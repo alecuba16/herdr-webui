@@ -16,3 +16,5 @@ zigbin/
 .e2e-*.log
 target-llvm
 .e2e-chrome-profile
+default_*.profraw
+lcov.info

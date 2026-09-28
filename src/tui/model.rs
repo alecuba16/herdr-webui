@@ -13,6 +13,11 @@ pub enum TuiMode {
     /// display of the API base, theme mode, refresh interval, and
     /// the git/exploration roots, plus a theme toggle (`t`).
     Settings,
+    /// Worktree/workspaces browser overlay (webui worktree open modal,
+    /// prefix `W`): discovered worktrees of the selected workspace folder
+    /// (fallback: the exploration default/home), j/k moves, Enter opens
+    /// through `worktree.open`, Esc closes.
+    WorktreeList,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -177,6 +177,7 @@ fn confirm_close_workspace_requires_y() {
 fn prompt_kind_hints_and_titles_cover_workspace_kinds() {
     for kind in [
         PromptKind::NewWorkspace,
+        PromptKind::NewWorkspaceName,
         PromptKind::RenameWorkspace,
         PromptKind::RenamePanel,
         PromptKind::CreateWorktreeBranch,
@@ -189,6 +190,7 @@ fn prompt_kind_hints_and_titles_cover_workspace_kinds() {
             kind.into_workspace_prompt(),
             match kind {
                 PromptKind::NewWorkspace => WorkspacePrompt::NewWorkspace,
+                PromptKind::NewWorkspaceName => WorkspacePrompt::NewWorkspaceName,
                 PromptKind::RenameWorkspace => WorkspacePrompt::RenameWorkspace,
                 PromptKind::RenamePanel => WorkspacePrompt::RenamePanel,
                 PromptKind::CreateWorktreeBranch => WorkspacePrompt::CreateWorktreeBranch,
@@ -349,10 +351,13 @@ fn workspace_fake_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) 
                 json!({"id": id, "result": {"workspace": {"workspace_id": "ws_2"}}})
             }
             "workspace.close" | "workspace.rename" | "tab.rename" | "worktree.remove"
-            | "worktree.create" | "tab.promote" => json!({"id": id, "result": {"ok": true}}),
+            | "worktree.create" | "worktree.open" | "tab.promote" => {
+                json!({"id": id, "result": {"ok": true}})
+            }
             "worktree.list" => {
                 json!({"id": id, "result": {"worktrees": [{"path": "/repo", "branch": "main"}]}})
             }
+            "pane.read" => json!({"id": id, "result": {"read": {"text": ""}}}),
             "tab.create" => json!({"id": id, "result": {"tab": {"tab_id": "tab_t"}}}),
             method => json!({"id": id, "error": format!("unexpected method {method}")}),
         };
@@ -374,9 +379,22 @@ fn app_with_fake_backend() -> (TuiApp, std::sync::mpsc::Sender<()>) {
     (app, stop)
 }
 
+/// Shared entry for sibling test modules: a client wired to the fake
+/// backend (answers worktree.list and friends) so tests that press
+/// API-backed keys stay hermetic. The stop channel leaks by design;
+/// the listener thread parks on its socket until process exit.
+pub(crate) fn fake_backend_client() -> BackendClient {
+    let (api_socket, _stop) = workspace_fake_socket();
+    BackendClient::new(api_socket.clone(), api_socket)
+}
+
 #[test]
 fn workspace_actions_validate_empty_inputs_and_missing_selection() {
-    let mut app = app_with_snapshot(workspace_snapshot());
+    // The worktree-list fallback hits the backend socket; wire the
+    // fake one so this stays hermetic (the builtin socket answers
+    // differently depending on the live session state).
+    let mut app = TuiApp::new(fake_backend_client(), Duration::from_secs(1));
+    app.snapshot = crate::tui::model::TuiSnapshot::from_backend_response(&workspace_snapshot());
     assert_eq!(
         app.create_workspace("  ").unwrap_err(),
         "type a directory path"
@@ -399,10 +417,12 @@ fn workspace_actions_validate_empty_inputs_and_missing_selection() {
     );
     assert_eq!(app.rename_panel("panel").unwrap_err(), "no active panel");
     assert_eq!(app.remove_worktree().unwrap_err(), "no workspace selected");
-    assert_eq!(
-        app.worktree_list().unwrap_err(),
-        "no workspace folder selected"
-    );
+    // Webui parity: without a workspace the worktree browser still opens,
+    // falling back to the home folder instead of failing.
+    assert!(app.worktree_list().is_ok());
+    assert_eq!(app.mode, TuiMode::WorktreeList);
+    assert_eq!(app.worktree_selected, 0);
+    app.mode = TuiMode::Navigate;
     assert_eq!(
         app.create_worktree("branch", "/tmp/path").unwrap_err(),
         "no workspace folder selected"
@@ -413,9 +433,14 @@ fn workspace_actions_validate_empty_inputs_and_missing_selection() {
 fn workspace_backend_actions_succeed_against_fake_socket() {
     let (mut app, _stop) = app_with_fake_backend();
 
+    // Webui parity: the folder must exist and tilde expands. Use a real
+    // temp dir so validation passes like the webui modal does.
+    let dir = std::env::temp_dir().join("tui-ws-create-parity");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_string_lossy().to_string();
     assert_eq!(
-        app.create_workspace(" /new ").unwrap(),
-        "workspace created: /new"
+        app.create_workspace(&format!(" {path} ")).unwrap(),
+        format!("workspace created: {path}")
     );
     assert_eq!(app.selected_workspace, 1);
     assert_eq!(
@@ -571,4 +596,312 @@ fn round4_workspace_temp_empty_ids_and_create_path_backend_error() {
         app.temp_terminal_toggle().unwrap_err(),
         "could not create the temp tab"
     );
+}
+
+#[test]
+fn new_workspace_prompt_validates_tilde_expands_and_chains_name_step() {
+    use super::{validate_workspace_folder, WorkspaceCreateStage};
+
+    // Tilde expansion mirrors the webui expand_user_path_string.
+    let home = std::env::var_os("HOME").expect("HOME set in tests");
+    let expanded = super::expand_tilde_path("~");
+    assert_eq!(expanded, std::path::PathBuf::from(&home));
+    let expanded = super::expand_tilde_path("~/Documents/code");
+    assert_eq!(
+        expanded,
+        std::path::PathBuf::from(&home).join("Documents/code")
+    );
+    assert_eq!(
+        super::expand_tilde_path("/absolute/path"),
+        std::path::PathBuf::from("/absolute/path")
+    );
+
+    // Webui parity: the folder must exist on disk.
+    let missing = validate_workspace_folder("/definitely/not/a/real/dir");
+    assert!(missing.unwrap_err().contains("workspace folder must exist"));
+
+    // Step 1 of the prompt chain: a real folder stages the path and
+    // opens the name prompt; a bad path stays on the path prompt.
+    let (mut app, _stop) = app_with_fake_backend();
+    let dir = std::env::temp_dir().join("tui-ws-chained");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_string_lossy().to_string();
+
+    run_prompt(&mut app, &WorkspacePrompt::NewWorkspace, &path);
+    assert!(app.error.is_none(), "valid path stages: {:?}", app.error);
+    assert_eq!(
+        app.workspace_create_stage,
+        Some(WorkspaceCreateStage::Path(path.clone()))
+    );
+    assert_eq!(
+        app.prompt_input.as_ref().map(|p| p.kind),
+        Some(PromptKind::NewWorkspaceName)
+    );
+    assert_eq!(app.status, format!("workspace name for {path}"));
+
+    // Step 2: the typed name creates the workspace with the label.
+    run_prompt(&mut app, &WorkspacePrompt::NewWorkspaceName, "myproj");
+    assert!(app.error.is_none(), "create with label: {:?}", app.error);
+    assert_eq!(app.status, format!("workspace created: {path}"));
+    assert_eq!(app.workspace_create_stage, None);
+    assert_eq!(app.selected_workspace, 1);
+
+    // A missing folder keeps the path prompt open and surfaces the error.
+    let (mut app, _stop) = app_with_fake_backend();
+    run_prompt(
+        &mut app,
+        &WorkspacePrompt::NewWorkspace,
+        "/definitely/not/real",
+    );
+    assert!(app
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("workspace folder must exist"));
+    assert_eq!(
+        app.prompt_input.as_ref().map(|p| p.kind),
+        Some(PromptKind::NewWorkspace)
+    );
+    assert_eq!(app.workspace_create_stage, None);
+
+    // The name step without a staged path errors instead of panicking.
+    let (mut app, _stop) = app_with_fake_backend();
+    run_prompt(&mut app, &WorkspacePrompt::NewWorkspaceName, "orphan");
+    assert_eq!(app.error.as_deref(), Some("no workspace path staged"));
+}
+
+#[test]
+fn worktree_list_browses_filters_and_opens_selected() {
+    let (mut app, _stop) = app_with_fake_backend();
+
+    // Ctrl+B W opens the browser overlay for the selected workspace cwd.
+    app.worktree_list().unwrap();
+    assert_eq!(app.mode, TuiMode::WorktreeList);
+    assert_eq!(app.worktree_root, "/repo");
+    assert_eq!(app.worktree_rows.len(), 1);
+    assert_eq!(app.worktree_rows[0].path, "/repo");
+    assert_eq!(app.worktree_rows[0].branch, "main");
+    assert_eq!(app.worktree_selected, 0);
+
+    // Filtering narrows the rows (case-insensitive over path/branch).
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    assert_eq!(app.worktree_filter, "m");
+    assert_eq!(app.filtered_worktree_rows().len(), 1);
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    assert_eq!(app.filtered_worktree_rows().len(), 0, "no row matches z");
+
+    // Esc clears the filter first and only closes on the second press.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::WorktreeList);
+    assert_eq!(app.worktree_filter, "");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+
+    // Enter opens the selected row through worktree.open and returns
+    // to Navigate (backend focuses the already-open workspace).
+    app.worktree_list().unwrap();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert!(app.status.contains("opened"), "status: {}", app.status);
+
+    // Without a workspace the browser still opens, falling back to home.
+    let (mut app, _stop) = app_with_fake_backend();
+    app.selected_workspace = 99;
+    assert!(app.worktree_list().is_ok());
+    assert_eq!(app.mode, TuiMode::WorktreeList);
+    assert!(!app.worktree_root.is_empty());
+}
+
+#[test]
+fn worktree_overlay_arrows_move_while_filter_active() {
+    // Webui modal parity: the search box does not swallow arrow keys,
+    // while j/k stay query letters (typing "j" extends the filter).
+    let (mut app, _stop) = app_with_fake_backend();
+    app.worktree_list().unwrap();
+    assert_eq!(app.worktree_rows.len(), 1);
+
+    // Type a filter that still matches the single row.
+    for ch in "repo".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.worktree_filter, "repo");
+    assert_eq!(app.filtered_worktree_rows().len(), 1);
+
+    // Down keeps the cursor in range (wrap on a 1-row list) instead of
+    // being eaten by the filter, and j extends the query.
+    app.worktree_selected = 0;
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(app.worktree_selected, 0, "Down moves even with a filter");
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.worktree_filter, "repoj", "j types into the filter");
+
+    // A filter matching nothing clamps the cursor to a valid position.
+    app.worktree_filter = "zz".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(
+        app.worktree_selected, 0,
+        "empty filtered list keeps cursor 0"
+    );
+}
+
+#[test]
+fn worktree_overlay_covers_remaining_key_arms_and_error_paths() {
+    let (mut app, _stop) = app_with_fake_backend();
+    app.worktree_list().unwrap();
+    assert_eq!(app.worktree_rows.len(), 1);
+    assert_eq!(app.worktree_rows[0].title(), "/repo");
+    // The fake row has no label, so the title is the bare path.
+
+    // Enter with the cursor past the filtered rows errors instead of
+    // panicking (the cursor is clamped by the key handler, but the API
+    // entry must still be defensive).
+    app.worktree_selected = 5;
+    assert_eq!(
+        app.worktree_open_selected().unwrap_err(),
+        "no worktree selected"
+    );
+
+    // Enter with a row whose path is missing errors.
+    app.worktree_selected = 0;
+    app.worktree_rows[0].path = String::new();
+    assert_eq!(
+        app.worktree_open_selected().unwrap_err(),
+        "worktree path missing"
+    );
+
+    // Ctrl+U clears the filter and resets the cursor.
+    app.worktree_list().unwrap();
+    app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+    app.worktree_selected = 9;
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.worktree_filter, "");
+    assert_eq!(app.worktree_selected, 0);
+
+    // Backspace pops a filter char and clamps the cursor.
+    app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.worktree_filter, "");
+
+    // Up/k move with wrap on the unfiltered list.
+    app.handle_key(KeyEvent::from(KeyCode::Up));
+    assert_eq!(app.worktree_selected, 0, "up wraps to last on 1 row");
+    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.worktree_selected, 0);
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(app.worktree_selected, 0);
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.worktree_selected, 0);
+
+    // A filter matching nothing keeps a valid cursor and Enter errors.
+    for ch in "zz".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.filtered_worktree_rows().len(), 0);
+    assert_eq!(
+        app.worktree_open_selected().unwrap_err(),
+        "no worktree selected"
+    );
+
+    // The no-match render message differs from the empty-discovery one.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.status, "no worktree selected");
+}
+
+#[test]
+fn create_workspace_with_label_validates_the_name() {
+    let (mut app, _stop) = app_with_fake_backend();
+    app.workspace_create_stage = Some(WorkspaceCreateStage::Path("/repo".to_string()));
+    assert_eq!(
+        app.create_workspace_with_label("   ").unwrap_err(),
+        "type a workspace name"
+    );
+    // The orphan name step (no staged path) errors.
+    let (mut app2, _stop2) = app_with_fake_backend();
+    assert_eq!(
+        app2.create_workspace_with_label("name").unwrap_err(),
+        "no workspace path staged"
+    );
+}
+
+#[test]
+fn worktree_row_title_falls_back_to_path_without_label() {
+    let row = WorktreeRow {
+        path: "/repo".to_string(),
+        branch: "main".to_string(),
+        label: String::new(),
+        is_linked: true,
+    };
+    assert_eq!(row.title(), "/repo");
+}
+
+#[test]
+fn worktree_open_focuses_unknown_path_without_panicking() {
+    // Opening a worktree whose cwd is not among the refreshed snapshot
+    // workspaces skips the focus step instead of panicking (backend may
+    // auto-drop or rename on open).
+    let (mut app, _stop) = app_with_fake_backend();
+    app.worktree_list().unwrap();
+    app.worktree_rows[0].path = "/elsewhere".to_string();
+    let before = app.selected_workspace;
+    let result = app.worktree_open_selected().unwrap();
+    assert_eq!(result, "opened /elsewhere");
+    assert_eq!(app.selected_workspace, before, "no focus when cwd missing");
+    assert_eq!(app.mode, TuiMode::Navigate);
+}
+
+#[test]
+fn worktree_backspace_clamps_cursor_when_filter_shrinks() {
+    let (mut app, _stop) = app_with_fake_backend();
+    app.worktree_list().unwrap();
+    // Type a filter, then backspace it to nothing: the cursor stays valid.
+    for ch in "repo".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.filtered_worktree_rows().len(), 1);
+    for _ in 0..4 {
+        app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    }
+    assert_eq!(app.worktree_filter, "");
+    assert!(app.worktree_selected < app.filtered_worktree_rows().len());
+}
+
+#[test]
+fn expand_tilde_falls_back_without_home() {
+    // Without $HOME a ~/path stays as typed instead of panicking.
+    let prev = std::env::var_os("HOME");
+    unsafe { std::env::remove_var("HOME") };
+    let expanded = expand_tilde_path("~/Documents");
+    assert_eq!(expanded, std::path::PathBuf::from("~/Documents"));
+    let bare = expand_tilde_path("~");
+    assert_eq!(bare, std::path::PathBuf::from("~"));
+    if let Some(home) = prev {
+        unsafe { std::env::set_var("HOME", home) }
+    }
+}
+
+#[test]
+fn worktree_backspace_on_filter_matching_nothing_clamps_to_zero() {
+    // Deleting the last char of a no-match filter must land the cursor
+    // on saturating_sub path: filter "zz" (0 rows), backspace -> "z"
+    // still 0 rows, cursor clamps to 0 via the len==0 branch.
+    let (mut app, _stop) = app_with_fake_backend();
+    app.worktree_list().unwrap();
+    for ch in "zz".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.filtered_worktree_rows().len(), 0);
+    app.worktree_selected = 3;
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.worktree_selected, 0);
+    assert_eq!(app.worktree_filter, "z");
+}
+
+#[test]
+fn focus_workspace_by_id_ignores_empty_ids() {
+    // A create/open response without a workspace id must not move the
+    // selection (the early return in focus_workspace_by_id).
+    let (mut app, _stop) = app_with_fake_backend();
+    let before = app.selected_workspace;
+    app.focus_workspace_by_id("");
+    assert_eq!(app.selected_workspace, before);
 }

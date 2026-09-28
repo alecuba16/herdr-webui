@@ -6,13 +6,46 @@
 //! `DEFAULT_WEBUI_SHORTCUTS`. Backed entirely by `BackendClient` JSON-RPC
 //! methods (`workspace.*`, `tab.*`, `worktree.*`).
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 
-use super::{PromptInput, PromptKind, SidebarFocus, TuiApp, TuiScreen};
+use super::{PromptInput, PromptKind, SidebarFocus, TuiApp, TuiMode};
 
 /// Result of a workspace action, reported through the status line or
 /// error slot by the caller.
 pub type WorkspaceResult = Result<String, String>;
+
+/// Expand a leading `~` or `~/...` to `$HOME`, the TUI counterpart of the
+/// webui `expand_user_path_string` (main.rs). Keeps relative and absolute
+/// paths untouched so the backend keeps its own resolution.
+pub(crate) fn expand_tilde_path(input: &str) -> PathBuf {
+    let trimmed = input.trim();
+    if trimmed == "~" {
+        return home_dir().unwrap_or_else(|| PathBuf::from(trimmed));
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return match home_dir() {
+            Some(home) => home.join(rest),
+            None => PathBuf::from(trimmed),
+        };
+    }
+    PathBuf::from(trimmed)
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// Webui workspace-create validation: the folder must exist on disk.
+/// Returns the expanded display path for the status line.
+pub(crate) fn validate_workspace_folder(input: &str) -> Result<String, String> {
+    let path = expand_tilde_path(input);
+    if !Path::new(&path).is_dir() {
+        return Err(format!("workspace folder must exist: {}", path.display()));
+    }
+    Ok(path.to_string_lossy().to_string())
+}
 
 impl TuiApp {
     /// Report a [`WorkspaceResult`] through the status line or error slot.
@@ -64,15 +97,47 @@ impl TuiApp {
         Ok(format!("panel {}/{}", next + 1, len))
     }
 
-    /// Webui `newWorkspace`: create a workspace at the typed path.
+    /// Webui `newWorkspace` one-shot: validate the typed path and create
+    /// the workspace immediately (backend names it after the folder when
+    /// no label is given). The interactive prompt flow chains the name
+    /// step instead; this entry point covers programmatic callers and
+    /// the e2e harness.
     pub fn create_workspace(&mut self, path: &str) -> WorkspaceResult {
         let path = path.trim();
         if path.is_empty() {
             return Err("type a directory path".to_string());
         }
+        // Webui parity: expand `~` and reject folders missing on disk
+        // before touching the backend (webui "workspace folder must
+        // exist" error).
+        let expanded = validate_workspace_folder(path)?;
+        self.workspace_create_stage = Some(WorkspaceCreateStage::Path(expanded.clone()));
+        self.create_workspace_at(&expanded, None)
+    }
+
+    /// Label step of the chained prompt: create the staged path with the
+    /// typed name (webui modal's "Workspace name" field).
+    pub fn create_workspace_with_label(&mut self, label: &str) -> WorkspaceResult {
+        let Some(WorkspaceCreateStage::Path(path)) = self.workspace_create_stage.clone() else {
+            return Err("no workspace path staged".to_string());
+        };
+        let label = label.trim();
+        if label.is_empty() {
+            return Err("type a workspace name".to_string());
+        }
+        self.create_workspace_at(&path, Some(label))
+    }
+
+    /// Create + focus a workspace at a validated path. Shared by the
+    /// path-only and path+label prompt flows.
+    pub fn create_workspace_at(
+        &mut self,
+        expanded_path: &str,
+        label: Option<&str>,
+    ) -> WorkspaceResult {
         let client = self.client.clone();
         let result = client
-            .create_workspace(Some(path), None)
+            .create_workspace(Some(expanded_path), label)
             .map_err(|err| err.to_string())?;
         let id = result
             .get("workspace")
@@ -80,15 +145,23 @@ impl TuiApp {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        self.workspace_create_stage = None;
         self.refresh().map_err(|err| err.to_string())?;
-        // Focus the new workspace like the webui post-create navigation.
-        if !id.is_empty() {
-            if let Some(index) = self.snapshot.workspaces.iter().position(|ws| ws.id == id) {
-                self.selected_workspace = index;
-                self.refresh_tail();
-            }
+        self.focus_workspace_by_id(&id);
+        Ok(format!("workspace created: {expanded_path}"))
+    }
+
+    /// Focus the workspace with the given id after a refresh (webui
+    /// post-create/post-open navigation). Empty or missing ids are
+    /// ignored so the selection simply stays where it was.
+    fn focus_workspace_by_id(&mut self, id: &str) {
+        if id.is_empty() {
+            return;
         }
-        Ok(format!("workspace created: {path}"))
+        if let Some(index) = self.snapshot.workspaces.iter().position(|ws| ws.id == id) {
+            self.selected_workspace = index;
+            self.refresh_tail();
+        }
     }
 
     /// Webui `closeWorkspace` (prefix Shift+X): close every panel in the
@@ -174,28 +247,154 @@ impl TuiApp {
         Ok("worktree removed".to_string())
     }
 
-    /// Webui `openWorktrees` (prefix W): list the worktrees detected for
-    /// the selected workspace folder and return them for display.
+    /// Webui `openWorktrees` (prefix W): browse the discovered worktrees
+    /// of the selected workspace folder. Without a workspace the webui
+    /// falls back to the exploration default folder; the TUI uses the
+    /// selected workspace cwd or home. Rows land in the WorktreeList
+    /// overlay (Enter opens, j/k moves, type filters).
     pub fn worktree_list(&mut self) -> WorkspaceResult {
-        let Some(cwd) = self
+        let cwd = self
             .selected_workspace()
             .map(|ws| ws.cwd.clone())
             .filter(|cwd| !cwd.is_empty())
-        else {
-            return Err("no workspace folder selected".to_string());
-        };
+            .unwrap_or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| home.to_string_lossy().to_string())
+                    .unwrap_or_else(|| ".".to_string())
+            });
         let result = self
             .client
             .list_worktrees(Some(&cwd))
             .map_err(|err| err.to_string())?;
-        let count = result
+        self.worktree_rows = result
             .get("worktrees")
             .and_then(Value::as_array)
-            .map(|items| items.len())
-            .unwrap_or(0);
-        self.status = format!("worktrees: {count} in {cwd}");
-        self.screen = TuiScreen::Terminal;
-        Ok(self.status.clone())
+            .map(|items| items.iter().map(WorktreeRow::from_json).collect())
+            .unwrap_or_default();
+        self.worktree_selected = 0;
+        self.worktree_filter.clear();
+        self.worktree_root = cwd.clone();
+        self.open_overlay(TuiMode::WorktreeList);
+        Ok(format!("worktrees: {} in {cwd}", self.worktree_rows.len()))
+    }
+
+    /// Enter in the WorktreeList overlay: open the selected checkout
+    /// through `worktree.open`. The backend focuses an already-open
+    /// workspace instead of duplicating it (webui already-open parity).
+    pub fn worktree_open_selected(&mut self) -> WorkspaceResult {
+        // The cursor indexes the filtered list, exactly like the webui
+        // modal selection over its rendered rows.
+        let Some(row) = self
+            .filtered_worktree_rows()
+            .get(self.worktree_selected)
+            .cloned()
+        else {
+            return Err("no worktree selected".to_string());
+        };
+        if row.path.is_empty() {
+            return Err("worktree path missing".to_string());
+        }
+        self.client
+            .open_worktree(&row.path, None, None)
+            .map_err(|err| err.to_string())?;
+        self.refresh().map_err(|err| err.to_string())?;
+        // Focus the opened workspace like the webui post-open navigation;
+        // the backend keys it by cwd, so resolve the id first.
+        if let Some(id) = self
+            .snapshot
+            .workspaces
+            .iter()
+            .find(|ws| ws.cwd == row.path)
+            .map(|ws| ws.id.clone())
+        {
+            self.focus_workspace_by_id(&id);
+        }
+        // Opening a worktree is a context switch (the webui navigates to
+        // the new workspace), so it also drops any overlay stack.
+        self.overlay_stack.clear();
+        self.mode = TuiMode::Navigate;
+        Ok(format!("opened {}", row.title()))
+    }
+
+    /// Rows matching the typed filter (webui modal search over rows).
+    pub fn filtered_worktree_rows(&self) -> Vec<WorktreeRow> {
+        let query = self.worktree_filter.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            return self.worktree_rows.clone();
+        }
+        self.worktree_rows
+            .iter()
+            .filter(|row| {
+                row.path.to_ascii_lowercase().contains(&query)
+                    || row.branch.to_ascii_lowercase().contains(&query)
+                    || row.label.to_ascii_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Keys inside the WorktreeList overlay: j/k move over the filtered
+    /// rows, printable characters extend the type-to-filter query (same
+    /// convention as the help overlay: j/k only move when the query is
+    /// empty), Enter opens the selected worktree, Esc closes (clearing
+    /// the filter first). Arrows always move the cursor like the webui
+    /// modal, which navigates its rows while the search box has text.
+    pub(crate) fn handle_worktree_list_key(&mut self, key: KeyEvent) {
+        let filter_active = !self.worktree_filter.is_empty();
+        let len = self.filtered_worktree_rows().len();
+        match key.code {
+            KeyCode::Esc => {
+                if filter_active {
+                    self.worktree_filter.clear();
+                    self.worktree_selected = 0;
+                } else {
+                    self.close_overlay();
+                }
+            }
+            KeyCode::Enter => match self.worktree_open_selected() {
+                Ok(message) => self.status = message,
+                Err(err) => self.status = err,
+            },
+            // Arrows always move (webui modal parity): they are not query
+            // letters, so an active filter must not swallow them.
+            KeyCode::Down if len > 0 => {
+                self.worktree_selected = (self.worktree_selected + 1) % len;
+            }
+            KeyCode::Up if len > 0 => {
+                self.worktree_selected = (self.worktree_selected + len.saturating_sub(1)) % len;
+            }
+            // j/k are query letters while the filter is active.
+            KeyCode::Char('j') if !filter_active && len > 0 => {
+                self.worktree_selected = (self.worktree_selected + 1) % len;
+            }
+            KeyCode::Char('k') if !filter_active && len > 0 => {
+                self.worktree_selected = (self.worktree_selected + len.saturating_sub(1)) % len;
+            }
+            KeyCode::Backspace => {
+                self.worktree_filter.pop();
+                self.worktree_selected = 0;
+                self.clamp_worktree_cursor();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.worktree_filter.clear();
+                self.worktree_selected = 0;
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                self.worktree_filter.push(c);
+                self.worktree_selected = 0;
+                self.clamp_worktree_cursor();
+            }
+            _ => {}
+        }
+    }
+
+    /// Keep the worktree cursor inside the filtered list after the query
+    /// changes its length (webui modal keeps its selection valid).
+    fn clamp_worktree_cursor(&mut self) {
+        let len = self.filtered_worktree_rows().len();
+        if self.worktree_selected >= len {
+            self.worktree_selected = len.saturating_sub(1);
+        }
     }
 
     /// Webui `createWorktree` (prefix Shift+T): create a worktree from
@@ -237,6 +436,7 @@ impl TuiApp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WorkspacePrompt {
     NewWorkspace,
+    NewWorkspaceName,
     RenameWorkspace,
     RenamePanel,
     CreateWorktreeBranch,
@@ -256,7 +456,26 @@ pub(crate) fn workspace_status(app: &mut TuiApp, result: WorkspaceResult) {
 /// Mirrors how `run_prompt_action` in `mod.rs` dispatches file/git prompts.
 pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
     let result = match kind {
-        WorkspacePrompt::NewWorkspace => app.create_workspace(text),
+        // Webui modal parity: step 1 validates the folder (tilde expansion,
+        // must exist) and stages it; step 2 takes the name and creates.
+        // A validation error stays in step 1 so the user can fix the path.
+        WorkspacePrompt::NewWorkspace => {
+            match validate_workspace_folder(text) {
+                Ok(expanded) => {
+                    app.workspace_create_stage = Some(WorkspaceCreateStage::Path(expanded.clone()));
+                    app.prompt_input = Some(PromptInput::new(PromptKind::NewWorkspaceName));
+                    app.status = format!("workspace name for {expanded}");
+                    return;
+                }
+                Err(err) => {
+                    // Re-open the path prompt with the error visible so the
+                    // user can correct the typo without re-pressing Ctrl+B N.
+                    app.prompt_input = Some(PromptInput::new(PromptKind::NewWorkspace));
+                    Err(err)
+                }
+            }
+        }
+        WorkspacePrompt::NewWorkspaceName => app.create_workspace_with_label(text),
         WorkspacePrompt::RenameWorkspace => app.rename_workspace(text),
         WorkspacePrompt::RenamePanel => app.rename_panel(text),
         WorkspacePrompt::ConfirmCloseWorkspace => app.close_workspace(),
@@ -288,6 +507,60 @@ pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorktreeCreateStage {
     Branch(String),
+}
+
+/// Two-step workspace creation prompt: the webui modal collects folder
+/// and name at once; the TUI asks path first (validated, tilde-expanded),
+/// then the name. The stage carries the validated path between steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceCreateStage {
+    Path(String),
+}
+
+/// One discovered worktree row in the browser overlay (webui worktree
+/// open modal row: checkout path, branch, label, linked flag).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeRow {
+    pub path: String,
+    pub branch: String,
+    pub label: String,
+    pub is_linked: bool,
+}
+
+impl WorktreeRow {
+    /// Parse a `worktree.list` JSON row into the overlay shape.
+    pub(crate) fn from_json(value: &Value) -> Self {
+        Self {
+            path: value
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            branch: value
+                .get("branch")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            label: value
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            is_linked: value
+                .get("is_linked_worktree")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }
+    }
+
+    /// Title line of the overlay row (webui worktreeOpenRowTitle).
+    pub fn title(&self) -> String {
+        if self.label.is_empty() {
+            self.path.clone()
+        } else {
+            format!("{} ({})", self.path, self.label)
+        }
+    }
 }
 
 impl TuiApp {
@@ -467,4 +740,4 @@ impl TuiApp {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

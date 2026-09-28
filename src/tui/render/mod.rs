@@ -1,14 +1,14 @@
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::tui::keys::help_rows;
 use crate::tui::panels::files::{content_rows, ContentRow, SearchKind};
 use crate::tui::panels::GitView;
 use crate::tui::terminal::styled_terminal_line;
 use crate::tui::theme::Palette;
+use crate::tui::workspace::WorkspaceCreateStage;
 use crate::tui::{SidebarFocus, TuiApp, TuiMode, TuiScreen};
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -39,14 +39,29 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
         TuiScreen::Git => render_git_screen(frame, main, app, p),
     }
     render_footer(frame, footer, app, p);
+    // Webui modal parity: every overlay draws over a dimmed backdrop
+    // (`.modal-backdrop { background: #0008 }`) with a shadowed,
+    // accent-bordered float window (neovim-style depth).
+    let overlay_active = app.mode == TuiMode::Help
+        || app.mode == TuiMode::ConfirmQuit
+        || app.mode == TuiMode::Settings
+        || app.mode == TuiMode::WorktreeList
+        || app.commit_input.is_some()
+        || app.prompt_input.is_some();
+    if overlay_active {
+        dim_backdrop(frame, p);
+    }
     if app.mode == TuiMode::Help {
-        render_help(frame, area, p, app.help_scroll);
+        render_help(frame, area, p, &app.help_filter, app.help_scroll);
     }
     if app.mode == TuiMode::ConfirmQuit {
         render_confirm_quit(frame, area, p);
     }
     if app.mode == TuiMode::Settings {
         render_settings(frame, area, app, p);
+    }
+    if app.mode == TuiMode::WorktreeList {
+        render_worktree_list(frame, area, app, p);
     }
     if app.commit_input.is_some() {
         render_commit_input(frame, area, app, p);
@@ -1310,14 +1325,8 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         .prompt_input
         .as_ref()
         .expect("render_prompt_input requires an active prompt");
-    let width = area.width.min(64);
-    let height = 6;
-    let rect = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = overlay_rect(area, area.width.min(64), 6);
+    render_shadow(frame, rect, p);
     // Show the subject of the action (file/branch/stash) above the input.
     let subject = match prompt.kind {
         crate::tui::PromptKind::RenameFile => app
@@ -1345,6 +1354,16 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         crate::tui::PromptKind::NewWorkspace
         | crate::tui::PromptKind::CreateWorktreeBranch
         | crate::tui::PromptKind::CreateWorktreePath => String::new(),
+        // Name step of the new-workspace flow: show the staged folder
+        // as the subject (webui modal shows the Folder field above the
+        // Workspace name field).
+        crate::tui::PromptKind::NewWorkspaceName => app
+            .workspace_create_stage
+            .as_ref()
+            .map(|stage| match stage {
+                WorkspaceCreateStage::Path(path) => path.clone(),
+            })
+            .unwrap_or_default(),
         crate::tui::PromptKind::RenameWorkspace => app
             .selected_workspace()
             .map(|workspace| workspace.label.clone())
@@ -1424,7 +1443,7 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     let title = format!(" {} ", prompt.kind.title());
     let lines = vec![
         Line::from(Span::styled(
-            truncate(&subject, (width.saturating_sub(4)) as usize),
+            truncate(&subject, (rect.width.saturating_sub(4)) as usize),
             Style::default().fg(p.muted),
         )),
         Line::from(Span::styled(
@@ -1438,7 +1457,7 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(&title, p))
+            .block(overlay_panel(&title, p))
             .style(Style::default().fg(p.text).bg(p.panel_bg)),
         rect,
     );
@@ -1451,14 +1470,8 @@ fn render_commit_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         .commit_input
         .as_ref()
         .expect("render_commit_input requires an active commit");
-    let width = area.width.min(64);
-    let height = 7;
-    let rect = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = overlay_rect(area, area.width.min(64), 7);
+    render_shadow(frame, rect, p);
     let title = if commit.amend {
         " Amend commit message "
     } else {
@@ -1477,14 +1490,14 @@ fn render_commit_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(title, p))
+            .block(overlay_panel(title, p))
             .style(Style::default().fg(p.text).bg(p.panel_bg)),
         rect,
     );
 }
 
 fn panel_block<'a>(title: &'a str, p: &Palette) -> Block<'a> {
-    panel(title, p).border_style(Style::default().fg(p.accent))
+    overlay_panel(title, p)
 }
 
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -1494,6 +1507,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         TuiMode::Help => "HELP",
         TuiMode::ConfirmQuit => "QUIT?",
         TuiMode::Settings => "SET",
+        TuiMode::WorktreeList => "WORKTREES",
     };
     let prefix = if app.prefix.is_armed() {
         "Ctrl+B> "
@@ -1571,20 +1585,176 @@ fn fit_hint(hint: &str, budget: usize) -> String {
     }
 }
 
-fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, scroll: usize) {
-    let rows = help_rows();
-    let width = area.width.min(72);
-    let height = area.height.min((rows.len() as u16 + 4).min(50));
-    let rect = Rect::new(
+/// The `filter: query_  matched/total` line shared by the help and
+/// worktree overlays while a type-to-filter query is active (webui
+/// search-box counterpart; returns None when the query is empty).
+fn filter_query_line(
+    p: &Palette,
+    filter: &str,
+    matched: usize,
+    total: usize,
+) -> Option<Line<'static>> {
+    if filter.is_empty() {
+        return None;
+    }
+    Some(Line::from(vec![
+        Span::styled(" filter: ", Style::default().fg(p.muted)),
+        Span::styled(format!("{filter}_"), Style::default().fg(p.accent)),
+        Span::styled(format!("  {matched}/{total}"), Style::default().fg(p.muted)),
+    ]))
+}
+
+/// Depth effect for overlay windows (webui `.modal-backdrop { background:
+/// #0008 }` + `.modal { box-shadow }`). Terminals cannot paint a
+/// translucent scrim over existing text, so the backdrop is faked by
+/// dimming the foreground color of every cell behind the overlay, the
+/// way neovim dims its float background. Works with the `system`
+/// theme too: it folds existing colors instead of painting a bg.
+fn dim_backdrop(frame: &mut Frame<'_>, p: &Palette) {
+    let area = frame.area();
+    let buffer = frame.buffer_mut();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            let cell = buffer.cell_mut((x, y)).expect("cell inside area");
+            cell.fg = dim_color(cell.fg, p);
+            cell.bg = dim_color(cell.bg, p);
+        }
+    }
+}
+
+/// Folds a color toward the muted tone (one step down in emphasis),
+/// keeping `Reset` (the terminal default) folded to `Reset` so the
+/// system theme never paints an opaque bg where the user's terminal
+/// background shows through.
+pub(crate) fn dim_color(color: Color, p: &Palette) -> Color {
+    match color {
+        Color::Reset => Color::Reset,
+        Color::Rgb(r, g, b) => {
+            // Fold the channel toward the border tone of the palette,
+            // halfway (the `/ 2` keeps the fold gentle, one emphasis
+            // step down like the webui's #0008 scrim).
+            let m = border_tone(p) as i16;
+            let fold =
+                |channel: u8| (channel as i16 + (m - channel as i16) / 2).clamp(0, 255) as u8;
+            Color::Rgb(fold(r), fold(g), fold(b))
+        }
+        Color::White | Color::Black => p.border,
+        Color::Red => p.red,
+        Color::Green => p.green,
+        Color::Blue => p.accent,
+        Color::Yellow => p.yellow,
+        Color::Cyan => p.teal,
+        Color::Magenta => p.accent,
+        Color::DarkGray | Color::Gray => p.muted,
+        _ => p.muted,
+    }
+}
+
+/// The channel the dimming folds toward: the border tone of the
+/// active palette (its green channel on light themes, red on dark).
+pub(crate) fn border_tone(p: &Palette) -> u8 {
+    match p.border {
+        Color::Rgb(r, g, _) => {
+            if is_dark(p) {
+                r
+            } else {
+                g
+            }
+        }
+        _ => 128,
+    }
+}
+
+pub(crate) fn is_dark(p: &Palette) -> bool {
+    // The panel bg of the dark palette is darker than the light one's.
+    match p.panel_bg {
+        Color::Rgb(r, _, _) => r < 128,
+        _ => true,
+    }
+}
+
+/// Neovim-style drop shadow: a one-cell band on the right and bottom
+/// edges of the overlay rect, painted with the shadow color of the
+/// palette (near-black on dark themes, gray on light ones).
+fn render_shadow(frame: &mut Frame<'_>, rect: Rect, p: &Palette) {
+    let shadow = shadow_color(p);
+    let style = Style::default().bg(shadow);
+    // Clamp the bands to the frame so a full-width or full-height
+    // overlay does not write outside the buffer.
+    let area = frame.area();
+    let buffer = frame.buffer_mut();
+    let right = rect.right();
+    for y in rect.y..rect.bottom() {
+        for x in right..(right + 1).min(area.right()) {
+            let cell = buffer.cell_mut((x, y)).expect("cell inside area");
+            cell.set_char(' ');
+            cell.set_style(style);
+        }
+    }
+    let bottom = rect.bottom();
+    for y in bottom..(bottom + 1).min(area.bottom()) {
+        for x in rect.x..right {
+            let cell = buffer.cell_mut((x, y)).expect("cell inside area");
+            cell.set_char(' ');
+            cell.set_style(style);
+        }
+    }
+}
+
+pub(crate) fn shadow_color(p: &Palette) -> Color {
+    if is_dark(p) {
+        Color::Rgb(10, 10, 16)
+    } else {
+        Color::Rgb(203, 213, 225)
+    }
+}
+
+/// Overlay block: same border as `panel` but with the accent-colored
+/// border, the neovim float-window look (nvim_win_set_config border
+/// highlight).
+fn overlay_panel<'a>(title: &'a str, p: &Palette) -> Block<'a> {
+    panel(title, p).border_style(Style::default().fg(p.accent))
+}
+
+/// Centers an overlay of `width` x `height` inside `area`, clamped to
+/// the available size. Shared by every overlay window so they all sit
+/// on the same spot and drop the same shadow.
+fn overlay_rect(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
         width,
         height,
-    );
+    )
+}
+
+fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scroll: usize) {
+    let rows = crate::tui::keys::filtered_help_rows(filter);
+    // One extra line for the filter query while it is active.
+    let filter_height = if filter.is_empty() { 0 } else { 1 };
+    let height = (rows.len() as u16 + 4 + filter_height).min(50);
+    let rect = overlay_rect(area, area.width.min(72), height);
+    render_shadow(frame, rect, p);
     let mut lines = vec![Line::from(Span::styled(
         "Herdr WebUI TUI",
         Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
     ))];
+    // Webui settings-search counterpart: show the active query so the
+    // user sees why the list shrank.
+    if let Some(line) =
+        filter_query_line(p, filter, rows.len(), crate::tui::keys::help_rows().len())
+    {
+        lines.push(line);
+    }
+    if rows.is_empty() {
+        // Same message as the webui settings search empty state.
+        lines.push(Line::from(Span::styled(
+            " No shortcuts match your search ",
+            Style::default().fg(p.muted),
+        )));
+    }
     for (keys, description) in rows {
         if keys.is_empty() {
             lines.push(Line::from(""));
@@ -1595,9 +1765,96 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, scroll: usize) {
             ]));
         }
     }
+    let title = if filter.is_empty() {
+        " Help · ? closes · type to filter · j/k scrolls "
+    } else {
+        " Help · Esc clears the filter "
+    };
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(" Help · Esc closes · j/k scrolls ", p))
+            .block(overlay_panel(title, p))
+            .style(Style::default().fg(p.text).bg(p.panel_bg))
+            .scroll((scroll as u16, 0)),
+        rect,
+    );
+}
+
+/// Worktree browser overlay (webui worktree open modal, prefix `W`):
+/// discovered checkouts of the discovery root, the typed filter query,
+/// j/k cursor, and Enter-open. Mirrors the webui rows: title (path +
+/// label), branch, linked badge.
+fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let rows = app.filtered_worktree_rows();
+    let filter_height = if app.worktree_filter.is_empty() { 0 } else { 1 };
+    let height = ((rows.len() as u16 + 5 + filter_height).min(24)).max(7 + filter_height);
+    let rect = overlay_rect(area, area.width.min(80), height);
+    render_shadow(frame, rect, p);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            " Worktrees ",
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("in {} ", app.worktree_root),
+            Style::default().fg(p.muted),
+        ),
+    ])];
+    if let Some(line) =
+        filter_query_line(p, &app.worktree_filter, rows.len(), app.worktree_rows.len())
+    {
+        lines.push(line);
+    }
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            if app.worktree_rows.is_empty() {
+                " No worktrees discovered in this folder "
+            } else {
+                " No worktrees match your search "
+            },
+            Style::default().fg(p.muted),
+        )));
+    }
+    for (index, row) in rows.iter().enumerate() {
+        let selected = index == app.worktree_selected;
+        let cursor = if selected { "▸ " } else { "  " };
+        let title_style = if selected {
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.text)
+        };
+        let linked = if row.is_linked {
+            " [linked]"
+        } else {
+            " [main]"
+        };
+        lines.push(Line::from(vec![
+            Span::styled(cursor, Style::default().fg(p.accent)),
+            Span::styled(row.title(), title_style),
+            Span::styled(
+                if row.branch.is_empty() {
+                    linked.to_string()
+                } else {
+                    format!("  {}{}", row.branch, linked)
+                },
+                Style::default().fg(p.muted),
+            ),
+        ]));
+    }
+    // Keep the cursor inside the window when the list outgrows the
+    // overlay (webui modal scrolls the selected row into view).
+    let header_lines = 2 + filter_height; // border + title (+ filter line)
+    let visible_rows = height.saturating_sub(header_lines + 1).max(1) as usize;
+    let scroll = app
+        .worktree_selected
+        .saturating_sub(visible_rows.saturating_sub(1));
+    let title = if app.worktree_filter.is_empty() {
+        " Worktrees · Enter opens · j/k moves · type to filter · Esc closes "
+    } else {
+        " Worktrees · Esc clears the filter "
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(overlay_panel(title, p))
             .style(Style::default().fg(p.text).bg(p.panel_bg))
             .scroll((scroll as u16, 0)),
         rect,
@@ -1610,14 +1867,8 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, scroll: usize) {
 /// informational (webui stores the rest in browser storage, which has
 /// no TUI equivalent yet).
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
-    let width = area.width.min(64);
-    let height = 12;
-    let rect = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = overlay_rect(area, area.width.min(64), 12);
+    render_shadow(frame, rect, p);
     let git_cwd = app.git_panel.cwd.clone();
     let files_cwd = app.file_explorer.cwd.clone();
     let row = |key: &str, value: &str| {
@@ -1651,7 +1902,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(" Settings · Esc closes ", p))
+            .block(overlay_panel(" Settings · Esc closes ", p))
             .style(Style::default().fg(p.text).bg(p.panel_bg)),
         rect,
     );
@@ -1661,14 +1912,8 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
 /// the destructive typed-`y` prompts, this one stays light: y/Enter
 /// quits, n/Esc (or any other key) stays, Ctrl+C also quits.
 fn render_confirm_quit(frame: &mut Frame<'_>, area: Rect, p: &Palette) {
-    let width = area.width.min(48);
-    let height = 7;
-    let rect = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = overlay_rect(area, area.width.min(48), 7);
+    render_shadow(frame, rect, p);
     let highlight = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
     let lines = vec![
         Line::from(Span::styled(
@@ -1693,7 +1938,7 @@ fn render_confirm_quit(frame: &mut Frame<'_>, area: Rect, p: &Palette) {
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(" Quit? ", p))
+            .block(overlay_panel(" Quit? ", p))
             .style(Style::default().fg(p.text).bg(p.panel_bg))
             .wrap(Wrap { trim: false }),
         rect,

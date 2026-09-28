@@ -38,6 +38,7 @@ impl PromptKind {
     pub(crate) fn into_workspace_prompt(self) -> workspace::WorkspacePrompt {
         match self {
             Self::NewWorkspace => workspace::WorkspacePrompt::NewWorkspace,
+            Self::NewWorkspaceName => workspace::WorkspacePrompt::NewWorkspaceName,
             Self::RenameWorkspace => workspace::WorkspacePrompt::RenameWorkspace,
             Self::RenamePanel => workspace::WorkspacePrompt::RenamePanel,
             Self::CreateWorktreeBranch => workspace::WorkspacePrompt::CreateWorktreeBranch,
@@ -89,6 +90,8 @@ pub(crate) enum FooterContext {
     ConfirmQuit,
     HelpOverlay,
     SettingsOverlay,
+    /// Worktree browser overlay: j/k or arrows move, Enter opens, Esc closes.
+    WorktreeList,
     /// Commit message modal: typing, Enter commits, Esc cancels.
     CommitInput,
     /// Any typed prompt (rename, confirm, new file, ...).
@@ -117,8 +120,9 @@ impl FooterContext {
     pub(crate) fn hint(self) -> &'static str {
         match self {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
-            Self::HelpOverlay => " Esc closes help · j/k scrolls ",
+            Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
             Self::SettingsOverlay => " t theme · Esc closes ",
+            Self::WorktreeList => " Enter opens · j/k moves · type filters · Esc closes ",
             Self::CommitInput => {
                 " type the message · Enter commits · Esc cancels · Ctrl+U clears · Ctrl+B ? help "
             }
@@ -177,8 +181,9 @@ impl FooterContext {
     pub(crate) fn compact_hint(self) -> &'static str {
         match self {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
-            Self::HelpOverlay => " Esc closes help · j/k scrolls ",
+            Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
             Self::SettingsOverlay => " t theme · Esc closes ",
+            Self::WorktreeList => " Enter opens · j/k moves · type filters · Esc closes ",
             Self::CommitInput => " Enter commit · Esc cancel · Ctrl+B ? help ",
             Self::PromptInput(PromptKind::ReplaceInFile) => {
                 " Enter replace · ! all · Esc cancel · Ctrl+B ? help "
@@ -259,13 +264,34 @@ pub struct TuiApp {
     pub tick: u64,
     /// Two-step worktree creation: branch typed first, then checkout path.
     pub worktree_create_stage: Option<workspace::WorktreeCreateStage>,
+    /// Two-step workspace creation: validated path first, then name
+    /// (webui modal collects both at once).
+    pub workspace_create_stage: Option<workspace::WorkspaceCreateStage>,
+    /// Worktree browser overlay state (webui worktree open modal):
+    /// discovered rows, cursor, type-to-filter query, and the discovery
+    /// root shown in the title.
+    pub worktree_rows: Vec<workspace::WorktreeRow>,
+    pub worktree_selected: usize,
+    pub worktree_filter: String,
+    pub worktree_root: String,
     /// Rebase upstream typed into the RebaseUpstream prompt; consumed by
     /// the follow-up typed confirm (webui rebase modal two-step).
     pub rebase_pending_upstream: Option<String>,
     /// Vertical scroll of the Help overlay (j/k when help is open).
     pub help_scroll: usize,
+    /// Type-to-filter query for the Help overlay, the TUI counterpart of
+    /// the webui settings "Search settings" box. Printable keys append,
+    /// Backspace edits, Esc clears it before closing the overlay.
+    pub help_filter: String,
     /// Mode the user was in when the quit overlay opened; restored on cancel.
     pub(crate) quit_prev_mode: TuiMode,
+    /// Modes the user was in before each overlay (help/settings/worktree)
+    /// opened, oldest opener at the bottom, so closing returns to the
+    /// immediately previous context. The WebUI modals return to the
+    /// underlying view; the TUI must keep the attach context, and a
+    /// help overlay opened from inside the worktree overlay must close
+    /// back into that overlay, not out of the whole stack.
+    pub(crate) overlay_stack: Vec<TuiMode>,
     dirty: bool,
 }
 
@@ -301,6 +327,9 @@ pub enum PromptKind {
     ConfirmDeleteBranch,
     ConfirmDropStash,
     NewWorkspace,
+    /// Second step of the new-workspace prompt: the workspace name
+    /// (webui modal "Workspace name" field, suggested from the folder).
+    NewWorkspaceName,
     RenameWorkspace,
     RenamePanel,
     CreateWorktreeBranch,
@@ -363,6 +392,7 @@ impl PromptKind {
             Self::ConfirmDeleteBranch => "Delete branch",
             Self::ConfirmDropStash => "Drop stash",
             Self::NewWorkspace => "New workspace path",
+            Self::NewWorkspaceName => "Workspace name",
             Self::RenameWorkspace => "Rename workspace",
             Self::RenamePanel => "Rename panel",
             Self::CreateWorktreeBranch => "Create worktree: branch",
@@ -386,7 +416,8 @@ impl PromptKind {
     pub fn hint(self) -> &'static str {
         match self {
             Self::RenameFile => "type the new name, Enter renames",
-            Self::NewWorkspace => "type a directory path, Enter opens it",
+            Self::NewWorkspace => "type a directory path (~ works), Enter continues to the name",
+            Self::NewWorkspaceName => "type the workspace name, Enter creates it",
             Self::RenameWorkspace | Self::RenamePanel => "type the new name, Enter renames",
             Self::CreateWorktreeBranch => "type the branch name, Enter continues",
             Self::CreateWorktreePath => "type the checkout path, Enter creates",
@@ -458,9 +489,16 @@ impl TuiApp {
             palette: Palette::for_theme(theme),
             tick: 0,
             worktree_create_stage: None,
+            workspace_create_stage: None,
+            worktree_rows: Vec::new(),
+            worktree_selected: 0,
+            worktree_filter: String::new(),
+            worktree_root: String::new(),
             rebase_pending_upstream: None,
             help_scroll: 0,
+            help_filter: String::new(),
             quit_prev_mode: TuiMode::Navigate,
+            overlay_stack: Vec::new(),
             dirty: true,
         }
     }
@@ -540,6 +578,7 @@ impl TuiApp {
             TuiMode::ConfirmQuit => return FooterContext::ConfirmQuit,
             TuiMode::Help => return FooterContext::HelpOverlay,
             TuiMode::Settings => return FooterContext::SettingsOverlay,
+            TuiMode::WorktreeList => return FooterContext::WorktreeList,
             _ => {}
         }
         // Screens and sub-views.
@@ -574,15 +613,63 @@ impl TuiApp {
         }
         match self.mode {
             TuiMode::Help => match key.code {
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
-                    self.mode = TuiMode::Navigate;
+                // Esc clears the filter first, then closes (webui settings
+                // search clears its box before dismissing the modal).
+                KeyCode::Esc => {
+                    if !self.help_filter.is_empty() {
+                        self.help_filter.clear();
+                        self.help_scroll = 0;
+                    } else {
+                        self.close_help_overlay();
+                    }
+                }
+                // Toggle close: ? always closes the overlay (it never
+                // appears in shortcut names or descriptions, so unlike q it
+                // cannot start a query). Esc is the other closer; q types
+                // into the filter like the webui search box, so queries
+                // like "quit" and "quick" are typeable.
+                KeyCode::Char('?') => {
+                    self.close_help_overlay();
+                }
+                // While a filter is active every printable key (except the
+                // ? toggle and Esc closer above) edits the query, so words
+                // like "worktree" and "quit" type through their j/k/q
+                // letters. Scrolling then lives on the arrow/Page keys only.
+                KeyCode::Down | KeyCode::PageDown => {
+                    let max = help_max_scroll().min(
+                        crate::tui::keys::filtered_help_rows(&self.help_filter)
+                            .len()
+                            .saturating_sub(1),
+                    );
+                    self.help_scroll = self.help_scroll.saturating_add(1).min(max);
+                }
+                KeyCode::Up | KeyCode::PageUp => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1);
+                }
+                KeyCode::Backspace => {
+                    self.help_filter.pop();
                     self.help_scroll = 0;
                 }
-                KeyCode::Char('j') | KeyCode::Down | KeyCode::PageDown => {
+                // Ctrl+U clears the filter like the prompt inputs do.
+                KeyCode::Char(ch)
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && ch.eq_ignore_ascii_case(&'u') =>
+                {
+                    self.help_filter.clear();
+                    self.help_scroll = 0;
+                }
+                // j/k scroll only while no filter is active (vim reflex at
+                // the top of the overlay); with a filter they become query
+                // letters through the catch-all below.
+                KeyCode::Char('j') if self.help_filter.is_empty() => {
                     self.help_scroll = self.help_scroll.saturating_add(1).min(help_max_scroll());
                 }
-                KeyCode::Char('k') | KeyCode::Up | KeyCode::PageUp => {
+                KeyCode::Char('k') if self.help_filter.is_empty() => {
                     self.help_scroll = self.help_scroll.saturating_sub(1);
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    self.help_filter.push(ch);
+                    self.help_scroll = 0;
                 }
                 _ => {}
             },
@@ -601,15 +688,20 @@ impl TuiApp {
             },
             TuiMode::Settings => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') => {
-                    self.mode = TuiMode::Navigate;
+                    self.close_overlay();
                 }
                 // Theme cycle (webui settings theme select).
                 KeyCode::Char('t') | KeyCode::Tab => {
                     self.theme = self.theme.next();
+                    // The palette is precomputed at startup; recompute it or
+                    // the cycle has no visible effect (webui applies the
+                    // theme immediately on selection).
+                    self.palette = Palette::for_theme(self.theme);
                     self.status = format!("theme: {}", self.theme.label());
                 }
                 _ => {}
             },
+            TuiMode::WorktreeList => self.handle_worktree_list_key(key),
             TuiMode::Navigate => self.handle_navigation_key(key),
             TuiMode::Attach => {
                 if self.screen == TuiScreen::Terminal {
@@ -711,6 +803,7 @@ impl TuiApp {
                 Err(err) => self.error = Some(err.to_string()),
             },
             PromptKind::NewWorkspace
+            | PromptKind::NewWorkspaceName
             | PromptKind::RenameWorkspace
             | PromptKind::RenamePanel
             | PromptKind::CreateWorktreeBranch
@@ -1027,10 +1120,7 @@ impl TuiApp {
 
     fn run_shortcut(&mut self, shortcut: Shortcut) {
         match shortcut {
-            Shortcut::Help => {
-                self.mode = TuiMode::Help;
-                self.help_scroll = 0;
-            }
+            Shortcut::Help => self.open_help_overlay(),
             Shortcut::Files => self.open_files_screen(),
             Shortcut::Git => self.open_git_screen(),
             Shortcut::Terminal => self.screen = TuiScreen::Terminal,
@@ -1099,7 +1189,7 @@ impl TuiApp {
             }
             Shortcut::Settings => {
                 // Prefix s: settings overlay (webui settings modal).
-                self.mode = TuiMode::Settings;
+                self.open_overlay(TuiMode::Settings);
             }
             Shortcut::Sidebar => {
                 // Prefix Shift+B: collapse/expand the sidebar column
@@ -1327,6 +1417,48 @@ impl TuiApp {
         self.quit_prev_mode = self.mode;
         self.mode = TuiMode::ConfirmQuit;
         self.status = "quit? y confirms · Esc cancels".to_string();
+    }
+
+    /// Open a modal overlay (help/settings/worktree), remembering the
+    /// mode it was opened from so closing returns there. Without this,
+    /// overlays opened while attached drop back to Navigate and lose
+    /// the attach context; the WebUI modals always return to whatever
+    /// the user was doing underneath.
+    fn open_overlay(&mut self, overlay: TuiMode) {
+        // The stack remembers every opener, so nested overlays unwind
+        // one level per close: help opened from inside the worktree
+        // overlay closes back into it, and closing that overlay returns
+        // to the original mode (e.g. Attach).
+        self.overlay_stack.push(self.mode);
+        self.mode = overlay;
+    }
+
+    /// Close the current overlay, restoring the context it was opened
+    /// from (falls back to Navigate when the stack is somehow empty).
+    pub(crate) fn close_overlay(&mut self) {
+        self.mode = self.overlay_stack.pop().unwrap_or(TuiMode::Navigate);
+    }
+
+    /// Open the help overlay with a clean filter and scroll. Every
+    /// entry point (prefix `?`, bare `?` on Files/Git/Terminal) funnels
+    /// through here so the reset behavior cannot drift between sites.
+    fn open_help_overlay(&mut self) {
+        self.open_overlay(TuiMode::Help);
+        self.reset_help_state();
+    }
+
+    /// Close the help overlay and reset its filter/scroll for the next
+    /// open (both the `?` toggle and the Esc closer go through here).
+    fn close_help_overlay(&mut self) {
+        self.close_overlay();
+        self.reset_help_state();
+    }
+
+    /// Clear the help filter and scroll so the overlay always opens or
+    /// closes from a clean state.
+    fn reset_help_state(&mut self) {
+        self.help_scroll = 0;
+        self.help_filter.clear();
     }
 
     /// Cancel the quit overlay and return to the mode the user was in.
@@ -1763,7 +1895,9 @@ impl TuiApp {
                     });
                 }
             }
-            KeyCode::Char('?') => self.mode = TuiMode::Help,
+            KeyCode::Char('?') => {
+                self.open_help_overlay();
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
             _ => {}
         }
@@ -2196,7 +2330,9 @@ impl TuiApp {
             }
             // Plain ? opens the help overlay from any git view (the
             // footer advertises Ctrl+B ?; a bare ? is the natural reflex).
-            KeyCode::Char('?') => self.mode = TuiMode::Help,
+            KeyCode::Char('?') => {
+                self.open_help_overlay();
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
             _ => {}
         }
@@ -2284,7 +2420,9 @@ impl TuiApp {
             // Only the Terminal screen reaches this handler; Files and Git
             // delegate to their panel handlers above.
             KeyCode::Char('q') | KeyCode::Esc => self.request_quit(),
-            KeyCode::Char('?') => self.mode = TuiMode::Help,
+            KeyCode::Char('?') => {
+                self.open_help_overlay();
+            }
             KeyCode::Char('r') => self.refresh_active_screen(),
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),

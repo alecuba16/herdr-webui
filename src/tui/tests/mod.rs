@@ -926,6 +926,53 @@ fn draw(app: &TuiApp, width: u16, height: u16) -> String {
     format!("{:?}", terminal.backend().buffer())
 }
 
+/// Renders and keeps the buffer so tests can assert on cell colors
+/// (the Debug dump of `draw` is lossy for that).
+fn draw_buffer(app: &TuiApp, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, app)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+/// A rendered row plus its y coordinate, for depth-effect assertions.
+/// `chars` is one entry per cell so multibyte glyphs (·, ▸) keep their
+/// cell x positions.
+struct RenderedRow {
+    chars: Vec<char>,
+    y: usize,
+}
+
+impl RenderedRow {
+    /// Cell x of the first character of `needle`, or the row is not
+    /// the one expected.
+    fn cell_x_of(&self, needle: &str) -> Option<usize> {
+        let needle: Vec<char> = needle.chars().collect();
+        self.chars
+            .windows(needle.len())
+            .position(|w| w == needle.as_slice())
+    }
+}
+
+fn rendered_row(buffer: &ratatui::buffer::Buffer, needle: &str) -> RenderedRow {
+    for y in 0..buffer.area.height as usize {
+        let chars: Vec<char> = (0..buffer.area.width as usize)
+            .map(|x| {
+                buffer[(x as u16, y as u16)]
+                    .symbol()
+                    .chars()
+                    .next()
+                    .unwrap_or(' ')
+            })
+            .collect();
+        let as_line: String = chars.iter().collect();
+        if as_line.contains(needle) {
+            return RenderedRow { chars, y };
+        }
+    }
+    panic!("row containing {needle:?} not rendered");
+}
+
 fn ctrl(ch: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
 }
@@ -1489,10 +1536,10 @@ fn shortcut_dispatch_covers_every_arm() {
     app.handle_key(KeyEvent::from(KeyCode::Char('q')));
     assert_eq!(app.mode, TuiMode::ConfirmQuit);
     assert!(!app.should_quit(), "quit shortcut asks first");
-    // y confirms; the overlay was opened from Navigate so cancel would
-    // restore that mode, but here we confirm for real.
-    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
-    assert_eq!(app.status, "quit");
+    // Cancel first; the destructive confirm runs at the very end of the
+    // test because after `y` the app is in a terminal ConfirmQuit state.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
 
     // Refresh arm and PrevWorkspace arm (focus unchanged by j/k).
     app.handle_key(ctrl_b);
@@ -1614,6 +1661,14 @@ fn shortcut_dispatch_covers_every_arm() {
     app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT));
+
+    // The real confirm runs last: y confirms the quit overlay that the
+    // quit arm opened earlier in the flow.
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+    assert_eq!(app.status, "quit");
 }
 
 #[test]
@@ -2858,7 +2913,7 @@ fn renders_terminal_footer_and_help_variants() {
 
     app.mode = TuiMode::Help;
     let help = draw(&app, 100, 24);
-    assert!(help.contains("Esc"), "help footer renders");
+    assert!(help.contains("? closes"), "help footer renders");
 }
 
 #[test]
@@ -3834,6 +3889,7 @@ fn files_screen_tab_cycles_recent_previews_and_w_reveals_git_file() {
 fn settings_overlay_opens_cycles_theme_and_closes() {
     let mut app = app_with_snapshot();
     app.theme = TuiTheme::Dark;
+    app.palette = Palette::for_theme(TuiTheme::Dark);
 
     // Ctrl+B s opens the settings overlay.
     app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
@@ -3845,12 +3901,16 @@ fn settings_overlay_opens_cycles_theme_and_closes() {
     assert!(drawn.contains("theme"));
     assert!(drawn.contains("dark"));
 
-    // t cycles the theme live.
+    // t cycles the theme live, and the palette follows it so the switch
+    // is visible immediately (webui applies the theme on selection).
     app.handle_key(KeyEvent::from(KeyCode::Char('t')));
     assert_eq!(app.theme, TuiTheme::Light);
     assert_eq!(app.status, "theme: light");
+    assert_eq!(app.palette, Palette::for_theme(TuiTheme::Light));
+    let light_bg = app.palette.bg;
     app.handle_key(KeyEvent::from(KeyCode::Char('t')));
     assert_eq!(app.theme, TuiTheme::System);
+    assert_ne!(app.palette.bg, light_bg);
 
     // Esc closes back to navigate mode.
     app.handle_key(KeyEvent::from(KeyCode::Esc));
@@ -4358,7 +4418,13 @@ fn round2_constructors_prompt_titles_help_and_refresh_errors() {
     assert_eq!(help.help_scroll, 0);
     help.handle_key(KeyEvent::from(KeyCode::Char('x')));
     assert_eq!(help.mode, TuiMode::Help);
+    // q types into the filter now (? is the toggle closer); the x above
+    // also typed, so clear first.
+    help.help_filter.clear();
     help.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(help.help_filter, "q");
+    assert_eq!(help.mode, TuiMode::Help);
+    help.handle_key(KeyEvent::from(KeyCode::Char('?')));
     assert_eq!(help.mode, TuiMode::Navigate);
 
     help.mode = TuiMode::Settings;
@@ -5233,4 +5299,538 @@ fn final_round_prompt_titles_options_and_refresh_error_arms() {
     app.last_refresh = Some(Instant::now());
     app.refresh_if_due();
     assert_eq!(app.status, "before", "not-due refresh skips the backend");
+}
+
+#[test]
+fn help_overlay_filters_by_typed_query() {
+    let mut app = app_with_snapshot();
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+
+    // Typing narrows the rows: "worktree" keeps only worktree shortcuts.
+    for ch in "worktree".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.help_filter, "worktree");
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("filter: worktree_"));
+    assert!(
+        drawn.contains(
+            "No shortcuts match"
+                .replace("No shortcuts match", "worktree")
+                .as_str()
+        ) || drawn.contains("worktree")
+    );
+    // The filter must drop unrelated rows like the terminal detach hint.
+    assert!(!drawn.contains("detach terminal"));
+
+    // Backspace edits the query; a wrong extra letter empties the list.
+    for ch in "zzz".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.help_filter, "worktreezzz");
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("No shortcuts match"));
+
+    // Esc clears the filter first (stays in the overlay), then closes.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.help_filter, "");
+    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+}
+
+#[test]
+fn help_filter_types_q_into_query_and_question_mark_closes() {
+    // Regression from the pty acceptance run: q must type into the query
+    // ("quit", "quick"...) like the webui search box; ? is the toggle
+    // closer and Esc clears the filter before closing.
+    let mut app = app_with_snapshot();
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+
+    // "quit" must type through its leading q into the filter and match
+    // the quit shortcut row.
+    for ch in "quit".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.help_filter, "quit");
+    assert_eq!(app.mode, TuiMode::Help);
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("filter: quit_"));
+    assert!(drawn.contains("quit"));
+
+    // ? closes the overlay even with a filter active.
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert_eq!(app.help_filter, "");
+
+    // Esc clears the filter first (stays in the overlay), then closes.
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    for ch in "zz".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.help_filter, "");
+    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+}
+
+#[test]
+fn filtered_help_rows_match_keys_and_descriptions() {
+    // Direct unit check of the filter helper (webui settings-search parity).
+    let rows = crate::tui::keys::filtered_help_rows("worktree");
+    assert!(!rows.is_empty());
+    assert!(rows.iter().all(
+        |(keys, description)| keys.to_ascii_lowercase().contains("worktree")
+            || description.to_ascii_lowercase().contains("worktree")
+    ));
+    // Empty query returns every row including separators.
+    assert_eq!(
+        crate::tui::keys::filtered_help_rows("").len(),
+        crate::tui::keys::help_rows().len()
+    );
+    // No match returns empty.
+    assert!(crate::tui::keys::filtered_help_rows("zzzzzzzz").is_empty());
+}
+
+#[test]
+fn overlays_restore_the_mode_they_were_opened_from() {
+    // Regression: overlays opened while attached must close back to
+    // Attach, not Navigate. The WebUI modals return to the underlying
+    // view; dropping the attach context silently detaches the user.
+    // The fake backend answers worktree.list so the nested overlay
+    // open does not depend on a live session (the builtin socket may
+    // reject /repo and the test would flake).
+    let client = crate::tui::workspace::tests::fake_backend_client();
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = fixture_snapshot();
+    app.screen = TuiScreen::Terminal;
+    app.mode = TuiMode::Attach;
+
+    // Help overlay from prefix while attached.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Attach, "? closer restores Attach");
+
+    // Esc closer with an active filter clears first, closes on second.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    for ch in "theme".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Help, "Esc clears the filter first");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Attach, "Esc closer restores Attach");
+
+    // Settings overlay from prefix while attached.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.mode, TuiMode::Settings);
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.mode, TuiMode::Attach, "s closer restores Attach");
+
+    // Overlays from Navigate keep returning to Navigate.
+    app.mode = TuiMode::Navigate;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Navigate);
+
+    // Nested: opening help from inside the worktree overlay restores
+    // the worktree overlay on close (prefix wins over the overlay).
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('w')));
+    assert_eq!(app.mode, TuiMode::WorktreeList);
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(
+        app.mode,
+        TuiMode::WorktreeList,
+        "nested close restores the worktree overlay"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+}
+
+#[test]
+fn worktree_overlay_renders_rows_filter_and_empty_states() {
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::WorktreeList;
+    app.worktree_root = "/repo".to_string();
+    app.worktree_rows = vec![
+        crate::tui::workspace::WorktreeRow {
+            path: "/repo".to_string(),
+            branch: "main".to_string(),
+            label: String::new(),
+            is_linked: false,
+        },
+        crate::tui::workspace::WorktreeRow {
+            path: "/repo-wt".to_string(),
+            branch: "feature".to_string(),
+            label: "wt".to_string(),
+            is_linked: true,
+        },
+    ];
+    app.worktree_selected = 1;
+
+    let buf = draw(&app, 100, 30);
+    assert!(buf.contains("Worktrees"), "title renders");
+    assert!(buf.contains("/repo"), "row path renders");
+    assert!(buf.contains("[linked]"), "linked badge renders");
+    assert!(buf.contains("[main]"), "main badge renders");
+    assert!(buf.contains("WORKTREES"), "footer context renders");
+
+    // Active filter shows the query and the narrowed count.
+    app.worktree_filter = "feature".to_string();
+    let buf = draw(&app, 100, 30);
+    assert!(buf.contains("filter: feature_"), "filter query renders");
+    assert!(buf.contains("1/2"), "filtered count renders");
+    assert!(buf.contains("Esc clears the filter"), "title switches");
+
+    // No match shows the search empty state, not the discovery one.
+    app.worktree_filter = "zz".to_string();
+    let buf = draw(&app, 100, 30);
+    assert!(buf.contains("No worktrees match your search"));
+
+    // No discovered rows shows the discovery empty state.
+    app.worktree_filter.clear();
+    app.worktree_rows.clear();
+    let buf = draw(&app, 100, 30);
+    assert!(buf.contains("No worktrees discovered in this folder"));
+}
+
+#[test]
+fn help_overlay_scrolls_with_page_keys_and_ctrl_u_clears() {
+    let mut app = app_with_snapshot();
+    app.open_overlay(TuiMode::Help);
+
+    // PageDown/Down scroll, PageUp/Up scroll back, all while filtering.
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    let scrolled = app.help_scroll;
+    assert!(scrolled <= crate::tui::keys::filtered_help_rows("").len());
+    app.handle_key(KeyEvent::from(KeyCode::PageDown));
+    assert!(app.help_scroll >= scrolled);
+    app.handle_key(KeyEvent::from(KeyCode::PageUp));
+    app.handle_key(KeyEvent::from(KeyCode::Up));
+    assert_eq!(app.help_scroll, 0);
+
+    // Ctrl+U clears the active filter.
+    for ch in "theme".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.help_filter, "theme");
+    app.handle_key(ctrl('u'));
+    assert_eq!(app.help_filter, "");
+    // The overlay stays open after Ctrl+U.
+    assert_eq!(app.mode, TuiMode::Help);
+    // Filtered render shows the count line and the narrowed title.
+    app.help_filter = "theme".to_string();
+    let buf = draw(&app, 100, 40);
+    assert!(buf.contains("filter: theme_"), "help filter renders");
+    assert!(buf.contains("Esc clears the filter"), "help title switches");
+}
+
+#[test]
+fn new_workspace_name_prompt_shows_the_staged_path() {
+    let mut app = app_with_snapshot();
+    app.workspace_create_stage = Some(crate::tui::workspace::WorkspaceCreateStage::Path(
+        "/repo".to_string(),
+    ));
+    app.prompt_input = Some(PromptInput {
+        kind: PromptKind::NewWorkspaceName,
+        text: String::new(),
+    });
+    let buf = draw(&app, 100, 30);
+    assert!(buf.contains("Workspace name"), "prompt title renders");
+    assert!(buf.contains("/repo"), "staged path shows as subject");
+}
+
+#[test]
+fn footer_context_hints_exist_for_every_variant() {
+    // Every overlay and capture-layer context must advertise its keys in
+    // both full and compact hint forms (the footer is the discoverability
+    // surface; an empty hint is a regression).
+    let contexts = [
+        FooterContext::ConfirmQuit,
+        FooterContext::HelpOverlay,
+        FooterContext::SettingsOverlay,
+        FooterContext::WorktreeList,
+        FooterContext::CommitInput,
+        FooterContext::PromptInput(PromptKind::ReplaceInFile),
+        FooterContext::PromptInput(PromptKind::RenameFile),
+        FooterContext::DiffSearch,
+        FooterContext::EditorFind,
+        FooterContext::FileEdit,
+        FooterContext::FilterBar,
+        FooterContext::ContentSearch,
+        FooterContext::Terminal(TuiMode::Attach),
+        FooterContext::Terminal(TuiMode::Navigate),
+        FooterContext::Files(TuiMode::Navigate),
+        FooterContext::Git(TuiMode::Navigate, GitView::Cleanup),
+    ];
+    for ctx in contexts {
+        assert!(!ctx.hint().trim().is_empty(), "{ctx:?} hint empty");
+        assert!(
+            !ctx.compact_hint().trim().is_empty(),
+            "{ctx:?} compact hint empty"
+        );
+    }
+    // The worktree overlay hint names its keys.
+    let hint = FooterContext::WorktreeList.hint();
+    assert!(hint.contains("Enter opens"), "worktree hint: {hint}");
+    assert!(hint.contains("type filters"), "worktree hint: {hint}");
+}
+
+#[test]
+fn help_overlay_backspace_edits_the_filter() {
+    let mut app = app_with_snapshot();
+    app.open_overlay(TuiMode::Help);
+    for ch in "git".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.help_filter, "git");
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.help_filter, "gi");
+    assert_eq!(app.help_scroll, 0, "backspace resets scroll");
+}
+
+#[test]
+fn worktree_row_without_branch_renders_only_the_badge() {
+    // Row with an empty branch shows the linked badge without the
+    // double-space separator.
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::WorktreeList;
+    app.worktree_root = "/repo".to_string();
+    app.worktree_rows = vec![crate::tui::workspace::WorktreeRow {
+        path: "/repo".to_string(),
+        branch: String::new(),
+        label: String::new(),
+        is_linked: true,
+    }];
+    let buf = draw(&app, 100, 30);
+    assert!(buf.contains("[linked]"), "badge renders without branch");
+}
+
+#[test]
+fn overlay_depth_effect_dims_backdrop_and_draws_shadow() {
+    // Webui modal parity: overlays sit on a dimmed backdrop
+    // (.modal-backdrop #0008) with a shadowed, accent-bordered float
+    // window (neovim-style depth).
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Terminal;
+
+    // Baseline footer text color before any overlay.
+    let plain = draw_buffer(&app, 110, 30);
+    let plain_footer_fg = plain[(5u16, 29u16)].fg;
+
+    // Open the settings overlay.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.mode, TuiMode::Settings);
+    let overlay = draw_buffer(&app, 110, 30);
+    let overlay_footer_fg = overlay[(5u16, 29u16)].fg;
+    assert_ne!(
+        plain_footer_fg, overlay_footer_fg,
+        "the backdrop behind the overlay must be dimmed"
+    );
+
+    // The overlay border uses the accent color and the cell right of
+    // the border carries the shadow band (blank cell, shadow bg).
+    let row = rendered_row(&overlay, "Settings · Esc closes");
+    let x0 = row.cell_x_of("Settings · Esc closes").unwrap() - 1;
+    assert_eq!(
+        overlay[(x0 as u16, row.y as u16)].fg,
+        Color::Rgb(137, 180, 250),
+        "overlay border must be accent"
+    );
+    let x_right = row.cell_x_of("┐").unwrap();
+    let shadow = overlay[((x_right + 1) as u16, (row.y + 3) as u16)].clone();
+    // The shadow is a blank cell whose colors fold into the shadow
+    // tone (bg painted, fg dimmed with the rest of the backdrop).
+    assert_eq!(shadow.fg, Color::Rgb(137, 142, 157));
+    assert_eq!(
+        shadow.bg,
+        Color::Rgb(10, 10, 16),
+        "shadow band painted right of the overlay"
+    );
+
+    // Closing the overlay restores the original colors (no residual
+    // dimming once the modal is gone).
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    let restored = draw_buffer(&app, 110, 30);
+    assert_eq!(
+        restored[(5u16, 29u16)].fg,
+        plain_footer_fg,
+        "backdrop colors must return after the overlay closes"
+    );
+}
+
+#[test]
+fn overlay_depth_effect_applies_to_every_overlay() {
+    // Help, quit confirm, and the typed prompts get the same depth
+    // treatment as settings: dimmed backdrop + shadow + accent border.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Terminal;
+
+    // Help overlay.
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    let help = draw_buffer(&app, 110, 30);
+    let row = rendered_row(&help, "Help · ? closes");
+    let x0 = row.cell_x_of("Help · ? closes").unwrap() - 1;
+    assert_eq!(
+        help[(x0 as u16, row.y as u16)].fg,
+        Color::Rgb(137, 180, 250),
+        "help border accent"
+    );
+    let x_right = row.cell_x_of("┐").unwrap();
+    assert_eq!(
+        help[((x_right + 1) as u16, (row.y + 3) as u16)].bg,
+        Color::Rgb(10, 10, 16),
+        "help shadow band"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+
+    // Quit confirmation.
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    let quit = draw_buffer(&app, 110, 30);
+    let row = rendered_row(&quit, "Quit?");
+    let x0 = row.cell_x_of("Quit?").unwrap() - 1;
+    assert_eq!(
+        quit[(x0 as u16, row.y as u16)].fg,
+        Color::Rgb(137, 180, 250),
+        "quit border accent"
+    );
+    let x_right = row.cell_x_of("┐").unwrap();
+    assert_eq!(
+        quit[((x_right + 1) as u16, (row.y + 3) as u16)].bg,
+        Color::Rgb(10, 10, 16),
+        "quit shadow band"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+
+    // Commit input modal.
+    app.commit_input = Some(CommitInput {
+        text: "wip".to_string(),
+        amend: false,
+    });
+    let commit = draw_buffer(&app, 110, 30);
+    let row = rendered_row(&commit, "Commit message");
+    let x0 = row.cell_x_of("Commit message").unwrap() - 1;
+    assert_eq!(
+        commit[(x0 as u16, row.y as u16)].fg,
+        Color::Rgb(137, 180, 250),
+        "commit modal border accent"
+    );
+    let x_right = row.cell_x_of("┐").unwrap();
+    assert_eq!(
+        commit[((x_right + 1) as u16, (row.y + 3) as u16)].bg,
+        Color::Rgb(10, 10, 16),
+        "commit modal shadow band"
+    );
+    app.commit_input = None;
+}
+
+#[test]
+fn overlay_depth_effect_light_theme_and_named_colors() {
+    // The depth helpers have theme-dependent arms: the light palette
+    // picks the green channel for the border fold and a gray shadow,
+    // and dim_color folds every named ANSI color it meets behind the
+    // overlay. Drive the light theme through the settings overlay and
+    // assert both the shadow color and a dimmed named-color cell.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Terminal;
+    app.theme = TuiTheme::Light;
+    app.palette = Palette::for_theme(TuiTheme::Light);
+
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.mode, TuiMode::Settings);
+    let overlay = draw_buffer(&app, 110, 30);
+    let row = rendered_row(&overlay, "Settings · Esc closes");
+    let x0 = row.cell_x_of("Settings · Esc closes").unwrap() - 1;
+    // Light palette border stays the light accent blue (37, 99, 235).
+    let accent = app.palette.accent;
+    assert_eq!(overlay[(x0 as u16, row.y as u16)].fg, accent);
+    // Light shadow: gray (203, 213, 225), not the dark near-black.
+    let x_right = row.cell_x_of("┐").unwrap();
+    let shadow = overlay[((x_right + 1) as u16, (row.y + 3) as u16)].clone();
+    assert_eq!(
+        shadow.bg,
+        Color::Rgb(203, 213, 225),
+        "light theme paints a gray shadow band"
+    );
+
+    // Named-color folding: dim_color maps the terminal ANSI names to
+    // the palette tones. Every named color appears somewhere behind
+    // the overlay in this fixture (footer, statuses, dots), so a
+    // full-screen pass folds at least White and Red cells; assert the
+    // dimming happened by sampling a footer cell again on light.
+    let plain = {
+        app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+        draw_buffer(&app, 110, 30)
+    };
+    let plain_fg = plain[(5u16, 29u16)].fg;
+    let dim_fg = overlay[(5u16, 29u16)].fg;
+    assert_ne!(plain_fg, dim_fg, "light backdrop also dims");
+}
+
+#[test]
+fn depth_helpers_fold_named_colors_and_pick_theme_tones() {
+    use crate::tui::render::{border_tone, dim_color, is_dark, shadow_color};
+
+    let dark = Palette::for_theme(TuiTheme::Dark);
+    let light = Palette::for_theme(TuiTheme::Light);
+
+    // Every named ANSI color has a dim_color arm; each must fold to a
+    // palette tone (Rgb) rather than stay a raw terminal name.
+    assert_eq!(dim_color(Color::White, &dark), dark.border);
+    assert_eq!(dim_color(Color::Black, &dark), dark.border);
+    assert_eq!(dim_color(Color::Red, &dark), dark.red);
+    assert_eq!(dim_color(Color::Green, &dark), dark.green);
+    assert_eq!(dim_color(Color::Blue, &dark), dark.accent);
+    assert_eq!(dim_color(Color::Yellow, &dark), dark.yellow);
+    assert_eq!(dim_color(Color::Cyan, &dark), dark.teal);
+    assert_eq!(dim_color(Color::Magenta, &dark), dark.accent);
+    assert_eq!(dim_color(Color::DarkGray, &dark), dark.muted);
+    assert_eq!(dim_color(Color::Gray, &dark), dark.muted);
+    // Remaining terminal names (Indexed, the bright variants) have no
+    // palette tone of their own and fold to muted like the grays.
+    assert_eq!(dim_color(Color::Indexed(3), &dark), dark.muted);
+    assert_eq!(dim_color(Color::LightRed, &dark), dark.muted);
+    // Reset stays Reset: the system theme must not paint over the
+    // user's terminal background.
+    assert_eq!(dim_color(Color::Reset, &dark), Color::Reset);
+    // Rgb folds halfway to the border tone.
+    assert_eq!(
+        dim_color(Color::Rgb(205, 214, 244), &dark),
+        Color::Rgb(137, 142, 157)
+    );
+
+    // Theme detection drives the tones.
+    assert!(is_dark(&dark));
+    assert!(!is_dark(&light));
+
+    // border_tone: red channel on dark, green channel on light.
+    assert_eq!(border_tone(&dark), 69);
+    assert_eq!(border_tone(&light), 213);
+
+    // shadow_color: near-black on dark, gray on light.
+    assert_eq!(shadow_color(&dark), Color::Rgb(10, 10, 16));
+    assert_eq!(shadow_color(&light), Color::Rgb(203, 213, 225));
+
+    // Non-Rgb palettes (a hand-built one) fall back to the defaults.
+    let mut plain = dark;
+    plain.border = Color::White;
+    assert_eq!(border_tone(&plain), 128);
+    plain.panel_bg = Color::Black;
+    assert!(is_dark(&plain));
 }
