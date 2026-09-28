@@ -109,6 +109,42 @@ fn wait_for(log: &std::sync::Arc<std::sync::Mutex<String>>, needle: &str) {
     }
 }
 
+/// Block until the theme value shows on the overlay row. Two wire
+/// forms are accepted: the differential renderer may re-emit just
+/// the changed cell with an explicit cursor jump (`ESC[11;28Hvalue`),
+/// or, when the backdrop dimming restyles the whole row (the depth
+/// effect repaints every cell while an overlay is open), as plain
+/// contiguous text (`themvalue`). Both prove the same thing: the
+/// theme row now shows `value`.
+fn wait_for_theme(log: &std::sync::Arc<std::sync::Mutex<String>>, value: &str) {
+    let jump = format!("\u{1b}[11;28H{value}");
+    // Settings rows pad the key to 16 columns ("  theme" + 11 spaces)
+    // before the value, so a full-row re-emission reads as contiguous
+    // "  theme          <value>" once SGR escapes are stripped.
+    let plain = format!("  theme{}{value}", " ".repeat(11));
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        {
+            let Ok(log) = log.lock() else { break };
+            if log.contains(&jump)
+                || log.contains(&plain)
+                || strip_sgr(&log).contains(&jump)
+                || strip_sgr(&log).contains(&plain)
+            {
+                return;
+            }
+            if Instant::now() > deadline {
+                let tail = log.len().saturating_sub(2000);
+                panic!(
+                    "TUI did not render theme {value:?} in time; tail of output: {:?}",
+                    &log[tail..]
+                );
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Remove `ESC [ ... m` (SGR) sequences so style changes cannot split a
 /// needle. Cursor-movement escapes are kept, which is what makes the
 /// deterministic overlay-cell needles below work.
@@ -226,22 +262,19 @@ fn tui_binary_interactive_loop_pty() {
     );
     let _ = writer.write_all(b"t");
     let _ = writer.flush();
-    // Asserting the theme cycle needs wire-format awareness: the theme
-    // row is two styled spans, so the diff renderer writes an SGR escape
-    // between the label padding and the value, and it only re-emits the
-    // changed value cells. The overlay is fixed at 64x12 centered in the
-    // 80x24 PTY, so the value cell always lands at row 11 col 28:
-    // `ESC[11;28H<theme label>` on the SGR-stripped wire. The transient
-    // "theme: X" status is not assertable: the 50ms refresh overwrites
-    // it before the next draw roughly half the time.
-    wait_for(&log, "\u{1b}[11;28Hdark");
+    // Asserting the theme cycle needs wire-format awareness; see
+    // wait_for_theme. The overlay is fixed at 64x12 centered in the
+    // 80x24 PTY. The transient "theme: X" status is not assertable:
+    // the 50ms refresh overwrites it before the next draw roughly
+    // half the time.
+    wait_for_theme(&log, "dark");
     let _ = writer.write_all(b"t");
     let _ = writer.flush();
-    wait_for(&log, "\u{1b}[11;28Hlight");
+    wait_for_theme(&log, "light");
     // A third `t` wraps the cycle back to system.
     let _ = writer.write_all(b"t");
     let _ = writer.flush();
-    wait_for(&log, "\u{1b}[11;28Hsystem");
+    wait_for_theme(&log, "system");
     let _ = writer.write_all(b"\x1b"); // Esc closes the overlay.
     let _ = writer.flush();
     // Give Esc time to land as its own event before the next keys.
