@@ -612,27 +612,29 @@ impl WebState {
 
 #[derive(Clone)]
 struct ApiClient {
-    socket_path: PathBuf,
+    /// Delegates the raw request/response framing to the shared client
+    /// so the WebUI proxy and the TUI cannot drift on wire format.
+    backend: herdr_webui::backend_client::BackendClient,
 }
 
 impl ApiClient {
+    /// Raw JSON request/response, one message per line. The framing
+    /// lives in BackendClient::request_raw; this keeps the WebUI's
+    /// plain-string error surface (handlers map it to status codes).
     fn request_value(&self, request: serde_json::Value) -> Result<serde_json::Value, String> {
-        let mut stream = connect_local_stream(&self.socket_path).map_err(|err| err.to_string())?;
-        stream
-            .write_all(
-                serde_json::to_string(&request)
-                    .map_err(|err| err.to_string())?
-                    .as_bytes(),
-            )
-            .map_err(|err| err.to_string())?;
-        stream.write_all(b"\n").map_err(|err| err.to_string())?;
-        stream.flush().map_err(|err| err.to_string())?;
-        let mut reader = BufReader::new(stream);
-        read_json_line(&mut reader).map_err(|err| err.to_string())
+        self.backend
+            .request_raw(request)
+            .map_err(|err| err.to_string())
     }
 
+    /// Subscribe to backend events: opens the control socket, sends
+    /// the subscription request, consumes the ack, and keeps the
+    /// stream open for later reads. The event socket has no framing
+    /// equivalent in BackendClient, so the connect/write prologue is
+    /// reproduced here against the same socket path.
     fn subscribe(&self, request: serde_json::Value) -> Result<EventStream, String> {
-        let mut stream = connect_local_stream(&self.socket_path).map_err(|err| err.to_string())?;
+        let mut stream =
+            connect_local_stream(self.backend.api_socket()).map_err(|err| err.to_string())?;
         stream
             .write_all(
                 serde_json::to_string(&request)
@@ -1519,19 +1521,28 @@ fn api_for_target_session(
             let session_name = canonical_session_name(session);
             let (api_socket, _) = builtin_socket_paths(Some(&session_name));
             ApiClient {
-                socket_path: api_socket,
+                backend: herdr_webui::backend_client::BackendClient::new(
+                    api_socket,
+                    PathBuf::new(),
+                ),
             }
         }
         SessionBackendTarget::ExternalHerdr => {
             if session.is_none() {
                 if let Some(socket_path) = &state.api_socket {
                     return ApiClient {
-                        socket_path: socket_path.clone(),
+                        backend: herdr_webui::backend_client::BackendClient::new(
+                            socket_path.clone(),
+                            PathBuf::new(),
+                        ),
                     };
                 }
             }
             ApiClient {
-                socket_path: api_socket_path_for(session),
+                backend: herdr_webui::backend_client::BackendClient::new(
+                    api_socket_path_for(session),
+                    PathBuf::new(),
+                ),
             }
         }
     }
@@ -2687,7 +2698,8 @@ async fn proxy_server_stop(api: ApiClient) -> Response {
     // an actual socket file for ECONNREFUSED to count as a dead listener
     // (Linux also refuses non-socket paths with ECONNREFUSED).
     let socket_path_is_socket = api
-        .socket_path
+        .backend
+        .api_socket()
         .metadata()
         .map(|meta| meta.file_type().is_socket())
         .unwrap_or(false);
@@ -2713,6 +2725,7 @@ async fn proxy_server_stop(api: ApiClient) -> Response {
                 || err.contains("ConnectionRefused"))
                 && socket_path_is_socket;
             let is_connection_drop = err.contains("empty response")
+                || err.contains("closed the control socket")
                 || err.contains("UnexpectedEof")
                 || err.contains("ConnectionReset")
                 || err.contains("Connection reset")
@@ -6108,7 +6121,10 @@ mod tests {
         let headers = HeaderMap::new();
 
         assert_eq!(
-            api_for_headers(&state, &headers).socket_path,
+            api_for_headers(&state, &headers)
+                .backend
+                .api_socket()
+                .to_path_buf(),
             PathBuf::from("/tmp/default-api.sock")
         );
         assert_eq!(
@@ -6120,7 +6136,9 @@ mod tests {
         session_headers.insert("x-herdr-session", HeaderValue::from_static("work"));
 
         assert!(api_for_headers(&state, &session_headers)
-            .socket_path
+            .backend
+            .api_socket()
+            .to_path_buf()
             .ends_with("sessions/work/herdr.sock"));
         assert!(client_socket_for_headers(&state, &session_headers)
             .ends_with("sessions/work/herdr-client.sock"));
@@ -6138,12 +6156,21 @@ mod tests {
         headers.insert("x-herdr-session", HeaderValue::from_static("other"));
 
         let (other_api, other_client) = builtin_socket_paths(Some("other"));
-        assert_eq!(api_for_headers(&state, &headers).socket_path, other_api);
+        assert_eq!(
+            api_for_headers(&state, &headers)
+                .backend
+                .api_socket()
+                .to_path_buf(),
+            other_api
+        );
         assert_eq!(client_socket_for_headers(&state, &headers), other_client);
 
         let (query_api, query_client) = builtin_socket_paths(Some("query"));
         assert_eq!(
-            api_for_query_session_routed(&state, &headers, Some("query"), None).socket_path,
+            api_for_query_session_routed(&state, &headers, Some("query"), None)
+                .backend
+                .api_socket()
+                .to_path_buf(),
             query_api
         );
         assert_eq!(
@@ -6170,7 +6197,9 @@ mod tests {
             SessionBackendTarget::ExternalHerdr
         );
         assert!(api_for_headers(&state, &headers)
-            .socket_path
+            .backend
+            .api_socket()
+            .to_path_buf()
             .ends_with("herdr/sessions/work/herdr.sock"));
     }
 
@@ -7986,7 +8015,10 @@ mod tests {
     fn worktree_api_builds_native_create_request() {
         let worktree_api = HerdrWorktreeApi {
             client: ApiClient {
-                socket_path: PathBuf::from("/tmp/herdr.sock"),
+                backend: herdr_webui::backend_client::BackendClient::new(
+                    PathBuf::from("/tmp/herdr.sock"),
+                    PathBuf::new(),
+                ),
             },
             version: HerdrWorktreeApiVersion::V0_7_1,
         };
