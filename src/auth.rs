@@ -5,9 +5,11 @@
 // comparison, cookie parsing, the localhost auth bypass, and the login
 // response. Axum handlers stay in main.rs because the router has a single
 // state type; they delegate here.
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use std::hash::{BuildHasher, Hasher};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -27,23 +29,37 @@ pub(crate) struct AuthConfig {
 }
 
 impl AuthConfig {
-    /// Derives a fresh session token from credentials plus a time seed.
+    /// Derives a fresh session token. The seed mixes OS randomness
+    /// (`RandomState` is seeded from the operating system per process)
+    /// with credentials and a time value, so a token cannot be
+    /// predicted from timing alone the way a pure nanos seed could.
     /// Settings validation happens before construction in the caller.
     pub(crate) fn from_parts(
         user: Option<String>,
         password: Option<String>,
         localhost_no_auth: bool,
     ) -> Self {
-        let seed = format!(
-            "{}:{}:{}",
-            user.as_deref().unwrap_or(""),
-            password.as_deref().unwrap_or(""),
+        use std::hash::Hash;
+        let mut seed = Sha256::new();
+        // OS-seeded entropy: a fresh RandomState per call carries keys the
+        // process derived from the operating system, not from anything
+        // an attacker can observe. Time and credentials only mix it.
+        let mut os_hasher = std::hash::RandomState::new().build_hasher();
+        SystemTime::now().hash(&mut os_hasher);
+        seed.update(os_hasher.finish().to_le_bytes());
+        seed.update(user.as_deref().unwrap_or(""));
+        seed.update(b":");
+        seed.update(password.as_deref().unwrap_or(""));
+        seed.update(b":");
+        seed.update(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|value| value.as_nanos())
                 .unwrap_or(0)
+                .to_le_bytes(),
         );
-        let token = Sha256::digest(seed.as_bytes())
+        let token = seed
+            .finalize()
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
@@ -76,6 +92,69 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Per-IP failed-login throttle. Without it a remote can hammer
+/// /api/login with password guesses as fast as the network allows;
+/// constant-time comparison stops timing leaks but not brute force.
+/// After `MAX_ATTEMPTS` failures inside `WINDOW` the IP is blocked
+/// until the oldest failure ages out of the window.
+pub(crate) struct LoginRateLimiter {
+    failures: Mutex<HashMap<IpAddr, Vec<SystemTime>>>,
+}
+
+const MAX_ATTEMPTS: usize = 5;
+const WINDOW: Duration = Duration::from_secs(300);
+
+impl LoginRateLimiter {
+    pub(crate) fn new() -> Self {
+        Self {
+            failures: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// True when the IP exhausted its attempts inside the window.
+    /// Prunes expired entries as a side effect so the map cannot grow
+    /// without bound from one-off scanners.
+    pub(crate) fn is_blocked(&self, ip: IpAddr) -> bool {
+        let Ok(mut failures) = self.failures.lock() else {
+            // Fail closed: if the lock is poisoned, do not let the
+            // limiter silently disappear under an attacker.
+            return true;
+        };
+        let cutoff = SystemTime::now().checked_sub(WINDOW);
+        let expired = {
+            let entries = failures.entry(ip).or_default();
+            if let Some(cutoff) = cutoff {
+                entries.retain(|time| *time > cutoff);
+            }
+            entries.is_empty()
+        };
+        if expired {
+            failures.remove(&ip);
+        }
+        failures
+            .get(&ip)
+            .is_some_and(|entries| entries.len() >= MAX_ATTEMPTS)
+    }
+
+    pub(crate) fn record_failure(&self, ip: IpAddr) {
+        if let Ok(mut failures) = self.failures.lock() {
+            failures.entry(ip).or_default().push(SystemTime::now());
+        }
+    }
+
+    pub(crate) fn reset(&self, ip: IpAddr) {
+        if let Ok(mut failures) = self.failures.lock() {
+            failures.remove(&ip);
+        }
+    }
+}
+
+impl Default for LoginRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Cookie-session check with the localhost bypass. Pure: takes the auth
@@ -128,18 +207,20 @@ pub(crate) struct LoginRequest {
     pub(crate) password: String,
 }
 
-/// Successful-login response that sets the session cookie.
-pub(crate) fn login_response(auth: &Mutex<AuthConfig>) -> Response {
+/// Successful-login response that sets the session cookie. `secure`
+/// marks the cookie `Secure` when the listener actually speaks TLS,
+/// so no proxy downgrade can strip it in the common deployment.
+pub(crate) fn login_response(auth: &Mutex<AuthConfig>, secure: bool) -> Response {
     let token = auth
         .lock()
         .map(|auth| auth.token.clone())
         .unwrap_or_default();
     let mut response = Json(json!({ "ok": true })).into_response();
+    let secure_flag = if secure { "; Secure" } else { "" };
     response.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_str(&format!(
-            "{COOKIE_NAME}={}; HttpOnly; SameSite=Lax; Path=/",
-            token
+            "{COOKIE_NAME}={token}; HttpOnly; SameSite=Lax{secure_flag}; Path=/"
         ))
         .expect("valid cookie"),
     );
@@ -227,7 +308,7 @@ mod tests {
     fn login_response_sets_http_only_cookie() {
         let (auth, _) = make_auth(false);
         let token = auth.lock().unwrap().token.clone();
-        let response = login_response(&auth);
+        let response = login_response(&auth, false);
         let cookie = response
             .headers()
             .get(header::SET_COOKIE)
@@ -236,5 +317,70 @@ mod tests {
         assert!(cookie.contains(&format!("{COOKIE_NAME}={token}")));
         assert!(cookie.contains("HttpOnly"));
         assert!(cookie.contains("SameSite=Lax"));
+        assert!(!cookie.contains("Secure"), "plain http must not pin Secure");
+    }
+
+    #[test]
+    fn login_response_adds_secure_flag_for_tls() {
+        let (auth, _) = make_auth(false);
+        let response = login_response(&auth, true);
+        let cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Lax"));
+        assert!(cookie.contains("Secure"));
+    }
+
+    #[test]
+    fn rate_limiter_blocks_after_max_attempts_and_resets() {
+        let limiter = LoginRateLimiter::new();
+        let ip: IpAddr = "192.0.2.10".parse().unwrap();
+        assert!(!limiter.is_blocked(ip));
+        for _ in 0..MAX_ATTEMPTS {
+            limiter.record_failure(ip);
+        }
+        assert!(limiter.is_blocked(ip), "fifth failure blocks the IP");
+        limiter.reset(ip);
+        assert!(!limiter.is_blocked(ip));
+    }
+
+    #[test]
+    fn rate_limiter_tracks_ips_independently() {
+        let limiter = LoginRateLimiter::new();
+        let blocked: IpAddr = "192.0.2.10".parse().unwrap();
+        let other: IpAddr = "192.0.2.11".parse().unwrap();
+        for _ in 0..MAX_ATTEMPTS {
+            limiter.record_failure(blocked);
+        }
+        assert!(limiter.is_blocked(blocked));
+        assert!(!limiter.is_blocked(other));
+    }
+
+    #[test]
+    fn rate_limiter_window_expires_old_failures() {
+        let limiter = LoginRateLimiter::new();
+        let ip: IpAddr = "192.0.2.10".parse().unwrap();
+        for _ in 0..MAX_ATTEMPTS {
+            limiter.record_failure(ip);
+        }
+        assert!(limiter.is_blocked(ip));
+        // Rewind every recorded failure past the window: the lock is
+        // intentionally taken via a short-lived poisoned-free helper by
+        // reaching into the internals from the test.
+        {
+            let mut failures = limiter.failures.lock().unwrap();
+            let entries = failures.get_mut(&ip).unwrap();
+            let aged = SystemTime::now() - WINDOW - Duration::from_secs(1);
+            for time in entries.iter_mut() {
+                *time = aged;
+            }
+        }
+        assert!(
+            !limiter.is_blocked(ip),
+            "expired failures must not keep the IP blocked"
+        );
     }
 }

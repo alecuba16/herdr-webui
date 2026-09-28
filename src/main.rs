@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::auth::{AuthConfig, LoginRequest};
+use crate::auth::{AuthConfig, LoginRateLimiter, LoginRequest};
 #[cfg(test)]
 use crate::builtin_detection::JcodeDetectionVariant;
 use server_settings::{
@@ -568,6 +568,8 @@ pub(crate) struct WebState {
     builtin_start_lock: Arc<Mutex<()>>,
     herdr_bin: String,
     auth: Arc<Mutex<AuthConfig>>,
+    /// Per-IP failed-login throttle backing the /api/login guard.
+    login_limiter: Arc<LoginRateLimiter>,
     server_settings: Arc<Mutex<RuntimeServerSettings>>,
     no_sleep: Arc<Mutex<NoSleepState>>,
     rebind_tx: tokio::sync::watch::Sender<ListenEndpoint>,
@@ -903,6 +905,7 @@ async fn main() -> io::Result<()> {
         builtin_start_lock,
         herdr_bin: std::env::var("HERDR_WEB_HERDR_BIN").unwrap_or_else(|_| "herdr".to_string()),
         auth,
+        login_limiter: Arc::new(LoginRateLimiter::new()),
         server_settings,
         no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
         rebind_tx,
@@ -2736,6 +2739,19 @@ async fn login(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<LoginRequest>,
 ) -> Response {
+    if state.login_limiter.is_blocked(remote.ip()) {
+        log_event(&state.log_level(), &format!("login: rate limited {remote}"));
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "too many attempts" })),
+        )
+            .into_response();
+    }
+    let secure = state
+        .server_settings
+        .lock()
+        .map(|settings| settings.tls_mode != TlsMode::Off)
+        .unwrap_or(false);
     let Ok(auth) = state.auth.lock() else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2749,11 +2765,12 @@ async fn login(
             &state.log_level(),
             &format!("login: localhost bypass for {remote}"),
         );
-        return crate::auth::login_response(&state.auth);
+        return crate::auth::login_response(&state.auth, secure);
     }
     let ok = auth.verify_credentials(&body.username, &body.password);
     drop(auth);
     if !ok {
+        state.login_limiter.record_failure(remote.ip());
         log_event(
             &state.log_level(),
             &format!("login: failed for user '{}' from {remote}", body.username),
@@ -2764,11 +2781,12 @@ async fn login(
         )
             .into_response();
     }
+    state.login_limiter.reset(remote.ip());
     log_event(
         &state.log_level(),
         &format!("login: success for user '{}' from {remote}", body.username),
     );
-    crate::auth::login_response(&state.auth)
+    crate::auth::login_response(&state.auth, secure)
 }
 
 async fn proxy_request_async(api: ApiClient, request: serde_json::Value) -> Response {
@@ -5482,6 +5500,7 @@ mod tests {
                 localhost_no_auth: false,
                 token: "token-123".to_string(),
             })),
+            login_limiter: Arc::new(LoginRateLimiter::new()),
             server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
                 bind,
                 tls_mode: TlsMode::Auto,
@@ -8269,6 +8288,39 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response_json(response).await["error"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn login_route_throttles_repeated_failures() {
+        let app = test_app();
+        for _ in 0..5 {
+            let body = Body::from(r#"{"username":"user","password":"wrong"}"#);
+            let response = app
+                .clone()
+                .oneshot(
+                    request(Method::POST, "/api/login")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        // Sixth attempt, even with correct credentials, must be throttled.
+        let body = Body::from(r#"{"username":"user","password":"pass"}"#);
+        let response = app
+            .oneshot(
+                request(Method::POST, "/api/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response_json(response).await["error"], "too many attempts");
     }
 
     #[tokio::test]
@@ -14986,6 +15038,7 @@ mod tui_parity_e2e_tests {
                 localhost_no_auth: true,
                 token: "e2e-token".to_string(),
             })),
+            login_limiter: Arc::new(LoginRateLimiter::new()),
             server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
                 bind,
                 tls_mode: TlsMode::Auto,

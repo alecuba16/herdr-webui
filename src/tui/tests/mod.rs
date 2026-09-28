@@ -9,6 +9,16 @@ use crate::tui::panels::{
     FileEntry, GitBranchEntry, GitCommitEntry, GitFileEntry, GitFileStatus, GitStashEntry, GitView,
 };
 
+/// Point the app's WebUI API at an endpoint nothing can ever answer:
+/// port 1 refuses connections instantly, so every request surfaces the
+/// deterministic "webui connection failed" error. Without this the
+/// tests hit whatever real session runs on the default port (8787 on
+/// this machine), and the same assertions flip between pass and fail
+/// depending on whether that session is up.
+pub(crate) fn point_web_api_at_dead_port(app: &mut TuiApp) {
+    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", 1);
+}
+
 #[test]
 fn parses_snapshot_for_tui_lists() {
     let snapshot = TuiSnapshot::from_backend_response(&json!({
@@ -207,6 +217,7 @@ fn git_panel_key_navigation_cycles_views() {
 fn log_two_commit_compare_keys_and_markdown_outline_key() {
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
+    point_web_api_at_dead_port(&mut app);
     app.screen = TuiScreen::Git;
     app.mode = TuiMode::Attach;
     app.git_panel.view = GitView::Log;
@@ -785,6 +796,7 @@ fn files_screen_dirty_preview_survives_switch_and_blocks_replacement() {
 fn dirty_preview_blocks_rename_delete_and_discard_of_edited_file() {
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
+    point_web_api_at_dead_port(&mut app);
     app.screen = TuiScreen::Files;
     app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("notes.md".to_string()),
@@ -1849,6 +1861,7 @@ fn git_in_panel_keys_cover_stage_fetch_pull_push_and_enter() {
 #[test]
 fn files_in_panel_keys_cover_rename_delete_and_enter() {
     let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
     app.screen = TuiScreen::Files;
     app.mode = TuiMode::Attach;
     app.file_explorer.entries = vec![
@@ -2641,6 +2654,7 @@ fn prompt_commit_and_panel_key_guard_arms() {
 #[test]
 fn files_key_error_and_guard_arms() {
     let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
     app.screen = TuiScreen::Files;
     app.mode = TuiMode::Attach;
     app.file_explorer.entries = vec![
@@ -5085,6 +5099,7 @@ fn round3_specific_tui_edges_and_shortcuts() {
 #[test]
 fn round4_commit_modal_typing_clear_submit_and_log_prompts() {
     let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
     app.screen = TuiScreen::Git;
     app.mode = TuiMode::Attach;
     app.git_panel.view = GitView::Changes;

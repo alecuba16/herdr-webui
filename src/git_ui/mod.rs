@@ -832,6 +832,7 @@ mod tests {
                 localhost_no_auth: true,
                 token: "token".to_string(),
             })),
+            login_limiter: Arc::new(crate::auth::LoginRateLimiter::new()),
             server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
                 bind,
                 tls_mode: crate::TlsMode::Auto,
