@@ -1,5 +1,21 @@
 # Release notes
 
+## 0.4.44 Release Notes
+- The TUI now matches the desktop WebUI shortcut map and Git/file feature
+  set. All 22 gaps from the TUI parity plan are closed: panel/workspace
+  management shortcuts (`[`/`]`, rename, close-workspace guard), search
+  palette, settings overlay, conflicts and cleanup views, stash diffs,
+  log actions (tag/reset/rebase/worktree, load more, scope cycle), diff
+  search, git cwd picker, hunk stage/unstage (`J`/`K`/`H`), content search
+  with jump-to-line, git status colors in the tree, reveal-in-tree,
+  editor find/replace, preview tab cycling, and the two deferred
+  sub-features: two-commit log compare (`Space` marks, `c` compares) and
+  the markdown header outline toggle (`M` on a `.md` preview).
+- TUI unit test coverage grew from 78.6% to 91.7% of lines (llvm-cov):
+  ~120 new tests against the existing fake backend-socket and fake
+  HTTP-server patterns, with no production-code changes in the test
+  commits.
+
 ## 0.4.42 Release Notes
 - Temporary terminals can be promoted into real workspaces without losing
   the shell. The `⤴` button in the temporary-terminal overlay head (or
