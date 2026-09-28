@@ -12,11 +12,12 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::builtin_detection::JcodeDetectionVariant;
-use crate::{auth::AuthConfig, lsp, WebConfig};
+use crate::{auth::AuthConfig, lsp, TlsMode, WebConfig};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PersistedServerSettings {
     pub bind: Option<String>,
+    pub tls_mode: Option<TlsMode>,
     pub user: Option<String>,
     pub password: Option<String>,
     pub localhost_no_auth: Option<bool>,
@@ -113,6 +114,7 @@ pub struct RecentWorkspace {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RuntimeServerSettings {
     pub bind: SocketAddr,
+    pub tls_mode: TlsMode,
     pub user: Option<String>,
     pub password: Option<String>,
     pub localhost_no_auth: bool,
@@ -175,6 +177,7 @@ pub fn validate_runtime_server_settings(settings: &RuntimeServerSettings) -> io:
 pub fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSettings {
     RuntimeServerSettings {
         bind,
+        tls_mode: TlsMode::Auto,
         user: None,
         password: None,
         localhost_no_auth: true,
@@ -203,10 +206,14 @@ pub fn server_settings_path() -> PathBuf {
 /// Apply CLI flags that must win over persisted settings.
 /// An explicit `--bind` beats the persisted bind from webui-settings.json;
 /// otherwise a preview instance could silently squat the saved port instead of
-/// the one the operator asked for.
+/// the one the operator asked for. An explicit `--https` beats the persisted
+/// tls_mode for the same reason.
 pub fn apply_cli_overrides(settings: &mut RuntimeServerSettings, config: &WebConfig) {
     if config.bind_explicit {
         settings.bind = config.bind;
+    }
+    if config.tls_mode_explicit {
+        settings.tls_mode = config.tls.mode;
     }
 }
 
@@ -225,6 +232,7 @@ pub fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<Runt
     })?;
     let missing_keys = [
         "bind",
+        "tls_mode",
         "user",
         "password",
         "localhost_no_auth",
@@ -251,6 +259,9 @@ pub fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<Runt
                 format!("invalid saved bind: {err}"),
             )
         })?;
+    }
+    if let Some(tls_mode) = persisted.tls_mode {
+        settings.tls_mode = tls_mode;
     }
     if persisted.user.is_some() {
         settings.user = persisted.user.filter(|value| !value.is_empty());
@@ -330,6 +341,7 @@ pub fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Res
     }
     let content = serde_json::to_string_pretty(&PersistedServerSettings {
         bind: Some(settings.bind.to_string()),
+        tls_mode: Some(settings.tls_mode),
         user: settings.user.clone(),
         password: settings.password.clone(),
         localhost_no_auth: Some(settings.localhost_no_auth),
@@ -356,6 +368,8 @@ pub fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Res
 pub fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Value {
     serde_json::json!({
         "bind": settings.bind.to_string(),
+        "tls_mode": settings.tls_mode.as_str(),
+        "scheme": settings.tls_mode.scheme(),
         "username": settings.user.clone().unwrap_or_default(),
         "has_password": settings.password.is_some(),
         "localhost_no_auth": settings.localhost_no_auth,
@@ -430,6 +444,37 @@ mod tests {
         );
         assert_eq!(BackendMode::parse("auto").unwrap(), BackendMode::Auto);
         assert!(BackendMode::parse("nope").is_err());
+    }
+
+    #[test]
+    fn tls_mode_defaults_to_auto_and_roundtrips_as_kebab_case() {
+        let settings = valid_settings();
+        assert_eq!(settings.tls_mode, crate::TlsMode::Auto);
+        let mut off = valid_settings();
+        off.tls_mode = crate::TlsMode::Off;
+        let json = serde_json::to_string(&PersistedServerSettings {
+            tls_mode: Some(off.tls_mode),
+            ..PersistedServerSettings::default()
+        })
+        .unwrap();
+        assert!(
+            json.contains("\"off\""),
+            "serialized mode must be kebab-case, got: {json}"
+        );
+        let parsed: PersistedServerSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.tls_mode, Some(crate::TlsMode::Off));
+        let self_signed = serde_json::to_string(&PersistedServerSettings {
+            tls_mode: Some(crate::TlsMode::SelfSigned),
+            ..PersistedServerSettings::default()
+        })
+        .unwrap();
+        assert!(self_signed.contains("\"self-signed\""));
+        let files = serde_json::to_string(&PersistedServerSettings {
+            tls_mode: Some(crate::TlsMode::Files),
+            ..PersistedServerSettings::default()
+        })
+        .unwrap();
+        assert!(files.contains("\"files\""));
     }
 
     #[test]

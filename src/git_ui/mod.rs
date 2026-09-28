@@ -810,7 +810,10 @@ mod tests {
 
     fn test_state() -> WebState {
         let bind = "127.0.0.1:8787".parse::<SocketAddr>().unwrap();
-        let (rebind_tx, _) = tokio::sync::watch::channel(bind);
+        let (rebind_tx, _) = tokio::sync::watch::channel(crate::ListenEndpoint {
+            bind,
+            tls_mode: crate::TlsMode::Auto,
+        });
         let (settings_tx, _) = tokio::sync::broadcast::channel(16);
         WebState {
             api_socket: None,
@@ -831,6 +834,7 @@ mod tests {
             })),
             server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
                 bind,
+                tls_mode: crate::TlsMode::Auto,
                 user: None,
                 password: None,
                 localhost_no_auth: true,
