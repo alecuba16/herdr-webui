@@ -10,6 +10,8 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::check_auth;
+use super::git_spawn;
 use super::{
     git_failure, git_json_error, git_ui_output, git_ui_repo, git_ui_text, safe_repo_path,
     GitUiCwdQuery,
@@ -61,18 +63,12 @@ pub(super) async fn git_ui_conflicts(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Query(query): Query<GitUiCwdQuery>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let Some(cwd) = query.cwd.as_deref() else {
         return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
     };
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_conflicts_blocking(cwd)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_conflicts_blocking(cwd)).await
 }
 
 fn git_ui_conflict_resolve_blocking(
@@ -141,9 +137,7 @@ pub(super) async fn git_ui_conflict_resolve(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiConflictResolveRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let path = match safe_repo_path(&body.path) {
         Ok(path) => path.to_string(),
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
@@ -151,15 +145,7 @@ pub(super) async fn git_ui_conflict_resolve(
     let mode = body.mode;
     let content = body.content;
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || {
-        git_ui_conflict_resolve_blocking(cwd, path, mode, content)
-    })
-    .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_conflict_resolve_blocking(cwd, path, mode, content)).await
 }
 
 fn git_ui_conflict_action_blocking(
@@ -191,18 +177,12 @@ pub(super) async fn git_ui_conflict_action(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiConflictActionRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let Some(args) = conflict_action_args(body.action.as_str()) else {
         return git_json_error(StatusCode::BAD_REQUEST, "invalid conflict action");
     };
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_conflict_action_blocking(cwd, args)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_conflict_action_blocking(cwd, args)).await
 }
 
 #[cfg(test)]

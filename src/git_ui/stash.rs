@@ -7,7 +7,9 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::check_auth;
 use super::diff::parse_unified_diff;
+use super::git_spawn;
 use super::{git_json_error, git_ui_text, safe_git_token, safe_repo_path, GitUiCwdQuery};
 use crate::{require_auth, WebState};
 
@@ -58,18 +60,12 @@ pub(super) async fn git_ui_stashes(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Query(query): Query<GitUiCwdQuery>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let Some(cwd) = query.cwd.as_deref() else {
         return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
     };
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_stashes_blocking(cwd)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_stashes_blocking(cwd)).await
 }
 
 fn git_ui_stash_show_blocking(
@@ -103,9 +99,7 @@ pub(super) async fn git_ui_stash_show(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Query(query): Query<GitUiStashShowQuery>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let Some(cwd) = query.cwd.as_deref() else {
         return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
     };
@@ -145,9 +139,7 @@ pub(super) async fn git_ui_stash(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiStashPushRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let msg = body
         .message
         .as_deref()
@@ -167,11 +159,7 @@ pub(super) async fn git_ui_stash(
         _ => None,
     };
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_stash_blocking(cwd, msg, safe_paths)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_stash_blocking(cwd, msg, safe_paths)).await
 }
 
 fn git_ui_stash_apply_blocking(
@@ -192,20 +180,14 @@ pub(super) async fn git_ui_stash_apply(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiStashApplyRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let stash = match safe_git_token(body.stash.as_deref().unwrap_or("stash@{0}"), "stash") {
         Ok(v) => v.to_string(),
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
     };
     let pop = body.pop.unwrap_or(false);
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_stash_apply_blocking(cwd, stash, pop)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_stash_apply_blocking(cwd, stash, pop)).await
 }
 
 fn git_ui_stash_drop_blocking(
@@ -224,9 +206,7 @@ pub(super) async fn git_ui_stash_drop(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiStashDropRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     if !body.confirmed.unwrap_or(false) {
         return git_json_error(StatusCode::BAD_REQUEST, "stash drop requires confirmation");
     }
@@ -235,9 +215,5 @@ pub(super) async fn git_ui_stash_drop(
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
     };
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_stash_drop_blocking(cwd, stash)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_stash_drop_blocking(cwd, stash)).await
 }

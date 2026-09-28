@@ -7,6 +7,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::check_auth;
 use super::{git_json_error, git_ui_output, git_ui_text_strings, safe_git_token, safe_repo_path};
 use crate::{require_auth, WebState};
 
@@ -327,9 +328,7 @@ pub(super) async fn git_ui_diff(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Query(query): Query<GitUiDiffQuery>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     git_ui_diff_common(query, false).await
 }
 
@@ -339,8 +338,6 @@ pub(super) async fn git_ui_compare(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Query(query): Query<GitUiDiffQuery>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     git_ui_diff_common(query, true).await
 }
