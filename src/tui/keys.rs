@@ -305,7 +305,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B w", "list worktrees of workspace folder"),
         ("Ctrl+B Shift+T", "create worktree (branch, then path)"),
         ("Ctrl+B Del", "remove linked worktree"),
-        ("Ctrl+B q", "quit"),
+        ("Ctrl+B q", "quit (y confirms, Esc stays)"),
         ("Ctrl+B Shift+B", "collapse/expand the sidebar"),
         ("Ctrl+B . ,", "focus next/prev region (sidebar/main)"),
         ("Ctrl+B Shift+M", "temporary terminal (open or refocus)"),

@@ -42,6 +42,9 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     if app.mode == TuiMode::Help {
         render_help(frame, area, p, app.help_scroll);
     }
+    if app.mode == TuiMode::ConfirmQuit {
+        render_confirm_quit(frame, area, p);
+    }
     if app.mode == TuiMode::Settings {
         render_settings(frame, area, app, p);
     }
@@ -1489,6 +1492,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         TuiMode::Navigate => "NAV",
         TuiMode::Attach => "ATTACH",
         TuiMode::Help => "HELP",
+        TuiMode::ConfirmQuit => "QUIT?",
         TuiMode::Settings => "SET",
     };
     let prefix = if app.prefix.is_armed() {
@@ -1497,15 +1501,24 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         ""
     };
     let help = match (app.mode, app.screen) {
+        (TuiMode::ConfirmQuit, _) => " y quit · n/Esc cancel ",
         (TuiMode::Attach, TuiScreen::Terminal) => {
-            " Ctrl+B prefix · Ctrl-G detach · type sends input "
+            " Ctrl+B prefix · Ctrl-G detach · type sends input · Ctrl+B ? help "
         }
-        (_, TuiScreen::Files) => " Ctrl+B prefix · j/k move · Enter open · h/u up · q terminal ",
+        (TuiMode::Attach, TuiScreen::Files) => {
+            " j/k move · Enter open · e edit · a/A new file/dir · Ctrl+B ? help "
+        }
+        (TuiMode::Attach, TuiScreen::Git) => {
+            " Tab view · s stage · d discard · c commit · P push · Ctrl+B ? help "
+        }
+        (_, TuiScreen::Files) => " Ctrl+B prefix · j/k move · Enter open · h/u up · Ctrl+B ? help ",
         (_, TuiScreen::Git) => {
-            " Ctrl+B prefix · Tab view · s stage · d discard · c commit · p pull · P push "
+            " Ctrl+B prefix · Tab view · s stage · d discard · c commit · p pull · P push · Ctrl+B ? help "
         }
-        (TuiMode::Navigate, _) => " Ctrl+B prefix · ↑/↓ j/k select · Enter attach · q quit ",
-        (TuiMode::Help, _) => " Esc closes help ",
+        (TuiMode::Navigate, _) => {
+            " Ctrl+B prefix · ↑/↓ j/k select · Enter attach · q quit · Ctrl+B ? help "
+        }
+        (TuiMode::Help, _) => " Esc closes help · j/k scrolls ",
         (TuiMode::Settings, _) => " t theme · Esc closes ",
     };
     let message = app.error.as_deref().unwrap_or(&app.status);
@@ -1616,6 +1629,49 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
         Paragraph::new(lines)
             .block(panel(" Settings · Esc closes ", p))
             .style(Style::default().fg(p.text).bg(p.panel_bg)),
+        rect,
+    );
+}
+
+/// Quit confirmation overlay. Every quit path opens this first; unlike
+/// the destructive typed-`y` prompts, this one stays light: y/Enter
+/// quits, n/Esc (or any other key) stays, Ctrl+C also quits.
+fn render_confirm_quit(frame: &mut Frame<'_>, area: Rect, p: &Palette) {
+    let width = area.width.min(48);
+    let height = 7;
+    let rect = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let highlight = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+    let lines = vec![
+        Line::from(Span::styled(
+            " Quit herdr-webui-tui? ",
+            Style::default().fg(p.red).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            " the terminal UI will close, the session keeps running ",
+            Style::default().fg(p.muted),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(" y ", highlight),
+            Span::styled("quit          ", Style::default().fg(p.text)),
+            Span::styled(" n ", highlight),
+            Span::styled("stay", Style::default().fg(p.text)),
+        ]),
+        Line::from(Span::styled(
+            " Esc also stays · Ctrl+C also quits ",
+            Style::default().fg(p.muted),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel(" Quit? ", p))
+            .style(Style::default().fg(p.text).bg(p.panel_bg))
+            .wrap(Wrap { trim: false }),
         rect,
     );
 }

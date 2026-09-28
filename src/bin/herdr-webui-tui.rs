@@ -555,7 +555,8 @@ mod tests {
             24,
         )
         .unwrap();
-        assert_eq!(app.status, "quit", "prefix q quits");
+        assert_eq!(app.mode, TuiMode::ConfirmQuit, "prefix q asks to quit");
+        assert!(!app.should_quit(), "quit needs confirmation");
     }
 
     #[test]
