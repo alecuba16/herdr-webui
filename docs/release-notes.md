@@ -1,5 +1,25 @@
 # Release notes
 
+## 0.4.47 Release Notes
+- The statusbar hint is now fully contextual: it describes the keys that
+  are live in the focused window instead of a generic per-screen string.
+  Each of the 7 git views names its own actions (`J/K hunk · H apply` on
+  Changes, `Space mark · c compare` on Log, `c create · D delete` on
+  Branches/Stash, `o ours · e parent · t remote` on Conflicts), and the
+  Files screen names its browse/edit actions.
+- Input-capture modes take over the hint line: while the commit message
+  modal, a typed prompt, the diff search, the editor find/replace bar,
+  file edit mode, the filter bar, or content-search results own the
+  keyboard, the statusbar shows that context's typing keys (`Ctrl-S
+  save · Esc stop` while editing, `type to filter` while the bar is
+  open) instead of the navigation hints.
+- The context priority mirrors the actual key dispatch order, so the
+  hint never names keys that do nothing in the current context. Every
+  hint keeps the `Ctrl+B ? help` discovery tail, including on narrow
+  terminals.
+- The audit and benchmark against lazygit, k9s, and helix that
+  motivated this is recorded in `docs/ux/statusbar-contextuality-review.md`.
+
 ## 0.4.46 Release Notes
 - The statusbar hint never loses the help discovery tail on narrow
   terminals anymore. On an 80-column terminal the long per-mode hints
