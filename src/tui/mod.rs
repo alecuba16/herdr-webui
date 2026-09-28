@@ -109,7 +109,7 @@ pub(crate) enum FooterContext {
     ConfirmQuit,
     HelpOverlay,
     SettingsOverlay,
-    /// Worktree browser overlay: j/k moves, Enter opens, Esc closes.
+    /// Worktree browser overlay: j/k or arrows move, Enter opens, Esc closes.
     WorktreeList,
     /// Commit message modal: typing, Enter commits, Esc cancels.
     CommitInput,
