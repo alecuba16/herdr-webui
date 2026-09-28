@@ -10,6 +10,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::check_auth;
+use super::git_spawn;
 use super::{git_json_error, git_ui_output, git_ui_text, list_local_branches, safe_git_token};
 use crate::{expand_user_path_string, git_failure, require_auth, WebState};
 
@@ -88,9 +90,7 @@ pub(super) async fn git_ui_cleanup_scan(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Query(query): Query<GitUiCleanupQuery>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let Some(root) = query.root.as_deref().or(query.cwd.as_deref()) else {
         return git_json_error(StatusCode::BAD_REQUEST, "root is required");
     };
@@ -342,9 +342,7 @@ pub(super) async fn git_ui_worktree_remove(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiWorktreeRemoveRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     if !body.confirmed.unwrap_or(false) {
         return git_json_error(
             StatusCode::BAD_REQUEST,
@@ -354,13 +352,7 @@ pub(super) async fn git_ui_worktree_remove(
     let force = body.force.unwrap_or(false);
     let path = body.path;
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_worktree_remove_blocking(cwd, path, force))
-        .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_worktree_remove_blocking(cwd, path, force)).await
 }
 
 fn git_ui_worktree_prune_blocking(
@@ -392,9 +384,7 @@ pub(super) async fn git_ui_worktree_prune(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiWorktreePruneRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let mut args = vec![
         "worktree".to_string(),
         "prune".to_string(),
@@ -412,9 +402,5 @@ pub(super) async fn git_ui_worktree_prune(
         args.push(validated.to_string());
     }
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_worktree_prune_blocking(cwd, args)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_worktree_prune_blocking(cwd, args)).await
 }

@@ -29,6 +29,22 @@ macro_rules! check_auth {
         }
     };
 }
+pub(crate) use check_auth;
+
+/// Run a blocking git operation on the thread pool and map its result to
+/// a Response with the error vocabulary shared by every git-ui handler.
+/// This replaces the per-handler match over spawn_blocking results that
+/// was duplicated 32 times across the module.
+pub(crate) async fn git_spawn<F>(operation: F) -> Response
+where
+    F: FnOnce() -> Result<Response, (StatusCode, String)> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(operation).await {
+        Ok(Ok(response)) => response,
+        Ok(Err((status, msg))) => git_json_error(status, msg),
+        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
 
 pub(crate) fn routes() -> Router<WebState> {
     Router::new()
@@ -183,13 +199,7 @@ async fn git_ui_path_info(
     Query(query): Query<GitUiPathInfoQuery>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    match tokio::task::spawn_blocking(move || git_ui_path_info_blocking(query.cwd, query.path))
-        .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_path_info_blocking(query.cwd, query.path)).await
 }
 
 fn git_origin_or_upstream_remote(cwd: &str) -> Result<String, String> {
@@ -343,13 +353,7 @@ async fn git_ui_permalink(
     Query(query): Query<GitUiPermalinkQuery>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    match tokio::task::spawn_blocking(move || git_ui_permalink_blocking(query.cwd, query.path))
-        .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_permalink_blocking(query.cwd, query.path)).await
 }
 
 pub(super) fn git_ui_output(cwd: &str, args: &[&str]) -> Result<std::process::Output, String> {
@@ -619,11 +623,7 @@ async fn git_ui_status(
         return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
     };
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_status_blocking(cwd)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_status_blocking(cwd)).await
 }
 
 fn git_ui_paths(body: &GitUiPathsRequest) -> Result<Vec<&str>, String> {
@@ -658,11 +658,7 @@ async fn git_ui_stage(
     };
     let paths = paths.into_iter().map(|p| p.to_string()).collect::<Vec<_>>();
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_stage_blocking(cwd, paths)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_stage_blocking(cwd, paths)).await
 }
 
 fn git_ui_unstage_blocking(
@@ -694,11 +690,7 @@ async fn git_ui_unstage(
     };
     let paths = paths.into_iter().map(|p| p.to_string()).collect::<Vec<_>>();
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_unstage_blocking(cwd, paths)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_unstage_blocking(cwd, paths)).await
 }
 
 fn git_ui_discard_blocking(
@@ -765,11 +757,7 @@ async fn git_ui_discard(
     };
     let paths = paths.into_iter().map(|p| p.to_string()).collect::<Vec<_>>();
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_discard_blocking(cwd, paths)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_discard_blocking(cwd, paths)).await
 }
 
 #[cfg(test)]
@@ -832,6 +820,7 @@ mod tests {
                 localhost_no_auth: true,
                 token: "token".to_string(),
             })),
+            login_limiter: Arc::new(crate::auth::LoginRateLimiter::new()),
             server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
                 bind,
                 tls_mode: crate::TlsMode::Auto,

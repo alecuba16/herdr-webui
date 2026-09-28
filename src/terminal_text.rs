@@ -34,46 +34,7 @@ impl TerminalTextOptions {
 
 pub(crate) fn terminal_text_lossy(input: &str, options: TerminalTextOptions) -> String {
     let mut screen = TextScreen::new(options);
-    let mut chars = input.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\u{1b}' => match chars.peek().copied() {
-                Some('[') => {
-                    chars.next();
-                    let mut sequence = String::new();
-                    for next in chars.by_ref() {
-                        sequence.push(next);
-                        if next.is_ascii_alphabetic() || matches!(next, '~' | '@') {
-                            break;
-                        }
-                    }
-                    screen.apply_csi(&sequence);
-                }
-                Some(']') => {
-                    chars.next();
-                    skip_osc(&mut chars);
-                }
-                // DCS (Sixel and friends), SOS, PM, APC (Kitty graphics):
-                // payloads are binary/base64 and must never render as text.
-                // Skip until ST only; a BEL byte can legally appear inside a
-                // Sixel quoted string and must not terminate the sequence.
-                Some('P' | 'X' | '^' | '_') => {
-                    chars.next();
-                    skip_string_sequence(&mut chars);
-                }
-                Some(_) => {
-                    chars.next();
-                }
-                None => {}
-            },
-            '\r' => screen.carriage_return(),
-            '\n' => screen.new_line(),
-            '\u{8}' => screen.backspace(),
-            '\t' => screen.tab(),
-            ch if ch.is_control() => {}
-            ch => screen.put(ch),
-        }
-    }
+    vt_drive(&mut screen, input);
     screen.text()
 }
 
@@ -119,90 +80,161 @@ pub(crate) fn strip_ansi_lossy(input: &str, carriage_return: StripCarriageReturn
     output
 }
 
-#[derive(Debug)]
-struct TextScreen {
-    lines: Vec<Vec<char>>,
-    row: usize,
-    col: usize,
-    options: TerminalTextOptions,
+/// A cell the generic screen core knows how to synthesize: build a cell
+/// from an input character under the current style, and build the blank
+/// cells used for padding, tabs, and erases. The plain-text screen uses
+/// `char` with a unit style; the styled screen attaches an SGR style.
+pub(crate) trait VtCell: Clone {
+    type Style: Default + Clone;
+    fn from_char(ch: char, style: &Self::Style) -> Self;
+    fn blank(style: &Self::Style) -> Self;
 }
 
-impl TextScreen {
-    fn new(options: TerminalTextOptions) -> Self {
+impl VtCell for char {
+    type Style = ();
+    fn from_char(ch: char, _style: &()) -> Self {
+        ch
+    }
+    fn blank(_style: &()) -> Self {
+        ' '
+    }
+}
+
+/// The input surface the escape-sequence driver needs from a screen.
+/// Both screen variants implement it by delegating to a `VtCore`; the
+/// styled one also intercepts SGR (`ESC ... m`) before delegating.
+pub(crate) trait VtSink {
+    fn apply_csi(&mut self, sequence: &str);
+    fn carriage_return(&mut self);
+    fn new_line(&mut self);
+    fn backspace(&mut self);
+    fn tab(&mut self);
+    fn put(&mut self, ch: char);
+}
+
+/// Feed raw terminal output into a screen: CSI sequences, OSC/DCS/SOS/
+/// PM/APC payload skipping, CR/LF, backspace, tab, and printable chars.
+/// Shared by the plain-text and styled variants so escape handling
+/// lives in exactly one place.
+pub(crate) fn vt_drive<S: VtSink>(screen: &mut S, input: &str) {
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\u{1b}' => match chars.peek().copied() {
+                Some('[') => {
+                    chars.next();
+                    let mut sequence = String::new();
+                    for next in chars.by_ref() {
+                        sequence.push(next);
+                        if next.is_ascii_alphabetic() || matches!(next, '~' | '@') {
+                            break;
+                        }
+                    }
+                    screen.apply_csi(&sequence);
+                }
+                Some(']') => {
+                    chars.next();
+                    skip_osc(&mut chars);
+                }
+                // DCS (Sixel and friends), SOS, PM, APC (Kitty graphics):
+                // payloads are binary/base64 and must never render as text.
+                // Skip until ST only; a BEL byte can legally appear inside a
+                // Sixel quoted string and must not terminate the sequence.
+                Some('P' | 'X' | '^' | '_') => {
+                    chars.next();
+                    skip_string_sequence(&mut chars);
+                }
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            },
+            '\r' => screen.carriage_return(),
+            '\n' => screen.new_line(),
+            '\u{8}' => screen.backspace(),
+            '\t' => screen.tab(),
+            ch if ch.is_control() => {}
+            ch => screen.put(ch),
+        }
+    }
+}
+
+/// The stateful VT screen: scrollback, cursor, and the CSI ops both
+/// terminal variants share (erase, cursor movement, line edits).
+/// Generic over the cell type; the current style seeds blank cells.
+pub(crate) struct VtCore<C: VtCell> {
+    pub(crate) lines: Vec<Vec<C>>,
+    pub(crate) row: usize,
+    pub(crate) col: usize,
+    pub(crate) style: C::Style,
+    max_lines: usize,
+}
+
+impl<C: VtCell> VtCore<C> {
+    pub(crate) fn new(max_lines: usize) -> Self {
         Self {
             lines: vec![Vec::new()],
             row: 0,
             col: 0,
-            options,
+            style: C::Style::default(),
+            max_lines: max_lines.max(1),
         }
     }
 
-    fn text(&self) -> String {
-        let text = self
-            .lines
-            .iter()
-            .map(|line| line.iter().collect::<String>().trim_end().to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        if self.options.trim_empty_edges {
-            text.trim_matches('\n').to_string()
-        } else {
-            text
-        }
-    }
-
-    fn ensure_row(&mut self) {
+    pub(crate) fn ensure_row(&mut self) {
         while self.lines.len() <= self.row {
             self.lines.push(Vec::new());
         }
     }
 
-    fn trim_scrollback(&mut self) {
-        let max_lines = self.options.max_lines.max(1);
-        let overflow = self.lines.len().saturating_sub(max_lines);
+    pub(crate) fn trim_scrollback(&mut self) {
+        let overflow = self.lines.len().saturating_sub(self.max_lines);
         if overflow > 0 {
             self.lines.drain(0..overflow);
             self.row = self.row.saturating_sub(overflow);
         }
     }
 
-    fn put(&mut self, ch: char) {
+    pub(crate) fn put(&mut self, ch: char) {
         self.ensure_row();
         let line = &mut self.lines[self.row];
         while line.len() < self.col {
-            line.push(' ');
+            line.push(C::blank(&self.style));
         }
+        let cell = C::from_char(ch, &self.style);
         if self.col < line.len() {
-            line[self.col] = ch;
+            line[self.col] = cell;
         } else {
-            line.push(ch);
+            line.push(cell);
         }
         self.col += ch.width().unwrap_or(1).max(1);
     }
 
-    fn carriage_return(&mut self) {
+    pub(crate) fn carriage_return(&mut self) {
         self.col = 0;
     }
 
-    fn new_line(&mut self) {
+    pub(crate) fn new_line(&mut self) {
         self.row += 1;
         self.col = 0;
         self.ensure_row();
         self.trim_scrollback();
     }
 
-    fn backspace(&mut self) {
+    pub(crate) fn backspace(&mut self) {
         self.col = self.col.saturating_sub(1);
     }
 
-    fn tab(&mut self) {
+    pub(crate) fn tab(&mut self) {
         let next_tab = ((self.col / 8) + 1) * 8;
         while self.col < next_tab {
             self.put(' ');
         }
     }
 
-    fn apply_csi(&mut self, sequence: &str) {
+    /// Cursor-movement and erase CSI ops. SGR (`m`) is a no-op here so
+    /// the styled variant can intercept it and delegate the rest.
+    pub(crate) fn apply_csi(&mut self, sequence: &str) {
         let Some(final_byte) = sequence.chars().last() else {
             return;
         };
@@ -224,14 +256,15 @@ impl TextScreen {
         }
     }
 
-    fn erase_line(&mut self, mode: usize) {
+    pub(crate) fn erase_line(&mut self, mode: usize) {
         self.ensure_row();
+        let style = self.style.clone();
         let line = &mut self.lines[self.row];
         match mode {
             1 => {
                 let end = self.col.min(line.len().saturating_sub(1));
-                for ch in line.iter_mut().take(end + 1) {
-                    *ch = ' ';
+                for cell in line.iter_mut().take(end + 1) {
+                    *cell = C::blank(&style);
                 }
             }
             2 => line.clear(),
@@ -239,7 +272,7 @@ impl TextScreen {
         }
     }
 
-    fn erase_display(&mut self, mode: usize) {
+    pub(crate) fn erase_display(&mut self, mode: usize) {
         match mode {
             2 | 3 => {
                 self.lines = vec![Vec::new()];
@@ -260,7 +293,7 @@ impl TextScreen {
         }
     }
 
-    fn move_cursor(&mut self, params: &str) {
+    pub(crate) fn move_cursor(&mut self, params: &str) {
         let mut parts = params.split(';');
         let row = parts
             .next()
@@ -277,11 +310,62 @@ impl TextScreen {
     }
 }
 
-fn csi_count(params: &str) -> usize {
+/// Plain-text screen: backend tails and the TUI text snapshot.
+struct TextScreen {
+    core: VtCore<char>,
+    options: TerminalTextOptions,
+}
+
+impl TextScreen {
+    fn new(options: TerminalTextOptions) -> Self {
+        Self {
+            core: VtCore::new(options.max_lines),
+            options,
+        }
+    }
+
+    fn text(&self) -> String {
+        let text = self
+            .core
+            .lines
+            .iter()
+            .map(|line| line.iter().collect::<String>().trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if self.options.trim_empty_edges {
+            text.trim_matches('\n').to_string()
+        } else {
+            text
+        }
+    }
+}
+
+impl VtSink for TextScreen {
+    fn apply_csi(&mut self, sequence: &str) {
+        self.core.apply_csi(sequence);
+    }
+    fn carriage_return(&mut self) {
+        self.core.carriage_return();
+    }
+    fn new_line(&mut self) {
+        self.core.new_line();
+    }
+    fn backspace(&mut self) {
+        self.core.backspace();
+    }
+    fn tab(&mut self) {
+        self.core.tab();
+    }
+    fn put(&mut self, ch: char) {
+        self.core.put(ch);
+    }
+}
+
+pub(crate) fn csi_count(params: &str) -> usize {
     csi_first_param(params).max(1)
 }
 
-fn csi_first_param(params: &str) -> usize {
+pub(crate) fn csi_first_param(params: &str) -> usize {
     params
         .trim_start_matches('?')
         .split(';')

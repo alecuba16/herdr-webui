@@ -8,6 +8,8 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::check_auth;
+use super::git_spawn;
 use super::{git_json_error, git_ui_text, list_local_branches, safe_git_token, GitUiCwdQuery};
 use crate::{require_auth, WebState};
 
@@ -137,18 +139,12 @@ pub(super) async fn git_ui_branches(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Query(query): Query<GitUiCwdQuery>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let Some(cwd) = query.cwd.as_deref() else {
         return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
     };
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_branches_blocking(cwd)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_branches_blocking(cwd)).await
 }
 
 fn git_ui_branch_delete_blocking(
@@ -204,9 +200,7 @@ pub(super) async fn git_ui_branch_delete(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiBranchDeleteRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     if !body.confirmed.unwrap_or(false) {
         return git_json_error(
             StatusCode::BAD_REQUEST,
@@ -219,13 +213,7 @@ pub(super) async fn git_ui_branch_delete(
     };
     let force = body.force.unwrap_or(false);
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_branch_delete_blocking(cwd, branch, force))
-        .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_branch_delete_blocking(cwd, branch, force)).await
 }
 
 fn git_ui_switch_blocking(
@@ -245,9 +233,7 @@ pub(super) async fn git_ui_switch(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiSwitchRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let branch = match safe_git_token(&body.branch, "branch") {
         Ok(v) => v,
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
@@ -270,11 +256,7 @@ pub(super) async fn git_ui_switch(
         vec!["switch".to_string(), branch.to_string()]
     };
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_switch_blocking(cwd, args)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_switch_blocking(cwd, args)).await
 }
 
 #[cfg(test)]

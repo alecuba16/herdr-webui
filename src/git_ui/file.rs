@@ -10,6 +10,8 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::check_auth;
+use super::git_spawn;
 use super::{git_json_error, git_ui_repo, git_ui_text, safe_git_token, safe_repo_path};
 use crate::{git_failure, require_auth, WebState};
 
@@ -67,9 +69,7 @@ pub(super) async fn git_ui_blame(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Query(query): Query<GitUiBlameQuery>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let (Some(cwd), Some(file)) = (query.cwd.as_deref(), query.file.as_deref()) else {
         return git_json_error(StatusCode::BAD_REQUEST, "cwd and file are required");
     };
@@ -84,11 +84,7 @@ pub(super) async fn git_ui_blame(
     let cwd = cwd.to_string();
     let file = file.to_string();
     let ref_name = ref_name.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_blame_blocking(cwd, file, ref_name)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_blame_blocking(cwd, file, ref_name)).await
 }
 
 fn git_ui_working_file_hash(repo: &str, path: &str) -> Result<String, String> {
@@ -154,9 +150,7 @@ pub(super) async fn git_ui_file(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Query(query): Query<GitUiFileQuery>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let (Some(cwd), Some(file)) = (query.cwd.as_deref(), query.file.as_deref()) else {
         return git_json_error(StatusCode::BAD_REQUEST, "cwd and file are required");
     };
@@ -167,11 +161,7 @@ pub(super) async fn git_ui_file(
     let cwd = cwd.to_string();
     let file = file.to_string();
     let ref_name = query.ref_name.clone();
-    match tokio::task::spawn_blocking(move || git_ui_file_blocking(cwd, file, ref_name)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_file_blocking(cwd, file, ref_name)).await
 }
 
 fn git_ui_write_file_blocking(
@@ -221,9 +211,7 @@ pub(super) async fn git_ui_write_file(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiWriteFileRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let path = match safe_repo_path(&body.path) {
         Ok(path) => path,
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
@@ -232,15 +220,7 @@ pub(super) async fn git_ui_write_file(
     let cwd = body.cwd;
     let content = body.content;
     let expected_hash = body.expected_hash;
-    match tokio::task::spawn_blocking(move || {
-        git_ui_write_file_blocking(cwd, path, content, expected_hash)
-    })
-    .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_write_file_blocking(cwd, path, content, expected_hash)).await
 }
 
 fn git_ui_file_history_blocking(
@@ -275,9 +255,7 @@ pub(super) async fn git_ui_file_history(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Query(query): Query<GitUiFileHistoryQuery>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let (Some(cwd), Some(file)) = (query.cwd.as_deref(), query.file.as_deref()) else {
         return git_json_error(StatusCode::BAD_REQUEST, "cwd and file are required");
     };
@@ -287,11 +265,7 @@ pub(super) async fn git_ui_file_history(
     };
     let cwd = cwd.to_string();
     let file = file.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_file_history_blocking(cwd, file)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_file_history_blocking(cwd, file)).await
 }
 
 #[cfg(test)]

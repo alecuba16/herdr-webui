@@ -11,8 +11,8 @@ use serde_json::json;
 
 use super::log_graph::{parse_log_row_json, reconstruct_log_line, LOG_FORMAT};
 use super::{
-    git_json_error, git_ui_output, git_ui_repo, git_ui_text, git_ui_text_strings, safe_git_token,
-    safe_repo_path,
+    check_auth, git_json_error, git_spawn, git_ui_output, git_ui_repo, git_ui_text,
+    git_ui_text_strings, safe_git_token, safe_repo_path,
 };
 use crate::{git_failure, require_auth, WebState};
 
@@ -260,9 +260,7 @@ pub(super) async fn git_ui_log(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Query(query): Query<GitUiLogQuery>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let Some(cwd) = query.cwd.as_deref() else {
         return git_json_error(StatusCode::BAD_REQUEST, "cwd is required");
     };
@@ -275,13 +273,7 @@ pub(super) async fn git_ui_log(
     let base = query.base;
     let file = query.file;
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_log_blocking(cwd, limit, scope, base, file))
-        .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_log_blocking(cwd, limit, scope, base, file)).await
 }
 
 fn git_ui_reset_blocking(
@@ -301,9 +293,7 @@ pub(super) async fn git_ui_reset(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiResetRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let mode = match body.mode.as_str() {
         "soft" => "--soft",
         "mixed" => "--mixed",
@@ -322,11 +312,7 @@ pub(super) async fn git_ui_reset(
     };
     let mode = mode.to_string();
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_reset_blocking(cwd, mode, ref_name)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_reset_blocking(cwd, mode, ref_name)).await
 }
 
 fn git_ui_default_base_ref(cwd: &str) -> Result<String, String> {
@@ -418,9 +404,7 @@ pub(super) async fn git_ui_rebase(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiRebaseRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     if body.confirmation.as_deref() != Some("rebase selected") {
         return git_json_error(
             StatusCode::BAD_REQUEST,
@@ -444,15 +428,7 @@ pub(super) async fn git_ui_rebase(
     };
     let cwd = body.cwd;
     let pull_first = body.pull_first.unwrap_or(false);
-    match tokio::task::spawn_blocking(move || {
-        git_ui_rebase_blocking(cwd, upstream, onto, pull_first)
-    })
-    .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_rebase_blocking(cwd, upstream, onto, pull_first)).await
 }
 
 fn git_ui_commit_blocking(
@@ -483,9 +459,7 @@ pub(super) async fn git_ui_commit(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiCommitRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let title = body.title.trim().to_string();
     if title.is_empty() {
         return git_json_error(StatusCode::BAD_REQUEST, "commit title is required");
@@ -493,15 +467,7 @@ pub(super) async fn git_ui_commit(
     let commit_body = body.body;
     let amend = body.amend.unwrap_or(false);
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || {
-        git_ui_commit_blocking(cwd, title, commit_body, amend)
-    })
-    .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_commit_blocking(cwd, title, commit_body, amend)).await
 }
 
 fn safe_tag_name(value: &str) -> Result<&str, String> {
@@ -531,9 +497,7 @@ pub(super) async fn git_ui_tag(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiTagRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let tag_name = match safe_tag_name(&body.tag_name) {
         Ok(v) => v.to_string(),
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
@@ -543,11 +507,7 @@ pub(super) async fn git_ui_tag(
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
     };
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_tag_blocking(cwd, tag_name, ref_name)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_tag_blocking(cwd, tag_name, ref_name)).await
 }
 
 fn git_ui_pull_blocking(
@@ -600,9 +560,7 @@ pub(super) async fn git_ui_pull(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiPullPushRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let mode = body.mode.unwrap_or_else(|| "regular".to_string());
     let branch = match body
         .branch
@@ -616,11 +574,7 @@ pub(super) async fn git_ui_pull(
         None => None,
     };
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_pull_blocking(cwd, mode, branch)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_pull_blocking(cwd, mode, branch)).await
 }
 
 fn git_ui_fetch_blocking(
@@ -643,9 +597,7 @@ pub(super) async fn git_ui_fetch(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiPullPushRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let branch = match body
         .branch
         .as_deref()
@@ -658,11 +610,7 @@ pub(super) async fn git_ui_fetch(
         None => None,
     };
     let cwd = body.cwd;
-    match tokio::task::spawn_blocking(move || git_ui_fetch_blocking(cwd, branch)).await {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_fetch_blocking(cwd, branch)).await
 }
 
 fn git_ui_push_blocking(
@@ -701,9 +649,7 @@ pub(super) async fn git_ui_push(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiPullPushRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     let mode = body.mode.unwrap_or_else(|| "regular".to_string());
     let branch = match body
         .branch
@@ -719,15 +665,7 @@ pub(super) async fn git_ui_push(
     let cwd = body.cwd;
     let pull_first = body.pull_first.unwrap_or(false);
     let push_tags = body.push_tags.unwrap_or(false);
-    match tokio::task::spawn_blocking(move || {
-        git_ui_push_blocking(cwd, mode, branch, pull_first, push_tags)
-    })
-    .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_push_blocking(cwd, mode, branch, pull_first, push_tags)).await
 }
 
 fn git_ui_apply_patch_blocking(
@@ -771,9 +709,7 @@ pub(super) async fn git_ui_apply_patch(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     Json(body): Json<GitUiApplyPatchRequest>,
 ) -> Response {
-    if let Err(response) = require_auth(&state, &headers, remote) {
-        return response;
-    }
+    check_auth!(&state, &headers, remote);
     if body.patch.trim().is_empty() {
         return git_json_error(StatusCode::BAD_REQUEST, "patch is required");
     }
@@ -781,15 +717,7 @@ pub(super) async fn git_ui_apply_patch(
     let patch = body.patch;
     let reverse = body.reverse.unwrap_or(false);
     let cached = body.cached.unwrap_or(false);
-    match tokio::task::spawn_blocking(move || {
-        git_ui_apply_patch_blocking(cwd, patch, reverse, cached)
-    })
-    .await
-    {
-        Ok(Ok(response)) => response,
-        Ok(Err((status, msg))) => git_json_error(status, msg),
-        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
-    }
+    git_spawn(move || git_ui_apply_patch_blocking(cwd, patch, reverse, cached)).await
 }
 
 #[cfg(test)]
