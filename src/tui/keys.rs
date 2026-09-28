@@ -302,7 +302,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B n", "new workspace (type a path)"),
         ("Ctrl+B Shift+S", "rename workspace"),
         ("Ctrl+B Shift+X", "close workspace (y confirms)"),
-        ("Ctrl+B w", "list worktrees of workspace folder"),
+        ("Ctrl+B w", "browse worktrees, Enter opens"),
         ("Ctrl+B Shift+T", "create worktree (branch, then path)"),
         ("Ctrl+B Del", "remove linked worktree"),
         ("Ctrl+B q", "quit (y confirms, Esc stays)"),

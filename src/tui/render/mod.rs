@@ -4,11 +4,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::tui::keys::help_rows;
+
 use crate::tui::panels::files::{content_rows, ContentRow, SearchKind};
 use crate::tui::panels::GitView;
 use crate::tui::terminal::styled_terminal_line;
 use crate::tui::theme::Palette;
+use crate::tui::workspace::WorkspaceCreateStage;
 use crate::tui::{SidebarFocus, TuiApp, TuiMode, TuiScreen};
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -40,13 +41,16 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     }
     render_footer(frame, footer, app, p);
     if app.mode == TuiMode::Help {
-        render_help(frame, area, p, app.help_scroll);
+        render_help(frame, area, p, &app.help_filter, app.help_scroll);
     }
     if app.mode == TuiMode::ConfirmQuit {
         render_confirm_quit(frame, area, p);
     }
     if app.mode == TuiMode::Settings {
         render_settings(frame, area, app, p);
+    }
+    if app.mode == TuiMode::WorktreeList {
+        render_worktree_list(frame, area, app, p);
     }
     if app.commit_input.is_some() {
         render_commit_input(frame, area, app, p);
@@ -1345,6 +1349,16 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         crate::tui::PromptKind::NewWorkspace
         | crate::tui::PromptKind::CreateWorktreeBranch
         | crate::tui::PromptKind::CreateWorktreePath => String::new(),
+        // Name step of the new-workspace flow: show the staged folder
+        // as the subject (webui modal shows the Folder field above the
+        // Workspace name field).
+        crate::tui::PromptKind::NewWorkspaceName => app
+            .workspace_create_stage
+            .as_ref()
+            .map(|stage| match stage {
+                WorkspaceCreateStage::Path(path) => path.clone(),
+            })
+            .unwrap_or_default(),
         crate::tui::PromptKind::RenameWorkspace => app
             .selected_workspace()
             .map(|workspace| workspace.label.clone())
@@ -1494,6 +1508,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         TuiMode::Help => "HELP",
         TuiMode::ConfirmQuit => "QUIT?",
         TuiMode::Settings => "SET",
+        TuiMode::WorktreeList => "WORKTREES",
     };
     let prefix = if app.prefix.is_armed() {
         "Ctrl+B> "
@@ -1571,10 +1586,12 @@ fn fit_hint(hint: &str, budget: usize) -> String {
     }
 }
 
-fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, scroll: usize) {
-    let rows = help_rows();
+fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scroll: usize) {
+    let rows = crate::tui::filtered_help_rows(filter);
     let width = area.width.min(72);
-    let height = area.height.min((rows.len() as u16 + 4).min(50));
+    // One extra line for the filter query while it is active.
+    let filter_height = if filter.is_empty() { 0 } else { 1 };
+    let height = area.height.min((rows.len() as u16 + 4 + filter_height).min(50));
     let rect = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -1585,6 +1602,28 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, scroll: usize) {
         "Herdr WebUI TUI",
         Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
     ))];
+    // Webui settings-search counterpart: show the active query so the
+    // user sees why the list shrank.
+    if !filter.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(" filter: ", Style::default().fg(p.muted)),
+            Span::styled(
+                format!("{filter}_"),
+                Style::default().fg(p.accent),
+            ),
+            Span::styled(
+                format!("  {}/{}", rows.len(), crate::tui::keys::help_rows().len()),
+                Style::default().fg(p.muted),
+            ),
+        ]));
+    }
+    if rows.is_empty() {
+        // Same message as the webui settings search empty state.
+        lines.push(Line::from(Span::styled(
+            " No shortcuts match your search ",
+            Style::default().fg(p.muted),
+        )));
+    }
     for (keys, description) in rows {
         if keys.is_empty() {
             lines.push(Line::from(""));
@@ -1595,9 +1634,108 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, scroll: usize) {
             ]));
         }
     }
+    let title = if filter.is_empty() {
+        " Help · Esc closes · type to filter · j/k scrolls "
+    } else {
+        " Help · Esc clears the filter "
+    };
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(" Help · Esc closes · j/k scrolls ", p))
+            .block(panel(title, p))
+            .style(Style::default().fg(p.text).bg(p.panel_bg))
+            .scroll((scroll as u16, 0)),
+        rect,
+    );
+}
+
+/// Worktree browser overlay (webui worktree open modal, prefix `W`):
+/// discovered checkouts of the discovery root, the typed filter query,
+/// j/k cursor, and Enter-open. Mirrors the webui rows: title (path +
+/// label), branch, linked badge.
+fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let rows = app.filtered_worktree_rows();
+    let filter_height = if app.worktree_filter.is_empty() { 0 } else { 1 };
+    let height = area
+        .height
+        .min((rows.len() as u16 + 5 + filter_height).min(24))
+        .max(7 + filter_height);
+    let width = area.width.min(80);
+    let rect = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            " Worktrees ",
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("in {} ", app.worktree_root),
+            Style::default().fg(p.muted),
+        ),
+    ])];
+    if !app.worktree_filter.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(" filter: ", Style::default().fg(p.muted)),
+            Span::styled(
+                format!("{}_", app.worktree_filter),
+                Style::default().fg(p.accent),
+            ),
+            Span::styled(
+                format!("  {}/{}", rows.len(), app.worktree_rows.len()),
+                Style::default().fg(p.muted),
+            ),
+        ]));
+    }
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            if app.worktree_rows.is_empty() {
+                " No worktrees discovered in this folder "
+            } else {
+                " No worktrees match your search "
+            },
+            Style::default().fg(p.muted),
+        )));
+    }
+    for (index, row) in rows.iter().enumerate() {
+        let selected = index == app.worktree_selected;
+        let cursor = if selected { "▸ " } else { "  " };
+        let title_style = if selected {
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.text)
+        };
+        let linked = if row.is_linked { " [linked]" } else { " [main]" };
+        lines.push(Line::from(vec![
+            Span::styled(cursor, Style::default().fg(p.accent)),
+            Span::styled(row.title(), title_style),
+            Span::styled(
+                if row.branch.is_empty() {
+                    linked.to_string()
+                } else {
+                    format!("  {}{}", row.branch, linked)
+                },
+                Style::default().fg(p.muted),
+            ),
+        ]));
+    }
+    // Keep the cursor inside the window when the list outgrows the
+    // overlay (webui modal scrolls the selected row into view).
+    let header_lines = 2 + filter_height; // border + title (+ filter line)
+    let visible_rows = height.saturating_sub(header_lines + 1).max(1) as usize;
+    let scroll = app
+        .worktree_selected
+        .saturating_sub(visible_rows.saturating_sub(1));
+    let title = if app.worktree_filter.is_empty() {
+        " Worktrees · Enter opens · j/k moves · type to filter · Esc closes "
+    } else {
+        " Worktrees · Esc clears the filter "
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel(title, p))
             .style(Style::default().fg(p.text).bg(p.panel_bg))
             .scroll((scroll as u16, 0)),
         rect,

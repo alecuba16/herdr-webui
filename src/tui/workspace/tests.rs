@@ -177,6 +177,7 @@ fn confirm_close_workspace_requires_y() {
 fn prompt_kind_hints_and_titles_cover_workspace_kinds() {
     for kind in [
         PromptKind::NewWorkspace,
+        PromptKind::NewWorkspaceName,
         PromptKind::RenameWorkspace,
         PromptKind::RenamePanel,
         PromptKind::CreateWorktreeBranch,
@@ -189,6 +190,7 @@ fn prompt_kind_hints_and_titles_cover_workspace_kinds() {
             kind.into_workspace_prompt(),
             match kind {
                 PromptKind::NewWorkspace => WorkspacePrompt::NewWorkspace,
+                PromptKind::NewWorkspaceName => WorkspacePrompt::NewWorkspaceName,
                 PromptKind::RenameWorkspace => WorkspacePrompt::RenameWorkspace,
                 PromptKind::RenamePanel => WorkspacePrompt::RenamePanel,
                 PromptKind::CreateWorktreeBranch => WorkspacePrompt::CreateWorktreeBranch,
@@ -349,10 +351,13 @@ fn workspace_fake_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) 
                 json!({"id": id, "result": {"workspace": {"workspace_id": "ws_2"}}})
             }
             "workspace.close" | "workspace.rename" | "tab.rename" | "worktree.remove"
-            | "worktree.create" | "tab.promote" => json!({"id": id, "result": {"ok": true}}),
+            | "worktree.create" | "worktree.open" | "tab.promote" => {
+                json!({"id": id, "result": {"ok": true}})
+            }
             "worktree.list" => {
                 json!({"id": id, "result": {"worktrees": [{"path": "/repo", "branch": "main"}]}})
             }
+            "pane.read" => json!({"id": id, "result": {"read": {"text": ""}}}),
             "tab.create" => json!({"id": id, "result": {"tab": {"tab_id": "tab_t"}}}),
             method => json!({"id": id, "error": format!("unexpected method {method}")}),
         };
@@ -399,10 +404,12 @@ fn workspace_actions_validate_empty_inputs_and_missing_selection() {
     );
     assert_eq!(app.rename_panel("panel").unwrap_err(), "no active panel");
     assert_eq!(app.remove_worktree().unwrap_err(), "no workspace selected");
-    assert_eq!(
-        app.worktree_list().unwrap_err(),
-        "no workspace folder selected"
-    );
+    // Webui parity: without a workspace the worktree browser still opens,
+    // falling back to the home folder instead of failing.
+    assert!(app.worktree_list().is_ok());
+    assert_eq!(app.mode, TuiMode::WorktreeList);
+    assert_eq!(app.worktree_selected, 0);
+    app.mode = TuiMode::Navigate;
     assert_eq!(
         app.create_worktree("branch", "/tmp/path").unwrap_err(),
         "no workspace folder selected"
@@ -413,9 +420,14 @@ fn workspace_actions_validate_empty_inputs_and_missing_selection() {
 fn workspace_backend_actions_succeed_against_fake_socket() {
     let (mut app, _stop) = app_with_fake_backend();
 
+    // Webui parity: the folder must exist and tilde expands. Use a real
+    // temp dir so validation passes like the webui modal does.
+    let dir = std::env::temp_dir().join("tui-ws-create-parity");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_string_lossy().to_string();
     assert_eq!(
-        app.create_workspace(" /new ").unwrap(),
-        "workspace created: /new"
+        app.create_workspace(&format!(" {path} ")).unwrap(),
+        format!("workspace created: {path}")
     );
     assert_eq!(app.selected_workspace, 1);
     assert_eq!(
@@ -571,4 +583,116 @@ fn round4_workspace_temp_empty_ids_and_create_path_backend_error() {
         app.temp_terminal_toggle().unwrap_err(),
         "could not create the temp tab"
     );
+}
+
+#[test]
+fn new_workspace_prompt_validates_tilde_expands_and_chains_name_step() {
+    use super::{WorkspaceCreateStage, validate_workspace_folder};
+
+    // Tilde expansion mirrors the webui expand_user_path_string.
+    let home = std::env::var_os("HOME").expect("HOME set in tests");
+    let expanded = super::expand_tilde_path("~");
+    assert_eq!(expanded, std::path::PathBuf::from(&home));
+    let expanded = super::expand_tilde_path("~/Documents/code");
+    assert_eq!(expanded, std::path::PathBuf::from(&home).join("Documents/code"));
+    assert_eq!(
+        super::expand_tilde_path("/absolute/path"),
+        std::path::PathBuf::from("/absolute/path")
+    );
+
+    // Webui parity: the folder must exist on disk.
+    let missing = validate_workspace_folder("/definitely/not/a/real/dir");
+    assert!(missing
+        .unwrap_err()
+        .contains("workspace folder must exist"));
+
+    // Step 1 of the prompt chain: a real folder stages the path and
+    // opens the name prompt; a bad path stays on the path prompt.
+    let (mut app, _stop) = app_with_fake_backend();
+    let dir = std::env::temp_dir().join("tui-ws-chained");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_string_lossy().to_string();
+
+    run_prompt(&mut app, &WorkspacePrompt::NewWorkspace, &path);
+    assert!(app.error.is_none(), "valid path stages: {:?}", app.error);
+    assert_eq!(
+        app.workspace_create_stage,
+        Some(WorkspaceCreateStage::Path(path.clone()))
+    );
+    assert_eq!(
+        app.prompt_input.as_ref().map(|p| p.kind),
+        Some(PromptKind::NewWorkspaceName)
+    );
+    assert_eq!(app.status, format!("workspace name for {path}"));
+
+    // Step 2: the typed name creates the workspace with the label.
+    run_prompt(&mut app, &WorkspacePrompt::NewWorkspaceName, "myproj");
+    assert!(app.error.is_none(), "create with label: {:?}", app.error);
+    assert_eq!(app.status, format!("workspace created: {path}"));
+    assert_eq!(app.workspace_create_stage, None);
+    assert_eq!(app.selected_workspace, 1);
+
+    // A missing folder keeps the path prompt open and surfaces the error.
+    let (mut app, _stop) = app_with_fake_backend();
+    run_prompt(&mut app, &WorkspacePrompt::NewWorkspace, "/definitely/not/real");
+    assert!(app
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("workspace folder must exist"));
+    assert_eq!(
+        app.prompt_input.as_ref().map(|p| p.kind),
+        Some(PromptKind::NewWorkspace)
+    );
+    assert_eq!(app.workspace_create_stage, None);
+
+    // The name step without a staged path errors instead of panicking.
+    let (mut app, _stop) = app_with_fake_backend();
+    run_prompt(&mut app, &WorkspacePrompt::NewWorkspaceName, "orphan");
+    assert_eq!(
+        app.error.as_deref(),
+        Some("no workspace path staged")
+    );
+}
+
+#[test]
+fn worktree_list_browses_filters_and_opens_selected() {
+    let (mut app, _stop) = app_with_fake_backend();
+
+    // Ctrl+B W opens the browser overlay for the selected workspace cwd.
+    app.worktree_list().unwrap();
+    assert_eq!(app.mode, TuiMode::WorktreeList);
+    assert_eq!(app.worktree_root, "/repo");
+    assert_eq!(app.worktree_rows.len(), 1);
+    assert_eq!(app.worktree_rows[0].path, "/repo");
+    assert_eq!(app.worktree_rows[0].branch, "main");
+    assert_eq!(app.worktree_selected, 0);
+
+    // Filtering narrows the rows (case-insensitive over path/branch).
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    assert_eq!(app.worktree_filter, "m");
+    assert_eq!(app.filtered_worktree_rows().len(), 1);
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    assert_eq!(app.filtered_worktree_rows().len(), 0, "no row matches z");
+
+    // Esc clears the filter first and only closes on the second press.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::WorktreeList);
+    assert_eq!(app.worktree_filter, "");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+
+    // Enter opens the selected row through worktree.open and returns
+    // to Navigate (backend focuses the already-open workspace).
+    app.worktree_list().unwrap();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert!(app.status.contains("opened"), "status: {}", app.status);
+
+    // Without a workspace the browser still opens, falling back to home.
+    let (mut app, _stop) = app_with_fake_backend();
+    app.selected_workspace = 99;
+    assert!(app.worktree_list().is_ok());
+    assert_eq!(app.mode, TuiMode::WorktreeList);
+    assert!(!app.worktree_root.is_empty());
 }

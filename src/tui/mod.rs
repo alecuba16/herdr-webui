@@ -38,6 +38,7 @@ impl PromptKind {
     pub(crate) fn into_workspace_prompt(self) -> workspace::WorkspacePrompt {
         match self {
             Self::NewWorkspace => workspace::WorkspacePrompt::NewWorkspace,
+            Self::NewWorkspaceName => workspace::WorkspacePrompt::NewWorkspaceName,
             Self::RenameWorkspace => workspace::WorkspacePrompt::RenameWorkspace,
             Self::RenamePanel => workspace::WorkspacePrompt::RenamePanel,
             Self::CreateWorktreeBranch => workspace::WorkspacePrompt::CreateWorktreeBranch,
@@ -58,6 +59,25 @@ const TERMINAL_RAW_BUFFER_BYTES: usize = 512 * 1024;
 fn help_max_scroll() -> usize {
     let rows = crate::tui::keys::help_rows().len();
     rows.saturating_sub(50usize.saturating_sub(4).saturating_sub(1))
+}
+
+/// Rows kept for the Help overlay after applying the user's filter.
+/// Mirrors the webui settings search: case-insensitive substring match
+/// over both the key sequence and the description; empty separator rows
+/// are dropped so filtered output stays compact.
+pub(crate) fn filtered_help_rows(filter: &str) -> Vec<(&'static str, &'static str)> {
+    let query = filter.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return crate::tui::keys::help_rows();
+    }
+    crate::tui::keys::help_rows()
+        .into_iter()
+        .filter(|(keys, description)| {
+            !keys.is_empty()
+                && (keys.to_ascii_lowercase().contains(&query)
+                    || description.to_ascii_lowercase().contains(&query))
+        })
+        .collect()
 }
 
 /// Which main screen the TUI shows. Mirrors the WebUI workspace shell modes
@@ -89,6 +109,8 @@ pub(crate) enum FooterContext {
     ConfirmQuit,
     HelpOverlay,
     SettingsOverlay,
+    /// Worktree browser overlay: j/k moves, Enter opens, Esc closes.
+    WorktreeList,
     /// Commit message modal: typing, Enter commits, Esc cancels.
     CommitInput,
     /// Any typed prompt (rename, confirm, new file, ...).
@@ -117,8 +139,9 @@ impl FooterContext {
     pub(crate) fn hint(self) -> &'static str {
         match self {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
-            Self::HelpOverlay => " Esc closes help · j/k scrolls ",
+            Self::HelpOverlay => " Esc closes help · type filters · j/k scrolls ",
             Self::SettingsOverlay => " t theme · Esc closes ",
+            Self::WorktreeList => " Enter opens · j/k moves · type filters · Esc closes ",
             Self::CommitInput => {
                 " type the message · Enter commits · Esc cancels · Ctrl+U clears · Ctrl+B ? help "
             }
@@ -177,8 +200,9 @@ impl FooterContext {
     pub(crate) fn compact_hint(self) -> &'static str {
         match self {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
-            Self::HelpOverlay => " Esc closes help · j/k scrolls ",
+            Self::HelpOverlay => " Esc closes help · type filters · j/k scrolls ",
             Self::SettingsOverlay => " t theme · Esc closes ",
+            Self::WorktreeList => " Enter opens · j/k moves · type filters · Esc closes ",
             Self::CommitInput => " Enter commit · Esc cancel · Ctrl+B ? help ",
             Self::PromptInput(PromptKind::ReplaceInFile) => {
                 " Enter replace · ! all · Esc cancel · Ctrl+B ? help "
@@ -259,11 +283,25 @@ pub struct TuiApp {
     pub tick: u64,
     /// Two-step worktree creation: branch typed first, then checkout path.
     pub worktree_create_stage: Option<workspace::WorktreeCreateStage>,
+    /// Two-step workspace creation: validated path first, then name
+    /// (webui modal collects both at once).
+    pub workspace_create_stage: Option<workspace::WorkspaceCreateStage>,
+    /// Worktree browser overlay state (webui worktree open modal):
+    /// discovered rows, cursor, type-to-filter query, and the discovery
+    /// root shown in the title.
+    pub worktree_rows: Vec<workspace::WorktreeRow>,
+    pub worktree_selected: usize,
+    pub worktree_filter: String,
+    pub worktree_root: String,
     /// Rebase upstream typed into the RebaseUpstream prompt; consumed by
     /// the follow-up typed confirm (webui rebase modal two-step).
     pub rebase_pending_upstream: Option<String>,
     /// Vertical scroll of the Help overlay (j/k when help is open).
     pub help_scroll: usize,
+    /// Type-to-filter query for the Help overlay, the TUI counterpart of
+    /// the webui settings "Search settings" box. Printable keys append,
+    /// Backspace edits, Esc clears it before closing the overlay.
+    pub help_filter: String,
     /// Mode the user was in when the quit overlay opened; restored on cancel.
     pub(crate) quit_prev_mode: TuiMode,
     dirty: bool,
@@ -301,6 +339,9 @@ pub enum PromptKind {
     ConfirmDeleteBranch,
     ConfirmDropStash,
     NewWorkspace,
+    /// Second step of the new-workspace prompt: the workspace name
+    /// (webui modal "Workspace name" field, suggested from the folder).
+    NewWorkspaceName,
     RenameWorkspace,
     RenamePanel,
     CreateWorktreeBranch,
@@ -363,6 +404,7 @@ impl PromptKind {
             Self::ConfirmDeleteBranch => "Delete branch",
             Self::ConfirmDropStash => "Drop stash",
             Self::NewWorkspace => "New workspace path",
+            Self::NewWorkspaceName => "Workspace name",
             Self::RenameWorkspace => "Rename workspace",
             Self::RenamePanel => "Rename panel",
             Self::CreateWorktreeBranch => "Create worktree: branch",
@@ -386,7 +428,8 @@ impl PromptKind {
     pub fn hint(self) -> &'static str {
         match self {
             Self::RenameFile => "type the new name, Enter renames",
-            Self::NewWorkspace => "type a directory path, Enter opens it",
+            Self::NewWorkspace => "type a directory path (~ works), Enter continues to the name",
+            Self::NewWorkspaceName => "type the workspace name, Enter creates it",
             Self::RenameWorkspace | Self::RenamePanel => "type the new name, Enter renames",
             Self::CreateWorktreeBranch => "type the branch name, Enter continues",
             Self::CreateWorktreePath => "type the checkout path, Enter creates",
@@ -458,8 +501,14 @@ impl TuiApp {
             palette: Palette::for_theme(theme),
             tick: 0,
             worktree_create_stage: None,
+            workspace_create_stage: None,
+            worktree_rows: Vec::new(),
+            worktree_selected: 0,
+            worktree_filter: String::new(),
+            worktree_root: String::new(),
             rebase_pending_upstream: None,
             help_scroll: 0,
+            help_filter: String::new(),
             quit_prev_mode: TuiMode::Navigate,
             dirty: true,
         }
@@ -540,6 +589,7 @@ impl TuiApp {
             TuiMode::ConfirmQuit => return FooterContext::ConfirmQuit,
             TuiMode::Help => return FooterContext::HelpOverlay,
             TuiMode::Settings => return FooterContext::SettingsOverlay,
+            TuiMode::WorktreeList => return FooterContext::WorktreeList,
             _ => {}
         }
         // Screens and sub-views.
@@ -574,15 +624,58 @@ impl TuiApp {
         }
         match self.mode {
             TuiMode::Help => match key.code {
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                // Esc clears the filter first, then closes (webui settings
+                // search clears its box before dismissing the modal).
+                KeyCode::Esc => {
+                    if !self.help_filter.is_empty() {
+                        self.help_filter.clear();
+                        self.help_scroll = 0;
+                    } else {
+                        self.mode = TuiMode::Navigate;
+                        self.help_scroll = 0;
+                    }
+                }
+                KeyCode::Char('?') | KeyCode::Char('q') => {
                     self.mode = TuiMode::Navigate;
                     self.help_scroll = 0;
+                    self.help_filter.clear();
                 }
-                KeyCode::Char('j') | KeyCode::Down | KeyCode::PageDown => {
+                // While a filter is active every printable key (except the
+                // Esc/?/q closes above) edits the query, so words like
+                // "worktree" and "workspace" type through their j/k letters.
+                // Scrolling then lives on the arrow/Page keys only.
+                KeyCode::Down | KeyCode::PageDown => {
+                    let max =
+                        help_max_scroll().min(filtered_help_rows(&self.help_filter).len().saturating_sub(1));
+                    self.help_scroll = self.help_scroll.saturating_add(1).min(max);
+                }
+                KeyCode::Up | KeyCode::PageUp => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1);
+                }
+                KeyCode::Backspace => {
+                    self.help_filter.pop();
+                    self.help_scroll = 0;
+                }
+                // Ctrl+U clears the filter like the prompt inputs do.
+                KeyCode::Char(ch)
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && ch.eq_ignore_ascii_case(&'u') =>
+                {
+                    self.help_filter.clear();
+                    self.help_scroll = 0;
+                }
+                // j/k scroll only while no filter is active (vim reflex at
+                // the top of the overlay); with a filter they become query
+                // letters through the catch-all below.
+                KeyCode::Char('j') if self.help_filter.is_empty() => {
                     self.help_scroll = self.help_scroll.saturating_add(1).min(help_max_scroll());
                 }
-                KeyCode::Char('k') | KeyCode::Up | KeyCode::PageUp => {
+                KeyCode::Char('k') if self.help_filter.is_empty() => {
                     self.help_scroll = self.help_scroll.saturating_sub(1);
+                }
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    self.help_filter.push(ch);
+                    self.help_scroll = 0;
                 }
                 _ => {}
             },
@@ -606,10 +699,15 @@ impl TuiApp {
                 // Theme cycle (webui settings theme select).
                 KeyCode::Char('t') | KeyCode::Tab => {
                     self.theme = self.theme.next();
+                    // The palette is precomputed at startup; recompute it or
+                    // the cycle has no visible effect (webui applies the
+                    // theme immediately on selection).
+                    self.palette = Palette::for_theme(self.theme);
                     self.status = format!("theme: {}", self.theme.label());
                 }
                 _ => {}
             },
+            TuiMode::WorktreeList => self.handle_worktree_list_key(key),
             TuiMode::Navigate => self.handle_navigation_key(key),
             TuiMode::Attach => {
                 if self.screen == TuiScreen::Terminal {
@@ -711,6 +809,7 @@ impl TuiApp {
                 Err(err) => self.error = Some(err.to_string()),
             },
             PromptKind::NewWorkspace
+            | PromptKind::NewWorkspaceName
             | PromptKind::RenameWorkspace
             | PromptKind::RenamePanel
             | PromptKind::CreateWorktreeBranch
@@ -1030,6 +1129,7 @@ impl TuiApp {
             Shortcut::Help => {
                 self.mode = TuiMode::Help;
                 self.help_scroll = 0;
+                self.help_filter.clear();
             }
             Shortcut::Files => self.open_files_screen(),
             Shortcut::Git => self.open_git_screen(),
@@ -1763,7 +1863,11 @@ impl TuiApp {
                     });
                 }
             }
-            KeyCode::Char('?') => self.mode = TuiMode::Help,
+            KeyCode::Char('?') => {
+                self.mode = TuiMode::Help;
+                self.help_scroll = 0;
+                self.help_filter.clear();
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
             _ => {}
         }
@@ -2196,7 +2300,11 @@ impl TuiApp {
             }
             // Plain ? opens the help overlay from any git view (the
             // footer advertises Ctrl+B ?; a bare ? is the natural reflex).
-            KeyCode::Char('?') => self.mode = TuiMode::Help,
+            KeyCode::Char('?') => {
+                self.mode = TuiMode::Help;
+                self.help_scroll = 0;
+                self.help_filter.clear();
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
             _ => {}
         }
@@ -2273,6 +2381,60 @@ impl TuiApp {
         self.mark_dirty();
     }
 
+    /// Keys inside the WorktreeList overlay: j/k move over the filtered
+    /// rows, printable characters extend the type-to-filter query (same
+    /// convention as the help overlay: j/k only move when the query is
+    /// empty), Enter opens the selected worktree, Esc closes (clearing
+    /// the filter first).
+    fn handle_worktree_list_key(&mut self, key: KeyEvent) {
+        let filter_active = !self.worktree_filter.is_empty();
+        match key.code {
+            KeyCode::Esc => {
+                if filter_active {
+                    self.worktree_filter.clear();
+                    self.worktree_selected = 0;
+                } else {
+                    self.mode = TuiMode::Navigate;
+                }
+            }
+            KeyCode::Enter => match self.worktree_open_selected() {
+                Ok(message) => self.status = message,
+                Err(err) => self.status = err,
+            },
+            KeyCode::Backspace => {
+                self.worktree_filter.pop();
+                self.worktree_selected = 0;
+            }
+            KeyCode::Char('j') | KeyCode::Down if !filter_active => {
+                let len = self.filtered_worktree_rows().len();
+                if len > 0 {
+                    self.worktree_selected = (self.worktree_selected + 1) % len;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up if !filter_active => {
+                let len = self.filtered_worktree_rows().len();
+                if len > 0 {
+                    self.worktree_selected =
+                        (self.worktree_selected + len.saturating_sub(1)) % len;
+                }
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.worktree_filter.clear();
+                self.worktree_selected = 0;
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                self.worktree_filter.push(c);
+                self.worktree_selected = 0;
+                // Keep the cursor in range when the query shrinks the list.
+                let len = self.filtered_worktree_rows().len();
+                if self.worktree_selected >= len {
+                    self.worktree_selected = len.saturating_sub(1);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn handle_navigation_key(&mut self, key: KeyEvent) {
         // The Files and Git screens own their keys in Navigate mode too;
         // only the Terminal screen keeps the workspace/agent list keys.
@@ -2284,7 +2446,11 @@ impl TuiApp {
             // Only the Terminal screen reaches this handler; Files and Git
             // delegate to their panel handlers above.
             KeyCode::Char('q') | KeyCode::Esc => self.request_quit(),
-            KeyCode::Char('?') => self.mode = TuiMode::Help,
+            KeyCode::Char('?') => {
+                self.mode = TuiMode::Help;
+                self.help_scroll = 0;
+                self.help_filter.clear();
+            }
             KeyCode::Char('r') => self.refresh_active_screen(),
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),

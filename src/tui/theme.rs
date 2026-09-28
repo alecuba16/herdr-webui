@@ -81,7 +81,7 @@ fn detect_terminal_theme() -> Option<TerminalTheme> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Palette {
     pub(crate) bg: Color,
     pub(crate) panel_bg: Color,

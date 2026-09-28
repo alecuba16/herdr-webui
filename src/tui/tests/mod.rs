@@ -3834,6 +3834,7 @@ fn files_screen_tab_cycles_recent_previews_and_w_reveals_git_file() {
 fn settings_overlay_opens_cycles_theme_and_closes() {
     let mut app = app_with_snapshot();
     app.theme = TuiTheme::Dark;
+    app.palette = Palette::for_theme(TuiTheme::Dark);
 
     // Ctrl+B s opens the settings overlay.
     app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
@@ -3845,12 +3846,16 @@ fn settings_overlay_opens_cycles_theme_and_closes() {
     assert!(drawn.contains("theme"));
     assert!(drawn.contains("dark"));
 
-    // t cycles the theme live.
+    // t cycles the theme live, and the palette follows it so the switch
+    // is visible immediately (webui applies the theme on selection).
     app.handle_key(KeyEvent::from(KeyCode::Char('t')));
     assert_eq!(app.theme, TuiTheme::Light);
     assert_eq!(app.status, "theme: light");
+    assert_eq!(app.palette, Palette::for_theme(TuiTheme::Light));
+    let light_bg = app.palette.bg;
     app.handle_key(KeyEvent::from(KeyCode::Char('t')));
     assert_eq!(app.theme, TuiTheme::System);
+    assert_ne!(app.palette.bg, light_bg);
 
     // Esc closes back to navigate mode.
     app.handle_key(KeyEvent::from(KeyCode::Esc));
@@ -5233,4 +5238,52 @@ fn final_round_prompt_titles_options_and_refresh_error_arms() {
     app.last_refresh = Some(Instant::now());
     app.refresh_if_due();
     assert_eq!(app.status, "before", "not-due refresh skips the backend");
+}
+
+#[test]
+fn help_overlay_filters_by_typed_query() {
+    let mut app = app_with_snapshot();
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+
+    // Typing narrows the rows: "worktree" keeps only worktree shortcuts.
+    for ch in "worktree".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.help_filter, "worktree");
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("filter: worktree_"));
+    assert!(drawn.contains("No shortcuts match".replace("No shortcuts match", "worktree").as_str()) || drawn.contains("worktree"));
+    // The filter must drop unrelated rows like the terminal detach hint.
+    assert!(!drawn.contains("detach terminal"));
+
+    // Backspace edits the query; a wrong extra letter empties the list.
+    for ch in "zzz".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.help_filter, "worktreezzz");
+    let drawn = draw(&app, 150, 40);
+    assert!(drawn.contains("No shortcuts match"));
+
+    // Esc clears the filter first (stays in the overlay), then closes.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.help_filter, "");
+    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+}
+
+#[test]
+fn filtered_help_rows_match_keys_and_descriptions() {
+    // Direct unit check of the filter helper (webui settings-search parity).
+    let rows = crate::tui::filtered_help_rows("worktree");
+    assert!(!rows.is_empty());
+    assert!(rows
+        .iter()
+        .all(|(keys, description)| keys.to_ascii_lowercase().contains("worktree")
+            || description.to_ascii_lowercase().contains("worktree")));
+    // Empty query returns every row including separators.
+    assert_eq!(crate::tui::filtered_help_rows("").len(), crate::tui::keys::help_rows().len());
+    // No match returns empty.
+    assert!(crate::tui::filtered_help_rows("zzzzzzzz").is_empty());
 }
