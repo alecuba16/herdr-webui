@@ -2,6 +2,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::terminal_text::{vt_drive, VtCell, VtCore, VtSink};
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct TuiTextStyle {
     pub(crate) fg: Option<Color>,
@@ -68,21 +70,29 @@ struct StyledCell {
     style: TuiTextStyle,
 }
 
-#[derive(Debug)]
+impl VtCell for StyledCell {
+    type Style = TuiTextStyle;
+    fn from_char(ch: char, style: &TuiTextStyle) -> Self {
+        Self { ch, style: *style }
+    }
+    fn blank(style: &TuiTextStyle) -> Self {
+        Self {
+            ch: ' ',
+            style: *style,
+        }
+    }
+}
+
+/// Styled screen over the shared VT core: cells carry the SGR style
+/// active when they were written, so colors survive later rewrites.
 struct StyledScreen {
-    lines: Vec<Vec<StyledCell>>,
-    row: usize,
-    col: usize,
-    style: TuiTextStyle,
+    core: VtCore<StyledCell>,
 }
 
 impl Default for StyledScreen {
     fn default() -> Self {
         Self {
-            lines: vec![Vec::new()],
-            row: 0,
-            col: 0,
-            style: TuiTextStyle::default(),
+            core: VtCore::new(Self::MAX_LINES),
         }
     }
 }
@@ -92,146 +102,43 @@ impl StyledScreen {
 
     fn lines(&self) -> Vec<Vec<TuiTextSpan>> {
         trim_empty_styled_edges(
-            self.lines
+            self.core
+                .lines
                 .iter()
                 .map(|line| styled_cells_to_spans(line))
                 .collect(),
         )
     }
+}
 
-    fn ensure_row(&mut self) {
-        while self.lines.len() <= self.row {
-            self.lines.push(Vec::new());
-        }
-    }
-
-    fn trim_scrollback(&mut self) {
-        let overflow = self.lines.len().saturating_sub(Self::MAX_LINES);
-        if overflow > 0 {
-            self.lines.drain(0..overflow);
-            self.row = self.row.saturating_sub(overflow);
-        }
-    }
-
-    fn put(&mut self, ch: char) {
-        self.ensure_row();
-        let line = &mut self.lines[self.row];
-        while line.len() < self.col {
-            line.push(StyledCell {
-                ch: ' ',
-                style: self.style,
-            });
-        }
-        let cell = StyledCell {
-            ch,
-            style: self.style,
-        };
-        if self.col < line.len() {
-            line[self.col] = cell;
-        } else {
-            line.push(cell);
-        }
-        self.col += ch.width().unwrap_or(1).max(1);
-    }
-
-    fn carriage_return(&mut self) {
-        self.col = 0;
-    }
-
-    fn new_line(&mut self) {
-        self.row += 1;
-        self.col = 0;
-        self.ensure_row();
-        self.trim_scrollback();
-    }
-
-    fn backspace(&mut self) {
-        self.col = self.col.saturating_sub(1);
-    }
-
-    fn tab(&mut self) {
-        let next_tab = ((self.col / 8) + 1) * 8;
-        while self.col < next_tab {
-            self.put(' ');
-        }
-    }
-
+impl VtSink for StyledScreen {
     fn apply_csi(&mut self, sequence: &str) {
+        // SGR updates the style the core stamps on every new cell; all
+        // other sequences (cursor moves, erases) delegate to the core.
         let Some(final_byte) = sequence.chars().last() else {
             return;
         };
-        let params = &sequence[..sequence.len() - final_byte.len_utf8()];
-        match final_byte {
-            'm' => apply_sgr(&mut self.style, params),
-            'K' => self.erase_line(csi_first_param(params)),
-            'J' => self.erase_display(csi_first_param(params)),
-            'A' => self.row = self.row.saturating_sub(csi_count(params)),
-            'B' => {
-                self.row += csi_count(params);
-                self.ensure_row();
-                self.trim_scrollback();
-            }
-            'C' => self.col += csi_count(params),
-            'D' => self.col = self.col.saturating_sub(csi_count(params)),
-            'G' => self.col = csi_count(params).saturating_sub(1),
-            'H' | 'f' => self.move_cursor(params),
-            _ => {}
+        if final_byte == 'm' {
+            let params = &sequence[..sequence.len() - final_byte.len_utf8()];
+            apply_sgr(&mut self.core.style, params);
+            return;
         }
+        self.core.apply_csi(sequence);
     }
-
-    fn erase_line(&mut self, mode: usize) {
-        self.ensure_row();
-        let line = &mut self.lines[self.row];
-        match mode {
-            1 => {
-                let end = self.col.min(line.len().saturating_sub(1));
-                for cell in line.iter_mut().take(end + 1) {
-                    *cell = StyledCell {
-                        ch: ' ',
-                        style: self.style,
-                    };
-                }
-            }
-            2 => line.clear(),
-            _ => line.truncate(self.col.min(line.len())),
-        }
+    fn carriage_return(&mut self) {
+        self.core.carriage_return();
     }
-
-    fn erase_display(&mut self, mode: usize) {
-        match mode {
-            2 | 3 => {
-                self.lines = vec![Vec::new()];
-                self.row = 0;
-                self.col = 0;
-            }
-            1 => {
-                self.lines
-                    .drain(..self.row.min(self.lines.len()))
-                    .for_each(drop);
-                self.row = 0;
-                self.erase_line(1);
-            }
-            _ => {
-                self.erase_line(0);
-                self.lines.truncate((self.row + 1).min(self.lines.len()));
-            }
-        }
+    fn new_line(&mut self) {
+        self.core.new_line();
     }
-
-    fn move_cursor(&mut self, params: &str) {
-        let mut parts = params.split(';');
-        let row = parts
-            .next()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(1);
-        let col = parts
-            .next()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(1);
-        self.row = row.saturating_sub(1);
-        self.col = col.saturating_sub(1);
-        self.ensure_row();
-        self.trim_scrollback();
+    fn backspace(&mut self) {
+        self.core.backspace();
+    }
+    fn tab(&mut self) {
+        self.core.tab();
+    }
+    fn put(&mut self, ch: char) {
+        self.core.put(ch);
     }
 }
 
@@ -269,44 +176,7 @@ fn styled_cells_to_spans(cells: &[StyledCell]) -> Vec<TuiTextSpan> {
 
 pub(crate) fn terminal_output_styled_lines_lossy(value: &str) -> Vec<Vec<TuiTextSpan>> {
     let mut screen = StyledScreen::default();
-    let mut chars = value.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\u{1b}' => match chars.peek().copied() {
-                Some('[') => {
-                    chars.next();
-                    let mut sequence = String::new();
-                    for next in chars.by_ref() {
-                        sequence.push(next);
-                        if next.is_ascii_alphabetic() || matches!(next, '~' | '@') {
-                            break;
-                        }
-                    }
-                    screen.apply_csi(&sequence);
-                }
-                Some(']') => {
-                    chars.next();
-                    skip_osc(&mut chars);
-                }
-                // DCS (Sixel), SOS, PM, APC (Kitty graphics): skip payloads
-                // until ST only; BEL is a legal byte inside Sixel data.
-                Some('P' | 'X' | '^' | '_') => {
-                    chars.next();
-                    skip_string_sequence(&mut chars);
-                }
-                Some(_) => {
-                    chars.next();
-                }
-                None => {}
-            },
-            '\r' => screen.carriage_return(),
-            '\n' => screen.new_line(),
-            '\u{8}' => screen.backspace(),
-            '\t' => screen.tab(),
-            ch if ch.is_control() => {}
-            ch => screen.put(ch),
-        }
-    }
+    vt_drive(&mut screen, value);
     screen.lines()
 }
 
@@ -368,41 +238,6 @@ fn parse_extended_color(codes: &mut impl Iterator<Item = u16>) -> Option<Color> 
 fn ansi_basic_color(code: u16, bright: bool) -> Color {
     let base = if bright { 8 } else { 0 };
     Color::Indexed((base + code.min(7)) as u8)
-}
-
-fn csi_count(params: &str) -> usize {
-    csi_first_param(params).max(1)
-}
-
-fn csi_first_param(params: &str) -> usize {
-    params
-        .trim_start_matches('?')
-        .split(';')
-        .next()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0)
-}
-
-fn skip_osc(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
-    let mut previous_escape = false;
-    for next in chars.by_ref() {
-        if next == '\u{7}' || (previous_escape && next == '\\') {
-            break;
-        }
-        previous_escape = next == '\u{1b}';
-    }
-}
-
-/// Skips a DCS/SOS/PM/APC payload until ST (`ESC \`). BEL does not
-/// terminate these sequences; a Sixel quoted string may contain `0x07`.
-fn skip_string_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
-    let mut previous_escape = false;
-    for next in chars.by_ref() {
-        if previous_escape && next == '\\' {
-            break;
-        }
-        previous_escape = next == '\u{1b}';
-    }
 }
 
 fn truncate(value: &str, max_width: usize) -> String {
