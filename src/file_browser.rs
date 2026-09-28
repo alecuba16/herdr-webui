@@ -95,6 +95,10 @@ struct FileBrowserWriteRequest {
     path: String,
     content: String,
     expected_hash: Option<String>,
+    /// Create missing intermediate directories (new-file/new-directory
+    /// flow). Off by default so plain writes never grow the tree.
+    #[serde(default)]
+    create_parents: bool,
 }
 
 #[derive(Deserialize)]
@@ -558,6 +562,23 @@ fn resolve_child(root: &Path, path: &str) -> Result<PathBuf, String> {
         return Err("path escapes root".to_string());
     }
     Ok(canonical)
+}
+
+/// Like `resolve_child`, but for write targets that may introduce new
+/// intermediate directories (file-browser new-file/new-directory flow):
+/// missing components are created with `create_dir_all` before resolving,
+/// so `a/new/dir/.gitkeep` works in one request. Each created level is
+/// still confined to `root` because the walk never leaves it.
+fn resolve_child_create(root: &Path, path: &str) -> Result<PathBuf, String> {
+    let joined = root.join(path);
+    if !joined.exists() {
+        // Create every missing intermediate directory up to the final
+        // component's parent; the caller writes the file itself.
+        if let Some(parent) = joined.parent() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+    }
+    resolve_child(root, path)
 }
 
 fn unresolved_child_path(cwd: &str, path: Option<&str>) -> Result<PathBuf, String> {
@@ -1498,7 +1519,12 @@ async fn file_browser_write_file(
         Ok(_) => return file_browser_json_error(StatusCode::BAD_REQUEST, "path is required"),
         Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
     };
-    let file = match resolve_child(&root, &rel) {
+    let file = if body.create_parents {
+        resolve_child_create(&root, &rel)
+    } else {
+        resolve_child(&root, &rel)
+    };
+    let file = match file {
         Ok(file) => file,
         Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
     };
@@ -1750,6 +1776,7 @@ async fn file_browser_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
 
     #[test]
     fn numbered_lines_html_builds_gutter_and_escaped_code() {
@@ -1768,6 +1795,45 @@ mod tests {
         assert!(clean_relative_path(Some("../secret")).is_err());
         assert!(clean_relative_path(Some("a/../secret")).is_err());
         assert_eq!(clean_relative_path(Some("/a/b")).unwrap(), "a/b");
+    }
+
+    #[test]
+    fn resolve_child_create_builds_missing_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-resolve-create-{}",
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        // GitHub's macOS runners expose a /var/folders TMPDIR that is a
+        // symlink alias of /private/var/folders; resolve_child canonicalizes
+        // the joined path, so the root must be canonical for the escape
+        // guard to compare like-for-like.
+        let root = root.canonicalize().unwrap();
+        let file = resolve_child_create(&root, "a/new/dir/.gitkeep").unwrap();
+        assert!(file.starts_with(&root));
+        assert!(root.join("a/new/dir").is_dir());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resolve_child_create_still_rejects_escapes() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-resolve-escape-{}",
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        // clean_relative_path rejects `..` before resolution, so the
+        // create variant inherits the same guard; resolve_child keeps
+        // the root-containment check for symlinked paths.
+        assert!(clean_relative_path(Some("../outside/x")).is_err());
+        assert!(resolve_child(&root, "../outside/x").is_err());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

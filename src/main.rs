@@ -14771,8 +14771,8 @@ mod tui_parity_e2e_tests {
     use super::*;
     use crate::lsp::LspRegistry;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use herdr_webui::tui_panels::{FileExplorer, GitFileStatus, GitPanel, GitView};
-    use herdr_webui::tui_web_api::WebApiClient;
+    use herdr_webui::tui::panels::{FileExplorer, GitFileStatus, GitPanel, GitView};
+    use herdr_webui::tui::web_api::WebApiClient;
 
     fn temp_git_repo() -> PathBuf {
         // Fixture dirs must be unique per call even when tests run in
@@ -15316,6 +15316,349 @@ mod tui_parity_e2e_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn tui_content_search_git_status_and_new_file_round_trip() {
+        let repo = temp_git_repo();
+        let state = localhost_no_auth_state(repo.clone());
+        let app = app_router(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let api = WebApiClient::new("127.0.0.1", addr.port());
+        let cwd = repo.to_string_lossy().to_string();
+
+        let result = tokio::task::spawn_blocking(move || tui_phase3_assertions(&api, &cwd))
+            .await
+            .unwrap();
+        result.unwrap_or_else(|err| panic!("tui phase3 round trip failed: {err}"));
+        server.abort();
+        let _ = std::fs::remove_dir_all(&repo);
+        let bare = std::env::temp_dir().join(
+            repo.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .replace("herdr-tui-e2e-repo-", "herdr-tui-e2e-bare-"),
+        );
+        let _ = std::fs::remove_dir_all(&bare);
+    }
+
+    fn tui_phase3_assertions(api: &WebApiClient, cwd: &str) -> Result<(), String> {
+        use herdr_webui::tui::panels::files::{
+            content_rows, run_content_search, ContentRow, SearchKind,
+        };
+
+        // Git status colors: the fixture has a modified readme.md and an
+        // untracked new_file.rs, so the tree payload's git_status map
+        // must reach the parsed entries.
+        let mut explorer = FileExplorer::new(cwd);
+        explorer.refresh(api).unwrap();
+        let readme = explorer
+            .entries
+            .iter()
+            .find(|entry| entry.name == "readme.md")
+            .ok_or("tree missing readme.md")?;
+        assert_eq!(readme.git_status.as_deref(), Some("modified"));
+        let new_file = explorer
+            .entries
+            .iter()
+            .find(|entry| entry.name == "new_file.rs")
+            .ok_or("tree missing new_file.rs")?;
+        assert_eq!(new_file.git_status.as_deref(), Some("untracked"));
+
+        // Content search: the fixture readme contains "world"; the
+        // grouped results must include the file with a matched line.
+        explorer.filter = "world".to_string();
+        explorer.search_mode = true;
+        explorer.search_kind = SearchKind::Content;
+        run_content_search(&mut explorer, api, false).unwrap();
+        let state = &explorer.content_search;
+        let readme_hit = state
+            .files
+            .iter()
+            .find(|file| file.path == "readme.md")
+            .ok_or(format!(
+                "content search missing readme.md, files: {:?}",
+                state
+                    .files
+                    .iter()
+                    .map(|f| f.path.clone())
+                    .collect::<Vec<_>>()
+            ))?;
+        assert!(readme_hit.match_count >= 1, "expected a match in readme.md");
+        assert!(state.total_matches >= 1);
+        // Flat rows: file header plus the chunk lines of the expanded
+        // file; the matched line must appear.
+        let rows = content_rows(state);
+        assert!(matches!(rows[0], ContentRow::File(0)));
+        let matched = rows.iter().any(|row| match row {
+            ContentRow::Line { matched, .. } => *matched,
+            _ => false,
+        });
+        assert!(matched, "no matched line in the flat rows");
+
+        // Jump-to-line: open the matched line and verify the jump state
+        // plus the preview content.
+        let jump = rows
+            .iter()
+            .find_map(|row| match row {
+                ContentRow::Line { file, line, .. } if *file == 0 => Some(*line),
+                _ => None,
+            })
+            .ok_or("no chunk line for the first file")?;
+        explorer
+            .open_preview_at_line(api, "readme.md", jump)
+            .map_err(|err| format!("jump to readme.md:{jump} failed: {err}"))?;
+        assert_eq!(explorer.preview.path.as_deref(), Some("readme.md"));
+        assert_eq!(explorer.preview_jump_line, Some(jump));
+
+        // Match-case toggle: default is case-insensitive so "WORLD"
+        // still matches "world"; with match_case on it must not.
+        explorer.content_search.match_case = false;
+        explorer.content_search.regex = false;
+        explorer.filter = "WORLD".to_string();
+        run_content_search(&mut explorer, api, false).unwrap();
+        assert!(
+            explorer
+                .content_search
+                .files
+                .iter()
+                .any(|file| file.path == "readme.md"),
+            "case-insensitive search for WORLD must match readme.md"
+        );
+        explorer.content_search.match_case = true;
+        run_content_search(&mut explorer, api, false).unwrap();
+        assert!(
+            explorer.content_search.files.is_empty(),
+            "match-case search for WORLD must not match lowercase world"
+        );
+        // Regex toggle: `wor.d` matches "world" in both modes.
+        explorer.content_search.match_case = false;
+        explorer.content_search.regex = true;
+        explorer.filter = "wor.d".to_string();
+        run_content_search(&mut explorer, api, false).unwrap();
+        assert!(
+            explorer
+                .content_search
+                .files
+                .iter()
+                .any(|file| file.path == "readme.md"),
+            "regex search must match readme.md"
+        );
+
+        // New file: empty write then preview, cursor lands on the file.
+        explorer.search_mode = false;
+        explorer.filter.clear();
+        explorer.refresh(api).unwrap();
+        explorer.create_file(api, "made_by_tui.rs").unwrap();
+        let created = explorer
+            .entries
+            .iter()
+            .find(|entry| entry.name == "made_by_tui.rs")
+            .ok_or("created file missing from tree")?;
+        assert_eq!(created.path, "made_by_tui.rs");
+        assert_eq!(
+            explorer.selected_entry().map(|e| e.name.clone()),
+            Some("made_by_tui.rs".to_string())
+        );
+        assert!(repo_file_exists(cwd, "made_by_tui.rs"));
+
+        // New directory: `.gitkeep` marker makes the dir visible.
+        explorer
+            .create_directory(api, "tui_new_dir")
+            .map_err(|err| format!("create_directory failed: {err}"))?;
+        assert!(repo_dir_exists(cwd, "tui_new_dir"));
+        assert!(repo_file_exists(cwd, "tui_new_dir/.gitkeep"));
+
+        Ok(())
+    }
+
+    fn repo_file_exists(root: &str, rel: &str) -> bool {
+        std::path::Path::new(root).join(rel).is_file()
+    }
+
+    fn repo_dir_exists(root: &str, rel: &str) -> bool {
+        std::path::Path::new(root).join(rel).is_dir()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn tui_reveal_find_replace_and_tab_cycle_round_trip() {
+        let repo = temp_git_repo();
+        let state = localhost_no_auth_state(repo.clone());
+        let app = app_router(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let api = WebApiClient::new("127.0.0.1", addr.port());
+        let cwd = repo.to_string_lossy().to_string();
+
+        let result = tokio::task::spawn_blocking(move || tui_phase4_assertions(&api, &cwd))
+            .await
+            .unwrap();
+        result.unwrap_or_else(|err| panic!("tui phase4 round trip failed: {err}"));
+        server.abort();
+        let _ = std::fs::remove_dir_all(&repo);
+        let bare = std::env::temp_dir().join(
+            repo.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .replace("herdr-tui-e2e-repo-", "herdr-tui-e2e-bare-"),
+        );
+        let _ = std::fs::remove_dir_all(&bare);
+    }
+
+    fn tui_phase4_assertions(api: &WebApiClient, cwd: &str) -> Result<(), String> {
+        // Reveal: a nested untracked file must be reachable through
+        // expand-ancestors + select, starting from a flat tree.
+        std::fs::create_dir_all(std::path::Path::new(cwd).join("nested/deep"))
+            .map_err(|err| err.to_string())?;
+        std::fs::write(
+            std::path::Path::new(cwd).join("nested/deep/target.rs"),
+            "fn target() {}\n",
+        )
+        .map_err(|err| err.to_string())?;
+        let mut explorer = FileExplorer::new(cwd);
+        explorer.refresh(api).unwrap();
+        explorer
+            .reveal_path(api, "nested/deep/target.rs")
+            .map_err(|err| format!("reveal_path failed: {err}"))?;
+        assert_eq!(
+            explorer.selected_entry().map(|e| e.path.clone()),
+            Some("nested/deep/target.rs".to_string()),
+            "reveal must select the nested file"
+        );
+
+        // Editor find + replace: open the readme, find "world",
+        // replace-all with "tui", verify the on-disk file after save.
+        explorer
+            .open_preview_at_line(api, "readme.md", 1)
+            .map_err(|err| format!("open readme.md failed: {err}"))?;
+        explorer.start_edit().unwrap();
+        explorer.editor_find_open();
+        for ch in "world".chars() {
+            explorer.push_find_char(ch);
+        }
+        assert_eq!(explorer.editor_find.ranges.len(), 1, "expected one match");
+        explorer
+            .editor_replace("tui", true)
+            .map_err(|err| format!("editor_replace failed: {err}"))?;
+        assert!(explorer.preview.dirty);
+        explorer
+            .editor_save(api)
+            .map_err(|err| format!("editor_save failed: {err}"))?;
+        let saved = std::fs::read_to_string(std::path::Path::new(cwd).join("readme.md"))
+            .map_err(|err| err.to_string())?;
+        assert_eq!(saved, "hello\ntui\n", "replace-all + save must persist");
+        explorer.editor_find_close();
+
+        // Tab cycle: readme + new_file previews rotate round-robin.
+        explorer
+            .open_preview_at_line(api, "new_file.rs", 1)
+            .map_err(|err| format!("open new_file.rs failed: {err}"))?;
+        assert!(
+            explorer.recent_previews.len() >= 2,
+            "recents must track both files"
+        );
+        assert!(explorer.cycle_recent_preview(api).unwrap());
+        let switched = explorer.preview.path.clone();
+        assert_eq!(
+            switched.as_deref(),
+            Some("readme.md"),
+            "Tab must rotate back to the previously opened file"
+        );
+
+        // Conflicts view: create a real merge conflict, refresh through
+        // the panel, resolve with `theirs`, then abort the merge (the
+        // resolve stage-marks the file so abort restores the pre-merge
+        // state and later assertions keep a clean repo).
+        let run_git = |args: &[&str]| -> Result<String, String> {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .map_err(|err| err.to_string())?;
+            if !out.status.success() {
+                return Err(format!(
+                    "git {args:?}: exit={} stdout={} stderr={}",
+                    out.status.code().unwrap_or(-1),
+                    String::from_utf8_lossy(&out.stdout).trim(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
+            }
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+        run_git(&["checkout", "-q", "-b", "conflict-side"])?;
+        std::fs::write(
+            std::path::Path::new(cwd).join("readme.md"),
+            "hello\nconflict-side\n",
+        )
+        .map_err(|err| err.to_string())?;
+        run_git(&["commit", "-q", "-a", "-m", "conflict side"])?;
+        run_git(&["checkout", "-q", "master"]).or_else(|_| run_git(&["checkout", "-q", "main"]))?;
+        std::fs::write(
+            std::path::Path::new(cwd).join("readme.md"),
+            "hello\nmaster-side\n",
+        )
+        .map_err(|err| err.to_string())?;
+        run_git(&["commit", "-q", "-a", "-m", "master side"])?;
+        // The merge exits 1 with the conflict; that is the expected state.
+        let merge_out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cwd)
+            .args(["merge", "conflict-side"])
+            .output()
+            .map_err(|err| err.to_string())?;
+        assert!(
+            !merge_out.status.success(),
+            "merge must conflict, got: {}",
+            String::from_utf8_lossy(&merge_out.stdout)
+        );
+        let mut panel = herdr_webui::tui::panels::GitPanel::new(cwd);
+        panel
+            .refresh_conflicts(api)
+            .map_err(|err| format!("refresh_conflicts failed: {err}"))?;
+        assert_eq!(
+            panel.conflict_files,
+            vec!["readme.md".to_string()],
+            "conflicts must list readme.md"
+        );
+        assert!(panel.merge_in_progress, "merge must be in progress");
+        panel
+            .resolve_selected_conflict(api, herdr_webui::tui::panels::ConflictResolveMode::Remote)
+            .map_err(|err| format!("resolve_selected_conflict failed: {err}"))?;
+        assert!(
+            panel.conflict_files.is_empty(),
+            "resolve must clear the conflict list"
+        );
+        panel
+            .conflict_action(api, herdr_webui::tui::panels::ConflictAction::MergeAbort)
+            .map_err(|err| format!("conflict_action failed: {err}"))?;
+        assert!(
+            !panel.merge_in_progress,
+            "merge-abort must end the merge state"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn tui_app_prompt_and_git_actions_round_trip() {
         let repo = temp_git_repo();
         let state = localhost_no_auth_state(repo.clone());
@@ -15366,7 +15709,7 @@ mod tui_parity_e2e_tests {
         app.snapshot = TuiSnapshot::default();
         app.screen = TuiScreen::Files;
         app.mode = TuiMode::Attach;
-        app.file_explorer = herdr_webui::tui_panels::FileExplorer::new(cwd);
+        app.file_explorer = herdr_webui::tui::panels::FileExplorer::new(cwd);
         app.file_explorer
             .refresh(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15462,7 +15805,7 @@ mod tui_parity_e2e_tests {
 
         // --- Git branch delete via prompt: Tab to Branches, D opens, y confirms.
         app.screen = TuiScreen::Git;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Branches;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15506,7 +15849,7 @@ mod tui_parity_e2e_tests {
 
         // --- Stash drop via prompt: create a stash, Tab to Stash, D opens, y confirms.
         app.web_api.git_stash(cwd).map_err(|e| e.to_string())?;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Stash;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Stash;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15522,7 +15865,7 @@ mod tui_parity_e2e_tests {
 
         // --- Git fetch/pull/push round-trip against the bare "origin":
         // the remote exists, so each action succeeds and refresh_view runs.
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Branches;
         press(&mut app, 'f');
         assert!(
             app.error.is_none(),
@@ -15573,7 +15916,7 @@ mod tui_parity_e2e_tests {
         )
         .map_err(|e| e.to_string())?;
         app.screen = TuiScreen::Git;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15640,7 +15983,7 @@ mod tui_parity_e2e_tests {
         )
         .map_err(|e| e.to_string())?;
         app.screen = TuiScreen::Git;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15691,7 +16034,7 @@ mod tui_parity_e2e_tests {
         )
         .map_err(|e| e.to_string())?;
         app.screen = TuiScreen::Git;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15708,7 +16051,7 @@ mod tui_parity_e2e_tests {
                 .files
                 .iter()
                 .filter(|f| f.path != "other.rs")
-                .all(|f| f.status == herdr_webui::tui_panels::GitFileStatus::Staged),
+                .all(|f| f.status == herdr_webui::tui::panels::GitFileStatus::Staged),
             "stage-all stages tracked changes: {:?}",
             app.git_panel
                 .files
@@ -15725,7 +16068,7 @@ mod tui_parity_e2e_tests {
             !app.git_panel
                 .files
                 .iter()
-                .any(|f| f.status == herdr_webui::tui_panels::GitFileStatus::Staged),
+                .any(|f| f.status == herdr_webui::tui::panels::GitFileStatus::Staged),
             "stage-all toggles everything back"
         );
 
@@ -15741,7 +16084,7 @@ mod tui_parity_e2e_tests {
         press(&mut app, 'y');
         assert!(
             app.git_panel.files.iter().any(|f| f.path == "edit_me.rs"
-                && f.status == herdr_webui::tui_panels::GitFileStatus::Staged),
+                && f.status == herdr_webui::tui::panels::GitFileStatus::Staged),
             "prefix y stages the selected file"
         );
         app.git_panel.file_selected = y_idx;
@@ -15749,7 +16092,7 @@ mod tui_parity_e2e_tests {
         press(&mut app, 'u');
         assert!(
             app.git_panel.files.iter().any(|f| f.path == "edit_me.rs"
-                && f.status != herdr_webui::tui_panels::GitFileStatus::Staged),
+                && f.status != herdr_webui::tui::panels::GitFileStatus::Staged),
             "prefix u unstages the selected file"
         );
 
@@ -15762,15 +16105,26 @@ mod tui_parity_e2e_tests {
             app.git_panel.files
         );
         // Restore the stashed changes for the later sections.
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Stash;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Stash;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
         app.handle_key(crossterm::event::KeyEvent::from(
             crossterm::event::KeyCode::Enter,
         ));
+        assert_eq!(
+            app.status, "stash diff loaded",
+            "stash restore: {}",
+            app.status
+        );
+        assert!(
+            app.git_panel.stash_diff_lines.len() > 2,
+            "stash diff has content lines"
+        );
+        // `a` applies the stash (Enter now previews the diff).
+        press(&mut app, 'a');
         assert_eq!(app.status, "stash applied", "stash restore: {}", app.status);
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15806,21 +16160,21 @@ mod tui_parity_e2e_tests {
         assert_eq!(app.status, "blame off", "blame off status: {}", app.status);
 
         // --- Prefix m from a non-Changes view resets to Changes first.
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Branches;
         app.git_panel.diff_title = "edit_me.rs".to_string();
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
         // Keep the changes list for blame resolution while showing Branches.
-        app.git_panel.files = vec![herdr_webui::tui_panels::GitFileEntry {
+        app.git_panel.files = vec![herdr_webui::tui::panels::GitFileEntry {
             path: "edit_me.rs".to_string(),
-            status: herdr_webui::tui_panels::GitFileStatus::Unstaged,
+            status: herdr_webui::tui::panels::GitFileStatus::Unstaged,
         }];
         app.handle_key(ctrl_b);
         press(&mut app, 'm');
         assert_eq!(
             app.git_panel.view,
-            herdr_webui::tui_panels::GitView::Changes,
+            herdr_webui::tui::panels::GitView::Changes,
             "prefix m resets the view to Changes"
         );
         assert!(app.git_panel.show_blame, "blame toggles on from Branches");
@@ -15862,11 +16216,11 @@ mod tui_parity_e2e_tests {
         press(&mut app, 'o');
         assert_eq!(
             app.git_panel.view,
-            herdr_webui::tui_panels::GitView::Changes
+            herdr_webui::tui::panels::GitView::Changes
         );
 
         // --- Prefix v with a non-current branch switches to it and back.
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Branches;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15920,7 +16274,7 @@ mod tui_parity_e2e_tests {
 
         // --- Prefix d with a dirty preview on the same file is refused first,
         // then the plain discard runs.
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15963,7 +16317,7 @@ mod tui_parity_e2e_tests {
         )
         .map_err(|e| e.to_string())?;
         app.screen = TuiScreen::Git;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -15982,7 +16336,7 @@ mod tui_parity_e2e_tests {
         app.handle_key(ctrl_b);
         press(&mut app, 'l');
         assert!(
-            app.git_panel.view == herdr_webui::tui_panels::GitView::Log,
+            app.git_panel.view == herdr_webui::tui::panels::GitView::Log,
             "prefix l opens the Log view"
         );
         assert_eq!(
@@ -15990,7 +16344,88 @@ mod tui_parity_e2e_tests {
             app.git_panel.commits.len().saturating_sub(1),
             "log refresh must clamp the selection"
         );
-        app.git_panel.view = herdr_webui::tui_panels::GitView::History;
+
+        // --- Log view actions (webui log toolbar parity).
+        // Enter compares the selected commit with its parent.
+        app.git_panel.commit_selected = 0;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(
+            !app.git_panel.diff_lines.is_empty(),
+            "log Enter loads the parent compare diff"
+        );
+        assert!(app.error.is_none(), "log Enter error: {:?}", app.error);
+        assert!(
+            app.status.contains("compare"),
+            "log Enter status: {}",
+            app.status
+        );
+
+        // `s` cycles the log scope (all -> base-current -> base).
+        let scope_before = app.git_panel.log_scope;
+        press(&mut app, 's');
+        assert_ne!(app.git_panel.log_scope, scope_before, "s cycles log scope");
+        assert!(
+            app.status.contains("log scope"),
+            "scope status: {}",
+            app.status
+        );
+
+        // `+` load-more is refused without more pages (or grows the limit
+        // and refetches); both paths keep the view consistent.
+        press(&mut app, '+');
+        assert!(
+            app.status.contains("log limit") || app.status.contains("no more"),
+            "+ load more status: {}",
+            app.status
+        );
+
+        // `t` opens the tag prompt; typing a name tags the selected commit.
+        press(&mut app, 't');
+        assert!(app.prompt_input.is_some(), "t opens the tag prompt");
+        for ch in "v-e2e".chars() {
+            press(&mut app, ch);
+        }
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(app.status, "tagged v-e2e", "tag prompt: {}", app.status);
+
+        // `R` opens the reset prompt; mixed mode resets the current
+        // branch to the selected commit.
+        press(&mut app, 'R');
+        for ch in "mixed".chars() {
+            press(&mut app, ch);
+        }
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(app.status, "reset mixed", "reset prompt: {}", app.status);
+
+        // `R` then "hard" chains into the typed-y confirm; non-y cancels
+        // without touching the repo. The actual hard reset is not executed
+        // here because it would wipe the working tree edits the later
+        // sections of this test still need; the typed-y path is the same
+        // `run_prompt_action` arm the mixed reset already exercised.
+        press(&mut app, 'R');
+        for ch in "hard".chars() {
+            press(&mut app, ch);
+        }
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(matches!(
+            app.prompt_input.as_ref().map(|p| p.kind),
+            Some(herdr_webui::tui::PromptKind::ConfirmResetHard)
+        ));
+        press(&mut app, 'n');
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(app.status, "cancelled", "non-y confirm cancels");
+
+        app.git_panel.view = herdr_webui::tui::panels::GitView::History;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -16035,7 +16470,7 @@ mod tui_parity_e2e_tests {
 
         // Branches: Enter switches to the selected non-current branch, then
         // back to the default branch.
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Branches;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Branches;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -16078,9 +16513,115 @@ mod tui_parity_e2e_tests {
             app.status
         );
 
-        // Stash: stash the dirty edit, Enter applies it.
+        // --- Branch create: Branches view `c` prompts, typed name creates
+        // and switches (webui git_switch create: true).
+        press(&mut app, 'c');
+        assert!(
+            app.prompt_input.is_some(),
+            "branches c opens the create prompt"
+        );
+        for ch in "tui-created-branch".chars() {
+            press(&mut app, ch);
+        }
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(
+            app.status, "switched to tui-created-branch",
+            "branch create: {}",
+            app.status
+        );
+        assert!(
+            app.git_panel
+                .branches
+                .iter()
+                .any(|b| b.name == "tui-created-branch" && b.current),
+            "created branch is current after the switch"
+        );
+        // Switch back to the default branch for the later sections.
+        let back_idx = app
+            .git_panel
+            .branches
+            .iter()
+            .position(|b| b.name == default_branch)
+            .ok_or("default branch missing after create")?;
+        app.git_panel.branch_selected = back_idx;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+
+        // --- Diff search in Changes (webui Ctrl+F): / opens, typing
+        // matches incrementally, Enter commits, n/N cycle.
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
+        app.git_panel
+            .refresh_view(&app.web_api)
+            .map_err(|e| e.to_string())?;
+        let edit_idx = app
+            .git_panel
+            .files
+            .iter()
+            .position(|f| f.path == "edit_me.rs")
+            .ok_or("edit_me.rs missing for diff search")?;
+        app.git_panel.file_selected = edit_idx;
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(!app.git_panel.diff_lines.is_empty(), "diff loaded");
+        press(&mut app, '/');
+        assert!(app.git_panel.diff_search_active, "/ opens the diff search");
+        press(&mut app, 'e');
+        press(&mut app, 'd');
+        press(&mut app, 'i');
+        press(&mut app, 't');
+        assert!(
+            !app.git_panel.diff_search_matches.is_empty(),
+            "diff search matches after typing"
+        );
+        let first_match = app.git_panel.diff_search_active_line();
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert!(!app.git_panel.diff_search_active, "Enter closes the bar");
+        assert!(
+            !app.git_panel.diff_search_matches.is_empty(),
+            "Enter keeps the matches"
+        );
+        press(&mut app, 'n');
+        assert_ne!(
+            app.git_panel.diff_search_active_line(),
+            first_match,
+            "n moves the active match"
+        );
+        press(&mut app, 'N');
+        assert_eq!(
+            app.git_panel.diff_search_active_line(),
+            first_match,
+            "N returns to the first match"
+        );
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Esc,
+        ));
+        assert!(
+            app.git_panel.diff_search_matches.is_empty(),
+            "Esc clears the search"
+        );
+
+        // --- Git cwd picker (prefix I): type a path, the panel switches.
+        app.handle_key(ctrl_b);
+        press(&mut app, 'I');
+        assert!(app.prompt_input.is_some(), "prefix I opens the cwd prompt");
+        for ch in cwd.chars() {
+            press(&mut app, ch);
+        }
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+        assert_eq!(app.git_panel.cwd, cwd, "cwd prompt switches the git panel");
+        assert!(app.error.is_none(), "cwd switch error: {:?}", app.error);
+
+        // Stash: stash the dirty edit, Enter previews the diff, `a` applies it.
         app.web_api.git_stash(cwd).map_err(|e| e.to_string())?;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Stash;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Stash;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;
@@ -16088,7 +16629,13 @@ mod tui_parity_e2e_tests {
         app.handle_key(crossterm::event::KeyEvent::from(
             crossterm::event::KeyCode::Enter,
         ));
-        assert_eq!(app.status, "stash applied", "stash Enter: {}", app.status);
+        assert_eq!(
+            app.status, "stash diff loaded",
+            "stash Enter: {}",
+            app.status
+        );
+        press(&mut app, 'a');
+        assert_eq!(app.status, "stash applied", "stash apply: {}", app.status);
         assert!(app.error.is_none(), "stash apply error: {:?}", app.error);
 
         // --- Files navigation: j/k moves, Enter on a directory expands.
@@ -16163,7 +16710,7 @@ mod tui_parity_e2e_tests {
         // --- Prefix e from Git Changes on a file that no longer exists on
         // disk surfaces the read error instead of opening edit mode.
         app.screen = TuiScreen::Git;
-        app.git_panel.view = herdr_webui::tui_panels::GitView::Changes;
+        app.git_panel.view = herdr_webui::tui::panels::GitView::Changes;
         app.git_panel
             .refresh_view(&app.web_api)
             .map_err(|e| e.to_string())?;

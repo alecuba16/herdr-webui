@@ -1,0 +1,722 @@
+//! File explorer panel: tree, lazy expansion, filter, preview, edit.
+//! Content search lives in the `content_search` submodule.
+
+pub mod content_search;
+pub mod find;
+
+use serde_json::Value;
+
+use crate::tui::model::value_str;
+use crate::tui::web_api::{WebApiClient, WebApiError};
+
+pub use content_search::{
+    content_rows, run_content_search, ContentRow, ContentSearchChunk, ContentSearchFile,
+    ContentSearchRow, ContentSearchState,
+};
+pub use find::{find_ranges, EditorFind};
+
+/// Which set of things `/` searches. Webui `filterKind` cycles
+/// Files → Folders → Content → Files (`nextSearchScope`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchKind {
+    File,
+    Dir,
+    Content,
+}
+
+impl SearchKind {
+    pub fn next(self) -> Self {
+        match self {
+            Self::File => Self::Dir,
+            Self::Dir => Self::Content,
+            Self::Content => Self::File,
+        }
+    }
+
+    /// Webui `searchScopeLabel`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::File => "Files",
+            Self::Dir => "Folders",
+            Self::Content => "Content",
+        }
+    }
+}
+
+/// File explorer state. Mirrors the WebUI file browser: lazy directory
+/// expansion, flat search results, preview pane for text files.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: Option<u64>,
+    pub level: usize,
+    pub expanded: bool,
+    /// Git status from the tree payload's `git_status` map
+    /// ("modified"/"deleted"/"untracked"/"added"/"conflict"),
+    /// already priority-propagated to parent dirs by the server
+    /// (red > yellow > green in the webui tree).
+    pub git_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FilePreview {
+    pub path: Option<String>,
+    pub content: String,
+    pub truncated: bool,
+    pub binary: bool,
+    pub hash: String,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileExplorer {
+    pub cwd: String,
+    pub root_path: String,
+    pub entries: Vec<FileEntry>,
+    pub selected: usize,
+    pub scroll: u16,
+    pub preview: FilePreview,
+    /// Editing mode: keys type into `preview.content` instead of moving
+    /// the tree selection.
+    pub edit_active: bool,
+    /// Byte offset of the edit cursor into `preview.content`.
+    pub edit_cursor: usize,
+    pub filter: String,
+    pub filter_active: bool,
+    pub search_mode: bool,
+    /// What `/` searches: files, folders, or file contents
+    /// (webui `filterKind` cycle).
+    pub search_kind: SearchKind,
+    /// Content search results (webui `HerdrContentSearch` state).
+    pub content_search: ContentSearchState,
+    pub truncated: bool,
+    pub status: Option<String>,
+    /// Line to scroll the preview to after a content-search jump
+    /// (1-based). Render highlights and centers on this line.
+    pub preview_jump_line: Option<usize>,
+    /// Editor find bar state (Ctrl+F in edit mode).
+    pub editor_find: EditorFind,
+    /// Recently opened preview paths, most recent first (Tab cycles).
+    pub recent_previews: Vec<String>,
+    /// Markdown outline flip (gap 22): when set, the preview pane shows
+    /// the header outline (`#`/`##`/… lines indented by level, with the
+    /// source line number) instead of the raw source. `M` toggles it,
+    /// mirroring the webui eye toggle for markdown files.
+    pub markdown_outline: bool,
+}
+
+impl FileExplorer {
+    pub fn new(cwd: &str) -> Self {
+        Self {
+            cwd: cwd.to_string(),
+            root_path: String::new(),
+            entries: Vec::new(),
+            selected: 0,
+            scroll: 0,
+            preview: FilePreview::default(),
+            edit_active: false,
+            edit_cursor: 0,
+            filter: String::new(),
+            filter_active: false,
+            search_mode: false,
+            search_kind: SearchKind::File,
+            content_search: ContentSearchState::default(),
+            truncated: false,
+            status: None,
+            preview_jump_line: None,
+            editor_find: EditorFind::default(),
+            recent_previews: Vec::new(),
+            markdown_outline: false,
+        }
+    }
+
+    pub fn refresh(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+        // Content search results live in `content_search` state, not the
+        // tree; nothing to fetch here (the render path shows them).
+        if self.search_mode && self.search_kind == SearchKind::Content {
+            return Ok(());
+        }
+        let data = if self.search_mode && !self.filter.trim().is_empty() {
+            api.file_search(
+                &self.cwd,
+                &self.root_path,
+                self.filter.trim(),
+                0,
+                200,
+                self.search_kind == SearchKind::Dir,
+            )?
+        } else {
+            api.file_tree(&self.cwd, &self.root_path, 0)?
+        };
+        self.truncated = data
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        self.entries = parse_entries(&data);
+        if self.selected >= self.entries.len() {
+            self.selected = self.entries.len().saturating_sub(1);
+        }
+        self.status = None;
+        Ok(())
+    }
+
+    pub fn selected_entry(&self) -> Option<&FileEntry> {
+        self.entries.get(self.selected)
+    }
+
+    /// Expand/collapse a directory inline by merging child entries.
+    pub fn toggle_expand(&mut self, api: &WebApiClient) -> Result<bool, WebApiError> {
+        let Some(entry) = self.entries.get(self.selected) else {
+            return Ok(false);
+        };
+        if !entry.is_dir {
+            return Ok(false);
+        }
+        let path = entry.path.clone();
+        let index = self.selected;
+        let was_expanded = entry.expanded;
+        if was_expanded {
+            let level = entry.level;
+            let mut remove_from = index + 1;
+            while self
+                .entries
+                .get(remove_from)
+                .is_some_and(|next| next.level > level)
+            {
+                remove_from += 1;
+            }
+            self.entries.drain(index + 1..remove_from);
+            self.entries[index].expanded = false;
+            return Ok(true);
+        }
+        let data = api.file_tree(&self.cwd, &path, 0)?;
+        let mut children = parse_entries(&data);
+        // The server numbers levels relative to the fetched directory; shift
+        // them under the parent so collapse scanning and indentation work.
+        let child_level = self.entries[index].level + 1;
+        for child in &mut children {
+            child.level = child_level;
+        }
+        self.entries[index].expanded = true;
+        self.entries.splice(index + 1..index + 1, children);
+        Ok(true)
+    }
+
+    /// Enter the selected directory as the new root (double-click parity).
+    pub fn enter_directory(&mut self) -> bool {
+        let Some(entry) = self.entries.get(self.selected) else {
+            return false;
+        };
+        if !entry.is_dir {
+            return false;
+        }
+        self.root_path = entry.path.clone();
+        self.entries.clear();
+        self.selected = 0;
+        self.search_mode = false;
+        self.preview = FilePreview::default();
+        true
+    }
+
+    /// Go up one directory, or reset the root when already at the workspace root.
+    pub fn go_up(&mut self) -> bool {
+        if self.root_path.is_empty() {
+            return false;
+        }
+        let parent = match self.root_path.rsplit_once('/') {
+            Some((dir, _)) if !dir.is_empty() => dir.to_string(),
+            _ => String::new(),
+        };
+        self.root_path = parent;
+        self.entries.clear();
+        self.selected = 0;
+        self.preview = FilePreview::default();
+        true
+    }
+
+    pub fn open_preview(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+        let Some(entry) = self.entries.get(self.selected).cloned() else {
+            return Ok(());
+        };
+        if entry.is_dir {
+            return self.toggle_expand(api).map(|_| ());
+        }
+        // Opening another file would throw away unsaved edits; the webui
+        // keeps dirty editor tabs open, so the TUI refuses until the
+        // buffer is saved or reloaded (Ctrl-S / Ctrl-R in edit mode).
+        if self.preview.dirty && self.preview.path.as_deref() != Some(entry.path.as_str()) {
+            return Err(WebApiError::Io(
+                "unsaved edits: save or reload before opening another file".to_string(),
+            ));
+        }
+        self.open_preview_path(api, &entry.path)
+    }
+
+    /// Load `path` into the preview, replacing whatever is shown. Callers
+    /// are responsible for dirty-buffer checks; Ctrl-R reload uses this to
+    /// intentionally discard local edits.
+    pub(super) fn open_preview_path(
+        &mut self,
+        api: &WebApiClient,
+        path: &str,
+    ) -> Result<(), WebApiError> {
+        let data = api.file_read(&self.cwd, path)?;
+        let content = data.get("content").and_then(Value::as_str).unwrap_or("");
+        let binary = data.get("binary").and_then(Value::as_bool).unwrap_or(false);
+        let truncated = data
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        // Track the recents stack for Tab cycling (most recent first,
+        // deduped like a browser tab history).
+        self.recent_previews.retain(|seen| seen != path);
+        self.recent_previews.insert(0, path.to_string());
+        self.recent_previews.truncate(12);
+        self.preview = FilePreview {
+            path: Some(path.to_string()),
+            content: content.to_string(),
+            truncated,
+            binary,
+            hash: data
+                .get("hash")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            dirty: false,
+        };
+        Ok(())
+    }
+
+    /// Open the selected file for editing in the Files screen. Binary or
+    /// truncated previews refuse to edit, mirroring the WebUI editor guard.
+    pub fn can_edit_preview(&self) -> Result<(), WebApiError> {
+        if self.preview.binary {
+            return Err(WebApiError::Io("binary file cannot be edited".to_string()));
+        }
+        if self.preview.truncated {
+            return Err(WebApiError::Io(
+                "truncated file cannot be edited safely".to_string(),
+            ));
+        }
+        if self.preview.path.is_none() {
+            return Err(WebApiError::Io("no file preview open".to_string()));
+        }
+        Ok(())
+    }
+
+    /// Save the edited content back through the file-browser write API.
+    /// The `expected_hash` guard makes the server reject the save when the
+    /// file changed on disk since the preview loaded; on conflict the
+    /// caller should reload.
+    pub fn save_preview(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+        let Some(path) = self.preview.path.clone() else {
+            return Err(WebApiError::Io("no file preview open".to_string()));
+        };
+        self.can_edit_preview()?;
+        let expected_hash = (!self.preview.hash.is_empty()).then_some(self.preview.hash.clone());
+        let data = api.file_write(
+            &self.cwd,
+            &path,
+            &self.preview.content,
+            expected_hash.as_deref(),
+        )?;
+        if let Some(hash) = data.get("hash").and_then(Value::as_str) {
+            self.preview.hash = hash.to_string();
+        }
+        self.preview.dirty = false;
+        Ok(())
+    }
+
+    pub fn move_selection(&mut self, delta: isize) {
+        self.selected = move_index(self.selected, self.entries.len(), delta);
+    }
+
+    /// Enter edit mode on the open preview after the safety checks.
+    pub fn start_edit(&mut self) -> Result<(), WebApiError> {
+        self.can_edit_preview()?;
+        self.edit_cursor = self.preview.content.len();
+        self.edit_active = true;
+        Ok(())
+    }
+
+    /// Handle one key while editing. Returns Err only for save failures;
+    /// Ctrl-S saves, Esc stops editing (dirty state is kept). The cursor is
+    /// a byte offset into `preview.content`; char-boundary-safe helpers keep
+    /// multibyte UTF-8 intact. Enter inserts a line break (crossterm
+    /// reports it as `KeyCode::Enter`, not `Char('\n')`), and control- or
+    /// alt-modified chars are ignored so Ctrl combos never reach the file.
+    pub fn edit_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        api: &WebApiClient,
+    ) -> Result<(), WebApiError> {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        // Defensive clamp: any path that swapped the preview keeps the
+        // invariant, but a stale cursor must never panic the editor.
+        self.edit_cursor = self.edit_cursor.min(self.preview.content.len());
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('s')) {
+            return self.save_preview(api);
+        }
+        // Ctrl-R reloads the file from the server, discarding the dirty
+        // buffer: the explicit "reload" answer to the 409 conflict message.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('r')) {
+            let path = match self.preview.path.clone() {
+                Some(path) => path,
+                None => return Ok(()),
+            };
+            self.open_preview_path(api, &path)?;
+            // The file may have become truncated or binary on disk; the
+            // edit guards decide whether editing can continue at all.
+            self.can_edit_preview()?;
+            self.edit_cursor = self.preview.content.len();
+            return Ok(());
+        }
+        let ctrl_or_alt = key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc => {
+                self.edit_active = false;
+            }
+            KeyCode::Backspace => {
+                if let Some((index, _)) = self.preview.content[..self.edit_cursor]
+                    .char_indices()
+                    .next_back()
+                {
+                    self.preview
+                        .content
+                        .replace_range(index..self.edit_cursor, "");
+                    self.edit_cursor = index;
+                    self.preview.dirty = true;
+                }
+            }
+            KeyCode::Enter => {
+                self.preview.content.insert(self.edit_cursor, '\n');
+                self.edit_cursor += 1;
+                self.preview.dirty = true;
+            }
+            KeyCode::Left => {
+                self.edit_cursor = self.preview.content[..self.edit_cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(index, _)| index)
+                    .unwrap_or(0);
+            }
+            KeyCode::Home => {
+                self.edit_cursor = self.preview.content[..self.edit_cursor]
+                    .rfind('\n')
+                    .map(|index| index + 1)
+                    .unwrap_or(0);
+            }
+            KeyCode::Right => {
+                if let Some(ch) = self.preview.content[self.edit_cursor..].chars().next() {
+                    self.edit_cursor += ch.len_utf8();
+                }
+            }
+            KeyCode::End => {
+                self.edit_cursor = self.preview.content[self.edit_cursor..]
+                    .find('\n')
+                    .map(|index| self.edit_cursor + index)
+                    .unwrap_or(self.preview.content.len());
+            }
+            KeyCode::Char(ch) if !ctrl_or_alt => {
+                self.preview.content.insert(self.edit_cursor, ch);
+                self.edit_cursor += ch.len_utf8();
+                self.preview.dirty = true;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub fn start_filter(&mut self) {
+        self.filter_active = true;
+    }
+
+    pub fn push_filter_char(&mut self, ch: char) {
+        if self.filter_active {
+            self.filter.push(ch);
+        }
+    }
+
+    pub fn pop_filter_char(&mut self) {
+        if self.filter_active {
+            self.filter.pop();
+        }
+    }
+
+    pub fn commit_filter(&mut self) {
+        self.filter_active = false;
+        self.search_mode = !self.filter.trim().is_empty();
+    }
+
+    /// Cycle to the next recently opened preview (Tab parity with the
+    /// webui's open-file tabs, cheap single-buffer approximation).
+    pub fn cycle_recent_preview(&mut self, api: &WebApiClient) -> Result<bool, WebApiError> {
+        if self.recent_previews.len() < 2 {
+            return Ok(false);
+        }
+        // A dirty buffer blocks switching files (webui keeps dirty
+        // editor tabs open); check before touching the rotation so a
+        // blocked switch leaves the recents untouched.
+        if self.preview.dirty {
+            return Ok(false);
+        }
+        // Rotate the list: the second entry becomes the front.
+        let next = self.recent_previews[1].clone();
+        let front = self.recent_previews.remove(0);
+        self.recent_previews.insert(0, next.clone());
+        self.recent_previews.push(front);
+        // Re-dedupe so rotation does not duplicate entries.
+        let mut seen = Vec::new();
+        self.recent_previews.retain(|path| {
+            if seen.contains(path) {
+                false
+            } else {
+                seen.push(path.clone());
+                true
+            }
+        });
+        self.preview_jump_line = None;
+        self.open_preview_path(api, &next)?;
+        Ok(true)
+    }
+
+    /// Cycle the `/` search scope (webui `toggleFilterKind`:
+    /// Files → Folders → Content). Fresh scope resets results.
+    pub fn cycle_search_kind(&mut self) {
+        self.search_kind = self.search_kind.next();
+        self.content_search.clear_results();
+        if self.search_mode && self.search_kind != SearchKind::Content {
+            self.selected = 0;
+        }
+    }
+
+    /// Create a new empty file (webui mobile new-file flow): write an
+    /// empty file under the current root via `file_write`, then refresh.
+    /// The server creates parent directories as needed.
+    pub fn create_file(&mut self, api: &WebApiClient, name: &str) -> Result<(), WebApiError> {
+        let path = join_root_path(&self.root_path, name);
+        if path.is_empty() {
+            return Err(WebApiError::Io("file name is required".to_string()));
+        }
+        api.file_write_create(&self.cwd, &path, "")?;
+        self.refresh(api)?;
+        self.select_path(&path);
+        Ok(())
+    }
+
+    /// Create a new directory. The file-browser API has no mkdir
+    /// endpoint, so this writes an empty `.gitkeep` marker inside
+    /// (documented deviation: the webui has no new-directory flow at
+    /// all; the marker keeps the empty dir visible to git and the tree).
+    pub fn create_directory(&mut self, api: &WebApiClient, name: &str) -> Result<(), WebApiError> {
+        let dir = join_root_path(&self.root_path, name);
+        if dir.is_empty() {
+            return Err(WebApiError::Io("directory name is required".to_string()));
+        }
+        let marker = format!("{dir}/.gitkeep");
+        api.file_write_create(&self.cwd, &marker, "")?;
+        self.refresh(api)?;
+        Ok(())
+    }
+
+    /// Select the entry with `path` if visible (used after creating a
+    /// file so the cursor lands on it).
+    pub fn select_path(&mut self, path: &str) {
+        if let Some(index) = self.entries.iter().position(|entry| entry.path == path) {
+            self.selected = index;
+        }
+    }
+
+    /// Reveal `path` in the tree (neovim reveal-current-file, webui
+    /// "reveal in tree"): expand every ancestor directory lazily and
+    /// land the cursor on the file. `root` here is the explorer's own
+    /// `cwd` + `root_path` join, because the git-panel file paths are
+    /// relative to the repo root while the tree may be scoped deeper.
+    pub fn reveal_path(&mut self, api: &WebApiClient, path: &str) -> Result<(), WebApiError> {
+        let clean = path.trim_start_matches('/');
+        if clean.is_empty() {
+            return Err(WebApiError::Io("no file to reveal".to_string()));
+        }
+        // Walk ancestor directories in order, expanding each one.
+        let mut parts: Vec<&str> = clean.split('/').collect();
+        parts.pop(); // the file itself is selected, not expanded
+        let mut prefix = String::new();
+        for part in parts {
+            prefix = if prefix.is_empty() {
+                part.to_string()
+            } else {
+                format!("{prefix}/{part}")
+            };
+            if let Some(index) = self
+                .entries
+                .iter()
+                .position(|entry| entry.path == prefix && entry.is_dir)
+            {
+                self.selected = index;
+                if !self.entries[index].expanded {
+                    self.toggle_expand(api)?;
+                }
+            } else if self
+                .entries
+                .iter()
+                .any(|entry| entry.is_dir && entry.path.starts_with(&format!("{prefix}/")))
+            {
+                // The server compacts single-child directories at the
+                // top level (e.g. `nested/deep` as one entry), so an
+                // ancestor may be absent while its children are
+                // already visible: nothing to expand, keep walking.
+            } else {
+                return Err(WebApiError::Io(format!(
+                    "cannot reveal {clean}: {prefix} is not in the tree"
+                )));
+            }
+        }
+        self.select_path(clean);
+        if self
+            .selected_entry()
+            .is_none_or(|entry| entry.path != clean)
+        {
+            return Err(WebApiError::Io(format!(
+                "cannot reveal {clean}: not found under {}",
+                self.root_path
+            )));
+        }
+        Ok(())
+    }
+
+    /// Open `path` at `line` (1-based) in the preview, jumping the
+    /// scroll so the line is visible (content-search Enter).
+    pub fn open_preview_at_line(
+        &mut self,
+        api: &WebApiClient,
+        path: &str,
+        line: usize,
+    ) -> Result<(), WebApiError> {
+        // Same dirty-buffer guard as opening any other file.
+        if self.preview.dirty && self.preview.path.as_deref() != Some(path) {
+            return Err(WebApiError::Io(
+                "unsaved edits: save or reload before opening another file".to_string(),
+            ));
+        }
+        self.open_preview_path(api, path)?;
+        self.preview_jump_line = Some(line.max(1));
+        Ok(())
+    }
+
+    /// Markdown outline flip (gap 22): `M` on the Files screen toggles
+    /// the outline view when the open preview is a markdown file,
+    /// mirroring the webui eye toggle. Returns the new state so the
+    /// caller can report it; None when no markdown preview is open.
+    pub fn toggle_markdown_outline(&mut self) -> Option<bool> {
+        let is_markdown = self
+            .preview
+            .path
+            .as_deref()
+            .is_some_and(|path| path.ends_with(".md") || path.ends_with(".markdown"));
+        if !is_markdown || self.edit_active {
+            return None;
+        }
+        self.markdown_outline = !self.markdown_outline;
+        Some(self.markdown_outline)
+    }
+}
+
+/// Markdown header outline (gap 22): every ATX heading (`#`…`######`)
+/// as `(level, line_number, text)`, indented by level when rendered.
+/// Fenced code blocks are skipped so `#` inside them is not a heading.
+pub fn parse_markdown_outline(content: &str) -> Vec<(usize, usize, String)> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for (index, line) in content.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let Some(after) = trimmed.strip_prefix('#') else {
+            continue;
+        };
+        let level = after.len() - after.trim_start_matches('#').len() + 1;
+        if level > 6 {
+            continue;
+        }
+        let text = after.trim_start_matches('#').trim();
+        if text.is_empty() && level > 1 {
+            continue;
+        }
+        out.push((level, index + 1, text.to_string()));
+    }
+    out
+}
+
+/// Join a typed name under the current root, stripping leading slashes
+/// (webui mobile `joinPath`).
+fn join_root_path(root: &str, name: &str) -> String {
+    let name = name.trim().trim_start_matches('/');
+    if name.is_empty() {
+        return String::new();
+    }
+    if root.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}/{}", root.trim_end_matches('/'), name)
+    }
+}
+
+pub(super) fn parse_entries(data: &Value) -> Vec<FileEntry> {
+    let git_status = data.get("git_status").and_then(Value::as_object);
+    data.get("entries")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| parse_entry_with_status(item, git_status))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_entry_with_status(
+    value: &Value,
+    git_status: Option<&serde_json::Map<String, Value>>,
+) -> FileEntry {
+    // The server compact single-child chains into names like `a/b/`;
+    // strip the trailing slash so the tree shows a clean name and path
+    // joining stays consistent.
+    let name = value_str(value, &["name"]).unwrap_or_default();
+    let is_dir = value_str(value, &["kind"]) == Some("dir");
+    let name = if is_dir {
+        name.strip_suffix('/').unwrap_or(name)
+    } else {
+        name
+    };
+    let path = value_str(value, &["path"]).unwrap_or_default().to_string();
+    let git_status = git_status
+        .and_then(|map| map.get(&path))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    FileEntry {
+        name: name.to_string(),
+        path,
+        is_dir,
+        size: value.get("size").and_then(Value::as_u64),
+        level: value.get("level").and_then(Value::as_u64).unwrap_or(0) as usize,
+        expanded: false,
+        git_status,
+    }
+}
+
+pub(super) fn move_index(current: usize, len: usize, delta: isize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let current = current.min(len - 1) as isize;
+    (current + delta).clamp(0, len as isize - 1) as usize
+}

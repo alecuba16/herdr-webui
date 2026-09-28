@@ -10,11 +10,11 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use herdr_webui::backend_client::{BackendClient, TerminalEvent, TerminalOutput};
+use herdr_webui::tui::web_api::WebApiClient;
 use herdr_webui::tui::{
     build_client, is_menu_key, key_to_terminal_bytes, render, snapshot_summary, TuiApp, TuiMode,
     TuiOptions, TuiScreen,
 };
-use herdr_webui::tui_web_api::WebApiClient;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
@@ -575,7 +575,7 @@ mod tests {
         // terminal is created.
         let mut app = app_with_terminal_screen();
         app.screen = TuiScreen::Files;
-        app.file_explorer = herdr_webui::tui_panels::FileExplorer::new("/repo");
+        app.file_explorer = herdr_webui::tui::panels::FileExplorer::new("/repo");
         let mut live = None;
         dispatch_key(
             &mut app,

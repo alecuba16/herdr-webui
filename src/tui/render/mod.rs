@@ -4,11 +4,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
+use crate::tui::keys::help_rows;
+use crate::tui::panels::files::{content_rows, ContentRow, SearchKind};
+use crate::tui::panels::GitView;
+use crate::tui::terminal::styled_terminal_line;
+use crate::tui::theme::Palette;
 use crate::tui::{SidebarFocus, TuiApp, TuiMode, TuiScreen};
-use crate::tui_keys::help_rows;
-use crate::tui_panels::GitView;
-use crate::tui_terminal::styled_terminal_line;
-use crate::tui_theme::Palette;
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MAX_DIFF_LINES: usize = 400;
@@ -17,14 +18,21 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     let p = &app.palette;
     let area = frame.area();
     let [body, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
-    let sidebar_width = if body.width >= 100 {
-        34
+    // Webui sidebar (KeyB) collapse: when hidden, the main screen takes
+    // the full body width and the sidebar column is not rendered.
+    let [sidebar, main] = if app.sidebar_collapsed {
+        Layout::horizontal([Constraint::Length(0), Constraint::Min(1)]).areas(body)
     } else {
-        28.min(body.width / 2)
+        let sidebar_width = if body.width >= 100 {
+            34
+        } else {
+            28.min(body.width / 2)
+        };
+        Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(1)]).areas(body)
     };
-    let [sidebar, main] =
-        Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(1)]).areas(body);
-    render_sidebar(frame, sidebar, app, p);
+    if !app.sidebar_collapsed {
+        render_sidebar(frame, sidebar, app, p);
+    }
     match app.screen {
         TuiScreen::Terminal => render_main(frame, main, app, p),
         TuiScreen::Files => render_files_screen(frame, main, app, p),
@@ -32,7 +40,10 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     }
     render_footer(frame, footer, app, p);
     if app.mode == TuiMode::Help {
-        render_help(frame, area, p);
+        render_help(frame, area, p, app.help_scroll);
+    }
+    if app.mode == TuiMode::Settings {
+        render_settings(frame, area, app, p);
     }
     if app.commit_input.is_some() {
         render_commit_input(frame, area, app, p);
@@ -274,6 +285,12 @@ fn render_files_screen(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
 
 fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let explorer = &app.file_explorer;
+    // Content-search results replace the tree while visible (webui
+    // switches the browser body to the HerdrContentSearch view).
+    if explorer.search_mode && explorer.search_kind == SearchKind::Content {
+        render_content_search(frame, area, app, p);
+        return;
+    }
     let title = format!(
         " Files · {} ",
         if explorer.root_path.is_empty() {
@@ -294,13 +311,20 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
                 Style::default().fg(p.accent),
             ),
         ]));
-        lines.push(Line::from(Span::styled(
-            "Enter applies · Esc cancels",
-            Style::default().fg(p.muted),
-        )));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("searching {} · ", explorer.search_kind.label()),
+                Style::default().fg(p.teal),
+            ),
+            Span::styled("Enter applies · Esc cancels", Style::default().fg(p.muted)),
+        ]));
     } else if explorer.search_mode {
         lines.push(Line::from(Span::styled(
-            format!("search results for '{}'", explorer.filter),
+            format!(
+                "search results for '{}' in {}",
+                explorer.filter,
+                explorer.search_kind.label()
+            ),
             Style::default().fg(p.muted),
         )));
     }
@@ -337,7 +361,17 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
         } else {
             " "
         };
-        let name_style = if entry.is_dir {
+        let name_style = if let Some(status) = entry.git_status.as_deref() {
+            // Webui `git-{status}` classes: modified yellow, deleted red,
+            // added/untracked green, conflict orange (yellow reads clearer
+            // on both TUI themes).
+            match status {
+                "deleted" | "conflict" => Style::default().fg(p.red),
+                "modified" => Style::default().fg(p.yellow),
+                "added" | "untracked" => Style::default().fg(p.green),
+                _ => Style::default().fg(p.text),
+            }
+        } else if entry.is_dir {
             Style::default().fg(p.accent)
         } else {
             Style::default().fg(p.text)
@@ -365,14 +399,158 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
     }
 }
 
+/// Content-search results view (webui `HerdrContentSearch.render`):
+/// summary line, file groups with match counts, context chunks with
+/// matched lines highlighted, selection over the flat row list.
+fn render_content_search(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let state = &app.file_explorer.content_search;
+    let toggles = format!(
+        "{}match-case{} · {}regex{}",
+        if state.match_case { "[" } else { " " },
+        if state.match_case { "]" } else { " " },
+        if state.regex { "[" } else { " " },
+        if state.regex { "]" } else { " " }
+    );
+    let title = format!(
+        " Search {} · '{}' · {} matches in {} files ",
+        app.file_explorer.search_kind.label(),
+        truncate(&state.query, 24),
+        state.total_matches,
+        state.total_files
+    );
+    let block = panel(&title, p).border_style(Style::default().fg(p.accent));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = content_rows(state);
+    let mut lines: Vec<Line> = Vec::new();
+    // Header: summary like the webui tools line (`N matches in M files,
+    // searched K files`), plus the toggle state and the pager hint.
+    let more = if state.done { "" } else { " · + loads more" };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(
+                "searched {} files{}{}",
+                state.visited,
+                if state.truncated {
+                    " (stopped at limit)"
+                } else {
+                    ""
+                },
+                more
+            ),
+            Style::default().fg(p.muted),
+        ),
+        Span::raw("  "),
+        Span::styled(toggles, Style::default().fg(p.teal)),
+    ]));
+    let header_height = lines.len() as u16;
+    let [header_area, list_area] =
+        Layout::vertical([Constraint::Length(header_height), Constraint::Min(1)]).areas(inner);
+    frame.render_widget(Paragraph::new(lines), header_area);
+
+    let visible = list_area.height as usize;
+    if rows.is_empty() {
+        let empty = Paragraph::new(Span::styled(
+            "No content matches.",
+            Style::default().fg(p.muted),
+        ));
+        frame.render_widget(empty, list_area);
+        return;
+    }
+    // Keep the selection centered in view like the tree list.
+    let start = if rows.len() > visible && visible > 0 {
+        state.selected.saturating_sub(visible / 2)
+    } else {
+        0
+    };
+    let mut rendered: Vec<Line> = Vec::new();
+    for (index, row) in rows.iter().enumerate().skip(start) {
+        if rendered.len() >= visible {
+            break;
+        }
+        let selected = index == state.selected;
+        let line = match row {
+            ContentRow::File(file_index) => {
+                let file = &state.files[*file_index];
+                let expanded = state.expanded.get(*file_index).copied().unwrap_or(true);
+                let caret = if expanded { "▾" } else { "▸" };
+                let trunc = if file.truncated { " …" } else { "" };
+                Line::from(vec![
+                    Span::styled(
+                        if selected { "> " } else { "  " },
+                        Style::default().fg(p.accent),
+                    ),
+                    Span::styled(caret, Style::default().fg(p.muted)),
+                    Span::raw(" "),
+                    Span::styled(
+                        truncate(&file.path, 52),
+                        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(
+                            " {} match{}{}",
+                            file.match_count,
+                            if file.match_count == 1 { "" } else { "es" },
+                            trunc
+                        ),
+                        Style::default().fg(p.muted),
+                    ),
+                ])
+            }
+            ContentRow::Line {
+                file: file_index,
+                line,
+                matched,
+            } => {
+                let file = &state.files[*file_index];
+                let text = file
+                    .chunks
+                    .iter()
+                    .flat_map(|chunk| chunk.rows.iter())
+                    .find(|row| row.line == *line)
+                    .map(|row| row.text.clone())
+                    .unwrap_or_default();
+                let number = format!("{line:>5} ");
+                Line::from(vec![
+                    Span::styled(
+                        if selected { "> " } else { "  " },
+                        Style::default().fg(p.accent),
+                    ),
+                    Span::styled(number, Style::default().fg(p.muted)),
+                    Span::styled(
+                        truncate(&text, (list_area.width.saturating_sub(9)) as usize),
+                        if *matched {
+                            Style::default().fg(p.yellow).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(p.text)
+                        },
+                    ),
+                ])
+            }
+        };
+        rendered.push(line);
+    }
+    frame.render_widget(Paragraph::new(rendered), list_area);
+}
+
 fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let explorer = &app.file_explorer;
     let preview = &explorer.preview;
     let dirty_marker = if preview.dirty { " *" } else { "" };
+    // Markdown outline flip (gap 22): the webui eye toggle renders the
+    // header outline; the TUI shows it in place of the raw source.
+    let outline_mode = explorer.markdown_outline
+        && !preview.binary
+        && preview
+            .path
+            .as_deref()
+            .is_some_and(|path| path.ends_with(".md") || path.ends_with(".markdown"));
     let title = match &preview.path {
         Some(path) => {
             if explorer.edit_active {
                 format!(" Editing · {}{dirty_marker} ", truncate(path, 44))
+            } else if outline_mode {
+                format!(" Outline · {} ", truncate(path, 44))
             } else {
                 format!(" Preview · {} ", truncate(path, 48))
             }
@@ -388,6 +566,35 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             "binary file",
             Style::default().fg(p.muted),
         )));
+    } else if outline_mode {
+        // Header outline: level-indented headings with source line
+        // numbers; an empty state explains the toggle when the file has
+        // no ATX headings.
+        let outline = crate::tui::panels::files::parse_markdown_outline(&preview.content);
+        if outline.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "no headings (M shows the source)",
+                Style::default().fg(p.muted),
+            )));
+        }
+        for (level, line_no, text) in outline {
+            let indent = "  ".repeat(level.saturating_sub(1));
+            let marker = match level {
+                1 => "#",
+                2 => "##",
+                3 => "###",
+                _ => "-",
+            };
+            let style = if level <= 2 {
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(p.text)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{line_no:>4} "), Style::default().fg(p.muted)),
+                Span::styled(format!("{indent}{marker} {text}"), style),
+            ]));
+        }
     } else if let Some(path) = &preview.path {
         // Cursor position decides the scrolled window while editing.
         let cursor_line = if explorer.edit_active {
@@ -400,21 +607,32 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         let visible = inner.height as usize;
         let start = if explorer.edit_active {
             cursor_line.saturating_sub(visible.saturating_sub(1))
+        } else if let Some(jump) = explorer.preview_jump_line {
+            // Content-search jump: center the target line in view.
+            jump.saturating_sub(1).saturating_sub(visible / 2)
         } else {
             0
         };
         for (index, line) in preview.content.lines().enumerate().skip(start) {
             let number = format!("{:>4} ", index + 1);
-            let number_style = if explorer.edit_active && index == cursor_line {
+            let jump_hit = !explorer.edit_active && explorer.preview_jump_line == Some(index + 1);
+            let number_style = if jump_hit {
+                Style::default().fg(p.yellow).add_modifier(Modifier::BOLD)
+            } else if explorer.edit_active && index == cursor_line {
                 Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(p.muted)
+            };
+            let line_style = if jump_hit {
+                Style::default().fg(p.yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(p.text)
             };
             lines.push(Line::from(vec![
                 Span::styled(number, number_style),
                 Span::styled(
                     truncate(line, (inner.width as usize).saturating_sub(6)),
-                    Style::default().fg(p.text),
+                    line_style,
                 ),
             ]));
             if lines.len() >= visible {
@@ -422,10 +640,36 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             }
         }
         if explorer.edit_active {
-            lines.push(Line::from(Span::styled(
-                "Ctrl-S save · Esc stop editing",
-                Style::default().fg(p.accent),
-            )));
+            // Find bar (webui Ctrl+F toolbar): query, toggles, count.
+            if explorer.editor_find.active {
+                let find = &explorer.editor_find;
+                let count = find.ranges.len();
+                let position = if count == 0 {
+                    "no matches".to_string()
+                } else {
+                    format!("match {}/{}", find.selected + 1, count)
+                };
+                let mut spans = vec![
+                    Span::styled("find ".to_string(), Style::default().fg(p.muted)),
+                    Span::styled(find.query.clone(), Style::default().fg(p.accent)),
+                ];
+                if find.match_case {
+                    spans.push(Span::styled(" A", Style::default().fg(p.green)));
+                }
+                if find.regex {
+                    spans.push(Span::styled(" X", Style::default().fg(p.green)));
+                }
+                spans.push(Span::styled(
+                    format!("  {position}  (Enter next, Shift+Enter prev, Esc close)"),
+                    Style::default().fg(p.muted),
+                ));
+                lines.push(Line::from(spans));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    "Ctrl-S save · Ctrl-F find · Ctrl-H replace · Esc stop editing",
+                    Style::default().fg(p.accent),
+                )));
+            }
         }
         if preview.truncated {
             lines.push(Line::from(Span::styled(
@@ -473,13 +717,22 @@ fn render_git_screen(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palett
         }
         GitView::Log => render_git_log(frame, content, app, p),
         GitView::Branches => render_git_branches(frame, content, app, p),
-        GitView::Stash => render_git_stash(frame, content, app, p),
+        GitView::Stash => {
+            // Webui stash split view: stash list left, selected stash's
+            // full diff right (Enter loads it via stash-show).
+            let [list_area, diff_area] =
+                Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)])
+                    .areas(content);
+            render_git_stash(frame, list_area, diff_area, app, p);
+        }
         GitView::History => {
             let [list_area, diff_area] =
                 Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)])
                     .areas(content);
             render_git_history(frame, list_area, diff_area, app, p);
         }
+        GitView::Conflicts => render_git_conflicts(frame, content, app, p),
+        GitView::Cleanup => render_git_cleanup(frame, content, app, p),
     }
 }
 
@@ -547,6 +800,17 @@ fn render_git_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palet
             .bg(p.accent)
             .add_modifier(Modifier::BOLD),
     )];
+    // Yellow badge when the git cwd drifted from the workspace cwd
+    // (prefix I location bar parity).
+    if let Some(workspace_cwd) = app.active_cwd() {
+        if workspace_cwd != panel.cwd {
+            spans.push(Span::styled(
+                " ≠ workspace ",
+                Style::default().fg(p.yellow).bg(p.panel_alt),
+            ));
+            spans.push(Span::raw(" "));
+        }
+    }
     spans.push(Span::raw(" "));
     for view in GitView::all() {
         let active = panel.view == view;
@@ -605,10 +869,10 @@ fn render_git_changes(
         .iter()
         .map(|entry| {
             let (letter, style) = match entry.status {
-                crate::tui_panels::GitFileStatus::Staged => ('S', Style::default().fg(p.green)),
-                crate::tui_panels::GitFileStatus::Unstaged => ('M', Style::default().fg(p.yellow)),
-                crate::tui_panels::GitFileStatus::Untracked => ('U', Style::default().fg(p.teal)),
-                crate::tui_panels::GitFileStatus::Conflicted => ('C', Style::default().fg(p.red)),
+                crate::tui::panels::GitFileStatus::Staged => ('S', Style::default().fg(p.green)),
+                crate::tui::panels::GitFileStatus::Unstaged => ('M', Style::default().fg(p.yellow)),
+                crate::tui::panels::GitFileStatus::Untracked => ('U', Style::default().fg(p.teal)),
+                crate::tui::panels::GitFileStatus::Conflicted => ('C', Style::default().fg(p.red)),
             };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{letter} "), style.add_modifier(Modifier::BOLD)),
@@ -631,7 +895,19 @@ fn render_git_changes(
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, list_area, &mut state);
 
-    let diff_title = if panel.show_blame {
+    let diff_title = if panel.diff_search_active {
+        format!(
+            " Diff · {} · /{} ({}/{}) ",
+            truncate(&panel.diff_title, 24),
+            truncate(&panel.diff_search_query, 12),
+            if panel.diff_search_matches.is_empty() {
+                0
+            } else {
+                panel.diff_search_selected + 1
+            },
+            panel.diff_search_matches.len()
+        )
+    } else if panel.show_blame {
         format!(" Diff · {} [blame] ", truncate(&panel.diff_title, 32))
     } else {
         format!(" Diff · {} ", truncate(&panel.diff_title, 40))
@@ -654,8 +930,10 @@ fn render_git_changes(
         &panel.diff_lines,
         Some(&panel.diff_meta),
         blame,
+        panel.diff_search_active_line(),
+        panel.hunk_cursor_line(),
         p,
-        "Select a file to load its diff (Enter).",
+        "Select a file to load its diff (Enter). J/K hunk, H applies.",
     );
 }
 
@@ -670,7 +948,7 @@ fn render_diff_pane(
     empty_hint: &str,
 ) {
     render_diff_pane_full(
-        frame, diff_area, diff_title, diff_lines, None, None, p, empty_hint,
+        frame, diff_area, diff_title, diff_lines, None, None, None, None, p, empty_hint,
     )
 }
 
@@ -683,8 +961,16 @@ fn render_diff_pane_full(
     diff_area: Rect,
     diff_title: &str,
     diff_lines: &[String],
-    diff_meta: Option<&[Option<crate::tui_panels::GitDiffLineMeta>]>,
+    diff_meta: Option<&[Option<crate::tui::panels::GitDiffLineMeta>]>,
     blame: Option<&std::collections::HashMap<usize, String>>,
+    // Diff search: index (into `diff_lines`) of the active match, if a
+    // search is running. The whole line gets the accent background so it
+    // stands out among the +/- colored lines.
+    active_match: Option<usize>,
+    // Hunk cursor: index (into `diff_lines`) of the `@@` header the
+    // hunk cursor sits on (gap 14); the header gets the accent
+    // background like the webui hunk head the buttons live in.
+    active_hunk: Option<usize>,
     p: &Palette,
     empty_hint: &str,
 ) {
@@ -693,12 +979,22 @@ fn render_diff_pane_full(
     frame.render_widget(block, diff_area);
     let mut lines = Vec::new();
     for (index, line) in diff_lines.iter().take(MAX_DIFF_LINES).enumerate() {
-        let style = match line.chars().next() {
+        let mut style = match line.chars().next() {
             Some('+') => Style::default().fg(p.green),
             Some('-') => Style::default().fg(p.red),
             Some('@') => Style::default().fg(p.teal),
             _ => Style::default().fg(p.text),
         };
+        // Diff search highlight: the active match line inverts the usual
+        // coloring (webui highlights the find bar hit).
+        if active_match == Some(index) {
+            style = Style::default().fg(p.panel_bg).bg(p.accent);
+        }
+        // Hunk cursor highlight (gap 14): the selected `@@` header gets
+        // the accent treatment, matching the search hit emphasis.
+        if active_hunk == Some(index) {
+            style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+        }
         // Blame annotation (webui `blameName`): the author for the line
         // number, first two words, shown when blame is toggled on for
         // the file the diff shows.
@@ -741,6 +1037,10 @@ fn render_diff_pane_full(
 }
 
 fn render_git_log(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    // Webui log layout: commit list plus the compare-with-parent diff
+    // pane (Enter / `c` compare the selected commit with its parent).
+    let [list_area, diff_area] =
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
     let panel = &app.git_panel;
     let items = panel
         .commits
@@ -751,7 +1051,18 @@ fn render_git_log(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
             } else {
                 format!(" ({})", commit.labels.join(", "))
             };
+            // Webui shift-click selection marker (gap 11): marked
+            // commits show `*` before the hash.
+            let mark = if panel.log_selected.contains(&commit.hash) {
+                Span::styled(
+                    "* ",
+                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled("  ", Style::default().fg(p.muted))
+            };
             ListItem::new(Line::from(vec![
+                mark,
                 Span::styled(
                     format!("{} ", &commit.hash[..commit.hash.len().min(7)]),
                     Style::default().fg(p.yellow),
@@ -769,12 +1080,36 @@ fn render_git_log(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
     if !items.is_empty() {
         state.select(Some(panel.commit_selected));
     }
+    // Title mirrors the webui log toolbar: scope, load-more hint and
+    // the file filter when the log is file-scoped.
+    let scope = panel.log_scope.label();
+    let more = if panel.log_has_more {
+        format!(" · +more {}", panel.log_limit)
+    } else {
+        String::new()
+    };
+    let title = match panel.log_file.as_deref() {
+        Some(file) if !file.is_empty() => {
+            format!(" Log · {scope} · {}{more} ", truncate(file, 24))
+        }
+        _ => format!(" Log · {scope}{more} "),
+    };
     let list = List::new(items)
-        .block(panel_block(" Log ", p))
+        .block(panel_block(&title, p))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
         .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
         .highlight_symbol("> ");
-    frame.render_stateful_widget(list, area, &mut state);
+    frame.render_stateful_widget(list, list_area, &mut state);
+
+    let diff_title = format!(" Compare · {} ", truncate(&panel.diff_title, 40));
+    render_diff_pane(
+        frame,
+        diff_area,
+        &diff_title,
+        &panel.diff_lines,
+        p,
+        "Select a commit to compare with its parent (Enter).",
+    );
 }
 
 fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -824,7 +1159,13 @@ fn render_git_branches(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_git_stash(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+fn render_git_stash(
+    frame: &mut Frame<'_>,
+    list_area: Rect,
+    diff_area: Rect,
+    app: &TuiApp,
+    p: &Palette,
+) {
     let panel = &app.git_panel;
     let items = panel
         .stashes
@@ -844,7 +1185,115 @@ fn render_git_stash(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
         state.select(Some(panel.stash_selected));
     }
     let list = List::new(items)
-        .block(panel_block(" Stash · a apply · x drop ", p))
+        .block(panel_block(" Stash · Enter diff · a apply · x drop ", p))
+        .style(Style::default().fg(p.text).bg(p.panel_bg))
+        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, list_area, &mut state);
+
+    let title = if panel.stash_diff_title.is_empty() {
+        " Stash diff ".to_string()
+    } else {
+        format!(" Stash diff · {} ", truncate(&panel.stash_diff_title, 36))
+    };
+    render_diff_pane(
+        frame,
+        diff_area,
+        &title,
+        &panel.stash_diff_lines,
+        p,
+        "Select a stash and press Enter to load its diff.",
+    );
+}
+
+/// Conflicts view (webui conflicts tab): operation state line, conflicted
+/// file list, and per-file resolve action hints in the footer keys line.
+fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let panel = &app.git_panel;
+    let [head_area, list_area] =
+        Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(area);
+
+    // Operation state mirrors the webui action toolbar: which operation
+    // is in progress drives the continue/skip/abort hints.
+    let state_line = if panel.rebase_in_progress {
+        "rebase in progress · R continue · S skip · A abort"
+    } else if panel.merge_in_progress {
+        "merge in progress · R continue · A abort"
+    } else {
+        "no merge/rebase in progress"
+    };
+    let spans = vec![
+        Span::styled(state_line.to_string(), Style::default().fg(p.yellow)),
+        Span::raw("   "),
+        Span::styled(
+            "o ours · e parent · t remote · m mark resolved",
+            Style::default().fg(p.muted),
+        ),
+    ];
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().fg(p.text).bg(p.panel_bg)),
+        head_area,
+    );
+
+    let items = panel
+        .conflict_files
+        .iter()
+        .map(|file| {
+            ListItem::new(Line::from(Span::styled(
+                truncate(file, 80),
+                Style::default().fg(p.text),
+            )))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    if !items.is_empty() {
+        state.select(Some(panel.conflict_selected));
+    }
+    let list = List::new(items)
+        .block(panel_block(" Conflicts ", p))
+        .style(Style::default().fg(p.text).bg(p.panel_bg))
+        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(list, list_area, &mut state);
+}
+
+/// Cleanup view (webui cleanup tab): repos with merged branches and
+/// stale worktrees; x deletes the selected entry after a y-confirm,
+/// p prunes the selected repo's worktree metadata.
+fn render_git_cleanup(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let panel = &app.git_panel;
+    let items = panel
+        .cleanup_items()
+        .into_iter()
+        .map(|item| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{} ", item.kind.label()),
+                    Style::default().fg(p.teal),
+                ),
+                Span::styled(
+                    format!("{} ", truncate(&item.name, 46)),
+                    Style::default().fg(p.text),
+                ),
+                Span::styled(
+                    format!("· {}", truncate(&item.repo, 28)),
+                    Style::default().fg(p.muted),
+                ),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    if !items.is_empty() {
+        state.select(Some(panel.cleanup_selected));
+    }
+    let root = panel.cleanup_root.as_deref().unwrap_or("");
+    let title = if root.is_empty() {
+        " Cleanup · x delete · B prune ".to_string()
+    } else {
+        format!(" Cleanup · {} · x delete · B prune ", truncate(root, 32))
+    };
+    let list = List::new(items)
+        .block(panel_block(&title, p))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
         .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
         .highlight_symbol("> ");
@@ -890,6 +1339,84 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             .get(app.git_panel.stash_selected)
             .map(|entry| entry.name.clone())
             .unwrap_or_default(),
+        crate::tui::PromptKind::NewWorkspace
+        | crate::tui::PromptKind::CreateWorktreeBranch
+        | crate::tui::PromptKind::CreateWorktreePath => String::new(),
+        crate::tui::PromptKind::RenameWorkspace => app
+            .selected_workspace()
+            .map(|workspace| workspace.label.clone())
+            .unwrap_or_default(),
+        crate::tui::PromptKind::RenamePanel => app
+            .snapshot
+            .workspace_tabs(
+                &app.selected_workspace()
+                    .map(|ws| ws.id.clone())
+                    .unwrap_or_default(),
+            )
+            .into_iter()
+            .find(|tab| {
+                Some(&tab.id)
+                    == app
+                        .selected_workspace()
+                        .and_then(|ws| ws.active_tab_id.as_ref())
+            })
+            .map(|tab| tab.label.clone())
+            .unwrap_or_default(),
+        crate::tui::PromptKind::ConfirmCloseWorkspace => app
+            .selected_workspace()
+            .map(|workspace| workspace.label.clone())
+            .unwrap_or_default(),
+        crate::tui::PromptKind::ConfirmCleanupDelete => app
+            .git_panel
+            .selected_cleanup_item()
+            .map(|item| format!("{} {}", item.kind.label(), item.name))
+            .unwrap_or_default(),
+        // Log action prompts: show the selected commit as the subject.
+        crate::tui::PromptKind::CreateTag
+        | crate::tui::PromptKind::ResetMode
+        | crate::tui::PromptKind::ConfirmResetHard
+        | crate::tui::PromptKind::RebaseUpstream
+        | crate::tui::PromptKind::ConfirmRebase => {
+            let hash = app
+                .git_panel
+                .selected_commit_hash()
+                .unwrap_or_default()
+                .to_string();
+            let short = &hash[..hash.len().min(7)];
+            let message = app
+                .git_panel
+                .commits
+                .get(app.git_panel.commit_selected)
+                .map(|commit| truncate(&commit.message, 30))
+                .unwrap_or_default();
+            format!("{short} {message}")
+        }
+        // Git cwd: show the current git panel cwd as the starting point.
+        crate::tui::PromptKind::GitCwd => app.git_panel.cwd.clone(),
+        // Branch create: runs on the repo, no subject line.
+        crate::tui::PromptKind::CreateBranch => String::new(),
+        // New file/directory: show the root the name joins under.
+        crate::tui::PromptKind::CreateFile | crate::tui::PromptKind::CreateDirectory => {
+            if app.file_explorer.root_path.is_empty() {
+                "(workspace root)".to_string()
+            } else {
+                app.file_explorer.root_path.clone()
+            }
+        }
+        // Replace: show the current find query and match position.
+        crate::tui::PromptKind::ReplaceInFile => {
+            let find = &app.file_explorer.editor_find;
+            if find.ranges.is_empty() {
+                format!("find: {} (no matches)", find.query)
+            } else {
+                format!(
+                    "find: {} (match {}/{})",
+                    find.query,
+                    find.selected + 1,
+                    find.ranges.len()
+                )
+            }
+        }
     };
     let title = format!(" {} ", prompt.kind.title());
     let lines = vec![
@@ -962,6 +1489,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         TuiMode::Navigate => "NAV",
         TuiMode::Attach => "ATTACH",
         TuiMode::Help => "HELP",
+        TuiMode::Settings => "SET",
     };
     let prefix = if app.prefix.is_armed() {
         "Ctrl+B> "
@@ -978,6 +1506,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         }
         (TuiMode::Navigate, _) => " Ctrl+B prefix · ↑/↓ j/k select · Enter attach · q quit ",
         (TuiMode::Help, _) => " Esc closes help ",
+        (TuiMode::Settings, _) => " t theme · Esc closes ",
     };
     let message = app.error.as_deref().unwrap_or(&app.status);
     let line = Line::from(vec![
@@ -1005,10 +1534,10 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     );
 }
 
-fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette) {
+fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, scroll: usize) {
     let rows = help_rows();
     let width = area.width.min(72);
-    let height = area.height.min((rows.len() as u16 + 4).min(30));
+    let height = area.height.min((rows.len() as u16 + 4).min(50));
     let rect = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -1031,7 +1560,61 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette) {
     }
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(" Help · Esc closes ", p))
+            .block(panel(" Help · Esc closes · j/k scrolls ", p))
+            .style(Style::default().fg(p.text).bg(p.panel_bg))
+            .scroll((scroll as u16, 0)),
+        rect,
+    );
+}
+
+/// Settings overlay (webui Settings modal, prefix `s`): read-only
+/// display of the discovered API base, theme mode, refresh interval,
+/// and the git/exploration roots. `t` cycles the theme; the rest is
+/// informational (webui stores the rest in browser storage, which has
+/// no TUI equivalent yet).
+fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let width = area.width.min(64);
+    let height = 12;
+    let rect = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let git_cwd = app.git_panel.cwd.clone();
+    let files_cwd = app.file_explorer.cwd.clone();
+    let row = |key: &str, value: &str| {
+        Line::from(vec![
+            Span::styled(format!("  {key:<16}"), Style::default().fg(p.muted)),
+            Span::styled(value.to_string(), Style::default().fg(p.text)),
+        ])
+    };
+    let lines = vec![
+        Line::from(Span::styled(
+            "Settings",
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        )),
+        row("web api base", &app.web_api.base_url()),
+        row(
+            "refresh interval",
+            &format!("{}s", app.refresh_interval.as_secs()),
+        ),
+        row("theme", app.theme.label()),
+        row("git cwd", &git_cwd),
+        row("files cwd", &files_cwd),
+        Line::from(""),
+        Line::from(Span::styled(
+            " t cycles the theme · Esc closes ",
+            Style::default().fg(p.accent),
+        )),
+        Line::from(Span::styled(
+            " other options live in the webui Settings modal ",
+            Style::default().fg(p.muted),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(panel(" Settings · Esc closes ", p))
             .style(Style::default().fg(p.text).bg(p.panel_bg)),
         rect,
     );

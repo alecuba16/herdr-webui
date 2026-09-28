@@ -1,3 +1,15 @@
+pub mod keys;
+pub mod model;
+pub mod panels;
+pub mod render;
+pub mod terminal;
+pub mod theme;
+pub mod web_api;
+pub mod workspace;
+
+#[cfg(test)]
+pub mod tests;
+
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -6,20 +18,47 @@ use serde_json::Value;
 
 use crate::backend_client::{BackendClient, BackendClientError, TerminalOutput};
 use crate::terminal_text::{self, StripCarriageReturn};
-pub use crate::tui_keys::{PrefixState, Shortcut};
-pub use crate::tui_model::{
+pub use keys::{PrefixState, Shortcut};
+pub use model::{
     snapshot_summary, SidebarFocus, TuiAgent, TuiMode, TuiPane, TuiSnapshot, TuiTab, TuiWorkspace,
 };
-use crate::tui_model::{value_str, value_u64};
-use crate::tui_panels::{FileExplorer, GitPanel, GitView};
-pub use crate::tui_render::render;
-use crate::tui_terminal::{terminal_output_styled_lines_lossy, TuiTextSpan};
-use crate::tui_theme::Palette;
-pub use crate::tui_theme::TuiTheme;
-use crate::tui_web_api::WebApiClient;
+use model::{value_str, value_u64};
+use panels::files::{content_rows, content_search, run_content_search, ContentRow, SearchKind};
+use panels::git::{ConflictAction, ConflictResolveMode};
+use panels::{FileExplorer, GitPanel, GitView};
+pub use render::render;
+use terminal::{terminal_output_styled_lines_lossy, TuiTextSpan};
+use theme::Palette;
+pub use theme::TuiTheme;
+use web_api::WebApiClient;
+
+impl PromptKind {
+    /// Map the workspace-management prompt kinds onto the workspace
+    /// module's own enum. File/git kinds never reach this conversion.
+    pub(crate) fn into_workspace_prompt(self) -> workspace::WorkspacePrompt {
+        match self {
+            Self::NewWorkspace => workspace::WorkspacePrompt::NewWorkspace,
+            Self::RenameWorkspace => workspace::WorkspacePrompt::RenameWorkspace,
+            Self::RenamePanel => workspace::WorkspacePrompt::RenamePanel,
+            Self::CreateWorktreeBranch => workspace::WorkspacePrompt::CreateWorktreeBranch,
+            Self::CreateWorktreePath => workspace::WorkspacePrompt::CreateWorktreePath,
+            Self::ConfirmCloseWorkspace => workspace::WorkspacePrompt::ConfirmCloseWorkspace,
+            // File/git kinds have no workspace counterpart; map to the
+            // harmless no-op closest to their intent.
+            _ => workspace::WorkspacePrompt::ConfirmCloseWorkspace,
+        }
+    }
+}
 
 const TAIL_LINES: usize = 240;
 const TERMINAL_RAW_BUFFER_BYTES: usize = 512 * 1024;
+
+/// Max lines the Help overlay can scroll down: total rows minus whatever
+/// fits in the 50-line centered box (title + border included).
+fn help_max_scroll() -> usize {
+    let rows = crate::tui::keys::help_rows().len();
+    rows.saturating_sub(50usize.saturating_sub(4).saturating_sub(1))
+}
 
 /// Which main screen the TUI shows. Mirrors the WebUI workspace shell modes
 /// (terminal, Git, Files) so the same workspace can be inspected from both
@@ -72,6 +111,11 @@ pub struct TuiApp {
     pub selected_workspace: usize,
     pub selected_agent: usize,
     pub sidebar_focus: SidebarFocus,
+    /// Webui sidebar: KeyB collapses/expands the sidebar column.
+    pub sidebar_collapsed: bool,
+    /// Webui focusNext/focusPrev: walker position. When true, key input
+    /// goes to the main screen instead of the sidebar list.
+    pub main_focused: bool,
     pub mode: TuiMode,
     pub screen: TuiScreen,
     pub prefix: PrefixState,
@@ -90,6 +134,13 @@ pub struct TuiApp {
     pub theme: TuiTheme,
     pub(crate) palette: Palette,
     pub tick: u64,
+    /// Two-step worktree creation: branch typed first, then checkout path.
+    pub worktree_create_stage: Option<workspace::WorktreeCreateStage>,
+    /// Rebase upstream typed into the RebaseUpstream prompt; consumed by
+    /// the follow-up typed confirm (webui rebase modal two-step).
+    pub rebase_pending_upstream: Option<String>,
+    /// Vertical scroll of the Help overlay (j/k when help is open).
+    pub help_scroll: usize,
     dirty: bool,
 }
 
@@ -109,18 +160,75 @@ pub struct PromptInput {
     pub text: String,
 }
 
+impl PromptInput {
+    pub fn new(kind: PromptKind) -> Self {
+        Self {
+            kind,
+            text: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptKind {
     RenameFile,
     ConfirmDeleteFile,
     ConfirmDeleteBranch,
     ConfirmDropStash,
+    NewWorkspace,
+    RenameWorkspace,
+    RenamePanel,
+    CreateWorktreeBranch,
+    CreateWorktreePath,
+    ConfirmCloseWorkspace,
+    ConfirmCleanupDelete,
+    /// Log view: tag name for the selected commit (webui tag modal).
+    CreateTag,
+    /// Log view: reset mode text (soft/mixed/hard) for the selected
+    /// commit (webui reset modal). `hard` chains into a typed confirm.
+    ResetMode,
+    /// Log view: typed `y` guard for a hard reset (webui asks for
+    /// "reset hard"; the server double-checks the same string).
+    ConfirmResetHard,
+    /// Log view: rebase upstream ref for the selected commit (webui
+    /// rebase modal). Chains into `ConfirmRebase`'s typed `y`.
+    RebaseUpstream,
+    /// Log view: typed `y` guard that runs the rebase staged by
+    /// `RebaseUpstream` (the webui modal has both fields at once;
+    /// the TUI prompts sequentially).
+    ConfirmRebase,
+    /// Git cwd picker (prefix I): type a repo path, Enter switches the
+    /// git panel to it (webui location bar).
+    GitCwd,
+    /// Branches view: create a new branch from the typed name
+    /// (webui `git_switch` with create: true).
+    CreateBranch,
+    /// Files screen `a`: new empty file under the current root
+    /// (webui mobile new-file flow; desktop has no default key).
+    CreateFile,
+    /// Files screen `A`: new directory. No mkdir endpoint exists, so
+    /// this writes a `.gitkeep` marker inside (documented deviation).
+    CreateDirectory,
+    /// Edit mode Ctrl+H: replacement text for the current editor find
+    /// match. A trailing `!` replaces all matches instead of the
+    /// selected one (documented deviation from the webui replace bar,
+    /// which has separate replace/replace-all buttons).
+    ReplaceInFile,
 }
 
 impl PromptKind {
     /// Destructive prompts only submit when the typed text is exactly `y`.
     pub fn needs_confirm(self) -> bool {
-        !matches!(self, Self::RenameFile)
+        matches!(
+            self,
+            Self::ConfirmDeleteFile
+                | Self::ConfirmDeleteBranch
+                | Self::ConfirmDropStash
+                | Self::ConfirmCloseWorkspace
+                | Self::ConfirmCleanupDelete
+                | Self::ConfirmResetHard
+                | Self::ConfirmRebase
+        )
     }
 
     pub fn title(self) -> &'static str {
@@ -129,6 +237,23 @@ impl PromptKind {
             Self::ConfirmDeleteFile => "Delete file",
             Self::ConfirmDeleteBranch => "Delete branch",
             Self::ConfirmDropStash => "Drop stash",
+            Self::NewWorkspace => "New workspace path",
+            Self::RenameWorkspace => "Rename workspace",
+            Self::RenamePanel => "Rename panel",
+            Self::CreateWorktreeBranch => "Create worktree: branch",
+            Self::CreateWorktreePath => "Create worktree: checkout path",
+            Self::ConfirmCloseWorkspace => "Close workspace (y)",
+            Self::ConfirmCleanupDelete => "Delete cleanup item (y)",
+            Self::CreateTag => "Tag commit",
+            Self::ResetMode => "Reset to commit",
+            Self::ConfirmResetHard => "Hard reset (y)",
+            Self::RebaseUpstream => "Rebase: upstream ref",
+            Self::ConfirmRebase => "Rebase (y)",
+            Self::GitCwd => "Git directory",
+            Self::CreateBranch => "Create branch",
+            Self::CreateFile => "New file",
+            Self::CreateDirectory => "New directory",
+            Self::ReplaceInFile => "Replace in file",
         }
     }
 
@@ -136,6 +261,20 @@ impl PromptKind {
     pub fn hint(self) -> &'static str {
         match self {
             Self::RenameFile => "type the new name, Enter renames",
+            Self::NewWorkspace => "type a directory path, Enter opens it",
+            Self::RenameWorkspace | Self::RenamePanel => "type the new name, Enter renames",
+            Self::CreateWorktreeBranch => "type the branch name, Enter continues",
+            Self::CreateWorktreePath => "type the checkout path, Enter creates",
+            Self::CreateTag => "type the tag name, Enter tags the selected commit",
+            Self::ResetMode => "type soft, mixed or hard, Enter resets",
+            Self::RebaseUpstream => "type the upstream ref, then y + Enter to rebase",
+            Self::GitCwd => "type a repository path, Enter switches the git panel",
+            Self::CreateBranch => "type the branch name, Enter creates and switches",
+            Self::CreateFile => "type the file name, Enter creates an empty file",
+            Self::CreateDirectory => "type the directory name, Enter creates it",
+            Self::ReplaceInFile => {
+                "type the replacement, Enter replaces the current match (! = all)"
+            }
             _ => "type y then Enter to confirm, Esc cancels",
         }
     }
@@ -173,6 +312,8 @@ impl TuiApp {
             selected_workspace: 0,
             selected_agent: 0,
             sidebar_focus: SidebarFocus::Workspaces,
+            sidebar_collapsed: false,
+            main_focused: true,
             mode: TuiMode::Navigate,
             screen: TuiScreen::Terminal,
             prefix: PrefixState::new(),
@@ -191,6 +332,9 @@ impl TuiApp {
             theme,
             palette: Palette::for_theme(theme),
             tick: 0,
+            worktree_create_stage: None,
+            rebase_pending_upstream: None,
+            help_scroll: 0,
             dirty: true,
         }
     }
@@ -259,7 +403,25 @@ impl TuiApp {
         match self.mode {
             TuiMode::Help => match key.code {
                 KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
-                    self.mode = TuiMode::Navigate
+                    self.mode = TuiMode::Navigate;
+                    self.help_scroll = 0;
+                }
+                KeyCode::Char('j') | KeyCode::Down | KeyCode::PageDown => {
+                    self.help_scroll = self.help_scroll.saturating_add(1).min(help_max_scroll());
+                }
+                KeyCode::Char('k') | KeyCode::Up | KeyCode::PageUp => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1);
+                }
+                _ => {}
+            },
+            TuiMode::Settings => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') => {
+                    self.mode = TuiMode::Navigate;
+                }
+                // Theme cycle (webui settings theme select).
+                KeyCode::Char('t') | KeyCode::Tab => {
+                    self.theme = self.theme.next();
+                    self.status = format!("theme: {}", self.theme.label());
                 }
                 _ => {}
             },
@@ -363,6 +525,285 @@ impl TuiApp {
                 Ok(_) => self.status = "stash dropped".to_string(),
                 Err(err) => self.error = Some(err.to_string()),
             },
+            PromptKind::NewWorkspace
+            | PromptKind::RenameWorkspace
+            | PromptKind::RenamePanel
+            | PromptKind::CreateWorktreeBranch
+            | PromptKind::CreateWorktreePath
+            | PromptKind::ConfirmCloseWorkspace => {
+                let kind = kind.into_workspace_prompt();
+                workspace::run_prompt(self, &kind, text);
+            }
+            PromptKind::ConfirmCleanupDelete => match self.git_panel.selected_cleanup_item() {
+                Some(item) => match self.git_panel.cleanup_delete(&self.web_api, &item) {
+                    Ok(()) => self.status = format!("deleted {} {}", item.kind.label(), item.name),
+                    Err(err) => self.error = Some(err.to_string()),
+                },
+                None => self.error = Some("no cleanup item selected".to_string()),
+            },
+            PromptKind::CreateTag => {
+                let tag = text.trim();
+                if tag.is_empty() {
+                    self.error = Some("type a tag name".to_string());
+                } else {
+                    match self.git_panel.log_tag(&self.web_api, tag) {
+                        Ok(()) => self.status = format!("tagged {tag}"),
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                }
+            }
+            PromptKind::ResetMode => {
+                let mode = text.trim();
+                match mode {
+                    "soft" | "mixed" => match self.git_panel.log_reset(&self.web_api, mode) {
+                        Ok(()) => self.status = format!("reset {mode}"),
+                        Err(err) => self.error = Some(err.to_string()),
+                    },
+                    // Hard reset chains into the typed-y confirm; the
+                    // server independently requires "reset hard".
+                    "hard" => {
+                        self.prompt_input = Some(PromptInput::new(PromptKind::ConfirmResetHard));
+                        self.status = PromptKind::ConfirmResetHard.title().to_string();
+                    }
+                    _ => self.error = Some("type soft, mixed or hard".to_string()),
+                }
+            }
+            PromptKind::ConfirmResetHard => match self.git_panel.log_reset(&self.web_api, "hard") {
+                Ok(()) => self.status = "reset hard".to_string(),
+                Err(err) => self.error = Some(err.to_string()),
+            },
+            PromptKind::RebaseUpstream => {
+                let upstream = text.trim();
+                if upstream.is_empty() {
+                    self.error = Some("type the upstream ref".to_string());
+                } else {
+                    self.rebase_pending_upstream = Some(upstream.to_string());
+                    self.prompt_input = Some(PromptInput::new(PromptKind::ConfirmRebase));
+                    self.status = PromptKind::ConfirmRebase.title().to_string();
+                }
+            }
+            PromptKind::ConfirmRebase => {
+                let Some(upstream) = self.rebase_pending_upstream.take() else {
+                    self.error = Some("no rebase pending".to_string());
+                    return;
+                };
+                match self.git_panel.log_rebase(&self.web_api, &upstream) {
+                    Ok(()) => self.status = format!("rebase onto {upstream}"),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            PromptKind::GitCwd => {
+                let path = text.trim();
+                if path.is_empty() {
+                    self.error = Some("type a directory path".to_string());
+                } else {
+                    self.git_panel.set_cwd(path);
+                    if let Err(err) = self.git_panel.refresh_view(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    } else {
+                        self.status = format!("git cwd: {path}");
+                    }
+                }
+            }
+            PromptKind::CreateBranch => {
+                let branch = text.trim();
+                if branch.is_empty() {
+                    self.error = Some("type a branch name".to_string());
+                } else {
+                    let cwd = self.git_panel.cwd.clone();
+                    match self.web_api.git_switch(&cwd, branch, true) {
+                        Ok(_) => {
+                            self.status = format!("switched to {branch}");
+                            if let Err(err) = self.git_panel.refresh_view(&self.web_api) {
+                                self.error = Some(err.to_string());
+                            }
+                        }
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                }
+            }
+            PromptKind::CreateFile => {
+                if text.trim().is_empty() {
+                    self.error = Some("type a file name".to_string());
+                } else {
+                    match self.file_explorer.create_file(&self.web_api, text.trim()) {
+                        Ok(()) => {
+                            self.status = format!("created {}", text.trim());
+                            // Webui opens the new file right away.
+                            if let Err(err) = self.file_explorer.open_preview(&self.web_api) {
+                                self.error = Some(err.to_string());
+                            }
+                        }
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                }
+            }
+            PromptKind::CreateDirectory => {
+                if text.trim().is_empty() {
+                    self.error = Some("type a directory name".to_string());
+                } else {
+                    match self
+                        .file_explorer
+                        .create_directory(&self.web_api, text.trim())
+                    {
+                        Ok(()) => self.status = format!("created {}", text.trim()),
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                }
+            }
+            PromptKind::ReplaceInFile => {
+                // `!` suffix = replace all (documented deviation).
+                let (replacement, all) = match text.strip_suffix('!') {
+                    Some(head) => (head.to_string(), true),
+                    None => (text.to_string(), false),
+                };
+                let count = self.file_explorer.editor_find.ranges.len();
+                match self.file_explorer.editor_replace(&replacement, all) {
+                    Ok(()) => {
+                        self.status = if all {
+                            format!("replaced {count} matches")
+                        } else {
+                            format!("replaced 1 of {count} matches")
+                        };
+                        // Stay in edit mode with the find bar alive so
+                        // Ctrl+S persists and Enter keeps cycling.
+                        self.file_explorer.edit_active = true;
+                    }
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+        }
+    }
+
+    /// Keys while content-search results are visible (webui results
+    /// view): j/k walk the flat rows, Enter opens the match (or toggles
+    /// a file group), `+` appends the next page, `A`/`X` flip the
+    /// match-case/regex toggles and re-run, Esc clears the results.
+    fn handle_content_search_key(&mut self, key: KeyEvent) {
+        let rows = content_rows(&self.file_explorer.content_search);
+        let len = rows.len();
+        let state = &mut self.file_explorer.content_search;
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                state.selected = move_index(state.selected, len, 1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                state.selected = move_index(state.selected, len, -1);
+            }
+            KeyCode::Enter => {
+                let selected = state.selected;
+                match rows.get(selected) {
+                    Some(ContentRow::File(index)) => {
+                        let index = *index;
+                        content_search::toggle_content_file(state, index);
+                    }
+                    Some(ContentRow::Line { file, line, .. }) => {
+                        let path = state.files[*file].path.clone();
+                        let line = *line;
+                        if let Err(err) =
+                            self.file_explorer
+                                .open_preview_at_line(&self.web_api, &path, line)
+                        {
+                            self.error = Some(err.to_string());
+                        } else {
+                            self.status = format!("{path}:{line}");
+                        }
+                    }
+                    None => {}
+                }
+            }
+            // Load more files (webui `loadMore`, appending at the offset).
+            KeyCode::Char('+') => {
+                let done = state.done;
+                if !done {
+                    if let Err(err) =
+                        run_content_search(&mut self.file_explorer, &self.web_api, true)
+                    {
+                        self.error = Some(err.to_string());
+                    } else {
+                        self.status = "loaded more results".to_string();
+                    }
+                } else {
+                    self.status = "no more results".to_string();
+                }
+            }
+            // Match-case toggle (webui setting `fileContentSearchMatchCase`);
+            // no default webui key: A/X are the TUI bindings, documented.
+            KeyCode::Char('A') => {
+                state.match_case = !state.match_case;
+                self.rerun_content_search();
+            }
+            // Regex toggle (webui setting `fileContentSearchRegex`).
+            KeyCode::Char('X') => {
+                state.regex = !state.regex;
+                self.rerun_content_search();
+            }
+            // Clear the results and go back to the tree.
+            KeyCode::Esc => {
+                state.clear_results();
+                self.file_explorer.search_mode = false;
+                self.file_explorer.filter.clear();
+                self.status = "content search closed".to_string();
+                if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+                    self.error = Some(err.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Re-run the content search after a toggle flip (fresh, offset 0).
+    fn rerun_content_search(&mut self) {
+        match run_content_search(&mut self.file_explorer, &self.web_api, false) {
+            Ok(()) => {
+                self.status = format!(
+                    "search re-run: match-case {}, regex {}",
+                    self.file_explorer.content_search.match_case,
+                    self.file_explorer.content_search.regex
+                )
+            }
+            Err(err) => self.error = Some(err.to_string()),
+        }
+    }
+
+    /// Keys while the editor find bar is active (webui find toolbar).
+    fn handle_editor_find_key(&mut self, key: KeyEvent) {
+        let shift = key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Esc => {
+                self.file_explorer.editor_find_close();
+                self.status = "find closed".to_string();
+            }
+            KeyCode::Enter => {
+                self.file_explorer.editor_find_next(!shift);
+                let count = self.file_explorer.editor_find.ranges.len();
+                self.status = if count == 0 {
+                    "no matches".to_string()
+                } else {
+                    format!(
+                        "match {}/{}",
+                        self.file_explorer.editor_find.selected + 1,
+                        count
+                    )
+                };
+            }
+            KeyCode::Backspace => self.file_explorer.pop_find_char(),
+            // Match-case / regex toggles (webui toolbar checkboxes).
+            KeyCode::Char('A') => {
+                self.file_explorer.editor_find.match_case =
+                    !self.file_explorer.editor_find.match_case;
+                self.file_explorer.refresh_find();
+            }
+            KeyCode::Char('X') => {
+                self.file_explorer.editor_find.regex = !self.file_explorer.editor_find.regex;
+                self.file_explorer.refresh_find();
+            }
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.file_explorer.push_find_char(ch);
+            }
+            _ => {}
         }
     }
 
@@ -401,7 +842,10 @@ impl TuiApp {
 
     fn run_shortcut(&mut self, shortcut: Shortcut) {
         match shortcut {
-            Shortcut::Help => self.mode = TuiMode::Help,
+            Shortcut::Help => {
+                self.mode = TuiMode::Help;
+                self.help_scroll = 0;
+            }
             Shortcut::Files => self.open_files_screen(),
             Shortcut::Git => self.open_git_screen(),
             Shortcut::Terminal => self.screen = TuiScreen::Terminal,
@@ -424,6 +868,74 @@ impl TuiApp {
             }
             Shortcut::NewTab => self.create_tab(),
             Shortcut::CloseTab => self.close_selected_tab(),
+            Shortcut::NextPanel => {
+                let result = self.move_panel(1);
+                self.workspace_status(result);
+            }
+            Shortcut::PrevPanel => {
+                let result = self.move_panel(-1);
+                self.workspace_status(result);
+            }
+            Shortcut::NewWorkspace => {
+                self.prompt_input = Some(PromptInput::new(PromptKind::NewWorkspace));
+                self.status = PromptKind::NewWorkspace.title().to_string();
+            }
+            Shortcut::OpenWorktrees => {
+                let result = self.worktree_list();
+                self.workspace_status(result);
+            }
+            Shortcut::CreateWorktree => {
+                self.worktree_create_stage = None;
+                self.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBranch));
+                self.status = PromptKind::CreateWorktreeBranch.title().to_string();
+            }
+            Shortcut::CloseWorkspace => {
+                self.prompt_input = Some(PromptInput::new(PromptKind::ConfirmCloseWorkspace));
+                self.status = PromptKind::ConfirmCloseWorkspace.title().to_string();
+            }
+            Shortcut::RemoveWorktree => {
+                let result = self.remove_worktree();
+                self.workspace_status(result);
+            }
+            Shortcut::RenamePanel => {
+                self.prompt_input = Some(PromptInput::new(PromptKind::RenamePanel));
+                self.status = PromptKind::RenamePanel.title().to_string();
+            }
+            Shortcut::RenameWorkspace => {
+                self.prompt_input = Some(PromptInput::new(PromptKind::RenameWorkspace));
+                self.status = PromptKind::RenameWorkspace.title().to_string();
+            }
+            Shortcut::GitCwdPicker => {
+                // Prefix I: switch the git panel to a typed repo path
+                // (webui location bar; no webui default binding).
+                self.open_git_screen();
+                self.prompt_input = Some(PromptInput::new(PromptKind::GitCwd));
+                self.status = PromptKind::GitCwd.title().to_string();
+            }
+            Shortcut::Settings => {
+                // Prefix s: settings overlay (webui settings modal).
+                self.mode = TuiMode::Settings;
+            }
+            Shortcut::Sidebar => {
+                // Prefix Shift+B: collapse/expand the sidebar column
+                // (webui sidebar: KeyB).
+                self.sidebar_collapsed = !self.sidebar_collapsed;
+                self.status = if self.sidebar_collapsed {
+                    "sidebar hidden".to_string()
+                } else {
+                    "sidebar shown".to_string()
+                };
+            }
+            Shortcut::FocusNext => self.walk_focus(1),
+            Shortcut::FocusPrev => self.walk_focus(-1),
+            Shortcut::TempTerminalToggle => {
+                let result = self.temp_terminal_toggle();
+                self.workspace_status(result);
+            }
+            Shortcut::TempTerminalPromote => {
+                let result = self.temp_terminal_promote();
+                self.workspace_status(result);
+            }
             Shortcut::Quit => self.status = "quit".to_string(),
             Shortcut::GitChanges => {
                 self.open_git_screen();
@@ -483,13 +995,13 @@ impl TuiApp {
                             // leave stale entries resolved against the new
                             // cwd.
                             let mut explorer =
-                                crate::tui_panels::FileExplorer::new(&self.git_panel.cwd);
+                                crate::tui::panels::FileExplorer::new(&self.git_panel.cwd);
                             // Best effort: a failed tree refresh leaves an
                             // empty tree but keeps cwd and preview aligned.
                             if let Err(err) = explorer.refresh(&self.web_api) {
                                 self.error = Some(err.to_string());
                             }
-                            explorer.preview = crate::tui_panels::FilePreview {
+                            explorer.preview = crate::tui::panels::FilePreview {
                                 path: Some(file),
                                 content: content.to_string(),
                                 truncated,
@@ -520,6 +1032,8 @@ impl TuiApp {
             Shortcut::GitLog => {
                 self.open_git_screen();
                 self.git_panel.view = GitView::Log;
+                // Keep an existing file scope (webui `logFilePath`) when
+                // re-opening the Log view.
                 self.refresh_active_screen();
             }
             Shortcut::GitStash => {
@@ -624,7 +1138,10 @@ impl TuiApp {
 
     fn run_git_action(
         &mut self,
-        action: impl FnOnce(&mut GitPanel, &WebApiClient) -> Result<(), crate::tui_web_api::WebApiError>,
+        action: impl FnOnce(
+            &mut GitPanel,
+            &WebApiClient,
+        ) -> Result<(), crate::tui::web_api::WebApiError>,
     ) {
         self.open_git_screen();
         self.git_panel.view = GitView::Changes;
@@ -657,6 +1174,7 @@ impl TuiApp {
             self.error = Some("no workspace selected".to_string());
             return;
         };
+        let workspace_id = workspace.id.clone();
         let tab_id = workspace.active_tab_id.clone().or_else(|| {
             self.snapshot
                 .workspace_tabs(&workspace.id)
@@ -667,15 +1185,35 @@ impl TuiApp {
             self.error = Some("no tab to close".to_string());
             return;
         };
+        // Webui closeTab guard (gap 7): closing the last tab in a
+        // workspace also closes the workspace. The built-in backend
+        // auto-closes emptied workspaces, but external backends may
+        // keep them, so the TUI mirrors the webui and closes it
+        // explicitly after the tab is gone.
+        let was_last_tab = self.snapshot.workspace_tabs(&workspace_id).len().max(1) == 1;
         match self
             .client
             .request("tab.close", serde_json::json!({ "tab_id": tab_id }))
         {
             Ok(_) => {
                 self.status = "tab closed".to_string();
+                if was_last_tab {
+                    if let Err(err) = self.client.request(
+                        "workspace.close",
+                        serde_json::json!({ "workspace_id": workspace_id }),
+                    ) {
+                        // The built-in backend may have already dropped
+                        // the emptied workspace; only surface real
+                        // failures.
+                        if !err.to_string().contains("not found") {
+                            self.error = Some(err.to_string());
+                        }
+                    }
+                }
                 if let Err(err) = self.refresh() {
                     self.error = Some(err.to_string());
                 }
+                self.clamp_selection();
             }
             Err(err) => self.error = Some(err.to_string()),
         }
@@ -761,6 +1299,13 @@ impl TuiApp {
     fn handle_files_key(&mut self, key: KeyEvent) {
         // While editing, all keys type into the buffer; Esc exits edit mode.
         if self.file_explorer.edit_active {
+            // Find bar owns the keyboard while active (webui Ctrl+F bar):
+            // typing re-runs incrementally, Enter/Shift+Enter cycle, A/X
+            // flip toggles, Esc closes keeping the query.
+            if self.file_explorer.editor_find.active {
+                self.handle_editor_find_key(key);
+                return;
+            }
             match self.file_explorer.edit_key(key, &self.web_api) {
                 Ok(()) => {
                     if !self.file_explorer.edit_active {
@@ -769,6 +1314,26 @@ impl TuiApp {
                         } else {
                             "edit mode closed".to_string()
                         };
+                    } else if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('f')
+                    {
+                        self.file_explorer.editor_find_open();
+                        self.status = "find: Enter next, Shift+Enter prev, Esc closes".to_string();
+                    } else if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('h')
+                    {
+                        // Replace flows through the shared prompt: type
+                        // the replacement, Enter replaces the current
+                        // match, `!` replaces all (documented deviation
+                        // from the webui's dedicated replace bar).
+                        self.prompt_input = Some(PromptInput {
+                            kind: PromptKind::ReplaceInFile,
+                            text: String::new(),
+                        });
                     } else if key
                         .modifiers
                         .contains(crossterm::event::KeyModifiers::CONTROL)
@@ -795,9 +1360,32 @@ impl TuiApp {
             if self.file_explorer.filter_active {
                 return;
             }
-            if let Err(err) = self.file_explorer.refresh(&self.web_api) {
+            // Committing the filter runs the search for the active
+            // kind: tree search refreshes entries, content search fills
+            // the grouped results (webui `runContentSearch`).
+            let result = if self.file_explorer.search_mode
+                && self.file_explorer.search_kind == SearchKind::Content
+            {
+                run_content_search(&mut self.file_explorer, &self.web_api, false)
+                    .map(|_| self.status = "content search done".to_string())
+            } else {
+                self.file_explorer
+                    .refresh(&self.web_api)
+                    .map(|_| self.status = String::new())
+            };
+            if let Err(err) = result {
                 self.error = Some(err.to_string());
             }
+            return;
+        }
+        // Content-search results own the keyboard while visible
+        // (webui results view): j/k move over the flat rows, Enter
+        // jumps/toggles, +/- page, A/X flip match-case/regex.
+        if self.file_explorer.search_mode
+            && self.file_explorer.search_kind == SearchKind::Content
+            && self.file_explorer.content_search.has_results()
+        {
+            self.handle_content_search_key(key);
             return;
         }
         match key.code {
@@ -840,7 +1428,91 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('r') => self.refresh_active_screen(),
+            // Webui file-browser "show history": open the git Log view
+            // scoped to the selected file (`logFilePath`). Plain `h` is
+            // go-up here, so the log entry is `L` (Log).
+            KeyCode::Char('L') => {
+                let file = self
+                    .file_explorer
+                    .selected_entry()
+                    .filter(|entry| !entry.is_dir)
+                    .map(|entry| entry.path.clone());
+                match file {
+                    Some(file) => {
+                        self.open_git_screen();
+                        self.git_panel.view = GitView::Log;
+                        self.git_panel.log_file = Some(file.clone());
+                        self.git_panel.log_limit = crate::tui::panels::git::LOG_PAGE_SIZE;
+                        self.refresh_active_screen();
+                        self.status = format!("log: {file}");
+                    }
+                    None => self.error = Some("select a file first".to_string()),
+                }
+            }
+            // Tab cycles recently opened previews (webui open-file
+            // tabs approximation). Blocked on a dirty buffer like the
+            // webui blocks tab switches with unsaved editors.
+            KeyCode::Tab => match self.file_explorer.cycle_recent_preview(&self.web_api) {
+                Ok(true) => self.status = "switched preview".to_string(),
+                Ok(false) => {
+                    self.status = if self.file_explorer.preview.dirty {
+                        "save or discard before switching".to_string()
+                    } else {
+                        "no recent previews".to_string()
+                    }
+                }
+                Err(err) => self.error = Some(err.to_string()),
+            },
+            // Reveal the git-panel selected file in the tree
+            // (neovim reveal-current-file; plan reserves prefix F, so
+            // plain `w` carries it here like `w` in the git log view
+            // reuses the worktree prompt).
+            KeyCode::Char('w') => {
+                let file = self
+                    .git_panel
+                    .selected_file()
+                    .map(|entry| entry.path.clone());
+                match file {
+                    Some(file) => match self.file_explorer.reveal_path(&self.web_api, &file) {
+                        Ok(()) => self.status = format!("revealed {file}"),
+                        Err(err) => self.error = Some(err.to_string()),
+                    },
+                    None => self.error = Some("no file selected in the git panel".to_string()),
+                }
+            }
             KeyCode::Char('/') => self.file_explorer.start_filter(),
+            // Cycle the filter scope (webui filter-kind toggle button):
+            // Files → Folders → Content.
+            KeyCode::Char('t') => {
+                self.file_explorer.cycle_search_kind();
+                self.status = format!("search: {}", self.file_explorer.search_kind.label());
+            }
+            // New file (webui mobile new-file flow): empty file created
+            // via `file_write` under the current root, then previewed.
+            KeyCode::Char('a') => {
+                self.prompt_input = Some(PromptInput {
+                    kind: PromptKind::CreateFile,
+                    text: String::new(),
+                });
+            }
+            // New directory: `.gitkeep` marker via `file_write` (the
+            // API has no mkdir endpoint; documented deviation).
+            KeyCode::Char('A') => {
+                self.prompt_input = Some(PromptInput {
+                    kind: PromptKind::CreateDirectory,
+                    text: String::new(),
+                });
+            }
+            // Markdown outline flip (gap 22): webui eye toggle. M shows
+            // the header outline of the open markdown preview (or the
+            // source again); a non-markdown preview explains itself.
+            KeyCode::Char('M') => match self.file_explorer.toggle_markdown_outline() {
+                Some(true) => self.status = "outline view (M shows source)".to_string(),
+                Some(false) => self.status = "source view".to_string(),
+                None => {
+                    self.error = Some("open a markdown file first".to_string());
+                }
+            },
             KeyCode::Char('e') => match self.file_explorer.start_edit() {
                 Ok(()) => self.status = "editing: Ctrl-S saves, Esc stops".to_string(),
                 Err(err) => self.error = Some(err.to_string()),
@@ -898,18 +1570,169 @@ impl TuiApp {
     }
 
     fn handle_git_key(&mut self, key: KeyEvent) {
+        // Diff search (webui Ctrl+F): while active it owns the keyboard;
+        // Enter commits the query, Esc closes, typing searches
+        // incrementally, n/N still work from the committed state.
+        if self.git_panel.diff_search_active {
+            match key.code {
+                // Enter commits the query but keeps the matches so n/N
+                // keep cycling; Esc forgets the search entirely.
+                KeyCode::Enter => self.git_panel.end_diff_search(),
+                KeyCode::Esc => self.git_panel.cancel_diff_search(),
+                KeyCode::Backspace => self.git_panel.pop_diff_search_char(),
+                KeyCode::Char('n') => {
+                    self.git_panel.diff_search_next();
+                }
+                KeyCode::Char('N') => {
+                    self.git_panel.diff_search_prev();
+                }
+                KeyCode::Char(ch) => {
+                    self.git_panel.push_diff_search_char(ch);
+                }
+                _ => {}
+            }
+            self.status = format!(
+                "diff search: {} ({} matches)",
+                self.git_panel.diff_search_query,
+                self.git_panel.diff_search_matches.len()
+            );
+            return;
+        }
         match key.code {
+            // Esc also clears a committed search (bar closed by Enter but
+            // matches kept): the webui Esc dismisses the highlight too.
+            KeyCode::Esc
+                if self.git_panel.view == GitView::Changes
+                    && !self.git_panel.diff_search_matches.is_empty() =>
+            {
+                self.git_panel.cancel_diff_search();
+            }
+            // Webui Ctrl+F in the diff: open the incremental search
+            // while the Changes diff pane is the target.
+            KeyCode::Char('/') if self.git_panel.view == GitView::Changes => {
+                self.git_panel.start_diff_search();
+                self.status = "diff search: type to match, n/N cycle, Esc closes".to_string();
+            }
+            KeyCode::Char('n') if self.git_panel.view == GitView::Changes => {
+                if !self.git_panel.diff_search_next() {
+                    self.status = "no diff search matches".to_string();
+                }
+            }
+            KeyCode::Char('N') if self.git_panel.view == GitView::Changes => {
+                if !self.git_panel.diff_search_prev() {
+                    self.status = "no diff search matches".to_string();
+                }
+            }
             KeyCode::Char('j') | KeyCode::Down => self.git_panel.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.git_panel.move_selection(-1),
+            // Hunk actions (gap 14, webui per-hunk stage/unstage
+            // buttons): J/K walk the `@@` headers of the loaded Changes
+            // diff (wrapping), H applies the hunk action — stage when
+            // the diff is working-tree scope, unstage when staged.
+            KeyCode::Char('J') if self.git_panel.view == GitView::Changes => {
+                if !self.git_panel.move_hunk_selection(1) {
+                    self.status = "no hunks in the loaded diff".to_string();
+                } else {
+                    self.status = format!("hunk {}", self.git_panel.diff_hunk_selected + 1);
+                }
+            }
+            KeyCode::Char('K') if self.git_panel.view == GitView::Changes => {
+                if !self.git_panel.move_hunk_selection(-1) {
+                    self.status = "no hunks in the loaded diff".to_string();
+                } else {
+                    self.status = format!("hunk {}", self.git_panel.diff_hunk_selected + 1);
+                }
+            }
+            KeyCode::Char('H') if self.git_panel.view == GitView::Changes => {
+                match self.git_panel.apply_hunk_action(&self.web_api) {
+                    Ok(()) => self.status = "hunk applied".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
             KeyCode::Tab => {
                 self.git_panel.view = match self.git_panel.view {
                     GitView::Changes => GitView::Log,
                     GitView::Log => GitView::Branches,
                     GitView::Branches => GitView::Stash,
                     GitView::Stash => GitView::History,
-                    GitView::History => GitView::Changes,
+                    GitView::History => GitView::Conflicts,
+                    GitView::Conflicts => GitView::Cleanup,
+                    GitView::Cleanup => GitView::Changes,
                 };
                 self.refresh_active_screen();
+            }
+            // Webui `selectLogCommit` shift-click arm (gap 11 two-commit
+            // compare): Space marks up to two commits, `c` compares the
+            // pair ordered by log position (newest = target).
+            KeyCode::Char(' ') if self.git_panel.view == GitView::Log => {
+                if let Some(hash) = self.git_panel.selected_commit_hash().map(str::to_string) {
+                    self.git_panel.log_toggle_selection(&hash);
+                    self.status = format!("selected: {:?}", self.git_panel.log_selected);
+                } else {
+                    self.error = Some("no commit selected".to_string());
+                }
+            }
+            KeyCode::Char('c')
+                if self.git_panel.view == GitView::Log
+                    && self.git_panel.log_selected.len() == 2 =>
+            {
+                match self.git_panel.log_compare_selection(&self.web_api) {
+                    Ok(()) => self.status = "compare loaded".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            // Log view actions (webui log toolbar). All guarded to Log so
+            // the shared git keys keep their meaning elsewhere. `s` (stage)
+            // has no use in Log, so it cycles the log scope here.
+            KeyCode::Char('s') if self.git_panel.view == GitView::Log => {
+                self.git_panel.cycle_log_scope();
+                if let Err(err) = self.git_panel.refresh_log(&self.web_api) {
+                    self.error = Some(err.to_string());
+                } else {
+                    self.status = format!("log scope: {}", self.git_panel.log_scope.label());
+                }
+            }
+            KeyCode::Char('+') if self.git_panel.view == GitView::Log => {
+                if self.git_panel.log_load_more() {
+                    if let Err(err) = self.git_panel.refresh_log(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    } else {
+                        self.status = format!("log limit: {}", self.git_panel.log_limit);
+                    }
+                } else {
+                    self.status = "no more commits".to_string();
+                }
+            }
+            KeyCode::Char('t') if self.git_panel.view == GitView::Log => {
+                if self.git_panel.selected_commit_hash().is_some() {
+                    self.prompt_input = Some(PromptInput::new(PromptKind::CreateTag));
+                    self.status = PromptKind::CreateTag.title().to_string();
+                } else {
+                    self.error = Some("no commit selected".to_string());
+                }
+            }
+            KeyCode::Char('R') if self.git_panel.view == GitView::Log => {
+                if self.git_panel.selected_commit_hash().is_some() {
+                    self.prompt_input = Some(PromptInput::new(PromptKind::ResetMode));
+                    self.status = PromptKind::ResetMode.title().to_string();
+                } else {
+                    self.error = Some("no commit selected".to_string());
+                }
+            }
+            KeyCode::Char('b') if self.git_panel.view == GitView::Log => {
+                if self.git_panel.selected_commit_hash().is_some() {
+                    self.prompt_input = Some(PromptInput::new(PromptKind::RebaseUpstream));
+                    self.status = PromptKind::RebaseUpstream.title().to_string();
+                } else {
+                    self.error = Some("no commit selected".to_string());
+                }
+            }
+            // Webui "worktree from branch": reuse the two-step worktree
+            // creation prompt chain (branch, then checkout path).
+            KeyCode::Char('w') if self.git_panel.view == GitView::Log => {
+                self.worktree_create_stage = None;
+                self.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBranch));
+                self.status = PromptKind::CreateWorktreeBranch.title().to_string();
             }
             KeyCode::Char('s') => {
                 if let Err(err) = self.git_panel.stage_selected(&self.web_api) {
@@ -951,6 +1774,13 @@ impl TuiApp {
                     self.error = Some(err.to_string());
                 }
             }
+            // Webui branch creation: in the Branches view `c` prompts
+            // for a new branch name (git_switch create: true). Elsewhere
+            // `c` keeps opening the commit modal.
+            KeyCode::Char('c') if self.git_panel.view == GitView::Branches => {
+                self.prompt_input = Some(PromptInput::new(PromptKind::CreateBranch));
+                self.status = PromptKind::CreateBranch.title().to_string();
+            }
             KeyCode::Char('c') => {
                 self.commit_input = Some(CommitInput {
                     text: String::new(),
@@ -958,10 +1788,20 @@ impl TuiApp {
                 });
             }
             KeyCode::Char('a') => {
-                self.commit_input = Some(CommitInput {
-                    text: String::new(),
-                    amend: true,
-                });
+                if self.git_panel.view == GitView::Stash {
+                    // Stash view: a applies the selected stash (webui
+                    // stash apply button; Enter is the diff preview now).
+                    if let Err(err) = self.git_panel.stash_apply(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    } else {
+                        self.status = "stash applied".to_string();
+                    }
+                } else {
+                    self.commit_input = Some(CommitInput {
+                        text: String::new(),
+                        amend: true,
+                    });
+                }
             }
             KeyCode::Char('r') => self.refresh_active_screen(),
             KeyCode::Char('D') => match self.git_panel.view {
@@ -1003,6 +1843,15 @@ impl TuiApp {
                         self.error = Some(err.to_string());
                     }
                 }
+                // Stash split view: Enter loads the selected stash's diff
+                // (webui stash view preview).
+                GitView::Stash => {
+                    if let Err(err) = self.git_panel.load_stash_diff(&self.web_api) {
+                        self.error = Some(err.to_string());
+                    } else {
+                        self.status = "stash diff loaded".to_string();
+                    }
+                }
                 // History rows are commits: Enter loads the selected commit's
                 // diff (webui `showHistoryCommit`) into the History diff
                 // pane; the view itself stays so the file context is kept.
@@ -1042,15 +1891,109 @@ impl TuiApp {
                         );
                     }
                 }
-                GitView::Stash => {
-                    if let Err(err) = self.git_panel.stash_apply(&self.web_api) {
-                        self.error = Some(err.to_string());
-                    } else {
-                        self.status = "stash applied".to_string();
+                GitView::Log => {
+                    // Webui log commit preview: compare the selected
+                    // commit with its parent into the Log diff pane.
+                    let hash = self.git_panel.selected_commit_hash().map(str::to_string);
+                    match hash {
+                        Some(hash) => {
+                            match self.git_panel.log_compare_parent(&self.web_api, &hash) {
+                                Ok(()) => self.status = format!("compare {hash}^..{hash}"),
+                                Err(err) => self.error = Some(err.to_string()),
+                            }
+                        }
+                        None => self.error = Some("no commit selected".to_string()),
                     }
                 }
-                GitView::Log => {}
+                GitView::Conflicts | GitView::Cleanup => {}
             },
+            // Conflicts view actions (webui conflicts tab buttons).
+            // Keys avoid the shared git actions: o/e/t/m for resolve modes
+            // (p is pull and r is refresh in every git view), R/S/A for the
+            // operation continue/skip/abort.
+            KeyCode::Char('o') if self.git_panel.view == GitView::Conflicts => {
+                match self
+                    .git_panel
+                    .resolve_selected_conflict(&self.web_api, ConflictResolveMode::Ours)
+                {
+                    Ok(()) => self.status = "resolved with HEAD".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Char('e') if self.git_panel.view == GitView::Conflicts => {
+                match self
+                    .git_panel
+                    .resolve_selected_conflict(&self.web_api, ConflictResolveMode::Parent)
+                {
+                    Ok(()) => self.status = "resolved with parent".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Char('t') if self.git_panel.view == GitView::Conflicts => {
+                match self
+                    .git_panel
+                    .resolve_selected_conflict(&self.web_api, ConflictResolveMode::Remote)
+                {
+                    Ok(()) => self.status = "resolved with remote".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Char('m') if self.git_panel.view == GitView::Conflicts => {
+                match self
+                    .git_panel
+                    .resolve_selected_conflict(&self.web_api, ConflictResolveMode::MarkResolved)
+                {
+                    Ok(()) => self.status = "marked resolved".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Char('R') if self.git_panel.view == GitView::Conflicts => {
+                let action = if self.git_panel.rebase_in_progress {
+                    ConflictAction::RebaseContinue
+                } else {
+                    ConflictAction::MergeContinue
+                };
+                match self.git_panel.conflict_action(&self.web_api, action) {
+                    Ok(()) => self.status = "operation continued".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Char('S') if self.git_panel.view == GitView::Conflicts => {
+                match self
+                    .git_panel
+                    .conflict_action(&self.web_api, ConflictAction::RebaseSkip)
+                {
+                    Ok(()) => self.status = "rebase commit skipped".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            KeyCode::Char('A') if self.git_panel.view == GitView::Conflicts => {
+                let action = if self.git_panel.rebase_in_progress {
+                    ConflictAction::RebaseAbort
+                } else {
+                    ConflictAction::MergeAbort
+                };
+                match self.git_panel.conflict_action(&self.web_api, action) {
+                    Ok(()) => self.status = "operation aborted".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
+            // Cleanup view actions (webui cleanup tab: delete + prune).
+            KeyCode::Char('x') if self.git_panel.view == GitView::Cleanup => {
+                match self.git_panel.selected_cleanup_item() {
+                    Some(_) => {
+                        self.prompt_input =
+                            Some(PromptInput::new(PromptKind::ConfirmCleanupDelete));
+                    }
+                    None => self.error = Some("no cleanup item selected".to_string()),
+                }
+            }
+            KeyCode::Char('B') if self.git_panel.view == GitView::Cleanup => {
+                match self.git_panel.cleanup_prune(&self.web_api) {
+                    Ok(()) => self.status = "worktrees pruned".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
+                }
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
             _ => {}
         }
@@ -1371,7 +2314,7 @@ pub fn build_client(options: &TuiOptions) -> BackendClient {
     }
 }
 
-pub use crate::tui_input::{is_menu_key, key_to_terminal_bytes};
+pub use terminal::input::{is_menu_key, key_to_terminal_bytes};
 
 fn move_index(current: usize, len: usize, delta: isize) -> usize {
     if len == 0 {
@@ -1396,7 +2339,3 @@ fn trim_terminal_raw_output(value: &mut String) {
         .unwrap_or(value.len());
     value.drain(..drain_to);
 }
-
-#[cfg(test)]
-#[path = "tui_tests.rs"]
-mod tests;

@@ -5,7 +5,7 @@ use ratatui::style::Color;
 use ratatui::Terminal;
 use serde_json::json;
 
-use crate::tui_panels::{
+use crate::tui::panels::{
     FileEntry, GitBranchEntry, GitCommitEntry, GitFileEntry, GitFileStatus, GitStashEntry, GitView,
 };
 
@@ -103,6 +103,7 @@ fn files_screen_navigation_and_preview_flow() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "main.rs".to_string(),
@@ -111,6 +112,7 @@ fn files_screen_navigation_and_preview_flow() {
             size: Some(120),
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
     app.file_explorer.move_selection(1);
@@ -190,11 +192,136 @@ fn git_panel_key_navigation_cycles_views() {
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::History);
     app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Conflicts);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Cleanup);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::Changes);
 
     // Esc/q returns to the terminal screen.
     app.handle_key(KeyEvent::from(KeyCode::Char('q')));
     assert_eq!(app.screen, TuiScreen::Terminal);
+}
+
+#[test]
+fn log_two_commit_compare_keys_and_markdown_outline_key() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Log;
+    app.git_panel.commits = vec![
+        crate::tui::panels::git::GitCommitEntry {
+            hash: "aaa".to_string(),
+            message: "new".to_string(),
+            author: "a".to_string(),
+            date: String::new(),
+            labels: vec![],
+        },
+        crate::tui::panels::git::GitCommitEntry {
+            hash: "bbb".to_string(),
+            message: "old".to_string(),
+            author: "a".to_string(),
+            date: String::new(),
+            labels: vec![],
+        },
+    ];
+    // Space marks the selected commit, Space again on the next commit.
+    app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+    assert_eq!(app.git_panel.log_selected, vec!["aaa".to_string()]);
+    app.git_panel.commit_selected = 1;
+    app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+    assert_eq!(
+        app.git_panel.log_selected,
+        vec!["aaa".to_string(), "bbb".to_string()]
+    );
+    // c with two selected compares (dead web API: the error surfaces,
+    // but only after the selection guard passed).
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert!(
+        app.error
+            .as_deref()
+            .is_some_and(|e| e.contains("webui connection failed")),
+        "compare hits the API: {:?}",
+        app.error
+    );
+    // One selected: c keeps the commit-modal meaning (no compare call).
+    app.error = None;
+    app.git_panel.log_selected.truncate(1);
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert!(app.commit_input.is_some(), "c opens the commit modal");
+    // Close the modal so the Files keys below are not swallowed by it.
+    app.commit_input = None;
+
+    // Files screen: M without a markdown preview errors; with one it
+    // flips the outline mode on and back off.
+    app.screen = TuiScreen::Files;
+    app.git_panel.log_selected.clear();
+    app.error = None;
+    app.file_explorer.preview = crate::tui::panels::FilePreview::default();
+    app.handle_key(KeyEvent::from(KeyCode::Char('M')));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("open a markdown file first")));
+    app.error = None;
+    app.file_explorer.preview.path = Some("docs/plan.md".to_string());
+    app.handle_key(KeyEvent::from(KeyCode::Char('M')));
+    assert!(app.file_explorer.markdown_outline);
+    assert_eq!(app.status, "outline view (M shows source)");
+    app.handle_key(KeyEvent::from(KeyCode::Char('M')));
+    assert!(!app.file_explorer.markdown_outline);
+    assert_eq!(app.status, "source view");
+}
+
+#[test]
+fn git_changes_hunk_keys_move_cursor_and_apply() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Changes;
+    // Two hunks loaded (headers are the meta-None lines).
+    app.git_panel.diff_lines = vec![
+        "@@ -1,2 +1,3 @@".to_string(),
+        "+added".to_string(),
+        "@@ -9,1 +9,2 @@".to_string(),
+        "-removed".to_string(),
+    ];
+    app.git_panel.diff_meta = vec![
+        None,
+        Some(crate::tui::panels::GitDiffLineMeta::default()),
+        None,
+        Some(crate::tui::panels::GitDiffLineMeta::default()),
+    ];
+    // J walks to the second hunk (status announces it), K back to the
+    // first, K again wraps to the last.
+    app.handle_key(KeyEvent::from(KeyCode::Char('J')));
+    assert_eq!(app.git_panel.diff_hunk_selected, 1);
+    assert_eq!(app.status, "hunk 2");
+    app.handle_key(KeyEvent::from(KeyCode::Char('K')));
+    assert_eq!(app.git_panel.diff_hunk_selected, 0);
+    app.handle_key(KeyEvent::from(KeyCode::Char('K')));
+    assert_eq!(app.git_panel.diff_hunk_selected, 1, "K wraps to the last");
+
+    // H without a per-file diff loaded: guard error, no API call.
+    app.git_panel.diff_title = "working tree".to_string();
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('H')));
+    assert!(
+        app.error
+            .as_deref()
+            .is_some_and(|e| e.contains("select a file to load its diff")),
+        "guard error surfaces: {:?}",
+        app.error
+    );
+
+    // J/K on other views fall through to their own bindings (Log uses
+    // plain j/k for commits; uppercase J must not move the hunk cursor
+    // there and must not crash).
+    app.git_panel.view = GitView::Log;
+    app.handle_key(KeyEvent::from(KeyCode::Char('J')));
+    assert_eq!(app.git_panel.diff_hunk_selected, 1, "untouched in Log");
 }
 
 #[test]
@@ -383,6 +510,7 @@ fn files_screen_rename_opens_prompt_prefilled_with_name() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.handle_key(KeyEvent::from(KeyCode::Char('R')));
     let prompt = app.prompt_input.as_ref().expect("rename prompt open");
@@ -413,6 +541,7 @@ fn files_screen_delete_requires_typed_y_confirmation() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
     assert_eq!(
@@ -437,7 +566,7 @@ fn files_screen_delete_requires_typed_y_confirmation() {
 
 #[test]
 fn git_branches_delete_blocked_for_current_branch_and_confirmed_for_others() {
-    use crate::tui_panels::GitBranchEntry;
+    use crate::tui::panels::GitBranchEntry;
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Git;
@@ -480,7 +609,7 @@ fn git_branches_delete_blocked_for_current_branch_and_confirmed_for_others() {
 
 #[test]
 fn git_stash_view_d_opens_drop_confirmation() {
-    use crate::tui_panels::GitStashEntry;
+    use crate::tui::panels::GitStashEntry;
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Git;
@@ -504,7 +633,7 @@ fn files_screen_e_starts_edit_and_esc_stops_with_dirty_kept() {
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Files;
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("notes.md".to_string()),
         content: "line one".to_string(),
         truncated: false,
@@ -586,7 +715,7 @@ fn files_screen_dirty_preview_survives_switch_and_blocks_replacement() {
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Files;
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("notes.md".to_string()),
         content: "line one".to_string(),
         truncated: false,
@@ -602,6 +731,7 @@ fn files_screen_dirty_preview_survives_switch_and_blocks_replacement() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "other.txt".to_string(),
@@ -610,6 +740,7 @@ fn files_screen_dirty_preview_survives_switch_and_blocks_replacement() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
     app.handle_key(KeyEvent::from(KeyCode::Char('e')));
@@ -655,7 +786,7 @@ fn dirty_preview_blocks_rename_delete_and_discard_of_edited_file() {
     let client = BackendClient::builtin_session(None);
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Files;
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("notes.md".to_string()),
         content: "line one".to_string(),
         truncated: false,
@@ -670,6 +801,7 @@ fn dirty_preview_blocks_rename_delete_and_discard_of_edited_file() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.handle_key(KeyEvent::from(KeyCode::Char('e')));
     app.handle_key(KeyEvent::from(KeyCode::Char('!')));
@@ -890,7 +1022,7 @@ fn renders_blame_annotations_in_changes_diff() {
     }];
     app.git_panel.diff_title = "src/app.rs".to_string();
     app.git_panel.diff_lines = vec!["+added line".to_string()];
-    app.git_panel.diff_meta = vec![Some(crate::tui_panels::GitDiffLineMeta {
+    app.git_panel.diff_meta = vec![Some(crate::tui::panels::GitDiffLineMeta {
         old_line: None,
         new_line: Some(2),
     })];
@@ -916,6 +1048,7 @@ fn renders_files_preview_states() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "readme.md".to_string(),
@@ -924,9 +1057,10 @@ fn renders_files_preview_states() {
             size: Some(42),
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("readme.md".to_string()),
         content: "hello world".to_string(),
         truncated: false,
@@ -953,7 +1087,18 @@ fn renders_files_preview_states() {
     app.file_explorer.preview.truncated = false;
     app.file_explorer.start_edit().unwrap();
     assert!(app.file_explorer.edit_active);
-    assert!(draw(&app, 150, 30).contains("Ctrl-S save \u{b7} Esc stop"));
+    assert!(draw(&app, 150, 30)
+        .contains("Ctrl-S save \u{b7} Ctrl-F find \u{b7} Ctrl-H replace \u{b7} Esc stop"));
+
+    // Find bar renders the query and match count while active.
+    app.file_explorer.editor_find.active = true;
+    app.file_explorer.editor_find.query = "read".to_string();
+    app.file_explorer.editor_find.ranges = vec![(1, 5), (10, 14)];
+    app.file_explorer.editor_find.selected = 1;
+    let find_draw = draw(&app, 150, 30);
+    assert!(find_draw.contains("find read"));
+    assert!(find_draw.contains("match 2/2"));
+    app.file_explorer.editor_find.active = false;
 
     // Filter mode renders the filter box.
     app.file_explorer.edit_active = false;
@@ -966,7 +1111,7 @@ fn renders_files_preview_states() {
     app.file_explorer.filter.clear();
 
     // No preview at all: the placeholder hints render.
-    app.file_explorer.preview = crate::tui_panels::FilePreview::default();
+    app.file_explorer.preview = crate::tui::panels::FilePreview::default();
     let no_preview = draw(&app, 150, 30);
     assert!(
         no_preview.contains("Select a file with j/k and press Enter to preview."),
@@ -978,7 +1123,7 @@ fn renders_files_preview_states() {
     );
 
     // Empty file preview shows the empty-file line.
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("empty.txt".to_string()),
         content: String::new(),
         truncated: false,
@@ -1034,6 +1179,7 @@ fn renders_files_preview_states() {
         size: None,
         level: 0,
         expanded: true,
+        git_status: None,
     }];
     for i in 0..40 {
         many.push(FileEntry {
@@ -1043,6 +1189,7 @@ fn renders_files_preview_states() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         });
     }
     app.file_explorer.entries = many;
@@ -1083,6 +1230,7 @@ fn renders_prompt_commit_help_and_modes() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.prompt_input = Some(PromptInput {
         kind: PromptKind::RenameFile,
@@ -1130,9 +1278,13 @@ fn renders_prompt_commit_help_and_modes() {
     // Help overlay.
     app.commit_input = None;
     app.mode = TuiMode::Help;
-    let help = draw(&app, 100, 28);
+    let help = draw(&app, 100, 50);
     assert!(help.contains("Ctrl+B"), "help lists prefix rows");
     assert!(help.contains("toggle blame"), "help lists blame");
+    assert!(
+        help.contains("create worktree"),
+        "help lists workspace rows"
+    );
     app.mode = TuiMode::Navigate;
 
     // Attach mode on the Terminal screen renders the detach hint bar.
@@ -1152,6 +1304,7 @@ fn prompt_key_flow_types_confirms_and_cancels() {
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
 
     // Rename: typing builds text, Backspace pops, Esc cancels, Enter acts.
@@ -1327,7 +1480,7 @@ fn shortcut_dispatch_covers_every_arm() {
     // NewTab/CloseTab dispatch: against a real backend these mutate the
     // session, so only assert the arms run without panic. Quit status arm.
     app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('x')));
 
@@ -1389,15 +1542,17 @@ fn shortcut_dispatch_covers_every_arm() {
     );
     app.commit_input = None;
 
-    // Prefix s opens the stash view.
+    // Prefix s opens the settings overlay (webui settings: KeyS).
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
-    assert_eq!(app.git_panel.view, GitView::Stash);
+    assert_eq!(app.mode, TuiMode::Settings);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
 
     // Unknown prefix key cancels quietly (the `_ => None` arm).
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::F(7)));
-    assert_eq!(app.git_panel.view, GitView::Stash);
+    assert_eq!(app.git_panel.view, GitView::Log);
 
     // History requires a selected file.
     app.handle_key(ctrl_b);
@@ -1579,7 +1734,7 @@ fn git_in_panel_keys_cover_stage_fetch_pull_push_and_enter() {
     app.error = None;
 
     // Tab cycles the git view (Changes -> Log -> Branches -> Stash ->
-    // History -> Changes).
+    // History -> Conflicts -> Cleanup -> Changes).
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::Log);
     app.handle_key(KeyEvent::from(KeyCode::Tab));
@@ -1588,6 +1743,10 @@ fn git_in_panel_keys_cover_stage_fetch_pull_push_and_enter() {
     assert_eq!(app.git_panel.view, GitView::Stash);
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::History);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Conflicts);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.git_panel.view, GitView::Cleanup);
     app.handle_key(KeyEvent::from(KeyCode::Tab));
     assert_eq!(app.git_panel.view, GitView::Changes);
     app.error = None;
@@ -1640,6 +1799,7 @@ fn files_in_panel_keys_cover_rename_delete_and_enter() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "a.txt".to_string(),
@@ -1648,6 +1808,7 @@ fn files_in_panel_keys_cover_rename_delete_and_enter() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
 
@@ -1685,7 +1846,7 @@ fn files_in_panel_keys_cover_rename_delete_and_enter() {
     app.file_explorer.filter.clear();
 
     // e starts editing the open preview.
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("a.txt".to_string()),
         content: "x".to_string(),
         truncated: false,
@@ -1735,7 +1896,7 @@ fn files_in_panel_keys_cover_rename_delete_and_enter() {
 fn shortcut_labels_cover_every_variant() {
     // Every Shortcut variant renders a non-empty label; exercise the
     // full match arms without going through the key map.
-    use crate::tui_keys::Shortcut;
+    use crate::tui::keys::Shortcut;
     let all = vec![
         Shortcut::Help,
         Shortcut::Files,
@@ -1788,7 +1949,7 @@ fn shortcut_labels_cover_every_variant() {
 #[test]
 fn file_explorer_expand_and_set_cwd_reset_state() {
     let client = BackendClient::builtin_session(None);
-    let mut explorer = crate::tui_panels::FileExplorer::new("/repo");
+    let mut explorer = crate::tui::panels::FileExplorer::new("/repo");
     explorer.entries = vec![
         FileEntry {
             name: "src".to_string(),
@@ -1797,6 +1958,7 @@ fn file_explorer_expand_and_set_cwd_reset_state() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "child.rs".to_string(),
@@ -1805,6 +1967,7 @@ fn file_explorer_expand_and_set_cwd_reset_state() {
             size: None,
             level: 1,
             expanded: false,
+            git_status: None,
         },
     ];
     let api = WebApiClient::new("127.0.0.1", 1);
@@ -1820,7 +1983,7 @@ fn file_explorer_expand_and_set_cwd_reset_state() {
     let _ = explorer.toggle_expand(&api);
 
     // set_cwd on GitPanel resets diff/blame state for the new repo.
-    let mut panel = crate::tui_panels::GitPanel::new("/repo");
+    let mut panel = crate::tui::panels::GitPanel::new("/repo");
     panel.diff_lines = vec!["+x".to_string()];
     panel.show_blame = true;
     panel.blame_path = Some("src/app.rs".to_string());
@@ -1835,7 +1998,7 @@ fn file_explorer_expand_and_set_cwd_reset_state() {
 #[test]
 fn git_panel_switch_and_delete_and_stash_hit_api() {
     let api = WebApiClient::new("127.0.0.1", 1);
-    let mut panel = crate::tui_panels::GitPanel::new("/repo");
+    let mut panel = crate::tui::panels::GitPanel::new("/repo");
     panel.branches = vec![GitBranchEntry {
         name: "feature".to_string(),
         current: false,
@@ -1857,7 +2020,7 @@ fn git_panel_switch_and_delete_and_stash_hit_api() {
 #[test]
 fn git_panel_commit_pull_push_fetch_hit_api() {
     let api = WebApiClient::new("127.0.0.1", 1);
-    let mut panel = crate::tui_panels::GitPanel::new("/repo");
+    let mut panel = crate::tui::panels::GitPanel::new("/repo");
     assert!(panel.commit(&api, "msg", false).is_err());
     assert!(panel.pull(&api).is_err());
     assert!(panel.push(&api).is_err());
@@ -1928,7 +2091,7 @@ fn prefix_e_from_git_changes_opens_file_edit_and_tab_arms_error() {
     // NewTab/CloseTab with no workspace selected: error arms.
     app.snapshot.workspaces.clear();
     app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(app.error.as_deref(), Some("no workspace selected"));
     app.error = None;
     app.handle_key(ctrl_b);
@@ -2057,6 +2220,15 @@ fn fake_backend_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
             "tab.create" | "tab.close" => {
                 json!({"id": request["id"], "result": {"ok": true}})
             }
+            "workspace.close" => {
+                // Built-in backend drops the emptied workspace itself; a
+                // second close reports not-found, which the TUI ignores.
+                if request["workspace_id"].as_str() == Some("ws_gone") {
+                    json!({"id": request["id"], "error": "workspace not found"})
+                } else {
+                    json!({"id": request["id"], "result": {"ok": true}})
+                }
+            }
             method => json!({"error": format!("unexpected method {method}")}),
         };
         stream
@@ -2145,7 +2317,7 @@ fn tab_create_and_close_shortcuts_hit_the_backend() {
     // NewTab creates a tab, then refresh() replaces the status with the
     // backend summary (proof the refresh after create succeeded).
     app.handle_key(ctrl_b);
-    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(
         app.status, "backend test · protocol 1 · 1 workspaces · 1 agents",
         "create tab must refresh against the fake backend"
@@ -2171,7 +2343,7 @@ fn tab_create_and_close_shortcuts_hit_the_backend() {
         app.snapshot = fixture_snapshot();
         let ctrl_b = ctrl('b');
         app.handle_key(ctrl_b);
-        app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('p')));
         assert!(
             app.error.is_some(),
             "create tab against a dead socket errors"
@@ -2201,7 +2373,7 @@ fn tab_create_and_close_shortcuts_hit_the_backend() {
         // Prefix f (files screen) with a dead web API: explorer refresh
         // error surfaces.
         app.screen = TuiScreen::Terminal;
-        app.file_explorer = crate::tui_panels::FileExplorer::new("/definitely/not/here");
+        app.file_explorer = crate::tui::panels::FileExplorer::new("/definitely/not/here");
         app.error = None;
         app.handle_key(ctrl_b);
         app.handle_key(KeyEvent::from(KeyCode::Char('f')));
@@ -2235,6 +2407,56 @@ fn tab_create_and_close_shortcuts_hit_the_backend() {
         assert_eq!(app.error.as_deref(), Some("no tab to close"));
         let _ = std::fs::remove_file(&api_socket);
     }
+}
+
+#[test]
+fn close_last_tab_also_closes_the_workspace() {
+    // Gap 7: webui closeTab closes the workspace explicitly when the
+    // tab was the last one in it. The single-tab fixture exercises the
+    // workspace.close arm: the fake backend answers both requests and
+    // the refreshed status proves the full round trip.
+    let (api_socket, _stop) = fake_backend_socket();
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = fixture_snapshot();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert_eq!(
+        app.status, "backend test · protocol 1 · 1 workspaces · 1 agents",
+        "closing the last tab must refresh against the fake backend"
+    );
+    assert!(app.error.is_none(), "last-tab close error: {:?}", app.error);
+    let _ = std::fs::remove_file(&api_socket);
+}
+
+#[test]
+fn close_last_tab_ignores_workspace_not_found() {
+    // Built-in backends drop the emptied workspace themselves, so the
+    // explicit workspace.close may come back "not found"; the TUI must
+    // swallow that and still report success.
+    let (api_socket, _stop) = fake_backend_socket();
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    let mut snapshot = fixture_snapshot();
+    snapshot.workspaces[0].id = "ws_gone".to_string();
+    snapshot.tabs[0].workspace_id = "ws_gone".to_string();
+    app.snapshot = snapshot;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    // Refresh succeeds against the fake backend, so the status is the
+    // backend summary; the point is that the not-found error is gone.
+    assert_eq!(
+        app.status,
+        "backend test · protocol 1 · 1 workspaces · 1 agents"
+    );
+    assert!(
+        !app.error
+            .as_deref()
+            .is_some_and(|e| e.contains("not found")),
+        "workspace-already-gone not-found must be ignored: {:?}",
+        app.error
+    );
+    let _ = std::fs::remove_file(&api_socket);
 }
 
 #[test]
@@ -2275,7 +2497,7 @@ fn prefix_e_and_discard_guards_against_dead_web_api() {
     // start_edit's own guard.
     app.error = None;
     app.screen = TuiScreen::Files;
-    app.file_explorer.preview = crate::tui_panels::FilePreview::default();
+    app.file_explorer.preview = crate::tui::panels::FilePreview::default();
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('e')));
     assert!(
@@ -2365,6 +2587,7 @@ fn files_key_error_and_guard_arms() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
         FileEntry {
             name: "a.txt".to_string(),
@@ -2373,6 +2596,7 @@ fn files_key_error_and_guard_arms() {
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
 
@@ -2392,7 +2616,7 @@ fn files_key_error_and_guard_arms() {
 
     // R with a dirty preview of the selected file is refused.
     app.file_explorer.selected = 1;
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("a.txt".to_string()),
         content: "x".to_string(),
         truncated: false,
@@ -2449,7 +2673,7 @@ fn edit_key_save_error_surfaces_from_files_screen() {
     );
     app.screen = TuiScreen::Files;
     app.mode = TuiMode::Attach;
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("a.txt".to_string()),
         content: "x".to_string(),
         truncated: false,
@@ -2671,24 +2895,26 @@ fn files_enter_refuses_to_open_preview_with_dirty_other_file() {
     // A dirty buffer on another file blocks Enter preview loading: the
     // refusal surfaces as an error, keeping the dirty buffer intact.
     app.file_explorer.entries = vec![
-        crate::tui_panels::FileEntry {
+        crate::tui::panels::FileEntry {
             name: "one.txt".to_string(),
             path: "one.txt".to_string(),
             is_dir: false,
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
-        crate::tui_panels::FileEntry {
+        crate::tui::panels::FileEntry {
             name: "two.txt".to_string(),
             path: "two.txt".to_string(),
             is_dir: false,
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("one.txt".to_string()),
         content: "edited".to_string(),
         truncated: false,
@@ -2718,23 +2944,25 @@ fn files_l_and_u_surface_refresh_errors_from_a_dead_api() {
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.screen = TuiScreen::Files;
     app.mode = TuiMode::Attach;
-    app.file_explorer = crate::tui_panels::FileExplorer::new("/repo");
+    app.file_explorer = crate::tui::panels::FileExplorer::new("/repo");
     app.file_explorer.entries = vec![
-        crate::tui_panels::FileEntry {
+        crate::tui::panels::FileEntry {
             name: "dir".to_string(),
             path: "dir".to_string(),
             is_dir: true,
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
-        crate::tui_panels::FileEntry {
+        crate::tui::panels::FileEntry {
             name: "file.txt".to_string(),
             path: "file.txt".to_string(),
             is_dir: false,
             size: None,
             level: 0,
             expanded: false,
+            git_status: None,
         },
     ];
     // l on a plain file falls through to toggle_expand, which returns
@@ -2781,7 +3009,7 @@ fn tab_shortcut_refresh_errors_surface_after_backend_create_and_close() {
     // Budget 1 answers exactly the tab.create request; the refresh that
     // follows hits the closed stream and its error surfaces.
     app.handle_key(ctrl('b'));
-    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     assert_eq!(app.status, "tab created", "create still succeeds");
     assert!(
         app.error.as_deref().is_some_and(|e| !e.is_empty()),
@@ -2824,7 +3052,7 @@ fn renders_prefix_armed_footer_and_tiny_screens() {
     // A file longer than the pane breaks out of the line loop instead
     // of overflowing the visible rows.
     app.screen = TuiScreen::Files;
-    app.file_explorer.preview = crate::tui_panels::FilePreview {
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
         path: Some("long.txt".to_string()),
         content: (0..200)
             .map(|i| format!("line {i}"))
@@ -2863,13 +3091,14 @@ fn files_and_git_panel_error_arms_surface_to_status() {
     assert_eq!(app.screen, TuiScreen::Files, "second open is a no-op");
 
     // Enter on a file entry: toggle_expand fails against the dead API.
-    app.file_explorer.entries = vec![crate::tui_panels::FileEntry {
+    app.file_explorer.entries = vec![crate::tui::panels::FileEntry {
         name: "a.rs".to_string(),
         path: "a.rs".to_string(),
         is_dir: false,
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.file_explorer.selected = 0;
     app.handle_key(KeyEvent::from(KeyCode::Enter));
@@ -2899,13 +3128,14 @@ fn files_and_git_panel_error_arms_surface_to_status() {
     // refresh surfaces too.
     app.screen = TuiScreen::Files;
     app.git_panel.cwd = std::env::temp_dir().to_string_lossy().to_string();
-    app.file_explorer.entries = vec![crate::tui_panels::FileEntry {
+    app.file_explorer.entries = vec![crate::tui::panels::FileEntry {
         name: "vanished.rs".to_string(),
         path: "vanished.rs".to_string(),
         is_dir: false,
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.file_explorer.selected = 0;
     app.handle_key(ctrl('b'));
@@ -2918,13 +3148,14 @@ fn files_and_git_panel_error_arms_surface_to_status() {
         kind: PromptKind::RenameFile,
         text: "b.rs".to_string(),
     });
-    app.file_explorer.entries = vec![crate::tui_panels::FileEntry {
+    app.file_explorer.entries = vec![crate::tui::panels::FileEntry {
         name: "a.rs".to_string(),
         path: "a.rs".to_string(),
         is_dir: false,
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.file_explorer.selected = 0;
     app.handle_key(KeyEvent::from(KeyCode::Enter));
@@ -3013,13 +3244,14 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
     );
     app.snapshot = fixture_snapshot();
     app.screen = TuiScreen::Files;
-    app.file_explorer.entries = vec![crate::tui_panels::FileEntry {
+    app.file_explorer.entries = vec![crate::tui::panels::FileEntry {
         name: "a.rs".to_string(),
         path: "a.rs".to_string(),
         is_dir: false,
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.file_explorer.selected = 0;
 
@@ -3049,11 +3281,11 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
     // rebuilt explorer's tree refresh fails -> error surfaces, and the
     // edit still starts from the fetched content.
     app.screen = TuiScreen::Git;
-    app.git_panel.view = crate::tui_panels::GitView::Changes;
+    app.git_panel.view = crate::tui::panels::GitView::Changes;
     app.git_panel.cwd = std::env::temp_dir().to_string_lossy().to_string();
-    app.git_panel.files = vec![crate::tui_panels::GitFileEntry {
+    app.git_panel.files = vec![crate::tui::panels::GitFileEntry {
         path: "a.rs".to_string(),
-        status: crate::tui_panels::GitFileStatus::Unstaged,
+        status: crate::tui::panels::GitFileStatus::Unstaged,
     }];
     app.git_panel.file_selected = 0;
     app.handle_key(ctrl('b'));
@@ -3073,13 +3305,14 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
     // fails (tree endpoint dead) -> Err arm.
     app.screen = TuiScreen::Files;
     app.file_explorer.edit_active = false;
-    app.file_explorer.entries = vec![crate::tui_panels::FileEntry {
+    app.file_explorer.entries = vec![crate::tui::panels::FileEntry {
         name: "d".to_string(),
         path: "d".to_string(),
         is_dir: true,
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.file_explorer.selected = 0;
     app.handle_key(KeyEvent::from(KeyCode::Enter));
@@ -3089,13 +3322,14 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
     // Enter on a plain file with the read endpoint dead: open_preview Err.
     let (dead_port, _stop2) = fake_web_api_server(true, true, false);
     app.web_api = WebApiClient::new("127.0.0.1", dead_port);
-    app.file_explorer.entries = vec![crate::tui_panels::FileEntry {
+    app.file_explorer.entries = vec![crate::tui::panels::FileEntry {
         name: "x.rs".to_string(),
         path: "x.rs".to_string(),
         is_dir: false,
         size: None,
         level: 0,
         expanded: false,
+        git_status: None,
     }];
     app.file_explorer.selected = 0;
     app.handle_key(KeyEvent::from(KeyCode::Enter));
@@ -3107,4 +3341,1597 @@ fn rename_delete_and_edit_succeed_but_refresh_fails() {
     app.file_explorer.root_path = std::env::temp_dir().to_string_lossy().to_string();
     app.handle_key(KeyEvent::from(KeyCode::Char('h')));
     assert!(app.error.is_some(), "go_up refresh failure surfaces");
+}
+
+#[test]
+fn content_search_keys_own_results_and_toggles_re_run() {
+    use crate::tui::panels::files::{ContentSearchChunk, ContentSearchFile, ContentSearchRow};
+
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+
+    // Fabricate results without a server: the key flow must not hit the
+    // API for j/k, Enter-toggle, or A/X toggles with a dead endpoint...
+    // except toggles re-run the search, so use the fake server that
+    // answers content-search with an empty payload (parse-safe).
+    let (port, _stop) = fake_web_api_server(true, true, true);
+    app.web_api = WebApiClient::new("127.0.0.1", port);
+    app.file_explorer.search_mode = true;
+    app.file_explorer.search_kind = crate::tui::panels::files::SearchKind::Content;
+    app.file_explorer.filter = "needle".to_string();
+    app.file_explorer.content_search = crate::tui::panels::files::ContentSearchState {
+        query: "needle".to_string(),
+        files: vec![ContentSearchFile {
+            path: "a.txt".to_string(),
+            name: "a.txt".to_string(),
+            match_count: 1,
+            chunks: vec![ContentSearchChunk {
+                start: 1,
+                end: 1,
+                rows: vec![ContentSearchRow {
+                    line: 4,
+                    text: "hit here".to_string(),
+                    matched: true,
+                }],
+            }],
+            truncated: false,
+            first_match_line: 4,
+        }],
+        expanded: vec![true],
+        done: true,
+        ..Default::default()
+    };
+
+    // j moves over the flat rows (header + one line).
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.file_explorer.content_search.selected, 1);
+
+    // Enter on a matched line jumps: preview opens at the line. The
+    // fake server must answer file reads for this to succeed.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.file_explorer.preview_jump_line, Some(4));
+
+    // Esc clears the results and leaves content mode.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.file_explorer.search_mode);
+    assert!(app.file_explorer.content_search.files.is_empty());
+}
+
+#[test]
+fn files_screen_ctrl_f_find_bar_types_cycles_and_esc_keeps_query() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
+        path: Some("notes.md".to_string()),
+        content: "alpha beta alpha".to_string(),
+        truncated: false,
+        binary: false,
+        hash: "h1".to_string(),
+        dirty: false,
+    };
+    app.file_explorer.edit_active = true;
+    app.file_explorer.edit_cursor = 0;
+
+    // Ctrl+F opens the find bar.
+    app.handle_key(ctrl('f'));
+    assert!(app.file_explorer.editor_find.active);
+
+    // Typing re-runs the search incrementally.
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('l')));
+    assert_eq!(app.file_explorer.editor_find.query, "al");
+    assert_eq!(app.file_explorer.editor_find.ranges.len(), 2);
+
+    // Enter cycles forward, Shift+Enter cycles back.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.file_explorer.editor_find.selected, 1);
+    let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+    app.handle_key(shift_enter);
+    assert_eq!(app.file_explorer.editor_find.selected, 0);
+
+    // A toggles match case (query "al" is lowercase so no change in
+    // count, but the flag flips and re-runs).
+    app.handle_key(KeyEvent::from(KeyCode::Char('A')));
+    assert!(app.file_explorer.editor_find.match_case);
+
+    // Esc closes the bar but keeps the query for the next open.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.file_explorer.editor_find.active);
+    assert_eq!(app.file_explorer.editor_find.query, "al");
+
+    // Reopen resumes with the same query.
+    app.handle_key(ctrl('f'));
+    assert!(app.file_explorer.editor_find.active);
+    assert_eq!(app.file_explorer.editor_find.ranges.len(), 2);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+}
+
+#[test]
+fn files_screen_ctrl_h_replace_prompt_replaces_current_and_all() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
+        path: Some("notes.md".to_string()),
+        content: "foo bar foo".to_string(),
+        truncated: false,
+        binary: false,
+        hash: "h1".to_string(),
+        dirty: false,
+    };
+    app.file_explorer.edit_active = true;
+    app.file_explorer.edit_cursor = 0;
+    app.handle_key(ctrl('f'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('f')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('o')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('o')));
+    assert_eq!(app.file_explorer.editor_find.ranges.len(), 2);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    // Ctrl+H opens the replace prompt.
+    app.handle_key(ctrl('h'));
+    assert_eq!(
+        app.prompt_input.as_ref().map(|prompt| prompt.kind),
+        Some(PromptKind::ReplaceInFile)
+    );
+
+    // Enter with plain text replaces only the current match.
+    for ch in "qux".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.prompt_input.is_none());
+    assert_eq!(app.file_explorer.preview.content, "qux bar foo");
+    assert!(app.file_explorer.preview.dirty);
+    assert!(app.file_explorer.edit_active);
+    // Find re-ran: the remaining foo is still a match.
+    assert_eq!(app.file_explorer.editor_find.ranges.len(), 1);
+
+    // Trailing `!` replaces all matches.
+    app.file_explorer.edit_active = true;
+    app.handle_key(ctrl('h'));
+    for ch in "zap!".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.file_explorer.preview.content, "qux bar zap");
+    assert!(app.file_explorer.editor_find.ranges.is_empty());
+}
+
+#[test]
+fn files_screen_tab_cycles_recent_previews_and_w_reveals_git_file() {
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.screen = TuiScreen::Files;
+    // Two already-open recents: Tab should flip the preview without
+    // touching the (dead) backend.
+    app.file_explorer.recent_previews = vec!["b.md".to_string(), "a.md".to_string()];
+    app.file_explorer.preview = crate::tui::panels::FilePreview {
+        path: Some("b.md".to_string()),
+        content: "b".to_string(),
+        truncated: false,
+        binary: false,
+        hash: "h1".to_string(),
+        dirty: false,
+    };
+    // Tab without a reachable API keeps the list rotating state intact;
+    // the switch itself fails and surfaces an error, so assert on the
+    // non-networking branch: single-entry recents.
+    app.file_explorer.recent_previews.truncate(1);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.status, "no recent previews");
+
+    // `w` with no git file selected errors instead of guessing.
+    app.handle_key(KeyEvent::from(KeyCode::Char('w')));
+    assert_eq!(
+        app.error.as_deref(),
+        Some("no file selected in the git panel")
+    );
+}
+
+#[test]
+fn settings_overlay_opens_cycles_theme_and_closes() {
+    let mut app = app_with_snapshot();
+    app.theme = TuiTheme::Dark;
+
+    // Ctrl+B s opens the settings overlay.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.mode, TuiMode::Settings);
+    let drawn = draw(&app, 150, 30);
+    assert!(drawn.contains("web api base"));
+    assert!(drawn.contains("refresh interval"));
+    assert!(drawn.contains("theme"));
+    assert!(drawn.contains("dark"));
+
+    // t cycles the theme live.
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(app.theme, TuiTheme::Light);
+    assert_eq!(app.status, "theme: light");
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(app.theme, TuiTheme::System);
+
+    // Esc closes back to navigate mode.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+}
+
+#[test]
+fn sidebar_toggle_hides_and_restores_the_sidebar_column() {
+    let mut app = app_with_snapshot();
+    let shown = draw(&app, 120, 30);
+    assert!(shown.contains("Workspaces"), "sidebar renders workspaces");
+
+    // Ctrl+B Shift+B collapses the sidebar (webui sidebar: KeyB).
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT));
+    assert!(app.sidebar_collapsed);
+    assert_eq!(app.status, "sidebar hidden");
+    let hidden = draw(&app, 120, 30);
+    assert!(
+        !hidden.contains("Workspaces"),
+        "collapsed sidebar must not render"
+    );
+
+    // Toggling again restores it.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT));
+    assert!(!app.sidebar_collapsed);
+    assert_eq!(app.status, "sidebar shown");
+    assert!(draw(&app, 120, 30).contains("Workspaces"));
+}
+
+#[test]
+fn focus_walker_cycles_sidebar_regions_and_main() {
+    let mut app = app_with_snapshot();
+    assert!(app.main_focused);
+
+    // Ctrl+B . walks forward: main -> workspaces.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::from(KeyCode::Char('.')));
+    assert!(!app.main_focused);
+    assert_eq!(app.sidebar_focus, SidebarFocus::Workspaces);
+    assert_eq!(app.status, "focus: workspaces");
+
+    // Again: workspaces -> agents.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::from(KeyCode::Char('.')));
+    assert_eq!(app.sidebar_focus, SidebarFocus::Agents);
+
+    // Ctrl+B , walks back and wraps: agents -> workspaces.
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::from(KeyCode::Char(',')));
+    assert_eq!(app.sidebar_focus, SidebarFocus::Workspaces);
+}
+
+#[test]
+fn promote_without_temp_terminal_reports_error_via_shortcut() {
+    // Ctrl+B Shift+P with no temp tab: the webui promotes only when the
+    // overlay is visible; the TUI equivalent guard refuses and reports.
+    let mut app = app_with_snapshot();
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT));
+    assert_eq!(app.error.as_deref(), Some("no temporary terminal open"));
+}
+
+#[test]
+fn renders_missed_terminal_sidebar_status_and_empty_tabs() {
+    let mut app = app_with_snapshot();
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({
+        "snapshot": {
+            "workspaces": [
+                {"workspace_id":"ws_1","label":"Done","cwd":"/done","focused":true,"agent_status":"done","pane_count":1,"tab_count":0,"active_tab_id":null},
+                {"workspace_id":"ws_2","label":"Mystery","cwd":"/mystery","focused":false,"agent_status":"weird","pane_count":0,"tab_count":0,"active_tab_id":null}
+            ],
+            "tabs": [],
+            "panes": [
+                {"pane_id":"pane_done","terminal_id":"term_done","workspace_id":"ws_1","tab_id":"","agent":"jcode","display_agent":"jcode","agent_status":"done","cwd":"/done","focused":true},
+                {"pane_id":"pane_unknown","terminal_id":"term_unknown","workspace_id":"ws_1","tab_id":"","agent":"bot","display_agent":"bot","agent_status":"strange","cwd":"/done","focused":false}
+            ],
+            "agents": [
+                {"pane_id":"pane_done","terminal_id":"term_done","workspace_id":"ws_1","tab_id":"","agent":"jcode","display_agent":"jcode","agent_status":"done","cwd":"/done","focused":true},
+                {"pane_id":"pane_unknown","terminal_id":"term_unknown","workspace_id":"ws_1","tab_id":"","agent":"bot","display_agent":"bot","agent_status":"strange","cwd":"/done","focused":false}
+            ]
+        }
+    }));
+    app.sidebar_focus = SidebarFocus::Agents;
+    app.selected_agent = 1;
+    let rendered = draw(&app, 120, 30);
+    assert!(rendered.contains("Workspaces"));
+    assert!(rendered.contains("Agents*"));
+    assert!(rendered.contains("Done"));
+    assert!(rendered.contains("Mystery"));
+    assert!(rendered.contains("/done"));
+    assert!(rendered.contains("strange"));
+
+    app.snapshot.workspaces.clear();
+    app.snapshot.tabs.clear();
+    app.snapshot.panes.clear();
+    app.snapshot.agents.clear();
+    let empty = draw(&app, 40, 20);
+    assert!(empty.contains("no workspaces"));
+    assert!(empty.contains("Pane"));
+
+    app.sidebar_collapsed = true;
+    let collapsed = draw(&app, 12, 8);
+    assert!(collapsed.contains("no work"));
+}
+
+#[test]
+fn renders_missed_file_preview_outline_jump_find_and_statuses() {
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Files;
+    app.file_explorer.entries = vec![
+        FileEntry {
+            name: "deleted.rs".to_string(),
+            path: "deleted.rs".to_string(),
+            is_dir: false,
+            size: None,
+            level: 0,
+            expanded: false,
+            git_status: Some("deleted".to_string()),
+        },
+        FileEntry {
+            name: "modified.rs".to_string(),
+            path: "modified.rs".to_string(),
+            is_dir: false,
+            size: None,
+            level: 0,
+            expanded: false,
+            git_status: Some("modified".to_string()),
+        },
+        FileEntry {
+            name: "added.rs".to_string(),
+            path: "added.rs".to_string(),
+            is_dir: false,
+            size: None,
+            level: 0,
+            expanded: false,
+            git_status: Some("added".to_string()),
+        },
+        FileEntry {
+            name: "other.rs".to_string(),
+            path: "other.rs".to_string(),
+            is_dir: false,
+            size: None,
+            level: 0,
+            expanded: false,
+            git_status: Some("renamed".to_string()),
+        },
+    ];
+    app.file_explorer.preview.path = Some("README.md".to_string());
+    app.file_explorer.preview.content = "# Title\ntext\n## Middle\n### Deep\n#### Leaf".to_string();
+    app.file_explorer.markdown_outline = true;
+    let outline = draw(&app, 140, 30);
+    assert!(outline.contains("Outline"));
+    assert!(outline.contains("# Title"));
+    assert!(outline.contains("## Middle"));
+    assert!(outline.contains("### Deep"));
+    assert!(outline.contains("- Leaf"));
+
+    app.file_explorer.preview.content = "plain text only".to_string();
+    assert!(draw(&app, 140, 30).contains("no headings"));
+
+    app.file_explorer.markdown_outline = false;
+    app.file_explorer.preview.path = Some("src/lib.rs".to_string());
+    app.file_explorer.preview.content = (1..=20)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.file_explorer.preview_jump_line = Some(15);
+    let jump = draw(&app, 140, 12);
+    assert!(jump.contains("  15"));
+    assert!(jump.contains("line 15"));
+
+    app.file_explorer.edit_active = true;
+    app.file_explorer.edit_cursor = app.file_explorer.preview.content.len();
+    app.file_explorer.editor_find.active = true;
+    app.file_explorer.editor_find.query = "line".to_string();
+    app.file_explorer.editor_find.match_case = true;
+    app.file_explorer.editor_find.regex = true;
+    app.file_explorer.editor_find.ranges.clear();
+    let no_matches = draw(&app, 140, 30);
+    assert!(no_matches.contains("find"));
+    assert!(no_matches.contains("no matches"));
+    assert!(no_matches.contains(" A"));
+    assert!(no_matches.contains(" X"));
+}
+
+#[test]
+fn renders_missed_git_diff_log_stash_and_prompt_branches() {
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Git;
+    app.git_panel.cwd = "/other".to_string();
+    app.git_panel.branch.clear();
+    app.git_panel.state = "conflicts".to_string();
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.files = vec![GitFileEntry {
+        path: "src/lib.rs".to_string(),
+        status: GitFileStatus::Conflicted,
+    }];
+    app.git_panel.diff_title = "src/lib.rs".to_string();
+    app.git_panel.diff_lines = vec![
+        "@@ -1,2 +1,2 @@".to_string(),
+        "-old".to_string(),
+        "+new search hit".to_string(),
+        " context".to_string(),
+    ];
+    app.git_panel.diff_meta = vec![
+        None,
+        Some(crate::tui::panels::git::GitDiffLineMeta {
+            old_line: Some(1),
+            new_line: None,
+        }),
+        Some(crate::tui::panels::git::GitDiffLineMeta {
+            old_line: None,
+            new_line: Some(1),
+        }),
+        Some(crate::tui::panels::git::GitDiffLineMeta {
+            old_line: None,
+            new_line: Some(2),
+        }),
+    ];
+    app.git_panel.diff_search_active = true;
+    app.git_panel.diff_search_query = "search".to_string();
+    app.git_panel.diff_search_matches = vec![2];
+    app.git_panel.diff_search_selected = 0;
+    app.git_panel.diff_hunk_selected = 0;
+    app.git_panel.show_blame = true;
+    app.git_panel.blame_path = Some("src/lib.rs".to_string());
+    app.git_panel
+        .blame_authors
+        .insert(1, "Ada Lovelace Byron".to_string());
+    let changes = draw(&app, 160, 30);
+    assert!(changes.contains("≠ workspace"));
+    assert!(changes.contains("(detached)"));
+    assert!(changes.contains("conflicts"));
+    assert!(changes.contains("/search"));
+    assert!(changes.contains("Ada Lovelace"));
+
+    app.git_panel.view = GitView::Log;
+    app.git_panel.commits = vec![GitCommitEntry {
+        hash: "abc123456789".to_string(),
+        message: "marked commit".to_string(),
+        author: "Ada".to_string(),
+        date: "now".to_string(),
+        labels: vec!["main".to_string(), "tag".to_string()],
+    }];
+    app.git_panel.log_selected = vec!["abc123456789".to_string()];
+    app.git_panel.diff_title = "abc1234".to_string();
+    app.git_panel.diff_lines = vec!["+commit diff".to_string()];
+    let log = draw(&app, 160, 30);
+    assert!(log.contains("*"));
+    assert!(log.contains("marked commit"));
+    assert!(log.contains("main, tag"));
+    assert!(log.contains("commit diff"));
+
+    app.git_panel.view = GitView::Stash;
+    app.git_panel.stashes = vec![GitStashEntry {
+        name: "stash@{0}".to_string(),
+        message: "wip stash".to_string(),
+    }];
+    app.git_panel.stash_diff_title = "stash@{0}".to_string();
+    app.git_panel.stash_diff_lines = vec!["+stash diff".to_string()];
+    let stash = draw(&app, 160, 30);
+    assert!(stash.contains("stash@{0}"));
+    assert!(stash.contains("Stash diff"));
+    assert!(stash.contains("+stash diff"));
+
+    app.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBranch));
+    assert!(draw(&app, 160, 30).contains("Create worktree: branch"));
+    app.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreePath));
+    assert!(draw(&app, 160, 30).contains("Create worktree: checkout path"));
+    app.prompt_input = Some(PromptInput::new(PromptKind::CreateBranch));
+    assert!(draw(&app, 160, 30).contains("Create branch"));
+    app.prompt_input = Some(PromptInput::new(PromptKind::RenameWorkspace));
+    assert!(draw(&app, 160, 30).contains("Repo"));
+    app.prompt_input = Some(PromptInput::new(PromptKind::RenamePanel));
+    assert!(draw(&app, 160, 30).contains("Shell"));
+    app.prompt_input = Some(PromptInput::new(PromptKind::ConfirmCloseWorkspace));
+    assert!(draw(&app, 160, 30).contains("Repo"));
+}
+
+#[test]
+fn renders_content_search_scroll_empty_cleanup_and_settings_modes() {
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Files;
+    app.mode = TuiMode::Settings;
+    app.status = "all fine".to_string();
+    app.file_explorer.cwd = "/repo/files".to_string();
+    app.git_panel.cwd = "/repo/git".to_string();
+    let settings = draw(&app, 100, 30);
+    assert!(settings.contains("Settings"));
+    assert!(settings.contains("/repo/files"));
+    assert!(settings.contains("/repo/git"));
+
+    app.mode = TuiMode::Help;
+    app.help_scroll = 0;
+    assert!(draw(&app, 100, 30).contains("Herdr WebUI TUI"));
+
+    app.mode = TuiMode::Navigate;
+    app.file_explorer.search_mode = true;
+    app.file_explorer.search_kind = crate::tui::panels::files::SearchKind::Content;
+    let files = (0..18)
+        .map(|index| crate::tui::panels::files::ContentSearchFile {
+            path: format!("src/file_{index}.rs"),
+            name: format!("file_{index}.rs"),
+            match_count: 1,
+            chunks: vec![crate::tui::panels::files::ContentSearchChunk {
+                start: index + 1,
+                end: index + 1,
+                rows: vec![crate::tui::panels::files::ContentSearchRow {
+                    line: index + 1,
+                    text: format!("needle {index}"),
+                    matched: index % 2 == 0,
+                }],
+            }],
+            truncated: false,
+            first_match_line: index + 1,
+        })
+        .collect::<Vec<_>>();
+    app.file_explorer.content_search = crate::tui::panels::files::ContentSearchState {
+        query: "needle".to_string(),
+        match_case: false,
+        regex: false,
+        files,
+        expanded: vec![true; 18],
+        offset: 0,
+        done: true,
+        total_files: 18,
+        total_matches: 18,
+        visited: 18,
+        truncated: false,
+        selected: 30,
+    };
+    let search = draw(&app, 120, 12);
+    assert!(search.contains("searched 18 files"));
+    assert!(search.contains("file_"));
+
+    app.screen = TuiScreen::Git;
+    app.file_explorer.search_mode = false;
+    app.git_panel.view = GitView::Cleanup;
+    app.git_panel.cleanup_root = None;
+    app.git_panel.cleanup_repos.clear();
+    let cleanup = draw(&app, 120, 30);
+    assert!(cleanup.contains("Cleanup"));
+    assert!(cleanup.contains("x delete"));
+}
+
+#[test]
+fn renders_content_search_results_conflicts_cleanup_and_prompt_subjects() {
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Files;
+    app.file_explorer.search_mode = true;
+    app.file_explorer.search_kind = crate::tui::panels::files::SearchKind::Content;
+    app.file_explorer.content_search = crate::tui::panels::files::ContentSearchState {
+        query: "Needle".to_string(),
+        match_case: true,
+        regex: true,
+        files: vec![crate::tui::panels::files::ContentSearchFile {
+            path: "src/search.rs".to_string(),
+            name: "search.rs".to_string(),
+            match_count: 2,
+            chunks: vec![crate::tui::panels::files::ContentSearchChunk {
+                start: 7,
+                end: 8,
+                rows: vec![
+                    crate::tui::panels::files::ContentSearchRow {
+                        line: 7,
+                        text: "before".to_string(),
+                        matched: false,
+                    },
+                    crate::tui::panels::files::ContentSearchRow {
+                        line: 8,
+                        text: "Needle found".to_string(),
+                        matched: true,
+                    },
+                ],
+            }],
+            truncated: true,
+            first_match_line: 8,
+        }],
+        expanded: vec![true],
+        offset: 1,
+        done: false,
+        total_files: 1,
+        total_matches: 2,
+        visited: 11,
+        truncated: true,
+        selected: 2,
+    };
+    let rendered = draw(&app, 220, 30);
+    assert!(rendered.contains("Search Content"));
+    assert!(rendered.contains("Needle"));
+    assert!(rendered.contains("searched 11 files"));
+    assert!(rendered.contains("stopped at limit"));
+    assert!(rendered.contains("stopped at limit"));
+    assert!(rendered.contains("src/search.rs"));
+    assert!(rendered.contains("Needle found"));
+
+    app.file_explorer.content_search.files.clear();
+    app.file_explorer.content_search.expanded.clear();
+    assert!(draw(&app, 220, 30).contains("No content matches."));
+
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Conflicts;
+    app.git_panel.conflict_files = vec!["src/lib.rs".to_string()];
+    app.git_panel.rebase_in_progress = true;
+    let conflicts = draw(&app, 150, 30);
+    assert!(conflicts.contains("rebase in progress"));
+    assert!(conflicts.contains("src/lib.rs"));
+    app.git_panel.rebase_in_progress = false;
+    app.git_panel.merge_in_progress = true;
+    assert!(draw(&app, 150, 30).contains("merge in progress"));
+    app.git_panel.merge_in_progress = false;
+    assert!(draw(&app, 150, 30).contains("no merge/rebase in progress"));
+
+    app.git_panel.view = GitView::Cleanup;
+    app.git_panel.cleanup_root = Some("/repo".to_string());
+    app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec!["old-branch".to_string()],
+        worktrees: vec!["stale-worktree".to_string()],
+    }];
+    let cleanup = draw(&app, 150, 30);
+    assert!(cleanup.contains("Cleanup"));
+    assert!(cleanup.contains("old-branch"));
+    assert!(cleanup.contains("stale-worktree"));
+
+    app.git_panel.commits = vec![GitCommitEntry {
+        hash: "abcdef123456".to_string(),
+        message: "subject line".to_string(),
+        author: "Ada".to_string(),
+        date: "today".to_string(),
+        labels: vec![],
+    }];
+    for kind in [
+        PromptKind::CreateTag,
+        PromptKind::ResetMode,
+        PromptKind::ConfirmResetHard,
+        PromptKind::RebaseUpstream,
+        PromptKind::ConfirmRebase,
+    ] {
+        app.prompt_input = Some(PromptInput::new(kind));
+        let prompt = draw(&app, 150, 30);
+        assert!(prompt.contains("abcdef1"));
+        assert!(prompt.contains("subject line"));
+    }
+
+    app.prompt_input = Some(PromptInput::new(PromptKind::GitCwd));
+    app.git_panel.cwd = "/repo/sub".to_string();
+    assert!(draw(&app, 150, 30).contains("/repo/sub"));
+
+    app.prompt_input = Some(PromptInput::new(PromptKind::CreateFile));
+    app.file_explorer.root_path.clear();
+    assert!(draw(&app, 150, 30).contains("(workspace root)"));
+    app.prompt_input = Some(PromptInput::new(PromptKind::CreateDirectory));
+    app.file_explorer.root_path = "/repo/src".to_string();
+    assert!(draw(&app, 150, 30).contains("/repo/src"));
+
+    app.prompt_input = Some(PromptInput::new(PromptKind::ReplaceInFile));
+    app.file_explorer.editor_find.query = "needle".to_string();
+    app.file_explorer.editor_find.ranges.clear();
+    assert!(draw(&app, 150, 30).contains("find: needle (no matches)"));
+    app.file_explorer.editor_find.ranges = vec![(0, 6), (10, 16)];
+    app.file_explorer.editor_find.selected = 1;
+    assert!(draw(&app, 150, 30).contains("find: needle (match 2/2)"));
+}
+
+#[test]
+fn round2_constructors_prompt_titles_help_and_refresh_errors() {
+    assert_eq!(
+        PromptKind::CreateFile.into_workspace_prompt(),
+        workspace::WorkspacePrompt::ConfirmCloseWorkspace
+    );
+    assert_eq!(PromptKind::CreateDirectory.title(), "New directory");
+    assert_eq!(
+        PromptKind::ReplaceInFile.hint(),
+        "type the replacement, Enter replaces the current match (! = all)"
+    );
+
+    let opts = TuiOptions::default();
+    assert!(opts.api_socket.is_none());
+    assert_eq!(opts.refresh_interval, Duration::from_millis(1000));
+
+    let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
+    let mut app = TuiApp::new_with_options(
+        client,
+        Duration::from_millis(5),
+        TuiTheme::Light,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    assert_eq!(app.status, "connecting");
+    assert_eq!(app.theme, TuiTheme::Light);
+    assert!(app.take_dirty());
+    assert!(!app.take_dirty());
+
+    app.refresh_if_due();
+    assert!(app.error.is_some());
+    assert!(app.take_dirty());
+
+    let mut help = TuiApp::new(BackendClient::builtin_session(None), Duration::from_secs(1));
+    help.mode = TuiMode::Help;
+    help.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert!(help.help_scroll > 0);
+    help.handle_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(help.help_scroll, 0);
+    help.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert_eq!(help.mode, TuiMode::Help);
+    help.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(help.mode, TuiMode::Navigate);
+
+    help.mode = TuiMode::Settings;
+    help.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert!(help.status.contains("theme:"));
+    help.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert_eq!(help.mode, TuiMode::Settings);
+    help.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(help.mode, TuiMode::Navigate);
+}
+
+#[test]
+fn round2_commit_modal_enter_error_and_editing_keys() {
+    let (port, _stop) = fake_web_api_server(false, false, false);
+    let mut app = TuiApp::new_with_options(
+        BackendClient::builtin_session(None),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", port),
+    );
+    app.screen = TuiScreen::Git;
+    app.commit_input = Some(CommitInput {
+        text: String::new(),
+        amend: true,
+    });
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('f')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "fix");
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "fi");
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.error.as_deref(), Some("commit message is empty"));
+    assert!(app.commit_input.is_none());
+
+    app.error = None;
+    app.commit_input = Some(CommitInput {
+        text: "ship it".to_string(),
+        amend: false,
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed") || err.contains("connection")));
+    assert!(app.commit_input.is_none());
+
+    app.commit_input = Some(CommitInput {
+        text: "cancel".to_string(),
+        amend: false,
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.commit_input.is_none());
+}
+
+#[test]
+fn round2_navigation_panel_attach_and_prompt_key_edges() {
+    let mut app = app_with_snapshot();
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert_eq!(app.sidebar_focus, SidebarFocus::Agents);
+    app.handle_key(KeyEvent::from(KeyCode::Char('w')));
+    assert_eq!(app.sidebar_focus, SidebarFocus::Workspaces);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.sidebar_focus, SidebarFocus::Agents);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.mode, TuiMode::Attach);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert!(
+        app.error.is_some(),
+        "dead builtin terminal attach should surface"
+    );
+    app.error = None;
+    app.handle_key(ctrl('g'));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert_eq!(app.status, "detached");
+
+    app.snapshot.panes.clear();
+    app.snapshot.agents.clear();
+    app.mode = TuiMode::Attach;
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert_eq!(app.error.as_deref(), Some("selected pane has no terminal"));
+
+    app.prompt_input = Some(PromptInput::new(PromptKind::ConfirmDeleteFile));
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "");
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.status, "cancelled");
+
+    app.prompt_input = Some(PromptInput {
+        kind: PromptKind::CreateFile,
+        text: "tmp.txt".to_string(),
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.prompt_input.is_none());
+}
+
+#[test]
+fn round2_files_git_keys_and_prompt_actions_hit_error_guards() {
+    let mut app = TuiApp::new_with_options(
+        BackendClient::builtin_session(None),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.snapshot = fixture_snapshot();
+    app.screen = TuiScreen::Files;
+    app.mode = TuiMode::Attach;
+    app.file_explorer.entries = vec![FileEntry {
+        name: "a.rs".to_string(),
+        path: "a.rs".to_string(),
+        is_dir: false,
+        size: None,
+        level: 0,
+        expanded: false,
+        git_status: None,
+    }];
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert!(app.file_explorer.filter_active);
+    app.file_explorer.filter_active = false;
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert!(app.status.contains("search:"));
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateFile
+    );
+    app.prompt_input = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('A')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateDirectory
+    );
+    app.prompt_input = None;
+    app.file_explorer.preview.dirty = true;
+    app.file_explorer.preview.path = Some("a.rs".to_string());
+    app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("before renaming")));
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("before deleting")));
+
+    app.file_explorer.preview.dirty = false;
+    app.prompt_input = Some(PromptInput {
+        kind: PromptKind::CreateFile,
+        text: String::new(),
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.error.as_deref(), Some("type a file name"));
+    app.prompt_input = Some(PromptInput {
+        kind: PromptKind::CreateDirectory,
+        text: "dir".to_string(),
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed") || err.contains("connection")));
+
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Changes;
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert!(app.git_panel.diff_search_active);
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('N')));
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(!app.git_panel.diff_search_active);
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    assert_eq!(app.status, "no diff search matches");
+    app.handle_key(KeyEvent::from(KeyCode::Char('N')));
+    assert_eq!(app.status, "no diff search matches");
+    app.handle_key(KeyEvent::from(KeyCode::Char('J')));
+    assert_eq!(app.status, "no hunks in the loaded diff");
+    app.handle_key(KeyEvent::from(KeyCode::Char('K')));
+    assert_eq!(app.status, "no hunks in the loaded diff");
+    app.handle_key(KeyEvent::from(KeyCode::Char('H')));
+    assert!(app.error.is_some());
+
+    app.error = None;
+    app.git_panel.view = GitView::Log;
+    app.git_panel.commits.clear();
+    app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+    assert_eq!(app.error.as_deref(), Some("no commit selected"));
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(
+        app.error.is_some(),
+        "log scope refresh should hit dead web api"
+    );
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('+')));
+    assert!(
+        app.error.is_some()
+            || app.status.contains("log limit")
+            || app.status.contains("already")
+            || app.status.contains("no more commits")
+    );
+}
+
+#[test]
+fn round2_shortcuts_git_guards_and_refresh_tail_edges() {
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.snapshot = fixture_snapshot();
+    app.file_explorer.preview.path = Some("dirty.rs".to_string());
+    app.file_explorer.preview.dirty = true;
+
+    for key in ['/', 'r', 'j', 'k', 'a', 'A', ']', '[', 'w'] {
+        app.handle_key(ctrl('b'));
+        app.handle_key(KeyEvent::from(KeyCode::Char(key)));
+    }
+    assert!(app.error.is_some());
+
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::NewWorkspace
+    );
+    app.prompt_input = None;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::SHIFT));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateWorktreeBranch
+    );
+    app.prompt_input = None;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::ConfirmCloseWorkspace
+    );
+    app.prompt_input = None;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::RenameWorkspace
+    );
+    app.prompt_input = None;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('I')));
+    assert_eq!(app.prompt_input.as_ref().unwrap().kind, PromptKind::GitCwd);
+    assert_eq!(app.screen, TuiScreen::Git);
+    app.prompt_input = None;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('B')));
+    assert!(app.sidebar_collapsed);
+
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.files = vec![GitFileEntry {
+        path: "dirty.rs".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    app.git_panel.file_selected = 0;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("before discarding")));
+
+    app.error = None;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('h')));
+    assert_eq!(app.git_panel.view, GitView::History);
+    assert!(app.error.is_some());
+
+    app.error = None;
+    app.git_panel.view = GitView::Log;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    assert_eq!(app.git_panel.view, GitView::Changes);
+    assert!(app.error.is_some());
+
+    app.snapshot.panes.clear();
+    app.pane_tail = vec!["old".to_string()];
+    app.refresh_tail();
+    assert!(app.pane_tail.is_empty());
+}
+
+#[test]
+fn round3_commit_modal_editing_and_submit_error_arms() {
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Changes;
+
+    app.commit_input = Some(CommitInput {
+        text: "abc".to_string(),
+        amend: true,
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "abd");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.error.as_deref(), Some("commit message is empty"));
+    assert!(app.commit_input.is_none());
+
+    app.error = None;
+    app.commit_input = Some(CommitInput {
+        text: "ship it".to_string(),
+        amend: false,
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.commit_input = Some(CommitInput {
+        text: "cancel me".to_string(),
+        amend: false,
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.commit_input.is_none());
+}
+
+#[test]
+fn round3_log_toolbar_prompts_and_prompt_error_paths() {
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Log;
+
+    for key in ['t', 'R', 'b'] {
+        app.error = None;
+        app.handle_key(KeyEvent::from(KeyCode::Char(key)));
+        assert_eq!(app.error.as_deref(), Some("no commit selected"));
+    }
+
+    app.git_panel.commits = vec![GitCommitEntry {
+        hash: "abc123".to_string(),
+        message: "change".to_string(),
+        author: "Ada".to_string(),
+        date: String::new(),
+        labels: vec![],
+    }];
+    app.git_panel.commit_selected = 0;
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateTag
+    );
+    app.prompt_input.as_mut().unwrap().text = "v1".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::ResetMode
+    );
+    app.prompt_input.as_mut().unwrap().text = "bogus".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.error.as_deref(), Some("type soft, mixed or hard"));
+
+    app.error = None;
+    app.prompt_input = Some(PromptInput {
+        kind: PromptKind::ResetMode,
+        text: "hard".to_string(),
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::ConfirmResetHard
+    );
+    app.prompt_input.as_mut().unwrap().text = "y".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('b')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::RebaseUpstream
+    );
+    app.prompt_input.as_mut().unwrap().text = "origin/main".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::ConfirmRebase
+    );
+    app.prompt_input.as_mut().unwrap().text = "y".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.git_panel.view = GitView::Branches;
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateBranch
+    );
+    app.prompt_input.as_mut().unwrap().text = "feature/demo".to_string();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.git_panel.view = GitView::Log;
+    app.handle_key(KeyEvent::from(KeyCode::Char('w')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateWorktreeBranch
+    );
+}
+
+#[test]
+fn round3_git_diff_search_hunk_and_stash_key_error_paths() {
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.diff_lines = vec![
+        "@@ -1 +1 @@".to_string(),
+        "-old needle".to_string(),
+        "+new needle".to_string(),
+    ];
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert!(app.git_panel.diff_search_active);
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    assert_eq!(app.git_panel.diff_search_query, "e");
+    app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+    assert_eq!(app.git_panel.diff_search_query, "ed");
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('N')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(!app.git_panel.diff_search_active);
+    assert!(!app.git_panel.diff_search_matches.is_empty());
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.git_panel.diff_search_matches.is_empty());
+    app.git_panel.diff_lines = vec![
+        "@@ -1 +1 @@".to_string(),
+        "-old needle".to_string(),
+        "+new needle".to_string(),
+    ];
+    app.git_panel.diff_meta = vec![
+        None,
+        Some(crate::tui::panels::git::GitDiffLineMeta::default()),
+        Some(crate::tui::panels::git::GitDiffLineMeta::default()),
+    ];
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('J')));
+    assert_eq!(app.status, "hunk 1");
+    app.handle_key(KeyEvent::from(KeyCode::Char('K')));
+    assert_eq!(app.status, "hunk 1");
+    app.handle_key(KeyEvent::from(KeyCode::Char('H')));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.git_panel.view = GitView::Stash;
+    app.git_panel.stashes = vec![GitStashEntry {
+        name: "stash@{0}".to_string(),
+        message: "wip".to_string(),
+    }];
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert!(app
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("webui connection failed")));
+
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::ConfirmDropStash
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.prompt_input.is_none());
+}
+
+#[test]
+fn round3_specific_tui_edges_and_shortcuts() {
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.snapshot = fixture_snapshot();
+
+    app.refresh_if_due();
+    assert!(app.error.is_some());
+    app.error = Some("visible".to_string());
+    assert!(app.text_snapshot().contains("error: visible"));
+
+    app.run_shortcut(Shortcut::RenamePanel);
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::RenamePanel
+    );
+    app.prompt_input = None;
+
+    app.run_shortcut(Shortcut::TempTerminalToggle);
+    assert!(app.error.is_some());
+    app.error = None;
+
+    app.screen = TuiScreen::Files;
+    app.mode = TuiMode::Attach;
+    app.file_explorer.entries = vec![FileEntry {
+        name: "dir".to_string(),
+        path: "dir".to_string(),
+        is_dir: true,
+        size: None,
+        level: 0,
+        expanded: false,
+        git_status: None,
+    }];
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert!(app.status == "no recent previews" || app.error.is_some());
+    app.git_panel.files = vec![GitFileEntry {
+        path: "src/lib.rs".to_string(),
+        status: GitFileStatus::Unstaged,
+    }];
+    app.handle_key(KeyEvent::from(KeyCode::Char('w')));
+    assert!(app.status.contains("revealed") || app.error.is_some());
+
+    app.file_explorer.edit_active = true;
+    app.file_explorer.preview.path = Some("edit.rs".to_string());
+    app.file_explorer.preview.content = "hello".to_string();
+    app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    assert!(app.status == "saved" || app.error.is_some());
+
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.diff_lines = vec!["@@ -1 +1 @@".to_string(), "+hello".to_string()];
+    app.git_panel.diff_hunk_selected = 0;
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('@')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('N')));
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    app.git_panel.cancel_diff_search();
+    app.git_panel.diff_lines = vec!["@@ -1 +1 @@".to_string(), "+hello".to_string()];
+    app.git_panel.view = GitView::Changes;
+    app.handle_key(KeyEvent::from(KeyCode::Char('J')));
+    assert!(app.status == "hunk 1" || app.status == "no hunks in the loaded diff");
+    app.handle_key(KeyEvent::from(KeyCode::Char('H')));
+    assert!(app.status == "hunk applied" || app.error.is_some());
+
+    app.error = None;
+    app.git_panel.view = GitView::Branches;
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateBranch
+    );
+    app.prompt_input = None;
+    app.git_panel.view = GitView::Changes;
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert!(app.commit_input.is_some());
+    app.commit_input = None;
+
+    app.git_panel.view = GitView::Stash;
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert!(app.status == "stash applied" || app.error.is_some());
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.status == "stash diff loaded" || app.error.is_some());
+
+    app.error = None;
+    app.git_panel.view = GitView::History;
+    app.git_panel.commits = vec![GitCommitEntry {
+        hash: "abc123".to_string(),
+        message: "msg".to_string(),
+        author: "me".to_string(),
+        date: String::new(),
+        labels: vec![],
+    }];
+    app.git_panel.commit_selected = 0;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.status.contains("commit abc123") || app.error.is_some());
+
+    app.error = None;
+    app.git_panel.view = GitView::Branches;
+    app.git_panel.branches = vec![GitBranchEntry {
+        name: "feature".to_string(),
+        current: false,
+        remote: false,
+        pushed: false,
+    }];
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.status.contains("switched") || app.error.is_some());
+
+    app.mode = TuiMode::Navigate;
+    app.screen = TuiScreen::Terminal;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.mode, TuiMode::Attach);
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert!(app.error.is_some());
+
+    app.load_selected_terminal_history(80, 24);
+    assert!(app.error.is_some());
+    assert!(!app.should_quit());
+}
+
+#[test]
+fn round4_commit_modal_typing_clear_submit_and_log_prompts() {
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Git;
+    app.mode = TuiMode::Attach;
+    app.git_panel.view = GitView::Changes;
+    app.commit_input = Some(CommitInput {
+        text: String::new(),
+        amend: false,
+    });
+
+    for ch in "hello".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "hello");
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "hell");
+    app.handle_key(KeyEvent::from(KeyCode::Left));
+    app.handle_key(KeyEvent::from(KeyCode::Right));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "hell");
+    app.handle_key(ctrl('u'));
+    assert_eq!(app.commit_input.as_ref().unwrap().text, "");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.commit_input.is_none());
+    assert_eq!(app.error.as_deref(), Some("commit message is empty"));
+
+    app.error = None;
+    app.commit_input = Some(CommitInput {
+        text: "ship it".to_string(),
+        amend: true,
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.commit_input.is_none());
+    assert!(
+        app.error
+            .as_deref()
+            .is_some_and(|err| err.contains("webui connection failed")),
+        "dead commit API error is surfaced: {:?}",
+        app.error
+    );
+
+    app.commit_input = Some(CommitInput {
+        text: "cancel me".to_string(),
+        amend: false,
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.commit_input.is_none());
+
+    app.git_panel.view = GitView::Log;
+    app.git_panel.commits = vec![GitCommitEntry {
+        hash: "abc123".to_string(),
+        message: "msg".to_string(),
+        author: "me".to_string(),
+        date: String::new(),
+        labels: vec![],
+    }];
+    app.git_panel.commit_selected = 0;
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::CreateTag
+    );
+    assert_eq!(app.status, PromptKind::CreateTag.title());
+    app.prompt_input = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        PromptKind::ResetMode
+    );
+    assert_eq!(app.status, PromptKind::ResetMode.title());
+
+    app.prompt_input = None;
+    app.git_panel.commits.clear();
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(app.error.as_deref(), Some("no commit selected"));
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Char('R')));
+    assert_eq!(app.error.as_deref(), Some("no commit selected"));
+}
+
+#[test]
+fn round4_render_small_area_diff_and_status_variants() {
+    let mut app = app_with_snapshot();
+    let backend = TestBackend::new(0, 0);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+
+    app.screen = TuiScreen::Terminal;
+    app.snapshot.workspaces[0].active_tab_id = Some("not-active".to_string());
+    let backend = TestBackend::new(90, 18);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = format!("{:?}", terminal.backend().buffer());
+    assert!(rendered.contains("Shell"));
+
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Changes;
+    app.git_panel.diff_title = "src/app.rs".to_string();
+    app.git_panel.diff_search_active = true;
+    app.git_panel.diff_search_query = "absent".to_string();
+    app.git_panel.diff_search_matches.clear();
+    app.git_panel.diff_lines = vec![
+        "@@ -1 +1 @@".to_string(),
+        "-old".to_string(),
+        "+new".to_string(),
+    ];
+    app.git_panel.diff_meta = vec![None, None, None];
+    app.git_panel.diff_hunk_selected = 0;
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = format!("{:?}", terminal.backend().buffer());
+    assert!(rendered.contains("Diff"));
+    assert!(rendered.contains("0/0"));
+
+    app.snapshot.agents = vec![
+        crate::tui::model::TuiAgent {
+            pane_id: "p1".to_string(),
+            terminal_id: "t1".to_string(),
+            workspace_id: "ws_1".to_string(),
+            tab_id: "tab_1".to_string(),
+            agent: Some("jcode".to_string()),
+            display_agent: Some("jcode".to_string()),
+            title: None,
+            status: "working".to_string(),
+            cwd: "/repo".to_string(),
+            focused: false,
+        },
+        crate::tui::model::TuiAgent {
+            pane_id: "p2".to_string(),
+            terminal_id: "t2".to_string(),
+            workspace_id: "ws_1".to_string(),
+            tab_id: "tab_1".to_string(),
+            agent: Some("shell".to_string()),
+            display_agent: Some("shell".to_string()),
+            title: None,
+            status: "blocked".to_string(),
+            cwd: "/repo".to_string(),
+            focused: false,
+        },
+    ];
+    let backend = TestBackend::new(100, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let rendered = format!("{:?}", terminal.backend().buffer());
+    assert!(rendered.contains("jcode"));
+    assert!(rendered.contains("shell"));
+}
+
+#[test]
+fn final_round_prompt_titles_options_and_refresh_error_arms() {
+    assert_eq!(
+        PromptKind::ConfirmCleanupDelete.title(),
+        "Delete cleanup item (y)"
+    );
+    assert_eq!(
+        PromptKind::CreateTag.hint(),
+        "type the tag name, Enter tags the selected commit"
+    );
+    assert_eq!(
+        PromptKind::ResetMode.hint(),
+        "type soft, mixed or hard, Enter resets"
+    );
+    assert_eq!(
+        PromptKind::RebaseUpstream.hint(),
+        "type the upstream ref, then y + Enter to rebase"
+    );
+    assert_eq!(
+        PromptKind::GitCwd.hint(),
+        "type a repository path, Enter switches the git panel"
+    );
+    assert_eq!(
+        PromptKind::CreateBranch.hint(),
+        "type the branch name, Enter creates and switches"
+    );
+    assert_eq!(
+        PromptKind::CreateFile.hint(),
+        "type the file name, Enter creates an empty file"
+    );
+    assert_eq!(
+        PromptKind::CreateDirectory.hint(),
+        "type the directory name, Enter creates it"
+    );
+    assert_eq!(
+        PromptKind::ReplaceInFile.hint(),
+        "type the replacement, Enter replaces the current match (! = all)"
+    );
+
+    let dead_options = TuiOptions {
+        api_socket: Some(std::path::PathBuf::from("/nonexistent.sock")),
+        terminal_socket: Some(std::path::PathBuf::from("/nonexistent-terminal.sock")),
+        ..TuiOptions::default()
+    };
+    let mut app = TuiApp::new_with_options(
+        build_client(&dead_options),
+        Duration::from_secs(0),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.snapshot = fixture_snapshot();
+    app.refresh_if_due();
+    assert!(app.error.as_deref().is_some_and(|err| !err.is_empty()));
+
+    let builtin_options = TuiOptions::default();
+    let mut app = TuiApp::new_with_options(
+        build_client(&builtin_options),
+        Duration::from_secs(60),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.snapshot = fixture_snapshot();
+    app.status = "before".to_string();
+    app.last_refresh = Some(Instant::now());
+    app.refresh_if_due();
+    assert_eq!(app.status, "before", "not-due refresh skips the backend");
 }

@@ -26,6 +26,7 @@ pub enum WebApiError {
     InvalidUrl(String),
     Http { status: u16, message: String },
     Json(String),
+    Api(String),
 }
 
 impl std::fmt::Display for WebApiError {
@@ -41,6 +42,7 @@ impl std::fmt::Display for WebApiError {
                 }
             }
             Self::Json(message) => write!(f, "invalid WebUI API response: {message}"),
+            Self::Api(message) => write!(f, "{message}"),
         }
     }
 }
@@ -234,12 +236,37 @@ impl WebApiClient {
         query: &str,
         offset: usize,
         limit: usize,
+        dirs_only: bool,
     ) -> Result<Value, WebApiError> {
         self.get(&format!(
-            "/api/file-browser/tree?cwd={}&path={}&q={}&offset={offset}&limit={limit}&include_git_status=true",
+            "/api/file-browser/tree?cwd={}&path={}&q={}&offset={offset}&limit={limit}&search_kind={}&include_git_status=true",
             urlencode(cwd),
             urlencode(path),
             urlencode(query),
+            if dirs_only { "dir" } else { "file" },
+        ))
+    }
+
+    /// `/api/file-browser/content-search`: grep-style results grouped
+    /// per file with pre-merged context chunks. `offset`/`limit` page
+    /// over files; `match_case`/`regex` mirror the webui toggles.
+    pub fn content_search(
+        &self,
+        cwd: &str,
+        path: &str,
+        query: &str,
+        offset: usize,
+        limit: usize,
+        match_case: bool,
+        regex: bool,
+    ) -> Result<Value, WebApiError> {
+        self.get(&format!(
+            "/api/file-browser/content-search?cwd={}&path={}&q={}&offset={offset}&limit={limit}&context_lines=2&match_case={}&regex={}",
+            urlencode(cwd),
+            urlencode(path),
+            urlencode(query),
+            if match_case { "true" } else { "false" },
+            if regex { "true" } else { "false" },
         ))
     }
 
@@ -258,6 +285,28 @@ impl WebApiClient {
         content: &str,
         expected_hash: Option<&str>,
     ) -> Result<Value, WebApiError> {
+        self.file_write_ext(cwd, path, content, expected_hash, false)
+    }
+
+    /// `file_write` with `create_parents`: missing intermediate
+    /// directories are created (new-file/new-directory flow).
+    pub fn file_write_create(
+        &self,
+        cwd: &str,
+        path: &str,
+        content: &str,
+    ) -> Result<Value, WebApiError> {
+        self.file_write_ext(cwd, path, content, None, true)
+    }
+
+    fn file_write_ext(
+        &self,
+        cwd: &str,
+        path: &str,
+        content: &str,
+        expected_hash: Option<&str>,
+        create_parents: bool,
+    ) -> Result<Value, WebApiError> {
         self.post(
             "/api/file-browser/file",
             &json!({
@@ -265,6 +314,7 @@ impl WebApiClient {
                 "path": path,
                 "content": content,
                 "expected_hash": expected_hash,
+                "create_parents": create_parents,
             }),
         )
     }
@@ -306,12 +356,29 @@ impl WebApiClient {
         self.get(&url)
     }
 
-    pub fn git_log(&self, cwd: &str, max: usize, all: bool) -> Result<Value, WebApiError> {
-        self.get(&format!(
-            "/api/git-ui/log?cwd={}&all={}&scope=all&max={max}",
+    /// `/api/git-ui/log` with full webui params: `scope` (all /
+    /// base-current / base), `base` branch, per-page `max` and an
+    /// optional file filter (webui `logFilePath`). `all` is redundant
+    /// with `scope` but the server reads both.
+    pub fn git_log_scoped(
+        &self,
+        cwd: &str,
+        scope: &str,
+        base: &str,
+        max: usize,
+        file: Option<&str>,
+    ) -> Result<Value, WebApiError> {
+        let mut url = format!(
+            "/api/git-ui/log?cwd={}&all={}&scope={}&base={}&max={max}",
             urlencode(cwd),
-            if all { "true" } else { "false" },
-        ))
+            if scope == "all" { "true" } else { "false" },
+            urlencode(scope),
+            urlencode(base),
+        );
+        if let Some(file) = file {
+            url.push_str(&format!("&file={}", urlencode(file)));
+        }
+        self.get(&url)
     }
 
     pub fn git_branches(&self, cwd: &str) -> Result<Value, WebApiError> {
@@ -367,6 +434,22 @@ impl WebApiClient {
         self.post("/api/git-ui/stage", &json!({ "cwd": cwd, "paths": paths }))
     }
 
+    /// `/api/git-ui/apply-patch`: apply a single-hunk patch (webui
+    /// `applyHunk`). `cached: true` stages the hunk (git apply --cached);
+    /// adding `reverse: true` unstages it (git apply -R --cached).
+    pub fn git_apply_patch(
+        &self,
+        cwd: &str,
+        patch: &str,
+        reverse: bool,
+        cached: bool,
+    ) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/apply-patch",
+            &json!({ "cwd": cwd, "patch": patch, "reverse": reverse, "cached": cached }),
+        )
+    }
+
     pub fn git_unstage(&self, cwd: &str, paths: &[String]) -> Result<Value, WebApiError> {
         self.post(
             "/api/git-ui/unstage",
@@ -416,6 +499,63 @@ impl WebApiClient {
         )
     }
 
+    /// `/api/git-ui/reset`: the server requires the typed confirmation
+    /// `"reset hard"` for hard mode; soft/mixed accept an empty string.
+    pub fn git_reset(
+        &self,
+        cwd: &str,
+        ref_name: &str,
+        mode: &str,
+        confirmation: &str,
+    ) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/reset",
+            &json!({
+                "cwd": cwd,
+                "ref_name": ref_name,
+                "mode": mode,
+                "confirmation": confirmation,
+            }),
+        )
+    }
+
+    /// `/api/git-ui/rebase`: upstream + optional onto (server falls back
+    /// to main/master). `pull_first` refreshes the remote first, matching
+    /// the webui rebase modal's checkbox. Requires typed confirmation
+    /// `"rebase selected"` on the server side.
+    pub fn git_rebase(
+        &self,
+        cwd: &str,
+        upstream: &str,
+        onto: Option<&str>,
+        pull_first: bool,
+        confirmation: &str,
+    ) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/rebase",
+            &json!({
+                "cwd": cwd,
+                "upstream": upstream,
+                "onto": onto,
+                "pull_first": pull_first,
+                "confirmation": confirmation,
+            }),
+        )
+    }
+
+    /// `/api/git-ui/tag`: create `tag_name` on `ref_name` (a hash or
+    /// branch). The server validates both as single git tokens.
+    pub fn git_tag(&self, cwd: &str, tag_name: &str, ref_name: &str) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/tag",
+            &json!({
+                "cwd": cwd,
+                "tag_name": tag_name,
+                "ref_name": ref_name,
+            }),
+        )
+    }
+
     pub fn git_branch_delete(
         &self,
         cwd: &str,
@@ -430,6 +570,76 @@ impl WebApiClient {
 
     pub fn git_stash(&self, cwd: &str) -> Result<Value, WebApiError> {
         self.post("/api/git-ui/stash", &json!({ "cwd": cwd }))
+    }
+
+    /// `/api/git-ui/stash-show`: full diff of one stash entry. Response
+    /// shape matches `/api/git-ui/diff`, so `parse_diff_lines_with_meta`
+    /// can parse it.
+    pub fn git_stash_show(&self, cwd: &str, stash: &str) -> Result<Value, WebApiError> {
+        self.get(&format!(
+            "/api/git-ui/stash-show?cwd={}&stash={}&context=3",
+            urlencode(cwd),
+            urlencode(stash),
+        ))
+    }
+
+    /// `/api/git-ui/conflicts`: conflicted file list plus merge/rebase state.
+    pub fn git_conflicts(&self, cwd: &str) -> Result<Value, WebApiError> {
+        self.get(&format!("/api/git-ui/conflicts?cwd={}", urlencode(cwd),))
+    }
+
+    /// `/api/git-ui/conflict-resolve`: resolve one file with `ours` /
+    /// `base` (parent) / `theirs` (remote) / `mark` (git add).
+    pub fn git_conflict_resolve(
+        &self,
+        cwd: &str,
+        path: &str,
+        mode: &str,
+    ) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/conflict-resolve",
+            &json!({ "cwd": cwd, "path": path, "mode": mode }),
+        )
+    }
+
+    /// `/api/git-ui/conflict-action`: continue/skip/abort a rebase, merge,
+    /// or cherry-pick in progress.
+    pub fn git_conflict_action(&self, cwd: &str, action: &str) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/conflict-action",
+            &json!({ "cwd": cwd, "action": action }),
+        )
+    }
+
+    /// `/api/git-ui/cleanup-scan`: repos with merged branches and stale
+    /// worktrees under a root directory.
+    pub fn git_cleanup_scan(&self, root: &str) -> Result<Value, WebApiError> {
+        self.get(&format!(
+            "/api/git-ui/cleanup-scan?root={}",
+            urlencode(root),
+        ))
+    }
+
+    /// `/api/git-ui/branch-delete` with explicit confirmation (the TUI
+    /// collects its own confirmation before calling).
+    pub fn git_cleanup_branch_delete(&self, cwd: &str, branch: &str) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/branch-delete",
+            &json!({ "cwd": cwd, "branch": branch, "force": false, "confirmed": true }),
+        )
+    }
+
+    /// `/api/git-ui/worktree-remove` for cleanup.
+    pub fn git_cleanup_worktree_remove(&self, cwd: &str, path: &str) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/git-ui/worktree-remove",
+            &json!({ "cwd": cwd, "path": path, "confirmed": true }),
+        )
+    }
+
+    /// `/api/git-ui/worktree-prune` for cleanup.
+    pub fn git_cleanup_worktree_prune(&self, cwd: &str) -> Result<Value, WebApiError> {
+        self.post("/api/git-ui/worktree-prune", &json!({ "cwd": cwd }))
     }
 
     pub fn git_stash_apply(&self, cwd: &str, stash: &str) -> Result<Value, WebApiError> {
@@ -907,5 +1117,124 @@ mod tests {
             std::env::remove_var("XDG_CONFIG_HOME");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn http_error_extracts_payload_and_request_helpers_cover_cleanup_routes() {
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(
+                &mut s,
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 22\r\n\r\n{\"error\":\"bad things\"}",
+            );
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let err = client.git_cleanup_scan("/root dir").unwrap_err();
+        assert_eq!(err.to_string(), "WebUI API error 500: bad things");
+        handle.join().unwrap();
+
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(
+                &mut s,
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+            );
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let err = client
+            .git_cleanup_branch_delete("/repo", "old")
+            .unwrap_err();
+        assert_eq!(err.to_string(), "WebUI API error 404");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn request_json_rejects_malformed_status_truncated_body_and_bad_json() {
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(&mut s, "NOTHTTP\r\n\r\n{}");
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let err = client.get("/bad").unwrap_err();
+        assert!(err.to_string().contains("malformed status line"));
+        handle.join().unwrap();
+
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(&mut s, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort");
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        assert!(client
+            .get("/short")
+            .unwrap_err()
+            .to_string()
+            .contains("failed"));
+        handle.join().unwrap();
+
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(
+                &mut s,
+                "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nnot json",
+            );
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        assert!(client
+            .get("/json")
+            .unwrap_err()
+            .to_string()
+            .contains("invalid WebUI API response"));
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn round4_http_json_errors_resets_and_conflict_resolve_post() {
+        assert_eq!(
+            WebApiError::Api("server said no".to_string()).to_string(),
+            "server said no"
+        );
+
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(
+                &mut s,
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 23\r\n\r\n{\"error\":\"boom failed\"}",
+            );
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let err = client.get("/api/fail").unwrap_err();
+        assert_eq!(err.to_string(), "WebUI API error 500: boom failed");
+        handle.join().unwrap();
+
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(
+                &mut s,
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 7\r\n\r\nnotjson",
+            );
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        let err = client.get("/api/bad-error").unwrap_err();
+        assert!(
+            err.to_string().contains("invalid WebUI API response"),
+            "malformed json error body fails while parsing response: {err}"
+        );
+        handle.join().unwrap();
+
+        let (port, handle) = raw_http_server(|s| {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        assert!(client
+            .get("/api/reset")
+            .unwrap_err()
+            .to_string()
+            .contains("webui connection failed"));
+        handle.join().unwrap();
+
+        let (port, handle) = raw_http_server(|mut s| {
+            write_response(&mut s, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+        });
+        let client = WebApiClient::new("127.0.0.1", port);
+        assert_eq!(
+            client
+                .git_conflict_resolve("/repo", "a.rs", "ours")
+                .unwrap(),
+            json!({})
+        );
+        handle.join().unwrap();
     }
 }

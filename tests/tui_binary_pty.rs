@@ -56,51 +56,112 @@ fn serve_fake_backend(path: &std::path::Path) -> mpsc::Sender<()> {
     tx
 }
 
-/// Pump the PTY on a dedicated thread so a hung render cannot block the
-/// test forever: the main thread enforces the deadline via the channel.
-fn read_until(pty_out: Box<dyn Read + Send>, needle: &str, timeout: Duration) -> String {
-    let needle = needle.to_string();
-    let (tx, rx) = mpsc::channel::<String>();
+/// Pump the PTY into a shared log so a single reader owns the master
+/// fd (multiple cloned readers race for the same buffer and lose
+/// chunks), while the log lets assertions wait for later output. The
+/// pump also keeps draining so the pty buffer never fills and blocks
+/// the TUI mid-draw.
+fn pump(pty_out: Box<dyn Read + Send>) -> std::sync::Arc<std::sync::Mutex<String>> {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let sink = log.clone();
     std::thread::spawn(move || {
         let mut reader = pty_out;
         let mut buf = vec![0u8; 4096];
         loop {
             match reader.read(&mut buf) {
-                Ok(0) | Err(_) => {
-                    let _ = tx.send(String::new());
-                    return;
-                }
+                Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    if tx
-                        .send(String::from_utf8_lossy(&buf[..n]).into_owned())
-                        .is_err()
-                    {
-                        return;
+                    if let Ok(mut log) = sink.lock() {
+                        log.push_str(&String::from_utf8_lossy(&buf[..n]));
                     }
                 }
             }
         }
     });
-    let mut seen = String::new();
-    let deadline = Instant::now() + timeout;
+    log
+}
+
+/// Block until `needle` shows up in the pumped log. 120s is a failure
+/// deadline, not the expected duration.
+///
+/// Matches are tried against both the raw wire and an SGR-stripped
+/// copy: ratatui's diff renderer only re-emits changed cells and puts
+/// an SGR escape at every style boundary, so needles that span two
+/// styled spans (or sit right after a style flip) never appear
+/// contiguously in the raw stream.
+fn wait_for(log: &std::sync::Arc<std::sync::Mutex<String>>, needle: &str) {
+    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            panic!("TUI did not render {needle:?} in time; output so far: {seen:?}");
+        {
+            let Ok(log) = log.lock() else { break };
+            if log.contains(needle) || strip_sgr(&log).contains(needle) {
+                return;
+            }
+            if Instant::now() > deadline {
+                let tail = log.len().saturating_sub(2000);
+                panic!(
+                    "TUI did not render {needle:?} in time; tail of output: {:?}",
+                    &log[tail..]
+                );
+            }
         }
-        match rx.recv_timeout(remaining) {
-            Ok(chunk) => {
-                seen.push_str(&chunk);
-                if seen.contains(&needle) {
-                    return seen;
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Remove `ESC [ ... m` (SGR) sequences so style changes cannot split a
+/// needle. Cursor-movement escapes are kept, which is what makes the
+/// deterministic overlay-cell needles below work.
+fn strip_sgr(wire: &str) -> String {
+    let mut out = String::with_capacity(wire.len());
+    let mut chars = wire.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        // Peek for "[ m" (SGR, params allowed but irrelevant here):
+        // anything else is copied verbatim so cursor moves survive.
+        // `ESC[m` (no params) is a valid SGR reset and is stripped too.
+        let mut rest = chars.clone();
+        if rest.next() == Some('[') {
+            let mut sgr = false;
+            for param in rest.by_ref() {
+                if !(param.is_ascii_digit() || param == ';') {
+                    sgr = param == 'm';
+                    break;
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                panic!("TUI did not render {needle:?} in time; output so far: {seen:?}")
+            if sgr {
+                chars = rest;
+                continue;
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("PTY closed before {needle:?}; output: {seen:?}")
-            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Panic-safe cleanup for the spawned TUI: if a wait_for assertion
+/// fails, the child would otherwise stay alive holding the PTY and
+/// the fake backend thread would spin forever. RAII keeps the happy
+/// path unchanged: `disarm` after the exit status is reaped. The
+/// guard holds a `ChildKiller` clone so the watchdog thread keeps
+/// ownership of the `Child` and its wait().
+struct ChildGuard {
+    killer: Option<Box<dyn portable_pty::ChildKiller>>,
+}
+
+impl ChildGuard {
+    fn disarm(&mut self) {
+        self.killer = None;
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut killer) = self.killer.take() {
+            let _ = killer.kill();
         }
     }
 }
@@ -136,36 +197,73 @@ fn tui_binary_interactive_loop_pty() {
         "50",
     ]);
     let mut child = pair.slave.spawn_command(cmd).unwrap();
+    let mut child_guard = ChildGuard {
+        killer: Some(child.clone_killer()),
+    };
     let pty_out = pair.master.try_clone_reader().unwrap();
+    let log = pump(pty_out);
 
-    // The TUI renders its footer with the Navigate hint. The watcher gets a
-    // clone; the original reader keeps draining in the background below,
-    // because nothing else consumes the master output once the needle is
-    // found: the pty buffer would fill and the TUI would block mid-draw,
-    // never reaching its input poll (it hangs before reading `q`).
-    // 120s is a failure deadline, not the expected duration.
-    let watcher = pair.master.try_clone_reader().unwrap();
-    let seen = read_until(watcher, "q quit", Duration::from_secs(120));
+    // The TUI renders its footer with the Navigate hint.
+    wait_for(&log, "q quit");
     assert!(
-        seen.contains("Ctrl+B prefix"),
+        log.lock().unwrap().contains("Ctrl+B prefix"),
         "footer should show prefix hint"
     );
 
-    // Drain master output until the child exits so redraws never block.
-    let (drain_tx, _drain_rx) = mpsc::channel::<()>();
-    std::thread::spawn(move || {
-        let mut reader = pty_out;
-        let mut buf = vec![0u8; 4096];
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 {
-                break;
-            }
-        }
-        let _ = drain_tx.send(());
-    });
-
-    // 'q' quits the interactive loop and the binary exits 0.
+    // Walk the settings overlay through the real binary: Ctrl+B arms
+    // the prefix, `s` opens the overlay, the render must show the
+    // Settings panel, `t` cycles the theme in the status line, and Esc
+    // returns to Navigate before `q` can quit.
     let mut writer = pair.master.take_writer().unwrap();
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"s");
+    let _ = writer.flush();
+    wait_for(&log, "web api base");
+    assert!(
+        log.lock().unwrap().contains("t cycles the theme"),
+        "settings overlay hint missing"
+    );
+    let _ = writer.write_all(b"t");
+    let _ = writer.flush();
+    // Asserting the theme cycle needs wire-format awareness: the theme
+    // row is two styled spans, so the diff renderer writes an SGR escape
+    // between the label padding and the value, and it only re-emits the
+    // changed value cells. The overlay is fixed at 64x12 centered in the
+    // 80x24 PTY, so the value cell always lands at row 11 col 28:
+    // `ESC[11;28H<theme label>` on the SGR-stripped wire. The transient
+    // "theme: X" status is not assertable: the 50ms refresh overwrites
+    // it before the next draw roughly half the time.
+    wait_for(&log, "\u{1b}[11;28Hdark");
+    let _ = writer.write_all(b"t");
+    let _ = writer.flush();
+    wait_for(&log, "\u{1b}[11;28Hlight");
+    // A third `t` wraps the cycle back to system.
+    let _ = writer.write_all(b"t");
+    let _ = writer.flush();
+    wait_for(&log, "\u{1b}[11;28Hsystem");
+    let _ = writer.write_all(b"\x1b"); // Esc closes the overlay.
+    let _ = writer.flush();
+    // Give Esc time to land as its own event before the next keys.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Sidebar collapse through the real binary: Ctrl+B Shift+B hides the
+    // workspace list (webui sidebar: KeyB), Ctrl+B Shift+B restores it.
+    // The transient "sidebar hidden/shown" status loses the race with
+    // the 50ms refresh, so the assertions use durable layout signals:
+    // collapsed, the tab bar redraws at row 1 column 1 (it lived at
+    // column 29 beside the 28-wide sidebar); restored, the sidebar
+    // border redraws at row 1 column 1 with the Workspaces title.
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"B");
+    let _ = writer.flush();
+    wait_for(&log, "\u{1b}[1;1H Repo");
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"B");
+    let _ = writer.flush();
+    wait_for(&log, "\u{1b}[1;1H\u{250c} Workspaces");
+
+    // Keep the last shortcut and `q` apart so both land as events.
+    std::thread::sleep(Duration::from_millis(200));
     let _ = writer.write_all(b"q");
     let _ = writer.flush();
     drop(writer);
@@ -187,6 +285,84 @@ fn tui_binary_interactive_loop_pty() {
     let status = status.expect("TUI did not exit after q");
     assert!(status.success());
 
+    // The child has exited on its own: disarm the panic guard so its
+    // Drop does not try to kill an already-reaped process.
+    child_guard.disarm();
+
     let _ = std::fs::remove_file(&path);
     let _ = stop.send(());
+}
+
+#[test]
+fn strip_sgr_removes_style_sequences_and_keeps_cursor_moves() {
+    // SGR with params, SGR reset without params, and the cursor move
+    // used by the theme needles: only the style escapes disappear.
+    let wire = "\u{1b}[38;2;205;214;244;48;2;17;17;27mthem\u{1b}[11;28H\u{1b}[m\u{1b}[0mlight";
+    assert_eq!(strip_sgr(wire), "them\u{1b}[11;28Hlight");
+}
+
+#[test]
+fn strip_sgr_keeps_private_modes_and_non_csi_escapes() {
+    // `ESC[?25l` (hide cursor) and `ESC]10;?\u{7}` (OSC query) are not
+    // SGR and must survive verbatim.
+    let wire = "\u{1b}[?25l\u{1b}]10;?\u{7}x";
+    assert_eq!(strip_sgr(wire), wire);
+}
+
+#[test]
+fn strip_sgr_handles_partial_and_truncated_sequences() {
+    // A lone trailing ESC (chunk boundary) and an unterminated CSI run
+    // are kept verbatim: the pumped log is always complete strings, but
+    // the helper must stay total on truncated input.
+    assert_eq!(strip_sgr("a\u{1b}"), "a\u{1b}");
+    assert_eq!(strip_sgr("a\u{1b}[38;2"), "a\u{1b}[38;2");
+    // ESC followed by a non-CSI char is not SGR either.
+    assert_eq!(strip_sgr("\u{1b}Pq"), "\u{1b}Pq");
+}
+
+#[test]
+fn child_guard_kills_a_live_child_on_drop_and_spares_a_disarmed_guard() {
+    // A panicking wait_for must not leak the TUI process: the guard's
+    // Drop kills the live child. A disarmed guard must not kill
+    // anything (the happy path disarms after the child exited).
+    let pty_system = NativePtySystem::default();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut cmd = CommandBuilder::new("sleep");
+    cmd.arg("30");
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+
+    let guard = ChildGuard {
+        killer: Some(child.clone_killer()),
+    };
+    drop(guard);
+    // The guard dropped without disarming: the child must now be dead.
+    let status = child.wait().unwrap();
+    assert!(!status.success(), "guard drop must kill the live child");
+
+    // Disarmed: Drop is a no-op and the child dies naturally. Fresh
+    // PTY pair: the first child's reaping closed the previous slave.
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut child = pair
+        .slave
+        .spawn_command(CommandBuilder::new("true"))
+        .unwrap();
+    let mut guard = ChildGuard {
+        killer: Some(child.clone_killer()),
+    };
+    guard.disarm();
+    drop(guard);
+    let status = child.wait().unwrap();
+    assert!(status.success(), "disarmed guard must not kill the child");
 }

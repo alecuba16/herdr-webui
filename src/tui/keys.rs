@@ -89,6 +89,38 @@ pub enum Shortcut {
     GitFileHistory,
     GitChangesBack,
     GitBlame,
+    // Workspace/panel management (WebUI DEFAULT_WEBUI_SHORTCUTS parity).
+    NextPanel,
+    PrevPanel,
+    NewWorkspace,
+    OpenWorktrees,
+    CreateWorktree,
+    CloseWorkspace,
+    RemoveWorktree,
+    RenamePanel,
+    RenameWorkspace,
+    // Git cwd picker (plan: prefix I; the webui has no default binding,
+    // its location bar is mouse-driven).
+    GitCwdPicker,
+    // Settings overlay (webui settings: KeyS).
+    Settings,
+    // Sidebar visibility (webui sidebar: KeyB is plain B, so the TUI
+    // uses Shift+B; plain b stays the git branches shortcut).
+    Sidebar,
+    // Focus walker (webui focusNext/focusPrev: Period/Comma). Cycles
+    // sidebar workspaces -> agents -> main screen, the keyboard-only
+    // equivalent of the webui DOM focus walker.
+    FocusNext,
+    FocusPrev,
+    // Temporary terminal (webui tempTerminalToggle: Shift+KeyM). The
+    // TUI approximates the overlay with a tab labeled "temp" living in
+    // a dedicated "temp" workspace.
+    TempTerminalToggle,
+    // Promote the temporary terminal into a real workspace at the
+    // shell's live cwd (webui tempTerminalPromote: Shift+KeyP). The
+    // old TUI-only prefix-GitPush moved aside (git screen keeps the
+    // in-screen P push).
+    TempTerminalPromote,
 }
 
 impl Shortcut {
@@ -124,6 +156,22 @@ impl Shortcut {
             Self::GitFileHistory => "file history",
             Self::GitChangesBack => "back to changes",
             Self::GitBlame => "toggle blame",
+            Self::NextPanel => "next panel",
+            Self::PrevPanel => "previous panel",
+            Self::NewWorkspace => "new workspace",
+            Self::OpenWorktrees => "worktree list",
+            Self::CreateWorktree => "create worktree",
+            Self::CloseWorkspace => "close workspace",
+            Self::RemoveWorktree => "remove worktree",
+            Self::RenamePanel => "rename panel",
+            Self::RenameWorkspace => "rename workspace",
+            Self::GitCwdPicker => "git cwd",
+            Self::Settings => "settings",
+            Self::Sidebar => "toggle sidebar",
+            Self::FocusNext => "focus next",
+            Self::FocusPrev => "focus previous",
+            Self::TempTerminalToggle => "temporary terminal",
+            Self::TempTerminalPromote => "promote temporary terminal",
         }
     }
 }
@@ -131,13 +179,24 @@ impl Shortcut {
 /// Resolve a key pressed while the prefix is armed. Shift-sensitivity mirrors
 /// the WebUI map (for example `Shift+X` vs `X`).
 pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
-    let shifted = key.modifiers.contains(KeyModifiers::SHIFT);
     let code = key.code;
+    // Terminals send Shift+letter as an uppercase Char with the SHIFT
+    // modifier, but synthetic events may carry the uppercase Char alone;
+    // treat both as shifted so the map stays case-driven.
+    let shifted = key.modifiers.contains(KeyModifiers::SHIFT)
+        || matches!(code, KeyCode::Char(ch) if ch.is_ascii_uppercase());
     match (code, shifted) {
         (KeyCode::Char('?'), _) => Some(Shortcut::Help),
         (KeyCode::Char('/'), _) => Some(Shortcut::Search),
+        // Webui `focusTerminal: KeyF` focuses the xterm DOM surface; the
+        // TUI terminal always owns the keyboard (no DOM), so `F` needs
+        // no parity key. The old TUI-only prefix-`f` Files screen stays
+        // (the webui has no files-explorer shortcut at all).
         (KeyCode::Char('f') | KeyCode::Char('F'), _) => Some(Shortcut::Files),
         (KeyCode::Char('g'), false) => Some(Shortcut::Git),
+        // Webui `stageAll: KeyG` is plain G, but the TUI prefix table
+        // already maps plain `g` to the git screen (a TUI-era addition
+        // predating the parity work), so stage-all lands on Shift+G.
         (KeyCode::Char('G'), true) => Some(Shortcut::GitStageAll),
         (KeyCode::Char('t'), false) => Some(Shortcut::Terminal),
         (KeyCode::Char('r') | KeyCode::Char('R'), false) => Some(Shortcut::Refresh),
@@ -145,21 +204,44 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('k'), false) => Some(Shortcut::PrevWorkspace),
         (KeyCode::Char('a'), false) => Some(Shortcut::NextAgent),
         (KeyCode::Char('A'), true) => Some(Shortcut::PrevAgent),
-        (KeyCode::Char('p'), false) => Some(Shortcut::Git),
-        (KeyCode::Char('P'), true) => Some(Shortcut::GitPush),
-        (KeyCode::Char('n'), false) => Some(Shortcut::NewTab),
+        // Webui newPanel: KeyP. The old `p` => Git was redundant with `g`.
+        // Shift+P is now tempTerminalPromote (webui parity); prefix push
+        // moved aside, the git screen keeps the in-screen `P` push.
+        (KeyCode::Char('p'), false) => Some(Shortcut::NewTab),
+        // Webui newWorkspace: KeyN.
+        (KeyCode::Char('n') | KeyCode::Char('N'), false) => Some(Shortcut::NewWorkspace),
         (KeyCode::Char('x'), false) => Some(Shortcut::CloseTab),
+        (KeyCode::Char('X'), true) => Some(Shortcut::CloseWorkspace),
         (KeyCode::Char('q'), false) => Some(Shortcut::Quit),
         (KeyCode::Char('1'), false) => Some(Shortcut::GitChanges),
         (KeyCode::Char('2'), false) => Some(Shortcut::GitCommit),
         (KeyCode::Char('3'), false) => Some(Shortcut::GitLog),
         (KeyCode::Char('4'), false) => Some(Shortcut::GitStash),
+        // Stash used to live on plain `s` (a TUI addition); the webui
+        // default binds plain `S` to settings, so `s` now matches the
+        // webui and stash stays on `4` (webui `stash: Digit4`).
+        (KeyCode::Char('s'), false) => Some(Shortcut::Settings),
         // Webui `help: Digit0` shows the git shortcut help.
         (KeyCode::Char('0'), false) => Some(Shortcut::Help),
+        // Sidebar visibility: webui `sidebar: KeyB` is plain B, but plain
+        // b is the git branches shortcut (git `branch: KeyV` would be the
+        // webui key, TUI keeps b from its own table), so the toggle
+        // lands on Shift+B.
+        (KeyCode::Char('B'), true) => Some(Shortcut::Sidebar),
+        // Webui focusNext/focusPrev: Period/Comma. Walks the TUI focus
+        // regions instead of DOM controls.
+        (KeyCode::Char('.'), _) => Some(Shortcut::FocusNext),
+        (KeyCode::Char(','), _) => Some(Shortcut::FocusPrev),
+        // Webui tempTerminalToggle: Shift+KeyM (plain m stays git blame
+        // from DEFAULT_GIT_SHORTCUTS).
+        (KeyCode::Char('M'), true) => Some(Shortcut::TempTerminalToggle),
+        // Webui tempTerminalPromote: Shift+KeyP. The old TUI-only prefix
+        // GitPush moved aside for parity (the git screen keeps the
+        // in-screen P push).
+        (KeyCode::Char('P'), true) => Some(Shortcut::TempTerminalPromote),
         (KeyCode::Char('b'), false) => Some(Shortcut::GitBranch),
         (KeyCode::Char('c'), false) => Some(Shortcut::GitCommit),
         (KeyCode::Char('l') | KeyCode::Char('L'), false) => Some(Shortcut::GitLog),
-        (KeyCode::Char('s'), false) => Some(Shortcut::GitStash),
         (KeyCode::Char('y'), false) => Some(Shortcut::GitStageFile),
         (KeyCode::Char('u'), false) => Some(Shortcut::GitUnstageFile),
         (KeyCode::Char('d'), false) => Some(Shortcut::GitDiscardFile),
@@ -176,6 +258,24 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('o') | KeyCode::Char('O'), false) => Some(Shortcut::GitChangesBack),
         (KeyCode::Char('m') | KeyCode::Char('M'), false) => Some(Shortcut::GitBlame),
         (KeyCode::Enter, _) => Some(Shortcut::GitCommit),
+        // Webui DEFAULT_WEBUI_SHORTCUTS parity: BracketRight/BracketLeft
+        // walk panels, W opens the worktree list, Shift+T creates a
+        // worktree (plain `t` stays the terminal screen), Shift+X closes
+        // the workspace, Delete/Backspace removes a linked worktree, and
+        // Shift+S renames the workspace (no webui default; panels rename
+        // via their visible menu, mirrored later).
+        (KeyCode::Char(']'), _) => Some(Shortcut::NextPanel),
+        (KeyCode::Char('['), _) => Some(Shortcut::PrevPanel),
+        (KeyCode::Char('w') | KeyCode::Char('W'), false) => Some(Shortcut::OpenWorktrees),
+        (KeyCode::Char('T'), true) => Some(Shortcut::CreateWorktree),
+        (KeyCode::Delete | KeyCode::Backspace, _) => Some(Shortcut::RemoveWorktree),
+        (KeyCode::Char('S'), true) => Some(Shortcut::RenameWorkspace),
+        // Settings overlay: webui `settings: KeyS` is plain S. Stash
+        // stays on `4` (webui `stash: Digit4`); the old TUI-only
+        // prefix-`s` stash binding moved aside for parity.
+        // Git cwd picker: prefix I (no webui default; its location bar is
+        // mouse-driven). Uppercase so plain `i` stays free.
+        (KeyCode::Char('I'), _) => Some(Shortcut::GitCwdPicker),
         _ => None,
     }
 }
@@ -190,20 +290,31 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Tab", "toggle workspace/agent list"),
         ("", ""),
         ("Ctrl+B f", "files explorer"),
-        ("Ctrl+B g/p", "git panel"),
+        ("Ctrl+B g", "git panel"),
         ("Ctrl+B t", "terminal view"),
         ("Ctrl+B /", "search/filter in panel"),
         ("Ctrl+B ?", "help"),
         ("Ctrl+B r", "refresh"),
         ("Ctrl+B j/k", "next/prev workspace"),
         ("Ctrl+B a/A", "next/prev agent"),
-        ("Ctrl+B n/x", "new/close tab"),
+        ("Ctrl+B p/x", "new/close tab"),
+        ("Ctrl+B ]/[", "next/prev panel in workspace"),
+        ("Ctrl+B n", "new workspace (type a path)"),
+        ("Ctrl+B Shift+S", "rename workspace"),
+        ("Ctrl+B Shift+X", "close workspace (y confirms)"),
+        ("Ctrl+B w", "list worktrees of workspace folder"),
+        ("Ctrl+B Shift+T", "create worktree (branch, then path)"),
+        ("Ctrl+B Del", "remove linked worktree"),
         ("Ctrl+B q", "quit"),
+        ("Ctrl+B Shift+B", "collapse/expand the sidebar"),
+        ("Ctrl+B . ,", "focus next/prev region (sidebar/main)"),
+        ("Ctrl+B Shift+M", "temporary terminal (open or refocus)"),
+        ("Ctrl+B Shift+P", "promote temporary terminal to workspace"),
         ("", ""),
         ("Ctrl+B 1", "git: changes"),
         ("Ctrl+B 2/c", "git: commit modal"),
         ("Ctrl+B 3/l", "git: log"),
-        ("Ctrl+B 4/s", "git: stash"),
+        ("Ctrl+B 4", "git: stash"),
         ("Ctrl+B b/v", "git: branches / switch"),
         (
             "Ctrl+B h/o",
@@ -213,7 +324,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B 0", "git: shortcut help"),
         ("Ctrl+B G", "git: toggle stage all"),
         ("Ctrl+B y/u/d/z", "git: stage/unstage/discard/stash file"),
-        ("Ctrl+B P", "git: push"),
+        ("git: P", "git: push (in-screen on the Git screen)"),
         ("", ""),
         (
             "Ctrl+B e",
@@ -229,7 +340,47 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "git: f/p/P",
             "fetch / pull / push (s stage, d discard, r refresh)",
         ),
+        (
+            "git: J/K/H (changes)",
+            "hunk cursor / apply (stage when unstaged, unstage when staged)",
+        ),
         ("git: D", "delete branch (branches) / drop stash (stash)"),
+        ("git: Enter", "log: compare commit with parent"),
+        ("git: Space (log)", "mark commit for compare (keep last 2)"),
+        ("git: c (log, 2 marked)", "compare the two marked commits"),
+        (
+            "git: t/R/b (log)",
+            "tag / reset (soft, mixed, hard) / rebase selected commit",
+        ),
+        (
+            "git: s/+ (log)",
+            "cycle scope (all/base+current/base) / load more",
+        ),
+        ("git: w (log)", "worktree from branch (branch, then path)"),
+        ("files: L", "git log of the selected file"),
+        ("files: M", "markdown preview: outline view of the headers"),
+        (
+            "files: / + t",
+            "search files/folders/content, t cycles the scope",
+        ),
+        (
+            "files: content search",
+            "Enter opens match (jump-to-line), + more, A/X toggles",
+        ),
+        ("files: a/A", "new file / new directory under the cursor"),
+        ("files: Tab", "cycle recently opened previews"),
+        ("files: w", "reveal the git-panel file in the tree"),
+        (
+            "edit: Ctrl+F/H",
+            "find (A case, X regex, Enter next) / replace (! = all)",
+        ),
+        (
+            "git: / (changes)",
+            "diff search: n/N cycle, Enter keeps, Esc clears",
+        ),
+        ("git: c (branches)", "create and switch to a new branch"),
+        ("Ctrl+B I", "git cwd: type a repo path"),
+        ("Ctrl+B s", "settings overlay (t cycles the theme)"),
     ]
 }
 
@@ -320,7 +471,21 @@ mod tests {
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('e')), Some(Shortcut::EditFile));
         prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(shift_key('p')), Some(Shortcut::GitPush));
+        assert_eq!(
+            prefix.feed(shift_key('p')),
+            Some(Shortcut::TempTerminalPromote)
+        );
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(key('.')), Some(Shortcut::FocusNext));
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(key(',')), Some(Shortcut::FocusPrev));
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(shift_key('b')), Some(Shortcut::Sidebar));
+        prefix.feed(ctrl('b'));
+        assert_eq!(
+            prefix.feed(shift_key('m')),
+            Some(Shortcut::TempTerminalToggle)
+        );
     }
 
     #[test]
@@ -339,5 +504,49 @@ mod tests {
         assert!(rows
             .iter()
             .any(|(_, description)| description.contains("files")));
+        assert!(rows.iter().any(|(keys, _)| keys.contains("git: J/K/H")));
+        assert!(rows.iter().any(|(keys, _)| keys.contains("Space (log)")));
+        assert!(rows.iter().any(|(keys, _)| keys.contains("files: M")));
+    }
+
+    #[test]
+    fn shortcut_labels_cover_workspace_and_focus_actions() {
+        for shortcut in [
+            Shortcut::NextPanel,
+            Shortcut::PrevPanel,
+            Shortcut::NewWorkspace,
+            Shortcut::OpenWorktrees,
+            Shortcut::CreateWorktree,
+            Shortcut::CloseWorkspace,
+            Shortcut::RemoveWorktree,
+            Shortcut::RenamePanel,
+            Shortcut::RenameWorkspace,
+            Shortcut::GitCwdPicker,
+            Shortcut::Settings,
+            Shortcut::Sidebar,
+            Shortcut::FocusNext,
+            Shortcut::FocusPrev,
+            Shortcut::TempTerminalToggle,
+            Shortcut::TempTerminalPromote,
+        ] {
+            assert!(!shortcut.label().is_empty());
+        }
+    }
+
+    #[test]
+    fn prefix_maps_workspace_worktree_and_cwd_shortcuts() {
+        let cases = [
+            (key('w'), Shortcut::OpenWorktrees),
+            (KeyEvent::from(KeyCode::Delete), Shortcut::RemoveWorktree),
+            (KeyEvent::from(KeyCode::Backspace), Shortcut::RemoveWorktree),
+            (shift_key('s'), Shortcut::RenameWorkspace),
+            (KeyEvent::from(KeyCode::Char('I')), Shortcut::GitCwdPicker),
+        ];
+
+        for (event, shortcut) in cases {
+            let mut prefix = PrefixState::new();
+            prefix.feed(ctrl('b'));
+            assert_eq!(prefix.feed(event), Some(shortcut));
+        }
     }
 }

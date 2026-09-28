@@ -5,6 +5,10 @@ pub enum TuiMode {
     Navigate,
     Attach,
     Help,
+    /// Settings overlay (webui Settings modal, prefix `S`): read-only
+    /// display of the API base, theme mode, refresh interval, and
+    /// the git/exploration roots, plus a theme toggle (`t`).
+    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
