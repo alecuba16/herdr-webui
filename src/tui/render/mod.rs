@@ -1,5 +1,5 @@
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
@@ -39,6 +39,18 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
         TuiScreen::Git => render_git_screen(frame, main, app, p),
     }
     render_footer(frame, footer, app, p);
+    // Webui modal parity: every overlay draws over a dimmed backdrop
+    // (`.modal-backdrop { background: #0008 }`) with a shadowed,
+    // accent-bordered float window (neovim-style depth).
+    let overlay_active = app.mode == TuiMode::Help
+        || app.mode == TuiMode::ConfirmQuit
+        || app.mode == TuiMode::Settings
+        || app.mode == TuiMode::WorktreeList
+        || app.commit_input.is_some()
+        || app.prompt_input.is_some();
+    if overlay_active {
+        dim_backdrop(frame, p);
+    }
     if app.mode == TuiMode::Help {
         render_help(frame, area, p, &app.help_filter, app.help_scroll);
     }
@@ -1313,14 +1325,8 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         .prompt_input
         .as_ref()
         .expect("render_prompt_input requires an active prompt");
-    let width = area.width.min(64);
-    let height = 6;
-    let rect = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = overlay_rect(area, area.width.min(64), 6);
+    render_shadow(frame, rect, p);
     // Show the subject of the action (file/branch/stash) above the input.
     let subject = match prompt.kind {
         crate::tui::PromptKind::RenameFile => app
@@ -1437,7 +1443,7 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     let title = format!(" {} ", prompt.kind.title());
     let lines = vec![
         Line::from(Span::styled(
-            truncate(&subject, (width.saturating_sub(4)) as usize),
+            truncate(&subject, (rect.width.saturating_sub(4)) as usize),
             Style::default().fg(p.muted),
         )),
         Line::from(Span::styled(
@@ -1451,7 +1457,7 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(&title, p))
+            .block(overlay_panel(&title, p))
             .style(Style::default().fg(p.text).bg(p.panel_bg)),
         rect,
     );
@@ -1464,14 +1470,8 @@ fn render_commit_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         .commit_input
         .as_ref()
         .expect("render_commit_input requires an active commit");
-    let width = area.width.min(64);
-    let height = 7;
-    let rect = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = overlay_rect(area, area.width.min(64), 7);
+    render_shadow(frame, rect, p);
     let title = if commit.amend {
         " Amend commit message "
     } else {
@@ -1490,14 +1490,14 @@ fn render_commit_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(title, p))
+            .block(overlay_panel(title, p))
             .style(Style::default().fg(p.text).bg(p.panel_bg)),
         rect,
     );
 }
 
 fn panel_block<'a>(title: &'a str, p: &Palette) -> Block<'a> {
-    panel(title, p).border_style(Style::default().fg(p.accent))
+    overlay_panel(title, p)
 }
 
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -1604,20 +1604,139 @@ fn filter_query_line(
     ]))
 }
 
-fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scroll: usize) {
-    let rows = crate::tui::keys::filtered_help_rows(filter);
-    let width = area.width.min(72);
-    // One extra line for the filter query while it is active.
-    let filter_height = if filter.is_empty() { 0 } else { 1 };
-    let height = area
-        .height
-        .min((rows.len() as u16 + 4 + filter_height).min(50));
-    let rect = Rect::new(
+/// Depth effect for overlay windows (webui `.modal-backdrop { background:
+/// #0008 }` + `.modal { box-shadow }`). Terminals cannot paint a
+/// translucent scrim over existing text, so the backdrop is faked by
+/// dimming the foreground color of every cell behind the overlay, the
+/// way neovim dims its float background. Works with the `system`
+/// theme too: it folds existing colors instead of painting a bg.
+fn dim_backdrop(frame: &mut Frame<'_>, p: &Palette) {
+    let area = frame.area();
+    let buffer = frame.buffer_mut();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            let cell = buffer.cell_mut((x, y)).expect("cell inside area");
+            cell.fg = dim_color(cell.fg, p);
+            cell.bg = dim_color(cell.bg, p);
+        }
+    }
+}
+
+/// Folds a color toward the muted tone (one step down in emphasis),
+/// keeping `Reset` (the terminal default) folded to `Reset` so the
+/// system theme never paints an opaque bg where the user's terminal
+/// background shows through.
+fn dim_color(color: Color, p: &Palette) -> Color {
+    match color {
+        Color::Reset => Color::Reset,
+        Color::Rgb(r, g, b) => {
+            // Fold the channel toward the border tone of the palette,
+            // halfway (the `/ 2` keeps the fold gentle, one emphasis
+            // step down like the webui's #0008 scrim).
+            let m = border_tone(p) as i16;
+            let fold =
+                |channel: u8| (channel as i16 + (m - channel as i16) / 2).clamp(0, 255) as u8;
+            Color::Rgb(fold(r), fold(g), fold(b))
+        }
+        Color::White | Color::Black => p.border,
+        Color::Red => p.red,
+        Color::Green => p.green,
+        Color::Blue => p.accent,
+        Color::Yellow => p.yellow,
+        Color::Cyan => p.teal,
+        Color::Magenta => p.accent,
+        Color::DarkGray | Color::Gray => p.muted,
+        _ => p.muted,
+    }
+}
+
+/// The channel the dimming folds toward: the border tone of the
+/// active palette (its green channel on light themes, red on dark).
+fn border_tone(p: &Palette) -> u8 {
+    match p.border {
+        Color::Rgb(r, g, _) => {
+            if is_dark(p) {
+                r
+            } else {
+                g
+            }
+        }
+        _ => 128,
+    }
+}
+
+fn is_dark(p: &Palette) -> bool {
+    // The panel bg of the dark palette is darker than the light one's.
+    match p.panel_bg {
+        Color::Rgb(r, _, _) => r < 128,
+        _ => true,
+    }
+}
+
+/// Neovim-style drop shadow: a one-cell band on the right and bottom
+/// edges of the overlay rect, painted with the shadow color of the
+/// palette (near-black on dark themes, gray on light ones).
+fn render_shadow(frame: &mut Frame<'_>, rect: Rect, p: &Palette) {
+    let shadow = shadow_color(p);
+    let style = Style::default().bg(shadow);
+    // Clamp the bands to the frame so a full-width or full-height
+    // overlay does not write outside the buffer.
+    let area = frame.area();
+    let buffer = frame.buffer_mut();
+    let right = rect.right();
+    for y in rect.y..rect.bottom() {
+        for x in right..(right + 1).min(area.right()) {
+            let cell = buffer.cell_mut((x, y)).expect("cell inside area");
+            cell.set_char(' ');
+            cell.set_style(style);
+        }
+    }
+    let bottom = rect.bottom();
+    for y in bottom..(bottom + 1).min(area.bottom()) {
+        for x in rect.x..right {
+            let cell = buffer.cell_mut((x, y)).expect("cell inside area");
+            cell.set_char(' ');
+            cell.set_style(style);
+        }
+    }
+}
+
+fn shadow_color(p: &Palette) -> Color {
+    if is_dark(p) {
+        Color::Rgb(10, 10, 16)
+    } else {
+        Color::Rgb(203, 213, 225)
+    }
+}
+
+/// Overlay block: same border as `panel` but with the accent-colored
+/// border, the neovim float-window look (nvim_win_set_config border
+/// highlight).
+fn overlay_panel<'a>(title: &'a str, p: &Palette) -> Block<'a> {
+    panel(title, p).border_style(Style::default().fg(p.accent))
+}
+
+/// Centers an overlay of `width` x `height` inside `area`, clamped to
+/// the available size. Shared by every overlay window so they all sit
+/// on the same spot and drop the same shadow.
+fn overlay_rect(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
         width,
         height,
-    );
+    )
+}
+
+fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scroll: usize) {
+    let rows = crate::tui::keys::filtered_help_rows(filter);
+    // One extra line for the filter query while it is active.
+    let filter_height = if filter.is_empty() { 0 } else { 1 };
+    let height = (rows.len() as u16 + 4 + filter_height).min(50);
+    let rect = overlay_rect(area, area.width.min(72), height);
+    render_shadow(frame, rect, p);
     let mut lines = vec![Line::from(Span::styled(
         "Herdr WebUI TUI",
         Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
@@ -1653,7 +1772,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scr
     };
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(title, p))
+            .block(overlay_panel(title, p))
             .style(Style::default().fg(p.text).bg(p.panel_bg))
             .scroll((scroll as u16, 0)),
         rect,
@@ -1667,17 +1786,9 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scr
 fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let rows = app.filtered_worktree_rows();
     let filter_height = if app.worktree_filter.is_empty() { 0 } else { 1 };
-    let height = area
-        .height
-        .min((rows.len() as u16 + 5 + filter_height).min(24))
-        .max(7 + filter_height);
-    let width = area.width.min(80);
-    let rect = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let height = ((rows.len() as u16 + 5 + filter_height).min(24)).max(7 + filter_height);
+    let rect = overlay_rect(area, area.width.min(80), height);
+    render_shadow(frame, rect, p);
     let mut lines = vec![Line::from(vec![
         Span::styled(
             " Worktrees ",
@@ -1743,7 +1854,7 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
     };
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(title, p))
+            .block(overlay_panel(title, p))
             .style(Style::default().fg(p.text).bg(p.panel_bg))
             .scroll((scroll as u16, 0)),
         rect,
@@ -1756,14 +1867,8 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
 /// informational (webui stores the rest in browser storage, which has
 /// no TUI equivalent yet).
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
-    let width = area.width.min(64);
-    let height = 12;
-    let rect = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = overlay_rect(area, area.width.min(64), 12);
+    render_shadow(frame, rect, p);
     let git_cwd = app.git_panel.cwd.clone();
     let files_cwd = app.file_explorer.cwd.clone();
     let row = |key: &str, value: &str| {
@@ -1797,7 +1902,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(" Settings · Esc closes ", p))
+            .block(overlay_panel(" Settings · Esc closes ", p))
             .style(Style::default().fg(p.text).bg(p.panel_bg)),
         rect,
     );
@@ -1807,14 +1912,8 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette)
 /// the destructive typed-`y` prompts, this one stays light: y/Enter
 /// quits, n/Esc (or any other key) stays, Ctrl+C also quits.
 fn render_confirm_quit(frame: &mut Frame<'_>, area: Rect, p: &Palette) {
-    let width = area.width.min(48);
-    let height = 7;
-    let rect = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = overlay_rect(area, area.width.min(48), 7);
+    render_shadow(frame, rect, p);
     let highlight = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
     let lines = vec![
         Line::from(Span::styled(
@@ -1839,7 +1938,7 @@ fn render_confirm_quit(frame: &mut Frame<'_>, area: Rect, p: &Palette) {
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(panel(" Quit? ", p))
+            .block(overlay_panel(" Quit? ", p))
             .style(Style::default().fg(p.text).bg(p.panel_bg))
             .wrap(Wrap { trim: false }),
         rect,

@@ -926,6 +926,53 @@ fn draw(app: &TuiApp, width: u16, height: u16) -> String {
     format!("{:?}", terminal.backend().buffer())
 }
 
+/// Renders and keeps the buffer so tests can assert on cell colors
+/// (the Debug dump of `draw` is lossy for that).
+fn draw_buffer(app: &TuiApp, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, app)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+/// A rendered row plus its y coordinate, for depth-effect assertions.
+/// `chars` is one entry per cell so multibyte glyphs (·, ▸) keep their
+/// cell x positions.
+struct RenderedRow {
+    chars: Vec<char>,
+    y: usize,
+}
+
+impl RenderedRow {
+    /// Cell x of the first character of `needle`, or the row is not
+    /// the one expected.
+    fn cell_x_of(&self, needle: &str) -> Option<usize> {
+        let needle: Vec<char> = needle.chars().collect();
+        self.chars
+            .windows(needle.len())
+            .position(|w| w == needle.as_slice())
+    }
+}
+
+fn rendered_row(buffer: &ratatui::buffer::Buffer, needle: &str) -> RenderedRow {
+    for y in 0..buffer.area.height as usize {
+        let chars: Vec<char> = (0..buffer.area.width as usize)
+            .map(|x| {
+                buffer[(x as u16, y as u16)]
+                    .symbol()
+                    .chars()
+                    .next()
+                    .unwrap_or(' ')
+            })
+            .collect();
+        let as_line: String = chars.iter().collect();
+        if as_line.contains(needle) {
+            return RenderedRow { chars, y };
+        }
+    }
+    panic!("row containing {needle:?} not rendered");
+}
+
 fn ctrl(ch: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
 }
@@ -5565,4 +5612,124 @@ fn worktree_row_without_branch_renders_only_the_badge() {
     }];
     let buf = draw(&app, 100, 30);
     assert!(buf.contains("[linked]"), "badge renders without branch");
+}
+
+#[test]
+fn overlay_depth_effect_dims_backdrop_and_draws_shadow() {
+    // Webui modal parity: overlays sit on a dimmed backdrop
+    // (.modal-backdrop #0008) with a shadowed, accent-bordered float
+    // window (neovim-style depth).
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Terminal;
+
+    // Baseline footer text color before any overlay.
+    let plain = draw_buffer(&app, 110, 30);
+    let plain_footer_fg = plain[(5u16, 29u16)].fg;
+
+    // Open the settings overlay.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.mode, TuiMode::Settings);
+    let overlay = draw_buffer(&app, 110, 30);
+    let overlay_footer_fg = overlay[(5u16, 29u16)].fg;
+    assert_ne!(
+        plain_footer_fg, overlay_footer_fg,
+        "the backdrop behind the overlay must be dimmed"
+    );
+
+    // The overlay border uses the accent color and the cell right of
+    // the border carries the shadow band (blank cell, shadow bg).
+    let row = rendered_row(&overlay, "Settings · Esc closes");
+    let x0 = row.cell_x_of("Settings · Esc closes").unwrap() - 1;
+    assert_eq!(
+        overlay[(x0 as u16, row.y as u16)].fg,
+        Color::Rgb(137, 180, 250),
+        "overlay border must be accent"
+    );
+    let x_right = row.cell_x_of("┐").unwrap();
+    let shadow = overlay[((x_right + 1) as u16, (row.y + 3) as u16)].clone();
+    // The shadow is a blank cell whose colors fold into the shadow
+    // tone (bg painted, fg dimmed with the rest of the backdrop).
+    assert_eq!(shadow.fg, Color::Rgb(137, 142, 157));
+    assert_eq!(
+        shadow.bg,
+        Color::Rgb(10, 10, 16),
+        "shadow band painted right of the overlay"
+    );
+
+    // Closing the overlay restores the original colors (no residual
+    // dimming once the modal is gone).
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    let restored = draw_buffer(&app, 110, 30);
+    assert_eq!(
+        restored[(5u16, 29u16)].fg,
+        plain_footer_fg,
+        "backdrop colors must return after the overlay closes"
+    );
+}
+
+#[test]
+fn overlay_depth_effect_applies_to_every_overlay() {
+    // Help, quit confirm, and the typed prompts get the same depth
+    // treatment as settings: dimmed backdrop + shadow + accent border.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Terminal;
+
+    // Help overlay.
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    let help = draw_buffer(&app, 110, 30);
+    let row = rendered_row(&help, "Help · ? closes");
+    let x0 = row.cell_x_of("Help · ? closes").unwrap() - 1;
+    assert_eq!(
+        help[(x0 as u16, row.y as u16)].fg,
+        Color::Rgb(137, 180, 250),
+        "help border accent"
+    );
+    let x_right = row.cell_x_of("┐").unwrap();
+    assert_eq!(
+        help[((x_right + 1) as u16, (row.y + 3) as u16)].bg,
+        Color::Rgb(10, 10, 16),
+        "help shadow band"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+
+    // Quit confirmation.
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    let quit = draw_buffer(&app, 110, 30);
+    let row = rendered_row(&quit, "Quit?");
+    let x0 = row.cell_x_of("Quit?").unwrap() - 1;
+    assert_eq!(
+        quit[(x0 as u16, row.y as u16)].fg,
+        Color::Rgb(137, 180, 250),
+        "quit border accent"
+    );
+    let x_right = row.cell_x_of("┐").unwrap();
+    assert_eq!(
+        quit[((x_right + 1) as u16, (row.y + 3) as u16)].bg,
+        Color::Rgb(10, 10, 16),
+        "quit shadow band"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+
+    // Commit input modal.
+    app.commit_input = Some(CommitInput {
+        text: "wip".to_string(),
+        amend: false,
+    });
+    let commit = draw_buffer(&app, 110, 30);
+    let row = rendered_row(&commit, "Commit message");
+    let x0 = row.cell_x_of("Commit message").unwrap() - 1;
+    assert_eq!(
+        commit[(x0 as u16, row.y as u16)].fg,
+        Color::Rgb(137, 180, 250),
+        "commit modal border accent"
+    );
+    let x_right = row.cell_x_of("┐").unwrap();
+    assert_eq!(
+        commit[((x_right + 1) as u16, (row.y + 3) as u16)].bg,
+        Color::Rgb(10, 10, 16),
+        "commit modal shadow band"
+    );
+    app.commit_input = None;
 }
