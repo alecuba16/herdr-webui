@@ -1626,7 +1626,7 @@ fn dim_backdrop(frame: &mut Frame<'_>, p: &Palette) {
 /// keeping `Reset` (the terminal default) folded to `Reset` so the
 /// system theme never paints an opaque bg where the user's terminal
 /// background shows through.
-fn dim_color(color: Color, p: &Palette) -> Color {
+pub(crate) fn dim_color(color: Color, p: &Palette) -> Color {
     match color {
         Color::Reset => Color::Reset,
         Color::Rgb(r, g, b) => {
@@ -1652,7 +1652,7 @@ fn dim_color(color: Color, p: &Palette) -> Color {
 
 /// The channel the dimming folds toward: the border tone of the
 /// active palette (its green channel on light themes, red on dark).
-fn border_tone(p: &Palette) -> u8 {
+pub(crate) fn border_tone(p: &Palette) -> u8 {
     match p.border {
         Color::Rgb(r, g, _) => {
             if is_dark(p) {
@@ -1665,7 +1665,7 @@ fn border_tone(p: &Palette) -> u8 {
     }
 }
 
-fn is_dark(p: &Palette) -> bool {
+pub(crate) fn is_dark(p: &Palette) -> bool {
     // The panel bg of the dark palette is darker than the light one's.
     match p.panel_bg {
         Color::Rgb(r, _, _) => r < 128,
@@ -1701,7 +1701,7 @@ fn render_shadow(frame: &mut Frame<'_>, rect: Rect, p: &Palette) {
     }
 }
 
-fn shadow_color(p: &Palette) -> Color {
+pub(crate) fn shadow_color(p: &Palette) -> Color {
     if is_dark(p) {
         Color::Rgb(10, 10, 16)
     } else {

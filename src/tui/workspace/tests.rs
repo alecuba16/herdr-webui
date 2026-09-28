@@ -379,9 +379,22 @@ fn app_with_fake_backend() -> (TuiApp, std::sync::mpsc::Sender<()>) {
     (app, stop)
 }
 
+/// Shared entry for sibling test modules: a client wired to the fake
+/// backend (answers worktree.list and friends) so tests that press
+/// API-backed keys stay hermetic. The stop channel leaks by design;
+/// the listener thread parks on its socket until process exit.
+pub(crate) fn fake_backend_client() -> BackendClient {
+    let (api_socket, _stop) = workspace_fake_socket();
+    BackendClient::new(api_socket.clone(), api_socket)
+}
+
 #[test]
 fn workspace_actions_validate_empty_inputs_and_missing_selection() {
-    let mut app = app_with_snapshot(workspace_snapshot());
+    // The worktree-list fallback hits the backend socket; wire the
+    // fake one so this stays hermetic (the builtin socket answers
+    // differently depending on the live session state).
+    let mut app = TuiApp::new(fake_backend_client(), Duration::from_secs(1));
+    app.snapshot = crate::tui::model::TuiSnapshot::from_backend_response(&workspace_snapshot());
     assert_eq!(
         app.create_workspace("  ").unwrap_err(),
         "type a directory path"

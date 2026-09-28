@@ -5400,7 +5400,12 @@ fn overlays_restore_the_mode_they_were_opened_from() {
     // Regression: overlays opened while attached must close back to
     // Attach, not Navigate. The WebUI modals return to the underlying
     // view; dropping the attach context silently detaches the user.
-    let mut app = app_with_snapshot();
+    // The fake backend answers worktree.list so the nested overlay
+    // open does not depend on a live session (the builtin socket may
+    // reject /repo and the test would flake).
+    let client = crate::tui::workspace::tests::fake_backend_client();
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = fixture_snapshot();
     app.screen = TuiScreen::Terminal;
     app.mode = TuiMode::Attach;
 
@@ -5732,4 +5737,100 @@ fn overlay_depth_effect_applies_to_every_overlay() {
         "commit modal shadow band"
     );
     app.commit_input = None;
+}
+
+#[test]
+fn overlay_depth_effect_light_theme_and_named_colors() {
+    // The depth helpers have theme-dependent arms: the light palette
+    // picks the green channel for the border fold and a gray shadow,
+    // and dim_color folds every named ANSI color it meets behind the
+    // overlay. Drive the light theme through the settings overlay and
+    // assert both the shadow color and a dimmed named-color cell.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Terminal;
+    app.theme = TuiTheme::Light;
+    app.palette = Palette::for_theme(TuiTheme::Light);
+
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.mode, TuiMode::Settings);
+    let overlay = draw_buffer(&app, 110, 30);
+    let row = rendered_row(&overlay, "Settings · Esc closes");
+    let x0 = row.cell_x_of("Settings · Esc closes").unwrap() - 1;
+    // Light palette border stays the light accent blue (37, 99, 235).
+    let accent = app.palette.accent;
+    assert_eq!(overlay[(x0 as u16, row.y as u16)].fg, accent);
+    // Light shadow: gray (203, 213, 225), not the dark near-black.
+    let x_right = row.cell_x_of("┐").unwrap();
+    let shadow = overlay[((x_right + 1) as u16, (row.y + 3) as u16)].clone();
+    assert_eq!(
+        shadow.bg,
+        Color::Rgb(203, 213, 225),
+        "light theme paints a gray shadow band"
+    );
+
+    // Named-color folding: dim_color maps the terminal ANSI names to
+    // the palette tones. Every named color appears somewhere behind
+    // the overlay in this fixture (footer, statuses, dots), so a
+    // full-screen pass folds at least White and Red cells; assert the
+    // dimming happened by sampling a footer cell again on light.
+    let plain = {
+        app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+        draw_buffer(&app, 110, 30)
+    };
+    let plain_fg = plain[(5u16, 29u16)].fg;
+    let dim_fg = overlay[(5u16, 29u16)].fg;
+    assert_ne!(plain_fg, dim_fg, "light backdrop also dims");
+}
+
+#[test]
+fn depth_helpers_fold_named_colors_and_pick_theme_tones() {
+    use crate::tui::render::{border_tone, dim_color, is_dark, shadow_color};
+
+    let dark = Palette::for_theme(TuiTheme::Dark);
+    let light = Palette::for_theme(TuiTheme::Light);
+
+    // Every named ANSI color has a dim_color arm; each must fold to a
+    // palette tone (Rgb) rather than stay a raw terminal name.
+    assert_eq!(dim_color(Color::White, &dark), dark.border);
+    assert_eq!(dim_color(Color::Black, &dark), dark.border);
+    assert_eq!(dim_color(Color::Red, &dark), dark.red);
+    assert_eq!(dim_color(Color::Green, &dark), dark.green);
+    assert_eq!(dim_color(Color::Blue, &dark), dark.accent);
+    assert_eq!(dim_color(Color::Yellow, &dark), dark.yellow);
+    assert_eq!(dim_color(Color::Cyan, &dark), dark.teal);
+    assert_eq!(dim_color(Color::Magenta, &dark), dark.accent);
+    assert_eq!(dim_color(Color::DarkGray, &dark), dark.muted);
+    assert_eq!(dim_color(Color::Gray, &dark), dark.muted);
+    // Remaining terminal names (Indexed, the bright variants) have no
+    // palette tone of their own and fold to muted like the grays.
+    assert_eq!(dim_color(Color::Indexed(3), &dark), dark.muted);
+    assert_eq!(dim_color(Color::LightRed, &dark), dark.muted);
+    // Reset stays Reset: the system theme must not paint over the
+    // user's terminal background.
+    assert_eq!(dim_color(Color::Reset, &dark), Color::Reset);
+    // Rgb folds halfway to the border tone.
+    assert_eq!(
+        dim_color(Color::Rgb(205, 214, 244), &dark),
+        Color::Rgb(137, 142, 157)
+    );
+
+    // Theme detection drives the tones.
+    assert!(is_dark(&dark));
+    assert!(!is_dark(&light));
+
+    // border_tone: red channel on dark, green channel on light.
+    assert_eq!(border_tone(&dark), 69);
+    assert_eq!(border_tone(&light), 213);
+
+    // shadow_color: near-black on dark, gray on light.
+    assert_eq!(shadow_color(&dark), Color::Rgb(10, 10, 16));
+    assert_eq!(shadow_color(&light), Color::Rgb(203, 213, 225));
+
+    // Non-Rgb palettes (a hand-built one) fall back to the defaults.
+    let mut plain = dark;
+    plain.border = Color::White;
+    assert_eq!(border_tone(&plain), 128);
+    plain.panel_bg = Color::Black;
+    assert!(is_dark(&plain));
 }
