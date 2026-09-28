@@ -304,6 +304,13 @@ pub struct TuiApp {
     pub help_filter: String,
     /// Mode the user was in when the quit overlay opened; restored on cancel.
     pub(crate) quit_prev_mode: TuiMode,
+    /// Modes the user was in before each overlay (help/settings/worktree)
+    /// opened, oldest opener at the bottom, so closing returns to the
+    /// immediately previous context. The WebUI modals return to the
+    /// underlying view; the TUI must keep the attach context, and a
+    /// help overlay opened from inside the worktree overlay must close
+    /// back into that overlay, not out of the whole stack.
+    pub(crate) overlay_stack: Vec<TuiMode>,
     dirty: bool,
 }
 
@@ -510,6 +517,7 @@ impl TuiApp {
             help_scroll: 0,
             help_filter: String::new(),
             quit_prev_mode: TuiMode::Navigate,
+            overlay_stack: Vec::new(),
             dirty: true,
         }
     }
@@ -631,7 +639,7 @@ impl TuiApp {
                         self.help_filter.clear();
                         self.help_scroll = 0;
                     } else {
-                        self.mode = TuiMode::Navigate;
+                        self.close_overlay();
                         self.help_scroll = 0;
                     }
                 }
@@ -641,7 +649,7 @@ impl TuiApp {
                 // into the filter like the webui search box, so queries
                 // like "quit" and "quick" are typeable.
                 KeyCode::Char('?') => {
-                    self.mode = TuiMode::Navigate;
+                    self.close_overlay();
                     self.help_scroll = 0;
                     self.help_filter.clear();
                 }
@@ -702,7 +710,7 @@ impl TuiApp {
             },
             TuiMode::Settings => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') => {
-                    self.mode = TuiMode::Navigate;
+                    self.close_overlay();
                 }
                 // Theme cycle (webui settings theme select).
                 KeyCode::Char('t') | KeyCode::Tab => {
@@ -1135,7 +1143,7 @@ impl TuiApp {
     fn run_shortcut(&mut self, shortcut: Shortcut) {
         match shortcut {
             Shortcut::Help => {
-                self.mode = TuiMode::Help;
+                self.open_overlay(TuiMode::Help);
                 self.help_scroll = 0;
                 self.help_filter.clear();
             }
@@ -1207,7 +1215,7 @@ impl TuiApp {
             }
             Shortcut::Settings => {
                 // Prefix s: settings overlay (webui settings modal).
-                self.mode = TuiMode::Settings;
+                self.open_overlay(TuiMode::Settings);
             }
             Shortcut::Sidebar => {
                 // Prefix Shift+B: collapse/expand the sidebar column
@@ -1435,6 +1443,26 @@ impl TuiApp {
         self.quit_prev_mode = self.mode;
         self.mode = TuiMode::ConfirmQuit;
         self.status = "quit? y confirms · Esc cancels".to_string();
+    }
+
+    /// Open a modal overlay (help/settings/worktree), remembering the
+    /// mode it was opened from so closing returns there. Without this,
+    /// overlays opened while attached drop back to Navigate and lose
+    /// the attach context; the WebUI modals always return to whatever
+    /// the user was doing underneath.
+    fn open_overlay(&mut self, overlay: TuiMode) {
+        // The stack remembers every opener, so nested overlays unwind
+        // one level per close: help opened from inside the worktree
+        // overlay closes back into it, and closing that overlay returns
+        // to the original mode (e.g. Attach).
+        self.overlay_stack.push(self.mode);
+        self.mode = overlay;
+    }
+
+    /// Close the current overlay, restoring the context it was opened
+    /// from (falls back to Navigate when the stack is somehow empty).
+    fn close_overlay(&mut self) {
+        self.mode = self.overlay_stack.pop().unwrap_or(TuiMode::Navigate);
     }
 
     /// Cancel the quit overlay and return to the mode the user was in.
@@ -1872,7 +1900,7 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('?') => {
-                self.mode = TuiMode::Help;
+                self.open_overlay(TuiMode::Help);
                 self.help_scroll = 0;
                 self.help_filter.clear();
             }
@@ -2309,7 +2337,7 @@ impl TuiApp {
             // Plain ? opens the help overlay from any git view (the
             // footer advertises Ctrl+B ?; a bare ? is the natural reflex).
             KeyCode::Char('?') => {
-                self.mode = TuiMode::Help;
+                self.open_overlay(TuiMode::Help);
                 self.help_scroll = 0;
                 self.help_filter.clear();
             }
@@ -2402,7 +2430,7 @@ impl TuiApp {
                     self.worktree_filter.clear();
                     self.worktree_selected = 0;
                 } else {
-                    self.mode = TuiMode::Navigate;
+                    self.close_overlay();
                 }
             }
             KeyCode::Enter => match self.worktree_open_selected() {
@@ -2454,7 +2482,7 @@ impl TuiApp {
             // delegate to their panel handlers above.
             KeyCode::Char('q') | KeyCode::Esc => self.request_quit(),
             KeyCode::Char('?') => {
-                self.mode = TuiMode::Help;
+                self.open_overlay(TuiMode::Help);
                 self.help_scroll = 0;
                 self.help_filter.clear();
             }

@@ -266,7 +266,7 @@ impl TuiApp {
         self.worktree_selected = 0;
         self.worktree_filter.clear();
         self.worktree_root = cwd.clone();
-        self.mode = TuiMode::WorktreeList;
+        self.open_overlay(TuiMode::WorktreeList);
         Ok(format!("worktrees: {} in {cwd}", self.worktree_rows.len()))
     }
 
@@ -303,6 +303,9 @@ impl TuiApp {
                 self.refresh_tail();
             }
         }
+        // Opening a worktree is a context switch (the webui navigates to
+        // the new workspace), so it also drops any overlay stack.
+        self.overlay_stack.clear();
         self.mode = TuiMode::Navigate;
         Ok(format!("opened {}", row.title()))
     }

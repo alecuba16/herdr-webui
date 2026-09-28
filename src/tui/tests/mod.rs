@@ -1489,10 +1489,10 @@ fn shortcut_dispatch_covers_every_arm() {
     app.handle_key(KeyEvent::from(KeyCode::Char('q')));
     assert_eq!(app.mode, TuiMode::ConfirmQuit);
     assert!(!app.should_quit(), "quit shortcut asks first");
-    // y confirms; the overlay was opened from Navigate so cancel would
-    // restore that mode, but here we confirm for real.
-    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
-    assert_eq!(app.status, "quit");
+    // Cancel first; the destructive confirm runs at the very end of the
+    // test because after `y` the app is in a terminal ConfirmQuit state.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
 
     // Refresh arm and PrevWorkspace arm (focus unchanged by j/k).
     app.handle_key(ctrl_b);
@@ -1614,6 +1614,14 @@ fn shortcut_dispatch_covers_every_arm() {
     app.handle_key(KeyEvent::from(KeyCode::Char('p')));
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT));
+
+    // The real confirm runs last: y confirms the quit overlay that the
+    // quit arm opened earlier in the flow.
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+    assert_eq!(app.status, "quit");
 }
 
 #[test]
@@ -5338,4 +5346,64 @@ fn filtered_help_rows_match_keys_and_descriptions() {
     );
     // No match returns empty.
     assert!(crate::tui::filtered_help_rows("zzzzzzzz").is_empty());
+}
+
+#[test]
+fn overlays_restore_the_mode_they_were_opened_from() {
+    // Regression: overlays opened while attached must close back to
+    // Attach, not Navigate. The WebUI modals return to the underlying
+    // view; dropping the attach context silently detaches the user.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Terminal;
+    app.mode = TuiMode::Attach;
+
+    // Help overlay from prefix while attached.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Attach, "? closer restores Attach");
+
+    // Esc closer with an active filter clears first, closes on second.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    for ch in "theme".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Help, "Esc clears the filter first");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Attach, "Esc closer restores Attach");
+
+    // Settings overlay from prefix while attached.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.mode, TuiMode::Settings);
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(app.mode, TuiMode::Attach, "s closer restores Attach");
+
+    // Overlays from Navigate keep returning to Navigate.
+    app.mode = TuiMode::Navigate;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Navigate);
+
+    // Nested: opening help from inside the worktree overlay restores
+    // the worktree overlay on close (prefix wins over the overlay).
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('w')));
+    assert_eq!(app.mode, TuiMode::WorktreeList);
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help);
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(
+        app.mode,
+        TuiMode::WorktreeList,
+        "nested close restores the worktree overlay"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
 }
