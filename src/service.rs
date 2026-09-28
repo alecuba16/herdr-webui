@@ -483,6 +483,10 @@ fn linux_service_unit(config: &WebConfig, install_bin: &Path) -> String {
 }
 
 fn append_mac_tls_args(config: &WebConfig, args: &mut Vec<String>) {
+    if !config.tls_mode_explicit && config.tls.cert_path.is_none() && config.tls.key_path.is_none()
+    {
+        return;
+    }
     match config.tls.mode {
         TlsMode::Off => {}
         TlsMode::Auto => {
@@ -520,6 +524,10 @@ fn append_mac_tls_file_args(config: &WebConfig, args: &mut Vec<String>) {
 }
 
 fn append_systemd_tls_args(config: &WebConfig, exec: &mut String) {
+    if !config.tls_mode_explicit && config.tls.cert_path.is_none() && config.tls.key_path.is_none()
+    {
+        return;
+    }
     match config.tls.mode {
         TlsMode::Off => {}
         TlsMode::Auto => {
@@ -715,6 +723,7 @@ mod tests {
             client_socket: None,
             backend_mode: None,
             tls,
+            tls_mode_explicit: false,
         }
     }
 
@@ -732,6 +741,7 @@ mod tests {
                 cert_path: None,
                 key_path: None,
             },
+            tls_mode_explicit: false,
         };
 
         let unit = linux_service_unit(&config, Path::new("/tmp/herdr-webui"));
@@ -755,6 +765,7 @@ mod tests {
                 cert_path: None,
                 key_path: None,
             },
+            tls_mode_explicit: false,
         };
 
         let unit = linux_service_unit(&config, Path::new("/tmp/herdr webui"));
@@ -776,6 +787,7 @@ mod tests {
                 cert_path: Some(PathBuf::from("/tmp/cert.pem")),
                 key_path: Some(PathBuf::from("/tmp/key.pem")),
             },
+            tls_mode_explicit: false,
         };
 
         let plist = mac_plist_xml(&config, Path::new("/tmp/herdr-webui")).unwrap();
@@ -804,6 +816,19 @@ mod tests {
             xml_escape("<&>\"'"),
             "&lt;&amp;&gt;&quot;&apos;".to_string()
         );
+    }
+
+    #[test]
+    fn service_without_explicit_https_uses_persisted_setting() {
+        let config = test_config(crate::TlsConfig {
+            mode: TlsMode::Auto,
+            cert_path: None,
+            key_path: None,
+        });
+        let plist = mac_plist_xml(&config, Path::new("/tmp/herdr-webui")).unwrap();
+        let unit = linux_service_unit(&config, Path::new("/tmp/herdr-webui"));
+        assert!(!plist.contains("--https"));
+        assert!(!unit.contains("--https"));
     }
 
     #[test]

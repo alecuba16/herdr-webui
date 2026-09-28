@@ -243,6 +243,9 @@ struct WebConfig {
     client_socket: Option<PathBuf>,
     backend_mode: Option<BackendMode>,
     tls: TlsConfig,
+    /// True when --https was passed explicitly and must override persisted
+    /// settings (same contract as `bind_explicit`).
+    tls_mode_explicit: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -275,12 +278,22 @@ struct TlsConfig {
     key_path: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum TlsMode {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TlsMode {
     Off,
     Auto,
     SelfSigned,
     Files,
+}
+
+/// The address and TLS mode the listener must (re)build with. The rebind
+/// watch channel carries this so a settings change can hot-swap the scheme
+/// (http <-> https) exactly like it hot-swaps the bind address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ListenEndpoint {
+    bind: SocketAddr,
+    tls_mode: TlsMode,
 }
 
 struct NoSleepGuard {
@@ -457,6 +470,7 @@ impl WebConfig {
                 cert_path,
                 key_path,
             },
+            tls_mode_explicit: tls_mode_set,
         })
     }
 }
@@ -471,6 +485,24 @@ fn parse_tls_mode(value: &str) -> io::Result<TlsMode> {
             io::ErrorKind::InvalidInput,
             format!("invalid --https mode: {other}; use off, auto, self-signed, or files"),
         )),
+    }
+}
+
+impl TlsMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TlsMode::Off => "off",
+            TlsMode::Auto => "auto",
+            TlsMode::SelfSigned => "self-signed",
+            TlsMode::Files => "files",
+        }
+    }
+
+    pub fn scheme(self) -> &'static str {
+        match self {
+            TlsMode::Off => "http",
+            TlsMode::Auto | TlsMode::SelfSigned | TlsMode::Files => "https",
+        }
     }
 }
 
@@ -538,7 +570,7 @@ pub(crate) struct WebState {
     auth: Arc<Mutex<AuthConfig>>,
     server_settings: Arc<Mutex<RuntimeServerSettings>>,
     no_sleep: Arc<Mutex<NoSleepState>>,
-    rebind_tx: tokio::sync::watch::Sender<SocketAddr>,
+    rebind_tx: tokio::sync::watch::Sender<ListenEndpoint>,
     /// Broadcasts the public settings JSON to every connected events socket
     /// after a settings change, so open tabs re-sync backend enablement
     /// without a page reload.
@@ -848,7 +880,14 @@ async fn main() -> io::Result<()> {
     let lsp_registry = Arc::new(lsp::LspRegistry::new(
         server_settings.lock().unwrap().lsp.clone(),
     ));
-    let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(server_settings.lock().unwrap().bind);
+    let listen_endpoint = {
+        let settings = server_settings.lock().unwrap();
+        ListenEndpoint {
+            bind: settings.bind,
+            tls_mode: settings.tls_mode,
+        }
+    };
+    let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(listen_endpoint);
     let (settings_tx, _) = tokio::sync::broadcast::channel(16);
     let closed_builtin_sessions: ClosedBuiltinSessions = Arc::new(Mutex::new(HashSet::new()));
     let promoted_temporary_tabs: PromotedTemporaryTabs = Arc::new(Mutex::new(HashMap::new()));
@@ -977,7 +1016,7 @@ fn socket_path_fits(_path: &Path) -> bool {
 
 async fn serve_rebindable(
     state: WebState,
-    mut rebind_rx: tokio::sync::watch::Receiver<SocketAddr>,
+    mut rebind_rx: tokio::sync::watch::Receiver<ListenEndpoint>,
     tls: TlsConfig,
 ) -> io::Result<()> {
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -986,7 +1025,16 @@ async fn serve_rebindable(
         .map_err(io::Error::other)?;
 
     loop {
-        let bind = *rebind_rx.borrow_and_update();
+        let endpoint = *rebind_rx.borrow_and_update();
+        let bind = endpoint.bind;
+        // The settings tls_mode is authoritative on every rebuild: an explicit
+        // --https flag was folded into the settings at startup by
+        // apply_cli_overrides, so it wins over the persisted file until the
+        // operator changes the protocol through the settings API.
+        let tls = TlsConfig {
+            mode: endpoint.tls_mode,
+            ..tls.clone()
+        };
         let listener = match tokio::net::TcpListener::bind(bind).await {
             Ok(listener) => listener,
             Err(err) => {
@@ -1782,6 +1830,7 @@ async fn me(
 #[derive(Deserialize)]
 struct UpdateServerSettingsRequest {
     bind: String,
+    tls_mode: Option<TlsMode>,
     username: Option<String>,
     password: Option<String>,
     localhost_no_auth: bool,
@@ -2064,6 +2113,10 @@ async fn update_server_settings(
         .map(|settings| settings.clone());
     let next = RuntimeServerSettings {
         bind,
+        tls_mode: body
+            .tls_mode
+            .or_else(|| current.as_ref().map(|settings| settings.tls_mode))
+            .unwrap_or(TlsMode::Auto),
         lsp: current
             .as_ref()
             .map(|settings| settings.lsp.clone())
@@ -2132,6 +2185,9 @@ async fn update_server_settings(
     let bind_changed = current
         .as_ref()
         .is_none_or(|settings| settings.bind != next.bind);
+    let tls_mode_changed = current
+        .as_ref()
+        .is_none_or(|settings| settings.tls_mode != next.tls_mode);
     // save_runtime_server_settings does file I/O (fs::write + permissions);
     // offload to avoid stalling the async runtime.
     let save_result = {
@@ -2171,8 +2227,11 @@ async fn update_server_settings(
     if let Ok(mut settings_lock) = state.server_settings.lock() {
         *settings_lock = next.clone();
     }
-    if bind_changed {
-        let _ = state.rebind_tx.send(next.bind);
+    if bind_changed || tls_mode_changed {
+        let _ = state.rebind_tx.send(ListenEndpoint {
+            bind: next.bind,
+            tls_mode: next.tls_mode,
+        });
     }
     // Tell every connected events socket so long-lived tabs adopt the new
     // enabled_backends immediately (a disabled backend stops being
@@ -5401,7 +5460,10 @@ mod tests {
 
     fn test_state() -> WebState {
         let bind = DEFAULT_BIND.parse::<SocketAddr>().unwrap();
-        let (rebind_tx, _) = tokio::sync::watch::channel(bind);
+        let (rebind_tx, _) = tokio::sync::watch::channel(ListenEndpoint {
+            bind,
+            tls_mode: TlsMode::Auto,
+        });
         let (settings_tx, _) = tokio::sync::broadcast::channel(16);
         WebState {
             api_socket: Some(PathBuf::from("/tmp/default-api.sock")),
@@ -5422,6 +5484,7 @@ mod tests {
             })),
             server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
                 bind,
+                tls_mode: TlsMode::Auto,
                 user: Some("user".to_string()),
                 password: Some("pass".to_string()),
                 localhost_no_auth: false,
@@ -5636,7 +5699,24 @@ mod tests {
     fn parses_https_off_opt_out() {
         let args = ["--https", "off"].map(String::from);
 
-        assert_eq!(WebConfig::parse(&args).unwrap().tls.mode, TlsMode::Off);
+        let config = WebConfig::parse(&args).unwrap();
+        assert_eq!(config.tls.mode, TlsMode::Off);
+        assert!(config.tls_mode_explicit);
+    }
+
+    #[test]
+    fn tls_mode_not_explicit_without_https_flag() {
+        let args: Vec<String> = Vec::new();
+        let config = WebConfig::parse(&args).unwrap();
+        assert!(!config.tls_mode_explicit);
+        // Without an explicit flag the persisted tls_mode from
+        // webui-settings.json must win; apply_cli_overrides must leave it
+        // untouched.
+        let mut settings =
+            server_settings::default_runtime_server_settings(DEFAULT_BIND.parse().unwrap());
+        settings.tls_mode = TlsMode::Off;
+        apply_cli_overrides(&mut settings, &config);
+        assert_eq!(settings.tls_mode, TlsMode::Off);
     }
 
     #[test]
@@ -6305,6 +6385,7 @@ mod tests {
         let settings = load_runtime_server_settings("127.0.0.1:8787".parse().unwrap()).unwrap();
 
         assert_eq!(settings.bind, "127.0.0.1:9999".parse().unwrap());
+        assert_eq!(settings.tls_mode, TlsMode::Auto);
         assert_eq!(settings.user, None);
         assert_eq!(settings.password, None);
         assert!(settings.localhost_no_auth);
@@ -6314,6 +6395,7 @@ mod tests {
         assert!(!settings.default_folder.is_empty());
         let raw = fs::read_to_string(path).unwrap();
         assert!(raw.contains("localhost_no_auth"));
+        assert!(raw.contains("tls_mode"));
         assert!(raw.contains("user"));
         assert!(raw.contains("password"));
         assert!(raw.contains("no_sleep_auto_cooldown_seconds"));
@@ -6368,6 +6450,7 @@ mod tests {
     fn loads_auth_from_runtime_settings() {
         let auth = AuthConfig::from_settings(&RuntimeServerSettings {
             bind: "0.0.0.0:8787".parse().unwrap(),
+            tls_mode: TlsMode::Auto,
             user: Some("test-user".to_string()),
             password: Some("test-password".to_string()),
             localhost_no_auth: false,
@@ -6394,6 +6477,7 @@ mod tests {
     fn rejects_public_bind_without_credentials() {
         let public_err = match AuthConfig::from_settings(&RuntimeServerSettings {
             bind: "0.0.0.0:8787".parse().unwrap(),
+            tls_mode: TlsMode::Auto,
             user: None,
             password: None,
             localhost_no_auth: true,
@@ -6442,6 +6526,8 @@ mod tests {
             .unwrap();
         let before_body = response_json(before).await;
         assert_eq!(before_body["bind"], "127.0.0.1:8787");
+        assert_eq!(before_body["tls_mode"], "auto");
+        assert_eq!(before_body["scheme"], "https");
         assert_eq!(before_body["username"], "user");
         assert_eq!(before_body["no_sleep_auto_cooldown_seconds"], 60);
         assert_eq!(before_body["backend_mode"], "external-herdr");
@@ -6464,6 +6550,7 @@ mod tests {
                     .body(Body::from(
                         json!({
                             "bind": "0.0.0.0:8787",
+                            "tls_mode": "off",
                             "username": "test-user",
                             "password": "test-password",
                             "localhost_no_auth": true,
@@ -6487,6 +6574,8 @@ mod tests {
         assert_eq!(updated_body["has_password"], true);
         assert_eq!(updated_body["no_sleep_auto_cooldown_seconds"], 90);
         assert_eq!(updated_body["backend_mode"], "builtin");
+        assert_eq!(updated_body["tls_mode"], "off");
+        assert_eq!(updated_body["scheme"], "http");
         assert_eq!(updated_body["builtin_shell"], "/bin/zsh");
         assert_eq!(
             updated_body["default_folder"],
@@ -8659,6 +8748,7 @@ mod tests {
         );
         let serialized = serde_json::to_string(&PersistedServerSettings {
             bind: Some(settings.bind.to_string()),
+            tls_mode: Some(settings.tls_mode),
             user: settings.user.clone(),
             password: settings.password.clone(),
             localhost_no_auth: Some(settings.localhost_no_auth),
@@ -14874,7 +14964,10 @@ mod tui_parity_e2e_tests {
 
     fn localhost_no_auth_state(default_folder: PathBuf) -> WebState {
         let bind = DEFAULT_BIND.parse::<SocketAddr>().unwrap();
-        let (rebind_tx, _) = tokio::sync::watch::channel(bind);
+        let (rebind_tx, _) = tokio::sync::watch::channel(ListenEndpoint {
+            bind,
+            tls_mode: TlsMode::Auto,
+        });
         let (settings_tx, _) = tokio::sync::broadcast::channel(16);
         WebState {
             api_socket: Some(PathBuf::from("/tmp/default-api.sock")),
@@ -14895,6 +14988,7 @@ mod tui_parity_e2e_tests {
             })),
             server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
                 bind,
+                tls_mode: TlsMode::Auto,
                 user: None,
                 password: None,
                 localhost_no_auth: true,

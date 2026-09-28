@@ -4200,6 +4200,60 @@ describe("app bundle load", () => {
     equal(err.textContent, "network down");
   });
 
+  it("reloads to the returned scheme when the protocol changes", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // Current page is http; the server reply reports https.
+    ctx.location = {
+      protocol: "http:",
+      host: "127.0.0.1:8787",
+      pathname: "/",
+      search: "",
+      href: "",
+    };
+    const err = ctx.document.getElementById("serverSettingsError");
+    const errClasses = new Set();
+    err.classList = {
+      add(name) {
+        errClasses.add(name);
+      },
+      remove(name) {
+        errClasses.delete(name);
+      },
+      contains(name) {
+        return errClasses.has(name);
+      },
+      toggle() {},
+    };
+    ctx.document.getElementById("optServerBind").value = "127.0.0.1:8787";
+    ctx.document.getElementById("optTlsMode").value = "auto";
+    ctx.fetch = async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ bind: "127.0.0.1:8787", scheme: "https" }),
+    });
+    await ctx.applyServerSettings();
+    equal(
+      ctx.location.href,
+      "https://127.0.0.1:8787/",
+      "browser follows the scheme switch",
+    );
+
+    // Same scheme reply: no navigation, saved badge still applies.
+    ctx.location.href = "";
+    ctx.fetch = async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ bind: "127.0.0.1:8787", scheme: "http" }),
+    });
+    await ctx.applyServerSettings();
+    equal(ctx.location.href, "", "same-scheme reply does not navigate");
+    ok(errClasses.has("saved"), "saved badge applies without a scheme switch");
+  });
+
   it("keeps server settings validation errors red without saved state", async () => {
     const ctx = context();
     vm.runInContext(source, ctx);
