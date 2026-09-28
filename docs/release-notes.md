@@ -1,5 +1,18 @@
 # Release notes
 
+## 0.4.46 Release Notes
+- The statusbar hint never loses the help discovery tail on narrow
+  terminals anymore. On an 80-column terminal the long per-mode hints
+  were clipping the `Ctrl+B ? help` ending off-screen; the footer now
+  swaps to compact hints when the full one does not fit, and if even the
+  compact hint is too wide it drops leading action segments so the
+  help shortcut always stays visible.
+- The status message next to the hint keeps a minimum of 8 columns
+  (it used to truncate to nothing when the hint overran the line), and
+  an armed `Ctrl+B>` prefix now counts against the hint budget too.
+- Quit discoverability is preserved in the compact Navigate hint, which
+  still lists `q quit` at 80 columns.
+
 ## 0.4.45 Release Notes
 - Quitting the TUI now asks first: every exit path (`Ctrl+B q`, plain `q`,
   Esc on the terminal screen) opens a small y/n confirmation overlay
