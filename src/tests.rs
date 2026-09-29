@@ -3146,6 +3146,119 @@ async fn recent_workspaces_record_endpoint_requires_auth_and_records() {
     std::env::remove_var("XDG_CONFIG_HOME");
 }
 
+/// End-to-end closure of the auth parity loop: a real axum server with
+/// real auth (username/password, no localhost bypass), a real
+/// `WebApiClient` as the TUI binary uses it, and a real
+/// `webui-settings.json` holding the credentials. The client must get
+/// 401 on the first recents call, log in through /api/login, cache the
+/// session cookie, retry, and every recents operation must then work
+/// against the authed server.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn web_api_client_authenticates_against_real_authed_server() {
+    let _env = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-tui-auth-e2e-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(config_home.join("herdr-webui")).unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    // The persisted settings the TUI reads: the authed server's
+    // user/password. bind is present too so the file shape matches
+    // a real deployment.
+    std::fs::write(
+        config_home.join("herdr-webui").join("webui-settings.json"),
+        json!({ "bind": "127.0.0.1:0", "user": "user", "password": "pass" }).to_string(),
+    )
+    .unwrap();
+    // GET /api/recent-workspaces prunes entries whose folder is gone,
+    // so the recorded path must exist on disk.
+    let recorded_dir = std::env::temp_dir().join(format!(
+        "herdr-webui-tui-auth-e2e-dir-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&recorded_dir).unwrap();
+    let recorded_path = recorded_dir.to_string_lossy().to_string();
+
+    // test_state() has auth on: user/pass, localhost_no_auth false,
+    // so only a valid session cookie passes require_auth.
+    let state = test_state();
+    let app = test_app_with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    // The blocking TUI client runs on the blocking pool.
+    let port = addr.port();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let client = herdr_webui::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        // First call: 401, then the client logs in with the persisted
+        // credentials and retries. recent-workspaces returns [] with a
+        // 200 once authorized.
+        let value = client
+            .recent_workspaces()
+            .expect("401 triggers login and the retry succeeds");
+        assert_eq!(value["recent"], json!([]), "authorized list is empty");
+        // Second call: the cached cookie authorizes without login.
+        let value = client
+            .recent_workspaces()
+            .expect("cached session cookie authorizes");
+        assert_eq!(value["recent"], json!([]));
+        // Record one entry; it must persist with the sent fields.
+        client
+            .record_recent_workspace(&recorded_path, Some("e2e label"), Some("workspace"))
+            .expect("record reaches the authed server");
+        // And the list now serves the entry back (the folder exists, so
+        // the GET pruning keeps it).
+        let value = client.recent_workspaces().expect("list after record");
+        assert_eq!(value["recent"][0]["path"], json!(recorded_path));
+        assert_eq!(value["recent"][0]["label"], json!("e2e label"));
+    })
+    .await;
+
+    // Also pin the wrong-password path: the 401 must surface, not hang
+    // or loop.
+    let wrong_port = addr.port();
+    let wrong_config_home = config_home.clone();
+    let wrong = tokio::task::spawn_blocking(move || {
+        std::fs::write(
+            wrong_config_home
+                .join("herdr-webui")
+                .join("webui-settings.json"),
+            json!({ "bind": "127.0.0.1:0", "user": "user", "password": "WRONG" }).to_string(),
+        )
+        .unwrap();
+        let client = herdr_webui::tui::web_api::WebApiClient::new("127.0.0.1", wrong_port);
+        match client.recent_workspaces() {
+            Err(herdr_webui::tui::web_api::WebApiError::Http { status: 401, .. }) => 401,
+            Err(herdr_webui::tui::web_api::WebApiError::Api(_)) => 401,
+            other => panic!("expected surfaced 401, got {other:?}"),
+        }
+    })
+    .await;
+
+    server_handle.abort();
+    outcome.expect("authed e2e client flow");
+    assert_eq!(wrong.expect("wrong-password flow"), 401);
+
+    let _ = std::fs::remove_dir_all(&recorded_dir);
+    let _ = std::fs::remove_dir_all(&config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn recent_workspaces_prunes_missing_paths_and_persists() {
