@@ -69,6 +69,14 @@ impl BackendClient {
     /// convention as the WebUI runtime. A future TUI can use this for the common
     /// case, or pass explicit paths with `new` when embedded/remote launchers
     /// provide sockets out of band.
+    ///
+    /// FOOTGUN for tests: with no arguments this resolves the user's REAL
+    /// live backend (`~/.config/herdr-webui/builtin/default/herdr.sock`).
+    /// Unit tests must never wire this into an app that can dispatch mutating
+    /// requests (`tab.create`, `tab.close`, `workspace.close`, ...): on a dev
+    /// machine the live session is real, and every test run mutates the user's
+    /// panels. Tests either use a fake listener socket (`fake_backend_socket`)
+    /// or a nonexistent socket path so calls stay on their error paths.
     pub fn builtin_session(session: Option<&str>) -> Self {
         let (api_socket, terminal_socket) = builtin_socket_paths(session);
         Self::new(api_socket, terminal_socket)
