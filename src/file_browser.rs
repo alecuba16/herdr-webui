@@ -1209,15 +1209,9 @@ fn collect_git_status(
     Some(map)
 }
 
-async fn file_browser_tree(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Query(query): Query<FileBrowserQuery>,
-) -> Response {
-    if let Err(response) = file_browser_auth(&state, &headers, remote) {
-        return response;
-    }
+/// Blocking body of the tree endpoint. Runs on a spawn_blocking thread so
+/// directory walks and search visits never stall the async runtime.
+fn file_browser_tree_blocking(query: FileBrowserQuery) -> Response {
     let root = match resolve_root(&query.cwd) {
         Ok(root) => root,
         Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
@@ -1316,6 +1310,21 @@ async fn file_browser_tree(
     .into_response()
 }
 
+async fn file_browser_tree(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<FileBrowserQuery>,
+) -> Response {
+    if let Err(response) = file_browser_auth(&state, &headers, remote) {
+        return response;
+    }
+    match tokio::task::spawn_blocking(move || file_browser_tree_blocking(query)).await {
+        Ok(response) => response,
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
 async fn file_browser_request_access(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1377,15 +1386,8 @@ fn file_browser_partial_read(file: &Path, rel: &str, size: u64, budget: u64) -> 
     .into_response()
 }
 
-async fn file_browser_file(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Query(query): Query<FileBrowserQuery>,
-) -> Response {
-    if let Err(response) = file_browser_auth(&state, &headers, remote) {
-        return response;
-    }
+/// Blocking body of the file read endpoint (fs metadata + content + hash).
+fn file_browser_file_blocking(query: FileBrowserQuery) -> Response {
     let root = match resolve_root(&query.cwd) {
         Ok(root) => root,
         Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
@@ -1481,6 +1483,21 @@ async fn file_browser_file(
     Json(payload).into_response()
 }
 
+async fn file_browser_file(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<FileBrowserQuery>,
+) -> Response {
+    if let Err(response) = file_browser_auth(&state, &headers, remote) {
+        return response;
+    }
+    match tokio::task::spawn_blocking(move || file_browser_file_blocking(query)).await {
+        Ok(response) => response,
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
 // Builds the two <pre> bodies used by the fallback numbered preview: the
 // gutter (one <span> per line number) and the escaped code. The browser
 // injects these strings directly; escaping happened here.
@@ -1501,15 +1518,8 @@ fn numbered_lines_html(content: &str) -> (String, String) {
     (gutter, code)
 }
 
-async fn file_browser_write_file(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Json(body): Json<FileBrowserWriteRequest>,
-) -> Response {
-    if let Err(response) = file_browser_auth(&state, &headers, remote) {
-        return response;
-    }
+/// Blocking body of the file write endpoint (hash check + create + write).
+fn file_browser_write_file_blocking(body: FileBrowserWriteRequest) -> Response {
     let root = match resolve_root(&body.cwd) {
         Ok(root) => root,
         Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
@@ -1560,15 +1570,23 @@ async fn file_browser_write_file(
     Json(json!({ "ok": true, "path": rel, "hash": hash })).into_response()
 }
 
-async fn file_browser_content_search(
+async fn file_browser_write_file(
     State(state): State<WebState>,
     headers: HeaderMap,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Query(query): Query<FileContentSearchQuery>,
+    Json(body): Json<FileBrowserWriteRequest>,
 ) -> Response {
     if let Err(response) = file_browser_auth(&state, &headers, remote) {
         return response;
     }
+    match tokio::task::spawn_blocking(move || file_browser_write_file_blocking(body)).await {
+        Ok(response) => response,
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+/// Blocking body of the directory content search endpoint.
+fn file_browser_content_search_blocking(query: FileContentSearchQuery) -> Response {
     let search = query.q.trim();
     if search.is_empty() {
         return file_browser_json_error(StatusCode::BAD_REQUEST, "query is required");
@@ -1630,7 +1648,7 @@ async fn file_browser_content_search(
     .into_response()
 }
 
-async fn file_browser_content_search_file(
+async fn file_browser_content_search(
     State(state): State<WebState>,
     headers: HeaderMap,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
@@ -1639,6 +1657,14 @@ async fn file_browser_content_search_file(
     if let Err(response) = file_browser_auth(&state, &headers, remote) {
         return response;
     }
+    match tokio::task::spawn_blocking(move || file_browser_content_search_blocking(query)).await {
+        Ok(response) => response,
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+/// Blocking body of the single-file content search endpoint.
+fn file_browser_content_search_file_blocking(query: FileContentSearchQuery) -> Response {
     let search = query.q.trim();
     if search.is_empty() {
         return file_browser_json_error(StatusCode::BAD_REQUEST, "query is required");
@@ -1692,15 +1718,27 @@ async fn file_browser_content_search_file(
     .into_response()
 }
 
-async fn file_browser_rename(
+async fn file_browser_content_search_file(
     State(state): State<WebState>,
     headers: HeaderMap,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Json(body): Json<FileBrowserRenameRequest>,
+    Query(query): Query<FileContentSearchQuery>,
 ) -> Response {
     if let Err(response) = file_browser_auth(&state, &headers, remote) {
         return response;
     }
+    match tokio::task::spawn_blocking(move || {
+        file_browser_content_search_file_blocking(query)
+    })
+    .await
+    {
+        Ok(response) => response,
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+/// Blocking body of the rename endpoint.
+fn file_browser_rename_blocking(body: FileBrowserRenameRequest) -> Response {
     let root = match resolve_root(&body.cwd) {
         Ok(root) => root,
         Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
@@ -1737,15 +1775,23 @@ async fn file_browser_rename(
     Json(json!({ "ok": true, "path": relative_to_root(&root, &target) })).into_response()
 }
 
-async fn file_browser_delete(
+async fn file_browser_rename(
     State(state): State<WebState>,
     headers: HeaderMap,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Json(body): Json<FileBrowserDeleteRequest>,
+    Json(body): Json<FileBrowserRenameRequest>,
 ) -> Response {
     if let Err(response) = file_browser_auth(&state, &headers, remote) {
         return response;
     }
+    match tokio::task::spawn_blocking(move || file_browser_rename_blocking(body)).await {
+        Ok(response) => response,
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+/// Blocking body of the delete endpoint.
+fn file_browser_delete_blocking(body: FileBrowserDeleteRequest) -> Response {
     let root = match resolve_root(&body.cwd) {
         Ok(root) => root,
         Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
@@ -1771,6 +1817,21 @@ async fn file_browser_delete(
         return file_browser_json_error(StatusCode::BAD_REQUEST, "path does not exist");
     }
     Json(json!({ "ok": true })).into_response()
+}
+
+async fn file_browser_delete(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<FileBrowserDeleteRequest>,
+) -> Response {
+    if let Err(response) = file_browser_auth(&state, &headers, remote) {
+        return response;
+    }
+    match tokio::task::spawn_blocking(move || file_browser_delete_blocking(body)).await {
+        Ok(response) => response,
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
 }
 
 #[cfg(test)]
