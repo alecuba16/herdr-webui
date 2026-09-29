@@ -113,10 +113,13 @@ impl SearchPalette {
 
     /// Live-filter local candidates (workspaces, panels, agents) while
     /// typing. Desktop scores every candidate against the query with
-    /// `searchScore` and keeps the top 12.
+    /// `searchScore` and keeps the top 12. Any query change drops the
+    /// committed state: fetched rows were for the old query, so the
+    /// next Enter must re-commit instead of navigating stale results.
     pub fn refresh_local(&mut self, snapshot: &TuiSnapshot) {
         self.results = local_candidates(snapshot, &self.query);
         self.selected = 0;
+        self.committed = false;
     }
 
     /// Type a printable char into the query and re-filter.

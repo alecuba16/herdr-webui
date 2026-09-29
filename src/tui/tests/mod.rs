@@ -6362,3 +6362,47 @@ fn search_palette_shows_error_and_stays_usable_when_backend_fails() {
         text.chars().take(200).collect::<String>()
     );
 }
+
+#[test]
+fn search_palette_retyping_after_commit_requires_fresh_enter() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+
+    // Simulate a successful commit: local rows plus the committed flag.
+    app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    app.search_palette.committed = true;
+    assert!(app.search_palette.committed);
+
+    // Extending the query must drop the committed state: the next Enter
+    // re-commits (re-fetches) instead of navigating rows fetched for
+    // the old query.
+    app.handle_key(KeyEvent::from(KeyCode::Char('o')));
+    assert!(
+        !app.search_palette.committed,
+        "typing after a commit drops committed"
+    );
+    // Backspace and Ctrl+U also invalidate the commit.
+    app.search_palette.committed = true;
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert!(!app.search_palette.committed, "backspace drops committed");
+    app.search_palette.committed = true;
+    app.handle_key(ctrl('u'));
+    assert!(!app.search_palette.committed, "Ctrl+U drops committed");
+
+    // And the uncommitted palette behaves like a committed-ignorant one:
+    // with a local hit the row renders (no false "no results" state).
+    app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+    let text = draw(&app, 80, 24);
+    assert!(
+        text.contains("[ws] Repo"),
+        "local row renders while uncommitted"
+    );
+    assert!(
+        !text.contains("no results"),
+        "no false no-results state while uncommitted"
+    );
+}
