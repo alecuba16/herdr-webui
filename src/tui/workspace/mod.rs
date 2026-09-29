@@ -338,7 +338,8 @@ impl TuiApp {
     /// Enter in the WorktreeList overlay: worktree rows open through
     /// `worktree.open`, folder rows descend into the folder, and the
     /// "this folder" row opens the browse root as a workspace. In
-    /// pick mode (prefix `N`) every Enter stages the path for the
+    /// pick mode (prefix `N`) Enter keeps descending folders (the
+    /// tree stays navigable) and `o` stages any row for the
     /// workspace name prompt instead.
     pub fn worktree_enter_selected(&mut self) -> WorkspaceResult {
         let Some(row) = self
@@ -348,28 +349,40 @@ impl TuiApp {
         else {
             return Err("no worktree selected".to_string());
         };
-        if self.worktree_pick_workspace {
-            let path = match &row {
-                BrowserRow::ThisFolder { path } | BrowserRow::Folder { path, .. } => path.clone(),
-                BrowserRow::Worktree(worktree) => worktree.path.clone(),
-            };
-            if path.is_empty() {
-                return Err("worktree path missing".to_string());
-            }
-            // Validate on disk like the typed-path flow (webui "workspace
-            // folder must exist") before chaining to the name step.
-            let expanded = validate_workspace_folder(&path)?;
-            self.workspace_create_stage = Some(WorkspaceCreateStage::Path(expanded.clone()));
-            self.worktree_pick_workspace = false;
-            self.close_overlay();
-            self.prompt_input = Some(PromptInput::new(PromptKind::NewWorkspaceName));
-            self.status = format!("workspace at {expanded}: type the name");
-            return Ok(format!("workspace path staged: {expanded}"));
+        if self.worktree_pick_workspace && !matches!(row, BrowserRow::Folder { .. }) {
+            return self.worktree_stage_picked();
         }
         match row {
             BrowserRow::Folder { path, .. } => self.worktree_browse(&path),
             _ => self.worktree_open_selected(),
         }
+    }
+
+    /// Stage the selected row's path for the workspace name prompt
+    /// (prefix `N` pick mode). Validates on disk like the typed-path
+    /// flow (webui "workspace folder must exist") before chaining.
+    fn worktree_stage_picked(&mut self) -> WorkspaceResult {
+        let Some(row) = self
+            .filtered_browser_rows()
+            .get(self.worktree_selected)
+            .cloned()
+        else {
+            return Err("no worktree selected".to_string());
+        };
+        let path = match &row {
+            BrowserRow::ThisFolder { path } | BrowserRow::Folder { path, .. } => path.clone(),
+            BrowserRow::Worktree(worktree) => worktree.path.clone(),
+        };
+        if path.is_empty() {
+            return Err("worktree path missing".to_string());
+        }
+        let expanded = validate_workspace_folder(&path)?;
+        self.workspace_create_stage = Some(WorkspaceCreateStage::Path(expanded.clone()));
+        self.worktree_pick_workspace = false;
+        self.close_overlay();
+        self.prompt_input = Some(PromptInput::new(PromptKind::NewWorkspaceName));
+        self.status = format!("workspace at {expanded}: type the name");
+        Ok(format!("workspace path staged: {expanded}"))
     }
 
     /// Open the selected checkout through `worktree.open`. The backend
@@ -462,10 +475,11 @@ impl TuiApp {
             },
             // `o` opens the selected row as a workspace even when it is
             // a folder (Enter on folders descends instead). In pick mode
-            // (prefix `N`) `o` stages like Enter: both keys pick.
+            // (prefix `N`) `o` stages the row: Enter descends folders,
+            // `o` picks them.
             KeyCode::Char('o') if !filter_active => {
                 let result = if self.worktree_pick_workspace {
-                    self.worktree_enter_selected()
+                    self.worktree_stage_picked()
                 } else {
                     self.worktree_open_selected()
                 };
@@ -477,7 +491,7 @@ impl TuiApp {
             // `h` goes to the parent folder (vim/left convention shared
             // with the Files screen). Backspace on an empty filter does
             // the same so the two navigation reflexes agree.
-            KeyCode::Char('h') if !filter_active => {
+            KeyCode::Char('h') | KeyCode::Backspace if !filter_active => {
                 let parent = Path::new(&self.worktree_root)
                     .parent()
                     .map(|path| path.to_string_lossy().to_string())

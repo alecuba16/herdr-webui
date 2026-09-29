@@ -1825,7 +1825,11 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
         let (title, badge) = match row {
             BrowserRow::ThisFolder { path } => (
                 format!("this folder: {path}"),
-                " [open as workspace]".to_string(),
+                if app.worktree_pick_workspace {
+                    " [o stages for new workspace]".to_string()
+                } else {
+                    " [open as workspace]".to_string()
+                },
             ),
             BrowserRow::Worktree(worktree) => {
                 let linked = if worktree.is_linked { " [linked]" } else { " [main]" };
@@ -1839,7 +1843,12 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
                 )
             }
             BrowserRow::Folder { name, .. } => {
-                (format!("{name}/"), " [folder]".to_string())
+                let badge = if app.worktree_pick_workspace {
+                    " [folder, Enter descends]"
+                } else {
+                    " [folder]"
+                };
+                (format!("{name}/"), badge.to_string())
             }
         };
         lines.push(Line::from(vec![
@@ -1856,7 +1865,7 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
         .worktree_selected
         .saturating_sub(visible_rows.saturating_sub(1));
     let title = if app.worktree_pick_workspace {
-        " New workspace · pick a folder · Enter stages it · h parent · type to filter · Esc cancels "
+        " New workspace · o stages the folder · Enter descends folders · h parent · type to filter · Esc cancels "
     } else if app.worktree_filter.is_empty() {
         " Worktrees · Enter opens/enters · o opens · h parent · type to filter · Esc closes "
     } else {

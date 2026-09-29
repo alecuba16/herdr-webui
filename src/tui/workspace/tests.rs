@@ -161,6 +161,51 @@ fn prefix_n_opens_folder_picker_and_stages_on_enter() {
 }
 
 #[test]
+fn pick_mode_enter_descends_folders_and_o_stages() {
+    let (mut app, _stop) = app_with_fake_backend();
+    let root = std::env::temp_dir().join("tui-ws-picker-tree");
+    let sub = root.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let root_path = root.to_string_lossy().to_string();
+    let sub_path = sub.to_string_lossy().to_string();
+
+    // Open the picker rooted at a real temp folder with a subdirectory.
+    // The fake backend injects a /repo worktree row for any cwd, so the
+    // browser rows are [this-folder, worktree(/repo), sub].
+    app.worktree_pick_workspace = true;
+    app.worktree_browse(&root_path).unwrap();
+    assert_eq!(app.worktree_folder_rows.len(), 1, "sub shows as a row");
+
+    // Cursor 2 is the subdirectory. Enter on it descends (stays a
+    // picker) instead of staging it.
+    app.worktree_selected = 2;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.worktree_root, sub_path, "Enter descends into sub");
+    assert_eq!(app.mode, TuiMode::WorktreeList, "picker stays open");
+    assert!(app.worktree_pick_workspace, "descent keeps the pick intent");
+    assert_eq!(app.workspace_create_stage, None);
+
+    // `o` stages the browsed folder into the name prompt.
+    app.handle_key(KeyEvent::from(KeyCode::Char('o')));
+    assert_eq!(
+        app.workspace_create_stage,
+        Some(WorkspaceCreateStage::Path(sub_path.clone()))
+    );
+    assert!(!app.worktree_pick_workspace);
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert_eq!(
+        app.prompt_input.as_ref().map(|p| p.kind),
+        Some(crate::tui::PromptKind::NewWorkspaceName)
+    );
+
+    // Backspace on an empty filter goes to the parent (same reflex as `h`).
+    let (mut app, _stop) = app_with_fake_backend();
+    app.worktree_browse(&sub_path).unwrap();
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.worktree_root, root_path, "backspace goes to parent");
+}
+
+#[test]
 fn prefix_shift_t_opens_worktree_branch_prompt_and_chains_to_path() {
     let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
     let mut app = app_with_snapshot(workspace_snapshot());
