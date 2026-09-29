@@ -7546,6 +7546,10 @@ mod tests {
         run_git(&repo, &["init", "-q"]).unwrap();
         fs::write(repo.join("README.md"), "base\n").unwrap();
         run_git(&repo, &["add", "."]).unwrap();
+        // Linux CI runners ship no global git identity, so the fixture
+        // repo must configure one before its first commit.
+        run_git(&repo, &["config", "user.email", "t@t"]).unwrap();
+        run_git(&repo, &["config", "user.name", "T"]).unwrap();
         run_git(&repo, &["commit", "-q", "-m", "base"]).unwrap();
         run_git(
             &repo,
