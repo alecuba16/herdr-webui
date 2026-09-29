@@ -1208,6 +1208,19 @@ impl TuiApp {
         }
     }
 
+    /// Desktop `isDefaultPanelTitle`: empty, shell, terminal, or
+    /// "tab N" labels are generated defaults, not user renames.
+    fn is_default_panel_title(label: &str) -> bool {
+        let value = label.trim().to_lowercase();
+        if value.is_empty() || value == "shell" || value == "terminal" {
+            return true;
+        }
+        let Some(rest) = value.strip_prefix("tab ") else {
+            return false;
+        };
+        !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit())
+    }
+
     /// Focus the concrete navigation target (desktop rule): a pane
     /// resolves to its agent list entry, a tab to its first pane, a
     /// workspace to its active tab's first pane. The sidebar selection
@@ -1498,7 +1511,15 @@ impl TuiApp {
                 self.workspace_status(result);
             }
             Shortcut::RenamePanel => {
-                self.prompt_input = Some(PromptInput::new(PromptKind::RenamePanel));
+                // Desktop prefills the rename input with the current
+                // label unless it is a default title (shell/terminal/
+                // "tab N" stay empty, `panelRenameInitialLabel`).
+                let mut input = PromptInput::new(PromptKind::RenamePanel);
+                input.text = self
+                    .active_panel_label()
+                    .filter(|label| !Self::is_default_panel_title(label))
+                    .unwrap_or_default();
+                self.prompt_input = Some(input);
                 self.status = PromptKind::RenamePanel.title().to_string();
             }
             Shortcut::RenameWorkspace => {

@@ -3805,6 +3805,32 @@ fn fake_web_api_server(
 }
 
 #[test]
+fn rename_panel_prompt_prefills_current_label_like_desktop() {
+    // Desktop `panelRenameInitialLabel` prefills the rename input with
+    // the current label unless it is a generated default (shell,
+    // terminal, "tab N").
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.run_shortcut(Shortcut::RenamePanel);
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().text, "",
+        "Shell is a default title, prefill stays empty"
+    );
+    app.prompt_input = None;
+
+    // A custom label prefills the prompt for incremental editing.
+    app.snapshot.tabs[0].label = "Build".to_string();
+    app.run_shortcut(Shortcut::RenamePanel);
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "Build");
+    app.prompt_input = None;
+
+    // "tab 2" is a generated default too.
+    app.snapshot.tabs[0].label = "Tab 2".to_string();
+    app.run_shortcut(Shortcut::RenamePanel);
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "");
+}
+
+#[test]
 fn rename_delete_and_edit_succeed_but_refresh_fails() {
     // Rename and delete succeed against the fake, but the follow-up tree
     // refresh (file-browser/tree) has no server: the refresh error must

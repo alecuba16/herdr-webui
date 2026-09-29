@@ -602,6 +602,17 @@ impl TuiApp {
                 .map(|tab| tab.id.clone())
         })
     }
+
+    /// Label of the active panel (desktop `panelRenameInitialLabel`
+    /// source; used to prefill the rename prompt).
+    pub fn active_panel_label(&self) -> Option<String> {
+        let tab_id = self.active_tab_id()?;
+        self.snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .map(|tab| tab.label.clone())
+    }
 }
 
 /// Prompt kinds owned by the workspace module, appended to the shared
