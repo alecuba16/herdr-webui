@@ -14,7 +14,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{expand_user_path_string, home_folder_path, require_auth, WebState};
@@ -60,6 +60,54 @@ pub(crate) fn routes() -> Router<WebState> {
             "/api/file-browser/request-access",
             axum::routing::post(file_browser_request_access),
         )
+}
+
+/// Built-in backend socket dispatch for the file browser: the same
+/// operations as the HTTP routes, minus auth (the BB unix socket is a
+/// trusted local transport). Params reuse the HTTP request structs so
+/// validation can never drift between the two transports.
+pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, String> {
+    fn decode<T: serde::de::DeserializeOwned>(params: &Value) -> Result<T, String> {
+        serde_json::from_value(params.clone()).map_err(|err| format!("invalid parameters: {err}"))
+    }
+    // Strip the HTTP status the payload fns carry; only the message
+    // matters on the socket transport.
+    fn map_status(
+        result: Result<Value, (StatusCode, String)>,
+    ) -> Result<Value, String> {
+        result.map_err(|(_, message)| message)
+    }
+    match method {
+        "file.tree" => {
+            let query: FileBrowserQuery = decode(&params)?;
+            map_status(file_browser_tree_payload(query))
+        }
+        "file.read" => {
+            let query: FileBrowserQuery = decode(&params)?;
+            map_status(file_browser_file_payload(query))
+        }
+        "file.write" => {
+            let body: FileBrowserWriteRequest = decode(&params)?;
+            map_status(file_browser_write_file_payload(body))
+        }
+        "file.content_search" => {
+            let query: FileContentSearchQuery = decode(&params)?;
+            map_status(file_browser_content_search_payload(query))
+        }
+        "file.content_search_file" => {
+            let query: FileContentSearchQuery = decode(&params)?;
+            map_status(file_browser_content_search_file_payload(query))
+        }
+        "file.rename" => {
+            let body: FileBrowserRenameRequest = decode(&params)?;
+            map_status(file_browser_rename_payload(body))
+        }
+        "file.delete" => {
+            let body: FileBrowserDeleteRequest = decode(&params)?;
+            map_status(file_browser_delete_payload(body))
+        }
+        other => Err(format!("unknown file-browser method: {other}")),
+    }
 }
 
 #[derive(Deserialize)]

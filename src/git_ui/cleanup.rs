@@ -307,7 +307,7 @@ fn cleanup_worktrees(cwd: &str) -> Result<Vec<GitCleanupWorktree>, String> {
     Ok(rows)
 }
 
-fn git_ui_worktree_remove_blocking(
+pub(super) fn git_ui_worktree_remove_blocking(
     cwd: String,
     path: String,
     force: bool,
@@ -355,7 +355,7 @@ pub(super) async fn git_ui_worktree_remove(
     git_spawn(move || git_ui_worktree_remove_blocking(cwd, path, force)).await
 }
 
-fn git_ui_worktree_prune_blocking(
+pub(super) fn git_ui_worktree_prune_blocking(
     cwd: String,
     args: Vec<String>,
 ) -> Result<serde_json::Value, (StatusCode, String)> {

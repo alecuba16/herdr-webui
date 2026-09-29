@@ -43,7 +43,7 @@ pub(super) struct GitUiWriteFileRequest {
     pub(super) expected_hash: Option<String>,
 }
 
-fn git_ui_blame_blocking(
+pub(super) fn git_ui_blame_blocking(
     cwd: String,
     file: String,
     ref_name: String,
@@ -105,7 +105,7 @@ fn git_ui_working_file_hash(repo: &str, path: &str) -> Result<String, String> {
     }
 }
 
-fn git_ui_file_blocking(
+pub(super) fn git_ui_file_blocking(
     cwd: String,
     file: String,
     ref_name: Option<String>,
@@ -164,7 +164,7 @@ pub(super) async fn git_ui_file(
     git_spawn(move || git_ui_file_blocking(cwd, file, ref_name)).await
 }
 
-fn git_ui_write_file_blocking(
+pub(super) fn git_ui_write_file_blocking(
     cwd: String,
     path: String,
     content: String,
@@ -223,7 +223,7 @@ pub(super) async fn git_ui_write_file(
     git_spawn(move || git_ui_write_file_blocking(cwd, path, content, expected_hash)).await
 }
 
-fn git_ui_file_history_blocking(
+pub(super) fn git_ui_file_history_blocking(
     cwd: String,
     file: String,
 ) -> Result<serde_json::Value, (StatusCode, String)> {

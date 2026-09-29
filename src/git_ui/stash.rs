@@ -41,7 +41,7 @@ pub(super) struct GitUiStashDropRequest {
     pub(super) confirmed: Option<bool>,
 }
 
-fn git_ui_stashes_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
+pub(super) fn git_ui_stashes_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
     match git_ui_text(&cwd, &["stash", "list", "--format=%gd%x00%h%x00%cr%x00%gs"]) {
         Ok(text) => {
             let stashes = text.lines().filter_map(|line| {
@@ -68,7 +68,7 @@ pub(super) async fn git_ui_stashes(
     git_spawn(move || git_ui_stashes_blocking(cwd)).await
 }
 
-fn git_ui_stash_show_blocking(
+pub(super) fn git_ui_stash_show_blocking(
     cwd: String,
     stash: String,
     context: usize,
@@ -117,7 +117,7 @@ pub(super) async fn git_ui_stash_show(
     }
 }
 
-fn git_ui_stash_blocking(
+pub(super) fn git_ui_stash_blocking(
     cwd: String,
     msg: String,
     safe_paths: Option<Vec<String>>,
@@ -162,7 +162,7 @@ pub(super) async fn git_ui_stash(
     git_spawn(move || git_ui_stash_blocking(cwd, msg, safe_paths)).await
 }
 
-fn git_ui_stash_apply_blocking(
+pub(super) fn git_ui_stash_apply_blocking(
     cwd: String,
     stash: String,
     pop: bool,
@@ -190,7 +190,7 @@ pub(super) async fn git_ui_stash_apply(
     git_spawn(move || git_ui_stash_apply_blocking(cwd, stash, pop)).await
 }
 
-fn git_ui_stash_drop_blocking(
+pub(super) fn git_ui_stash_drop_blocking(
     cwd: String,
     stash: String,
 ) -> Result<serde_json::Value, (StatusCode, String)> {

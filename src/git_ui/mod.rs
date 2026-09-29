@@ -9,6 +9,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
+use serde_json::Value;
 use serde_json::json;
 
 use crate::{expand_user_path_string, git_failure, require_auth, WebState};
@@ -103,6 +104,354 @@ pub(crate) fn routes() -> Router<WebState> {
             "/api/git-ui/conflict-action",
             post(conflict::git_ui_conflict_action),
         )
+}
+
+/// Built-in backend socket dispatch: the same git-ui operations the HTTP
+/// routes expose, minus auth (the BB unix socket is a trusted local
+/// transport) and minus axum. Params mirror the HTTP request bodies and
+/// query strings. Each arm reuses the exact validation the HTTP handler
+/// performs, then calls the same blocking payload fn the HTTP path uses,
+/// so the two transports can never drift apart.
+pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, String> {
+    match method {
+        "git.status" => {
+            let cwd = optional_cwd(&params)?;
+            map_status(git_status_blocking(cwd))
+        }
+        "git.diff" => diff::socket_diff(params, false),
+        "git.compare" => diff::socket_diff(params, true),
+        "git.branches" => {
+            let cwd = optional_cwd(&params)?;
+            map_status(branch::git_ui_branches_blocking(cwd))
+        }
+        "git.branch.delete" => {
+            let body: branch::GitUiBranchDeleteRequest = decode(&params)?;
+            if !body.confirmed.unwrap_or(false) {
+                return Err("branch deletion requires confirmation".to_string());
+            }
+            let branch = safe_git_token(&body.branch, "branch")?.to_string();
+            let force = body.force.unwrap_or(false);
+            map_status(branch::git_ui_branch_delete_blocking(body.cwd, branch, force))
+        }
+        "git.switch" => {
+            let body: branch::GitUiSwitchRequest = decode(&params)?;
+            let branch = safe_git_token(&body.branch, "branch")?;
+            if branch.is_empty() {
+                return Err("branch is required".to_string());
+            }
+            let args: Vec<String> = if body.create.unwrap_or(false) {
+                let base = safe_git_token(body.base.as_deref().unwrap_or("HEAD"), "base")?;
+                vec![
+                    "switch".to_string(),
+                    "-c".to_string(),
+                    branch.to_string(),
+                    base.to_string(),
+                ]
+            } else {
+                vec!["switch".to_string(), branch.to_string()]
+            };
+            map_status(branch::git_ui_switch_blocking(body.cwd, args))
+        }
+        "git.log" => log::socket_log(params),
+        "git.path_info" => {
+            let body: GitUiPathInfoQuery = decode(&params)?;
+            map_status(git_ui_path_info_blocking(body.cwd, body.path))
+        }
+        "git.permalink" => {
+            let body: GitUiPermalinkQuery = decode(&params)?;
+            map_status(git_ui_permalink_blocking(body.cwd, body.path))
+        }
+        "git.blame" => {
+            let body: file::GitUiBlameQuery = decode(&params)?;
+            let (Some(cwd), Some(file)) = (body.cwd.as_deref(), body.file.as_deref()) else {
+                return Err("cwd and file are required".to_string());
+            };
+            let file = safe_repo_path(file)?.to_string();
+            let ref_name =
+                safe_git_token(body.ref_name.as_deref().unwrap_or("working"), "ref")?.to_string();
+            map_status(file::git_ui_blame_blocking(cwd.to_string(), file, ref_name))
+        }
+        "git.file" => {
+            let body: file::GitUiFileQuery = decode(&params)?;
+            let (Some(cwd), Some(file)) = (body.cwd.as_deref(), body.file.as_deref()) else {
+                return Err("cwd and file are required".to_string());
+            };
+            let file = safe_repo_path(file)?.to_string();
+            map_status(file::git_ui_file_blocking(cwd.to_string(), file, body.ref_name))
+        }
+        "git.file_write" => {
+            let body: file::GitUiWriteFileRequest = decode(&params)?;
+            let path = safe_repo_path(&body.path)?.to_string();
+            map_status(file::git_ui_write_file_blocking(
+                body.cwd,
+                path,
+                body.content,
+                body.expected_hash,
+            ))
+        }
+        "git.file_history" => {
+            let body: file::GitUiFileHistoryQuery = decode(&params)?;
+            let (Some(cwd), Some(file)) = (body.cwd.as_deref(), body.file.as_deref()) else {
+                return Err("cwd and file are required".to_string());
+            };
+            let file = safe_repo_path(file)?.to_string();
+            map_status(file::git_ui_file_history_blocking(cwd.to_string(), file))
+        }
+        "git.stashes" => {
+            let cwd = optional_cwd(&params)?;
+            map_status(stash::git_ui_stashes_blocking(cwd))
+        }
+        "git.stash_show" => {
+            let body: stash::GitUiStashShowQuery = decode(&params)?;
+            let Some(cwd) = body.cwd.as_deref() else {
+                return Err("cwd is required".to_string());
+            };
+            let stash =
+                safe_git_token(body.stash.as_deref().unwrap_or("stash@{0}"), "stash")?.to_string();
+            map_status(stash::git_ui_stash_show_blocking(
+                cwd.to_string(),
+                stash,
+                body.context.unwrap_or(3),
+            ))
+        }
+        "git.conflicts" => {
+            let cwd = optional_cwd(&params)?;
+            map_status(conflict::git_ui_conflicts_blocking(cwd))
+        }
+        "git.stage" => {
+            let body: GitUiPathsRequest = decode(&params)?;
+            let paths = git_ui_paths(&body)?.into_iter().map(str::to_string).collect::<Vec<_>>();
+            map_status(git_ui_stage_blocking(body.cwd, paths))
+        }
+        "git.unstage" => {
+            let body: GitUiPathsRequest = decode(&params)?;
+            let paths = git_ui_paths(&body)?.into_iter().map(str::to_string).collect::<Vec<_>>();
+            map_status(git_ui_unstage_blocking(body.cwd, paths))
+        }
+        "git.discard" => {
+            let body: GitUiPathsRequest = decode(&params)?;
+            if !body.confirmed.unwrap_or(false) {
+                return Err("discard requires confirmation".to_string());
+            }
+            let paths = git_ui_paths(&body)?.into_iter().map(str::to_string).collect::<Vec<_>>();
+            map_status(git_ui_discard_blocking(body.cwd, paths))
+        }
+        "git.stash" => {
+            let body: stash::GitUiStashPushRequest = decode(&params)?;
+            let msg = body
+                .message
+                .as_deref()
+                .unwrap_or("herdr-webui stash")
+                .to_string();
+            let safe_paths = match body.paths.as_ref() {
+                Some(paths) if !paths.is_empty() => {
+                    let safe = paths
+                        .iter()
+                        .map(|path| safe_repo_path(path))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Some(safe.into_iter().map(str::to_string).collect::<Vec<_>>())
+                }
+                _ => None,
+            };
+            map_status(stash::git_ui_stash_blocking(body.cwd, msg, safe_paths))
+        }
+        "git.stash_apply" => {
+            let body: stash::GitUiStashApplyRequest = decode(&params)?;
+            let stash =
+                safe_git_token(body.stash.as_deref().unwrap_or("stash@{0}"), "stash")?.to_string();
+            map_status(stash::git_ui_stash_apply_blocking(
+                body.cwd,
+                stash,
+                body.pop.unwrap_or(false),
+            ))
+        }
+        "git.stash_drop" => {
+            let body: stash::GitUiStashDropRequest = decode(&params)?;
+            if !body.confirmed.unwrap_or(false) {
+                return Err("stash drop requires confirmation".to_string());
+            }
+            let stash =
+                safe_git_token(body.stash.as_deref().unwrap_or("stash@{0}"), "stash")?.to_string();
+            map_status(stash::git_ui_stash_drop_blocking(body.cwd, stash))
+        }
+        "git.reset" => {
+            let body: log::GitUiResetRequest = decode(&params)?;
+            let mode = match body.mode.as_str() {
+                "soft" => "--soft",
+                "mixed" => "--mixed",
+                "hard" => "--hard",
+                _ => return Err("invalid reset mode".to_string()),
+            };
+            if mode == "--hard" && body.confirmation.as_deref() != Some("reset hard") {
+                return Err("hard reset requires typed confirmation".to_string());
+            }
+            let ref_name = safe_git_token(&body.ref_name, "ref")?.to_string();
+            map_status(log::git_ui_reset_blocking(body.cwd, mode.to_string(), ref_name))
+        }
+        "git.rebase" => {
+            let body: log::GitUiRebaseRequest = decode(&params)?;
+            if body.confirmation.as_deref() != Some("rebase selected") {
+                return Err("rebase requires typed confirmation".to_string());
+            }
+            let upstream = safe_git_token(&body.upstream, "upstream")?.to_string();
+            let onto = match body
+                .onto
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                Some(value) => Some(safe_git_token(value, "onto")?.to_string()),
+                None => None,
+            };
+            map_status(log::git_ui_rebase_blocking(
+                body.cwd,
+                upstream,
+                onto,
+                body.pull_first.unwrap_or(false),
+            ))
+        }
+        "git.fetch" => {
+            let body: log::GitUiPullPushRequest = decode(&params)?;
+            let branch = socket_branch_token(body.branch.as_deref())?;
+            map_status(log::git_ui_fetch_blocking(body.cwd, branch))
+        }
+        "git.pull" => {
+            let body: log::GitUiPullPushRequest = decode(&params)?;
+            let mode = body.mode.unwrap_or_else(|| "regular".to_string());
+            let branch = socket_branch_token(body.branch.as_deref())?;
+            map_status(log::git_ui_pull_blocking(body.cwd, mode, branch))
+        }
+        "git.push" => {
+            let body: log::GitUiPullPushRequest = decode(&params)?;
+            let mode = body.mode.unwrap_or_else(|| "regular".to_string());
+            let branch = socket_branch_token(body.branch.as_deref())?;
+            map_status(log::git_ui_push_blocking(
+                body.cwd,
+                mode,
+                branch,
+                body.pull_first.unwrap_or(false),
+                body.push_tags.unwrap_or(false),
+            ))
+        }
+        "git.commit" => {
+            let body: log::GitUiCommitRequest = decode(&params)?;
+            let title = body.title.trim().to_string();
+            if title.is_empty() {
+                return Err("commit title is required".to_string());
+            }
+            map_status(log::git_ui_commit_blocking(
+                body.cwd,
+                title,
+                body.body,
+                body.amend.unwrap_or(false),
+            ))
+        }
+        "git.tag" => {
+            let body: log::GitUiTagRequest = decode(&params)?;
+            let tag_name = log::safe_tag_name(&body.tag_name)?.to_string();
+            let ref_name = safe_git_token(&body.ref_name, "ref")?.to_string();
+            map_status(log::git_ui_tag_blocking(body.cwd, tag_name, ref_name))
+        }
+        "git.apply_patch" => {
+            let body: log::GitUiApplyPatchRequest = decode(&params)?;
+            if body.patch.trim().is_empty() {
+                return Err("patch is required".to_string());
+            }
+            map_status(log::git_ui_apply_patch_blocking(
+                body.cwd,
+                body.patch,
+                body.reverse.unwrap_or(false),
+                body.cached.unwrap_or(false),
+            ))
+        }
+        "git.conflict_resolve" => {
+            let body: conflict::GitUiConflictResolveRequest = decode(&params)?;
+            let path = safe_repo_path(&body.path)?.to_string();
+            map_status(conflict::git_ui_conflict_resolve_blocking(
+                body.cwd,
+                path,
+                body.mode,
+                body.content,
+            ))
+        }
+        "git.conflict_action" => {
+            let body: conflict::GitUiConflictActionRequest = decode(&params)?;
+            let Some(args) = conflict::conflict_action_args(body.action.as_str()) else {
+                return Err("invalid conflict action".to_string());
+            };
+            map_status(conflict::git_ui_conflict_action_blocking(body.cwd, args))
+        }
+        "git.cleanup_scan" => {
+            let body: cleanup::GitUiCleanupQuery = decode(&params)?;
+            let Some(root) = body.root.as_deref().or(body.cwd.as_deref()) else {
+                return Err("root is required".to_string());
+            };
+            let (repos, truncated) = cleanup::git_cleanup_scan(root)?;
+            Ok(json!({
+                "root": expand_user_path_string(root),
+                "repos": repos,
+                "truncated": truncated,
+            }))
+        }
+        "git.worktree_remove" => {
+            let body: cleanup::GitUiWorktreeRemoveRequest = decode(&params)?;
+            if !body.confirmed.unwrap_or(false) {
+                return Err("worktree removal requires confirmation".to_string());
+            }
+            map_status(cleanup::git_ui_worktree_remove_blocking(
+                body.cwd,
+                body.path,
+                body.force.unwrap_or(false),
+            ))
+        }
+        "git.worktree_prune" => {
+            let body: cleanup::GitUiWorktreePruneRequest = decode(&params)?;
+            let mut args = vec![
+                "worktree".to_string(),
+                "prune".to_string(),
+                "--verbose".to_string(),
+            ];
+            if body.dry_run.unwrap_or(false) {
+                args.push("--dry-run".to_string());
+            }
+            if let Some(expire) = body.expire.as_deref() {
+                let validated = safe_git_token(expire, "expire")?;
+                args.push("--expire".to_string());
+                args.push(validated.to_string());
+            }
+            map_status(cleanup::git_ui_worktree_prune_blocking(body.cwd, args))
+        }
+        other => Err(format!("unknown git-ui method: {other}")),
+    }
+}
+
+/// Shared body of the socket dispatch helpers: strip the HTTP status the
+/// payload fns carry and surface only the message on failure. The status
+/// code is meaningless on the socket transport.
+pub(crate) fn map_status(
+    result: Result<Value, (axum::http::StatusCode, String)>,
+) -> Result<Value, String> {
+    result.map_err(|(_, message)| message)
+}
+
+fn decode<T: serde::de::DeserializeOwned>(params: &Value) -> Result<T, String> {
+    serde_json::from_value(params.clone())
+        .map_err(|err| format!("invalid parameters: {err}"))
+}
+
+fn optional_cwd(params: &Value) -> Result<String, String> {
+    let query: GitUiCwdQuery = decode(params)?;
+    query
+        .cwd
+        .ok_or_else(|| "cwd is required".to_string())
+}
+
+fn socket_branch_token(value: Option<&str>) -> Result<Option<String>, String> {
+    match value.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(value) => Ok(Some(
+            safe_git_token(value, "branch")?.to_string(),
+        )),
+        None => Ok(None),
+    }
 }
 
 #[derive(Deserialize)]

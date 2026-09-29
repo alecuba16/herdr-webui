@@ -65,11 +65,11 @@ pub(super) struct GitUiResetRequest {
 
 #[derive(Deserialize)]
 pub(super) struct GitUiRebaseRequest {
-    cwd: String,
-    upstream: String,
-    onto: Option<String>,
-    pull_first: Option<bool>,
-    confirmation: Option<String>,
+    pub(super) cwd: String,
+    pub(super) upstream: String,
+    pub(super) onto: Option<String>,
+    pub(super) pull_first: Option<bool>,
+    pub(super) confirmation: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -201,7 +201,7 @@ fn trim_log_lines_to_commit_limit(lines: Vec<String>, limit: usize) -> Vec<Strin
     trimmed
 }
 
-fn git_ui_log_blocking(
+pub(super) fn git_ui_log_blocking(
     cwd: String,
     limit: usize,
     scope: GitLogScope,
@@ -275,7 +275,7 @@ pub(super) async fn git_ui_log(
     git_spawn(move || git_ui_log_blocking(cwd, limit, scope, base, file)).await
 }
 
-fn git_ui_reset_blocking(
+pub(super) fn git_ui_reset_blocking(
     cwd: String,
     mode: String,
     ref_name: String,
@@ -355,7 +355,7 @@ fn fetch_default_base(cwd: &str) -> Result<(), (StatusCode, String)> {
     Ok(())
 }
 
-fn git_ui_rebase_blocking(
+pub(super) fn git_ui_rebase_blocking(
     cwd: String,
     upstream: String,
     onto: Option<String>,
@@ -430,7 +430,7 @@ pub(super) async fn git_ui_rebase(
     git_spawn(move || git_ui_rebase_blocking(cwd, upstream, onto, pull_first)).await
 }
 
-fn git_ui_commit_blocking(
+pub(super) fn git_ui_commit_blocking(
     cwd: String,
     title: String,
     body: Option<String>,
@@ -469,7 +469,7 @@ pub(super) async fn git_ui_commit(
     git_spawn(move || git_ui_commit_blocking(cwd, title, commit_body, amend)).await
 }
 
-fn safe_tag_name(value: &str) -> Result<&str, String> {
+pub(super) fn safe_tag_name(value: &str) -> Result<&str, String> {
     let tag = safe_git_token(value, "tag")?;
     if tag.chars().any(char::is_whitespace) {
         return Err("invalid tag".to_string());
@@ -477,7 +477,24 @@ fn safe_tag_name(value: &str) -> Result<&str, String> {
     Ok(tag)
 }
 
-fn git_ui_tag_blocking(
+/// Socket transport for the log: mirrors the HTTP handler's parameter
+/// shaping (default limit, scope resolution, optional base and file
+/// filter) and runs the blocking query inline.
+pub(super) fn socket_log(params: serde_json::Value) -> Result<serde_json::Value, String> {
+    let query: GitUiLogQuery = serde_json::from_value(params)
+        .map_err(|err| format!("invalid parameters: {err}"))?;
+    let Some(cwd) = query.cwd.as_deref() else {
+        return Err("cwd is required".to_string());
+    };
+    let limit = query.max.unwrap_or(80).clamp(1, 2000);
+    let all = query.all.unwrap_or(false);
+    let scope = GitLogScope::from_query(query.scope, all)?;
+    let base = query.base;
+    let file = query.file;
+    super::map_status(git_ui_log_blocking(cwd.to_string(), limit, scope, base, file))
+}
+
+pub(super) fn git_ui_tag_blocking(
     cwd: String,
     tag_name: String,
     ref_name: String,
@@ -509,7 +526,7 @@ pub(super) async fn git_ui_tag(
     git_spawn(move || git_ui_tag_blocking(cwd, tag_name, ref_name)).await
 }
 
-fn git_ui_pull_blocking(
+pub(super) fn git_ui_pull_blocking(
     cwd: String,
     mode: String,
     branch: Option<String>,
@@ -576,7 +593,7 @@ pub(super) async fn git_ui_pull(
     git_spawn(move || git_ui_pull_blocking(cwd, mode, branch)).await
 }
 
-fn git_ui_fetch_blocking(
+pub(super) fn git_ui_fetch_blocking(
     cwd: String,
     branch: Option<String>,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
@@ -612,7 +629,7 @@ pub(super) async fn git_ui_fetch(
     git_spawn(move || git_ui_fetch_blocking(cwd, branch)).await
 }
 
-fn git_ui_push_blocking(
+pub(super) fn git_ui_push_blocking(
     cwd: String,
     mode: String,
     branch: Option<String>,
@@ -667,7 +684,7 @@ pub(super) async fn git_ui_push(
     git_spawn(move || git_ui_push_blocking(cwd, mode, branch, pull_first, push_tags)).await
 }
 
-fn git_ui_apply_patch_blocking(
+pub(super) fn git_ui_apply_patch_blocking(
     cwd: String,
     patch: String,
     reverse: bool,

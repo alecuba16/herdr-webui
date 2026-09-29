@@ -48,7 +48,7 @@ fn split_branch_tip_details(details: &str) -> (String, String, String) {
     (author, date, subject)
 }
 
-fn git_ui_branches_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
+pub(super) fn git_ui_branches_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
     let worktree_paths = git_ui_text(&cwd, &["worktree", "list", "--porcelain"])
         .map(|raw| parse_worktree_branch_paths(&raw))
         .unwrap_or_default();
@@ -144,7 +144,7 @@ pub(super) async fn git_ui_branches(
     git_spawn(move || git_ui_branches_blocking(cwd)).await
 }
 
-fn git_ui_branch_delete_blocking(
+pub(super) fn git_ui_branch_delete_blocking(
     cwd: String,
     branch: String,
     force: bool,
@@ -213,7 +213,7 @@ pub(super) async fn git_ui_branch_delete(
     git_spawn(move || git_ui_branch_delete_blocking(cwd, branch, force)).await
 }
 
-fn git_ui_switch_blocking(
+pub(super) fn git_ui_switch_blocking(
     cwd: String,
     args: Vec<String>,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
