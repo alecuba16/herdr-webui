@@ -100,17 +100,13 @@ impl RecentWorkspace {
     }
 }
 
-/// Parse the `/api/recent-workspaces` `{"recent": [...]}` payload.
+/// Parse the `/api/recent-workspaces` payload. All rows load (the
+/// server keeps up to 20); the desktop caps at 8 only after query
+/// filtering, so the cap lives in `recent_rows`.
 pub fn parse_recent_workspaces(data: &Value) -> Vec<RecentWorkspace> {
     data.get("recent")
         .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(RecentWorkspace::from_json)
-                .take(MAX_RECENT_RESULTS)
-                .collect()
-        })
+        .map(|items| items.iter().filter_map(RecentWorkspace::from_json).collect())
         .unwrap_or_default()
 }
 
@@ -225,9 +221,11 @@ impl SearchPalette {
 
     /// Recent rows for the current query (desktop
     /// `recentWorkspaceCandidates`): subtitle text filters case-
-    /// insensitively against the query, capped at 8. `is_open` flags
-    /// entries whose canonical path already has an open workspace so
-    /// they render disabled and refuse navigation like the desktop.
+    /// insensitively against the query, capped at 8 AFTER the filter
+    /// (so a query can surface entries beyond the first 8 of the
+    /// server's 20). `is_open` flags entries whose canonical path
+    /// already has an open workspace so they render disabled and
+    /// refuse navigation like the desktop.
     pub fn recent_rows(&self, snapshot: &TuiSnapshot) -> Vec<SearchCandidate> {
         let needle = self.query.trim().to_lowercase();
         self.recents
@@ -238,6 +236,10 @@ impl SearchPalette {
                     haystack.contains(&needle)
                 }
             })
+            // Desktop `recentWorkspaceCandidates` slices to 8 AFTER
+            // the query filter, so a query can surface entries beyond
+            // the first 8 of the server list (up to 20).
+            .take(MAX_RECENT_RESULTS)
             .map(|recent| {
                 let is_open = snapshot.workspaces.iter().any(|ws| {
                     !ws.cwd.is_empty()
@@ -687,6 +689,34 @@ mod tests {
         );
         // Missing keys drop the row instead of panicking.
         assert!(parse_file_hits(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn recent_rows_cap_applies_after_query_filtering() {
+        // Desktop slices to 8 AFTER the query filter: with 10 server
+        // entries, an empty query shows the first 8, but a query
+        // matching only entry 10 still surfaces it.
+        let snap = snapshot();
+        let recents: Vec<RecentWorkspace> = (0..10)
+            .map(|index| RecentWorkspace {
+                path: format!("/repo-{index}"),
+                label: Some(format!("target-{index}")),
+                branch: None,
+                kind: None,
+            })
+            .collect();
+        let mut palette = SearchPalette {
+            recents,
+            ..SearchPalette::default()
+        };
+        palette.refresh_local(&snap);
+        assert_eq!(palette.results.len(), 8, "empty query caps at 8");
+        palette.push_char('9', &snap);
+        assert_eq!(palette.results.len(), 1, "query reaches beyond the first 8");
+        assert!(matches!(
+            &palette.results[0],
+            SearchCandidate::Recent { path, .. } if path == "/repo-9"
+        ));
     }
 
     #[test]
