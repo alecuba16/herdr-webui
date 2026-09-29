@@ -74,8 +74,12 @@
       getMobileTerminal().connect();
     }
 
+    let createPanelInFlight = false;
     async function createPanel() {
       if (!state.ws) return;
+      // Guard: rapid re-taps must not POST one tab.create per event.
+      if (createPanelInFlight) return;
+      createPanelInFlight = true;
       try {
         const response = await api("/api/tabs", {
           method: "POST",
@@ -99,6 +103,8 @@
       } catch (error) {
         state.error = error.message || String(error);
         render();
+      } finally {
+        createPanelInFlight = false;
       }
     }
 

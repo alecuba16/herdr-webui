@@ -1044,8 +1044,14 @@ async function removeWorktree(id) {
     hideBlocking();
   }
 }
+let newTabInFlight = false;
 async function newTab() {
   if (!state.ws) return;
+  // Guard: rapid re-triggers (double-click on +, held prefix-P key repeat)
+  // must not POST one tab.create per event. The first request wins; the
+  // rest are dropped until it settles.
+  if (newTabInFlight) return;
+  newTabInFlight = true;
   showBlocking("Creating panel...");
   try {
     const r = await api("/api/tabs", {
@@ -1056,6 +1062,7 @@ async function newTab() {
     const tab = r.result.tab.tab_id;
     go(state.ws, tab);
   } finally {
+    newTabInFlight = false;
     hideBlocking();
   }
 }
@@ -1125,11 +1132,16 @@ async function commitTabRename(id) {
     });
   refresh();
 }
+let closeTabInFlight = false;
 async function closeTab(id) {
+  // Guard: double-click on the ✕ button must not fire two close requests
+  // (the second would close the next panel too).
+  if (closeTabInFlight) return;
   if (!confirm(`Close panel "${panelCloseName(id)}"?`)) return;
   const tab = state.allTabs.concat(state.tabs).find((t) => t.tab_id === id),
     workspaceId = tab && tab.workspace_id,
     workspaceTabs = workspaceId ? tabsForWorkspace(workspaceId) : [];
+  closeTabInFlight = true;
   showBlocking("Closing panel...");
   try {
     if (workspaceTabs.length > 1) {
@@ -1157,6 +1169,7 @@ async function closeTab(id) {
     }
     refresh();
   } finally {
+    closeTabInFlight = false;
     hideBlocking();
   }
 }
