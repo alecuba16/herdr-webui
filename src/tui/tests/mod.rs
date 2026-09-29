@@ -2294,6 +2294,31 @@ fn fake_backend_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
             "tab.create" | "tab.close" => {
                 json!({"id": request["id"], "result": {"ok": true}})
             }
+            "workspace.create" => json!({
+                "id": request["id"],
+                "result": {"workspace": {"workspace_id": "ws_created"}}
+            }),
+            "worktree.open" => json!({
+                "id": request["id"],
+                "result": {
+                    "workspace": {"workspace_id": "ws_opened"},
+                    "tab": {"tab_id": "tab_opened"},
+                    "root_pane": {"pane_id": "pane_opened"}
+                }
+            }),
+            // Result shaped like the server's promote route payload:
+            // workspace cwd (the backend resolves the live cwd) plus
+            // label, which the TUI records into recents.
+            "tab.promote" => json!({
+                "id": request["id"],
+                "result": {
+                    "workspace": {
+                        "workspace_id": "ws_promoted",
+                        "cwd": "/promoted/cwd",
+                        "label": "promoted label"
+                    }
+                }
+            }),
             "workspace.close" => {
                 // Built-in backend drops the emptied workspace itself; a
                 // second close reports not-found, which the TUI ignores.
@@ -3534,6 +3559,465 @@ fn files_and_git_panel_error_arms_surface_to_status() {
     assert!(app.prompt_input.is_none());
 }
 
+/// Fake HTTP server for the recent-workspaces endpoints: keeps an
+/// in-memory list so remove/clear mutate it like the real handler, and
+/// records the open POST body (path + label) for assertions. Requests
+/// for any other path get an empty 200 so unrelated best-effort
+/// calls (file/content search) stay harmless.
+fn fake_recents_server(
+    initial: Vec<serde_json::Value>,
+) -> (u16, std::sync::mpsc::Receiver<serde_json::Value>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::{Arc, Mutex};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let recents = Arc::new(Mutex::new(initial));
+    let (tx, rx) = std::sync::mpsc::channel::<serde_json::Value>();
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let request = {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let target = request_line
+                    .split(' ')
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let trimmed = header.trim();
+                    if trimmed.is_empty() {
+                        break;
+                    }
+                    if let Some(value) =
+                        trimmed.to_ascii_lowercase().strip_prefix("content-length:")
+                    {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; content_length];
+                if content_length > 0 {
+                    let _ = reader.read_exact(&mut body);
+                }
+                let body: serde_json::Value = if body.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null)
+                };
+                (target, body)
+            };
+            let (target, body) = request;
+            let response = if target == "/api/recent-workspaces" {
+                // POST re-records the opened path (top of the list);
+                // GET returns the current list.
+                if body
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+                {
+                    let _ = tx.send(body.clone());
+                    let mut list = recents.lock().unwrap();
+                    let path = body["path"].as_str().unwrap().to_string();
+                    let label = body["label"].as_str().map(str::to_string);
+                    let entry = match label {
+                        Some(label) => serde_json::json!({ "path": path, "label": label }),
+                        None => serde_json::json!({ "path": path }),
+                    };
+                    list.retain(|item| item["path"].as_str() != Some(path.as_str()));
+                    list.insert(0, entry);
+                    // worktree.open-shaped result, exactly like the
+                    // real proxy returns it (and the desktop api() body):
+                    // everything nested under "result".
+                    serde_json::json!({
+                        "ok": true,
+                        "result": {
+                            "workspace": { "workspace_id": "ws_reopened" },
+                            "tab": { "tab_id": "tab_reopened" },
+                            "root_pane": { "pane_id": "pane_reopened" }
+                        }
+                    })
+                } else {
+                    serde_json::json!({ "recent": *recents.lock().unwrap() })
+                }
+            } else if target == "/api/recent-workspaces/remove" {
+                let path = body["path"].as_str().unwrap_or_default().to_string();
+                recents
+                    .lock()
+                    .unwrap()
+                    .retain(|item| item["path"].as_str() != Some(path.as_str()));
+                serde_json::json!({ "ok": true })
+            } else if target == "/api/recent-workspaces/record" {
+                // Record-only endpoint: insert at the top like the
+                // server's push_recent_workspace (dedup by path).
+                let _ = tx.send(body.clone());
+                let path = body["path"].as_str().unwrap_or_default().to_string();
+                let label = body["label"].as_str().map(str::to_string);
+                let kind = body["kind"].as_str().map(str::to_string);
+                let entry = match (label, kind) {
+                    (Some(label), _) => json!({ "path": path, "label": label }),
+                    (None, Some(kind)) => json!({ "path": path, "kind": kind }),
+                    (None, None) => json!({ "path": path }),
+                };
+                let mut list = recents.lock().unwrap();
+                list.retain(|item| item["path"].as_str() != Some(path.as_str()));
+                list.insert(0, entry);
+                serde_json::json!({ "ok": true })
+            } else if target == "/api/recent-workspaces/clear" {
+                recents.lock().unwrap().clear();
+                serde_json::json!({ "ok": true })
+            } else {
+                serde_json::json!({ "ok": true })
+            };
+            let body_text = response.to_string();
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body_text.len(),
+                    body_text
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    std::mem::forget(handle);
+    (port, rx)
+}
+
+#[test]
+fn search_palette_recents_unavailable_keeps_palette_usable() {
+    // Desktop `loadRecentWorkspaces` swallows a failed load (empty
+    // list, palette unaffected). The TUI must do the same: with the
+    // WebUI API at a dead port, opening the palette notes the failure
+    // in the status line, clears the recents section, and still
+    // lists the local candidates for navigation.
+    let (api_socket, _stop_backend) = fake_backend_socket();
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new(api_socket.clone(), api_socket),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.snapshot = fixture_snapshot();
+    let ctrl_b = ctrl('b');
+
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(
+        app.mode,
+        TuiMode::SearchPalette,
+        "palette opens despite the failed recents load"
+    );
+    assert!(
+        app.search_palette.recents.is_empty(),
+        "failed load clears the section"
+    );
+    assert!(
+        app.status.starts_with("recents unavailable"),
+        "status notes the failure: {}",
+        app.status
+    );
+    // The palette stays usable: typing filters the local candidates.
+    let query = fixture_snapshot()
+        .workspaces
+        .first()
+        .map(|ws| ws.label.chars().next().unwrap().to_string())
+        .unwrap_or_else(|| "w".to_string());
+    app.handle_key(KeyEvent::from(KeyCode::Char(query.chars().next().unwrap())));
+    assert_eq!(
+        app.mode,
+        TuiMode::SearchPalette,
+        "typing still filters instead of closing"
+    );
+    assert_eq!(app.search_palette.query, query);
+}
+
+#[test]
+fn search_palette_recents_load_remove_clear_and_open() {
+    // Fake backend answers ping/snapshot; the fixture workspace cwd is
+    // /repo, so the /repo recent must render disabled while /side stays
+    // openable.
+    let (api_socket, _stop_backend) = fake_backend_socket();
+    let (port, open_requests) = fake_recents_server(vec![
+        json!({ "path": "/repo", "label": "main repo" }),
+        json!({ "path": "/side", "kind": "worktree", "branch": "feature/x" }),
+    ]);
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new(api_socket.clone(), api_socket),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", port),
+    );
+    app.snapshot = fixture_snapshot();
+    let ctrl_b = ctrl('b');
+
+    // Opening the palette loads the recents: with the empty query the
+    // recent section lists both entries above the (empty) local rows.
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.mode, TuiMode::SearchPalette);
+    assert_eq!(app.search_palette.recents.len(), 2);
+    assert_eq!(app.search_palette.results.len(), 2);
+    assert!(matches!(
+        &app.search_palette.results[0],
+        search::SearchCandidate::Recent { is_open: true, .. }
+    ));
+    assert!(matches!(
+        &app.search_palette.results[1],
+        search::SearchCandidate::Recent { is_open: false, .. }
+    ));
+
+    // Desktop `renderSearchPalette` snaps the cursor off disabled rows:
+    // the selection lands on the openable /side, not the disabled
+    // /repo at index 0.
+    assert_eq!(
+        app.search_palette.selected, 1,
+        "cursor skips the disabled recent"
+    );
+
+    // The disabled row renders with the hint; the openable row keeps
+    // its title and worktree subtitle.
+    let canvas = draw(&app, 100, 24);
+    assert!(canvas.contains("(already open)"), "open recent is dimmed");
+    assert!(canvas.contains("[wt] side"), "worktree row with icon");
+    assert!(canvas.contains("worktree"), "subtitle renders");
+
+    // The refusal guard still holds when the cursor sits on a
+    // disabled row (desktop `chooseSearchResult` returns early on
+    // disabled rows): park it there manually, Enter commits the
+    // (empty) query first, the second Enter is refused, and the
+    // palette stays open with the status explaining why.
+    app.search_palette.selected = 0;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.search_palette.committed, "empty query commits cleanly");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.mode, TuiMode::SearchPalette);
+    assert_eq!(app.status, "recent workspace already open");
+
+    // Ctrl+X removes the recent under the cursor (/repo, parked at
+    // row 0) from the server list; only /side remains and the
+    // refresh snaps the cursor to it.
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    assert_eq!(app.search_palette.recents.len(), 1);
+    assert_eq!(app.search_palette.results.len(), 1);
+    assert_eq!(app.status, "removed recent: /repo");
+
+    // Ctrl+X with no recent under the cursor explains itself instead
+    // of failing silently (a local row or empty selection).
+    app.search_palette.results.clear();
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    assert_eq!(app.status, "no recent workspace selected");
+
+    // Reopen the palette to reload from the (mutated) server list,
+    // then Ctrl+Shift+X clears every entry.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.recents.len(), 1, "reload after remove");
+    app.handle_key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    assert_eq!(app.search_palette.recents.len(), 0);
+    assert!(app.search_palette.results.is_empty());
+    assert_eq!(app.status, "recent workspaces cleared");
+
+    // Esc, then reopen with a fresh server list (the fake kept /side
+    // through the remove and clear only affected its own copy: push a
+    // new entry by reopening via the open flow below). Instead of
+    // relying on the shared fake state, drive the open flow directly:
+    // reopen the palette on a second fake preloaded with /side.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    drop(open_requests);
+    let (port2, open_requests2) =
+        fake_recents_server(vec![json!({ "path": "/side", "kind": "worktree" })]);
+    app.web_api = WebApiClient::new("127.0.0.1", port2);
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.recents.len(), 1);
+
+    // Enter on the openable recent reopens it: the first Enter commits
+    // the empty query, the second navigates. The palette closes, the
+    // POST body carries the recorded label (here none, kind only), and
+    // the status confirms the open.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.search_palette.committed);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_ne!(app.mode, TuiMode::SearchPalette, "open navigates away");
+    assert!(app.error.is_none(), "open flow: {:?}", app.error);
+    let posted = open_requests2
+        .recv_timeout(Duration::from_secs(5))
+        .expect("open POST reached the server");
+    assert_eq!(posted["path"], "/side");
+    assert!(posted.get("label").is_none_or(|v| v.is_null()));
+
+    // A recent WITH a recorded label travels with the open POST like
+    // the desktop openRecentWorkspace(path, label) round trip: the
+    // label key is present and carries the custom name, so the server
+    // re-records it (only a null label keeps the backend naming).
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    drop(open_requests2);
+    let (port3, open_requests3) =
+        fake_recents_server(vec![json!({ "path": "/labored", "label": "custom name" })]);
+    app.web_api = WebApiClient::new("127.0.0.1", port3);
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.recents.len(), 1);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_ne!(
+        app.mode,
+        TuiMode::SearchPalette,
+        "labeled open navigates away"
+    );
+    assert!(app.error.is_none(), "labeled open flow: {:?}", app.error);
+    let posted = open_requests3
+        .recv_timeout(Duration::from_secs(5))
+        .expect("labeled open POST reached the server");
+    assert_eq!(posted["path"], "/labored");
+    assert_eq!(posted["label"], "custom name");
+}
+
+#[test]
+fn search_palette_recents_cache_serves_ttl_and_invalidates_on_mutations() {
+    // Desktop `loadRecent` caches the list 10s (failed loads too) and
+    // `invalidateRecent` drops the cache after open/remove/clear. The
+    // TUI mirrors both: within the TTL a reopen serves the cached rows
+    // without touching the server; the mutations invalidate so the
+    // next open refetches.
+    let (api_socket, _stop_backend) = fake_backend_socket();
+    let (port, _open_requests) = fake_recents_server(vec![json!({ "path": "/cached" })]);
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new(api_socket.clone(), api_socket),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", port),
+    );
+    app.snapshot = fixture_snapshot();
+    let ctrl_b = ctrl('b');
+
+    // First open fetches.
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.recents.len(), 1);
+    assert!(app.search_palette.recents_fetched_at.is_some());
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    // Reopen inside the TTL: cached rows, no refetch. Simulate the
+    // server changing the list underneath: a fresh fetch would show
+    // zero rows (the fake was seeded with one entry only and nothing
+    // removed it), so assert the cached rows survive unchanged and the
+    // fetch stamp stays put.
+    let stamp = app.search_palette.recents_fetched_at;
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.recents.len(), 1, "cached rows served");
+    assert_eq!(
+        app.search_palette.recents_fetched_at, stamp,
+        "no refetch inside the TTL"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    // Invalidate (as remove/clear/open do) forces the next open to
+    // refetch: the stamp moves.
+    app.search_palette.invalidate_recents();
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.recents.len(), 1);
+    assert_ne!(
+        app.search_palette.recents_fetched_at, stamp,
+        "invalidation forces a refetch"
+    );
+}
+
+#[test]
+fn tui_created_workspaces_and_opened_worktrees_record_recents() {
+    // Desktop records every created workspace (fire-and-forget POST
+    // after the create) and every worktree open (`/api/worktrees/open`
+    // records server-side). The TUI talks to the backend socket
+    // directly, so its create/open flows must POST the new record-only
+    // endpoint themselves — best effort, a dead WebUI server must not
+    // fail the operation.
+    let (api_socket, _stop_backend) = fake_backend_socket();
+    let (port, open_requests) = fake_recents_server(vec![]);
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new(api_socket.clone(), api_socket),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", port),
+    );
+    app.snapshot = fixture_snapshot();
+
+    // Create flow: a real temp folder (validation checks the disk),
+    // a custom label, then the record POST must carry both.
+    let dir = std::env::temp_dir().join(format!(
+        "herdr-tui-recent-create-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_string_lossy().to_string();
+    // `create_workspace_at` is the shared tail of both prompt flows
+    // (path-only and path+label); drive it directly with the label.
+    let result = app.create_workspace_at(&path, Some("custom ws"));
+    assert!(result.is_ok(), "create flow: {result:?}");
+    // The worktree-open flow needs the overlay populated; reuse the
+    // same fake backend's worktree.open arm.
+    app.worktree_rows = vec![crate::tui::workspace::WorktreeRow {
+        path: "/wt/branch-x".to_string(),
+        branch: "branch-x".to_string(),
+        label: String::new(),
+        is_linked: false,
+    }];
+    // Row 0 is the "this folder" row; index 1 is the worktree.
+    app.worktree_selected = 1;
+    let result2 = app.worktree_open_selected();
+    assert!(result2.is_ok(), "open flow: {result2:?}");
+
+    // Promote flow: server route records the promoted workspace from
+    // the result (cwd resolved by the backend + label); the TUI socket
+    // flow must POST the same shape. Push a temp tab into the snapshot.
+    app.snapshot.tabs.push(crate::tui::model::TuiTab {
+        id: "tab_temp".to_string(),
+        workspace_id: "ws_1".to_string(),
+        label: "temp".to_string(),
+        focused: false,
+        pane_count: 1,
+        agent_status: "idle".to_string(),
+    });
+    let result3 = app.temp_terminal_promote();
+    assert!(result3.is_ok(), "promote flow: {result3:?}");
+
+    let posted_create = open_requests
+        .recv_timeout(Duration::from_secs(5))
+        .expect("create record POST reached the server");
+    assert_eq!(posted_create["path"], json!(path));
+    assert_eq!(posted_create["label"], "custom ws");
+    assert_eq!(posted_create["kind"], "workspace");
+    let posted_open = open_requests
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worktree open record POST reached the server");
+    assert_eq!(posted_open["path"], "/wt/branch-x");
+    assert_eq!(posted_open["kind"], "worktree");
+    assert!(posted_open.get("label").is_none_or(|v| v.is_null()));
+    let posted_promote = open_requests
+        .recv_timeout(Duration::from_secs(5))
+        .expect("promote record POST reached the server");
+    assert_eq!(posted_promote["path"], "/promoted/cwd");
+    assert_eq!(posted_promote["label"], "promoted label");
+    assert_eq!(posted_promote["kind"], "workspace");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// HTTP fake serving only the rename/delete/read endpoints: every tree
 /// refresh fails so success arms with a failing refresh are reachable.
 fn fake_web_api_server(
@@ -3586,6 +4070,33 @@ fn fake_web_api_server(
         }
     });
     (port, tx)
+}
+
+#[test]
+fn rename_panel_prompt_prefills_current_label_like_desktop() {
+    // Desktop `panelRenameInitialLabel` prefills the rename input with
+    // the current label unless it is a generated default (shell,
+    // terminal, "tab N").
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.run_shortcut(Shortcut::RenamePanel);
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().text,
+        "",
+        "Shell is a default title, prefill stays empty"
+    );
+    app.prompt_input = None;
+
+    // A custom label prefills the prompt for incremental editing.
+    app.snapshot.tabs[0].label = "Build".to_string();
+    app.run_shortcut(Shortcut::RenamePanel);
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "Build");
+    app.prompt_input = None;
+
+    // "tab 2" is a generated default too.
+    app.snapshot.tabs[0].label = "Tab 2".to_string();
+    app.run_shortcut(Shortcut::RenamePanel);
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "");
 }
 
 #[test]
@@ -6039,14 +6550,24 @@ fn search_palette_boundary_and_regression_checks() {
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert_eq!(app.mode, TuiMode::Navigate, "Esc closes the palette");
 
-    // Enter with an empty query: commit is a no-op, second Enter closes.
+    // Enter with an empty query: commit is a no-op, and with no row
+    // under the cursor the palette stays open (desktop
+    // `chooseSearchResult` returns early on a missing row); Esc is the
+    // exit path there.
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('/')));
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert!(app.search_palette.committed);
     assert!(app.search_palette.results.is_empty());
     app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert_eq!(app.mode, TuiMode::Navigate, "empty commit Enter closes");
+    assert_eq!(
+        app.mode,
+        TuiMode::SearchPalette,
+        "no-row Enter keeps the palette open"
+    );
+    assert_eq!(app.status, "search: no matching rows");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate, "Esc closes the palette");
 
     // The palette is reachable from every screen the fixture offers.
     for screen in [TuiScreen::Files, TuiScreen::Git, TuiScreen::Terminal] {

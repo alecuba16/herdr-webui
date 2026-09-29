@@ -68,11 +68,29 @@ impl TuiApp {
         if len == 0 {
             return Err("no panels in this workspace".to_string());
         }
-        let current = tabs
-            .iter()
-            .position(|tab| Some(&tab.id) == active_tab_id.as_ref())
+        // The cursor tracks the pane the TUI actually selected (the
+        // selected agent's tab), because the snapshot's active_tab_id
+        // only follows a real backend focus, not the local selection.
+        // Without this, moving twice from a non-active tab jumps back.
+        let current = self
+            .selected_agent_pane_id()
+            .and_then(|pane_id| {
+                self.snapshot
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == pane_id)
+                    .map(|pane| pane.tab_id.clone())
+            })
+            .and_then(|tab_id| tabs.iter().position(|tab| tab.id == tab_id))
+            .or_else(|| {
+                tabs.iter()
+                    .position(|tab| Some(&tab.id) == active_tab_id.as_ref())
+            })
             .unwrap_or(0);
-        let next = (current as isize + delta).clamp(0, len as isize - 1) as usize;
+        // Webui `selectRelativePanel` wraps around the tab list
+        // (`(current + delta + tabs.length) % tabs.length`), so the
+        // panel cursor cycles instead of sticking at the edges.
+        let next = (current as isize + delta).rem_euclid(len as isize) as usize;
         let tab_id = tabs[next].id.clone();
         // tab.focus is not exposed as a dedicated backend method; the
         // focused tab follows the pane focus in the snapshot refresh.
@@ -95,6 +113,11 @@ impl TuiApp {
         }
         self.refresh_tail();
         Ok(format!("panel {}/{}", next + 1, len))
+    }
+
+    /// Pane id of the agent row the sidebar has selected, if any.
+    fn selected_agent_pane_id(&self) -> Option<String> {
+        self.selected_agent().map(|agent| agent.pane_id.clone())
     }
 
     /// Webui `newWorkspace` one-shot: validate the typed path and create
@@ -146,6 +169,14 @@ impl TuiApp {
             .unwrap_or_default()
             .to_string();
         self.workspace_create_stage = None;
+        // Desktop records every created workspace into the recents
+        // list right after the create (fire-and-forget POST after
+        // `POST /api/workspaces`); the TUI's socket-side create never
+        // passes a recording proxy, so record here, best effort: a
+        // failed record must not fail the workspace creation.
+        let _ = self
+            .web_api
+            .record_recent_workspace(expanded_path, label, Some("workspace"));
         self.refresh().map_err(|err| err.to_string())?;
         self.focus_workspace_by_id(&id);
         Ok(format!("workspace created: {expanded_path}"))
@@ -407,9 +438,19 @@ impl TuiApp {
             return Err("worktree path missing".to_string());
         }
         let title = row.title();
+        // The webui's worktree opens go through `/api/worktrees/open`,
+        // which records the opened path into recents server-side
+        // (kind: worktree). The TUI opens through the backend socket,
+        // so record here, best effort: a failed record must not fail
+        // the open.
+        let kind = match &row {
+            BrowserRow::Worktree(_) => Some("worktree"),
+            _ => Some("workspace"),
+        };
         self.client
             .open_worktree(&path, None, None)
             .map_err(|err| err.to_string())?;
+        let _ = self.web_api.record_recent_workspace(&path, None, kind);
         self.refresh().map_err(|err| err.to_string())?;
         // Focus the opened workspace like the webui post-open navigation;
         // the backend keys it by cwd, so resolve the id first.
@@ -576,6 +617,17 @@ impl TuiApp {
                 .first()
                 .map(|tab| tab.id.clone())
         })
+    }
+
+    /// Label of the active panel (desktop `panelRenameInitialLabel`
+    /// source; used to prefill the rename prompt).
+    pub fn active_panel_label(&self) -> Option<String> {
+        let tab_id = self.active_tab_id()?;
+        self.snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .map(|tab| tab.label.clone())
     }
 }
 
@@ -914,9 +966,35 @@ impl TuiApp {
         let Some(tab_id) = temp_tab else {
             return Err("no temporary terminal open".to_string());
         };
-        self.client
+        let result = self
+            .client
             .promote_tab(&tab_id)
             .map_err(|err| err.to_string())?;
+        // The server's promote route records the promoted workspace into
+        // recents (path from the result, because the backend resolves
+        // the live cwd). The TUI promotes through the socket, so record
+        // here, best effort: a failed record must not fail the promote.
+        let recorded_path = result
+            .get("workspace")
+            .and_then(|ws| ws.get("cwd"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|cwd| !cwd.is_empty())
+            .map(str::to_string);
+        let recorded_label = result
+            .get("workspace")
+            .and_then(|ws| ws.get("label"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .map(str::to_string);
+        if let Some(cwd) = recorded_path {
+            let _ = self.web_api.record_recent_workspace(
+                &cwd,
+                recorded_label.as_deref(),
+                Some("workspace"),
+            );
+        }
         self.refresh().map_err(|err| err.to_string())?;
         // The promoted tab lands in the workspace at its live cwd; jump
         // the selection there like the webui post-promote navigation.

@@ -996,6 +996,25 @@ impl TuiApp {
             {
                 self.search_palette.clear_query(&self.snapshot);
             }
+            // Ctrl+X removes the selected recent-workspace entry from
+            // the server list (desktop per-row trash button; printable
+            // `x` must keep typing into the query).
+            KeyCode::Char(ch)
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::SHIFT)
+                    && ch.eq_ignore_ascii_case(&'x') =>
+            {
+                self.remove_selected_recent();
+            }
+            // Ctrl+Shift+X clears every recent-workspace entry (desktop
+            // section Clear button).
+            KeyCode::Char(ch)
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.modifiers.contains(KeyModifiers::SHIFT)
+                    && ch.eq_ignore_ascii_case(&'x') =>
+            {
+                self.clear_recent_workspaces();
+            }
             KeyCode::Backspace => {
                 self.search_palette.pop_char(&self.snapshot);
             }
@@ -1034,12 +1053,24 @@ impl TuiApp {
                 let candidate = self.search_palette.selected_candidate().cloned();
                 match candidate {
                     Some(candidate) => {
+                        // Desktop disabled rows refuse navigation with a
+                        // visible hint; the TUI keeps the palette open
+                        // and explains in the status line.
+                        if let search::SearchCandidate::Recent { is_open: true, .. } = &candidate {
+                            self.status = "recent workspace already open".to_string();
+                            return;
+                        }
                         self.close_search_palette();
                         if let Err(err) = self.run_search_candidate(&candidate) {
                             self.error = Some(err);
                         }
                     }
-                    None => self.close_search_palette(),
+                    // Desktop `chooseSearchResult` returns early when
+                    // no row sits under the cursor: an empty result
+                    // list keeps the palette open instead of closing.
+                    None => {
+                        self.status = "search: no matching rows".to_string();
+                    }
                 }
             }
             KeyCode::Char(ch) if !ch.is_control() => {
@@ -1119,7 +1150,76 @@ impl TuiApp {
                     .map_err(|err| err.to_string())?;
                 Ok(())
             }
+            search::SearchCandidate::Recent {
+                path,
+                label,
+                is_open,
+                ..
+            } => {
+                if *is_open {
+                    return Err("recent workspace already open".to_string());
+                }
+                // Desktop `openRecentWorkspace`: POST /api/recent-workspaces
+                // proxies worktree.open (focuses an already-open workspace
+                // instead of duplicating it) and re-records the entry. Only
+                // the recorded custom label travels; None keeps the
+                // backend's own naming for the reopened workspace.
+                let result = self
+                    .web_api
+                    .open_recent_workspace(path, label.as_deref())
+                    .map_err(|err| err.to_string())?;
+                // Desktop invalidates the recents cache after an open
+                // (`invalidateRecent`), so the next palette open refetches
+                // instead of serving the stale order.
+                self.search_palette.invalidate_recents();
+                self.refresh().map_err(|err| err.to_string())?;
+                // Land on the reopened workspace like the desktop go()
+                // navigation: the response carries the workspace plus its
+                // focused tab and root pane (desktop `openRecentWorkspace`
+                // passes all three; the tab/pane ids resolve the concrete
+                // terminal, the workspace id alone falls back to the
+                // active tab's first pane).
+                let result = result.get("result");
+                let workspace = result.and_then(|result| result.get("workspace"));
+                let workspace_id = Self::recent_open_field(workspace, "workspace_id")
+                    .or_else(|| Self::recent_open_field(result, "workspace_id"))
+                    .unwrap_or_default()
+                    .to_string();
+                let tab_id =
+                    Self::recent_open_field(result.and_then(|result| result.get("tab")), "tab_id");
+                let pane_id = Self::recent_open_field(
+                    result.and_then(|result| result.get("root_pane")),
+                    "pane_id",
+                );
+                self.select_search_target(Some(workspace_id.as_str()), tab_id, pane_id);
+                self.status = format!("opened {path}");
+                Ok(())
+            }
         }
+    }
+
+    /// Read a non-empty string field from a `worktree.open`-shaped
+    /// result object (the recent-open response nests workspace, tab,
+    /// and root_pane objects; missing or empty fields stay None).
+    fn recent_open_field<'a>(parent: Option<&'a Value>, key: &str) -> Option<&'a str> {
+        let value = parent?.get(key)?;
+        match value.as_str() {
+            Some(text) if !text.is_empty() => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Desktop `isDefaultPanelTitle`: empty, shell, terminal, or
+    /// "tab N" labels are generated defaults, not user renames.
+    fn is_default_panel_title(label: &str) -> bool {
+        let value = label.trim().to_lowercase();
+        if value.is_empty() || value == "shell" || value == "terminal" {
+            return true;
+        }
+        let Some(rest) = value.strip_prefix("tab ") else {
+            return false;
+        };
+        !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit())
     }
 
     /// Focus the concrete navigation target (desktop rule): a pane
@@ -1412,7 +1512,15 @@ impl TuiApp {
                 self.workspace_status(result);
             }
             Shortcut::RenamePanel => {
-                self.prompt_input = Some(PromptInput::new(PromptKind::RenamePanel));
+                // Desktop prefills the rename input with the current
+                // label unless it is a default title (shell/terminal/
+                // "tab N" stay empty, `panelRenameInitialLabel`).
+                let mut input = PromptInput::new(PromptKind::RenamePanel);
+                input.text = self
+                    .active_panel_label()
+                    .filter(|label| !Self::is_default_panel_title(label))
+                    .unwrap_or_default();
+                self.prompt_input = Some(input);
                 self.status = PromptKind::RenamePanel.title().to_string();
             }
             Shortcut::RenameWorkspace => {
@@ -1684,17 +1792,78 @@ impl TuiApp {
     /// refocuses the input) instead of nesting the palette over itself.
     fn open_search_palette(&mut self) {
         self.search_palette.open();
-        if self.mode == TuiMode::SearchPalette {
-            self.status = "search: type query".to_string();
-            return;
+        // Desktop loads the recent-workspaces section when the palette
+        // opens (`loadRecentWorkspaces`). Best effort: without the WebUI
+        // server the palette stays open and usable for local navigation,
+        // matching how the desktop tolerates a failed recents load.
+        let mut recents_error = None;
+        match self.search_palette.load_recents(&self.web_api) {
+            Ok(()) => {}
+            Err(err) => {
+                self.search_palette.recents.clear();
+                recents_error = Some(format!("recents unavailable: {err}"));
+            }
         }
-        self.open_overlay(TuiMode::SearchPalette);
-        self.status = "search: type query".to_string();
+        // Show the recents immediately (empty query lists the recent
+        // section, the desktop counterpart of opening the palette).
+        self.search_palette.refresh_local(&self.snapshot);
+        if self.mode != TuiMode::SearchPalette {
+            self.open_overlay(TuiMode::SearchPalette);
+        }
+        // The failure note survives: it is the one signal the user
+        // gets that the recents section is empty because the load
+        // failed, not because there are no recents.
+        self.status = match recents_error {
+            Some(note) => note,
+            None => "search: type query".to_string(),
+        };
     }
 
     /// Close the search palette and restore the previous mode.
     fn close_search_palette(&mut self) {
         self.close_overlay();
+    }
+
+    /// Remove the selected recent-workspace entry from the server list
+    /// (desktop per-row trash button). Keeps the palette open and the
+    /// cursor valid, mirroring the desktop staying in the palette after
+    /// a remove.
+    fn remove_selected_recent(&mut self) {
+        let Some(search::SearchCandidate::Recent { path, .. }) =
+            self.search_palette.selected_candidate()
+        else {
+            self.status = "no recent workspace selected".to_string();
+            return;
+        };
+        let path = path.clone();
+        match self.web_api.remove_recent_workspace(&path) {
+            Ok(_) => {
+                self.search_palette
+                    .recents
+                    .retain(|recent| recent.path != path);
+                // Desktop invalidates the cache after a remove so the
+                // next open refetches the pruned list.
+                self.search_palette.invalidate_recents();
+                self.search_palette.refresh_local(&self.snapshot);
+                self.status = format!("removed recent: {path}");
+            }
+            Err(err) => self.error = Some(err.to_string()),
+        }
+    }
+
+    /// Clear every recent-workspace entry on the server (desktop section
+    /// Clear button). Keeps the palette open with the emptied section.
+    fn clear_recent_workspaces(&mut self) {
+        match self.web_api.clear_recent_workspaces() {
+            Ok(_) => {
+                self.search_palette.recents.clear();
+                // Desktop invalidates the cache after a clear.
+                self.search_palette.invalidate_recents();
+                self.search_palette.refresh_local(&self.snapshot);
+                self.status = "recent workspaces cleared".to_string();
+            }
+            Err(err) => self.error = Some(err.to_string()),
+        }
     }
 
     /// Open the help overlay with a clean filter and scroll. Every
@@ -2937,4 +3106,77 @@ fn trim_terminal_raw_output(value: &mut String) {
         .find_map(|(index, _)| (index >= excess).then_some(index))
         .unwrap_or(value.len());
     value.drain(..drain_to);
+}
+
+#[cfg(test)]
+mod recent_open_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The recent-open navigation target for a `worktree.open`
+    /// response, parsed exactly like `run_search_candidate`: ids come
+    /// from the objects nested under `"result"` (the real proxy shape
+    /// behind the desktop `api()`, whose `openRecentWorkspace` reads
+    /// `r.result.workspace`); a result object carrying `workspace_id`
+    /// directly (no nested workspace object) still resolves. Returns
+    /// `(workspace_id, tab_id, pane_id)`.
+    fn recent_open_target(response: &Value) -> (String, Option<String>, Option<String>) {
+        let result = response.get("result");
+        let workspace = result.and_then(|result| result.get("workspace"));
+        let workspace_id = TuiApp::recent_open_field(workspace, "workspace_id")
+            .or_else(|| TuiApp::recent_open_field(result, "workspace_id"))
+            .unwrap_or_default()
+            .to_string();
+        let tab_id =
+            TuiApp::recent_open_field(result.and_then(|result| result.get("tab")), "tab_id")
+                .map(str::to_string);
+        let pane_id =
+            TuiApp::recent_open_field(result.and_then(|result| result.get("root_pane")), "pane_id")
+                .map(str::to_string);
+        (workspace_id, tab_id, pane_id)
+    }
+
+    #[test]
+    fn recent_open_target_parses_real_worktree_open_shape() {
+        // Exactly what POST /api/recent-workspaces proxies back: the
+        // backend's worktree.open result nested under "result".
+        let response = json!({
+            "ok": true,
+            "result": {
+                "workspace": { "workspace_id": "ws_reopened" },
+                "tab": { "tab_id": "tab_reopened" },
+                "root_pane": { "pane_id": "pane_reopened" }
+            }
+        });
+        let (workspace_id, tab_id, pane_id) = recent_open_target(&response);
+        assert_eq!(workspace_id, "ws_reopened");
+        assert_eq!(tab_id.as_deref(), Some("tab_reopened"));
+        assert_eq!(pane_id.as_deref(), Some("pane_reopened"));
+    }
+
+    #[test]
+    fn recent_open_target_resolves_result_level_ids_and_skips_empty() {
+        // A result object without the nested workspace object still
+        // resolves workspace_id from the result level; empty or missing
+        // ids stay None instead of resolving to empty-string targets.
+        // A response without a "result" wrapper resolves nothing
+        // (the real proxy always wraps, matching the desktop's
+        // `r.result.workspace` read).
+        let response = json!({
+            "ok": true,
+            "result": {
+                "workspace_id": "ws_bare",
+                "tab": { "tab_id": "" },
+                "root_pane": {}
+            }
+        });
+        let (workspace_id, tab_id, pane_id) = recent_open_target(&response);
+        assert_eq!(workspace_id, "ws_bare");
+        assert_eq!(tab_id, None, "empty tab id stays None");
+        assert_eq!(pane_id, None, "missing pane id stays None");
+
+        let flat = json!({ "workspace": { "workspace_id": "ws_flat" } });
+        let (workspace_id, _, _) = recent_open_target(&flat);
+        assert_eq!(workspace_id, "", "no result wrapper resolves nothing");
+    }
 }

@@ -200,6 +200,10 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('G'), true) => Some(Shortcut::GitStageAll),
         (KeyCode::Char('t'), false) => Some(Shortcut::Terminal),
         (KeyCode::Char('r') | KeyCode::Char('R'), false) => Some(Shortcut::Refresh),
+        // Rename panel: no webui prefix default (the webui renames from
+        // the panel menu), so Shift+R takes it while plain r stays the
+        // webui refresh key.
+        (KeyCode::Char('R'), true) => Some(Shortcut::RenamePanel),
         (KeyCode::Char('j'), false) => Some(Shortcut::NextWorkspace),
         (KeyCode::Char('k'), false) => Some(Shortcut::PrevWorkspace),
         (KeyCode::Char('a'), false) => Some(Shortcut::NextAgent),
@@ -301,10 +305,15 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B ]/[", "next/prev panel in workspace"),
         ("Ctrl+B n", "new workspace (browse folders, Enter picks)"),
         ("Ctrl+B Shift+S", "rename workspace"),
+        ("Ctrl+B Shift+R", "rename panel"),
         ("Ctrl+B Shift+X", "close workspace (y confirms)"),
         ("Ctrl+B w", "browse worktrees/folders, Enter opens"),
         ("Ctrl+B Shift+T", "create worktree (branch, then path)"),
         ("Ctrl+B Del", "remove linked worktree"),
+        (
+            "Ctrl+B /",
+            "search palette: Enter opens, Ctrl+X removes a recent",
+        ),
         ("Ctrl+B q", "quit (y confirms, Esc stays)"),
         ("Ctrl+B Shift+B", "collapse/expand the sidebar"),
         ("Ctrl+B . ,", "focus next/prev region (sidebar/main)"),
@@ -567,5 +576,14 @@ mod tests {
             prefix.feed(ctrl('b'));
             assert_eq!(prefix.feed(event), Some(shortcut));
         }
+    }
+
+    #[test]
+    fn shift_r_renames_panel_while_plain_r_refreshes() {
+        let mut prefix = PrefixState::new();
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(key('r')), Some(Shortcut::Refresh));
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(shift_key('r')), Some(Shortcut::RenamePanel));
     }
 }

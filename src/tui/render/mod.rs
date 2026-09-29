@@ -6,6 +6,7 @@ use ratatui::Frame;
 
 use crate::tui::panels::files::{content_rows, ContentRow, SearchKind};
 use crate::tui::panels::GitView;
+use crate::tui::search;
 use crate::tui::terminal::styled_terminal_line;
 use crate::tui::theme::Palette;
 use crate::tui::workspace::{BrowserRow, WorkspaceCreateStage};
@@ -1931,14 +1932,47 @@ fn render_search_palette(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pa
         } else {
             Style::default().fg(p.text)
         };
-        lines.push(Line::from(vec![
+        // Desktop disabled recent rows render dimmed with an
+        // "(already open)" hint; recent rows also carry their
+        // kind/branch/path subtitle.
+        let (title, subtitle) = match candidate {
+            search::SearchCandidate::Recent {
+                title,
+                subtitle,
+                is_open: true,
+                ..
+            } => (format!("{title} (already open)"), Some(subtitle.as_str())),
+            search::SearchCandidate::Recent { subtitle, .. } => {
+                (candidate.title().to_string(), Some(subtitle.as_str()))
+            }
+            _ => (candidate.title().to_string(), None),
+        };
+        let is_open_recent = matches!(
+            candidate,
+            search::SearchCandidate::Recent { is_open: true, .. }
+        );
+        let mut spans = vec![
             Span::styled(cursor, Style::default().fg(p.accent)),
             Span::styled(
                 format!("[{}] ", candidate.icon()),
                 Style::default().fg(p.muted),
             ),
-            Span::styled(candidate.title(), title_style),
-        ]));
+            Span::styled(
+                truncate(&title, 40),
+                if is_open_recent {
+                    Style::default().fg(p.muted)
+                } else {
+                    title_style
+                },
+            ),
+        ];
+        if let Some(subtitle) = subtitle.filter(|text| !text.is_empty()) {
+            spans.push(Span::styled(
+                format!(" \u{b7} {}", truncate(subtitle, 36)),
+                Style::default().fg(p.muted),
+            ));
+        }
+        lines.push(Line::from(spans));
     }
     // Keep the cursor inside the window when the rows outgrow the
     // overlay (scroll like the worktree browser).
@@ -1950,7 +1984,7 @@ fn render_search_palette(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pa
     frame.render_widget(
         Paragraph::new(lines)
             .block(overlay_panel(
-                " Search · Enter commits/navigates · j/k moves · Esc closes ",
+                " Search · Enter commits/navigates · Ctrl+X removes a recent · Esc closes ",
                 p,
             ))
             .style(Style::default().fg(p.text).bg(p.panel_bg))

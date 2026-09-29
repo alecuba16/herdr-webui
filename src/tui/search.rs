@@ -24,6 +24,7 @@
 //!   Files screen search remains the paginated interface).
 
 use serde_json::Value;
+use std::time::Duration;
 
 use crate::tui::model::{value_str, TuiSnapshot};
 use crate::tui::web_api::{WebApiClient, WebApiError};
@@ -34,6 +35,89 @@ const MAX_LOCAL_RESULTS: usize = 12;
 const MAX_FILE_RESULTS: usize = 12;
 /// Cap on content-search files shown in the palette.
 const MAX_CONTENT_RESULTS: usize = 8;
+/// Cap on recent-workspace rows (desktop `recentWorkspaceCandidates`
+/// `slice(0, 8)`).
+const MAX_RECENT_RESULTS: usize = 8;
+/// Desktop `loadRecent` caches the recents list (including failed
+/// loads) for 10s; the palette refetches only outside that window.
+const RECENTS_CACHE_TTL: Duration = Duration::from_secs(10);
+
+/// One server-persisted recent workspace (desktop recent-workspaces
+/// section, `/api/recent-workspaces`). Path is the reopen target;
+/// kind distinguishes workspaces from worktree checkouts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentWorkspace {
+    pub path: String,
+    pub label: Option<String>,
+    pub branch: Option<String>,
+    pub kind: Option<String>,
+}
+
+impl RecentWorkspace {
+    /// Parse one row of the `recent` array from the API response.
+    fn from_json(value: &Value) -> Option<Self> {
+        let path = value.get("path")?.as_str()?.trim().to_string();
+        if path.is_empty() {
+            return None;
+        }
+        let opt = |key: &str| {
+            value
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+        };
+        Some(Self {
+            path,
+            label: opt("label"),
+            branch: opt("branch"),
+            kind: opt("kind"),
+        })
+    }
+
+    /// Row title: the custom label, else the last path segment, else the
+    /// path (desktop `recentWorkspaceCandidates` title rule).
+    pub fn title(&self) -> String {
+        if let Some(label) = self.label.as_deref() {
+            return label.to_string();
+        }
+        self.path
+            .rsplit(['/', '\\'])
+            .find(|segment| !segment.is_empty())
+            .unwrap_or(self.path.as_str())
+            .to_string()
+    }
+
+    /// Subtitle: kind, branch, and path joined like the desktop row.
+    pub fn subtitle(&self) -> String {
+        let kind = match self.kind.as_deref() {
+            Some("worktree") => "worktree",
+            Some("workspace") => "workspace",
+            _ => "workspace",
+        };
+        [Some(kind), self.branch.as_deref(), Some(self.path.as_str())]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" \u{b7} ")
+    }
+}
+
+/// Parse the `/api/recent-workspaces` payload. All rows load (the
+/// server keeps up to 20); the desktop caps at 8 only after query
+/// filtering, so the cap lives in `recent_rows`.
+pub fn parse_recent_workspaces(data: &Value) -> Vec<RecentWorkspace> {
+    data.get("recent")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(RecentWorkspace::from_json)
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 /// One palette row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +145,18 @@ pub enum SearchCandidate {
         line: usize,
         name: String,
     },
+    /// A server-persisted recent workspace (desktop Recent workspaces
+    /// section). `is_open` mirrors the desktop disabled state for
+    /// entries whose folder is already open in this session; `label` is
+    /// the recorded custom label (None keeps the backend naming).
+    Recent {
+        path: String,
+        title: String,
+        subtitle: String,
+        label: Option<String>,
+        is_worktree: bool,
+        is_open: bool,
+    },
 }
 
 impl SearchCandidate {
@@ -71,10 +167,11 @@ impl SearchCandidate {
             | SearchCandidate::Panel { label, .. }
             | SearchCandidate::Agent { label, .. } => label,
             SearchCandidate::File { name, .. } | SearchCandidate::Content { name, .. } => name,
+            SearchCandidate::Recent { title, .. } => title,
         }
     }
 
-    /// Two-letter icon prefix (desktop `ws` / `pn` / `ag`).
+    /// Two-letter icon prefix (desktop `ws` / `pn` / `ag` / `wt`).
     pub fn icon(&self) -> &'static str {
         match self {
             SearchCandidate::Workspace { .. } => "ws",
@@ -83,6 +180,13 @@ impl SearchCandidate {
             SearchCandidate::File { is_dir: true, .. } => "dir",
             SearchCandidate::File { .. } => "file",
             SearchCandidate::Content { .. } => "cnt",
+            SearchCandidate::Recent { is_worktree, .. } => {
+                if *is_worktree {
+                    "wt"
+                } else {
+                    "ws"
+                }
+            }
         }
     }
 }
@@ -100,6 +204,13 @@ pub struct SearchPalette {
     /// True once Enter has committed the query (runs the file/content
     /// fetches and closes local-only live filtering).
     pub committed: bool,
+    /// Server-persisted recent workspaces (desktop Recent workspaces
+    /// section), loaded on open and kept until the palette closes.
+    pub recents: Vec<RecentWorkspace>,
+    /// When the recents fetch last happened (desktop `recentCache`
+    /// stamps failed loads too, so a dead server is not retried for
+    /// 10s). `None` means no fetch ran yet.
+    pub recents_fetched_at: Option<std::time::Instant>,
 }
 
 impl SearchPalette {
@@ -111,14 +222,86 @@ impl SearchPalette {
         self.committed = false;
     }
 
-    /// Live-filter local candidates (workspaces, panels, agents) while
-    /// typing. Desktop scores every candidate against the query with
-    /// `searchScore` and keeps the top 12. Any query change drops the
-    /// committed state: fetched rows were for the old query, so the
-    /// next Enter must re-commit instead of navigating stale results.
+    /// Load the recent workspaces through `/api/recent-workspaces`
+    /// (desktop `loadRecent`): a fetch inside the 10s window returns the
+    /// cached rows without a request; every other fetch refreshes the
+    /// cache, including failed ones (desktop `loadRecent` caches the
+    /// empty list on failure too, so a dead server is not hammered on
+    /// every palette open). Best effort by design.
+    pub fn load_recents(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
+        if let Some(at) = self.recents_fetched_at {
+            if at.elapsed() < RECENTS_CACHE_TTL {
+                return Ok(());
+            }
+        }
+        let result = api.recent_workspaces();
+        self.recents_fetched_at = Some(std::time::Instant::now());
+        let data = result?;
+        self.recents = parse_recent_workspaces(&data);
+        Ok(())
+    }
+
+    /// Drop the recents cache (desktop `invalidateRecent` after an
+    /// open/remove/clear so the next palette open refetches).
+    pub fn invalidate_recents(&mut self) {
+        self.recents_fetched_at = None;
+    }
+
+    /// Recent rows for the current query (desktop
+    /// `recentWorkspaceCandidates`): subtitle text filters case-
+    /// insensitively against the query, capped at 8 AFTER the filter
+    /// (so a query can surface entries beyond the first 8 of the
+    /// server's 20). `is_open` flags entries whose canonical path
+    /// already has an open workspace so they render disabled and
+    /// refuse navigation like the desktop.
+    pub fn recent_rows(&self, snapshot: &TuiSnapshot) -> Vec<SearchCandidate> {
+        let needle = self.query.trim().to_lowercase();
+        self.recents
+            .iter()
+            .filter(|recent| {
+                needle.is_empty() || {
+                    let haystack =
+                        format!("{} {}", recent.title(), recent.subtitle()).to_lowercase();
+                    haystack.contains(&needle)
+                }
+            })
+            // Desktop `recentWorkspaceCandidates` slices to 8 AFTER
+            // the query filter, so a query can surface entries beyond
+            // the first 8 of the server list (up to 20).
+            .take(MAX_RECENT_RESULTS)
+            .map(|recent| {
+                let is_open = snapshot.workspaces.iter().any(|ws| {
+                    !ws.cwd.is_empty()
+                        && std::path::Path::new(&ws.cwd) == std::path::Path::new(&recent.path)
+                });
+                SearchCandidate::Recent {
+                    path: recent.path.clone(),
+                    title: recent.title(),
+                    subtitle: recent.subtitle(),
+                    label: recent.label.clone(),
+                    is_worktree: recent.kind.as_deref() == Some("worktree"),
+                    is_open,
+                }
+            })
+            .collect()
+    }
+
+    /// Rebuild the results with the recent section placed above the
+    /// local candidates (desktop row order: actions, recents, then the
+    /// workspace/files/content sections). Only uncommitted palettes
+    /// refresh live; after a commit the fetched rows stay until the
+    /// query changes or the palette reopens.
     pub fn refresh_local(&mut self, snapshot: &TuiSnapshot) {
-        self.results = local_candidates(snapshot, &self.query);
+        let mut rows = self.recent_rows(snapshot);
+        rows.extend(local_candidates(snapshot, &self.query));
+        self.results = rows;
         self.selected = 0;
+        // Desktop moves the cursor off a disabled row after every
+        // render (`renderSearchPalette`): snap to the first
+        // selectable row, or 0 when none qualify.
+        if self.selected_is_disabled() {
+            self.selected = self.selectable_indices().first().copied().unwrap_or(0);
+        }
         self.committed = false;
     }
 
@@ -146,16 +329,45 @@ impl SearchPalette {
         self.results.get(self.selected)
     }
 
-    /// Move the cursor, wrapping around the list (desktop
-    /// `moveSearchSelection`).
+    /// Indices Enter can navigate (desktop `selectableSearchResults`
+    /// filters out disabled recent rows).
+    fn selectable_indices(&self) -> Vec<usize> {
+        self.results
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                !matches!(candidate, SearchCandidate::Recent { is_open: true, .. })
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// True when the cursor sits on a disabled recent row.
+    fn selected_is_disabled(&self) -> bool {
+        matches!(
+            self.selected_candidate(),
+            Some(SearchCandidate::Recent { is_open: true, .. })
+        )
+    }
+
+    /// Move the cursor, wrapping around the selectable rows (desktop
+    /// `moveSearchSelection` skips disabled recents; a cursor parked
+    /// on a disabled row behaves like the desktop's -1 `indexOf`, so a
+    /// forward move lands on the first selectable row).
     pub fn move_selection(&mut self, delta: isize) {
-        let len = self.results.len();
-        if len == 0 {
+        let selectable = self.selectable_indices();
+        if selectable.is_empty() {
             self.selected = 0;
             return;
         }
-        let current = self.selected.min(len - 1) as isize;
-        self.selected = (current + delta).rem_euclid(len as isize) as usize;
+        let position = selectable
+            .iter()
+            .position(|&index| index == self.selected)
+            .map(|position| position as isize)
+            .unwrap_or(-1);
+        let len = selectable.len() as isize;
+        let next = (position + delta).rem_euclid(len) as usize;
+        self.selected = selectable[next];
     }
 
     /// File-search commit (desktop path section): runs the tree search
@@ -443,6 +655,44 @@ mod tests {
     }
 
     #[test]
+    fn selection_skips_disabled_recents_like_desktop() {
+        // Desktop `moveSearchSelection` walks `selectableSearchResults`
+        // (disabled recents filtered) and `renderSearchPalette` snaps
+        // the cursor off a disabled row: with a disabled recent at 0
+        // and an openable one at 1, the cursor lands on 1 and the
+        // arrow keys never visit 0.
+        let snap = snapshot();
+        let mut palette = SearchPalette {
+            recents: vec![
+                RecentWorkspace {
+                    path: "/repo".to_string(),
+                    label: None,
+                    branch: None,
+                    kind: None,
+                },
+                RecentWorkspace {
+                    path: "/side".to_string(),
+                    label: None,
+                    branch: None,
+                    kind: None,
+                },
+            ],
+            ..SearchPalette::default()
+        };
+        palette.refresh_local(&snap);
+        assert_eq!(palette.selected, 1, "refresh snaps off the disabled row");
+        palette.move_selection(1);
+        assert_eq!(palette.selected, 1, "single selectable row stays put");
+        palette.move_selection(-1);
+        assert_eq!(palette.selected, 1);
+        // Cursor parked on a disabled row moves like the desktop's
+        // `indexOf` -1: forward lands on the first selectable row.
+        palette.selected = 0;
+        palette.move_selection(1);
+        assert_eq!(palette.selected, 1);
+    }
+
+    #[test]
     fn parse_file_hits_reads_entries_and_kinds() {
         let data = json!({
             "entries": [
@@ -461,6 +711,112 @@ mod tests {
         );
         // Missing keys drop the row instead of panicking.
         assert!(parse_file_hits(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn recent_rows_cap_applies_after_query_filtering() {
+        // Desktop slices to 8 AFTER the query filter: with 10 server
+        // entries, an empty query shows the first 8, but a query
+        // matching only entry 10 still surfaces it.
+        let snap = snapshot();
+        let recents: Vec<RecentWorkspace> = (0..10)
+            .map(|index| RecentWorkspace {
+                path: format!("/repo-{index}"),
+                label: Some(format!("target-{index}")),
+                branch: None,
+                kind: None,
+            })
+            .collect();
+        let mut palette = SearchPalette {
+            recents,
+            ..SearchPalette::default()
+        };
+        palette.refresh_local(&snap);
+        assert_eq!(palette.results.len(), 8, "empty query caps at 8");
+        palette.push_char('9', &snap);
+        assert_eq!(palette.results.len(), 1, "query reaches beyond the first 8");
+        assert!(matches!(
+            &palette.results[0],
+            SearchCandidate::Recent { path, .. } if path == "/repo-9"
+        ));
+    }
+
+    #[test]
+    fn parse_recent_workspaces_reads_rows_and_drops_broken_entries() {
+        let data = json!({
+            "recent": [
+                {"path":"/repo/main","label":"main repo","branch":"main","kind":"workspace"},
+                {"path":"/repo/wt","branch":"feat","kind":"worktree"},
+                {"label":"no path"},
+                {"path":"   "},
+                "not-an-object"
+            ]
+        });
+        let recents = parse_recent_workspaces(&data);
+        assert_eq!(recents.len(), 2);
+        assert_eq!(recents[0].path, "/repo/main");
+        assert_eq!(recents[0].label.as_deref(), Some("main repo"));
+        assert_eq!(recents[1].label, None);
+        // Titles follow the desktop rule: label first, else the last
+        // path segment; the kind falls back to workspace in subtitles.
+        assert_eq!(recents[0].title(), "main repo");
+        assert_eq!(recents[1].title(), "wt");
+        assert!(recents[1].subtitle().contains("worktree"));
+        assert!(parse_recent_workspaces(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn recent_rows_list_above_local_candidates_and_flag_open_paths() {
+        let snap = snapshot();
+        let mut palette = SearchPalette {
+            recents: vec![
+                RecentWorkspace {
+                    path: "/repo".to_string(),
+                    label: None,
+                    branch: None,
+                    kind: Some("workspace".to_string()),
+                },
+                RecentWorkspace {
+                    path: "/other".to_string(),
+                    label: Some("side checkout".to_string()),
+                    branch: None,
+                    kind: None,
+                },
+            ],
+            ..SearchPalette::default()
+        };
+        // Empty query: the recent section lists even though the desktop
+        // local candidates stay empty until something is typed.
+        palette.refresh_local(&snap);
+        assert_eq!(palette.results.len(), 2);
+        assert!(matches!(
+            &palette.results[0],
+            SearchCandidate::Recent { is_open: true, .. }
+        ));
+        assert!(matches!(
+            &palette.results[1],
+            SearchCandidate::Recent { is_open: false, .. }
+        ));
+
+        // Typing filters recents and locals together: "rep" keeps the
+        // open /repo recent (disabled rows stay visible like the desktop)
+        // plus the matching workspace/panel rows.
+        palette.push_char('r', &snap);
+        palette.push_char('e', &snap);
+        palette.push_char('p', &snap);
+        assert!(palette.results.iter().any(|candidate| matches!(
+            candidate,
+            SearchCandidate::Recent { path, .. } if path == "/repo"
+        )));
+        assert!(palette
+            .results
+            .iter()
+            .any(|candidate| matches!(candidate, SearchCandidate::Workspace { .. })));
+        // The non-matching recent is gone.
+        assert!(!palette.results.iter().any(|candidate| matches!(
+            candidate,
+            SearchCandidate::Recent { path, .. } if path == "/other"
+        )));
     }
 
     #[test]

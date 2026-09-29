@@ -45,6 +45,11 @@ Desktop shortcuts and features not present in the TUI today (verified against
 Panel/workspace management:
 
 1. No `nextPanel`/`prevPanel` ([/] panel navigation) shortcut.
+
+   Closed: prefix `]`/`[` walk the panel tabs through `move_panel`,
+   which now wraps around the tab list (`rem_euclid`, matching the
+   webui `selectRelativePanel` wrap) and anchors on the selected
+   agent's pane tab instead of the snapshot active tab.
 2. No `newWorkspace` (prefix `N`) or `openWorktrees` (prefix `W`) or
    `createWorktree` (prefix `T`) dialogs.
 
@@ -58,6 +63,10 @@ Panel/workspace management:
 3. No `closeWorkspace` (prefix `Shift+X`), `removeWorktree`
    (prefix `Delete`/`Backspace`).
 4. No workspace rename, no panel rename.
+
+   Partially closed: prefix `Shift+R` renames the selected panel
+   (webui `renamePanel`; plain `r` keeps the refresh binding). Workspace
+   rename stays open.
 5. No search palette (prefix `/`).
 
    Closed: prefix `/` opens the search palette overlay (new module
@@ -75,7 +84,66 @@ Panel/workspace management:
    from the desktop: fetches commit on Enter (not the desktop's 180ms
    debounce per keystroke; a synchronous per-key request would stall
    TUI typing) and result caps fit the overlay (12 file / 8 content
-   rows vs the desktop's paged 100/50).
+   rows vs the desktop's paged 100/50). (An earlier revision listed
+   the cursor reset-to-0 on every keystroke as a third deviation;
+   the desktop `scheduleSearch` also resets `selectedIndex = 0` on
+   every input event, so the TUI behavior is parity, not a
+   deviation.)
+
+   Recents parity: opening the palette also loads the desktop
+   `Recent workspaces` section from `GET /api/recent-workspaces`
+   (best effort; a failed load clears the section and notes it in the
+   status line without blocking the palette). Like the desktop's
+   `loadRecent`, the palette caches the list 10s client-side
+   (including failed loads, so a dead server is not retried on every
+   open) and open/remove/clear invalidate the cache
+   (`invalidateRecent` parity). The TUI `WebApiClient` also
+   authenticates now: a 401 triggers a `POST /api/login` with
+   the `user`/`password` from the same `webui-settings.json` the bind
+   discovery reads, at most one login attempt per call. The session
+   cookie is cached and sent on every later call, and a stale cookie
+   after a WebUI restart (the token regenerates per start) recovers
+   the same way: the next call re-logins and replaces it. Documented
+   deviation: the desktop `api()` wrapper redirects to `/` on a 401
+   for a human re-login through the form; the TUI automates the
+   re-login with the persisted credentials instead.
+   `localhost_no_auth` servers never 401, so the default local setup
+   is unchanged. Remaining caveat: when the settings file has no
+   credentials the 401 surfaces as an error, consistent with every
+   other WebUI-API failure mode.
+   Recent rows list above the local candidates, filter with the
+   query, dim already-open paths (`(already open)` hint) and refuse
+   navigation on them.
+   (The desktop's `Actions` section — the HerdrActionRegistry rows —
+   stays webui-only; the TUI palette has no action registry, so its
+   rows are recents plus local/fetched candidates only.)
+   `Ctrl+X` removes the selected recent server-side, `Ctrl+Shift+X`
+   clears the whole list, and `Enter` on an openable recent reopens
+   it through `POST /api/recent-workspaces` and lands on its focused
+   pane; only a recorded custom label travels with the open request
+   (None keeps the backend naming). TUI-created workspaces and
+   TUI-opened worktrees also land in the recents list through the new
+   record-only endpoint `POST /api/recent-workspaces/record` (best
+   effort, like the desktop's fire-and-forget record after a
+   workspace create, so a dead WebUI server never fails the
+   create/open itself). The same applies to the temporary-terminal
+   promote (`Ctrl+B Shift+P`): the server's promote route records
+   the promoted workspace from the promote result (cwd the backend
+   resolved plus label), and the TUI socket flow POSTs the record
+   endpoint itself with the same shape. The desktop create-flow
+   records by re-POSTing the open endpoint `/api/recent-workspaces`
+   (the server records there anyway), while the TUI uses the
+   record-only endpoint to skip the redundant reopen — same
+   persisted entry, one fewer workspace create. The `(already open)` flag compares
+   the recent path against the open workspace cwds only; the desktop
+   `recentWorkspaceIsOpen` also cross-checks linked worktree paths
+   (`state.worktrees` with `open_workspace_id`), but every open
+   worktree also appears as a workspace with that cwd, so the TUI
+   check stays sufficient. The TUI `WebApiClient` authenticates like
+   the desktop (401 → login from `webui-settings.json` credentials,
+   cached session cookie), so these endpoints work with server auth
+   enabled; without credentials in the settings the 401 surfaces as
+   an error, consistent with every other TUI WebUI-API failure mode.
 6. No settings screen; no shortcut help overlay parity for the new keys.
 
    Closed: prefix `S` (settings) and prefix `?` (help) ship, the help

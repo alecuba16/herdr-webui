@@ -1221,6 +1221,10 @@ fn app_router(state: WebState) -> Router {
             "/api/recent-workspaces/remove",
             post(remove_recent_workspace),
         )
+        .route(
+            "/api/recent-workspaces/record",
+            post(record_recent_workspace_endpoint),
+        )
         .route("/api/worktrees", get(worktrees).post(create_worktree))
         .route("/api/worktrees/open", post(open_worktree))
         .route("/api/worktrees/remove-path", post(remove_worktree_path))
@@ -3062,6 +3066,50 @@ async fn clear_recent_workspaces(
     }
 }
 
+/// Record a workspace the client just opened/created through a
+/// non-WebUI path (the TUI talks to the backend socket directly, so
+/// its workspace.create/worktree.open flows never pass through the
+/// recording proxies). Record-only: like the desktop's fire-and-forget
+/// POST after `POST /api/workspaces`, a failed record must never
+/// fail the client operation.
+async fn record_recent_workspace_endpoint(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<RecordRecentWorkspaceRequest>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    // Validate the raw path BEFORE expanding, matching the remove/open
+    // endpoints: empty paths 400 instead of recording the home dir.
+    let raw_path = body.path.as_deref().unwrap_or_default();
+    if raw_path.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "path is required" })),
+        )
+            .into_response();
+    }
+    let path = expand_user_path_string(raw_path).trim().to_string();
+    match record_recent_workspace(
+        &state,
+        &path,
+        body.label.clone(),
+        body.branch.clone(),
+        body.kind.clone(),
+    )
+    .await
+    {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 async fn remove_recent_workspace(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -3737,6 +3785,14 @@ struct OpenRecentWorkspaceRequest {
 #[derive(Deserialize)]
 struct RemoveRecentWorkspaceRequest {
     path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RecordRecentWorkspaceRequest {
+    path: Option<String>,
+    label: Option<String>,
+    branch: Option<String>,
+    kind: Option<String>,
 }
 
 async fn open_recent_workspace(

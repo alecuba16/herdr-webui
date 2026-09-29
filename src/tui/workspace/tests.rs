@@ -58,14 +58,14 @@ fn move_panel_moves_selection_within_workspace_tabs() {
     // Second tab tab_2 selects its agent pane_2 (index 1).
     assert_eq!(app.selected_agent, 1);
 
-    // Clamped at the last panel.
+    // Wraps to the first panel (webui selectRelativePanel cycles).
     app.move_panel(1).unwrap();
-    assert_eq!(app.selected_agent, 1);
-
-    app.move_panel(-1).unwrap();
     assert_eq!(app.selected_agent, 0);
 
-    // Clamped at the first panel.
+    app.move_panel(-1).unwrap();
+    assert_eq!(app.selected_agent, 1);
+
+    // Wraps back to the first panel from the start.
     app.move_panel(-1).unwrap();
     assert_eq!(app.selected_agent, 0);
 }
