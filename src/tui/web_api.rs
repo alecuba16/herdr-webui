@@ -28,7 +28,10 @@ pub struct WebApiClient {
     port: u16,
     timeout: Duration,
     /// Cached `herdr_web_session` cookie from a successful login.
-    session_cookie: Option<String>,
+    /// Interior mutability so `request_json(&self)` can keep the cookie
+    /// after the 401 login retry — without it the cookie would land on
+    /// a dropped temporary and every authed call would re-login.
+    session_cookie: std::cell::RefCell<Option<String>>,
 }
 
 /// Login credentials read from the persisted WebUI settings.
@@ -73,14 +76,14 @@ impl WebApiClient {
             host: host.into(),
             port,
             timeout: Duration::from_secs(20),
-            session_cookie: None,
+            session_cookie: std::cell::RefCell::new(None),
         }
     }
 
-    /// Login once and cache the session cookie. Called by `request_json`
-    /// after a 401; also public so `Clone`-based copies do not each fire
-    /// their own login on first use (tests call it directly).
-    pub fn login(&mut self, credentials: &WebApiCredentials) -> Result<(), WebApiError> {
+    /// Login once and cache the session cookie (RefCell, so `&self`
+    /// suffices). Called by `request_json` after a 401; tests call it
+    /// directly too.
+    pub fn login(&self, credentials: &WebApiCredentials) -> Result<(), WebApiError> {
         let body = json!({ "username": credentials.username, "password": credentials.password });
         let mut response = self.raw_request_json("POST", "/api/login", Some(&body))?;
         // Pull the session cookie out of the `set-cookie` header we stashed
@@ -97,7 +100,7 @@ impl WebApiClient {
             .map(|obj| obj.remove("_set_cookie"));
         match cookie {
             Some(cookie) => {
-                self.session_cookie = Some(cookie);
+                *self.session_cookie.borrow_mut() = Some(cookie);
                 Ok(())
             }
             None => Err(WebApiError::Api(
@@ -171,8 +174,9 @@ impl WebApiClient {
         body: Option<&Value>,
     ) -> Result<Value, WebApiError> {
         match self.raw_request_json(method, path_and_query, body) {
-            Err(WebApiError::Http { status: 401, .. }) if self.session_cookie.is_none() => {
-                let mut authorized = self.clone();
+            Err(WebApiError::Http { status: 401, .. })
+                if self.session_cookie.borrow().is_none() =>
+            {
                 let Some(credentials) = persisted_credentials() else {
                     return Err(WebApiError::Http {
                         status: 401,
@@ -180,8 +184,10 @@ impl WebApiClient {
                             .to_string(),
                     });
                 };
-                authorized.login(&credentials)?;
-                authorized.raw_request_json(method, path_and_query, body)
+                // The cookie lands on `self` (RefCell), so later calls
+                // skip the login instead of re-authenticating every time.
+                self.login(&credentials)?;
+                self.raw_request_json(method, path_and_query, body)
             }
             other => other,
         }
@@ -202,6 +208,7 @@ impl WebApiClient {
         };
         let cookie_header = self
             .session_cookie
+            .borrow()
             .as_deref()
             .map(|cookie| format!("Cookie: {cookie}\r\n"))
             .unwrap_or_default();
@@ -1015,7 +1022,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let login_seen = Arc::new(Mutex::new(false));
+        let login_seen = Arc::new(Mutex::new(0usize));
         let seen = login_seen.clone();
         let handle = std::thread::spawn(move || {
             let mut remaining = 3usize; // login + 2 authorized GETs
@@ -1063,7 +1070,7 @@ mod tests {
                 };
                 let mut stream = stream;
                 let response = if target == "/api/login" {
-                    *seen.lock().unwrap() = true;
+                    *seen.lock().unwrap() += 1;
                     let ok = body.get("username").and_then(Value::as_str) == Some("admin")
                         && body.get("password").and_then(Value::as_str) == Some("secret");
                     if ok {
@@ -1096,22 +1103,143 @@ mod tests {
                 }
             }
         });
-        let mut client = WebApiClient::new("127.0.0.1", port);
+        let client = WebApiClient::new("127.0.0.1", port);
         let credentials = WebApiCredentials {
             username: "admin".to_string(),
             password: "secret".to_string(),
         };
+        assert!(
+            client.session_cookie.borrow().is_none(),
+            "test starts without a cookie"
+        );
+        // Login explicitly (the TUI binary could do this at startup too),
+        // then both calls must ride the cached cookie.
         client.login(&credentials).expect("login succeeds");
+        assert_eq!(*login_seen.lock().unwrap(), 1, "explicit login counted");
         let value = client.recent_workspaces().expect("authorized call");
         assert_eq!(value["recent"][0]["path"], "/a");
-        // A second call reuses the cached cookie: the server would 401
-        // without one, so success proves the cookie header is sent.
+        // A second call reuses the cached cookie — the bug this pins:
+        // the cookie used to land on a dropped temporary inside
+        // request_json, so every authed call re-logged-in. Exactly one
+        // login must serve both calls.
         let value = client.recent_workspaces().expect("cached cookie works");
         assert_eq!(value["recent"][0]["path"], "/a");
-        assert!(*login_seen.lock().unwrap(), "server saw a login");
+        assert_eq!(*login_seen.lock().unwrap(), 1, "exactly one login");
         // The server thread parks on accept() after its bounded request
         // count; detach it like the other fake servers in this suite.
         drop(handle);
+    }
+
+    #[test]
+    fn retry_path_logs_in_once_and_caches_the_cookie() {
+        // Reproduces the exact bug path: NO explicit login. The first
+        // call 401s, request_json reads persisted_credentials() from
+        // XDG_CONFIG_HOME, logs in, retries, and the cookie must land
+        // on the shared client so the second call skips the login.
+        let _guard = lock_env();
+        use std::io::{BufRead as _, BufReader};
+        use std::sync::{Arc, Mutex};
+        let config_home =
+            std::env::temp_dir().join(format!("herdr-tui-retry-login-{}", std::process::id()));
+        std::fs::create_dir_all(config_home.join("herdr-webui")).unwrap();
+        std::fs::write(
+            config_home.join("herdr-webui").join("webui-settings.json"),
+            serde_json::json!({ "user": "admin", "password": "secret" }).to_string(),
+        )
+        .unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let login_count = Arc::new(Mutex::new(0usize));
+        let seen = login_count.clone();
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let target = request_line.split(' ').nth(1).unwrap_or("").to_string();
+                let mut content_length = 0usize;
+                let mut cookie = String::new();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let trimmed = header.trim();
+                    if trimmed.is_empty() {
+                        break;
+                    }
+                    let lower = trimmed.to_ascii_lowercase();
+                    if let Some(value) = lower.strip_prefix("content-length:") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    } else if let Some(value) = lower.strip_prefix("cookie:") {
+                        cookie = value.trim().to_string();
+                    }
+                }
+                let mut body = vec![0; content_length];
+                if content_length > 0 {
+                    let _ = reader.read_exact(&mut body);
+                }
+                let body: Value = if body.is_empty() {
+                    Value::Null
+                } else {
+                    serde_json::from_slice(&body).unwrap_or(Value::Null)
+                };
+                let mut stream = stream;
+                let response = if target == "/api/login" {
+                    *seen.lock().unwrap() += 1;
+                    let ok = body.get("username").and_then(Value::as_str) == Some("admin")
+                        && body.get("password").and_then(Value::as_str) == Some("secret");
+                    if ok {
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: herdr_web_session=token123; HttpOnly; Path=/\r\nContent-Length: {}\r\n\r\n{{\"ok\":true}}",
+                            "{\"ok\":true}".len()
+                        )
+                    } else {
+                        format!(
+                            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{{\"error\":\"bad credentials\"}}",
+                            "{\"error\":\"bad credentials\"}".len()
+                        )
+                    }
+                } else if !cookie.contains("herdr_web_session=token123") {
+                    format!(
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{{\"error\":\"unauthorized\"}}",
+                        "{\"error\":\"unauthorized\"}".len()
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{{\"recent\":[{{\"path\":\"/a\"}}]}}",
+                        "{\"recent\":[{\"path\":\"/a\"}]}".len()
+                    )
+                };
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+
+        let client = WebApiClient::new("127.0.0.1", port);
+        // No explicit login: both calls go through the 401 retry path.
+        let value = client
+            .recent_workspaces()
+            .expect("retry logs in and succeeds");
+        assert_eq!(value["recent"][0]["path"], "/a");
+        assert_eq!(*login_count.lock().unwrap(), 1, "first call logged in once");
+        // Second call must ride the cached cookie: a second login here
+        // was the dropped-temporary bug.
+        let value = client
+            .recent_workspaces()
+            .expect("cached cookie authorizes the second call");
+        assert_eq!(value["recent"][0]["path"], "/a");
+        assert_eq!(*login_count.lock().unwrap(), 1, "exactly one login total");
+        drop(handle);
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = std::fs::remove_dir_all(&config_home);
     }
 
     #[test]
