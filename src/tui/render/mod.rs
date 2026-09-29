@@ -414,7 +414,7 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
     frame.render_widget(Paragraph::new(rendered), list_area);
     if explorer.entries.is_empty() && !explorer.filter_active {
         let empty = Paragraph::new(Span::styled(
-            "No entries. Ctrl+B r refreshes, Ctrl+B / filters.",
+            "No entries. Ctrl+B r refreshes, / filters.",
             Style::default().fg(p.muted),
         ));
         frame.render_widget(empty, inner);
