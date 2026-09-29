@@ -147,6 +147,68 @@ const sheetClosed = await evalx(`(() => {
 })()`);
 check('Escape closes input sheet', sheetClosed);
 
+// Multi-line submit: each line must execute as its own command.
+await evalx(`HerdrMobile.openTerminalInputSheet()`);
+await cdp.send('Input.insertText', { text: 'echo LINE_ONE_OK\necho LINE_TWO_OK' });
+await evalx(`(() => {
+  const input = document.getElementById('mobileTerminalInput');
+  if (!input) return false;
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  return true;
+})()`);
+let bothLines = false;
+let multiTail = '';
+for (let i = 0; i < 25; i++) {
+  multiTail = await evalx(`((document.querySelector('#terminal .term-grid') || {}).textContent || '').trim().slice(-400)`);
+  const one = /LINE_ONE_OK[\s\S]*LINE_ONE_OK/.test(multiTail);
+  const two = /LINE_TWO_OK[\s\S]*LINE_TWO_OK/.test(multiTail);
+  if (one && two) { bothLines = true; break; }
+  await new Promise((r) => setTimeout(r, 300));
+}
+check('multi-line submit executes each line', bothLines, multiTail.slice(-160));
+await evalx(`HerdrMobile.closeTerminalInputSheet()`);
+
+// Temporary terminal on mobile is keyboard-gated too: opening it must not
+// focus wterm's textarea, and its pencil input sheet must deliver input.
+await evalx(`HerdrMobile.runAction('temp-terminal')`);
+let tempOpen = false;
+for (let i = 0; i < 24; i++) {
+  tempOpen = await evalx(`!!document.querySelector('.temp-terminal-backdrop .terminal') && ((document.querySelector('.temp-terminal-backdrop .terminal') || {}).textContent || '').trim().length > 0`);
+  if (tempOpen) break;
+  await new Promise((r) => setTimeout(r, 400));
+}
+check('temp terminal opens on mobile', tempOpen);
+const tempActive = await evalx(`document.activeElement ? document.activeElement.tagName : 'none'`);
+check('temp terminal does not autofocus its textarea', !/TEXTAREA/i.test(String(tempActive)), tempActive);
+const tempTyped = await evalx(`(() => {
+  const b = document.querySelector('.temp-terminal-input-button');
+  if (!b) return 'no pencil';
+  b.click();
+  const i = document.querySelector('.temp-terminal-input-sheet .temp-terminal-input-field');
+  return i && document.activeElement === i ? 'focused' : 'not focused';
+})()`);
+check('temp terminal pencil focuses input sheet', tempTyped === 'focused', tempTyped);
+await cdp.send('Input.insertText', { text: 'echo TEMP_SHEET_OK' });
+await evalx(`(() => {
+  const i = document.querySelector('.temp-terminal-input-sheet .temp-terminal-input-field');
+  if (!i) return false;
+  i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  return true;
+})()`);
+let tempEchoed = false;
+let tempTail = '';
+for (let i = 0; i < 25; i++) {
+  tempTail = await evalx(`((document.querySelector('.temp-terminal-backdrop .term-grid') || {}).textContent || '').trim().slice(-200)`);
+  if (/TEMP_SHEET_OK[\s\S]*TEMP_SHEET_OK/.test(tempTail)) { tempEchoed = true; break; }
+  await new Promise((r) => setTimeout(r, 300));
+}
+check('temp sheet input reaches PTY and echoes', tempEchoed, tempTail.slice(-120));
+await evalx(`HerdrMobile.runAction('temp-terminal')`);
+await evalx(`(function(){ const c = document.querySelector('.temp-terminal-close'); if (c) c.click(); return true; })()`);
+await new Promise((r) => setTimeout(r, 300));
+await evalx(`(function(){ const cc = document.querySelector('.temp-terminal-confirm-close'); if (cc) cc.click(); return true; })()`);
+await new Promise((r) => setTimeout(r, 500));
+
 const failures = results.filter((r) => !r.ok).length;
 console.log(failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

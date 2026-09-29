@@ -697,6 +697,9 @@
     },
     defaultFolderFn: () => state.defaultFolder || "",
     workspaceIdFn: () => state.ws || (state.workspaces && state.workspaces.length === 1 ? state.workspaces[0].workspace_id : "") || "",
+    // Mobile input model: the temp terminal surface is keyboard-gated too;
+    // input goes through its pencil-button input sheet.
+    inputGate: () => true,
   });
   window.addEventListener("resize", () => mobileTempTerminal.handleResize());
   mobileSettings = globalThis.HerdrMobileSettings.create({

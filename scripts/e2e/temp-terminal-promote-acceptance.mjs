@@ -336,11 +336,13 @@ await sleep(3000);
 
   // cd into ROOT3: guaranteed no workspace sits there yet, so the promote
   // always moves the tab (the mobile page reloaded onto the workspace at
-  // ROOT, and a same-cwd promote would be the rejected case).
+  // ROOT, and a same-cwd promote would be the rejected case). Mobile input
+  // goes through the temp terminal pencil input sheet (the surface is
+  // keyboard-gated), so open the sheet and type there.
   await evalApp(`(function(){
-    const t = document.querySelector('.temp-terminal-backdrop .terminal textarea, .temp-terminal-backdrop textarea');
-    if (t) t.focus();
-    return !!t;
+    const b = document.querySelector('.temp-terminal-input-button');
+    if (b) b.click();
+    return !!b;
   })()`);
   // The PTY echoes typed input, so waiting for the marker text alone would
   // match the typed line itself. Require two occurrences (typed echo plus

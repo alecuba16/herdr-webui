@@ -1499,6 +1499,73 @@ body.light .mobile-nav-status.working {
   right: 14px;
   z-index: 10;
 }
+.temp-terminal-input-button {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  z-index: 10;
+  min-height: 46px;
+  min-width: 46px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 18px;
+  font-weight: 900;
+  box-shadow: 0 10px 28px #0008;
+}
+/* Follow pill visible: stack the pencil above it. */
+.temp-terminal-follow:not([hidden]) ~ .temp-terminal-input-button,
+.temp-terminal-input-button.shifted {
+  bottom: 62px;
+}
+.temp-terminal-input-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 11;
+  display: flex;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+  background: var(--panel, #1e1e2e);
+  border-top: 1px solid var(--border);
+}
+.temp-terminal-input-sheet[hidden] {
+  display: none;
+}
+.temp-terminal-input-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  align-items: center;
+}
+.temp-terminal-input-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font-size: 15px;
+}
+.temp-terminal-input-send,
+.temp-terminal-input-close {
+  flex: 0 0 auto;
+  min-height: 44px;
+  min-width: 44px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel2, #2a2a3c);
+  color: var(--fg);
+  font-size: 16px;
+  font-weight: 700;
+}
+.temp-terminal-input-send {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
 .temp-terminal-confirm {
   position: absolute;
   inset: 0;

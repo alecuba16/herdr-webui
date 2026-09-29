@@ -75,6 +75,11 @@
     var shortcutLabelFn = opts.shortcutLabelFn || function () { return ""; };
     var onPromoted = opts.onPromoted || null;
     var promoteShortcutLabelFn = opts.promoteShortcutLabelFn || function () { return ""; };
+    // Mobile input model: when inputGate denies focus the surface never
+    // takes keyboard input; a pencil button opens a real input field whose
+    // lines go through the session sendInput (default query-reply/mouse
+    // stripping applies, same as typed input).
+    var inputGate = opts.inputGate || null;
 
     // Shared workspace state across all temp terminals.
     var sharedWorkspaceId = null;
@@ -225,7 +230,11 @@
           '<div class="temp-terminal-body">' +
           '<button class="terminal-follow-button temp-terminal-follow" type="button" hidden>↓ Tail</button>' +
           '<div class="terminal"></div>' +
-          '</div></div>';
+          '</div>' +
+          (inputGate
+            ? '<button class="temp-terminal-input-button" type="button" title="Type to terminal" aria-label="Open terminal input">✎</button>'
+            : '') +
+          '</div>';
         doc.body.appendChild(modal);
 
         container = modal.querySelector(".terminal");
@@ -240,6 +249,68 @@
 
         var closeBtn = modal.querySelector(".temp-terminal-close");
         if (closeBtn) closeBtn.onclick = requestClose;
+
+        // Mobile input model: a pencil button opens a real input field; the
+        // gated terminal surface itself never takes keyboard focus.
+        if (inputGate) {
+          var pencilBtn = modal.querySelector(".temp-terminal-input-button");
+          if (pencilBtn) pencilBtn.onclick = function () { openTempInputSheet(); };
+        }
+      }
+
+      function openTempInputSheet() {
+        if (!modal) return;
+        var sheet = modal.querySelector(".temp-terminal-input-sheet");
+        if (!sheet) {
+          sheet = globalThis.document.createElement("div");
+          sheet.className = "temp-terminal-input-sheet";
+          sheet.setAttribute("role", "dialog");
+          sheet.setAttribute("aria-label", "Temporary terminal input");
+          sheet.innerHTML =
+            '<div class="temp-terminal-input-row">' +
+            '<input class="temp-terminal-input-field" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="send" placeholder="Type a command and press Enter" />' +
+            '<button type="button" class="temp-terminal-input-send" aria-label="Send to terminal">↵</button>' +
+            '<button type="button" class="temp-terminal-input-close" aria-label="Close input">✕</button>' +
+            '</div>';
+          modal.querySelector(".temp-terminal-modal").appendChild(sheet);
+          var input = sheet.querySelector(".temp-terminal-input-field");
+          var sendBtn = sheet.querySelector(".temp-terminal-input-send");
+          var closeBtn = sheet.querySelector(".temp-terminal-input-close");
+          var submit = function () {
+            if (!input) return;
+            var value = input.value;
+            if (!value) return;
+            var lines = value.replace(/\r\n|\r/g, "\n").split("\n");
+            for (var i = 0; i < lines.length; i++) {
+              if (lines[i]) sendInput(lines[i]);
+              sendInput("\r");
+            }
+            input.value = "";
+          };
+          if (input) input.onkeydown = function (event) {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              submit();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              sheet.hidden = true;
+              input.blur();
+            } else if (event.key === "Backspace" && input.value === "") {
+              event.preventDefault();
+              sendInput("\x7f");
+            }
+          };
+          if (sendBtn) sendBtn.onclick = submit;
+          if (closeBtn) closeBtn.onclick = function () {
+            sheet.hidden = true;
+            if (input) input.blur();
+          };
+        }
+        sheet.hidden = false;
+        var input = sheet.querySelector(".temp-terminal-input-field");
+        if (input) {
+          try { input.focus(); } catch (e) {}
+        }
       }
 
       function open() {
@@ -351,6 +422,10 @@
 
       function installInputTrap() {
         if (keyTrapBound) return;
+        // Gated (mobile) sessions never steal keyboard focus: no click-to-
+        // focus trap and no document keydown trap; input goes through the
+        // pencil input sheet instead.
+        if (inputGate && inputGate("focus")) return;
         keyTrapBound = true;
         globalThis.document.addEventListener("keydown", tempTerminalKeydown, true);
         if (modal) {
@@ -672,6 +747,7 @@
           scrollback: 5000,
           onData: function (data) { sendInput(data); },
           onWheelMouseReport: function (report) { sendInput(report, { allowMouseReports: true }); },
+          inputGate: inputGate || undefined,
         }).then(function (created) {
           term = created;
           bindTerminalScrollEvents(containerEl);
