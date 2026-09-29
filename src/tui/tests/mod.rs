@@ -6498,3 +6498,59 @@ fn search_palette_retry_after_partial_failure_appends_no_duplicates() {
         "retry must not append a duplicate file row"
     );
 }
+
+#[test]
+fn search_palette_file_and_content_navigation_failure_paths() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+
+    // A committed palette with a file row: navigating it with a dead
+    // backend must surface the reveal error, close the palette, and
+    // land on the Files screen (not crash or hang).
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.search_palette.results = vec![search::SearchCandidate::File {
+        path: "src/alpha.rs".to_string(),
+        name: "alpha.rs".to_string(),
+        is_dir: false,
+    }];
+    app.search_palette.selected = 0;
+    app.search_palette.committed = true;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_ne!(app.mode, TuiMode::SearchPalette, "palette closed");
+    assert_eq!(app.screen, TuiScreen::Files, "landed on Files screen");
+    assert!(app.error.is_some(), "reveal failure surfaces");
+
+    // Same for a content row: the preview fetch fails, the error
+    // surfaces, and the app stays usable (mode restored).
+    app.error = None;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.search_palette.results = vec![search::SearchCandidate::Content {
+        file: "src/beta.rs".to_string(),
+        name: "beta.rs".to_string(),
+        line: 7,
+    }];
+    app.search_palette.selected = 0;
+    app.search_palette.committed = true;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_ne!(app.mode, TuiMode::SearchPalette, "palette closed");
+    assert_eq!(app.screen, TuiScreen::Files, "landed on Files screen");
+    assert!(app.error.is_some(), "preview failure surfaces");
+
+    // A dir row navigates without any fetch (select_path only), so it
+    // succeeds even with the backend dead.
+    app.error = None;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.search_palette.results = vec![search::SearchCandidate::File {
+        path: "src".to_string(),
+        name: "src".to_string(),
+        is_dir: true,
+    }];
+    app.search_palette.selected = 0;
+    app.search_palette.committed = true;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_ne!(app.mode, TuiMode::SearchPalette);
+    assert!(app.error.is_none(), "dir navigation needs no fetch");
+}
