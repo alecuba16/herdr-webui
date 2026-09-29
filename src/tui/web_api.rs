@@ -226,7 +226,12 @@ impl WebApiClient {
             self.port,
             body_text.len(),
         );
-        let stream = TcpStream::connect((self.host.as_str(), self.port))
+        // connect() without a bound would wait on the platform default
+        // (~75s on macOS) when the WebUI server is unreachable; cap it with
+        // the same request timeout the read/write paths already use.
+        // Accept both literal IPs and hostnames (e.g. "localhost").
+        let addr = resolve_web_api_addr(&self.host, self.port)?;
+        let stream = TcpStream::connect_timeout(&addr, self.timeout)
             .map_err(|err| WebApiError::Io(err.to_string()))?;
         stream
             .set_read_timeout(Some(self.timeout))
@@ -816,6 +821,20 @@ impl WebApiClient {
             &json!({ "cwd": cwd, "stash": stash, "confirmed": true }),
         )
     }
+}
+
+/// Resolve a host string (literal IP or hostname like "localhost") plus
+/// port to a single socket address for `TcpStream::connect_timeout`. Falls
+/// back to the first resolved address; resolution failure surfaces as an
+/// Io error like the old connect() path did.
+fn resolve_web_api_addr(host: &str, port: u16) -> Result<std::net::SocketAddr, WebApiError> {
+    use std::net::ToSocketAddrs;
+    let mut addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|err| WebApiError::Io(err.to_string()))?;
+    addrs
+        .next()
+        .ok_or_else(|| WebApiError::Io(format!("host did not resolve: {host}")))
 }
 
 fn read_chunked_body(reader: &mut BufReader<TcpStream>) -> Result<Vec<u8>, WebApiError> {
