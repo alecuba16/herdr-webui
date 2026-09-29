@@ -6,15 +6,22 @@
 //! - local candidates (workspaces, panels, agents) are scored with the
 //!   desktop `searchScore` (exact 0, prefix 1, substring 10+index,
 //!   otherwise dropped), sorted by score then title, capped at 12;
-//! - files and content hits come from the web API (`/api/file-browser/tree`
-//!   `q=` search and content-search), fetched once on Enter commit
-//!   (the Files screen filter precedent: queries commit on Enter, not
-//!   per keystroke);
 //! - navigation always targets a concrete pane/workspace (desktop
 //!   rule): Enter on a target result selects the workspace, then the
 //!   first pane of its tab so `Enter attach` works on the next key;
 //! - file hits reveal the file in the Files screen tree; content hits
 //!   open the file preview at the match line.
+//!
+//! Known deviations from the desktop (documented, deliberate):
+//! - the desktop fetches file/content hits on every keystroke with a
+//!   180ms debounce (`oninput` → `scheduleSearch`); the TUI fetches
+//!   once on Enter commit instead, because a synchronous per-key
+//!   web request would stall typing. The Files screen filter already
+//!   set this commit-on-Enter precedent;
+//! - the desktop pages path results at 100 and content at 50 files;
+//!   the palette overlays cap at 12 files and 8 content rows to fit
+//!   the 20-row window (Enter commits with the same caps, and the
+//!   Files screen search remains the paginated interface).
 
 use serde_json::Value;
 

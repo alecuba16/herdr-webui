@@ -64,13 +64,18 @@ Panel/workspace management:
    `src/tui/search.rs`). Typing live-filters local candidates
    (workspaces, panels, agents) with the desktop `searchScore` ranking
    (exact / prefix / substring+index, cap 12); Enter commits the query
-   and appends file hits (`/api/file-browser/tree?q=`) and content hits
-   (content-search API, first match line as jump target); a second Enter
-   navigates: workspace/panel/agent rows select a concrete pane
+   and appends file hits (`/api/file-browser/tree?q=`, `search_kind=file`
+   like the desktop default) and content hits (content-search API,
+   first match line as jump target); a second Enter navigates:
+   workspace/panel/agent rows select a concrete pane
    (desktop `targetForWorkspace` rule), file rows reveal in the Files
    tree, content rows open the preview at the match line. Arrows always
    move, j/k move while the query is empty (help/worktree overlay
-   convention), Ctrl+U clears, Esc closes.
+   convention), Ctrl+U clears, Esc closes. Two documented deviations
+   from the desktop: fetches commit on Enter (not the desktop's 180ms
+   debounce per keystroke; a synchronous per-key request would stall
+   TUI typing) and result caps fit the overlay (12 file / 8 content
+   rows vs the desktop's paged 100/50).
 6. No settings screen; no shortcut help overlay parity for the new keys.
 
    Closed: prefix `S` (settings) and prefix `?` (help) ship, the help
