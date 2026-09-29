@@ -6406,3 +6406,95 @@ fn search_palette_retyping_after_commit_requires_fresh_enter() {
         "no false no-results state while uncommitted"
     );
 }
+
+/// HTTP fake serving the palette search endpoints: the tree (file)
+/// search succeeds with one hit, the content search drops the
+/// connection (simulates a partial backend failure).
+fn fake_palette_server(file_ok: bool, content_ok: bool) -> (u16, std::sync::mpsc::Sender<()>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            if rx.try_recv().is_ok() {
+                break;
+            }
+            let Ok(mut stream) = stream else { break };
+            let mut line = String::new();
+            {
+                let mut reader = BufReader::new(&mut stream);
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+            }
+            let target = line.split(' ').nth(1).unwrap_or_default().to_string();
+            let body = if target.contains("/api/file-browser/tree") && file_ok {
+                json!({"entries": [
+                    {"name": "alpha.rs", "kind": "file", "path": "src/alpha.rs"}
+                ]})
+            } else if target.contains("/api/file-browser/content-search") && content_ok {
+                json!({"files": [
+                    {"path": "src/beta.rs", "name": "beta.rs",
+                     "matches": [{"line": 7, "text": "let x = 1;"}]}
+                ]})
+            } else {
+                // Drop without a response: the call fails with an I/O error.
+                continue;
+            };
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.to_string().len(),
+                    body
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    (port, tx)
+}
+
+#[test]
+fn search_palette_retry_after_partial_failure_appends_no_duplicates() {
+    let (port, _stop) = fake_palette_server(true, false);
+    let mut app = app_with_snapshot();
+    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+
+    // The file search succeeds (one row appended), the content search
+    // drops the connection: the commit fails and stays uncommitted.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(
+        !app.search_palette.committed,
+        "partial failure keeps uncommitted"
+    );
+    let files_after_first = app
+        .search_palette
+        .results
+        .iter()
+        .filter(|c| matches!(c, search::SearchCandidate::File { .. }))
+        .count();
+    assert_eq!(
+        files_after_first, 1,
+        "file hit appended on the failed commit"
+    );
+
+    // Retrying the commit must not duplicate the file row.
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(!app.search_palette.committed, "retry fails again");
+    let files_after_retry = app
+        .search_palette
+        .results
+        .iter()
+        .filter(|c| matches!(c, search::SearchCandidate::File { .. }))
+        .count();
+    assert_eq!(
+        files_after_retry, 1,
+        "retry must not append a duplicate file row"
+    );
+}

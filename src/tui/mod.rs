@@ -1052,8 +1052,10 @@ impl TuiApp {
 
     /// Commit the palette query: run the file search and the content
     /// search over the active cwd, appending hits below the local
-    /// candidates. A query that already has rows keeps them (the
-    /// second Enter navigates instead of re-fetching).
+    /// candidates. Retries are idempotent: every commit rebuilds the
+    /// rows from the local candidates before fetching, so a partial
+    /// failure (files fetched, content failed) followed by a retry
+    /// never appends duplicate rows.
     fn commit_search_query(&mut self) -> Result<(), String> {
         let query = self.search_palette.query.trim().to_string();
         if query.is_empty() {
@@ -1063,6 +1065,7 @@ impl TuiApp {
             return Err("no workspace selected".to_string());
         };
         let root = self.file_explorer.root_path.clone();
+        self.search_palette.refresh_local(&self.snapshot);
         let file_result = self
             .search_palette
             .commit_file_search(&self.web_api, &cwd, &root)
