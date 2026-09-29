@@ -3883,6 +3883,58 @@ fn search_palette_recents_load_remove_clear_and_open() {
 }
 
 #[test]
+fn search_palette_recents_cache_serves_ttl_and_invalidates_on_mutations() {
+    // Desktop `loadRecent` caches the list 10s (failed loads too) and
+    // `invalidateRecent` drops the cache after open/remove/clear. The
+    // TUI mirrors both: within the TTL a reopen serves the cached rows
+    // without touching the server; the mutations invalidate so the
+    // next open refetches.
+    let (api_socket, _stop_backend) = fake_backend_socket();
+    let (port, _open_requests) = fake_recents_server(vec![json!({ "path": "/cached" })]);
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new(api_socket.clone(), api_socket),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", port),
+    );
+    app.snapshot = fixture_snapshot();
+    let ctrl_b = ctrl('b');
+
+    // First open fetches.
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.recents.len(), 1);
+    assert!(app.search_palette.recents_fetched_at.is_some());
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    // Reopen inside the TTL: cached rows, no refetch. Simulate the
+    // server changing the list underneath: a fresh fetch would show
+    // zero rows (the fake was seeded with one entry only and nothing
+    // removed it), so assert the cached rows survive unchanged and the
+    // fetch stamp stays put.
+    let stamp = app.search_palette.recents_fetched_at;
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.recents.len(), 1, "cached rows served");
+    assert_eq!(
+        app.search_palette.recents_fetched_at, stamp,
+        "no refetch inside the TTL"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+
+    // Invalidate (as remove/clear/open do) forces the next open to
+    // refetch: the stamp moves.
+    app.search_palette.invalidate_recents();
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.recents.len(), 1);
+    assert_ne!(
+        app.search_palette.recents_fetched_at, stamp,
+        "invalidation forces a refetch"
+    );
+}
+
+#[test]
 fn tui_created_workspaces_and_opened_worktrees_record_recents() {
     // Desktop records every created workspace (fire-and-forget POST
     // after the create) and every worktree open (`/api/worktrees/open`

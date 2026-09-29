@@ -84,17 +84,28 @@ Panel/workspace management:
    from the desktop: fetches commit on Enter (not the desktop's 180ms
    debounce per keystroke; a synchronous per-key request would stall
    TUI typing) and result caps fit the overlay (12 file / 8 content
-   rows vs the desktop's paged 100/50). A third deviation: the TUI
-   resets the cursor to row 0 on every keystroke while the desktop
-   keeps `selectedIndex` across re-renders (clamping only when out
-   of range); TUI-acceptable, documented here.
+   rows vs the desktop's paged 100/50). (An earlier revision listed
+   the cursor reset-to-0 on every keystroke as a third deviation;
+   the desktop `scheduleSearch` also resets `selectedIndex = 0` on
+   every input event, so the TUI behavior is parity, not a
+   deviation.)
 
    Recents parity: opening the palette also loads the desktop
    `Recent workspaces` section from `GET /api/recent-workspaces`
    (best effort; a failed load clears the section and notes it in the
-   status line without blocking the palette). The desktop caches the
-   list 10s client-side (`loadRecent`) including failed loads; the TUI
-   refetches on every palette open instead, which is always fresh.
+   status line without blocking the palette). Like the desktop's
+   `loadRecent`, the palette caches the list 10s client-side
+   (including failed loads, so a dead server is not retried on every
+   open) and open/remove/clear invalidate the cache
+   (`invalidateRecent` parity). The TUI `WebApiClient` also
+   authenticates now: a first 401 triggers a `POST /api/login` with
+   the `user`/`password` from the same `webui-settings.json` the bind
+   discovery reads, the session cookie is cached and sent on every
+   later call, with exactly one retry (the desktop browser carries
+   the cookie transparently). `localhost_no_auth` servers never 401,
+   so the default local setup is unchanged. Remaining caveat: when
+   the settings file has no credentials the 401 surfaces as an error,
+   consistent with every other WebUI-API failure mode.
    Recent rows list above the local candidates, filter with the
    query, dim already-open paths (`(already open)` hint) and refuse
    navigation on them.
@@ -123,9 +134,11 @@ Panel/workspace management:
    `recentWorkspaceIsOpen` also cross-checks linked worktree paths
    (`state.worktrees` with `open_workspace_id`), but every open
    worktree also appears as a workspace with that cwd, so the TUI
-   check stays sufficient. Known caveat: the TUI `WebApiClient`
-   sends no auth headers, so these endpoints 401 when server auth is
-   enabled, consistent with every other TUI WebUI-API call.
+   check stays sufficient. The TUI `WebApiClient` authenticates like
+   the desktop (401 → login from `webui-settings.json` credentials,
+   cached session cookie), so these endpoints work with server auth
+   enabled; without credentials in the settings the 401 surfaces as
+   an error, consistent with every other TUI WebUI-API failure mode.
 6. No settings screen; no shortcut help overlay parity for the new keys.
 
    Closed: prefix `S` (settings) and prefix `?` (help) ship, the help

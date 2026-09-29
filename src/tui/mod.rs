@@ -1168,6 +1168,10 @@ impl TuiApp {
                     .web_api
                     .open_recent_workspace(path, label.as_deref())
                     .map_err(|err| err.to_string())?;
+                // Desktop invalidates the recents cache after an open
+                // (`invalidateRecent`), so the next palette open refetches
+                // instead of serving the stale order.
+                self.search_palette.invalidate_recents();
                 self.refresh().map_err(|err| err.to_string())?;
                 // Land on the reopened workspace like the desktop go()
                 // navigation: the response carries the workspace plus its
@@ -1837,6 +1841,9 @@ impl TuiApp {
                 self.search_palette
                     .recents
                     .retain(|recent| recent.path != path);
+                // Desktop invalidates the cache after a remove so the
+                // next open refetches the pruned list.
+                self.search_palette.invalidate_recents();
                 self.search_palette.refresh_local(&self.snapshot);
                 self.status = format!("removed recent: {path}");
             }
@@ -1850,6 +1857,8 @@ impl TuiApp {
         match self.web_api.clear_recent_workspaces() {
             Ok(_) => {
                 self.search_palette.recents.clear();
+                // Desktop invalidates the cache after a clear.
+                self.search_palette.invalidate_recents();
                 self.search_palette.refresh_local(&self.snapshot);
                 self.status = "recent workspaces cleared".to_string();
             }

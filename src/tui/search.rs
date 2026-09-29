@@ -24,6 +24,7 @@
 //!   Files screen search remains the paginated interface).
 
 use serde_json::Value;
+use std::time::Duration;
 
 use crate::tui::model::{value_str, TuiSnapshot};
 use crate::tui::web_api::{WebApiClient, WebApiError};
@@ -37,6 +38,9 @@ const MAX_CONTENT_RESULTS: usize = 8;
 /// Cap on recent-workspace rows (desktop `recentWorkspaceCandidates`
 /// `slice(0, 8)`).
 const MAX_RECENT_RESULTS: usize = 8;
+/// Desktop `loadRecent` caches the recents list (including failed
+/// loads) for 10s; the palette refetches only outside that window.
+const RECENTS_CACHE_TTL: Duration = Duration::from_secs(10);
 
 /// One server-persisted recent workspace (desktop recent-workspaces
 /// section, `/api/recent-workspaces`). Path is the reopen target;
@@ -203,6 +207,10 @@ pub struct SearchPalette {
     /// Server-persisted recent workspaces (desktop Recent workspaces
     /// section), loaded on open and kept until the palette closes.
     pub recents: Vec<RecentWorkspace>,
+    /// When the recents fetch last happened (desktop `recentCache`
+    /// stamps failed loads too, so a dead server is not retried for
+    /// 10s). `None` means no fetch ran yet.
+    pub recents_fetched_at: Option<std::time::Instant>,
 }
 
 impl SearchPalette {
@@ -215,13 +223,28 @@ impl SearchPalette {
     }
 
     /// Load the recent workspaces through `/api/recent-workspaces`
-    /// (desktop `loadRecentWorkspaces` on palette open). Best effort:
-    /// a failed fetch keeps an empty section instead of blocking the
-    /// palette.
+    /// (desktop `loadRecent`): a fetch inside the 10s window returns the
+    /// cached rows without a request; every other fetch refreshes the
+    /// cache, including failed ones (desktop `loadRecent` caches the
+    /// empty list on failure too, so a dead server is not hammered on
+    /// every palette open). Best effort by design.
     pub fn load_recents(&mut self, api: &WebApiClient) -> Result<(), WebApiError> {
-        let data = api.recent_workspaces()?;
+        if let Some(at) = self.recents_fetched_at {
+            if at.elapsed() < RECENTS_CACHE_TTL {
+                return Ok(());
+            }
+        }
+        let result = api.recent_workspaces();
+        self.recents_fetched_at = Some(std::time::Instant::now());
+        let data = result?;
         self.recents = parse_recent_workspaces(&data);
         Ok(())
+    }
+
+    /// Drop the recents cache (desktop `invalidateRecent` after an
+    /// open/remove/clear so the next palette open refetches).
+    pub fn invalidate_recents(&mut self) {
+        self.recents_fetched_at = None;
     }
 
     /// Recent rows for the current query (desktop
