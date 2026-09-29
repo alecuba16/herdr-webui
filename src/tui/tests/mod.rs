@@ -3644,6 +3644,47 @@ fn fake_recents_server(
 }
 
 #[test]
+fn search_palette_recents_unavailable_keeps_palette_usable() {
+    // Desktop `loadRecentWorkspaces` swallows a failed load (empty
+    // list, palette unaffected). The TUI must do the same: with the
+    // WebUI API at a dead port, opening the palette notes the failure
+    // in the status line, clears the recents section, and still
+    // lists the local candidates for navigation.
+    let (api_socket, _stop_backend) = fake_backend_socket();
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new(api_socket.clone(), api_socket),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.snapshot = fixture_snapshot();
+    let ctrl_b = ctrl('b');
+
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.mode, TuiMode::SearchPalette, "palette opens despite the failed recents load");
+    assert!(app.search_palette.recents.is_empty(), "failed load clears the section");
+    assert!(
+        app.status.starts_with("recents unavailable"),
+        "status notes the failure: {}",
+        app.status
+    );
+    // The palette stays usable: typing filters the local candidates.
+    let query = fixture_snapshot()
+        .workspaces
+        .first()
+        .map(|ws| ws.label.chars().next().unwrap().to_string())
+        .unwrap_or_else(|| "w".to_string());
+    app.handle_key(KeyEvent::from(KeyCode::Char(query.chars().next().unwrap())));
+    assert_eq!(
+        app.mode,
+        TuiMode::SearchPalette,
+        "typing still filters instead of closing"
+    );
+    assert_eq!(app.search_palette.query, query);
+}
+
+#[test]
 fn search_palette_recents_load_remove_clear_and_open() {
     // Fake backend answers ping/snapshot; the fixture workspace cwd is
     // /repo, so the /repo recent must render disabled while /side stays

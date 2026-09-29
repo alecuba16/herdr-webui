@@ -95,6 +95,9 @@ Panel/workspace management:
    status line without blocking the palette). Recent rows list above
    the local candidates, filter with the query, dim already-open
    paths (`(already open)` hint) and refuse navigation on them.
+   (The desktop's `Actions` section — the HerdrActionRegistry rows —
+   stays webui-only; the TUI palette has no action registry, so its
+   rows are recents plus local/fetched candidates only.)
    `Ctrl+X` removes the selected recent server-side, `Ctrl+Shift+X`
    clears the whole list, and `Enter` on an openable recent reopens
    it through `POST /api/recent-workspaces` and lands on its focused

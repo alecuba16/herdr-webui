@@ -1795,22 +1795,27 @@ impl TuiApp {
         // opens (`loadRecentWorkspaces`). Best effort: without the WebUI
         // server the palette stays open and usable for local navigation,
         // matching how the desktop tolerates a failed recents load.
+        let mut recents_error = None;
         match self.search_palette.load_recents(&self.web_api) {
             Ok(()) => {}
             Err(err) => {
                 self.search_palette.recents.clear();
-                self.status = format!("recents unavailable: {err}");
+                recents_error = Some(format!("recents unavailable: {err}"));
             }
         }
         // Show the recents immediately (empty query lists the recent
         // section, the desktop counterpart of opening the palette).
         self.search_palette.refresh_local(&self.snapshot);
-        if self.mode == TuiMode::SearchPalette {
-            self.status = "search: type query".to_string();
-            return;
+        if self.mode != TuiMode::SearchPalette {
+            self.open_overlay(TuiMode::SearchPalette);
         }
-        self.open_overlay(TuiMode::SearchPalette);
-        self.status = "search: type query".to_string();
+        // The failure note survives: it is the one signal the user
+        // gets that the recents section is empty because the load
+        // failed, not because there are no recents.
+        self.status = match recents_error {
+            Some(note) => note,
+            None => "search: type query".to_string(),
+        };
     }
 
     /// Close the search palette and restore the previous mode.
