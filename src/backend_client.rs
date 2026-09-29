@@ -531,6 +531,18 @@ fn safe_socket_component(value: &str) -> String {
     }
 }
 
+/// Unique scratch path for test fakes (local-socket listeners, temp
+/// files). Process id plus a global atomic counter: unlike a clock
+/// timestamp this cannot collide between two test threads that mint
+/// paths within the same nanosecond (macOS clocks resolve to ~1us, and
+/// a collision with `try_overwrite` steals the other listener).
+pub fn unique_test_path(prefix: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{prefix}-{}-{seq}.sock", std::process::id(),))
+}
+
 fn short_socket_hash(value: &str) -> String {
     Sha256::digest(value.as_bytes())
         .iter()

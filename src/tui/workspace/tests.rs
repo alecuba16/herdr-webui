@@ -394,14 +394,7 @@ fn workspace_fake_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) 
     use interprocess::TryClone as _;
     use std::io::{BufRead, BufReader, Write};
 
-    let path = std::env::temp_dir().join(format!(
-        "herdr-workspace-fake-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    ));
+    let path = crate::backend_client::unique_test_path("herdr-workspace-fake");
     let _ = std::fs::remove_file(&path);
     let listener = ListenerOptions::new()
         .name(path.clone().to_fs_name::<GenericFilePath>().unwrap())

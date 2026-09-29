@@ -211,14 +211,7 @@ impl Drop for ChildGuard {
 
 #[test]
 fn tui_binary_interactive_loop_pty() {
-    let path = std::env::temp_dir().join(format!(
-        "herdr-tui-pty-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let path = herdr_webui::backend_client::unique_test_path("herdr-tui-pty");
     let _ = std::fs::remove_file(&path);
     let stop = serve_fake_backend(&path);
 
@@ -368,14 +361,7 @@ fn tui_binary_worktree_browser_and_picker_pty() {
     std::fs::create_dir_all(&sub_beta).unwrap();
     let root_path = root.to_string_lossy().to_string();
 
-    let path = std::env::temp_dir().join(format!(
-        "herdr-tui-pty-browser-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let path = herdr_webui::backend_client::unique_test_path("herdr-tui-pty-browser");
     let _ = std::fs::remove_file(&path);
     let stop = serve_fake_backend_at(&path, &root_path);
 

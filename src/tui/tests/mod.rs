@@ -2259,14 +2259,7 @@ fn fake_backend_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
     use interprocess::TryClone as _;
     use std::io::{BufRead, BufReader, Write};
 
-    let path = std::env::temp_dir().join(format!(
-        "herdr-tui-fake-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    ));
+    let path = crate::backend_client::unique_test_path("herdr-tui-fake");
     let _ = std::fs::remove_file(&path);
     let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new()
@@ -2327,14 +2320,7 @@ fn fake_backend_socket_failing_snapshots() -> (std::path::PathBuf, std::sync::mp
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
     use std::io::{BufRead, BufReader, Write};
 
-    let path = std::env::temp_dir().join(format!(
-        "herdr-tui-fake-nosnap-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    ));
+    let path = crate::backend_client::unique_test_path("herdr-tui-fake-nosnap");
     let _ = std::fs::remove_file(&path);
     let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new()
