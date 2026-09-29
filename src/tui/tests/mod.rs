@@ -3538,10 +3538,7 @@ fn files_and_git_panel_error_arms_surface_to_status() {
 /// calls (file/content search) stay harmless.
 fn fake_recents_server(
     initial: Vec<serde_json::Value>,
-) -> (
-    u16,
-    std::sync::mpsc::Receiver<serde_json::Value>,
-) {
+) -> (u16, std::sync::mpsc::Receiver<serde_json::Value>) {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::{Arc, Mutex};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -3557,7 +3554,11 @@ fn fake_recents_server(
                 if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
                     continue;
                 }
-                let target = request_line.split(' ').nth(1).unwrap_or_default().to_string();
+                let target = request_line
+                    .split(' ')
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
                 let mut content_length = 0usize;
                 loop {
                     let mut header = String::new();
@@ -3568,9 +3569,8 @@ fn fake_recents_server(
                     if trimmed.is_empty() {
                         break;
                     }
-                    if let Some(value) = trimmed
-                        .to_ascii_lowercase()
-                        .strip_prefix("content-length:")
+                    if let Some(value) =
+                        trimmed.to_ascii_lowercase().strip_prefix("content-length:")
                     {
                         content_length = value.trim().parse().unwrap_or(0);
                     }
@@ -3590,7 +3590,11 @@ fn fake_recents_server(
             let response = if target == "/api/recent-workspaces" {
                 // POST re-records the opened path (top of the list);
                 // GET returns the current list.
-                if body.get("path").and_then(serde_json::Value::as_str).is_some() {
+                if body
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+                {
                     let _ = tx.send(body.clone());
                     let mut list = recents.lock().unwrap();
                     let path = body["path"].as_str().unwrap().to_string();
@@ -3662,8 +3666,15 @@ fn search_palette_recents_unavailable_keeps_palette_usable() {
 
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('/')));
-    assert_eq!(app.mode, TuiMode::SearchPalette, "palette opens despite the failed recents load");
-    assert!(app.search_palette.recents.is_empty(), "failed load clears the section");
+    assert_eq!(
+        app.mode,
+        TuiMode::SearchPalette,
+        "palette opens despite the failed recents load"
+    );
+    assert!(
+        app.search_palette.recents.is_empty(),
+        "failed load clears the section"
+    );
     assert!(
         app.status.starts_with("recents unavailable"),
         "status notes the failure: {}",
@@ -3722,7 +3733,10 @@ fn search_palette_recents_load_remove_clear_and_open() {
     // Desktop `renderSearchPalette` snaps the cursor off disabled rows:
     // the selection lands on the openable /side, not the disabled
     // /repo at index 0.
-    assert_eq!(app.search_palette.selected, 1, "cursor skips the disabled recent");
+    assert_eq!(
+        app.search_palette.selected, 1,
+        "cursor skips the disabled recent"
+    );
 
     // The disabled row renders with the hint; the openable row keeps
     // its title and worktree subtitle.
@@ -3778,7 +3792,8 @@ fn search_palette_recents_load_remove_clear_and_open() {
     // reopen the palette on a second fake preloaded with /side.
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     drop(open_requests);
-    let (port2, open_requests2) = fake_recents_server(vec![json!({ "path": "/side", "kind": "worktree" })]);
+    let (port2, open_requests2) =
+        fake_recents_server(vec![json!({ "path": "/side", "kind": "worktree" })]);
     app.web_api = WebApiClient::new("127.0.0.1", port2);
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('/')));
@@ -3863,7 +3878,8 @@ fn rename_panel_prompt_prefills_current_label_like_desktop() {
     point_web_api_at_dead_port(&mut app);
     app.run_shortcut(Shortcut::RenamePanel);
     assert_eq!(
-        app.prompt_input.as_ref().unwrap().text, "",
+        app.prompt_input.as_ref().unwrap().text,
+        "",
         "Shell is a default title, prefill stays empty"
     );
     app.prompt_input = None;
@@ -6341,7 +6357,11 @@ fn search_palette_boundary_and_regression_checks() {
     assert!(app.search_palette.committed);
     assert!(app.search_palette.results.is_empty());
     app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert_eq!(app.mode, TuiMode::SearchPalette, "no-row Enter keeps the palette open");
+    assert_eq!(
+        app.mode,
+        TuiMode::SearchPalette,
+        "no-row Enter keeps the palette open"
+    );
     assert_eq!(app.status, "search: no matching rows");
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert_eq!(app.mode, TuiMode::Navigate, "Esc closes the palette");

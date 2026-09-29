@@ -1056,11 +1056,8 @@ impl TuiApp {
                         // Desktop disabled rows refuse navigation with a
                         // visible hint; the TUI keeps the palette open
                         // and explains in the status line.
-                        if let search::SearchCandidate::Recent { is_open: true, .. } =
-                            &candidate
-                        {
-                            self.status =
-                                "recent workspace already open".to_string();
+                        if let search::SearchCandidate::Recent { is_open: true, .. } = &candidate {
+                            self.status = "recent workspace already open".to_string();
                             return;
                         }
                         self.close_search_palette();
@@ -1184,10 +1181,8 @@ impl TuiApp {
                     .or_else(|| Self::recent_open_field(result, "workspace_id"))
                     .unwrap_or_default()
                     .to_string();
-                let tab_id = Self::recent_open_field(
-                    result.and_then(|result| result.get("tab")),
-                    "tab_id",
-                );
+                let tab_id =
+                    Self::recent_open_field(result.and_then(|result| result.get("tab")), "tab_id");
                 let pane_id = Self::recent_open_field(
                     result.and_then(|result| result.get("root_pane")),
                     "pane_id",
@@ -1202,10 +1197,7 @@ impl TuiApp {
     /// Read a non-empty string field from a `worktree.open`-shaped
     /// result object (the recent-open response nests workspace, tab,
     /// and root_pane objects; missing or empty fields stay None).
-    fn recent_open_field<'a>(
-        parent: Option<&'a Value>,
-        key: &str,
-    ) -> Option<&'a str> {
+    fn recent_open_field<'a>(parent: Option<&'a Value>, key: &str) -> Option<&'a str> {
         let value = parent?.get(key)?;
         match value.as_str() {
             Some(text) if !text.is_empty() => Some(text),
@@ -3126,16 +3118,12 @@ mod recent_open_tests {
             .or_else(|| TuiApp::recent_open_field(result, "workspace_id"))
             .unwrap_or_default()
             .to_string();
-        let tab_id = TuiApp::recent_open_field(
-            result.and_then(|result| result.get("tab")),
-            "tab_id",
-        )
-        .map(str::to_string);
-        let pane_id = TuiApp::recent_open_field(
-            result.and_then(|result| result.get("root_pane")),
-            "pane_id",
-        )
-        .map(str::to_string);
+        let tab_id =
+            TuiApp::recent_open_field(result.and_then(|result| result.get("tab")), "tab_id")
+                .map(str::to_string);
+        let pane_id =
+            TuiApp::recent_open_field(result.and_then(|result| result.get("root_pane")), "pane_id")
+                .map(str::to_string);
         (workspace_id, tab_id, pane_id)
     }
 

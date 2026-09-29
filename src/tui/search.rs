@@ -106,7 +106,12 @@ impl RecentWorkspace {
 pub fn parse_recent_workspaces(data: &Value) -> Vec<RecentWorkspace> {
     data.get("recent")
         .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(RecentWorkspace::from_json).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(RecentWorkspace::from_json)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -232,7 +237,8 @@ impl SearchPalette {
             .iter()
             .filter(|recent| {
                 needle.is_empty() || {
-                    let haystack = format!("{} {}", recent.title(), recent.subtitle()).to_lowercase();
+                    let haystack =
+                        format!("{} {}", recent.title(), recent.subtitle()).to_lowercase();
                     haystack.contains(&needle)
                 }
             })
@@ -271,11 +277,7 @@ impl SearchPalette {
         // render (`renderSearchPalette`): snap to the first
         // selectable row, or 0 when none qualify.
         if self.selected_is_disabled() {
-            self.selected = self
-                .selectable_indices()
-                .first()
-                .copied()
-                .unwrap_or(0);
+            self.selected = self.selectable_indices().first().copied().unwrap_or(0);
         }
         self.committed = false;
     }
@@ -311,10 +313,7 @@ impl SearchPalette {
             .iter()
             .enumerate()
             .filter(|(_, candidate)| {
-                !matches!(
-                    candidate,
-                    SearchCandidate::Recent { is_open: true, .. }
-                )
+                !matches!(candidate, SearchCandidate::Recent { is_open: true, .. })
             })
             .map(|(index, _)| index)
             .collect()
@@ -767,8 +766,14 @@ mod tests {
         // local candidates stay empty until something is typed.
         palette.refresh_local(&snap);
         assert_eq!(palette.results.len(), 2);
-        assert!(matches!(&palette.results[0], SearchCandidate::Recent { is_open: true, .. }));
-        assert!(matches!(&palette.results[1], SearchCandidate::Recent { is_open: false, .. }));
+        assert!(matches!(
+            &palette.results[0],
+            SearchCandidate::Recent { is_open: true, .. }
+        ));
+        assert!(matches!(
+            &palette.results[1],
+            SearchCandidate::Recent { is_open: false, .. }
+        ));
 
         // Typing filters recents and locals together: "rep" keeps the
         // open /repo recent (disabled rows stay visible like the desktop)
@@ -780,10 +785,10 @@ mod tests {
             candidate,
             SearchCandidate::Recent { path, .. } if path == "/repo"
         )));
-        assert!(palette.results.iter().any(|candidate| matches!(
-            candidate,
-            SearchCandidate::Workspace { .. }
-        )));
+        assert!(palette
+            .results
+            .iter()
+            .any(|candidate| matches!(candidate, SearchCandidate::Workspace { .. })));
         // The non-matching recent is gone.
         assert!(!palette.results.iter().any(|candidate| matches!(
             candidate,

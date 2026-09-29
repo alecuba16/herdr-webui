@@ -90,8 +90,7 @@ impl TuiApp {
         // Webui `selectRelativePanel` wraps around the tab list
         // (`(current + delta + tabs.length) % tabs.length`), so the
         // panel cursor cycles instead of sticking at the edges.
-        let next =
-            (current as isize + delta).rem_euclid(len as isize) as usize;
+        let next = (current as isize + delta).rem_euclid(len as isize) as usize;
         let tab_id = tabs[next].id.clone();
         // tab.focus is not exposed as a dedicated backend method; the
         // focused tab follows the pane focus in the snapshot refresh.
@@ -118,8 +117,7 @@ impl TuiApp {
 
     /// Pane id of the agent row the sidebar has selected, if any.
     fn selected_agent_pane_id(&self) -> Option<String> {
-        self.selected_agent()
-            .map(|agent| agent.pane_id.clone())
+        self.selected_agent().map(|agent| agent.pane_id.clone())
     }
 
     /// Webui `newWorkspace` one-shot: validate the typed path and create

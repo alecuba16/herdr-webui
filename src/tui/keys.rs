@@ -310,7 +310,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B w", "browse worktrees/folders, Enter opens"),
         ("Ctrl+B Shift+T", "create worktree (branch, then path)"),
         ("Ctrl+B Del", "remove linked worktree"),
-        ("Ctrl+B /", "search palette: Enter opens, Ctrl+X removes a recent"),
+        (
+            "Ctrl+B /",
+            "search palette: Enter opens, Ctrl+X removes a recent",
+        ),
         ("Ctrl+B q", "quit (y confirms, Esc stays)"),
         ("Ctrl+B Shift+B", "collapse/expand the sidebar"),
         ("Ctrl+B . ,", "focus next/prev region (sidebar/main)"),
