@@ -3813,6 +3813,32 @@ fn search_palette_recents_load_remove_clear_and_open() {
         .expect("open POST reached the server");
     assert_eq!(posted["path"], "/side");
     assert!(posted.get("label").is_none_or(|v| v.is_null()));
+
+    // A recent WITH a recorded label travels with the open POST like
+    // the desktop openRecentWorkspace(path, label) round trip: the
+    // label key is present and carries the custom name, so the server
+    // re-records it (only a null label keeps the backend naming).
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    drop(open_requests2);
+    let (port3, open_requests3) =
+        fake_recents_server(vec![json!({ "path": "/labored", "label": "custom name" })]);
+    app.web_api = WebApiClient::new("127.0.0.1", port3);
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.recents.len(), 1);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_ne!(
+        app.mode,
+        TuiMode::SearchPalette,
+        "labeled open navigates away"
+    );
+    assert!(app.error.is_none(), "labeled open flow: {:?}", app.error);
+    let posted = open_requests3
+        .recv_timeout(Duration::from_secs(5))
+        .expect("labeled open POST reached the server");
+    assert_eq!(posted["path"], "/labored");
+    assert_eq!(posted["label"], "custom name");
 }
 
 /// HTTP fake serving only the rename/delete/read endpoints: every tree
