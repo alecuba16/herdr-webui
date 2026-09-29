@@ -72,6 +72,42 @@ pub(super) fn parse_diff_path(raw: &str) -> Option<String> {
     Some(path.replace("\\t", "\t").replace("\\\"", "\""))
 }
 
+/// Socket transport for diff/compare: shares arg building with the HTTP
+/// handler, then runs the blocking part inline (the BB dispatch thread is
+/// already a blocking context).
+pub(super) fn socket_diff(
+    params: serde_json::Value,
+    compare: bool,
+) -> Result<serde_json::Value, String> {
+    let query: GitUiDiffQuery =
+        serde_json::from_value(params).map_err(|err| format!("invalid parameters: {err}"))?;
+    let args = git_ui_diff_args(&query, compare).map_err(|err| err.to_string())?;
+    let root_parent_base = if compare {
+        query
+            .base
+            .as_deref()
+            .and_then(|base| base.trim().strip_suffix('^'))
+            .map(str::to_string)
+    } else {
+        None
+    };
+    let cwd = query.cwd.unwrap_or_default();
+    let mut args = args;
+    if let Some(commit) = root_parent_base.as_deref() {
+        if let Ok(Some(empty_tree)) = root_parent_fallback(&cwd, commit) {
+            let base = format!("{commit}^");
+            if let Some(index) = args.iter().position(|arg| arg == &base) {
+                args[index] = empty_tree;
+                if let Some(index) = args.iter().position(|arg| arg.as_str() == "--merge-base") {
+                    args.remove(index);
+                }
+            }
+        }
+    }
+    let text = git_ui_text_strings(&cwd, &args)?;
+    Ok(json!({ "files": parse_unified_diff(&text) }))
+}
+
 pub(super) fn parse_unified_diff(text: &str) -> Vec<GitDiffFile> {
     let mut files = Vec::new();
     for block in text.split("\ndiff --git ") {

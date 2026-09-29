@@ -1,13 +1,20 @@
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use interprocess::local_socket::traits::Stream as _;
 use interprocess::local_socket::Stream as LocalStream;
 use interprocess::TryClone as _;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::protocol::{read_message, write_message, ClientMessage, ServerMessage, TerminalFrame};
+
+/// Upper bound for one control-socket request. The TUI calls these from its
+/// render loop; without a bound a hung backend (accepts connect, never
+/// responds) freezes the whole UI forever.
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Client-side API intended for a future first-party TUI or smoke CLI.
 ///
@@ -92,6 +99,15 @@ impl BackendClient {
 
     pub fn request_raw(&self, request: Value) -> Result<Value, BackendClientError> {
         let mut stream = connect_local_stream(&self.api_socket)?;
+        // A hung backend that accepts the socket but never responds would
+        // otherwise block the caller forever (the TUI render loop freezes on
+        // its refresh tick). Bound every control request with a read timeout.
+        stream
+            .set_recv_timeout(Some(DEFAULT_REQUEST_TIMEOUT))
+            .map_err(BackendClientError::Io)?;
+        stream
+            .set_send_timeout(Some(DEFAULT_REQUEST_TIMEOUT))
+            .map_err(BackendClientError::Io)?;
         stream.write_all(serde_json::to_string(&request)?.as_bytes())?;
         stream.write_all(b"\n")?;
         stream.flush()?;

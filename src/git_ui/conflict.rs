@@ -5,7 +5,7 @@ use std::process::Command;
 
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
@@ -32,7 +32,9 @@ pub(super) struct GitUiConflictActionRequest {
     pub(super) action: String,
 }
 
-fn git_ui_conflicts_blocking(cwd: String) -> Result<Response, (StatusCode, String)> {
+pub(super) fn git_ui_conflicts_blocking(
+    cwd: String,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let mut warnings: Vec<String> = Vec::new();
     let files = match git_ui_text(&cwd, &["diff", "--name-only", "--diff-filter=U"]) {
         Ok(text) => text.lines().map(ToOwned::to_owned).collect::<Vec<_>>(),
@@ -53,8 +55,9 @@ fn git_ui_conflicts_blocking(cwd: String) -> Result<Response, (StatusCode, Strin
     let rebase_apply = git_ui_text(&cwd, &["rev-parse", "--git-path", "rebase-apply"])
         .ok()
         .is_some_and(|path| Path::new(&repo).join(path.trim()).exists());
-    Ok(Json(json!({ "files": files, "merge": merge, "rebase": rebase_merge || rebase_apply, "warnings": warnings }))
-        .into_response())
+    Ok(
+        json!({ "files": files, "merge": merge, "rebase": rebase_merge || rebase_apply, "warnings": warnings }),
+    )
 }
 
 pub(super) async fn git_ui_conflicts(
@@ -71,12 +74,12 @@ pub(super) async fn git_ui_conflicts(
     git_spawn(move || git_ui_conflicts_blocking(cwd)).await
 }
 
-fn git_ui_conflict_resolve_blocking(
+pub(super) fn git_ui_conflict_resolve_blocking(
     cwd: String,
     path: String,
     mode: String,
     content: Option<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let result = match mode.as_str() {
         "ours" => git_ui_text(&cwd, &["checkout", "--ours", "--", &path])
             .and_then(|_| git_ui_text(&cwd, &["add", "--", &path])),
@@ -98,7 +101,7 @@ fn git_ui_conflict_resolve_blocking(
         _ => Err("invalid conflict resolve mode".to_string()),
     };
     match result {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -148,17 +151,17 @@ pub(super) async fn git_ui_conflict_resolve(
     git_spawn(move || git_ui_conflict_resolve_blocking(cwd, path, mode, content)).await
 }
 
-fn git_ui_conflict_action_blocking(
+pub(super) fn git_ui_conflict_action_blocking(
     cwd: String,
     args: Vec<&'static str>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     match git_ui_text(&cwd, &args) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
 
-fn conflict_action_args(action: &str) -> Option<Vec<&'static str>> {
+pub(super) fn conflict_action_args(action: &str) -> Option<Vec<&'static str>> {
     Some(match action {
         "merge-abort" => vec!["merge", "--abort"],
         "merge-continue" => vec!["merge", "--continue"],

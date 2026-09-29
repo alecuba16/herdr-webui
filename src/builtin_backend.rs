@@ -762,10 +762,52 @@ impl BuiltinState {
             "worktree.list" => self.worktree_list(optional_string(&params, "cwd")),
             "worktree.open" => self.worktree_open(params),
             "worktree.create" => self.worktree_create(params),
-            "worktree.remove" => Err(
-                "built-in backend does not implement worktree.remove yet; use remove-path fallback"
-                    .to_string(),
-            ),
+            "worktree.remove" => self.worktree_remove(params),
+            // The TUI git/file panels run over the socket instead of the
+            // HTTP API: the dispatch lives with the handlers themselves so
+            // validation stays single-sourced between both transports.
+            "git.status"
+            | "git.diff"
+            | "git.compare"
+            | "git.branches"
+            | "git.branch.delete"
+            | "git.switch"
+            | "git.log"
+            | "git.path_info"
+            | "git.permalink"
+            | "git.blame"
+            | "git.file"
+            | "git.file_write"
+            | "git.file_history"
+            | "git.stashes"
+            | "git.stash_show"
+            | "git.conflicts"
+            | "git.stage"
+            | "git.unstage"
+            | "git.discard"
+            | "git.stash"
+            | "git.stash_apply"
+            | "git.stash_drop"
+            | "git.reset"
+            | "git.rebase"
+            | "git.fetch"
+            | "git.pull"
+            | "git.push"
+            | "git.commit"
+            | "git.tag"
+            | "git.apply_patch"
+            | "git.conflict_resolve"
+            | "git.conflict_action"
+            | "git.cleanup_scan"
+            | "git.worktree_remove"
+            | "git.worktree_prune" => crate::git_ui::socket_dispatch(method, params),
+            "file.tree"
+            | "file.read"
+            | "file.write"
+            | "file.content_search"
+            | "file.content_search_file"
+            | "file.rename"
+            | "file.delete" => crate::file_browser::socket_dispatch(method, params),
             "pane.read" => {
                 let pane_id = required_string(&params, "pane_id")?;
                 let text = self.read_pane_recent(&pane_id)?;
@@ -1551,6 +1593,37 @@ impl BuiltinState {
             "worktree": { "path": path, "branch": optional_string(&params, "branch"), "is_bare": false, "is_detached": false, "is_prunable": false, "is_linked_worktree": true, "open_workspace_id": workspace_id, "label": workspace_id },
             "already_open": already_open,
         }))
+    }
+
+    /// Remove a git worktree from its repo. Mirrors the WebUI
+    /// /api/worktrees/remove-path semantics: `repo_root` scopes the git
+    /// invocation, `path` is the worktree directory to remove, `force`
+    /// maps to `git worktree remove --force`. Emits `worktree.removed`.
+    fn worktree_remove(&self, params: Value) -> Result<Value, String> {
+        let repo_root = optional_string(&params, "repo_root")
+            .or_else(|| optional_string(&params, "cwd"))
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .ok_or_else(|| "repo_root is required".to_string())?;
+        let path = required_string(&params, "path")?;
+        let force = optional_bool(&params, "force").unwrap_or(false);
+        let repo = Path::new(&repo_root);
+        if !repo.is_dir() {
+            return Err(format!("repo_root is not a directory: {}", repo.display()));
+        }
+        let mut args = vec!["worktree", "remove"];
+        if force {
+            args.push("--force");
+        }
+        args.push(&path);
+        run_git(repo, &args)?;
+        let result = json!({
+            "type": "worktree_removed",
+            "path": path,
+            "repo_root": repo.to_string_lossy(),
+        });
+        self.publish_event("worktree.removed", result.clone());
+        Ok(result)
     }
 
     fn worktree_create(&self, params: Value) -> Result<Value, String> {
@@ -7440,7 +7513,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_worktree_remove_reports_unsupported_instead_of_false_success() {
+    fn builtin_worktree_remove_rejects_missing_params() {
         let state = BuiltinState::new(
             std::env::temp_dir(),
             Some(default_shell()),
@@ -7452,7 +7525,168 @@ mod tests {
             .handle_request_inner("worktree.remove", json!({ "workspace_id": "ws_1" }))
             .unwrap_err();
 
-        assert!(err.contains("does not implement worktree.remove"));
+        assert!(
+            err.contains("repo_root") || err.contains("path"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn builtin_worktree_remove_removes_a_real_worktree() {
+        let scratch = std::env::temp_dir().join(format!(
+            "herdr-wt-remove-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo = scratch.join("repo");
+        let worktree = scratch.join("feature-x");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]).unwrap();
+        fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&repo, &["add", "."]).unwrap();
+        run_git(&repo, &["commit", "-q", "-m", "base"]).unwrap();
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature-x",
+                &worktree.to_string_lossy(),
+            ],
+        )
+        .unwrap();
+        assert!(worktree.is_dir());
+
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let result = state
+            .handle_request_inner(
+                "worktree.remove",
+                json!({
+                    "repo_root": repo.to_string_lossy(),
+                    "path": worktree.to_string_lossy(),
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(result["type"], "worktree_removed");
+        assert!(!worktree.exists(), "worktree directory must be gone");
+        let listing = git_output(&repo, &["worktree", "list", "--porcelain"]).unwrap();
+        assert!(!listing.contains("feature-x"));
+        fs::remove_dir_all(&scratch).ok();
+    }
+
+    /// The TUI git/file panels talk to the BB socket: git.* and file.*
+    /// methods must run the real operations, not the unsupported-method
+    /// error the BB used to return for them.
+    #[test]
+    fn builtin_socket_dispatch_runs_git_and_file_ops() {
+        let scratch = std::env::temp_dir().join(format!(
+            "herdr-socket-dispatch-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo = scratch.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]).unwrap();
+        fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&repo, &["add", "."]).unwrap();
+        run_git(&repo, &["config", "user.email", "t@t"]).unwrap();
+        run_git(&repo, &["config", "user.name", "T"]).unwrap();
+        run_git(&repo, &["commit", "-q", "-m", "base"]).unwrap();
+
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let cwd = repo.to_string_lossy().to_string();
+
+        // git.status sees the clean repo
+        let status = state
+            .handle_request_inner("git.status", json!({ "cwd": cwd }))
+            .unwrap();
+        assert!(status["branch"].is_string(), "status payload: {status}");
+
+        // git.stage + git.commit work end to end
+        fs::write(repo.join("new.txt"), "content\n").unwrap();
+        state
+            .handle_request_inner("git.stage", json!({ "cwd": cwd, "paths": ["new.txt"] }))
+            .unwrap();
+        state
+            .handle_request_inner("git.commit", json!({ "cwd": cwd, "title": "add new" }))
+            .unwrap();
+        let log = state
+            .handle_request_inner("git.log", json!({ "cwd": cwd, "scope": "all", "max": 5 }))
+            .unwrap();
+        assert_eq!(log["commits"].as_array().map(Vec::len), Some(2));
+
+        // git.diff for the working tree
+        fs::write(repo.join("new.txt"), "changed\n").unwrap();
+        let diff = state
+            .handle_request_inner("git.diff", json!({ "cwd": cwd, "scope": "working" }))
+            .unwrap();
+        assert_eq!(diff["files"].as_array().map(Vec::len), Some(1));
+
+        // file.tree + file.read + file.write over the socket
+        let tree = state
+            .handle_request_inner("file.tree", json!({ "cwd": cwd, "path": "", "depth": 0 }))
+            .unwrap();
+        assert!(tree["entries"].as_array().is_some(), "tree payload: {tree}");
+        let read = state
+            .handle_request_inner("file.read", json!({ "cwd": cwd, "path": "README.md" }))
+            .unwrap();
+        assert_eq!(read["content"], "base\n");
+        let expected_hash = read["hash"].as_str().unwrap().to_string();
+        let write = state
+            .handle_request_inner(
+                "file.write",
+                json!({
+                    "cwd": cwd,
+                    "path": "README.md",
+                    "content": "updated\n",
+                    "expected_hash": expected_hash,
+                }),
+            )
+            .unwrap();
+        assert_eq!(write["ok"], true);
+        // A stale hash must be rejected, same as over HTTP.
+        let stale = state.handle_request_inner(
+            "file.write",
+            json!({
+                "cwd": cwd,
+                "path": "README.md",
+                "content": "conflict\n",
+                "expected_hash": "stale-hash",
+            }),
+        );
+        assert_eq!(
+            stale.unwrap_err(),
+            "file changed on disk; reload before saving"
+        );
+
+        // validation flows through both dispatch tables
+        let err = state
+            .handle_request_inner("git.status", json!({}))
+            .unwrap_err();
+        assert_eq!(err, "cwd is required");
+        let err = state
+            .handle_request_inner("file.read", json!({ "cwd": cwd, "path": "missing.bin" }))
+            .unwrap_err();
+        assert_eq!(err, "path is not a file");
+
+        fs::remove_dir_all(&scratch).ok();
     }
 
     #[test]

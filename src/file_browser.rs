@@ -14,7 +14,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{expand_user_path_string, home_folder_path, require_auth, WebState};
@@ -60,6 +60,52 @@ pub(crate) fn routes() -> Router<WebState> {
             "/api/file-browser/request-access",
             axum::routing::post(file_browser_request_access),
         )
+}
+
+/// Built-in backend socket dispatch for the file browser: the same
+/// operations as the HTTP routes, minus auth (the BB unix socket is a
+/// trusted local transport). Params reuse the HTTP request structs so
+/// validation can never drift between the two transports.
+pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, String> {
+    fn decode<T: serde::de::DeserializeOwned>(params: &Value) -> Result<T, String> {
+        serde_json::from_value(params.clone()).map_err(|err| format!("invalid parameters: {err}"))
+    }
+    // Strip the HTTP status the payload fns carry; only the message
+    // matters on the socket transport.
+    fn map_status(result: Result<Value, (StatusCode, String)>) -> Result<Value, String> {
+        result.map_err(|(_, message)| message)
+    }
+    match method {
+        "file.tree" => {
+            let query: FileBrowserQuery = decode(&params)?;
+            map_status(file_browser_tree_payload(query))
+        }
+        "file.read" => {
+            let query: FileBrowserQuery = decode(&params)?;
+            map_status(file_browser_file_payload(query))
+        }
+        "file.write" => {
+            let body: FileBrowserWriteRequest = decode(&params)?;
+            map_status(file_browser_write_file_payload(body))
+        }
+        "file.content_search" => {
+            let query: FileContentSearchQuery = decode(&params)?;
+            map_status(file_browser_content_search_payload(query))
+        }
+        "file.content_search_file" => {
+            let query: FileContentSearchQuery = decode(&params)?;
+            map_status(file_browser_content_search_file_payload(query))
+        }
+        "file.rename" => {
+            let body: FileBrowserRenameRequest = decode(&params)?;
+            map_status(file_browser_rename_payload(body))
+        }
+        "file.delete" => {
+            let body: FileBrowserDeleteRequest = decode(&params)?;
+            map_status(file_browser_delete_payload(body))
+        }
+        other => Err(format!("unknown file-browser method: {other}")),
+    }
 }
 
 #[derive(Deserialize)]
@@ -594,10 +640,10 @@ fn applescript_quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn request_file_access_blocking(
+fn request_file_access_payload(
     cwd: String,
     path: Option<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let target = unresolved_child_path(&cwd, path.as_deref())
         .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     let default_folder = if target.is_dir() {
@@ -621,12 +667,11 @@ fn request_file_access_blocking(
             format!("selected folder is not readable: {err}"),
         )
     })?;
-    Ok(Json(json!({
+    Ok(json!({
         "ok": true,
         "path": canonical.to_string_lossy(),
         "message": "Folder access confirmed",
     }))
-    .into_response())
 }
 
 #[cfg(target_os = "macos")]
@@ -1209,29 +1254,28 @@ fn collect_git_status(
     Some(map)
 }
 
-async fn file_browser_tree(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Query(query): Query<FileBrowserQuery>,
-) -> Response {
-    if let Err(response) = file_browser_auth(&state, &headers, remote) {
-        return response;
-    }
+/// Blocking body of the tree endpoint. Runs on a spawn_blocking thread so
+/// directory walks and search visits never stall the async runtime.
+fn file_browser_tree_payload(
+    query: FileBrowserQuery,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let root = match resolve_root(&query.cwd) {
         Ok(root) => root,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let rel = match clean_relative_path(query.path.as_deref()) {
         Ok(rel) => rel,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let dir = match resolve_child(&root, &rel) {
         Ok(dir) => dir,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     if !dir.is_dir() {
-        return file_browser_json_error(StatusCode::BAD_REQUEST, "path is not a directory");
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "path is not a directory".to_string(),
+        ));
     }
     let dirs_only = query.dirs_only.unwrap_or(false);
     let depth = if dirs_only {
@@ -1267,12 +1311,12 @@ async fn file_browser_tree(
             &mut matched,
             search_kind,
         ) {
-            return file_browser_json_error(StatusCode::BAD_GATEWAY, err);
+            return Err((StatusCode::BAD_GATEWAY, err));
         }
     } else if dirs_only {
         for entry in match sorted_directory_entries(&dir) {
             Ok(entries) => entries,
-            Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
+            Err(err) => return Err((StatusCode::BAD_GATEWAY, err)),
         } {
             if build.entries.len() >= MAX_ENTRIES {
                 build.truncated = true;
@@ -1297,14 +1341,14 @@ async fn file_browser_tree(
             });
         }
     } else if let Err(err) = push_tree_entries(&mut build, &dir, 0, depth, depth == 0) {
-        return file_browser_json_error(StatusCode::BAD_GATEWAY, err);
+        return Err((StatusCode::BAD_GATEWAY, err));
     }
     let git_status = if query.include_git_status.unwrap_or(false) {
         collect_git_status(&root, &dir)
     } else {
         None
     };
-    Json(json!({
+    Ok(json!({
         "root": root.to_string_lossy(),
         "home": home_folder_path().to_string_lossy(),
         "path": relative_to_root(&root, &dir),
@@ -1313,7 +1357,22 @@ async fn file_browser_tree(
         "query": search,
         "git_status": git_status,
     }))
-    .into_response()
+}
+
+async fn file_browser_tree(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<FileBrowserQuery>,
+) -> Response {
+    if let Err(response) = file_browser_auth(&state, &headers, remote) {
+        return response;
+    }
+    match tokio::task::spawn_blocking(move || file_browser_tree_payload(query)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err((status, msg))) => file_browser_json_error(status, msg),
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
 }
 
 async fn file_browser_request_access(
@@ -1327,8 +1386,8 @@ async fn file_browser_request_access(
     }
     let cwd = body.cwd;
     let path = body.path;
-    match tokio::task::spawn_blocking(move || request_file_access_blocking(cwd, path)).await {
-        Ok(Ok(response)) => response,
+    match tokio::task::spawn_blocking(move || request_file_access_payload(cwd, path)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
         Ok(Err((status, msg))) => file_browser_json_error(status, msg),
         Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
@@ -1352,20 +1411,25 @@ fn partial_read_budget(max_bytes: Option<u64>) -> Option<u64> {
 /// degrades to U+FFFD once) and marked truncated. The hash is empty on
 /// purpose: a partial view must never satisfy the save path's
 /// expected_hash check.
-fn file_browser_partial_read(file: &Path, rel: &str, size: u64, budget: u64) -> Response {
+fn file_browser_partial_read_payload(
+    file: &Path,
+    rel: &str,
+    size: u64,
+    budget: u64,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let mut handle = match fs::File::open(file) {
         Ok(handle) => handle,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string()),
+        Err(err) => return Err((StatusCode::BAD_GATEWAY, err.to_string())),
     };
     use std::io::Read;
     let take = budget.min(size);
     let mut bytes = Vec::with_capacity(take as usize);
     if let Err(err) = Read::by_ref(&mut handle).take(take).read_to_end(&mut bytes) {
-        return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string());
+        return Err((StatusCode::BAD_GATEWAY, err.to_string()));
     }
     let content = String::from_utf8_lossy(&bytes).into_owned();
     let preview_bytes = bytes.len() as u64;
-    Json(json!({
+    Ok(json!({
         "path": rel,
         "content": content,
         "hash": "",
@@ -1374,37 +1438,31 @@ fn file_browser_partial_read(file: &Path, rel: &str, size: u64, budget: u64) -> 
         "size": size,
         "preview_bytes": preview_bytes,
     }))
-    .into_response()
 }
 
-async fn file_browser_file(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Query(query): Query<FileBrowserQuery>,
-) -> Response {
-    if let Err(response) = file_browser_auth(&state, &headers, remote) {
-        return response;
-    }
+/// Blocking body of the file read endpoint (fs metadata + content + hash).
+fn file_browser_file_payload(
+    query: FileBrowserQuery,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let root = match resolve_root(&query.cwd) {
         Ok(root) => root,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let rel = match clean_relative_path(query.path.as_deref()) {
         Ok(rel) if !rel.is_empty() => rel,
-        Ok(_) => return file_browser_json_error(StatusCode::BAD_REQUEST, "path is required"),
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let file = match resolve_child(&root, &rel) {
         Ok(file) => file,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     if !file.is_file() {
-        return file_browser_json_error(StatusCode::BAD_REQUEST, "path is not a file");
+        return Err((StatusCode::BAD_REQUEST, "path is not a file".to_string()));
     }
     let metadata = match fs::metadata(&file) {
         Ok(metadata) => metadata,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string()),
+        Err(err) => return Err((StatusCode::BAD_GATEWAY, err.to_string())),
     };
     // A6: cheap change detection. hash_only skips the content read and
     // returns just the hash/size the browser needs to notice an external
@@ -1412,41 +1470,39 @@ async fn file_browser_file(
     if query.hash_only.unwrap_or(false) {
         let hash = match file_hash(&file) {
             Ok(hash) => hash,
-            Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
+            Err(err) => return Err((StatusCode::BAD_GATEWAY, err)),
         };
-        return Json(json!({
+        return Ok(json!({
             "path": rel,
             "content": "",
             "hash": hash,
             "binary": false,
             "truncated": false,
             "size": metadata.len(),
-        }))
-        .into_response();
+        }));
     }
     if metadata.len() > MAX_FILE_BYTES {
         let budget = partial_read_budget(query.max_bytes);
         if let Some(budget) = budget {
-            return file_browser_partial_read(&file, &rel, metadata.len(), budget);
+            return file_browser_partial_read_payload(&file, &rel, metadata.len(), budget);
         }
-        return Json(json!({
+        return Ok(json!({
             "path": rel,
             "content": "",
             "hash": "",
             "binary": false,
             "truncated": true,
             "size": metadata.len(),
-        }))
-        .into_response();
+        }));
     }
     let bytes = match fs::read(&file) {
         Ok(bytes) => bytes,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string()),
+        Err(err) => return Err((StatusCode::BAD_GATEWAY, err.to_string())),
     };
     let content = match String::from_utf8(bytes) {
         Ok(content) => content,
         Err(_) => {
-            return Json(json!({
+            return Ok(json!({
                 "path": rel,
                 "content": "",
                 "hash": "",
@@ -1454,12 +1510,11 @@ async fn file_browser_file(
                 "truncated": false,
                 "size": metadata.len(),
             }))
-            .into_response()
         }
     };
     let hash = match file_hash(&file) {
         Ok(hash) => hash,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
+        Err(err) => return Err((StatusCode::BAD_GATEWAY, err)),
     };
     let mut payload = json!({
         "path": rel,
@@ -1478,7 +1533,23 @@ async fn file_browser_file(
         payload["lines_gutter_html"] = json!(gutter);
         payload["lines_code_html"] = json!(code);
     }
-    Json(payload).into_response()
+    Ok(payload)
+}
+
+async fn file_browser_file(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<FileBrowserQuery>,
+) -> Response {
+    if let Err(response) = file_browser_auth(&state, &headers, remote) {
+        return response;
+    }
+    match tokio::task::spawn_blocking(move || file_browser_file_payload(query)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err((status, msg))) => file_browser_json_error(status, msg),
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
 }
 
 // Builds the two <pre> bodies used by the fallback numbered preview: the
@@ -1501,6 +1572,60 @@ fn numbered_lines_html(content: &str) -> (String, String) {
     (gutter, code)
 }
 
+/// Blocking body of the file write endpoint (hash check + create + write).
+fn file_browser_write_file_payload(
+    body: FileBrowserWriteRequest,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let root = match resolve_root(&body.cwd) {
+        Ok(root) => root,
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
+    };
+    let rel = match clean_relative_path(Some(&body.path)) {
+        Ok(rel) if !rel.is_empty() => rel,
+        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
+    };
+    let file = if body.create_parents {
+        resolve_child_create(&root, &rel)
+    } else {
+        resolve_child(&root, &rel)
+    };
+    let file = match file {
+        Ok(file) => file,
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
+    };
+    if file.is_dir() {
+        return Err((StatusCode::BAD_REQUEST, "path is a directory".to_string()));
+    }
+    let current_hash = match file_hash(&file) {
+        Ok(hash) => hash,
+        Err(err) => return Err((StatusCode::BAD_GATEWAY, err)),
+    };
+    if let Some(expected_hash) = body.expected_hash.as_deref() {
+        if expected_hash != current_hash {
+            return Err((
+                StatusCode::CONFLICT,
+                "file changed on disk; reload before saving".to_string(),
+            ));
+        }
+    }
+    if let Some(parent) = file.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            return Err((StatusCode::BAD_GATEWAY, err.to_string()));
+        }
+    }
+    if let Err(err) =
+        fs::File::create(&file).and_then(|mut file| file.write_all(body.content.as_bytes()))
+    {
+        return Err((StatusCode::BAD_GATEWAY, err.to_string()));
+    }
+    let hash = match file_hash(&file) {
+        Ok(hash) => hash,
+        Err(err) => return Err((StatusCode::BAD_GATEWAY, err)),
+    };
+    Ok(json!({ "ok": true, "path": rel, "hash": hash }))
+}
+
 async fn file_browser_write_file(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -1510,83 +1635,38 @@ async fn file_browser_write_file(
     if let Err(response) = file_browser_auth(&state, &headers, remote) {
         return response;
     }
-    let root = match resolve_root(&body.cwd) {
-        Ok(root) => root,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    let rel = match clean_relative_path(Some(&body.path)) {
-        Ok(rel) if !rel.is_empty() => rel,
-        Ok(_) => return file_browser_json_error(StatusCode::BAD_REQUEST, "path is required"),
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    let file = if body.create_parents {
-        resolve_child_create(&root, &rel)
-    } else {
-        resolve_child(&root, &rel)
-    };
-    let file = match file {
-        Ok(file) => file,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    if file.is_dir() {
-        return file_browser_json_error(StatusCode::BAD_REQUEST, "path is a directory");
+    match tokio::task::spawn_blocking(move || file_browser_write_file_payload(body)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err((status, msg))) => file_browser_json_error(status, msg),
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
-    let current_hash = match file_hash(&file) {
-        Ok(hash) => hash,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
-    };
-    if let Some(expected_hash) = body.expected_hash.as_deref() {
-        if expected_hash != current_hash {
-            return file_browser_json_error(
-                StatusCode::CONFLICT,
-                "file changed on disk; reload before saving",
-            );
-        }
-    }
-    if let Some(parent) = file.parent() {
-        if let Err(err) = fs::create_dir_all(parent) {
-            return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string());
-        }
-    }
-    if let Err(err) =
-        fs::File::create(&file).and_then(|mut file| file.write_all(body.content.as_bytes()))
-    {
-        return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string());
-    }
-    let hash = match file_hash(&file) {
-        Ok(hash) => hash,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
-    };
-    Json(json!({ "ok": true, "path": rel, "hash": hash })).into_response()
 }
 
-async fn file_browser_content_search(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    Query(query): Query<FileContentSearchQuery>,
-) -> Response {
-    if let Err(response) = file_browser_auth(&state, &headers, remote) {
-        return response;
-    }
+/// Blocking body of the directory content search endpoint.
+fn file_browser_content_search_payload(
+    query: FileContentSearchQuery,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let search = query.q.trim();
     if search.is_empty() {
-        return file_browser_json_error(StatusCode::BAD_REQUEST, "query is required");
+        return Err((StatusCode::BAD_REQUEST, "query is required".to_string()));
     }
     let root = match resolve_root(&query.cwd) {
         Ok(root) => root,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let rel = match clean_relative_path(query.path.as_deref()) {
         Ok(rel) => rel,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let dir = match resolve_child(&root, &rel) {
         Ok(dir) => dir,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     if !dir.is_dir() {
-        return file_browser_json_error(StatusCode::BAD_REQUEST, "path is not a directory");
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "path is not a directory".to_string(),
+        ));
     }
     let limit = query
         .limit
@@ -1614,10 +1694,10 @@ async fn file_browser_content_search(
             } else {
                 StatusCode::BAD_GATEWAY
             };
-            return file_browser_json_error(status, err);
+            return Err((status, err));
         }
     };
-    Json(json!({
+    Ok(json!({
         "root": root.to_string_lossy(),
         "path": relative_to_root(&root, &dir),
         "query": search,
@@ -1627,10 +1707,9 @@ async fn file_browser_content_search(
         "visited": build.visited,
         "truncated": build.truncated,
     }))
-    .into_response()
 }
 
-async fn file_browser_content_search_file(
+async fn file_browser_content_search(
     State(state): State<WebState>,
     headers: HeaderMap,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
@@ -1639,25 +1718,36 @@ async fn file_browser_content_search_file(
     if let Err(response) = file_browser_auth(&state, &headers, remote) {
         return response;
     }
+    match tokio::task::spawn_blocking(move || file_browser_content_search_payload(query)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err((status, msg))) => file_browser_json_error(status, msg),
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+/// Blocking body of the single-file content search endpoint.
+fn file_browser_content_search_file_payload(
+    query: FileContentSearchQuery,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let search = query.q.trim();
     if search.is_empty() {
-        return file_browser_json_error(StatusCode::BAD_REQUEST, "query is required");
+        return Err((StatusCode::BAD_REQUEST, "query is required".to_string()));
     }
     let root = match resolve_root(&query.cwd) {
         Ok(root) => root,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let rel = match clean_relative_path(query.file.as_deref().or(query.path.as_deref())) {
         Ok(rel) if !rel.is_empty() => rel,
-        Ok(_) => return file_browser_json_error(StatusCode::BAD_REQUEST, "file is required"),
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Ok(_) => return Err((StatusCode::BAD_REQUEST, "file is required".to_string())),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let file = match resolve_child(&root, &rel) {
         Ok(file) => file,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     if !file.is_file() {
-        return file_browser_json_error(StatusCode::BAD_REQUEST, "path is not a file");
+        return Err((StatusCode::BAD_REQUEST, "path is not a file".to_string()));
     }
     let context_lines = content_search_context_lines(query.context_lines);
     let max_matches = content_search_matches_per_file(
@@ -1671,25 +1761,80 @@ async fn file_browser_content_search_file(
         query.regex.unwrap_or(false),
     ) {
         Ok(matcher) => matcher,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let result =
         match content_search_file(&root, &file, search, &matcher, context_lines, max_matches) {
             Ok(Some(result)) => result,
             Ok(None) => {
-                return Json(json!({
+                return Ok(json!({
                     "query": search,
                     "file": null,
                 }))
-                .into_response()
             }
-            Err(err) => return file_browser_json_error(StatusCode::BAD_GATEWAY, err),
+            Err(err) => return Err((StatusCode::BAD_GATEWAY, err)),
         };
-    Json(json!({
+    Ok(json!({
         "query": search,
         "file": result,
     }))
-    .into_response()
+}
+
+async fn file_browser_content_search_file(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<FileContentSearchQuery>,
+) -> Response {
+    if let Err(response) = file_browser_auth(&state, &headers, remote) {
+        return response;
+    }
+    match tokio::task::spawn_blocking(move || file_browser_content_search_file_payload(query)).await
+    {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err((status, msg))) => file_browser_json_error(status, msg),
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+/// Blocking body of the rename endpoint.
+fn file_browser_rename_payload(
+    body: FileBrowserRenameRequest,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let root = match resolve_root(&body.cwd) {
+        Ok(root) => root,
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
+    };
+    let rel = match clean_relative_path(Some(&body.path)) {
+        Ok(rel) if !rel.is_empty() => rel,
+        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
+    };
+    let new_name = match clean_file_name(&body.new_name) {
+        Ok(name) => name,
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
+    };
+    let source = match resolve_child(&root, &rel) {
+        Ok(path) => path,
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
+    };
+    if !source.exists() {
+        return Err((StatusCode::BAD_REQUEST, "path does not exist".to_string()));
+    }
+    let Some(parent) = source.parent() else {
+        return Err((StatusCode::BAD_REQUEST, "invalid path".to_string()));
+    };
+    let target = parent.join(new_name);
+    if !target.starts_with(&root) {
+        return Err((StatusCode::BAD_REQUEST, "path escapes root".to_string()));
+    }
+    if target.exists() {
+        return Err((StatusCode::CONFLICT, "target already exists".to_string()));
+    }
+    if let Err(err) = fs::rename(&source, &target) {
+        return Err((StatusCode::BAD_GATEWAY, err.to_string()));
+    }
+    Ok(json!({ "ok": true, "path": relative_to_root(&root, &target) }))
 }
 
 async fn file_browser_rename(
@@ -1701,40 +1846,42 @@ async fn file_browser_rename(
     if let Err(response) = file_browser_auth(&state, &headers, remote) {
         return response;
     }
+    match tokio::task::spawn_blocking(move || file_browser_rename_payload(body)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err((status, msg))) => file_browser_json_error(status, msg),
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+/// Blocking body of the delete endpoint.
+fn file_browser_delete_payload(
+    body: FileBrowserDeleteRequest,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let root = match resolve_root(&body.cwd) {
         Ok(root) => root,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let rel = match clean_relative_path(Some(&body.path)) {
         Ok(rel) if !rel.is_empty() => rel,
-        Ok(_) => return file_browser_json_error(StatusCode::BAD_REQUEST, "path is required"),
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let new_name = match clean_file_name(&body.new_name) {
-        Ok(name) => name,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    let source = match resolve_child(&root, &rel) {
+    let path = match resolve_child(&root, &rel) {
         Ok(path) => path,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    if !source.exists() {
-        return file_browser_json_error(StatusCode::BAD_REQUEST, "path does not exist");
+    if path.is_dir() {
+        if let Err(err) = fs::remove_dir_all(&path) {
+            return Err((StatusCode::BAD_GATEWAY, err.to_string()));
+        }
+    } else if path.is_file() {
+        if let Err(err) = fs::remove_file(&path) {
+            return Err((StatusCode::BAD_GATEWAY, err.to_string()));
+        }
+    } else {
+        return Err((StatusCode::BAD_REQUEST, "path does not exist".to_string()));
     }
-    let Some(parent) = source.parent() else {
-        return file_browser_json_error(StatusCode::BAD_REQUEST, "invalid path");
-    };
-    let target = parent.join(new_name);
-    if !target.starts_with(&root) {
-        return file_browser_json_error(StatusCode::BAD_REQUEST, "path escapes root");
-    }
-    if target.exists() {
-        return file_browser_json_error(StatusCode::CONFLICT, "target already exists");
-    }
-    if let Err(err) = fs::rename(&source, &target) {
-        return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string());
-    }
-    Json(json!({ "ok": true, "path": relative_to_root(&root, &target) })).into_response()
+    Ok(json!({ "ok": true }))
 }
 
 async fn file_browser_delete(
@@ -1746,31 +1893,11 @@ async fn file_browser_delete(
     if let Err(response) = file_browser_auth(&state, &headers, remote) {
         return response;
     }
-    let root = match resolve_root(&body.cwd) {
-        Ok(root) => root,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    let rel = match clean_relative_path(Some(&body.path)) {
-        Ok(rel) if !rel.is_empty() => rel,
-        Ok(_) => return file_browser_json_error(StatusCode::BAD_REQUEST, "path is required"),
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    let path = match resolve_child(&root, &rel) {
-        Ok(path) => path,
-        Err(err) => return file_browser_json_error(StatusCode::BAD_REQUEST, err),
-    };
-    if path.is_dir() {
-        if let Err(err) = fs::remove_dir_all(&path) {
-            return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string());
-        }
-    } else if path.is_file() {
-        if let Err(err) = fs::remove_file(&path) {
-            return file_browser_json_error(StatusCode::BAD_GATEWAY, err.to_string());
-        }
-    } else {
-        return file_browser_json_error(StatusCode::BAD_REQUEST, "path does not exist");
+    match tokio::task::spawn_blocking(move || file_browser_delete_payload(body)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err((status, msg))) => file_browser_json_error(status, msg),
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
-    Json(json!({ "ok": true })).into_response()
 }
 
 #[cfg(test)]
@@ -2432,7 +2559,11 @@ mod tests {
         let path = root.join("big.txt");
         fs::write(&path, &body).unwrap();
 
-        let response = file_browser_partial_read(&path, "big.txt", body.len() as u64, 16 * 1024);
+        let response =
+            file_browser_partial_read_payload(&path, "big.txt", body.len() as u64, 16 * 1024)
+                .map(Json)
+                .map(IntoResponse::into_response)
+                .unwrap_or_else(|(status, msg)| file_browser_json_error(status, msg));
         let bytes = axum::body::to_bytes(response.into_body(), 10 * 1024 * 1024)
             .await
             .unwrap();

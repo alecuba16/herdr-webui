@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
@@ -27,7 +27,7 @@ pub(super) struct GitUiLogQuery {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum GitLogScope {
+pub(super) enum GitLogScope {
     All,
     BaseCurrent,
     Base,
@@ -65,11 +65,11 @@ pub(super) struct GitUiResetRequest {
 
 #[derive(Deserialize)]
 pub(super) struct GitUiRebaseRequest {
-    cwd: String,
-    upstream: String,
-    onto: Option<String>,
-    pull_first: Option<bool>,
-    confirmation: Option<String>,
+    pub(super) cwd: String,
+    pub(super) upstream: String,
+    pub(super) onto: Option<String>,
+    pub(super) pull_first: Option<bool>,
+    pub(super) confirmation: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -201,13 +201,13 @@ fn trim_log_lines_to_commit_limit(lines: Vec<String>, limit: usize) -> Vec<Strin
     trimmed
 }
 
-fn git_ui_log_blocking(
+pub(super) fn git_ui_log_blocking(
     cwd: String,
     limit: usize,
     scope: GitLogScope,
     base: Option<String>,
     file: Option<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let refs = log_refs(&cwd, scope, base)?;
     let query_limit = limit.saturating_add(1);
     let args = git_log_args(query_limit, scope.includes_all(), &refs, file.as_deref())
@@ -241,14 +241,13 @@ fn git_ui_log_blocking(
                 .iter()
                 .map(|line| reconstruct_log_line(line))
                 .collect::<Vec<_>>();
-            Ok(Json(json!({
+            Ok(json!({
                 "commits": commits,
                 "lines": display_lines,
                 "rows": rows,
                 "has_more": has_more,
                 "limit": limit,
             }))
-            .into_response())
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
@@ -276,13 +275,13 @@ pub(super) async fn git_ui_log(
     git_spawn(move || git_ui_log_blocking(cwd, limit, scope, base, file)).await
 }
 
-fn git_ui_reset_blocking(
+pub(super) fn git_ui_reset_blocking(
     cwd: String,
     mode: String,
     ref_name: String,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     match git_ui_text(&cwd, &["reset", &mode, &ref_name]) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -356,12 +355,12 @@ fn fetch_default_base(cwd: &str) -> Result<(), (StatusCode, String)> {
     Ok(())
 }
 
-fn git_ui_rebase_blocking(
+pub(super) fn git_ui_rebase_blocking(
     cwd: String,
     upstream: String,
     onto: Option<String>,
     pull_first: bool,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let onto = match onto {
         Some(value) => value,
         None => match git_ui_default_base_ref(&cwd) {
@@ -391,9 +390,7 @@ fn git_ui_rebase_blocking(
         onto.clone()
     };
     match git_ui_text(&cwd, &["rebase", "--onto", &rebase_onto, &upstream]) {
-        Ok(text) => {
-            Ok(Json(json!({ "ok": true, "message": text, "onto": rebase_onto })).into_response())
-        }
+        Ok(text) => Ok(json!({ "ok": true, "message": text, "onto": rebase_onto })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -431,12 +428,12 @@ pub(super) async fn git_ui_rebase(
     git_spawn(move || git_ui_rebase_blocking(cwd, upstream, onto, pull_first)).await
 }
 
-fn git_ui_commit_blocking(
+pub(super) fn git_ui_commit_blocking(
     cwd: String,
     title: String,
     body: Option<String>,
     amend: bool,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let mut args = vec!["commit"];
     if amend {
         args.push("--amend");
@@ -448,7 +445,7 @@ fn git_ui_commit_blocking(
         args.push(message);
     }
     match git_ui_text(&cwd, &args) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -470,7 +467,7 @@ pub(super) async fn git_ui_commit(
     git_spawn(move || git_ui_commit_blocking(cwd, title, commit_body, amend)).await
 }
 
-fn safe_tag_name(value: &str) -> Result<&str, String> {
+pub(super) fn safe_tag_name(value: &str) -> Result<&str, String> {
     let tag = safe_git_token(value, "tag")?;
     if tag.chars().any(char::is_whitespace) {
         return Err("invalid tag".to_string());
@@ -478,15 +475,36 @@ fn safe_tag_name(value: &str) -> Result<&str, String> {
     Ok(tag)
 }
 
-fn git_ui_tag_blocking(
+/// Socket transport for the log: mirrors the HTTP handler's parameter
+/// shaping (default limit, scope resolution, optional base and file
+/// filter) and runs the blocking query inline.
+pub(super) fn socket_log(params: serde_json::Value) -> Result<serde_json::Value, String> {
+    let query: GitUiLogQuery =
+        serde_json::from_value(params).map_err(|err| format!("invalid parameters: {err}"))?;
+    let Some(cwd) = query.cwd.as_deref() else {
+        return Err("cwd is required".to_string());
+    };
+    let limit = query.max.unwrap_or(80).clamp(1, 2000);
+    let all = query.all.unwrap_or(false);
+    let scope = GitLogScope::from_query(query.scope, all)?;
+    let base = query.base;
+    let file = query.file;
+    super::map_status(git_ui_log_blocking(
+        cwd.to_string(),
+        limit,
+        scope,
+        base,
+        file,
+    ))
+}
+
+pub(super) fn git_ui_tag_blocking(
     cwd: String,
     tag_name: String,
     ref_name: String,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     match git_ui_text(&cwd, &["tag", &tag_name, &ref_name]) {
-        Ok(text) => {
-            Ok(Json(json!({ "ok": true, "message": text, "tag": tag_name })).into_response())
-        }
+        Ok(text) => Ok(json!({ "ok": true, "message": text, "tag": tag_name })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -510,11 +528,11 @@ pub(super) async fn git_ui_tag(
     git_spawn(move || git_ui_tag_blocking(cwd, tag_name, ref_name)).await
 }
 
-fn git_ui_pull_blocking(
+pub(super) fn git_ui_pull_blocking(
     cwd: String,
     mode: String,
     branch: Option<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     if mode == "update" {
         // GitHub-flow update: fetch everything, then fast-forward the
         // current branch only. Never creates a merge commit.
@@ -531,7 +549,7 @@ fn git_ui_pull_blocking(
             args.push("@{u}".to_string());
         }
         return match git_ui_text_strings(&cwd, &args) {
-            Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+            Ok(text) => Ok(json!({ "ok": true, "message": text })),
             Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
         };
     }
@@ -549,7 +567,7 @@ fn git_ui_pull_blocking(
         args.push(branch.to_string());
     }
     match git_ui_text_strings(&cwd, &args) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -577,16 +595,16 @@ pub(super) async fn git_ui_pull(
     git_spawn(move || git_ui_pull_blocking(cwd, mode, branch)).await
 }
 
-fn git_ui_fetch_blocking(
+pub(super) fn git_ui_fetch_blocking(
     cwd: String,
     branch: Option<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let mut args = vec!["fetch".to_string(), "origin".to_string()];
     if let Some(branch) = branch.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
         args.push(branch.to_string());
     }
     match git_ui_text_strings(&cwd, &args) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -613,13 +631,13 @@ pub(super) async fn git_ui_fetch(
     git_spawn(move || git_ui_fetch_blocking(cwd, branch)).await
 }
 
-fn git_ui_push_blocking(
+pub(super) fn git_ui_push_blocking(
     cwd: String,
     mode: String,
     branch: Option<String>,
     pull_first: bool,
     push_tags: bool,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     if pull_first {
         git_ui_text(&cwd, &["pull", "--ff-only"]).map_err(|err| (StatusCode::BAD_GATEWAY, err))?;
     }
@@ -638,7 +656,7 @@ fn git_ui_push_blocking(
         args.push(branch.to_string());
     }
     match git_ui_text_strings(&cwd, &args) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -668,12 +686,12 @@ pub(super) async fn git_ui_push(
     git_spawn(move || git_ui_push_blocking(cwd, mode, branch, pull_first, push_tags)).await
 }
 
-fn git_ui_apply_patch_blocking(
+pub(super) fn git_ui_apply_patch_blocking(
     cwd: String,
     patch: String,
     reverse: bool,
     cached: bool,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let repo = match git_ui_repo(&cwd) {
         Ok(repo) => repo,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
@@ -697,7 +715,7 @@ fn git_ui_apply_patch_blocking(
         }
     }
     match child.wait_with_output() {
-        Ok(output) if output.status.success() => Ok(Json(json!({ "ok": true })).into_response()),
+        Ok(output) if output.status.success() => Ok(json!({ "ok": true })),
         Ok(output) => Err((StatusCode::BAD_GATEWAY, git_failure(output, "git apply"))),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err.to_string())),
     }
@@ -972,10 +990,7 @@ mod tests {
             None,
         )
         .expect("update pull should succeed");
-        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let payload: serde_json::Value = response;
         assert_eq!(payload["ok"], serde_json::json!(true));
 
         // Local main now equals remote main, linear history.
@@ -1059,10 +1074,7 @@ mod tests {
             true,
         )
         .expect("rebase should succeed");
-        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let payload: serde_json::Value = response;
         assert_eq!(payload["onto"], serde_json::json!("origin/main"));
 
         // The feature commit now sits on top of the advanced remote main.

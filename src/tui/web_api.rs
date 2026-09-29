@@ -26,14 +26,24 @@ use serde_json::{json, Value};
 /// for the default local setup.
 #[derive(Debug, Clone)]
 pub struct WebApiClient {
-    host: String,
-    port: u16,
+    transport: WebApiTransport,
     timeout: Duration,
     /// Cached `herdr_web_session` cookie from a successful login.
     /// Interior mutability so `request_json(&self)` can keep the cookie
     /// after the 401 login retry — without it the cookie would land on
     /// a dropped temporary and every authed call would re-login.
     session_cookie: std::cell::RefCell<Option<String>>,
+}
+
+/// Where the git/file panel data comes from. The default is the WebUI
+/// HTTP server; `Socket` talks to the built-in backend control socket
+/// instead (the same `git.*`/`file.*` methods the backend dispatches
+/// for its own panels), which keeps the TUI working even when the HTTP
+/// server is not running and skips the HTTP auth dance entirely.
+#[derive(Debug, Clone)]
+enum WebApiTransport {
+    Http { host: String, port: u16 },
+    Socket { api_socket: std::path::PathBuf },
 }
 
 /// Login credentials read from the persisted WebUI settings.
@@ -75,11 +85,30 @@ impl std::error::Error for WebApiError {}
 impl WebApiClient {
     pub fn new(host: impl Into<String>, port: u16) -> Self {
         Self {
-            host: host.into(),
-            port,
+            transport: WebApiTransport::Http {
+                host: host.into(),
+                port,
+            },
             timeout: Duration::from_secs(20),
             session_cookie: std::cell::RefCell::new(None),
         }
+    }
+
+    /// Git/file data straight from the built-in backend control socket
+    /// (`git.*` / `file.*` dispatch). Used by the TUI when backend
+    /// sockets are known: no HTTP server, no auth, no cookie dance.
+    pub fn from_backend_socket(api_socket: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            transport: WebApiTransport::Socket {
+                api_socket: api_socket.into(),
+            },
+            timeout: Duration::from_secs(20),
+            session_cookie: std::cell::RefCell::new(None),
+        }
+    }
+
+    pub fn is_socket_transport(&self) -> bool {
+        matches!(self.transport, WebApiTransport::Socket { .. })
     }
 
     /// Login once and cache the session cookie (RefCell, so `&self`
@@ -162,7 +191,12 @@ impl WebApiClient {
     }
 
     pub fn base_url(&self) -> String {
-        format!("http://{}:{}", self.host, self.port)
+        match &self.transport {
+            WebApiTransport::Http { host, port } => format!("http://{host}:{port}"),
+            WebApiTransport::Socket { api_socket } => {
+                format!("socket://{}", api_socket.to_string_lossy())
+            }
+        }
     }
 
     /// Auth-aware request: on 401 (server auth enabled, no cookie yet)
@@ -220,13 +254,26 @@ impl WebApiClient {
             .as_deref()
             .map(|cookie| format!("Cookie: {cookie}\r\n"))
             .unwrap_or_default();
+        let (host, port) = match &self.transport {
+            WebApiTransport::Http { host, port } => (host.as_str(), *port),
+            WebApiTransport::Socket { .. } => {
+                return Err(WebApiError::Api(
+                    "recent-workspace and login calls need the WebUI HTTP server".to_string(),
+                ));
+            }
+        };
         let request = format!(
             "{method} {path_and_query} HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\nUser-Agent: herdr-webui-tui\r\n{cookie_header}\r\n{body_text}",
-            self.host,
-            self.port,
+            host,
+            port,
             body_text.len(),
         );
-        let stream = TcpStream::connect((self.host.as_str(), self.port))
+        // connect() without a bound would wait on the platform default
+        // (~75s on macOS) when the WebUI server is unreachable; cap it with
+        // the same request timeout the read/write paths already use.
+        // Accept both literal IPs and hostnames (e.g. "localhost").
+        let addr = resolve_web_api_addr(host, port)?;
+        let stream = TcpStream::connect_timeout(&addr, self.timeout)
             .map_err(|err| WebApiError::Io(err.to_string()))?;
         stream
             .set_read_timeout(Some(self.timeout))
@@ -380,12 +427,52 @@ impl WebApiClient {
 
     // ---- file browser ----
 
+    /// Route one git/file panel call to whichever transport is active.
+    /// `http_*` describes the WebUI HTTP request; `socket_method` and
+    /// `socket_params` describe the equivalent built-in backend socket
+    /// call. Recent-workspaces calls stay HTTP-only (that state lives in
+    /// the WebUI server) and never go through here.
+    fn call(
+        &self,
+        http_method: &str,
+        http_path_and_query: &str,
+        http_body: Option<&Value>,
+        socket_method: &str,
+        socket_params: Value,
+    ) -> Result<Value, WebApiError> {
+        match &self.transport {
+            WebApiTransport::Http { .. } => {
+                self.request_json(http_method, http_path_and_query, http_body)
+            }
+            WebApiTransport::Socket { api_socket } => {
+                let client = crate::backend_client::BackendClient::new(
+                    api_socket.clone(),
+                    api_socket.clone(),
+                );
+                client
+                    .request(socket_method, socket_params)
+                    .map_err(|err| WebApiError::Api(err.to_string()))
+            }
+        }
+    }
+
     pub fn file_tree(&self, cwd: &str, path: &str, depth: u8) -> Result<Value, WebApiError> {
-        self.get(&format!(
-            "/api/file-browser/tree?cwd={}&path={}&depth={depth}&include_git_status=true",
-            urlencode(cwd),
-            urlencode(path),
-        ))
+        self.call(
+            "GET",
+            &format!(
+                "/api/file-browser/tree?cwd={}&path={}&depth={depth}&include_git_status=true",
+                urlencode(cwd),
+                urlencode(path),
+            ),
+            None,
+            "file.tree",
+            json!({
+                "cwd": cwd,
+                "path": path,
+                "depth": depth,
+                "include_git_status": true,
+            }),
+        )
     }
 
     pub fn file_search(
@@ -397,13 +484,27 @@ impl WebApiClient {
         limit: usize,
         dirs_only: bool,
     ) -> Result<Value, WebApiError> {
-        self.get(&format!(
-            "/api/file-browser/tree?cwd={}&path={}&q={}&offset={offset}&limit={limit}&search_kind={}&include_git_status=true",
-            urlencode(cwd),
-            urlencode(path),
-            urlencode(query),
-            if dirs_only { "dir" } else { "file" },
-        ))
+        self.call(
+            "GET",
+            &format!(
+                "/api/file-browser/tree?cwd={}&path={}&q={}&offset={offset}&limit={limit}&search_kind={}&include_git_status=true",
+                urlencode(cwd),
+                urlencode(path),
+                urlencode(query),
+                if dirs_only { "dir" } else { "file" },
+            ),
+            None,
+            "file.tree",
+            json!({
+                "cwd": cwd,
+                "path": path,
+                "q": query,
+                "offset": offset,
+                "limit": limit,
+                "search_kind": if dirs_only { "dir" } else { "file" },
+                "include_git_status": true,
+            }),
+        )
     }
 
     /// `/api/file-browser/content-search`: grep-style results grouped
@@ -419,22 +520,43 @@ impl WebApiClient {
         match_case: bool,
         regex: bool,
     ) -> Result<Value, WebApiError> {
-        self.get(&format!(
-            "/api/file-browser/content-search?cwd={}&path={}&q={}&offset={offset}&limit={limit}&context_lines=2&match_case={}&regex={}",
+        self.call(
+            "GET",
+            &format!(
+                "/api/file-browser/content-search?cwd={}&path={}&q={}&offset={offset}&limit={limit}&context_lines=2&match_case={}&regex={}",
             urlencode(cwd),
             urlencode(path),
             urlencode(query),
             if match_case { "true" } else { "false" },
             if regex { "true" } else { "false" },
-        ))
+            ),
+            None,
+            "file.content_search",
+            json!({
+                "cwd": cwd,
+                "path": path,
+                "q": query,
+                "offset": offset,
+                "limit": limit,
+                "context_lines": 2,
+                "match_case": match_case,
+                "regex": regex,
+            }),
+        )
     }
 
     pub fn file_read(&self, cwd: &str, path: &str) -> Result<Value, WebApiError> {
-        self.get(&format!(
-            "/api/file-browser/file?cwd={}&path={}",
-            urlencode(cwd),
-            urlencode(path),
-        ))
+        self.call(
+            "GET",
+            &format!(
+                "/api/file-browser/file?cwd={}&path={}",
+                urlencode(cwd),
+                urlencode(path)
+            ),
+            None,
+            "file.read",
+            json!({ "cwd": cwd, "path": path }),
+        )
     }
 
     pub fn file_write(
@@ -466,36 +588,54 @@ impl WebApiClient {
         expected_hash: Option<&str>,
         create_parents: bool,
     ) -> Result<Value, WebApiError> {
-        self.post(
-            "/api/file-browser/file",
-            &json!({
+        let body = json!({
                 "cwd": cwd,
                 "path": path,
                 "content": content,
                 "expected_hash": expected_hash,
                 "create_parents": create_parents,
-            }),
+        });
+        self.call(
+            "POST",
+            "/api/file-browser/file",
+            Some(&body),
+            "file.write",
+            body.clone(),
         )
     }
 
     pub fn file_rename(&self, cwd: &str, path: &str, new_name: &str) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "path": path, "new_name": new_name });
+        self.call(
+            "POST",
             "/api/file-browser/rename",
-            &json!({ "cwd": cwd, "path": path, "new_name": new_name }),
+            Some(&body),
+            "file.rename",
+            body.clone(),
         )
     }
 
     pub fn file_delete(&self, cwd: &str, path: &str) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "path": path });
+        self.call(
+            "POST",
             "/api/file-browser/delete",
-            &json!({ "cwd": cwd, "path": path }),
+            Some(&body),
+            "file.delete",
+            body.clone(),
         )
     }
 
     // ---- git ui ----
 
     pub fn git_status(&self, cwd: &str) -> Result<Value, WebApiError> {
-        self.get(&format!("/api/git-ui/status?cwd={}", urlencode(cwd)))
+        self.call(
+            "GET",
+            &format!("/api/git-ui/status?cwd={}", urlencode(cwd)),
+            None,
+            "git.status",
+            json!({ "cwd": cwd }),
+        )
     }
 
     pub fn git_diff(
@@ -512,7 +652,13 @@ impl WebApiClient {
         if let Some(file) = file {
             url.push_str(&format!("&file={}", urlencode(file)));
         }
-        self.get(&url)
+        self.call(
+            "GET",
+            &url,
+            None,
+            "git.diff",
+            json!({ "cwd": cwd, "scope": scope, "context": 3, "file": file }),
+        )
     }
 
     /// `/api/git-ui/log` with full webui params: `scope` (all /
@@ -537,19 +683,44 @@ impl WebApiClient {
         if let Some(file) = file {
             url.push_str(&format!("&file={}", urlencode(file)));
         }
-        self.get(&url)
+        self.call(
+            "GET",
+            &url,
+            None,
+            "git.log",
+            json!({
+                "cwd": cwd,
+                "all": scope == "all",
+                "scope": scope,
+                "base": base,
+                "max": max,
+                "file": file,
+            }),
+        )
     }
 
     pub fn git_branches(&self, cwd: &str) -> Result<Value, WebApiError> {
-        self.get(&format!("/api/git-ui/branches?cwd={}", urlencode(cwd)))
+        self.call(
+            "GET",
+            &format!("/api/git-ui/branches?cwd={}", urlencode(cwd)),
+            None,
+            "git.branches",
+            json!({ "cwd": cwd }),
+        )
     }
 
     pub fn git_file_history(&self, cwd: &str, file: &str) -> Result<Value, WebApiError> {
-        self.get(&format!(
-            "/api/git-ui/file-history?cwd={}&file={}",
-            urlencode(cwd),
-            urlencode(file)
-        ))
+        self.call(
+            "GET",
+            &format!(
+                "/api/git-ui/file-history?cwd={}&file={}",
+                urlencode(cwd),
+                urlencode(file)
+            ),
+            None,
+            "git.file_history",
+            json!({ "cwd": cwd, "file": file }),
+        )
     }
 
     /// Compare two refs (webui history "committed file" uses
@@ -571,26 +742,51 @@ impl WebApiClient {
         if let Some(file) = file {
             url.push_str(&format!("&file={}", urlencode(file)));
         }
-        self.get(&url)
+        self.call(
+            "GET",
+            &url,
+            None,
+            "git.compare",
+            json!({ "cwd": cwd, "base": base, "target": target, "context": 0, "file": file }),
+        )
     }
 
     /// Blame for one file (webui `blame` toggle). The server returns
     /// raw `--line-porcelain` text; the panel parses it.
     pub fn git_blame(&self, cwd: &str, file: &str, ref_name: &str) -> Result<Value, WebApiError> {
-        self.get(&format!(
-            "/api/git-ui/blame?cwd={}&file={}&ref_name={}",
-            urlencode(cwd),
-            urlencode(file),
-            urlencode(ref_name)
-        ))
+        self.call(
+            "GET",
+            &format!(
+                "/api/git-ui/blame?cwd={}&file={}&ref_name={}",
+                urlencode(cwd),
+                urlencode(file),
+                urlencode(ref_name)
+            ),
+            None,
+            "git.blame",
+            json!({ "cwd": cwd, "file": file, "ref_name": ref_name }),
+        )
     }
 
     pub fn git_stashes(&self, cwd: &str) -> Result<Value, WebApiError> {
-        self.get(&format!("/api/git-ui/stashes?cwd={}", urlencode(cwd)))
+        self.call(
+            "GET",
+            &format!("/api/git-ui/stashes?cwd={}", urlencode(cwd)),
+            None,
+            "git.stashes",
+            json!({ "cwd": cwd }),
+        )
     }
 
     pub fn git_stage(&self, cwd: &str, paths: &[String]) -> Result<Value, WebApiError> {
-        self.post("/api/git-ui/stage", &json!({ "cwd": cwd, "paths": paths }))
+        let body = json!({ "cwd": cwd, "paths": paths });
+        self.call(
+            "POST",
+            "/api/git-ui/stage",
+            Some(&body),
+            "git.stage",
+            body.clone(),
+        )
     }
 
     /// `/api/git-ui/apply-patch`: apply a single-hunk patch (webui
@@ -603,23 +799,35 @@ impl WebApiClient {
         reverse: bool,
         cached: bool,
     ) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "patch": patch, "reverse": reverse, "cached": cached });
+        self.call(
+            "POST",
             "/api/git-ui/apply-patch",
-            &json!({ "cwd": cwd, "patch": patch, "reverse": reverse, "cached": cached }),
+            Some(&body),
+            "git.apply_patch",
+            body.clone(),
         )
     }
 
     pub fn git_unstage(&self, cwd: &str, paths: &[String]) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "paths": paths });
+        self.call(
+            "POST",
             "/api/git-ui/unstage",
-            &json!({ "cwd": cwd, "paths": paths }),
+            Some(&body),
+            "git.unstage",
+            body.clone(),
         )
     }
 
     pub fn git_discard(&self, cwd: &str, paths: &[String]) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "paths": paths, "confirmed": true });
+        self.call(
+            "POST",
             "/api/git-ui/discard",
-            &json!({ "cwd": cwd, "paths": paths, "confirmed": true }),
+            Some(&body),
+            "git.discard",
+            body.clone(),
         )
     }
 
@@ -630,31 +838,57 @@ impl WebApiClient {
         body: Option<&str>,
         amend: bool,
     ) -> Result<Value, WebApiError> {
-        self.post(
+        let payload = json!({ "cwd": cwd, "title": title, "body": body, "amend": amend });
+        self.call(
+            "POST",
             "/api/git-ui/commit",
-            &json!({ "cwd": cwd, "title": title, "body": body, "amend": amend }),
+            Some(&payload),
+            "git.commit",
+            payload.clone(),
         )
     }
 
     pub fn git_pull(&self, cwd: &str, mode: &str) -> Result<Value, WebApiError> {
-        self.post("/api/git-ui/pull", &json!({ "cwd": cwd, "mode": mode }))
+        let body = json!({ "cwd": cwd, "mode": mode });
+        self.call(
+            "POST",
+            "/api/git-ui/pull",
+            Some(&body),
+            "git.pull",
+            body.clone(),
+        )
     }
 
     pub fn git_push(&self, cwd: &str, mode: &str) -> Result<Value, WebApiError> {
-        self.post("/api/git-ui/push", &json!({ "cwd": cwd, "mode": mode }))
+        let body = json!({ "cwd": cwd, "mode": mode });
+        self.call(
+            "POST",
+            "/api/git-ui/push",
+            Some(&body),
+            "git.push",
+            body.clone(),
+        )
     }
 
     pub fn git_fetch(&self, cwd: &str, branch: Option<&str>) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "branch": branch });
+        self.call(
+            "POST",
             "/api/git-ui/fetch",
-            &json!({ "cwd": cwd, "branch": branch }),
+            Some(&body),
+            "git.fetch",
+            body.clone(),
         )
     }
 
     pub fn git_switch(&self, cwd: &str, branch: &str, create: bool) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "branch": branch, "create": create });
+        self.call(
+            "POST",
             "/api/git-ui/switch",
-            &json!({ "cwd": cwd, "branch": branch, "create": create }),
+            Some(&body),
+            "git.switch",
+            body.clone(),
         )
     }
 
@@ -667,14 +901,18 @@ impl WebApiClient {
         mode: &str,
         confirmation: &str,
     ) -> Result<Value, WebApiError> {
-        self.post(
-            "/api/git-ui/reset",
-            &json!({
+        let body = json!({
                 "cwd": cwd,
                 "ref_name": ref_name,
                 "mode": mode,
                 "confirmation": confirmation,
-            }),
+        });
+        self.call(
+            "POST",
+            "/api/git-ui/reset",
+            Some(&body),
+            "git.reset",
+            body.clone(),
         )
     }
 
@@ -690,28 +928,36 @@ impl WebApiClient {
         pull_first: bool,
         confirmation: &str,
     ) -> Result<Value, WebApiError> {
-        self.post(
-            "/api/git-ui/rebase",
-            &json!({
+        let body = json!({
                 "cwd": cwd,
                 "upstream": upstream,
                 "onto": onto,
                 "pull_first": pull_first,
                 "confirmation": confirmation,
-            }),
+        });
+        self.call(
+            "POST",
+            "/api/git-ui/rebase",
+            Some(&body),
+            "git.rebase",
+            body.clone(),
         )
     }
 
     /// `/api/git-ui/tag`: create `tag_name` on `ref_name` (a hash or
     /// branch). The server validates both as single git tokens.
     pub fn git_tag(&self, cwd: &str, tag_name: &str, ref_name: &str) -> Result<Value, WebApiError> {
-        self.post(
-            "/api/git-ui/tag",
-            &json!({
+        let body = json!({
                 "cwd": cwd,
                 "tag_name": tag_name,
                 "ref_name": ref_name,
-            }),
+        });
+        self.call(
+            "POST",
+            "/api/git-ui/tag",
+            Some(&body),
+            "git.tag",
+            body.clone(),
         )
     }
 
@@ -721,30 +967,53 @@ impl WebApiClient {
         branch: &str,
         force: bool,
     ) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "branch": branch, "force": force, "confirmed": true });
+        self.call(
+            "POST",
             "/api/git-ui/branch-delete",
-            &json!({ "cwd": cwd, "branch": branch, "force": force, "confirmed": true }),
+            Some(&body),
+            "git.branch.delete",
+            body.clone(),
         )
     }
 
     pub fn git_stash(&self, cwd: &str) -> Result<Value, WebApiError> {
-        self.post("/api/git-ui/stash", &json!({ "cwd": cwd }))
+        let body = json!({ "cwd": cwd });
+        self.call(
+            "POST",
+            "/api/git-ui/stash",
+            Some(&body),
+            "git.stash",
+            body.clone(),
+        )
     }
 
     /// `/api/git-ui/stash-show`: full diff of one stash entry. Response
     /// shape matches `/api/git-ui/diff`, so `parse_diff_lines_with_meta`
     /// can parse it.
     pub fn git_stash_show(&self, cwd: &str, stash: &str) -> Result<Value, WebApiError> {
-        self.get(&format!(
-            "/api/git-ui/stash-show?cwd={}&stash={}&context=3",
-            urlencode(cwd),
-            urlencode(stash),
-        ))
+        self.call(
+            "GET",
+            &format!(
+                "/api/git-ui/stash-show?cwd={}&stash={}&context=3",
+                urlencode(cwd),
+                urlencode(stash),
+            ),
+            None,
+            "git.stash_show",
+            json!({ "cwd": cwd, "stash": stash, "context": 3 }),
+        )
     }
 
     /// `/api/git-ui/conflicts`: conflicted file list plus merge/rebase state.
     pub fn git_conflicts(&self, cwd: &str) -> Result<Value, WebApiError> {
-        self.get(&format!("/api/git-ui/conflicts?cwd={}", urlencode(cwd),))
+        self.call(
+            "GET",
+            &format!("/api/git-ui/conflicts?cwd={}", urlencode(cwd)),
+            None,
+            "git.conflicts",
+            json!({ "cwd": cwd }),
+        )
     }
 
     /// `/api/git-ui/conflict-resolve`: resolve one file with `ours` /
@@ -755,67 +1024,115 @@ impl WebApiClient {
         path: &str,
         mode: &str,
     ) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "path": path, "mode": mode });
+        self.call(
+            "POST",
             "/api/git-ui/conflict-resolve",
-            &json!({ "cwd": cwd, "path": path, "mode": mode }),
+            Some(&body),
+            "git.conflict_resolve",
+            body.clone(),
         )
     }
 
     /// `/api/git-ui/conflict-action`: continue/skip/abort a rebase, merge,
     /// or cherry-pick in progress.
     pub fn git_conflict_action(&self, cwd: &str, action: &str) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "action": action });
+        self.call(
+            "POST",
             "/api/git-ui/conflict-action",
-            &json!({ "cwd": cwd, "action": action }),
+            Some(&body),
+            "git.conflict_action",
+            body.clone(),
         )
     }
 
     /// `/api/git-ui/cleanup-scan`: repos with merged branches and stale
     /// worktrees under a root directory.
     pub fn git_cleanup_scan(&self, root: &str) -> Result<Value, WebApiError> {
-        self.get(&format!(
-            "/api/git-ui/cleanup-scan?root={}",
-            urlencode(root),
-        ))
+        self.call(
+            "GET",
+            &format!("/api/git-ui/cleanup-scan?root={}", urlencode(root)),
+            None,
+            "git.cleanup_scan",
+            json!({ "root": root }),
+        )
     }
 
     /// `/api/git-ui/branch-delete` with explicit confirmation (the TUI
     /// collects its own confirmation before calling).
     pub fn git_cleanup_branch_delete(&self, cwd: &str, branch: &str) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "branch": branch, "force": false, "confirmed": true });
+        self.call(
+            "POST",
             "/api/git-ui/branch-delete",
-            &json!({ "cwd": cwd, "branch": branch, "force": false, "confirmed": true }),
+            Some(&body),
+            "git.branch.delete",
+            body.clone(),
         )
     }
 
     /// `/api/git-ui/worktree-remove` for cleanup.
     pub fn git_cleanup_worktree_remove(&self, cwd: &str, path: &str) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "path": path, "confirmed": true });
+        self.call(
+            "POST",
             "/api/git-ui/worktree-remove",
-            &json!({ "cwd": cwd, "path": path, "confirmed": true }),
+            Some(&body),
+            "git.worktree_remove",
+            body.clone(),
         )
     }
 
     /// `/api/git-ui/worktree-prune` for cleanup.
     pub fn git_cleanup_worktree_prune(&self, cwd: &str) -> Result<Value, WebApiError> {
-        self.post("/api/git-ui/worktree-prune", &json!({ "cwd": cwd }))
+        let body = json!({ "cwd": cwd });
+        self.call(
+            "POST",
+            "/api/git-ui/worktree-prune",
+            Some(&body),
+            "git.worktree_prune",
+            body.clone(),
+        )
     }
 
     pub fn git_stash_apply(&self, cwd: &str, stash: &str) -> Result<Value, WebApiError> {
-        self.post(
+        let body = json!({ "cwd": cwd, "stash": stash });
+        self.call(
+            "POST",
             "/api/git-ui/stash-apply",
-            &json!({ "cwd": cwd, "stash": stash }),
+            Some(&body),
+            "git.stash_apply",
+            body.clone(),
         )
     }
 
     pub fn git_stash_drop(&self, cwd: &str, stash: &str) -> Result<Value, WebApiError> {
         // The server rejects drops without an explicit confirmation flag;
         // the TUI collects its own `y` confirmation before calling.
-        self.post(
+        let body = json!({ "cwd": cwd, "stash": stash, "confirmed": true });
+        self.call(
+            "POST",
             "/api/git-ui/stash-drop",
-            &json!({ "cwd": cwd, "stash": stash, "confirmed": true }),
+            Some(&body),
+            "git.stash_drop",
+            body.clone(),
         )
     }
+}
+
+/// Resolve a host string (literal IP or hostname like "localhost") plus
+/// port to a single socket address for `TcpStream::connect_timeout`. Falls
+/// back to the first resolved address; resolution failure surfaces as an
+/// Io error like the old connect() path did.
+fn resolve_web_api_addr(host: &str, port: u16) -> Result<std::net::SocketAddr, WebApiError> {
+    use std::net::ToSocketAddrs;
+    let mut addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|err| WebApiError::Io(err.to_string()))?;
+    addrs
+        .next()
+        .ok_or_else(|| WebApiError::Io(format!("host did not resolve: {host}")))
 }
 
 fn read_chunked_body(reader: &mut BufReader<TcpStream>) -> Result<Vec<u8>, WebApiError> {
@@ -926,12 +1243,11 @@ mod tests {
     #[test]
     fn parses_webui_api_urls() {
         let client = WebApiClient::parse_url("127.0.0.1:8787").unwrap();
-        assert_eq!(client.host, "127.0.0.1");
-        assert_eq!(client.port, 8787);
+        assert_eq!(client.base_url(), "http://127.0.0.1:8787");
+        assert!(!client.is_socket_transport());
 
         let client = WebApiClient::parse_url("http://localhost:9000/").unwrap();
-        assert_eq!(client.host, "localhost");
-        assert_eq!(client.port, 9000);
+        assert_eq!(client.base_url(), "http://localhost:9000");
 
         assert!(WebApiClient::parse_url("localhost").is_err());
         assert!(WebApiClient::parse_url("http://localhost").is_err());
@@ -975,7 +1291,7 @@ mod tests {
         // assert a valid client is produced.
         if std::env::var("HERDR_WEBUI_TUI_API").is_ok() {
             let client = WebApiClient::discover().unwrap();
-            assert!(client.port > 0);
+            assert!(client.base_url().starts_with("http://"));
             return;
         }
         let client = match WebApiClient::discover() {
@@ -983,11 +1299,18 @@ mod tests {
             Err(_) => return,
         };
         if std::env::var("HERDR_WEBUI_TUI_API").is_err() {
-            assert_eq!(
-                client.base_url(),
-                format!("http://{}:{}", client.host, client.port)
-            );
+            assert!(client.base_url().starts_with("http://"));
         }
+    }
+
+    #[test]
+    fn from_backend_socket_reports_socket_transport() {
+        let client = WebApiClient::from_backend_socket("/tmp/herdr-test.sock");
+        assert!(client.is_socket_transport());
+        assert_eq!(client.base_url(), "socket:///tmp/herdr-test.sock");
+        // HTTP-only endpoints reject cleanly instead of dialing anything.
+        let err = client.recent_workspaces().unwrap_err();
+        assert!(err.to_string().contains("WebUI HTTP server"));
     }
 
     #[test]
@@ -1429,7 +1752,7 @@ mod tests {
                 }
             }
         });
-        let mut client = WebApiClient::new("127.0.0.1", port);
+        let client = WebApiClient::new("127.0.0.1", port);
         let credentials = WebApiCredentials {
             username: "admin".to_string(),
             password: "wrong".to_string(),
@@ -1549,7 +1872,11 @@ mod tests {
             std::env::set_var("XDG_CONFIG_HOME", &dir);
         }
         let client = WebApiClient::discover().unwrap();
-        assert_eq!(client.port, 8787, "empty env falls back to default");
+        assert_eq!(
+            client.base_url(),
+            "http://127.0.0.1:8787",
+            "empty env falls back to default"
+        );
 
         // Malformed persisted binds fall back to the default too.
         for bad in ["no-colon", ":8787", "host:notaport"] {
@@ -1559,7 +1886,11 @@ mod tests {
             )
             .unwrap();
             let client = WebApiClient::discover().unwrap();
-            assert_eq!(client.port, 8787, "bad bind {bad} falls back");
+            assert_eq!(
+                client.base_url(),
+                "http://127.0.0.1:8787",
+                "bad bind {bad} falls back"
+            );
         }
         unsafe {
             std::env::remove_var("HERDR_WEBUI_TUI_API");
@@ -1689,7 +2020,7 @@ mod tests {
             std::env::set_var("HERDR_WEBUI_TUI_API", "127.0.0.1:1234");
         }
         let client = WebApiClient::discover().expect("env discovery");
-        assert_eq!(client.port, 1234);
+        assert_eq!(client.base_url(), "http://127.0.0.1:1234");
         unsafe {
             std::env::remove_var("HERDR_WEBUI_TUI_API");
         }
@@ -1709,8 +2040,7 @@ mod tests {
             std::env::set_var("XDG_CONFIG_HOME", &dir);
         }
         let client = WebApiClient::discover().expect("default discovery");
-        assert_eq!(client.host, "127.0.0.1");
-        assert_eq!(client.port, 8787);
+        assert_eq!(client.base_url(), "http://127.0.0.1:8787");
 
         // A settings file with a bind address wins over the default.
         let settings = serde_json::json!({"bind": "192.168.1.10:9999"});
@@ -1720,8 +2050,7 @@ mod tests {
         )
         .unwrap();
         let client = WebApiClient::discover().expect("settings discovery");
-        assert_eq!(client.host, "192.168.1.10");
-        assert_eq!(client.port, 9999);
+        assert_eq!(client.base_url(), "http://192.168.1.10:9999");
         unsafe {
             std::env::remove_var("XDG_CONFIG_HOME");
         }
