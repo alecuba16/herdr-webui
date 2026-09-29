@@ -167,29 +167,35 @@ impl WebApiClient {
     /// logs in with the persisted settings credentials and retries once.
     /// Everything else flows through unchanged. Without credentials in
     /// the settings file the 401 surfaces like any other HTTP error.
+    /// A stale cookie (WebUI restart rotated the token) also re-logins:
+    /// the guard allows one re-login whenever the 401 is not already
+    /// the result of the immediately-preceding login, and the retry
+    /// after login overwrites the cookie, so recovery is automatic.
     fn request_json(
         &self,
         method: &str,
         path_and_query: &str,
         body: Option<&Value>,
     ) -> Result<Value, WebApiError> {
-        match self.raw_request_json(method, path_and_query, body) {
-            Err(WebApiError::Http { status: 401, .. })
-                if self.session_cookie.borrow().is_none() =>
-            {
-                let Some(credentials) = persisted_credentials() else {
-                    return Err(WebApiError::Http {
-                        status: 401,
-                        message: "unauthorized (set user/password in webui-settings.json)"
-                            .to_string(),
-                    });
-                };
-                // The cookie lands on `self` (RefCell), so later calls
-                // skip the login instead of re-authenticating every time.
-                self.login(&credentials)?;
-                self.raw_request_json(method, path_and_query, body)
+        let mut attempted_login = false;
+        loop {
+            match self.raw_request_json(method, path_and_query, body) {
+                Err(WebApiError::Http { status: 401, .. }) if !attempted_login => {
+                    let Some(credentials) = persisted_credentials() else {
+                        return Err(WebApiError::Http {
+                            status: 401,
+                            message: "unauthorized (set user/password in webui-settings.json)"
+                                .to_string(),
+                        });
+                    };
+                    // The cookie lands on `self` (RefCell), so later
+                    // calls skip the login; a stale one is replaced
+                    // here when the server rotated its token.
+                    self.login(&credentials)?;
+                    attempted_login = true;
+                }
+                other => return other,
             }
-            other => other,
         }
     }
 
@@ -1128,6 +1134,132 @@ mod tests {
         // The server thread parks on accept() after its bounded request
         // count; detach it like the other fake servers in this suite.
         drop(handle);
+    }
+
+    #[test]
+    fn stale_cookie_relogs_in_after_server_token_rotation() {
+        // The WebUI regenerates its session token on every start, so a
+        // long-running TUI holds a stale cookie after a server restart.
+        // The old guard (`cookie.is_none()`) refused to re-login and the
+        // 401 surfaced forever; the retry loop must replace the stale
+        // cookie and recover.
+        let _guard = lock_env();
+        use std::io::{BufRead as _, BufReader};
+        use std::sync::{Arc, Mutex};
+        let config_home =
+            std::env::temp_dir().join(format!("herdr-tui-stale-cookie-{}", std::process::id()));
+        std::fs::create_dir_all(config_home.join("herdr-webui")).unwrap();
+        std::fs::write(
+            config_home.join("herdr-webui").join("webui-settings.json"),
+            serde_json::json!({ "user": "admin", "password": "secret" }).to_string(),
+        )
+        .unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+        // The server rotates its accepted token after the first
+        // authorized call (a restart): token1 then token2.
+        let current_token = Arc::new(Mutex::new("token1".to_string()));
+        let token_for_server = current_token.clone();
+        let login_count = Arc::new(Mutex::new(0usize));
+        let seen = login_count.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let target = request_line.split(' ').nth(1).unwrap_or("").to_string();
+                let mut content_length = 0usize;
+                let mut cookie = String::new();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let trimmed = header.trim();
+                    if trimmed.is_empty() {
+                        break;
+                    }
+                    let lower = trimmed.to_ascii_lowercase();
+                    if let Some(value) = lower.strip_prefix("content-length:") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    } else if let Some(value) = lower.strip_prefix("cookie:") {
+                        cookie = value.trim().to_string();
+                    }
+                }
+                let mut body = vec![0; content_length];
+                if content_length > 0 {
+                    let _ = reader.read_exact(&mut body);
+                }
+                let body: Value = if body.is_empty() {
+                    Value::Null
+                } else {
+                    serde_json::from_slice(&body).unwrap_or(Value::Null)
+                };
+                let mut stream = stream;
+                let response = if target == "/api/login" {
+                    *seen.lock().unwrap() += 1;
+                    let ok = body.get("username").and_then(Value::as_str) == Some("admin")
+                        && body.get("password").and_then(Value::as_str) == Some("secret");
+                    let token = token_for_server.lock().unwrap().clone();
+                    if ok {
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: herdr_web_session={token}; HttpOnly; Path=/\r\nContent-Length: {}\r\n\r\n{{\"ok\":true}}",
+                            "{\"ok\":true}".len()
+                        )
+                    } else {
+                        format!(
+                            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{{\"error\":\"bad credentials\"}}",
+                            "{\"error\":\"bad credentials\"}".len()
+                        )
+                    }
+                } else if !cookie.contains(&format!(
+                    "herdr_web_session={}",
+                    token_for_server.lock().unwrap().clone()
+                )) {
+                    format!(
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{{\"error\":\"unauthorized\"}}",
+                        "{\"error\":\"unauthorized\"}".len()
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{{\"recent\":[{{\"path\":\"/a\"}}]}}",
+                        "{\"recent\":[{\"path\":\"/a\"}]}".len()
+                    )
+                };
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+
+        let client = WebApiClient::new("127.0.0.1", port);
+        // First call: login, cookie token1, authorized.
+        let value = client.recent_workspaces().expect("first call logs in");
+        assert_eq!(value["recent"][0]["path"], "/a");
+        assert_eq!(*login_count.lock().unwrap(), 1);
+        // Second call still rides token1.
+        client.recent_workspaces().expect("cached cookie works");
+        assert_eq!(*login_count.lock().unwrap(), 1);
+        // Server restart: the token rotates. The TUI's cached cookie is
+        // now stale; the next call must re-login and recover.
+        *current_token.lock().unwrap() = "token2".to_string();
+        let value = client
+            .recent_workspaces()
+            .expect("stale cookie triggers re-login and the call recovers");
+        assert_eq!(value["recent"][0]["path"], "/a");
+        assert_eq!(*login_count.lock().unwrap(), 2, "exactly one re-login");
+        // And the new cookie is cached again: no further logins.
+        client.recent_workspaces().expect("new cookie cached");
+        assert_eq!(*login_count.lock().unwrap(), 2);
+        drop(handle);
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = std::fs::remove_dir_all(&config_home);
     }
 
     #[test]

@@ -98,14 +98,17 @@ Panel/workspace management:
    (including failed loads, so a dead server is not retried on every
    open) and open/remove/clear invalidate the cache
    (`invalidateRecent` parity). The TUI `WebApiClient` also
-   authenticates now: a first 401 triggers a `POST /api/login` with
+   authenticates now: a 401 triggers a `POST /api/login` with
    the `user`/`password` from the same `webui-settings.json` the bind
-   discovery reads, the session cookie is cached and sent on every
-   later call, with exactly one retry (the desktop browser carries
-   the cookie transparently). `localhost_no_auth` servers never 401,
-   so the default local setup is unchanged. Remaining caveat: when
-   the settings file has no credentials the 401 surfaces as an error,
-   consistent with every other WebUI-API failure mode.
+   discovery reads, at most one login attempt per call (the desktop
+   browser carries the cookie transparently). The session cookie is
+   cached and sent on every later call, and a stale cookie after a
+   WebUI restart (the token regenerates per start) recovers the same
+   way: the next call re-logins and replaces it. `localhost_no_auth`
+   servers never 401, so the default local setup is unchanged.
+   Remaining caveat: when the settings file has no credentials the
+   401 surfaces as an error, consistent with every other WebUI-API
+   failure mode.
    Recent rows list above the local candidates, filter with the
    query, dim already-open paths (`(already open)` hint) and refuse
    navigation on them.
