@@ -6230,3 +6230,75 @@ fn search_palette_render_invariants() {
         "cursor is not on a result row: {cursor_row}"
     );
 }
+
+#[test]
+fn search_palette_scoring_orders_exact_prefix_substring() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.snapshot
+        .workspaces
+        .push(crate::tui::model::TuiWorkspace {
+            id: "ws_repo".to_string(),
+            label: "repo".to_string(),
+            cwd: "/repo".to_string(),
+            focused: false,
+            agent_status: "idle".to_string(),
+            pane_count: 0,
+            tab_count: 0,
+            active_tab_id: None,
+        });
+    app.snapshot
+        .workspaces
+        .push(crate::tui::model::TuiWorkspace {
+            id: "ws_x".to_string(),
+            label: "my repo here".to_string(),
+            cwd: "/x".to_string(),
+            focused: false,
+            agent_status: "idle".to_string(),
+            pane_count: 0,
+            tab_count: 0,
+            active_tab_id: None,
+        });
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    // "repo" ties "Repo" and "repo" at the same substring index (score
+    // tie broken by title) and finds "my repo here" at a later index.
+    app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('o')));
+
+    let labels: Vec<String> = app
+        .search_palette
+        .results
+        .iter()
+        .map(|c| match c {
+            search::SearchCandidate::Workspace { label, .. } => label.clone(),
+            _ => String::new(),
+        })
+        .collect();
+    // Desktop parity: workspace searchText is "workspace {title} ...", so
+    // both "Repo" and "repo" are substring hits at the same index (score
+    // tie) and order falls to title.localeCompare, where "Repo" < "repo".
+    // "my repo here" matches at a later index, so it ranks last.
+    assert_eq!(
+        labels,
+        vec![
+            "Repo".to_string(),
+            "repo".to_string(),
+            "my repo here".to_string()
+        ],
+        "score ties break by title, later substring index ranks later"
+    );
+
+    // Selection stays robust when results go empty: typing a nonsense
+    // query must not panic on move_selection or Enter.
+    for ch in "zzqqxx".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert!(app.search_palette.results.is_empty());
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    app.handle_key(KeyEvent::from(KeyCode::Up));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.mode, crate::tui::model::TuiMode::SearchPalette);
+}
