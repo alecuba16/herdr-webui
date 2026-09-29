@@ -247,11 +247,13 @@ impl TuiApp {
         Ok("worktree removed".to_string())
     }
 
-    /// Webui `openWorktrees` (prefix W): browse the discovered worktrees
-    /// of the selected workspace folder. Without a workspace the webui
-    /// falls back to the exploration default folder; the TUI uses the
-    /// selected workspace cwd or home. Rows land in the WorktreeList
-    /// overlay (Enter opens, j/k moves, type filters).
+    /// Webui `openWorktrees` (prefix W): browse the selected workspace
+    /// folder like the webui "Open workspace or worktree" modal. The
+    /// overlay lists the folder itself (Enter opens it as a workspace),
+    /// the discovered worktrees (Enter opens), and the subdirectories
+    /// (Enter descends, `o` opens as a workspace), all filterable.
+    /// Without a workspace the webui falls back to the exploration
+    /// default folder; the TUI uses the selected workspace cwd or home.
     pub fn worktree_list(&mut self) -> WorkspaceResult {
         let cwd = self
             .selected_workspace()
@@ -262,6 +264,28 @@ impl TuiApp {
                     .map(|home| home.to_string_lossy().to_string())
                     .unwrap_or_else(|| ".".to_string())
             });
+        self.worktree_browse(&cwd)
+    }
+
+    /// Webui `newWorkspace` (prefix `N`): open the browser overlay in
+    /// "pick a folder" intent. Enter on the "this folder" row, a
+    /// worktree row, or a folder row stages that path into the
+    /// workspace name prompt (webui modal collects folder + name).
+    pub fn workspace_pick_folder(&mut self) -> WorkspaceResult {
+        self.worktree_pick_workspace = true;
+        let result = self.worktree_list();
+        if result.is_err() {
+            self.worktree_pick_workspace = false;
+        }
+        result
+    }
+
+    /// Point the browser overlay at `path`: discover its worktrees and
+    /// subdirectories, reset the cursor and filter, and open the overlay
+    /// (staying in it when already open, e.g. while descending).
+    pub fn worktree_browse(&mut self, path: &str) -> WorkspaceResult {
+        let expanded = expand_tilde_path(path);
+        let cwd = expanded.to_string_lossy().to_string();
         let result = self
             .client
             .list_worktrees(Some(&cwd))
@@ -271,31 +295,120 @@ impl TuiApp {
             .and_then(Value::as_array)
             .map(|items| items.iter().map(WorktreeRow::from_json).collect())
             .unwrap_or_default();
+        self.worktree_folder_rows = list_subdirectories(&expanded);
         self.worktree_selected = 0;
         self.worktree_filter.clear();
         self.worktree_root = cwd.clone();
-        self.open_overlay(TuiMode::WorktreeList);
-        Ok(format!("worktrees: {} in {cwd}", self.worktree_rows.len()))
+        if self.mode != TuiMode::WorktreeList {
+            self.open_overlay(TuiMode::WorktreeList);
+        }
+        Ok(format!(
+            "browsing {} ({} worktrees, {} folders)",
+            self.worktree_root,
+            self.worktree_rows.len(),
+            self.worktree_folder_rows.len()
+        ))
     }
 
-    /// Enter in the WorktreeList overlay: open the selected checkout
-    /// through `worktree.open`. The backend focuses an already-open
-    /// workspace instead of duplicating it (webui already-open parity).
-    pub fn worktree_open_selected(&mut self) -> WorkspaceResult {
-        // The cursor indexes the filtered list, exactly like the webui
-        // modal selection over its rendered rows.
+    /// Rows shown in the overlay, in display order: the browse root
+    /// itself ("this folder"), the discovered worktrees, then the
+    /// subdirectories of the root.
+    pub fn browser_rows(&self) -> Vec<BrowserRow> {
+        let mut rows = vec![BrowserRow::ThisFolder {
+            path: self.worktree_root.clone(),
+        }];
+        rows.extend(self.worktree_rows.iter().cloned().map(BrowserRow::Worktree));
+        rows.extend(self.worktree_folder_rows.iter().cloned());
+        rows
+    }
+
+    /// Rows matching the typed filter (webui modal search over rows).
+    /// The query matches paths, names, branches, and labels.
+    pub fn filtered_browser_rows(&self) -> Vec<BrowserRow> {
+        let query = self.worktree_filter.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            return self.browser_rows();
+        }
+        self.browser_rows()
+            .into_iter()
+            .filter(|row| row.matches(&query))
+            .collect()
+    }
+
+    /// Enter in the WorktreeList overlay: worktree rows open through
+    /// `worktree.open`, folder rows descend into the folder, and the
+    /// "this folder" row opens the browse root as a workspace. In
+    /// pick mode (prefix `N`) Enter keeps descending folders (the
+    /// tree stays navigable) and `o` stages any row for the
+    /// workspace name prompt instead.
+    pub fn worktree_enter_selected(&mut self) -> WorkspaceResult {
         let Some(row) = self
-            .filtered_worktree_rows()
+            .filtered_browser_rows()
             .get(self.worktree_selected)
             .cloned()
         else {
             return Err("no worktree selected".to_string());
         };
-        if row.path.is_empty() {
+        if self.worktree_pick_workspace && !matches!(row, BrowserRow::Folder { .. }) {
+            return self.worktree_stage_picked();
+        }
+        match row {
+            BrowserRow::Folder { path, .. } => self.worktree_browse(&path),
+            _ => self.worktree_open_selected(),
+        }
+    }
+
+    /// Stage the selected row's path for the workspace name prompt
+    /// (prefix `N` pick mode). Validates on disk like the typed-path
+    /// flow (webui "workspace folder must exist") before chaining.
+    fn worktree_stage_picked(&mut self) -> WorkspaceResult {
+        let Some(row) = self
+            .filtered_browser_rows()
+            .get(self.worktree_selected)
+            .cloned()
+        else {
+            return Err("no worktree selected".to_string());
+        };
+        let path = match &row {
+            BrowserRow::ThisFolder { path } | BrowserRow::Folder { path, .. } => path.clone(),
+            BrowserRow::Worktree(worktree) => worktree.path.clone(),
+        };
+        if path.is_empty() {
             return Err("worktree path missing".to_string());
         }
+        let expanded = validate_workspace_folder(&path)?;
+        self.workspace_create_stage = Some(WorkspaceCreateStage::Path(expanded.clone()));
+        self.worktree_pick_workspace = false;
+        self.close_overlay();
+        self.prompt_input = Some(PromptInput::new(PromptKind::NewWorkspaceName));
+        self.status = format!("workspace at {expanded}: type the name");
+        Ok(format!("workspace path staged: {expanded}"))
+    }
+
+    /// Open the selected checkout through `worktree.open`. The backend
+    /// focuses an already-open workspace instead of duplicating it (webui
+    /// already-open parity), so it also covers plain folders opened as
+    /// workspaces.
+    pub fn worktree_open_selected(&mut self) -> WorkspaceResult {
+        // The cursor indexes the filtered list, exactly like the webui
+        // modal selection over its rendered rows.
+        let Some(row) = self
+            .filtered_browser_rows()
+            .get(self.worktree_selected)
+            .cloned()
+        else {
+            return Err("no worktree selected".to_string());
+        };
+        let path = match &row {
+            BrowserRow::ThisFolder { path } | BrowserRow::Folder { path, .. } => path.clone(),
+            BrowserRow::Worktree(worktree) => worktree.path.clone(),
+        };
+        if path.is_empty() {
+            return Err("worktree path missing".to_string());
+        }
+        let title = row.title();
         self.client
-            .open_worktree(&row.path, None, None)
+            .open_worktree(&path, None, None)
             .map_err(|err| err.to_string())?;
         self.refresh().map_err(|err| err.to_string())?;
         // Focus the opened workspace like the webui post-open navigation;
@@ -304,7 +417,7 @@ impl TuiApp {
             .snapshot
             .workspaces
             .iter()
-            .find(|ws| ws.cwd == row.path)
+            .find(|ws| ws.cwd == path)
             .map(|ws| ws.id.clone())
         {
             self.focus_workspace_by_id(&id);
@@ -313,7 +426,7 @@ impl TuiApp {
         // the new workspace), so it also drops any overlay stack.
         self.overlay_stack.clear();
         self.mode = TuiMode::Navigate;
-        Ok(format!("opened {}", row.title()))
+        Ok(format!("opened {title}"))
     }
 
     /// Rows matching the typed filter (webui modal search over rows).
@@ -336,25 +449,65 @@ impl TuiApp {
     /// Keys inside the WorktreeList overlay: j/k move over the filtered
     /// rows, printable characters extend the type-to-filter query (same
     /// convention as the help overlay: j/k only move when the query is
-    /// empty), Enter opens the selected worktree, Esc closes (clearing
-    /// the filter first). Arrows always move the cursor like the webui
-    /// modal, which navigates its rows while the search box has text.
+    /// empty), Enter opens worktrees and the "this folder" row and
+    /// descends into folders, `o` opens any row without descending, `h`
+    /// goes to the parent folder, Esc closes (clearing the filter
+    /// first). Arrows always move the cursor like the webui modal, which
+    /// navigates its rows while the search box has text.
     pub(crate) fn handle_worktree_list_key(&mut self, key: KeyEvent) {
         let filter_active = !self.worktree_filter.is_empty();
-        let len = self.filtered_worktree_rows().len();
+        let len = self.filtered_browser_rows().len();
         match key.code {
             KeyCode::Esc => {
                 if filter_active {
                     self.worktree_filter.clear();
                     self.worktree_selected = 0;
                 } else {
+                    // Closing the picker cancels the intent (prefix `N`
+                    // chains to the name prompt only on Enter).
+                    self.worktree_pick_workspace = false;
                     self.close_overlay();
                 }
             }
-            KeyCode::Enter => match self.worktree_open_selected() {
+            KeyCode::Enter => match self.worktree_enter_selected() {
                 Ok(message) => self.status = message,
                 Err(err) => self.status = err,
             },
+            // `o` opens the selected row as a workspace even when it is
+            // a folder (Enter on folders descends instead). In pick mode
+            // (prefix `N`) `o` stages the row: Enter descends folders,
+            // `o` picks them.
+            KeyCode::Char('o') if !filter_active => {
+                let result = if self.worktree_pick_workspace {
+                    self.worktree_stage_picked()
+                } else {
+                    self.worktree_open_selected()
+                };
+                match result {
+                    Ok(message) => self.status = message,
+                    Err(err) => self.status = err,
+                }
+            }
+            // `h` goes to the parent folder (vim/left convention shared
+            // with the Files screen). Backspace on an empty filter does
+            // the same so the two navigation reflexes agree.
+            KeyCode::Char('h') | KeyCode::Backspace if !filter_active => {
+                let parent = Path::new(&self.worktree_root)
+                    .parent()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !parent.is_empty() {
+                    match self.worktree_browse(&parent) {
+                        Ok(message) => self.status = message,
+                        Err(err) => self.status = err,
+                    }
+                }
+            }
+            KeyCode::Backspace if filter_active => {
+                self.worktree_filter.pop();
+                self.worktree_selected = 0;
+                self.clamp_worktree_cursor();
+            }
             // Arrows always move (webui modal parity): they are not query
             // letters, so an active filter must not swallow them.
             KeyCode::Down if len > 0 => {
@@ -369,11 +522,6 @@ impl TuiApp {
             }
             KeyCode::Char('k') if !filter_active && len > 0 => {
                 self.worktree_selected = (self.worktree_selected + len.saturating_sub(1)) % len;
-            }
-            KeyCode::Backspace => {
-                self.worktree_filter.pop();
-                self.worktree_selected = 0;
-                self.clamp_worktree_cursor();
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.worktree_filter.clear();
@@ -391,7 +539,7 @@ impl TuiApp {
     /// Keep the worktree cursor inside the filtered list after the query
     /// changes its length (webui modal keeps its selection valid).
     fn clamp_worktree_cursor(&mut self) {
-        let len = self.filtered_worktree_rows().len();
+        let len = self.filtered_browser_rows().len();
         if self.worktree_selected >= len {
             self.worktree_selected = len.saturating_sub(1);
         }
@@ -508,7 +656,6 @@ pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
 pub enum WorktreeCreateStage {
     Branch(String),
 }
-
 /// Two-step workspace creation prompt: the webui modal collects folder
 /// and name at once; the TUI asks path first (validated, tilde-expanded),
 /// then the name. The stage carries the validated path between steps.
@@ -526,7 +673,6 @@ pub struct WorktreeRow {
     pub label: String,
     pub is_linked: bool,
 }
-
 impl WorktreeRow {
     /// Parse a `worktree.list` JSON row into the overlay shape.
     pub(crate) fn from_json(value: &Value) -> Self {
@@ -561,6 +707,69 @@ impl WorktreeRow {
             format!("{} ({})", self.path, self.label)
         }
     }
+}
+
+/// One row of the browser overlay: the browse root itself, a
+/// discovered worktree, or a subdirectory of the root. Drives both the
+/// cursor (they share one filtered list) and the render badges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrowserRow {
+    /// The folder currently browsed (webui "Open as workspace").
+    ThisFolder { path: String },
+    /// A discovered worktree checkout (webui worktree row).
+    Worktree(WorktreeRow),
+    /// A subdirectory of the browse root (Enter descends, `o` opens).
+    Folder { path: String, name: String },
+}
+
+impl BrowserRow {
+    /// Row title used for the list line and open status message.
+    pub fn title(&self) -> String {
+        match self {
+            Self::ThisFolder { path } => path.clone(),
+            Self::Worktree(worktree) => worktree.title(),
+            Self::Folder { name, .. } => name.clone(),
+        }
+    }
+
+    /// Case-insensitive filter match over the row's display text
+    /// (path, name, branch, label).
+    pub fn matches(&self, query: &str) -> bool {
+        let haystack = match self {
+            Self::ThisFolder { path } => path.to_ascii_lowercase(),
+            Self::Worktree(worktree) => {
+                format!("{} {} {}", worktree.path, worktree.branch, worktree.label)
+                    .to_ascii_lowercase()
+            }
+            Self::Folder { path, name } => format!("{path} {name}").to_ascii_lowercase(),
+        };
+        haystack.contains(query)
+    }
+}
+
+/// Subdirectories of `root`, sorted by name, without `.` entries.
+/// Read errors (missing or permission-denied folders) yield an empty
+/// list so the overlay stays usable instead of failing to open.
+pub(crate) fn list_subdirectories(root: &Path) -> Vec<BrowserRow> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<BrowserRow> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                return None;
+            }
+            Some(BrowserRow::Folder {
+                path: entry.path().to_string_lossy().to_string(),
+                name,
+            })
+        })
+        .collect();
+    dirs.sort_by_key(|left| left.title());
+    dirs
 }
 
 impl TuiApp {

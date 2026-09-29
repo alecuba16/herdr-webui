@@ -108,20 +108,101 @@ fn prefix_bracket_shortcuts_move_panels() {
 }
 
 #[test]
-fn prefix_n_opens_new_workspace_prompt() {
+fn prefix_n_opens_folder_picker_and_stages_on_enter() {
     let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
-    let mut app = app_with_snapshot(workspace_snapshot());
+    let (mut app, _stop) = app_with_fake_backend();
 
+    // Ctrl+B N opens the browser overlay in pick mode: same rows as
+    // prefix W, but Enter stages a folder instead of opening it.
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('n')));
-    let prompt = app.prompt_input.as_ref().unwrap();
-    assert_eq!(prompt.kind, PromptKind::NewWorkspace);
+    assert_eq!(app.mode, TuiMode::WorktreeList);
+    assert!(app.worktree_pick_workspace, "prefix N sets the pick intent");
+    assert_eq!(app.worktree_root, "/repo");
 
-    // Typing then Enter tries the backend create; the builtin backend
-    // errors without a real session, which surfaces in the error slot.
-    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    // Enter on the "this folder" row validates on disk like the typed
+    // path flow; the fake /repo does not exist, so the error surfaces
+    // and nothing is staged.
     app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert!(app.error.is_some() || app.status.contains("workspace"));
+    assert!(
+        app.status.contains("workspace folder must exist"),
+        "status: {}",
+        app.status
+    );
+    assert_eq!(app.workspace_create_stage, None);
+    assert_eq!(app.mode, TuiMode::WorktreeList, "failed pick stays open");
+
+    // A real folder stages into the workspace name prompt (webui
+    // modal collects folder + name; the TUI chains them).
+    let dir = std::env::temp_dir().join("tui-ws-picker");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_string_lossy().to_string();
+    app.worktree_root = path.clone();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.workspace_create_stage,
+        Some(WorkspaceCreateStage::Path(path))
+    );
+    assert!(!app.worktree_pick_workspace, "pick consumed on stage");
+    assert_eq!(app.mode, TuiMode::Navigate, "picker closed after staging");
+    assert_eq!(
+        app.prompt_input.as_ref().map(|p| p.kind),
+        Some(crate::tui::PromptKind::NewWorkspaceName)
+    );
+
+    // Esc cancels the pick intent without staging.
+    let (mut app, _stop) = app_with_fake_backend();
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert!(!app.worktree_pick_workspace);
+    assert_eq!(app.workspace_create_stage, None);
+}
+
+#[test]
+fn pick_mode_enter_descends_folders_and_o_stages() {
+    let (mut app, _stop) = app_with_fake_backend();
+    let root = std::env::temp_dir().join("tui-ws-picker-tree");
+    let sub = root.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let root_path = root.to_string_lossy().to_string();
+    let sub_path = sub.to_string_lossy().to_string();
+
+    // Open the picker rooted at a real temp folder with a subdirectory.
+    // The fake backend injects a /repo worktree row for any cwd, so the
+    // browser rows are [this-folder, worktree(/repo), sub].
+    app.worktree_pick_workspace = true;
+    app.worktree_browse(&root_path).unwrap();
+    assert_eq!(app.worktree_folder_rows.len(), 1, "sub shows as a row");
+
+    // Cursor 2 is the subdirectory. Enter on it descends (stays a
+    // picker) instead of staging it.
+    app.worktree_selected = 2;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.worktree_root, sub_path, "Enter descends into sub");
+    assert_eq!(app.mode, TuiMode::WorktreeList, "picker stays open");
+    assert!(app.worktree_pick_workspace, "descent keeps the pick intent");
+    assert_eq!(app.workspace_create_stage, None);
+
+    // `o` stages the browsed folder into the name prompt.
+    app.handle_key(KeyEvent::from(KeyCode::Char('o')));
+    assert_eq!(
+        app.workspace_create_stage,
+        Some(WorkspaceCreateStage::Path(sub_path.clone()))
+    );
+    assert!(!app.worktree_pick_workspace);
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert_eq!(
+        app.prompt_input.as_ref().map(|p| p.kind),
+        Some(crate::tui::PromptKind::NewWorkspaceName)
+    );
+
+    // Backspace on an empty filter goes to the parent (same reflex as `h`).
+    let (mut app, _stop) = app_with_fake_backend();
+    app.worktree_browse(&sub_path).unwrap();
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.worktree_root, root_path, "backspace goes to parent");
 }
 
 #[test]
@@ -451,7 +532,10 @@ fn workspace_backend_actions_succeed_against_fake_socket() {
         app.rename_panel(" Build ").unwrap(),
         "panel renamed to Build"
     );
-    assert_eq!(app.worktree_list().unwrap(), "worktrees: 1 in /docs");
+    assert_eq!(
+        app.worktree_list().unwrap(),
+        "browsing /docs (1 worktrees, 0 folders)"
+    );
     assert_eq!(
         app.create_worktree(" feature ", " /checkout ").unwrap(),
         "worktree created: feature -> /checkout"
@@ -598,8 +682,14 @@ fn round4_workspace_temp_empty_ids_and_create_path_backend_error() {
     );
 }
 
+/// Serializes tests that touch `$HOME`: one removes it process-wide
+/// (expand_tilde_falls_back_without_home) while the other expands `~`
+/// against it, so running them concurrently is a race.
+static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn new_workspace_prompt_validates_tilde_expands_and_chains_name_step() {
+    let _guard = HOME_LOCK.lock().unwrap();
     use super::{validate_workspace_folder, WorkspaceCreateStage};
 
     // Tilde expansion mirrors the webui expand_user_path_string.
@@ -727,16 +817,18 @@ fn worktree_overlay_arrows_move_while_filter_active() {
     assert_eq!(app.worktree_filter, "repo");
     assert_eq!(app.filtered_worktree_rows().len(), 1);
 
-    // Down keeps the cursor in range (wrap on a 1-row list) instead of
-    // being eaten by the filter, and j extends the query.
+    // Down keeps moving the cursor (wrap over the 2 filtered rows:
+    // "this folder" and the worktree) instead of being eaten by the
+    // filter, and j extends the query.
     app.worktree_selected = 0;
     app.handle_key(KeyEvent::from(KeyCode::Down));
-    assert_eq!(app.worktree_selected, 0, "Down moves even with a filter");
+    assert_eq!(app.worktree_selected, 1, "Down moves even with a filter");
     app.handle_key(KeyEvent::from(KeyCode::Char('j')));
     assert_eq!(app.worktree_filter, "repoj", "j types into the filter");
 
     // A filter matching nothing clamps the cursor to a valid position.
     app.worktree_filter = "zz".to_string();
+    app.worktree_selected = 0;
     app.handle_key(KeyEvent::from(KeyCode::Down));
     assert_eq!(
         app.worktree_selected, 0,
@@ -761,8 +853,9 @@ fn worktree_overlay_covers_remaining_key_arms_and_error_paths() {
         "no worktree selected"
     );
 
-    // Enter with a row whose path is missing errors.
-    app.worktree_selected = 0;
+    // Enter with a row whose path is missing errors. The browser list
+    // puts the "this folder" row at 0, so the worktree row is at 1.
+    app.worktree_selected = 1;
     app.worktree_rows[0].path = String::new();
     assert_eq!(
         app.worktree_open_selected().unwrap_err(),
@@ -782,13 +875,14 @@ fn worktree_overlay_covers_remaining_key_arms_and_error_paths() {
     app.handle_key(KeyEvent::from(KeyCode::Backspace));
     assert_eq!(app.worktree_filter, "");
 
-    // Up/k move with wrap on the unfiltered list.
+    // Up/k move with wrap. The browser list has two rows: the "this
+    // folder" row plus the discovered worktree.
     app.handle_key(KeyEvent::from(KeyCode::Up));
-    assert_eq!(app.worktree_selected, 0, "up wraps to last on 1 row");
+    assert_eq!(app.worktree_selected, 1, "up wraps to last on 2 rows");
     app.handle_key(KeyEvent::from(KeyCode::Char('k')));
     assert_eq!(app.worktree_selected, 0);
     app.handle_key(KeyEvent::from(KeyCode::Down));
-    assert_eq!(app.worktree_selected, 0);
+    assert_eq!(app.worktree_selected, 1);
     app.handle_key(KeyEvent::from(KeyCode::Char('j')));
     assert_eq!(app.worktree_selected, 0);
 
@@ -841,6 +935,8 @@ fn worktree_open_focuses_unknown_path_without_panicking() {
     // auto-drop or rename on open).
     let (mut app, _stop) = app_with_fake_backend();
     app.worktree_list().unwrap();
+    // Cursor 1 targets the worktree row (0 is the "this folder" row).
+    app.worktree_selected = 1;
     app.worktree_rows[0].path = "/elsewhere".to_string();
     let before = app.selected_workspace;
     let result = app.worktree_open_selected().unwrap();
@@ -867,6 +963,7 @@ fn worktree_backspace_clamps_cursor_when_filter_shrinks() {
 
 #[test]
 fn expand_tilde_falls_back_without_home() {
+    let _guard = HOME_LOCK.lock().unwrap();
     // Without $HOME a ~/path stays as typed instead of panicking.
     let prev = std::env::var_os("HOME");
     unsafe { std::env::remove_var("HOME") };

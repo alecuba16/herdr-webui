@@ -10,6 +10,13 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 fn serve_fake_backend(path: &std::path::Path) -> mpsc::Sender<()> {
+    serve_fake_backend_at(path, "/repo")
+}
+
+/// Same fake backend with a configurable workspace cwd, so PTY tests
+/// can point the browser at real on-disk folders.
+fn serve_fake_backend_at(path: &std::path::Path, cwd: &str) -> mpsc::Sender<()> {
+    let cwd = cwd.to_string();
     let name = path.to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new()
         .name(name)
@@ -37,7 +44,7 @@ fn serve_fake_backend(path: &std::path::Path) -> mpsc::Sender<()> {
         let response = match request["method"].as_str().unwrap_or("") {
             "ping" => json!({"id": request["id"], "result": {"version": "pty", "protocol": 1}}),
             "session.snapshot" => json!({"id": request["id"], "result": {"snapshot": {
-                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
+                "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd": cwd, "focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
                 "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idled","cwd":"/repo","focused":true}],
                 "agents": []
             }}}),
@@ -334,6 +341,160 @@ fn tui_binary_interactive_loop_pty() {
 
     let _ = std::fs::remove_file(&path);
     let _ = stop.send(());
+}
+
+#[test]
+fn tui_binary_worktree_browser_and_picker_pty() {
+    // End-to-end acceptance over the real binary: the prefix-W browser
+    // overlay must show the browse root and its real subdirectories,
+    // the typed filter must narrow the rows, and the prefix-N picker
+    // must stage the browsed folder into the workspace name prompt.
+    // The workspace cwd points at a real temp tree so the folder rows
+    // come from the actual filesystem.
+    // A deliberately short root keeps the this-folder row inside the
+    // 80-col overlay on CI runners whose TMPDIR lives deep under
+    // /var/folders and would truncate the rendered path. canonicalize
+    // folds the /private/tmp symlink so the asserted path matches
+    // what the TUI actually renders (the backend reports the cwd, and
+    // this test asserts on the rendered path string).
+    let root_raw =
+        std::path::PathBuf::from(format!("/tmp/hdrw-tui-browser-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root_raw);
+    std::fs::create_dir_all(&root_raw).unwrap();
+    let root = std::fs::canonicalize(&root_raw).unwrap();
+    let sub_alpha = root.join("alpha");
+    let sub_beta = root.join("beta");
+    std::fs::create_dir_all(&sub_alpha).unwrap();
+    std::fs::create_dir_all(&sub_beta).unwrap();
+    let root_path = root.to_string_lossy().to_string();
+
+    let path = std::env::temp_dir().join(format!(
+        "herdr-tui-pty-browser-{}-{}.sock",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let stop = serve_fake_backend_at(&path, &root_path);
+
+    let pty_system = NativePtySystem::default();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 30,
+            cols: 100,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr-webui-tui"));
+    cmd.args([
+        "--api-socket",
+        path.to_str().unwrap(),
+        "--terminal-socket",
+        path.to_str().unwrap(),
+        "--refresh-ms",
+        "50",
+    ]);
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+    let mut child_guard = ChildGuard {
+        killer: Some(child.clone_killer()),
+    };
+    let pty_out = pair.master.try_clone_reader().unwrap();
+    let log = pump(pty_out);
+
+    wait_for(&log, "q quit");
+
+    // Ctrl+B w opens the browser: the "this folder" row shows the
+    // browse root and both real subdirectories render as rows.
+    let mut writer = pair.master.take_writer().unwrap();
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"w");
+    let _ = writer.flush();
+    wait_for(&log, "Open workspace or worktree");
+    assert!(
+        log.lock()
+            .unwrap()
+            .contains(&format!("this folder: {root_path}")),
+        "this-folder row must show the browse root"
+    );
+    wait_for(&log, "alpha/");
+    assert!(
+        log.lock().unwrap().contains("beta/"),
+        "subdirectories must render as folder rows"
+    );
+    assert!(
+        log.lock().unwrap().contains("[folder]"),
+        "folder badge must render"
+    );
+
+    // Typing filters the rows (webui modal search): "alp" matches only
+    // alpha out of the three rows (this folder, alpha, beta), so the
+    // count line narrows to 1/3. Positive assertions are used because
+    // the pump log is append-only and ratatui only re-emits changed
+    // cells: the narrowed count arrives contiguously in both repaint
+    // forms (full-row repaint and per-cell diff update), while the
+    // filter text itself may arrive as split cell updates, so "1/3"
+    // is the stable wire signal for the narrowed result set.
+    let _ = writer.write_all(b"alp");
+    let _ = writer.flush();
+    wait_for(&log, "1/3");
+    // Esc clears the filter first, second Esc closes the overlay.
+    let _ = writer.write_all(b"\x1b");
+    let _ = writer.flush();
+    std::thread::sleep(Duration::from_millis(200));
+    let _ = writer.write_all(b"\x1b");
+    let _ = writer.flush();
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Ctrl+B n opens the picker over the same rows: the panel title
+    // announces the pick intent ("o stages the folder"). The row badge
+    // is truncated by the 80-col overlay behind the long temp path,
+    // so the title is the assertable signal; the badge rendering is
+    // covered by the unit tests.
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"n");
+    let _ = writer.flush();
+    wait_for(&log, "New workspace");
+    wait_for(&log, "o stages the folder");
+    let _ = writer.write_all(b"o");
+    let _ = writer.flush();
+    wait_for(&log, "Workspace name");
+    assert!(
+        log.lock().unwrap().contains(&root_path),
+        "staged path must show as the prompt subject"
+    );
+
+    // Quit cleanly: Esc drops the prompt, Ctrl+B q + y exits.
+    let _ = writer.write_all(b"\x1b");
+    let _ = writer.flush();
+    std::thread::sleep(Duration::from_millis(200));
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"q");
+    let _ = writer.flush();
+    wait_for(&log, "Quit herdr-webui-tui?");
+    let _ = writer.write_all(b"y");
+    let _ = writer.flush();
+    drop(writer);
+
+    let (tx, rx) = mpsc::channel::<portable_pty::ExitStatus>();
+    let mut killer = child.clone_killer();
+    std::thread::spawn(move || {
+        if let Ok(status) = child.wait() {
+            let _ = tx.send(status);
+        }
+    });
+    let status = rx.recv_timeout(Duration::from_secs(120));
+    if status.is_err() {
+        let _ = killer.kill();
+    }
+    let status = status.expect("TUI did not exit after q + y confirm");
+    assert!(status.success());
+    child_guard.disarm();
+
+    let _ = std::fs::remove_file(&path);
+    let _ = stop.send(());
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
