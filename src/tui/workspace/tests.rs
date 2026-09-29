@@ -10,7 +10,13 @@ use super::*;
 use crate::backend_client::BackendClient;
 
 fn app_with_snapshot(snapshot: serde_json::Value) -> TuiApp {
-    let mut app = TuiApp::new(BackendClient::builtin_session(None), Duration::from_secs(1));
+    // Never wire the live built-in backend into tests: a mutating shortcut
+    // (or a refresh) would hit the real user session. A nonexistent socket
+    // keeps every backend call on its error path.
+    let mut app = TuiApp::new(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+    );
     app.snapshot = crate::tui::model::TuiSnapshot::from_backend_response(&snapshot);
     app
 }

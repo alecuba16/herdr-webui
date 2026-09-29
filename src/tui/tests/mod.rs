@@ -921,11 +921,14 @@ fn fixture_snapshot() -> TuiSnapshot {
 }
 
 fn app_with_snapshot() -> TuiApp {
-    // NOTE: `builtin_session` points at the built-in backend, which may be
-    // live on this machine. Tests must not depend on its state; any key
-    // that triggers a backend refresh can replace this fixture snapshot
-    // with live data.
-    let client = BackendClient::builtin_session(None);
+    // NOTE: tests must NEVER wire `builtin_session(None)` into an app that
+    // dispatches mutating shortcuts: that points at the real user backend
+    // (the live herdr.sock in ~/.config/herdr-webui/builtin/default), so a
+    // single Ctrl+B P / Ctrl+B X arm creates or closes REAL tabs in the
+    // user's session. A nonexistent socket keeps every mutating arm on its
+    // error path (and read-only refreshes too), which is what these tests
+    // assert anyway. Tests that need a working backend use `fake_backend_socket`.
+    let client = BackendClient::new("/nonexistent.sock", "/nonexistent.sock");
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.snapshot = fixture_snapshot();
     app
