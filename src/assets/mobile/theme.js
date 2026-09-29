@@ -25,11 +25,22 @@
         ),
       );
       largestVisualViewportHeight = Math.max(largestVisualViewportHeight, height);
-      documentRef.body.style.setProperty("--herdr-mobile-viewport-height", `${height}px`);
-      documentRef.body.classList.toggle(
-        "mobile-keyboard-open",
-        state.screen === "terminal" && largestVisualViewportHeight - height > 120,
-      );
+      // Runs on every render; skip the style/class writes when unchanged so
+      // steady-state refreshes stop dirtying body style.
+      const vh = `${height}px`;
+      if (
+        typeof documentRef.body.style.getPropertyValue !== "function" ||
+        documentRef.body.style.getPropertyValue("--herdr-mobile-viewport-height") !== vh
+      )
+        documentRef.body.style.setProperty("--herdr-mobile-viewport-height", vh);
+      const keyboardOpen =
+        state.screen === "terminal" && largestVisualViewportHeight - height > 120;
+      if (
+        typeof documentRef.body.classList.contains === "function"
+          ? documentRef.body.classList.contains("mobile-keyboard-open") !== keyboardOpen
+          : true
+      )
+        documentRef.body.classList.toggle("mobile-keyboard-open", keyboardOpen);
     }
 
     function scheduleTerminalResize() {
@@ -45,7 +56,13 @@
       try {
         const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
         const value = Math.max(0, Math.min(40, Number(parsed.treeIndentPx) || 14));
-        documentRef.body.style.setProperty("--herdr-tree-indent", `${value}px`);
+        const indent = `${value}px`;
+        // Runs on every render; only write when the setting actually moved.
+        if (
+          typeof documentRef.body.style.getPropertyValue !== "function" ||
+          documentRef.body.style.getPropertyValue("--herdr-tree-indent") !== indent
+        )
+          documentRef.body.style.setProperty("--herdr-tree-indent", indent);
       } catch (_) {}
     }
 
