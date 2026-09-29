@@ -116,10 +116,14 @@ function syncWorkspacePanelMenuSize() {
     menu = workspacePane && workspacePane.querySelector && workspacePane.querySelector(".panel-menu");
   if (!workspacePane) return;
   if (!menu) {
-    workspacePane.classList.remove("panel-menu-open");
-    if (workspacePane.style.removeProperty)
-      workspacePane.style.removeProperty("--workspace-panel-menu-min-height");
-    else workspacePane.style.setProperty("--workspace-panel-menu-min-height", "0px");
+    // Skip the class/style writes when the pane is already in the closed
+    // state; this runs on every render so unchanged writes are pure recalc.
+    if (workspacePane.classList.contains("panel-menu-open")) {
+      workspacePane.classList.remove("panel-menu-open");
+      if (workspacePane.style.removeProperty)
+        workspacePane.style.removeProperty("--workspace-panel-menu-min-height");
+      else workspacePane.style.setProperty("--workspace-panel-menu-min-height", "0px");
+    }
     return;
   }
   workspacePane.classList.add("panel-menu-open");
@@ -127,7 +131,14 @@ function syncWorkspacePanelMenuSize() {
     menuRect = menu.getBoundingClientRect ? menu.getBoundingClientRect() : null;
   if (!paneRect || !menuRect) return;
   const minHeight = Math.max(0, Math.ceil(menuRect.bottom - paneRect.top + 10));
-  workspacePane.style.setProperty("--workspace-panel-menu-min-height", `${minHeight}px`);
+  // Setting the property to the same value still dirties style; only write
+  // when the measured min-height actually moved. The typeof guard keeps
+  // DOM-stub test environments (style objects without getPropertyValue) happy.
+  if (
+    typeof workspacePane.style.getPropertyValue !== "function" ||
+    `${minHeight}px` !== workspacePane.style.getPropertyValue("--workspace-panel-menu-min-height")
+  )
+    workspacePane.style.setProperty("--workspace-panel-menu-min-height", `${minHeight}px`);
 }
 window.HerdrDesktopRender = render;
 function syncProjectDashboard() {
