@@ -9,8 +9,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
-use serde_json::Value;
 use serde_json::json;
+use serde_json::Value;
 
 use crate::{expand_user_path_string, git_failure, require_auth, WebState};
 
@@ -131,7 +131,9 @@ pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, Stri
             }
             let branch = safe_git_token(&body.branch, "branch")?.to_string();
             let force = body.force.unwrap_or(false);
-            map_status(branch::git_ui_branch_delete_blocking(body.cwd, branch, force))
+            map_status(branch::git_ui_branch_delete_blocking(
+                body.cwd, branch, force,
+            ))
         }
         "git.switch" => {
             let body: branch::GitUiSwitchRequest = decode(&params)?;
@@ -177,7 +179,11 @@ pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, Stri
                 return Err("cwd and file are required".to_string());
             };
             let file = safe_repo_path(file)?.to_string();
-            map_status(file::git_ui_file_blocking(cwd.to_string(), file, body.ref_name))
+            map_status(file::git_ui_file_blocking(
+                cwd.to_string(),
+                file,
+                body.ref_name,
+            ))
         }
         "git.file_write" => {
             let body: file::GitUiWriteFileRequest = decode(&params)?;
@@ -220,12 +226,18 @@ pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, Stri
         }
         "git.stage" => {
             let body: GitUiPathsRequest = decode(&params)?;
-            let paths = git_ui_paths(&body)?.into_iter().map(str::to_string).collect::<Vec<_>>();
+            let paths = git_ui_paths(&body)?
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
             map_status(git_ui_stage_blocking(body.cwd, paths))
         }
         "git.unstage" => {
             let body: GitUiPathsRequest = decode(&params)?;
-            let paths = git_ui_paths(&body)?.into_iter().map(str::to_string).collect::<Vec<_>>();
+            let paths = git_ui_paths(&body)?
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
             map_status(git_ui_unstage_blocking(body.cwd, paths))
         }
         "git.discard" => {
@@ -233,7 +245,10 @@ pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, Stri
             if !body.confirmed.unwrap_or(false) {
                 return Err("discard requires confirmation".to_string());
             }
-            let paths = git_ui_paths(&body)?.into_iter().map(str::to_string).collect::<Vec<_>>();
+            let paths = git_ui_paths(&body)?
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
             map_status(git_ui_discard_blocking(body.cwd, paths))
         }
         "git.stash" => {
@@ -286,7 +301,11 @@ pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, Stri
                 return Err("hard reset requires typed confirmation".to_string());
             }
             let ref_name = safe_git_token(&body.ref_name, "ref")?.to_string();
-            map_status(log::git_ui_reset_blocking(body.cwd, mode.to_string(), ref_name))
+            map_status(log::git_ui_reset_blocking(
+                body.cwd,
+                mode.to_string(),
+                ref_name,
+            ))
         }
         "git.rebase" => {
             let body: log::GitUiRebaseRequest = decode(&params)?;
@@ -434,22 +453,17 @@ pub(crate) fn map_status(
 }
 
 fn decode<T: serde::de::DeserializeOwned>(params: &Value) -> Result<T, String> {
-    serde_json::from_value(params.clone())
-        .map_err(|err| format!("invalid parameters: {err}"))
+    serde_json::from_value(params.clone()).map_err(|err| format!("invalid parameters: {err}"))
 }
 
 fn optional_cwd(params: &Value) -> Result<String, String> {
     let query: GitUiCwdQuery = decode(params)?;
-    query
-        .cwd
-        .ok_or_else(|| "cwd is required".to_string())
+    query.cwd.ok_or_else(|| "cwd is required".to_string())
 }
 
 fn socket_branch_token(value: Option<&str>) -> Result<Option<String>, String> {
     match value.map(str::trim).filter(|v| !v.is_empty()) {
-        Some(value) => Ok(Some(
-            safe_git_token(value, "branch")?.to_string(),
-        )),
+        Some(value) => Ok(Some(safe_git_token(value, "branch")?.to_string())),
         None => Ok(None),
     }
 }
@@ -529,7 +543,10 @@ fn repo_relative_path(repo_root: &Path, cwd: &Path, file: &str) -> Result<String
     }
 }
 
-fn git_ui_path_info_blocking(cwd: String, path: String) -> Result<serde_json::Value, (StatusCode, String)> {
+fn git_ui_path_info_blocking(
+    cwd: String,
+    path: String,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let path = safe_repo_path(&path).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     let repo_root = git_repo_root(&cwd).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     let repo_root_path = fs::canonicalize(&repo_root).unwrap_or_else(|_| PathBuf::from(&repo_root));
@@ -661,7 +678,10 @@ fn git_permalink_url(
     )
 }
 
-fn git_ui_permalink_blocking(cwd: String, path: String) -> Result<serde_json::Value, (StatusCode, String)> {
+fn git_ui_permalink_blocking(
+    cwd: String,
+    path: String,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let path = safe_repo_path(&path).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     let repo_root = git_repo_root(&cwd).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     let repo_root_path = fs::canonicalize(&repo_root).unwrap_or_else(|_| PathBuf::from(&repo_root));

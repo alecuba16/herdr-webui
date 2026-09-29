@@ -2093,7 +2093,8 @@ fn web_api_socket_transport_serves_git_and_file_panels() {
     let status = api.git_status(&cwd).unwrap();
     assert!(status["branch"].is_string(), "status payload: {status}");
     std::fs::write(repo.join("socket-new.txt"), "content\n").unwrap();
-    api.git_stage(&cwd, &["socket-new.txt".to_string()]).unwrap();
+    api.git_stage(&cwd, &["socket-new.txt".to_string()])
+        .unwrap();
     api.git_commit(&cwd, "add socket-new", None, false).unwrap();
     let log = api.git_log_scoped(&cwd, "all", "", 10, None).unwrap();
     assert!(

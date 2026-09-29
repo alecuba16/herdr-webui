@@ -3,8 +3,8 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use interprocess::local_socket::Stream as LocalStream;
 use interprocess::local_socket::traits::Stream as _;
+use interprocess::local_socket::Stream as LocalStream;
 use interprocess::TryClone as _;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};

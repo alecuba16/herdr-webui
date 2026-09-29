@@ -137,9 +137,7 @@ pub(super) fn git_ui_file_blocking(
     };
     let spec = format!("{ref_name}:{file}");
     match git_ui_text(&repo, &["show", &spec]) {
-        Ok(content) => {
-            Ok(json!({ "path": file, "content": content, "hash": "" }))
-        }
+        Ok(content) => Ok(json!({ "path": file, "content": content, "hash": "" })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }

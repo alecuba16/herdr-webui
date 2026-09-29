@@ -766,21 +766,48 @@ impl BuiltinState {
             // The TUI git/file panels run over the socket instead of the
             // HTTP API: the dispatch lives with the handlers themselves so
             // validation stays single-sourced between both transports.
-            "git.status" | "git.diff" | "git.compare" | "git.branches"
-            | "git.branch.delete" | "git.switch" | "git.log" | "git.path_info"
-            | "git.permalink" | "git.blame" | "git.file" | "git.file_write"
-            | "git.file_history" | "git.stashes" | "git.stash_show" | "git.conflicts"
-            | "git.stage" | "git.unstage" | "git.discard" | "git.stash"
-            | "git.stash_apply" | "git.stash_drop" | "git.reset" | "git.rebase"
-            | "git.fetch" | "git.pull" | "git.push" | "git.commit" | "git.tag"
-            | "git.apply_patch" | "git.conflict_resolve" | "git.conflict_action"
-            | "git.cleanup_scan" | "git.worktree_remove" | "git.worktree_prune" => {
-                crate::git_ui::socket_dispatch(method, params)
-            }
-            "file.tree" | "file.read" | "file.write" | "file.content_search"
-            | "file.content_search_file" | "file.rename" | "file.delete" => {
-                crate::file_browser::socket_dispatch(method, params)
-            }
+            "git.status"
+            | "git.diff"
+            | "git.compare"
+            | "git.branches"
+            | "git.branch.delete"
+            | "git.switch"
+            | "git.log"
+            | "git.path_info"
+            | "git.permalink"
+            | "git.blame"
+            | "git.file"
+            | "git.file_write"
+            | "git.file_history"
+            | "git.stashes"
+            | "git.stash_show"
+            | "git.conflicts"
+            | "git.stage"
+            | "git.unstage"
+            | "git.discard"
+            | "git.stash"
+            | "git.stash_apply"
+            | "git.stash_drop"
+            | "git.reset"
+            | "git.rebase"
+            | "git.fetch"
+            | "git.pull"
+            | "git.push"
+            | "git.commit"
+            | "git.tag"
+            | "git.apply_patch"
+            | "git.conflict_resolve"
+            | "git.conflict_action"
+            | "git.cleanup_scan"
+            | "git.worktree_remove"
+            | "git.worktree_prune" => crate::git_ui::socket_dispatch(method, params),
+            "file.tree"
+            | "file.read"
+            | "file.write"
+            | "file.content_search"
+            | "file.content_search_file"
+            | "file.rename"
+            | "file.delete" => crate::file_browser::socket_dispatch(method, params),
             "pane.read" => {
                 let pane_id = required_string(&params, "pane_id")?;
                 let text = self.read_pane_recent(&pane_id)?;
@@ -7498,7 +7525,10 @@ mod tests {
             .handle_request_inner("worktree.remove", json!({ "workspace_id": "ws_1" }))
             .unwrap_err();
 
-        assert!(err.contains("repo_root") || err.contains("path"), "unexpected error: {err}");
+        assert!(
+            err.contains("repo_root") || err.contains("path"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -7571,11 +7601,7 @@ mod tests {
         run_git(&repo, &["init", "-q"]).unwrap();
         fs::write(repo.join("README.md"), "base\n").unwrap();
         run_git(&repo, &["add", "."]).unwrap();
-        run_git(
-            &repo,
-            &["config", "user.email", "t@t"],
-        )
-        .unwrap();
+        run_git(&repo, &["config", "user.email", "t@t"]).unwrap();
         run_git(&repo, &["config", "user.name", "T"]).unwrap();
         run_git(&repo, &["commit", "-q", "-m", "base"]).unwrap();
 
@@ -7595,40 +7621,27 @@ mod tests {
 
         // git.stage + git.commit work end to end
         fs::write(repo.join("new.txt"), "content\n").unwrap();
-        state.handle_request_inner(
-            "git.stage",
-            json!({ "cwd": cwd, "paths": ["new.txt"] }),
-        )
-        .unwrap();
-        state.handle_request_inner(
-            "git.commit",
-            json!({ "cwd": cwd, "title": "add new" }),
-        )
-        .unwrap();
+        state
+            .handle_request_inner("git.stage", json!({ "cwd": cwd, "paths": ["new.txt"] }))
+            .unwrap();
+        state
+            .handle_request_inner("git.commit", json!({ "cwd": cwd, "title": "add new" }))
+            .unwrap();
         let log = state
-            .handle_request_inner(
-                "git.log",
-                json!({ "cwd": cwd, "scope": "all", "max": 5 }),
-            )
+            .handle_request_inner("git.log", json!({ "cwd": cwd, "scope": "all", "max": 5 }))
             .unwrap();
         assert_eq!(log["commits"].as_array().map(Vec::len), Some(2));
 
         // git.diff for the working tree
         fs::write(repo.join("new.txt"), "changed\n").unwrap();
         let diff = state
-            .handle_request_inner(
-                "git.diff",
-                json!({ "cwd": cwd, "scope": "working" }),
-            )
+            .handle_request_inner("git.diff", json!({ "cwd": cwd, "scope": "working" }))
             .unwrap();
         assert_eq!(diff["files"].as_array().map(Vec::len), Some(1));
 
         // file.tree + file.read + file.write over the socket
         let tree = state
-            .handle_request_inner(
-                "file.tree",
-                json!({ "cwd": cwd, "path": "", "depth": 0 }),
-            )
+            .handle_request_inner("file.tree", json!({ "cwd": cwd, "path": "", "depth": 0 }))
             .unwrap();
         assert!(tree["entries"].as_array().is_some(), "tree payload: {tree}");
         let read = state
@@ -7649,16 +7662,15 @@ mod tests {
             .unwrap();
         assert_eq!(write["ok"], true);
         // A stale hash must be rejected, same as over HTTP.
-        let stale = state
-            .handle_request_inner(
-                "file.write",
-                json!({
-                    "cwd": cwd,
-                    "path": "README.md",
-                    "content": "conflict\n",
-                    "expected_hash": "stale-hash",
-                }),
-            );
+        let stale = state.handle_request_inner(
+            "file.write",
+            json!({
+                "cwd": cwd,
+                "path": "README.md",
+                "content": "conflict\n",
+                "expected_hash": "stale-hash",
+            }),
+        );
         assert_eq!(
             stale.unwrap_err(),
             "file changed on disk; reload before saving"

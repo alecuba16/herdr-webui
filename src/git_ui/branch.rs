@@ -48,7 +48,9 @@ fn split_branch_tip_details(details: &str) -> (String, String, String) {
     (author, date, subject)
 }
 
-pub(super) fn git_ui_branches_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
+pub(super) fn git_ui_branches_blocking(
+    cwd: String,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let worktree_paths = git_ui_text(&cwd, &["worktree", "list", "--porcelain"])
         .map(|raw| parse_worktree_branch_paths(&raw))
         .unwrap_or_default();

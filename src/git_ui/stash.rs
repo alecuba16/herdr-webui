@@ -41,7 +41,9 @@ pub(super) struct GitUiStashDropRequest {
     pub(super) confirmed: Option<bool>,
 }
 
-pub(super) fn git_ui_stashes_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
+pub(super) fn git_ui_stashes_blocking(
+    cwd: String,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     match git_ui_text(&cwd, &["stash", "list", "--format=%gd%x00%h%x00%cr%x00%gs"]) {
         Ok(text) => {
             let stashes = text.lines().filter_map(|line| {

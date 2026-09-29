@@ -32,7 +32,9 @@ pub(super) struct GitUiConflictActionRequest {
     pub(super) action: String,
 }
 
-pub(super) fn git_ui_conflicts_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
+pub(super) fn git_ui_conflicts_blocking(
+    cwd: String,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let mut warnings: Vec<String> = Vec::new();
     let files = match git_ui_text(&cwd, &["diff", "--name-only", "--diff-filter=U"]) {
         Ok(text) => text.lines().map(ToOwned::to_owned).collect::<Vec<_>>(),
@@ -53,7 +55,9 @@ pub(super) fn git_ui_conflicts_blocking(cwd: String) -> Result<serde_json::Value
     let rebase_apply = git_ui_text(&cwd, &["rev-parse", "--git-path", "rebase-apply"])
         .ok()
         .is_some_and(|path| Path::new(&repo).join(path.trim()).exists());
-    Ok(json!({ "files": files, "merge": merge, "rebase": rebase_merge || rebase_apply, "warnings": warnings }))
+    Ok(
+        json!({ "files": files, "merge": merge, "rebase": rebase_merge || rebase_apply, "warnings": warnings }),
+    )
 }
 
 pub(super) async fn git_ui_conflicts(

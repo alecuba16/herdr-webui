@@ -2285,11 +2285,10 @@ async fn sessions(
     // on a blocking thread so a slow or hung socket never stalls the
     // async runtime while the session list is built.
     let probe_state = state.clone();
-    let sessions = tokio::task::spawn_blocking(move || {
-        known_sessions(&probe_state, herdr_install.compatible)
-    })
-    .await
-    .unwrap_or_default();
+    let sessions =
+        tokio::task::spawn_blocking(move || known_sessions(&probe_state, herdr_install.compatible))
+            .await
+            .unwrap_or_default();
     Json(json!({
         "backend_mode": state.backend_mode.as_str(),
         "current_backend": backend_target_for_headers(&state, &headers).as_str(),

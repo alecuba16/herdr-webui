@@ -72,9 +72,7 @@ pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, Stri
     }
     // Strip the HTTP status the payload fns carry; only the message
     // matters on the socket transport.
-    fn map_status(
-        result: Result<Value, (StatusCode, String)>,
-    ) -> Result<Value, String> {
+    fn map_status(result: Result<Value, (StatusCode, String)>) -> Result<Value, String> {
         result.map_err(|(_, message)| message)
     }
     match method {
@@ -1258,7 +1256,9 @@ fn collect_git_status(
 
 /// Blocking body of the tree endpoint. Runs on a spawn_blocking thread so
 /// directory walks and search visits never stall the async runtime.
-fn file_browser_tree_payload(query: FileBrowserQuery) -> Result<serde_json::Value, (StatusCode, String)> {
+fn file_browser_tree_payload(
+    query: FileBrowserQuery,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let root = match resolve_root(&query.cwd) {
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
@@ -1272,7 +1272,10 @@ fn file_browser_tree_payload(query: FileBrowserQuery) -> Result<serde_json::Valu
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     if !dir.is_dir() {
-        return Err((StatusCode::BAD_REQUEST, "path is not a directory".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "path is not a directory".to_string(),
+        ));
     }
     let dirs_only = query.dirs_only.unwrap_or(false);
     let depth = if dirs_only {
@@ -1438,7 +1441,9 @@ fn file_browser_partial_read_payload(
 }
 
 /// Blocking body of the file read endpoint (fs metadata + content + hash).
-fn file_browser_file_payload(query: FileBrowserQuery) -> Result<serde_json::Value, (StatusCode, String)> {
+fn file_browser_file_payload(
+    query: FileBrowserQuery,
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let root = match resolve_root(&query.cwd) {
         Ok(root) => root,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
@@ -1658,7 +1663,10 @@ fn file_browser_content_search_payload(
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     if !dir.is_dir() {
-        return Err((StatusCode::BAD_REQUEST, "path is not a directory".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "path is not a directory".to_string(),
+        ));
     }
     let limit = query
         .limit
@@ -1781,10 +1789,7 @@ async fn file_browser_content_search_file(
     if let Err(response) = file_browser_auth(&state, &headers, remote) {
         return response;
     }
-    match tokio::task::spawn_blocking(move || {
-        file_browser_content_search_file_payload(query)
-    })
-    .await
+    match tokio::task::spawn_blocking(move || file_browser_content_search_file_payload(query)).await
     {
         Ok(Ok(value)) => Json(value).into_response(),
         Ok(Err((status, msg))) => file_browser_json_error(status, msg),
@@ -2554,10 +2559,11 @@ mod tests {
         let path = root.join("big.txt");
         fs::write(&path, &body).unwrap();
 
-        let response = file_browser_partial_read_payload(&path, "big.txt", body.len() as u64, 16 * 1024)
-            .map(Json)
-            .map(IntoResponse::into_response)
-            .unwrap_or_else(|(status, msg)| file_browser_json_error(status, msg));
+        let response =
+            file_browser_partial_read_payload(&path, "big.txt", body.len() as u64, 16 * 1024)
+                .map(Json)
+                .map(IntoResponse::into_response)
+                .unwrap_or_else(|(status, msg)| file_browser_json_error(status, msg));
         let bytes = axum::body::to_bytes(response.into_body(), 10 * 1024 * 1024)
             .await
             .unwrap();

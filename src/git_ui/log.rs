@@ -390,9 +390,7 @@ pub(super) fn git_ui_rebase_blocking(
         onto.clone()
     };
     match git_ui_text(&cwd, &["rebase", "--onto", &rebase_onto, &upstream]) {
-        Ok(text) => {
-            Ok(json!({ "ok": true, "message": text, "onto": rebase_onto }))
-        }
+        Ok(text) => Ok(json!({ "ok": true, "message": text, "onto": rebase_onto })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -481,8 +479,8 @@ pub(super) fn safe_tag_name(value: &str) -> Result<&str, String> {
 /// shaping (default limit, scope resolution, optional base and file
 /// filter) and runs the blocking query inline.
 pub(super) fn socket_log(params: serde_json::Value) -> Result<serde_json::Value, String> {
-    let query: GitUiLogQuery = serde_json::from_value(params)
-        .map_err(|err| format!("invalid parameters: {err}"))?;
+    let query: GitUiLogQuery =
+        serde_json::from_value(params).map_err(|err| format!("invalid parameters: {err}"))?;
     let Some(cwd) = query.cwd.as_deref() else {
         return Err("cwd is required".to_string());
     };
@@ -491,7 +489,13 @@ pub(super) fn socket_log(params: serde_json::Value) -> Result<serde_json::Value,
     let scope = GitLogScope::from_query(query.scope, all)?;
     let base = query.base;
     let file = query.file;
-    super::map_status(git_ui_log_blocking(cwd.to_string(), limit, scope, base, file))
+    super::map_status(git_ui_log_blocking(
+        cwd.to_string(),
+        limit,
+        scope,
+        base,
+        file,
+    ))
 }
 
 pub(super) fn git_ui_tag_blocking(
@@ -500,9 +504,7 @@ pub(super) fn git_ui_tag_blocking(
     ref_name: String,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     match git_ui_text(&cwd, &["tag", &tag_name, &ref_name]) {
-        Ok(text) => {
-            Ok(json!({ "ok": true, "message": text, "tag": tag_name }))
-        }
+        Ok(text) => Ok(json!({ "ok": true, "message": text, "tag": tag_name })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }

@@ -75,9 +75,12 @@ pub(super) fn parse_diff_path(raw: &str) -> Option<String> {
 /// Socket transport for diff/compare: shares arg building with the HTTP
 /// handler, then runs the blocking part inline (the BB dispatch thread is
 /// already a blocking context).
-pub(super) fn socket_diff(params: serde_json::Value, compare: bool) -> Result<serde_json::Value, String> {
-    let query: GitUiDiffQuery = serde_json::from_value(params)
-        .map_err(|err| format!("invalid parameters: {err}"))?;
+pub(super) fn socket_diff(
+    params: serde_json::Value,
+    compare: bool,
+) -> Result<serde_json::Value, String> {
+    let query: GitUiDiffQuery =
+        serde_json::from_value(params).map_err(|err| format!("invalid parameters: {err}"))?;
     let args = git_ui_diff_args(&query, compare).map_err(|err| err.to_string())?;
     let root_parent_base = if compare {
         query

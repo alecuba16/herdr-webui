@@ -548,7 +548,11 @@ impl WebApiClient {
     pub fn file_read(&self, cwd: &str, path: &str) -> Result<Value, WebApiError> {
         self.call(
             "GET",
-            &format!("/api/file-browser/file?cwd={}&path={}", urlencode(cwd), urlencode(path)),
+            &format!(
+                "/api/file-browser/file?cwd={}&path={}",
+                urlencode(cwd),
+                urlencode(path)
+            ),
             None,
             "file.read",
             json!({ "cwd": cwd, "path": path }),
@@ -602,12 +606,24 @@ impl WebApiClient {
 
     pub fn file_rename(&self, cwd: &str, path: &str, new_name: &str) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd, "path": path, "new_name": new_name });
-        self.call("POST", "/api/file-browser/rename", Some(&body), "file.rename", body.clone())
+        self.call(
+            "POST",
+            "/api/file-browser/rename",
+            Some(&body),
+            "file.rename",
+            body.clone(),
+        )
     }
 
     pub fn file_delete(&self, cwd: &str, path: &str) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd, "path": path });
-        self.call("POST", "/api/file-browser/delete", Some(&body), "file.delete", body.clone())
+        self.call(
+            "POST",
+            "/api/file-browser/delete",
+            Some(&body),
+            "file.delete",
+            body.clone(),
+        )
     }
 
     // ---- git ui ----
@@ -696,7 +712,11 @@ impl WebApiClient {
     pub fn git_file_history(&self, cwd: &str, file: &str) -> Result<Value, WebApiError> {
         self.call(
             "GET",
-            &format!("/api/git-ui/file-history?cwd={}&file={}", urlencode(cwd), urlencode(file)),
+            &format!(
+                "/api/git-ui/file-history?cwd={}&file={}",
+                urlencode(cwd),
+                urlencode(file)
+            ),
             None,
             "git.file_history",
             json!({ "cwd": cwd, "file": file }),
@@ -760,7 +780,13 @@ impl WebApiClient {
 
     pub fn git_stage(&self, cwd: &str, paths: &[String]) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd, "paths": paths });
-        self.call("POST", "/api/git-ui/stage", Some(&body), "git.stage", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/stage",
+            Some(&body),
+            "git.stage",
+            body.clone(),
+        )
     }
 
     /// `/api/git-ui/apply-patch`: apply a single-hunk patch (webui
@@ -785,12 +811,24 @@ impl WebApiClient {
 
     pub fn git_unstage(&self, cwd: &str, paths: &[String]) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd, "paths": paths });
-        self.call("POST", "/api/git-ui/unstage", Some(&body), "git.unstage", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/unstage",
+            Some(&body),
+            "git.unstage",
+            body.clone(),
+        )
     }
 
     pub fn git_discard(&self, cwd: &str, paths: &[String]) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd, "paths": paths, "confirmed": true });
-        self.call("POST", "/api/git-ui/discard", Some(&body), "git.discard", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/discard",
+            Some(&body),
+            "git.discard",
+            body.clone(),
+        )
     }
 
     pub fn git_commit(
@@ -801,27 +839,57 @@ impl WebApiClient {
         amend: bool,
     ) -> Result<Value, WebApiError> {
         let payload = json!({ "cwd": cwd, "title": title, "body": body, "amend": amend });
-        self.call("POST", "/api/git-ui/commit", Some(&payload), "git.commit", payload.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/commit",
+            Some(&payload),
+            "git.commit",
+            payload.clone(),
+        )
     }
 
     pub fn git_pull(&self, cwd: &str, mode: &str) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd, "mode": mode });
-        self.call("POST", "/api/git-ui/pull", Some(&body), "git.pull", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/pull",
+            Some(&body),
+            "git.pull",
+            body.clone(),
+        )
     }
 
     pub fn git_push(&self, cwd: &str, mode: &str) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd, "mode": mode });
-        self.call("POST", "/api/git-ui/push", Some(&body), "git.push", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/push",
+            Some(&body),
+            "git.push",
+            body.clone(),
+        )
     }
 
     pub fn git_fetch(&self, cwd: &str, branch: Option<&str>) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd, "branch": branch });
-        self.call("POST", "/api/git-ui/fetch", Some(&body), "git.fetch", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/fetch",
+            Some(&body),
+            "git.fetch",
+            body.clone(),
+        )
     }
 
     pub fn git_switch(&self, cwd: &str, branch: &str, create: bool) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd, "branch": branch, "create": create });
-        self.call("POST", "/api/git-ui/switch", Some(&body), "git.switch", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/switch",
+            Some(&body),
+            "git.switch",
+            body.clone(),
+        )
     }
 
     /// `/api/git-ui/reset`: the server requires the typed confirmation
@@ -839,7 +907,13 @@ impl WebApiClient {
                 "mode": mode,
                 "confirmation": confirmation,
         });
-        self.call("POST", "/api/git-ui/reset", Some(&body), "git.reset", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/reset",
+            Some(&body),
+            "git.reset",
+            body.clone(),
+        )
     }
 
     /// `/api/git-ui/rebase`: upstream + optional onto (server falls back
@@ -861,7 +935,13 @@ impl WebApiClient {
                 "pull_first": pull_first,
                 "confirmation": confirmation,
         });
-        self.call("POST", "/api/git-ui/rebase", Some(&body), "git.rebase", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/rebase",
+            Some(&body),
+            "git.rebase",
+            body.clone(),
+        )
     }
 
     /// `/api/git-ui/tag`: create `tag_name` on `ref_name` (a hash or
@@ -872,7 +952,13 @@ impl WebApiClient {
                 "tag_name": tag_name,
                 "ref_name": ref_name,
         });
-        self.call("POST", "/api/git-ui/tag", Some(&body), "git.tag", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/tag",
+            Some(&body),
+            "git.tag",
+            body.clone(),
+        )
     }
 
     pub fn git_branch_delete(
@@ -893,7 +979,13 @@ impl WebApiClient {
 
     pub fn git_stash(&self, cwd: &str) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd });
-        self.call("POST", "/api/git-ui/stash", Some(&body), "git.stash", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/stash",
+            Some(&body),
+            "git.stash",
+            body.clone(),
+        )
     }
 
     /// `/api/git-ui/stash-show`: full diff of one stash entry. Response
@@ -1006,14 +1098,26 @@ impl WebApiClient {
 
     pub fn git_stash_apply(&self, cwd: &str, stash: &str) -> Result<Value, WebApiError> {
         let body = json!({ "cwd": cwd, "stash": stash });
-        self.call("POST", "/api/git-ui/stash-apply", Some(&body), "git.stash_apply", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/stash-apply",
+            Some(&body),
+            "git.stash_apply",
+            body.clone(),
+        )
     }
 
     pub fn git_stash_drop(&self, cwd: &str, stash: &str) -> Result<Value, WebApiError> {
         // The server rejects drops without an explicit confirmation flag;
         // the TUI collects its own `y` confirmation before calling.
         let body = json!({ "cwd": cwd, "stash": stash, "confirmed": true });
-        self.call("POST", "/api/git-ui/stash-drop", Some(&body), "git.stash_drop", body.clone())
+        self.call(
+            "POST",
+            "/api/git-ui/stash-drop",
+            Some(&body),
+            "git.stash_drop",
+            body.clone(),
+        )
     }
 }
 
@@ -1768,7 +1872,11 @@ mod tests {
             std::env::set_var("XDG_CONFIG_HOME", &dir);
         }
         let client = WebApiClient::discover().unwrap();
-        assert_eq!(client.base_url(), "http://127.0.0.1:8787", "empty env falls back to default");
+        assert_eq!(
+            client.base_url(),
+            "http://127.0.0.1:8787",
+            "empty env falls back to default"
+        );
 
         // Malformed persisted binds fall back to the default too.
         for bad in ["no-colon", ":8787", "host:notaport"] {
@@ -1778,7 +1886,11 @@ mod tests {
             )
             .unwrap();
             let client = WebApiClient::discover().unwrap();
-            assert_eq!(client.base_url(), "http://127.0.0.1:8787", "bad bind {bad} falls back");
+            assert_eq!(
+                client.base_url(),
+                "http://127.0.0.1:8787",
+                "bad bind {bad} falls back"
+            );
         }
         unsafe {
             std::env::remove_var("HERDR_WEBUI_TUI_API");
