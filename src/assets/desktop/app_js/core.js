@@ -2539,6 +2539,10 @@ function applyTerminalFont() {
   if (!term) return;
   const family = terminalFontFamily();
   if (term.setFontFamily) term.setFontFamily(family);
+  // Font geometry changed: drop the cached cell metrics so the next fit
+  // re-measures instead of reusing stale dimensions.
+  if (window.HerdrTerminalFit && window.HerdrTerminalFit.invalidateCellSizeCache)
+    window.HerdrTerminalFit.invalidateCellSizeCache();
 }
 function applyTheme() {
   themeMode = normalizeThemeMode(themeMode);

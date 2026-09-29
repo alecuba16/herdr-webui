@@ -838,7 +838,7 @@ describe("app bundle load", () => {
 
   it("keeps terminal surface min sizes mode-aware", () => {
     match(source, /if \(options\.overflow\) \{\n\s+terminal\.style\.width = width \+ "px";/);
-    match(source, /terminal\.style\.minWidth = "0";\n\s+terminal\.style\.minHeight = "0";/);
+    match(source, /if \(style\.minWidth !== "0"\) style\.minWidth = "0";\n\s+if \(style\.minHeight !== "0"\) style\.minHeight = "0";/);
     ok(!source.includes('terminal.querySelector(".wterm")'));
     ok(!source.includes('x.style.'));
     match(source, /shellStyle\.display === "none" \|\|\n\s+shellStyle\.visibility === "hidden" \|\|\n\s+\(shellRects && shellRects\.length === 0\)/);
@@ -909,7 +909,8 @@ describe("app bundle load", () => {
     // The shell changes size without a window resize (sidebar toggle, Git
     // drawer, Files browser, project dashboard); a ResizeObserver keeps the
     // terminal grid renegotiated against the real shell box.
-    match(desktopTerminalSource, /new ResizeObserver\(refitAfterShellResize\)\.observe\(shell\);/);
+    match(desktopTerminalSource, /const observer = new ResizeObserver\(refitAfterShellResize\);\n\s+observer\.observe\(shell\);/);
+    match(desktopTerminalSource, /terminalShellResizeObserverActive = true;/);
     match(desktopTerminalSource, /function observeTerminalShell\(\) \{[\s\S]*?typeof ResizeObserver !== "function"/);
     match(
       desktopTerminalSource,

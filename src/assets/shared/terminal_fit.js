@@ -15,6 +15,14 @@
     };
   }
 
+  // Cached cell metrics. Cell geometry only changes when the terminal
+  // font family/size or the renderer grid changes, not per resize frame.
+  // Re-measuring (querySelector + getBoundingClientRect) on every frame of
+  // a resize drag forced layout on each one; the cache collapses it to one
+  // measurement per actual font/core change.
+  var cachedCellContainer = null;
+  var cachedCell = null;
+
   function measuredCell(container) {
     var adapter = container && container.__herdrTerminalAdapter;
     if (adapter && typeof adapter.cellSize === "function") return adapter.cellSize();
@@ -31,11 +39,32 @@
   function cellSize(term, container, fallback) {
     var fb = fallback || { width: 9, height: 17 };
     var adapterCell = term && typeof term.cellSize === "function" ? term.cellSize() : null;
+    if (adapterCell && adapterCell.width > 0 && adapterCell.height > 0) return adapterCell;
+    if (
+      container === cachedCellContainer &&
+      cachedCell &&
+      cachedCell.width > 0 &&
+      cachedCell.height > 0
+    ) {
+      return cachedCell;
+    }
     var measured = measuredCell(container);
-    return {
-      width: (adapterCell && adapterCell.width) || measured.width || fb.width || 9,
-      height: (adapterCell && adapterCell.height) || measured.height || fb.height || 17,
+    var cell = {
+      width: measured.width || fb.width || 9,
+      height: measured.height || fb.height || 17,
     };
+    if (cell.width > 0 && cell.height > 0) {
+      cachedCellContainer = container;
+      cachedCell = cell;
+    }
+    return cell;
+  }
+
+  // Drop the cached cell metrics (e.g. after a font family/size change or a
+  // renderer rebuild) so the next cellSize() re-measures.
+  function invalidateCellSizeCache() {
+    cachedCellContainer = null;
+    cachedCell = null;
   }
 
   function gridSize(container, term, options) {
@@ -82,6 +111,7 @@
     gridSize: gridSize,
     fitTerminalToContainer: fitTerminalToContainer,
     afterLayout: afterLayout,
+    invalidateCellSizeCache: invalidateCellSizeCache,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = root.HerdrTerminalFit;
 })(typeof globalThis !== "undefined" ? globalThis : window);

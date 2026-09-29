@@ -967,32 +967,40 @@ function fitTerminalSurface() {
     terminal.style.minWidth = width + "px";
     terminal.style.minHeight = height + "px";
     terminal.style.overflow = "";
-  } else {
-    // Fill the shell vertically so short terminal content never leaves empty
-    // space at the bottom. Grid renegotiation (state.termCols/termRows, see
-    // applyBrowserTerminalSize and the shell ResizeObserver) keeps the actual
-    // rows in sync with the space, so the surface and the grid always match.
-    const visibleHeight = shellHeight > 0 ? shellHeight : height;
-    // Align the surface to whole terminal rows. When the shell height is not
-    // an exact multiple of the row height, a full-shell surface leaves a
-    // sub-row gap at the bottom. wterm's follow-scroll snaps scrollTop to
-    // whole rows while the app's scrollToBottom targets the exact bottom, so
-    // the two fight on every frame (visible "shaking"). Keeping at most one
-    // row of reserved gap at the bottom makes both land on the same value.
-    const alignedHeight =
-      rows > 0 && rowHeight > 0
-        ? Math.min(visibleHeight, Math.floor(visibleHeight / rowHeight) * rowHeight)
-        : visibleHeight;
-    terminal.style.width = "100%";
-    terminal.style.height = alignedHeight > 0 ? alignedHeight + "px" : "";
-    terminal.style.maxHeight = alignedHeight > 0 ? alignedHeight + "px" : "";
-    terminal.style.minWidth = "0";
-    terminal.style.minHeight = "0";
-    // Don't force overflow:hidden - wterm needs overflow:auto on .terminal for internal scrollback
-    // terminal.style.overflow = "hidden";  // REMOVED: breaks wterm scrollTop
+    return;
+  }
+  // Fill the shell vertically so short terminal content never leaves empty
+  // space at the bottom. Grid renegotiation (state.termCols/termRows, see
+  // applyBrowserTerminalSize and the shell ResizeObserver) keeps the actual
+  // rows in sync with the space, so the surface and the grid always match.
+  const visibleHeight = shellHeight > 0 ? shellHeight : height;
+  // Align the surface to whole terminal rows. When the shell height is not
+  // an exact multiple of the row height, a full-shell surface leaves a
+  // sub-row gap at the bottom. wterm's follow-scroll snaps scrollTop to
+  // whole rows while the app's scrollToBottom targets the exact bottom, so
+  // the two fight on every frame (visible "shaking"). Keeping at most one
+  // row of reserved gap at the bottom makes both land on the same value.
+  const alignedHeight =
+    rows > 0 && rowHeight > 0
+      ? Math.min(visibleHeight, Math.floor(visibleHeight / rowHeight) * rowHeight)
+      : visibleHeight;
+  // Skip style writes that did not change: this runs on resize frames, and
+  // redundant writes invalidate style on every frame of a drag.
+  const style = terminal.style;
+  const heightPx = alignedHeight > 0 ? alignedHeight + "px" : "";
+  if (style.width !== "100%") style.width = "100%";
+  if (style.height !== heightPx) style.height = heightPx;
+  if (style.maxHeight !== heightPx) style.maxHeight = heightPx;
+  if (style.minWidth !== "0") style.minWidth = "0";
+  if (style.minHeight !== "0") style.minHeight = "0";
+  // Don't force overflow:hidden - wterm needs overflow:auto on .terminal for internal scrollback
+  // terminal.style.overflow = "hidden";  // REMOVED: breaks wterm scrollTop
+  if (lastFitTerminalHeight !== alignedHeight) {
+    lastFitTerminalHeight = alignedHeight;
     HerdrTerminalFit.fitTerminalToContainer(terminal, { height: alignedHeight });
   }
 }
+let lastFitTerminalHeight = -1;
 function cssPixels(value) {
   const parsed = Number.parseFloat(value || "0");
   return Number.isFinite(parsed) ? parsed : 0;
@@ -1135,7 +1143,11 @@ window.addEventListener("resize", scheduleTerminalResize);
       document.getElementById("terminalShell"));
   if (!shell || typeof ResizeObserver !== "function") return;
   const refitAfterShellResize = scheduleTerminalResize;
-  new ResizeObserver(refitAfterShellResize).observe(shell);
+  const observer = new ResizeObserver(refitAfterShellResize);
+  observer.observe(shell);
+  // The observer owns refits whenever the shell geometry changes, so render()
+  // does not need to re-fit on every refresh (see render.js).
+  terminalShellResizeObserverActive = true;
 })();
 window.addEventListener("focus", () =>
   requestAnimationFrame(fitFocusedTerminal),

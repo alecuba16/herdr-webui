@@ -44,8 +44,17 @@ function render() {
   applySidebarCollapsed();
   syncGitWorkspaceToggle();
   syncFileWorkspaceToggle();
+  // Both of these rebuild static icon markup on every render. Cache the last
+  // written string and only touch the DOM when the theme/icon actually
+  // changed; innerHTML writes here invalidate the head chrome on every poll.
   const themeHead = el("themeToggleHead");
-  if (themeHead) themeHead.innerHTML = themeToggleIcon();
+  if (themeHead) {
+    const iconHtml = themeToggleIcon();
+    if (lastThemeHeadIcon !== iconHtml) {
+      themeHead.innerHTML = iconHtml;
+      lastThemeHeadIcon = iconHtml;
+    }
+  }
   const pane = state.panes.find((p) => p.pane_id === state.pane);
   const tabsHtml = "";
   if (tabsHtml !== lastTabsHtml && !(state.editingTab && tabRenameActive)) {
@@ -68,9 +77,24 @@ function render() {
       input.focus();
     }
   }
-  fitTerminalShell();
-  if (typeof fitTerminalSurface === "function") fitTerminalSurface();
+  // Terminal layout fit is driven by the dedicated resize scheduler
+  // (scheduleTerminalResize, the shell ResizeObserver, and the layout.updated
+  // event). Re-running the fit here forced getComputedStyle + clientHeight +
+  // getBoundingClientRect reads on every refresh (every poll/event), which
+  // interleaved layout reads with the DOM writes above (layout thrash) and
+  // duplicated work the ResizeObserver already does when the DOM actually
+  // changes. If no observer is available, keep the old behavior so the
+  // terminal still fits on constrained engines.
+  if (!terminalShellResizeObserverActive) {
+    fitTerminalShell();
+    if (typeof fitTerminalSurface === "function") fitTerminalSurface();
+  }
 }
+// Tracks whether the dedicated shell ResizeObserver owns terminal fitting.
+let terminalShellResizeObserverActive = false;
+// Last innerHTML written to #themeToggleHead, so render() can skip the
+// write when the theme icon did not change.
+let lastThemeHeadIcon = null;
 
 function panesByTabIndex() {
   const map = new Map();
@@ -455,10 +479,21 @@ function syncGitWorkspaceToggle() {
   }
   const workspace = selectedOrDefaultWorkspace();
   const status = window.HerdrGitUi && window.HerdrGitUi.workspaceStatus ? window.HerdrGitUi.workspaceStatus(state.ws, workspace) : "unknown";
-  button.className = `btn worktree-open-trigger shell-action shell-icon-button git-workspace-toggle ${status}`;
-  button.innerHTML = appIcon("git");
-  button.setAttribute("aria-label", status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer");
-  button.title = status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer";
+  const className = `btn worktree-open-trigger shell-action shell-icon-button git-workspace-toggle ${status}`;
+  if (button.className !== className) button.className = className;
+  // The icon markup is static per status; skip the innerHTML rebuild (which
+  // reparses SVG on every render/poll) unless the status class changed it.
+  const iconHtml = appIcon("git");
+  if (button.__herdrGitIcon !== iconHtml || button.__herdrGitIconStatus !== status) {
+    button.innerHTML = iconHtml;
+    button.__herdrGitIcon = iconHtml;
+    button.__herdrGitIconStatus = status;
+  }
+  const ariaLabel = status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer";
+  const title = status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer";
+  if (typeof button.getAttribute === "function" && button.getAttribute("aria-label") !== ariaLabel)
+    button.setAttribute("aria-label", ariaLabel);
+  if (button.title !== title) button.title = title;
   syncShellModeButtons();
 }
 
