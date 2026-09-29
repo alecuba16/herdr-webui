@@ -384,20 +384,25 @@
       screen.innerHTML = `<div class="mobile-error">${escapeHtml(state.error)}</div>`;
       return;
     }
-    if (state.screen === "agents") screen.innerHTML = mobileScreens.renderAgents();
-    else if (state.screen === "panels") screen.innerHTML = renderPanels();
-    else if (state.screen === "worktrees")
-      screen.innerHTML = mobileWorktrees.renderScreen();
-    else if (state.screen === "files")
-      screen.innerHTML = mobileFileBrowser.renderScreen();
+    // Build the screen HTML, then only write innerHTML when it actually
+    // changed. Every events-WS refresh calls render(); most carry unchanged
+    // data, and rewriting the screen DOM needlessly reparses hundreds of
+    // nodes (and would drop any focus inside the screen).
+    let html = null;
+    if (state.screen === "agents") html = mobileScreens.renderAgents();
+    else if (state.screen === "panels") html = renderPanels();
+    else if (state.screen === "worktrees") html = mobileWorktrees.renderScreen();
+    else if (state.screen === "files") html = mobileFileBrowser.renderScreen();
     else if (state.screen === "git") mobileGit.renderGitScreen(screen);
-    else if (state.screen === "settings")
-      screen.innerHTML = mobileSettings.render();
-    else if (state.screen === "sessions")
-      screen.innerHTML = mobileSessions.renderSessions();
+    else if (state.screen === "settings") html = mobileSettings.render();
+    else if (state.screen === "sessions") html = mobileSessions.renderSessions();
     else if (state.screen === "terminal") renderTerminalScreen(screen);
-    else if (state.screen === "more") screen.innerHTML = mobileScreens.renderMore();
-    else screen.innerHTML = mobileScreens.renderHome();
+    else if (state.screen === "more") html = mobileScreens.renderMore();
+    else html = mobileScreens.renderHome();
+    if (html !== null && screen.__lastScreenHtml !== html) {
+      screen.innerHTML = html;
+      screen.__lastScreenHtml = html;
+    }
     syncBrowserFavicon();
   }
 
