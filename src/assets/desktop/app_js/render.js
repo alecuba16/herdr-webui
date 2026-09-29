@@ -734,23 +734,44 @@ function samePath(a, b) {
 }
 function renderAgents(wsById, tabById, tabCountsByWorkspace) {
   const list = state.agents.slice();
-  if (options.agentSortMode !== "off")
-    list.sort(agentAttentionCompare);
+  if (options.agentSortMode !== "off") {
+    // Hoist the normalized order out of the comparator: sorting n agents
+    // used to rebuild it O(n log n) times via normalizeAgentStatusOrder.
+    const order = normalizeAgentStatusOrder(options.agentStatusOrder),
+      orderMap = new Map(),
+      rankOf = (a) => agentAttentionRank(a, order, orderMap);
+    list.sort((a, b) => agentAttentionCompare(a, b, rankOf));
+  }
   return list
     .map((a) => renderAgentRow(a, wsById, tabById, tabCountsByWorkspace))
     .join("");
 }
-function agentAttentionCompare(a, b) {
-  const aRank = agentAttentionRank(a),
-    bRank = agentAttentionRank(b);
-  return aRank - bRank;
+function agentAttentionCompare(a, b, rankOf) {
+  // rankOf is injected by renderAgents so the normalized order is built once
+  // per sort; direct 2-arg callers (tests) fall back to building it here.
+  if (!rankOf) {
+    const order = normalizeAgentStatusOrder(options.agentStatusOrder),
+      orderMap = new Map();
+    rankOf = (x) => agentAttentionRank(x, order, orderMap);
+  }
+  return rankOf(a) - rankOf(b);
 }
-function agentAttentionRank(a) {
+function agentAttentionRank(a, order, orderMap) {
   const status = isWorkingDismissed(a) ? "idle" : statusClass(a.agent_status);
   const group = ["idle", "working", "blocked", "done"].includes(status)
     ? status
     : "other";
-  const order = normalizeAgentStatusOrder(options.agentStatusOrder);
+  // orderMap caches the group -> rank lookup so the sort comparator does not
+  // rebuild the normalized order array per comparison.
+  if (orderMap) {
+    let rank = orderMap.get(group);
+    if (rank === undefined) {
+      rank = order.indexOf(group);
+      rank = rank >= 0 ? rank : order.length;
+      orderMap.set(group, rank);
+    }
+    return rank;
+  }
   const rank = order.indexOf(group);
   return rank >= 0 ? rank : order.length;
 }
