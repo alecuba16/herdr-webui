@@ -395,6 +395,8 @@
       this.cols = Math.max(1, Math.floor(cols || this.cols || 80));
       this.rows = Math.max(1, Math.floor(rows || this.rows || 24));
       this.wterm.resize(this.cols, this.rows);
+      // Rebuilding the grid can re-flow the row DOM; re-measure next time.
+      this.invalidateCellMetrics();
     }
 
     focus() {
@@ -432,6 +434,7 @@
     }
 
     setFontFamily(family) {
+      this.invalidateCellMetrics();
       this.fontFamily = family || "monospace";
       applyFontVar(this.element, this.fontFamily);
     }
@@ -493,20 +496,36 @@
     }
 
     rowHeight() {
-      const row = this.element.querySelector && this.element.querySelector(".term-row");
-      const rect = row && row.getBoundingClientRect && row.getBoundingClientRect();
-      if (rect && rect.height > 0) return rect.height;
-      const css = root.getComputedStyle ? root.getComputedStyle(this.element) : null;
-      const value = css && parseFloat(css.getPropertyValue("--term-row-height") || css.lineHeight || "0");
-      return Number.isFinite(value) && value > 0 ? value : 17;
+      const size = this._cellMetricCache;
+      if (size && size.height > 0) return size.height;
+      return this.cellSize().height;
+    }
+
+    // Cell metrics only change on font changes or renderer rebuilds, but
+    // callers measure on every resize frame (fit paths, wheel handlers, the
+    // graphics bridge). Cache the DOM measurement and invalidate on the
+    // events that actually change geometry.
+    invalidateCellMetrics() {
+      this._cellMetricCache = null;
     }
 
     cellSize() {
+      if (this._cellMetricCache) return this._cellMetricCache;
       const row = this.element.querySelector && this.element.querySelector(".term-row");
       const span = row && row.querySelector && row.querySelector("span");
       const rect = span && span.getBoundingClientRect && span.getBoundingClientRect();
+      const rowRect = row && row.getBoundingClientRect && row.getBoundingClientRect();
       const width = rect && rect.width > 0 ? rect.width / Math.max(1, span.textContent.length || 1) : 9;
-      return { width, height: this.rowHeight() };
+      // The mock/test DOM has no rows; fall back to the computed row-height
+      // variable so environments without rendered rows still get real metrics.
+      let height = rowRect && rowRect.height > 0 ? rowRect.height : 0;
+      if (!(height > 0)) {
+        const css = root.getComputedStyle ? root.getComputedStyle(this.element) : null;
+        const value = css && parseFloat(css.getPropertyValue("--term-row-height") || css.lineHeight || "0");
+        height = Number.isFinite(value) && value > 0 ? value : 17;
+      }
+      this._cellMetricCache = { width, height };
+      return this._cellMetricCache;
     }
 
     scrollLines(lines) {

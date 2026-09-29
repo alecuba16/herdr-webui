@@ -105,8 +105,11 @@
   border-radius: inherit;
   display: block;
   height: 100%;
-  transition: width 80ms linear;
-  width: 0%;
+  /* scaleX instead of width so progress updates repaint without layout. */
+  transform: scaleX(var(--paste-progress, 0));
+  transform-origin: left center;
+  transition: transform 80ms linear;
+  width: 100%;
 }
 .terminal-follow-button:hover,
 .terminal-follow-button:focus {

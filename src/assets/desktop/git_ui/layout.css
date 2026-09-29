@@ -339,14 +339,19 @@
   border-radius: 6px;
   color: var(--muted);
   cursor: pointer;
-  display: none;
+  /* opacity toggle instead of display none/inline-flex so hovering a row
+     does not re-layout the whole branch list */
+  display: inline-flex;
   flex: none;
+  opacity: 0;
   padding: 6px;
+  pointer-events: none;
   width: 28px;
 }
-.git-ui-branch-row:hover .git-ui-branch-row-trash {
-  align-items: center;
-  display: inline-flex;
+.git-ui-branch-row:hover .git-ui-branch-row-trash,
+.git-ui-branch-row:focus-within .git-ui-branch-row-trash {
+  opacity: 1;
+  pointer-events: auto;
 }
 .git-ui-branch-row-trash:hover {
   color: var(--danger, #f85149);

@@ -85,19 +85,25 @@
     };
   }
 
+  function setStyleIfChanged(element, prop, value) {
+    if (element.style[prop] !== value) element.style[prop] = value;
+  }
+
   function fitTerminalToContainer(container, options) {
     var opts = options || {};
     if (!container || !container.style) return;
     var height = Math.floor(opts.height || container.clientHeight || 0);
     var heightPx = height > 0 ? height + "px" : "";
-    container.style.width = opts.width ? Math.floor(opts.width) + "px" : container.style.width || "100%";
-    container.style.height = heightPx || container.style.height || "100%";
-    container.style.maxHeight = heightPx || "";
-    container.style.minWidth = opts.minWidth || "0";
-    container.style.minHeight = opts.minHeight || "0";
-    container.style.overflow = opts.overflow || "";
-    container.style.overflowX = opts.overflowX || "hidden";
-    container.style.overflowY = opts.overflowY || "auto";
+    // Write-if-changed: this runs on resize frames and redundant style
+    // writes invalidate layout even when the value is identical.
+    setStyleIfChanged(container, "width", opts.width ? Math.floor(opts.width) + "px" : (container.style.width || "100%"));
+    setStyleIfChanged(container, "height", heightPx || container.style.height || "100%");
+    setStyleIfChanged(container, "maxHeight", heightPx || "");
+    setStyleIfChanged(container, "minWidth", opts.minWidth || "0");
+    setStyleIfChanged(container, "minHeight", opts.minHeight || "0");
+    setStyleIfChanged(container, "overflow", opts.overflow || "");
+    setStyleIfChanged(container, "overflowX", opts.overflowX || "hidden");
+    setStyleIfChanged(container, "overflowY", opts.overflowY || "auto");
   }
 
   function afterLayout(callback) {

@@ -38,7 +38,6 @@ textarea,
   transition:
     background 120ms ease,
     border-color 120ms ease,
-    box-shadow 120ms ease,
     color 120ms ease,
     transform 80ms ease;
 }
@@ -150,7 +149,6 @@ input[type="checkbox"] {
   transition:
     background 120ms ease,
     border-color 120ms ease,
-    box-shadow 120ms ease,
     color 120ms ease,
     transform 80ms ease;
 }

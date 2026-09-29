@@ -924,8 +924,10 @@ function updateTerminalPasteProgress(done, total) {
   const pct = Math.max(0, Math.min(100, Math.round((Math.max(0, done) / Math.max(1, total)) * 100)));
   const label = el("terminalPasteProgressLabel");
   if (label) label.textContent = pct >= 100 ? "Paste sent" : "Pasting… " + pct + "%";
+  // Drive the bar with a scaleX variable so progress updates stay on the
+  // compositor instead of triggering layout (width transitions did).
   const bar = el("terminalPasteProgressBar");
-  if (bar) bar.style.width = pct + "%";
+  if (bar) bar.style.setProperty("--paste-progress", String(pct / 100));
 }
 function hideTerminalPasteProgress() {
   if (pasteProgressHideTimer) {
@@ -1042,13 +1044,20 @@ function browserTerminalSize() {
   const shellSize = fitTerminalShell();
   if (!shellSize) return null;
   const padding = terminalShellPadding(shell);
-  return HerdrTerminalFit.gridSize(shell, term, {
-    paddingX: padding.x,
-    paddingY: padding.y,
-    fallbackCell: { width: 9, height: 20 },
-    minCols: 80,
-    minRows: 24,
-  });
+  // Single-pass: fitTerminalShell() already measured the shell box, so compute
+  // the grid here instead of routing through HerdrTerminalFit.gridSize(),
+  // which re-ran visibleBox (getComputedStyle + getClientRects + clientWidth)
+  // on every call.
+  const cell = HerdrTerminalFit.cellSize(term, terminal, { width: 9, height: 20 });
+  const width = Math.max(0, shellSize.width - padding.x);
+  const height = Math.max(0, shellSize.height - padding.y);
+  return {
+    cols: Math.max(80, Math.floor(width / Math.max(1, cell.width))),
+    rows: Math.max(24, Math.floor(height / Math.max(1, cell.height))),
+    width: shellSize.width,
+    height: shellSize.height,
+    cell,
+  };
 }
 function shouldFitFocusedWebTerminal() {
   return !document.hidden;
@@ -1116,16 +1125,27 @@ function applyScheduledTerminalResize() {
 }
 
 function scheduleTerminalResize() {
+  // Remember that a resize is wanted even while a frame/timer is already
+  // pending: the applied frame may measure before the final layout settles
+  // (mid-drag), and without a trailing run the last drag position would be
+  // dropped.
+  terminalResizeWanted = true;
   if (terminalResizeFrame !== null || terminalResizeTimer !== null) return;
   const elapsed = terminalResizeNow() - terminalResizeLastAppliedAt;
   const delay = Math.max(0, TERMINAL_RESIZE_MIN_INTERVAL_MS - elapsed);
   const queueFrame = () => {
     terminalResizeTimer = null;
-    terminalResizeFrame = requestAnimationFrame(applyScheduledTerminalResize);
+    terminalResizeFrame = requestAnimationFrame(() => {
+      terminalResizeFrame = null;
+      terminalResizeWanted = false;
+      applyScheduledTerminalResize();
+      if (terminalResizeWanted) scheduleTerminalResize();
+    });
   };
   if (delay > 0) terminalResizeTimer = setTimeout(queueFrame, delay);
   else queueFrame();
 }
+let terminalResizeWanted = false;
 
 // Window resize and shell resize can fire together during a drag. Both feed
 // the same scheduler so an expensive renderer resize happens at most once per

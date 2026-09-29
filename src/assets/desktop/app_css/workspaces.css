@@ -121,7 +121,10 @@ body.light .chip.label {
   color: #7e22ce;
 }
 .modal-backdrop {
-  backdrop-filter: blur(8px);
+  /* A full-window backdrop-filter re-blurs everything under the overlay on
+     every repaint below it while a modal is open; the dark tint alone is
+     cheap and visually equivalent at this opacity. */
+  backdrop-filter: none;
 }
 .modal {
   width: min(560px, calc(100vw - 32px));

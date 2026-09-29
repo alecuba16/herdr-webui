@@ -4026,7 +4026,7 @@ describe("app bundle load", () => {
     match(html, /id="terminalPasteProgressLabel"/);
     match(html, /id="terminalPasteProgressBar"/);
     match(terminalCss, /\.terminal-paste-progress \{/);
-    match(terminalCss, /\.terminal-paste-progress-track i \{[\s\S]*?transition: width 80ms linear;/);
+    match(terminalCss, /\.terminal-paste-progress-track i \{[\s\S]*?transition: transform 80ms linear;/);
     match(source, /function updateTerminalPasteProgress\(done, total\)/);
     match(source, /label\.textContent = pct >= 100 \? "Paste sent" : "Pasting… " \+ pct \+ "%"/);
   });
@@ -4439,7 +4439,6 @@ describe("app bundle load", () => {
     match(appBootSource, /\/assets\/shared\/terminal-fit\.js/);
     match(terminalFitSource, /visibleBox/);
     match(desktopTerminalSource, /HerdrTerminalFit\.cellSize\(term, terminal/);
-    match(desktopTerminalSource, /HerdrTerminalFit\.gridSize\(shell, term/);
     match(mobileTerminalSource, /HerdrTerminalFit\.gridSize\(shell, term/);
     match(mobileTerminalSource, /HerdrTerminalRenderer\.create\(terminal/);
     ok(!mobileTerminalSource.includes("Math.floor(shell.clientWidth / 9)"));

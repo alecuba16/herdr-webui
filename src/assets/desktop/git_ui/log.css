@@ -240,7 +240,10 @@
   background: var(--lane, var(--accent));
   border: 1px solid color-mix(in srgb, var(--lane, var(--accent)) 70%, var(--fg));
   border-radius: 999px;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--lane, var(--accent)) 24%, transparent);
+  /* outline paints the halo without the per-dot shadow cost in long logs */
+  box-shadow: none;
+  outline: 3px solid color-mix(in srgb, var(--lane, var(--accent)) 24%, transparent);
+  outline-offset: -4px;
   display: block;
   height: 9px;
   width: 9px;
