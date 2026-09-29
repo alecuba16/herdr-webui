@@ -203,11 +203,34 @@ for (let i = 0; i < 25; i++) {
   await new Promise((r) => setTimeout(r, 300));
 }
 check('temp sheet input reaches PTY and echoes', tempEchoed, tempTail.slice(-120));
-await evalx(`HerdrMobile.runAction('temp-terminal')`);
+
+// Pencil/follow overlap: scrolling up shows the follow pill; the pencil
+// must get .shifted and move above it instead of covering it.
+await evalx(`(() => {
+  const grid = document.querySelector('.temp-terminal-backdrop .term-grid');
+  if (grid) { grid.scrollTop = 0; grid.dispatchEvent(new Event('scroll', { bubbles: false })); }
+  return true;
+})()`);
+let shifted = false;
+let shiftDetail = '';
+for (let i = 0; i < 20; i++) {
+  shiftDetail = await evalx(`(() => {
+    const b = document.querySelector('.temp-terminal-backdrop .terminal-follow-button');
+    const p = document.querySelector('.temp-terminal-backdrop .temp-terminal-input-button');
+    if (!b || !p) return 'missing';
+    return JSON.stringify({ hidden: b.hidden, shifted: p.className.indexOf('shifted') !== -1 });
+  })()`);
+  try { if (JSON.parse(shiftDetail).shifted) { shifted = true; break; } } catch (e) {}
+  await new Promise((r) => setTimeout(r, 300));
+}
+check('pencil shifts above follow pill on scroll', shifted, shiftDetail);
+
 await evalx(`(function(){ const c = document.querySelector('.temp-terminal-close'); if (c) c.click(); return true; })()`);
 await new Promise((r) => setTimeout(r, 300));
 await evalx(`(function(){ const cc = document.querySelector('.temp-terminal-confirm-close'); if (cc) cc.click(); return true; })()`);
 await new Promise((r) => setTimeout(r, 500));
+const followStillVisible = await evalx(`(() => { const b = document.querySelector('.temp-terminal-backdrop .terminal-follow-button'); return b ? !b.hidden : false; })()`);
+check('temp terminal closes and resets follow state', !followStillVisible);
 
 const failures = results.filter((r) => !r.ok).length;
 console.log(failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`);

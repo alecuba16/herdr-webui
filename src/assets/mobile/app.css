@@ -1514,8 +1514,8 @@ body.light .mobile-nav-status.working {
   font-weight: 900;
   box-shadow: 0 10px 28px #0008;
 }
-/* Follow pill visible: stack the pencil above it. */
-.temp-terminal-follow:not([hidden]) ~ .temp-terminal-input-button,
+/* Follow pill visible: setFollowPaused() adds .shifted to stack the
+ pencil above the pill (different subtrees, so no pure-CSS selector). */
 .temp-terminal-input-button.shifted {
   bottom: 62px;
 }

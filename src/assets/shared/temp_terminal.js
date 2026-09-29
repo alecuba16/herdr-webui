@@ -1011,9 +1011,19 @@
       function setFollowPaused(paused) {
         followPaused = !!paused;
         var button = modal && modal.querySelector(".terminal-follow-button");
-        if (!button) return;
-        button.hidden = !followPaused;
-        button.setAttribute && button.setAttribute("aria-hidden", followPaused ? "false" : "true");
+        if (button) {
+          button.hidden = !followPaused;
+          button.setAttribute && button.setAttribute("aria-hidden", followPaused ? "false" : "true");
+        }
+        // The pencil input button sits at the same corner as the follow
+        // pill; stack it above while the pill is visible so they never
+        // overlap (they live in different subtrees, CSS alone cannot see
+        // the pill state from the pencil's position).
+        var pencil = modal && modal.querySelector(".temp-terminal-input-button");
+        if (pencil) {
+          if (followPaused) pencil.classList.add("shifted");
+          else pencil.classList.remove("shifted");
+        }
       }
 
       function scrollToTail() {
