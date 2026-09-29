@@ -99,7 +99,12 @@ Panel/workspace management:
    clears the whole list, and `Enter` on an openable recent reopens
    it through `POST /api/recent-workspaces` and lands on its focused
    pane; only a recorded custom label travels with the open request
-   (None keeps the backend naming). Known caveat: the TUI `WebApiClient`
+   (None keeps the backend naming). The `(already open)` flag compares
+   the recent path against the open workspace cwds only; the desktop
+   `recentWorkspaceIsOpen` also cross-checks linked worktree paths
+   (`state.worktrees` with `open_workspace_id`), but every open
+   worktree also appears as a workspace with that cwd, so the TUI
+   check stays sufficient. Known caveat: the TUI `WebApiClient`
    sends no auth headers, so these endpoints 401 when server auth is
    enabled, consistent with every other TUI WebUI-API call.
 6. No settings screen; no shortcut help overlay parity for the new keys.

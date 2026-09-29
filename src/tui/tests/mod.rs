@@ -3601,13 +3601,16 @@ fn fake_recents_server(
                     };
                     list.retain(|item| item["path"].as_str() != Some(path.as_str()));
                     list.insert(0, entry);
-                    // worktree.open-shaped result: workspace plus the
-                    // focused tab and root pane, like the real proxy.
+                    // worktree.open-shaped result, exactly like the
+                    // real proxy returns it (and the desktop api() body):
+                    // everything nested under "result".
                     serde_json::json!({
                         "ok": true,
-                        "workspace": { "workspace_id": "ws_reopened" },
-                        "tab": { "tab_id": "tab_reopened" },
-                        "root_pane": { "pane_id": "pane_reopened" },
+                        "result": {
+                            "workspace": { "workspace_id": "ws_reopened" },
+                            "tab": { "tab_id": "tab_reopened" },
+                            "root_pane": { "pane_id": "pane_reopened" }
+                        }
                     })
                 } else {
                     serde_json::json!({ "recent": *recents.lock().unwrap() })
@@ -3706,6 +3709,12 @@ fn search_palette_recents_load_remove_clear_and_open() {
     assert_eq!(app.search_palette.recents.len(), 1);
     assert_eq!(app.search_palette.results.len(), 1);
     assert_eq!(app.status, "removed recent: /repo");
+
+    // Ctrl+X with no recent under the cursor explains itself instead
+    // of failing silently (a local row or empty selection).
+    app.search_palette.results.clear();
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    assert_eq!(app.status, "no recent workspace selected");
 
     // Reopen the palette to reload from the (mutated) server list,
     // then Ctrl+Shift+X clears every entry.

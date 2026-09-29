@@ -3096,3 +3096,80 @@ fn trim_terminal_raw_output(value: &mut String) {
         .unwrap_or(value.len());
     value.drain(..drain_to);
 }
+
+#[cfg(test)]
+mod recent_open_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The recent-open navigation target for a `worktree.open`
+    /// response, parsed exactly like `run_search_candidate`: ids come
+    /// from the objects nested under `"result"` (the real proxy shape
+    /// behind the desktop `api()`, whose `openRecentWorkspace` reads
+    /// `r.result.workspace`); a result object carrying `workspace_id`
+    /// directly (no nested workspace object) still resolves. Returns
+    /// `(workspace_id, tab_id, pane_id)`.
+    fn recent_open_target(response: &Value) -> (String, Option<String>, Option<String>) {
+        let result = response.get("result");
+        let workspace = result.and_then(|result| result.get("workspace"));
+        let workspace_id = TuiApp::recent_open_field(workspace, "workspace_id")
+            .or_else(|| TuiApp::recent_open_field(result, "workspace_id"))
+            .unwrap_or_default()
+            .to_string();
+        let tab_id = TuiApp::recent_open_field(
+            result.and_then(|result| result.get("tab")),
+            "tab_id",
+        )
+        .map(str::to_string);
+        let pane_id = TuiApp::recent_open_field(
+            result.and_then(|result| result.get("root_pane")),
+            "pane_id",
+        )
+        .map(str::to_string);
+        (workspace_id, tab_id, pane_id)
+    }
+
+    #[test]
+    fn recent_open_target_parses_real_worktree_open_shape() {
+        // Exactly what POST /api/recent-workspaces proxies back: the
+        // backend's worktree.open result nested under "result".
+        let response = json!({
+            "ok": true,
+            "result": {
+                "workspace": { "workspace_id": "ws_reopened" },
+                "tab": { "tab_id": "tab_reopened" },
+                "root_pane": { "pane_id": "pane_reopened" }
+            }
+        });
+        let (workspace_id, tab_id, pane_id) = recent_open_target(&response);
+        assert_eq!(workspace_id, "ws_reopened");
+        assert_eq!(tab_id.as_deref(), Some("tab_reopened"));
+        assert_eq!(pane_id.as_deref(), Some("pane_reopened"));
+    }
+
+    #[test]
+    fn recent_open_target_resolves_result_level_ids_and_skips_empty() {
+        // A result object without the nested workspace object still
+        // resolves workspace_id from the result level; empty or missing
+        // ids stay None instead of resolving to empty-string targets.
+        // A response without a "result" wrapper resolves nothing
+        // (the real proxy always wraps, matching the desktop's
+        // `r.result.workspace` read).
+        let response = json!({
+            "ok": true,
+            "result": {
+                "workspace_id": "ws_bare",
+                "tab": { "tab_id": "" },
+                "root_pane": {}
+            }
+        });
+        let (workspace_id, tab_id, pane_id) = recent_open_target(&response);
+        assert_eq!(workspace_id, "ws_bare");
+        assert_eq!(tab_id, None, "empty tab id stays None");
+        assert_eq!(pane_id, None, "missing pane id stays None");
+
+        let flat = json!({ "workspace": { "workspace_id": "ws_flat" } });
+        let (workspace_id, _, _) = recent_open_target(&flat);
+        assert_eq!(workspace_id, "", "no result wrapper resolves nothing");
+    }
+}
