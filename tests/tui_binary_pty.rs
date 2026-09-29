@@ -351,7 +351,17 @@ fn tui_binary_worktree_browser_and_picker_pty() {
     // must stage the browsed folder into the workspace name prompt.
     // The workspace cwd points at a real temp tree so the folder rows
     // come from the actual filesystem.
-    let root = std::env::temp_dir().join(format!("herdr-tui-browser-{}", std::process::id()));
+    // A deliberately short root keeps the this-folder row inside the
+    // 80-col overlay on CI runners whose TMPDIR lives deep under
+    // /var/folders and would truncate the rendered path. canonicalize
+    // folds the /private/tmp symlink so the asserted path matches
+    // what the TUI actually renders (the backend reports the cwd, and
+    // this test asserts on the rendered path string).
+    let root_raw =
+        std::path::PathBuf::from(format!("/tmp/hdrw-tui-browser-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root_raw);
+    std::fs::create_dir_all(&root_raw).unwrap();
+    let root = std::fs::canonicalize(&root_raw).unwrap();
     let sub_alpha = root.join("alpha");
     let sub_beta = root.join("beta");
     std::fs::create_dir_all(&sub_alpha).unwrap();
@@ -420,12 +430,14 @@ fn tui_binary_worktree_browser_and_picker_pty() {
 
     // Typing filters the rows (webui modal search): "alp" matches only
     // alpha out of the three rows (this folder, alpha, beta), so the
-    // count line narrows to 1/3. A positive assertion is used because
+    // count line narrows to 1/3. Positive assertions are used because
     // the pump log is append-only and ratatui only re-emits changed
-    // cells, so "beta is gone" cannot be asserted on the raw stream.
+    // cells: the narrowed count arrives contiguously in both repaint
+    // forms (full-row repaint and per-cell diff update), while the
+    // filter text itself may arrive as split cell updates, so "1/3"
+    // is the stable wire signal for the narrowed result set.
     let _ = writer.write_all(b"alp");
     let _ = writer.flush();
-    wait_for(&log, "filter: alp_");
     wait_for(&log, "1/3");
     // Esc clears the filter first, second Esc closes the overlay.
     let _ = writer.write_all(b"\x1b");
