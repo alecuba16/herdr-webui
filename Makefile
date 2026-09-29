@@ -48,8 +48,14 @@ clean:
 
 install-mac: build
 	mkdir -p "$(HOME)/Library/LaunchAgents" "$(INSTALL_LOG_DIR)" "$(LOCAL_BIN_DIR)"
-	install -m 755 "$(BUILD_BIN)" "$(INSTALL_BIN)"
-	install -m 755 "$(BUILD_TUI_BIN)" "$(INSTALL_TUI_BIN)"
+	# Stop the agent before touching the binary, and overwrite it in place
+	# (cat >) so the file identity is preserved: macOS re-prompts for
+	# permissions when the installed binary is replaced by a new file.
+	launchctl bootout "gui/$$(id -u)/$(INSTALL_LABEL)" >/dev/null 2>&1 || true
+	cat "$(BUILD_BIN)" > "$(INSTALL_BIN)"
+	chmod 755 "$(INSTALL_BIN)"
+	cat "$(BUILD_TUI_BIN)" > "$(INSTALL_TUI_BIN)"
+	chmod 755 "$(INSTALL_TUI_BIN)"
 	@{ \
 		echo '<?xml version="1.0" encoding="UTF-8"?>'; \
 		echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'; \
@@ -74,7 +80,6 @@ install-mac: build
 		echo '</dict>'; \
 		echo '</plist>'; \
 	} > "$(INSTALL_PLIST)"
-	launchctl bootout "gui/$$(id -u)" "$(INSTALL_PLIST)" >/dev/null 2>&1 || true
 	launchctl bootstrap "gui/$$(id -u)" "$(INSTALL_PLIST)"
 	launchctl kickstart -k "gui/$$(id -u)/$(INSTALL_LABEL)"
 	@echo "Installed $(INSTALL_LABEL) at $(INSTALL_PLIST)"
@@ -85,9 +90,15 @@ install-mac: build
 
 update-mac: build
 	mkdir -p "$(LOCAL_BIN_DIR)"
-	install -m 755 "$(BUILD_BIN)" "$(INSTALL_BIN)"
-	install -m 755 "$(BUILD_TUI_BIN)" "$(INSTALL_TUI_BIN)"
-	$(MAKE) restart-mac
+	# Overwrite in place (cat >) so the file identity is preserved: macOS
+	# re-prompts for permissions when the installed binary is replaced by a
+	# new file. Stop the agent first so its running image is not truncated.
+	launchctl bootout "gui/$$(id -u)/$(INSTALL_LABEL)" >/dev/null 2>&1 || true
+	cat "$(BUILD_BIN)" > "$(INSTALL_BIN)"
+	chmod 755 "$(INSTALL_BIN)"
+	cat "$(BUILD_TUI_BIN)" > "$(INSTALL_TUI_BIN)"
+	chmod 755 "$(INSTALL_TUI_BIN)"
+	$(MAKE) start-mac
 	@echo "Updated binary at $(INSTALL_BIN)"
 	@echo "Updated TUI binary at $(INSTALL_TUI_BIN)"
 

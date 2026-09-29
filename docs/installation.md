@@ -242,6 +242,12 @@ no-op refresh is visible instead of silent.
 
 The install and update targets build with `cargo build --release --bins` and install both `herdr-webui` and `herdr-webui-tui` into `~/.local/bin` unless `LOCAL_BIN_DIR` is overridden.
 
+### macOS permission preservation
+
+On macOS, `install-mac`/`update-mac` (both the release-binary commands and the Makefile targets) refresh the installed binaries in place: they overwrite the existing file bytes instead of replacing the file. macOS ties Gatekeeper assessment and privacy (TCC) permission grants to the installed file identity, so replacing the binary with a brand new file on every update makes the system treat it as an unknown binary and re-prompts for folder access and other permissions. Overwriting in place keeps the same file identity, so granted permissions survive updates.
+
+The refresh also writes raw bytes through a file handle, so `com.apple.quarantine` from a downloaded release tarball is never copied onto the installed binaries and Gatekeeper first-launch assessment is not re-triggered. The service is stopped before the binary is overwritten (a running executable must not be truncated) and started again afterwards.
+
 Uninstall service:
 
 ```sh

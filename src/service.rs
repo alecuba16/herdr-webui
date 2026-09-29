@@ -21,6 +21,9 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
     let service = mac_service_target();
     log_macos_context("install", Some(&plist));
     println!("Installing {INSTALL_LABEL} {HERDR_WEBUI_VERSION}");
+    // Stop the service before touching the binary: an in-place refresh
+    // truncates the file the running process executes, corrupting its image.
+    let _ = launchctl_quiet(&["bootout", &service]);
     let (install_bin, outcome) = copy_current_exe_to_install_path()?;
     warn_if_noop_self_install(&outcome, "install-mac");
     if let Some((tui_bin, tui_outcome)) =
@@ -33,7 +36,6 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
     fs::create_dir_all(mac_log_dir()?)?;
     fs::write(&plist, mac_plist_xml(&config, &install_bin)?)?;
     let plist_arg = plist.display().to_string();
-    let _ = launchctl_quiet(&["bootout", &service]);
     launchctl_required(&["bootstrap", &domain, &plist_arg])?;
     launchctl_required(&["kickstart", "-k", &service])?;
     println!("Installed {INSTALL_LABEL} at {}", plist.display());
@@ -45,6 +47,9 @@ pub fn update_macos() -> io::Result<()> {
     ensure_macos_user_context()?;
     log_macos_context("update", mac_plist_path().ok().as_deref());
     println!("Updating {INSTALL_LABEL} to {HERDR_WEBUI_VERSION}");
+    // Stop the service before touching the binary: an in-place refresh
+    // truncates the file the running process executes, corrupting its image.
+    stop_macos_service()?;
     let (install_bin, outcome) = copy_current_exe_to_install_path()?;
     warn_if_noop_self_install(&outcome, "update-mac");
     if let Some((tui_bin, tui_outcome)) =
@@ -52,7 +57,7 @@ pub fn update_macos() -> io::Result<()> {
     {
         print_tui_install_line("Updated", &tui_bin, &tui_outcome);
     }
-    restart_macos_service()?;
+    start_macos_service()?;
     print_main_install_line("Updated", &install_bin, &outcome);
     Ok(())
 }
@@ -108,6 +113,9 @@ pub fn uninstall_macos() -> io::Result<()> {
 
 pub fn install_linux(config: WebConfig) -> io::Result<()> {
     println!("Installing {INSTALL_LABEL} {HERDR_WEBUI_VERSION}");
+    // Stop the service before touching the binary: overwriting a running
+    // executable in place fails with ETXTBSY on Linux.
+    let _ = stop_linux_service();
     let (install_bin, outcome) = copy_current_exe_to_install_path()?;
     warn_if_noop_self_install(&outcome, "install-linux");
     if let Some((tui_bin, tui_outcome)) =
@@ -128,6 +136,9 @@ pub fn install_linux(config: WebConfig) -> io::Result<()> {
 
 pub fn update_linux() -> io::Result<()> {
     println!("Updating {INSTALL_LABEL} to {HERDR_WEBUI_VERSION}");
+    // Stop the service before touching the binary: overwriting a running
+    // executable in place fails with ETXTBSY on Linux.
+    let _ = stop_linux_service();
     let (install_bin, outcome) = copy_current_exe_to_install_path()?;
     warn_if_noop_self_install(&outcome, "update-linux");
     if let Some((tui_bin, tui_outcome)) =
@@ -136,7 +147,7 @@ pub fn update_linux() -> io::Result<()> {
         print_tui_install_line("Updated", &tui_bin, &tui_outcome);
     }
     systemctl_user(&["daemon-reload"])?;
-    restart_linux_service()?;
+    start_linux_service()?;
     print_main_install_line("Updated", &install_bin, &outcome);
     Ok(())
 }
@@ -293,33 +304,69 @@ fn copy_executable(source: &Path, target: &Path) -> io::Result<CopyOutcome> {
     if same_file {
         return Ok(CopyOutcome::SameFile);
     }
-    // Copy to a temporary sibling, then rename over the target. A plain
-    // fs::copy onto the target fails with ETXTBSY on Linux while the old
-    // service binary is still running, and truncates the live process image
-    // in place on macOS. The rename swaps the inode atomically instead.
+    // Refresh an already-installed binary in place. macOS keeps Gatekeeper
+    // and privacy (TCC) permission grants tied to the installed file, so a
+    // rename over the target (a fresh inode) makes the system treat the
+    // update as a brand new binary and re-prompts for every permission.
+    let bytes = fs::read(source)?;
     let temp = target.with_extension(format!("tmp-{}", std::process::id()));
+    if target.is_file() {
+        // Writing through a plain file handle also means extended attributes
+        // such as com.apple.quarantine are not cloned from the source, so a
+        // downloaded update never re-triggers Gatekeeper first-launch
+        // assessment on the installed binary. A leftover temp from an
+        // interrupted copy of the older rename-based installer is garbage:
+        // drop it instead of leaving it next to the binary.
+        let _ = fs::remove_file(&temp);
+        write_in_place_preserving_exec(&target, &bytes)?;
+        return Ok(CopyOutcome::Copied);
+    }
+    // First install: write to a temporary sibling, then rename over the
+    // target. A plain fs::copy onto the target fails with ETXTBSY on Linux
+    // while the old service binary is still running, and truncates the live
+    // process image in place on macOS. The rename swaps the inode atomically
+    // instead. The bytes are written through a plain file handle here too,
+    // so quarantine from a downloaded release tarball is never carried into
+    // the install directory and Gatekeeper never blocks the first launch.
     // A leftover temp from an interrupted copy is stale garbage. If it is
     // somehow a symlink, remove it rather than write through it.
     if fs::symlink_metadata(&temp).is_ok_and(|meta| meta.file_type().is_symlink()) {
         let _ = fs::remove_file(&temp);
     }
-    if let Err(err) = fs::copy(source, &temp)
-        .and_then(|_| {
-            let mut permissions = fs::metadata(&temp)?.permissions();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                permissions.set_mode(0o755);
-            }
-            fs::set_permissions(&temp, permissions)?;
-            Ok(())
-        })
-        .and_then(|()| fs::rename(&temp, target))
-    {
+    if let Err(err) = (|| {
+        write_in_place_preserving_exec(&temp, &bytes)?;
+        let mut permissions = fs::metadata(&temp)?.permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o755);
+        }
+        fs::set_permissions(&temp, permissions)?;
+        fs::rename(&temp, target)?;
+        Ok(())
+    })() {
         let _ = fs::remove_file(&temp);
         return Err(err);
     }
     Ok(CopyOutcome::Copied)
+}
+
+/// Overwrite `target` with `bytes` without replacing the file, so the
+/// installed binary keeps its inode and its extended attributes. The whole
+/// write must go through one file handle: reopening between writes could leave
+/// a partially written binary behind if the process dies mid-update.
+/// Callers must stop the service first: truncating a running executable
+/// corrupts the live process image on macOS.
+fn write_in_place_preserving_exec(target: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(target)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
 }
 
 /// Resolve symlinked path components of `path` the way the kernel would for
@@ -917,6 +964,51 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(&target).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o755);
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn copy_executable_refreshes_existing_file_in_place_preserving_inode() {
+        let _guard = env_lock().lock().unwrap();
+        let base = std::env::temp_dir().join(format!(
+            "herdr-webui-copy-in-place-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let target = base.join("herdr-webui");
+        fs::write(&target, "old-bytes\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&target).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&target, permissions).unwrap();
+        }
+        #[cfg(unix)]
+        let target_inode_before = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&target).unwrap().ino()
+        };
+        let source = base.join("herdr-webui-new");
+        fs::write(&source, "fresh-bytes\n").unwrap();
+
+        assert_eq!(
+            copy_executable(&source, &target).unwrap(),
+            CopyOutcome::Copied
+        );
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "fresh-bytes\n");
+        // The refresh must not replace the file: macOS ties Gatekeeper and
+        // TCC permission grants to the installed file identity, and a new
+        // inode makes the update look like a brand new binary.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let meta = fs::metadata(&target).unwrap();
+            assert_eq!(meta.ino(), target_inode_before);
+            assert_eq!(meta.permissions().mode() & 0o777, 0o755);
         }
         let _ = fs::remove_dir_all(&base);
     }
