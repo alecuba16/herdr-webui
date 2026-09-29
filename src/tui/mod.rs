@@ -1169,22 +1169,42 @@ impl TuiApp {
                 self.refresh().map_err(|err| err.to_string())?;
                 // Land on the reopened workspace like the desktop go()
                 // navigation: the response carries the workspace plus its
-                // focused tab and root pane.
-                let workspace_id = result
-                    .get("result")
-                    .and_then(|result| result.get("workspace"))
-                    .and_then(|ws| ws.get("workspace_id"))
-                    .and_then(Value::as_str)
+                // focused tab and root pane (desktop `openRecentWorkspace`
+                // passes all three; the tab/pane ids resolve the concrete
+                // terminal, the workspace id alone falls back to the
+                // active tab's first pane).
+                let result = result.get("result");
+                let workspace = result.and_then(|result| result.get("workspace"));
+                let workspace_id = Self::recent_open_field(workspace, "workspace_id")
+                    .or_else(|| Self::recent_open_field(result, "workspace_id"))
                     .unwrap_or_default()
                     .to_string();
-                self.select_search_target(
-                    Some(workspace_id.as_str()),
-                    None,
-                    None,
+                let tab_id = Self::recent_open_field(
+                    result.and_then(|result| result.get("tab")),
+                    "tab_id",
                 );
+                let pane_id = Self::recent_open_field(
+                    result.and_then(|result| result.get("root_pane")),
+                    "pane_id",
+                );
+                self.select_search_target(Some(workspace_id.as_str()), tab_id, pane_id);
                 self.status = format!("opened {path}");
                 Ok(())
             }
+        }
+    }
+
+    /// Read a non-empty string field from a `worktree.open`-shaped
+    /// result object (the recent-open response nests workspace, tab,
+    /// and root_pane objects; missing or empty fields stay None).
+    fn recent_open_field<'a>(
+        parent: Option<&'a Value>,
+        key: &str,
+    ) -> Option<&'a str> {
+        let value = parent?.get(key)?;
+        match value.as_str() {
+            Some(text) if !text.is_empty() => Some(text),
+            _ => None,
         }
     }
 

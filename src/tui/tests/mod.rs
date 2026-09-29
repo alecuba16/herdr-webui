@@ -3601,7 +3601,14 @@ fn fake_recents_server(
                     };
                     list.retain(|item| item["path"].as_str() != Some(path.as_str()));
                     list.insert(0, entry);
-                    serde_json::json!({ "ok": true })
+                    // worktree.open-shaped result: workspace plus the
+                    // focused tab and root pane, like the real proxy.
+                    serde_json::json!({
+                        "ok": true,
+                        "workspace": { "workspace_id": "ws_reopened" },
+                        "tab": { "tab_id": "tab_reopened" },
+                        "root_pane": { "pane_id": "pane_reopened" },
+                    })
                 } else {
                     serde_json::json!({ "recent": *recents.lock().unwrap() })
                 }
