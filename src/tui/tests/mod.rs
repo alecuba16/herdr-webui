@@ -5997,3 +5997,141 @@ fn search_palette_renders_query_rows_and_empty_state() {
     // The footer shows the palette mode label.
     assert!(canvas.contains("SEARCH"));
 }
+
+#[test]
+fn search_palette_boundary_and_regression_checks() {
+    // Reopen: a fresh open after navigation resets query/results/cursor.
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.query, "", "reopen resets the query");
+    assert_eq!(app.search_palette.results.len(), 0, "reopen resets rows");
+    assert!(!app.search_palette.committed, "reopen resets committed");
+
+    // Overlay stacking: help opened inside the palette returns to the
+    // palette, Esc from the palette returns to the original mode.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert_eq!(app.mode, TuiMode::Help, "help opens over the palette");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(
+        app.mode,
+        TuiMode::SearchPalette,
+        "help close returns to the palette"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate, "palette close restores mode");
+
+    // Enter on a palette with no candidate just closes (no panic).
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.mode, TuiMode::Navigate, "empty palette Enter closes");
+
+    // Enter with an empty query: commit is a no-op, second Enter closes.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.search_palette.committed);
+    assert!(app.search_palette.results.is_empty());
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.mode, TuiMode::Navigate, "empty commit Enter closes");
+
+    // The palette is reachable from every screen the fixture offers.
+    for screen in [TuiScreen::Files, TuiScreen::Git, TuiScreen::Terminal] {
+        app.screen = screen;
+        app.handle_key(ctrl('b'));
+        app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+        assert_eq!(
+            app.mode,
+            TuiMode::SearchPalette,
+            "palette opens from {screen:?}"
+        );
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+    }
+
+    // The help overlay lists the palette entry and its filter finds it.
+    let rows = crate::tui::keys::help_rows();
+    assert!(
+        rows.iter()
+            .any(|(key, desc)| *key == "Ctrl+B /" && desc.contains("palette")),
+        "help rows mention the palette"
+    );
+    assert!(!crate::tui::keys::filtered_help_rows("palette").is_empty());
+
+    // File and content rows hit the API-backed navigation arms without
+    // panicking (dead API surfaces the error, palette already closed).
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.search_palette.results = vec![search::SearchCandidate::File {
+        path: "/repo/src".to_string(),
+        name: "src".to_string(),
+        is_dir: true,
+    }];
+    app.search_palette.committed = true;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.screen, TuiScreen::Files, "dir hit lands on Files");
+    assert_ne!(
+        app.mode,
+        TuiMode::SearchPalette,
+        "navigation closed the palette"
+    );
+
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.search_palette.results = vec![
+        search::SearchCandidate::File {
+            path: "/repo/main.rs".to_string(),
+            name: "main.rs".to_string(),
+            is_dir: false,
+        },
+        search::SearchCandidate::Content {
+            file: "/repo/main.rs".to_string(),
+            line: 12,
+            name: "main.rs".to_string(),
+        },
+    ];
+    app.search_palette.committed = true;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.error.is_some(), "dead API reveal errors surface");
+    app.error = None;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.search_palette.results = vec![search::SearchCandidate::Content {
+        file: "/repo/main.rs".to_string(),
+        line: 12,
+        name: "main.rs".to_string(),
+    }];
+    app.search_palette.committed = true;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.error.is_some(), "dead API preview errors surface");
+}
+
+#[test]
+fn search_palette_scrolls_when_rows_outgrow_the_overlay() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    // More rows than fit (overlay caps at 20 height ≈ 15 visible).
+    app.search_palette.results = (0..40)
+        .map(|i| search::SearchCandidate::Agent {
+            pane_id: format!("pane_{i}"),
+            label: format!("agent {i}"),
+        })
+        .collect();
+    app.search_palette.selected = 39;
+    let canvas = draw(&app, 80, 24);
+    assert!(canvas.contains("agent 39"), "cursor row scrolls into view");
+    assert!(
+        !canvas.contains("agent 0"),
+        "scrolled-off rows leave the window"
+    );
+}

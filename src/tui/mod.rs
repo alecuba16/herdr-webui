@@ -1673,8 +1673,14 @@ impl TuiApp {
 
     /// Open the search palette (prefix `/`): reset the query and
     /// results, then enter the overlay on top of the current mode.
+    /// Opening it while already open resets in place (desktop re-open
+    /// refocuses the input) instead of nesting the palette over itself.
     fn open_search_palette(&mut self) {
         self.search_palette.open();
+        if self.mode == TuiMode::SearchPalette {
+            self.status = "search: type query".to_string();
+            return;
+        }
         self.open_overlay(TuiMode::SearchPalette);
         self.status = "search: type query".to_string();
     }
