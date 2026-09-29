@@ -762,10 +762,7 @@ impl BuiltinState {
             "worktree.list" => self.worktree_list(optional_string(&params, "cwd")),
             "worktree.open" => self.worktree_open(params),
             "worktree.create" => self.worktree_create(params),
-            "worktree.remove" => Err(
-                "built-in backend does not implement worktree.remove yet; use remove-path fallback"
-                    .to_string(),
-            ),
+            "worktree.remove" => self.worktree_remove(params),
             "pane.read" => {
                 let pane_id = required_string(&params, "pane_id")?;
                 let text = self.read_pane_recent(&pane_id)?;
@@ -1551,6 +1548,37 @@ impl BuiltinState {
             "worktree": { "path": path, "branch": optional_string(&params, "branch"), "is_bare": false, "is_detached": false, "is_prunable": false, "is_linked_worktree": true, "open_workspace_id": workspace_id, "label": workspace_id },
             "already_open": already_open,
         }))
+    }
+
+    /// Remove a git worktree from its repo. Mirrors the WebUI
+    /// /api/worktrees/remove-path semantics: `repo_root` scopes the git
+    /// invocation, `path` is the worktree directory to remove, `force`
+    /// maps to `git worktree remove --force`. Emits `worktree.removed`.
+    fn worktree_remove(&self, params: Value) -> Result<Value, String> {
+        let repo_root = optional_string(&params, "repo_root")
+            .or_else(|| optional_string(&params, "cwd"))
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .ok_or_else(|| "repo_root is required".to_string())?;
+        let path = required_string(&params, "path")?;
+        let force = optional_bool(&params, "force").unwrap_or(false);
+        let repo = Path::new(&repo_root);
+        if !repo.is_dir() {
+            return Err(format!("repo_root is not a directory: {}", repo.display()));
+        }
+        let mut args = vec!["worktree", "remove"];
+        if force {
+            args.push("--force");
+        }
+        args.push(&path);
+        run_git(repo, &args)?;
+        let result = json!({
+            "type": "worktree_removed",
+            "path": path,
+            "repo_root": repo.to_string_lossy(),
+        });
+        self.publish_event("worktree.removed", result.clone());
+        Ok(result)
     }
 
     fn worktree_create(&self, params: Value) -> Result<Value, String> {
@@ -7440,7 +7468,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_worktree_remove_reports_unsupported_instead_of_false_success() {
+    fn builtin_worktree_remove_rejects_missing_params() {
         let state = BuiltinState::new(
             std::env::temp_dir(),
             Some(default_shell()),
@@ -7452,7 +7480,60 @@ mod tests {
             .handle_request_inner("worktree.remove", json!({ "workspace_id": "ws_1" }))
             .unwrap_err();
 
-        assert!(err.contains("does not implement worktree.remove"));
+        assert!(err.contains("repo_root") || err.contains("path"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn builtin_worktree_remove_removes_a_real_worktree() {
+        let scratch = std::env::temp_dir().join(format!(
+            "herdr-wt-remove-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo = scratch.join("repo");
+        let worktree = scratch.join("feature-x");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]).unwrap();
+        fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&repo, &["add", "."]).unwrap();
+        run_git(&repo, &["commit", "-q", "-m", "base"]).unwrap();
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature-x",
+                &worktree.to_string_lossy(),
+            ],
+        )
+        .unwrap();
+        assert!(worktree.is_dir());
+
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let result = state
+            .handle_request_inner(
+                "worktree.remove",
+                json!({
+                    "repo_root": repo.to_string_lossy(),
+                    "path": worktree.to_string_lossy(),
+                }),
+            )
+            .unwrap();
+
+        assert_eq!(result["type"], "worktree_removed");
+        assert!(!worktree.exists(), "worktree directory must be gone");
+        let listing = git_output(&repo, &["worktree", "list", "--porcelain"]).unwrap();
+        assert!(!listing.contains("feature-x"));
+        fs::remove_dir_all(&scratch).ok();
     }
 
     #[test]
