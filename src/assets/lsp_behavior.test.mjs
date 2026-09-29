@@ -471,3 +471,69 @@ function safeCall(fn) {
     fn();
   } catch (_) {}
 }
+describe("diagnostics events bus (shared page socket)", () => {
+  it("skips the private socket while the page bus feeds frames", async () => {
+    const sockets = [];
+    class FakeWebSocket {
+      constructor(url) { this.url = url; sockets.push(this); }
+      close() { if (this.onclose) this.onclose(); }
+      send() {}
+    }
+    let pollCalls = 0;
+    let intervalCallback = null;
+    const sandbox = loadLsp({
+      WebSocket: FakeWebSocket,
+      location: { protocol: "http:", host: "127.0.0.1:8787" },
+      setInterval: (fn, ms) => { intervalCallback = { fn, ms }; return 1; },
+      fetch: async (url) => {
+        if (url === "/api/lsp/notifications") { pollCalls += 1; return jsonResponse({ notifications: [] }); }
+        return jsonResponse({ ok: true, result: { capabilities: {} } });
+      },
+    });
+    // The page registers its events socket before any document opens.
+    sandbox.HerdrLsp.registerEventsBus();
+    const ws = sandbox.HerdrLsp.workspaceFor("/tmp/proj");
+    await sandbox.HerdrLsp.didOpen(ws, "src/config.json", "{");
+    ok(sockets.length === 0, `private socket must stay closed with an active bus (opened=${sockets.length})`);
+    ok(intervalCallback, "interval fallback timer armed");
+    // Frame over the page bus applies diagnostics exactly like the socket.
+    const notification = {
+      method: "textDocument/publishDiagnostics",
+      params: {
+        uri: "file:///tmp/proj/src/config.json",
+        diagnostics: [{ range: { start: { line: 3, character: 0 } }, severity: 1, message: "bus error" }],
+      },
+    };
+    sandbox.HerdrLsp.feedEventsFrame(JSON.stringify({
+      type: "event",
+      event: { type: "lsp.diagnostics", event: "lsp.diagnostics", data: { notification } },
+    }));
+    const diagnostics = sandbox.HerdrLsp.diagnosticsFor(ws, "src/config.json");
+    ok(diagnostics.length === 1 && diagnostics[0].message === "bus error", "bus diagnostic applied");
+    // Bus live: the poll stays at the slow 30s drain cadence.
+    await intervalCallback.fn();
+    ok(pollCalls === 0, `no HTTP poll while bus is live (calls=${pollCalls})`);
+  });
+
+  it("feedEventsFrame is a no-op before registerEventsBus", () => {
+    const sandbox = loadLsp({
+      WebSocket: function () { throw Error("socket must not open"); },
+      location: { protocol: "http:", host: "127.0.0.1:8787" },
+    });
+    const ws = sandbox.HerdrLsp.workspaceFor("/tmp/proj");
+    sandbox.HerdrLsp.feedEventsFrame(JSON.stringify({
+      type: "event",
+      event: {
+        type: "lsp.diagnostics",
+        event: "lsp.diagnostics",
+        data: {
+          notification: {
+            method: "textDocument/publishDiagnostics",
+            params: { uri: "file:///tmp/proj/src/config.json", diagnostics: [{ message: "x" }] },
+          },
+        },
+      },
+    }));
+    ok(sandbox.HerdrLsp.diagnosticsFor(ws, "src/config.json").length === 0, "unregistered feed ignored");
+  });
+});

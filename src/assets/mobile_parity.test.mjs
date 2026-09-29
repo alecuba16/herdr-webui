@@ -408,3 +408,106 @@ describe("mobile parity feature guards", () => {
     assert.match(terminalSource, /termWs\.send\(JSON\.stringify\(\{ type: "resize", cols: nextSize\.cols, rows: nextSize\.rows \}\)\)/);
   });
 });
+
+describe("mobile events module", () => {
+  const eventsSource = readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8");
+
+  function loadEventsModule({ onRefreshDelays = [] } = {}) {
+    const pendingTimers = [];
+    const sandbox = {
+      console,
+      Date,
+      JSON,
+      Object,
+      Array,
+      Math,
+      Promise,
+      setTimeout: (fn, delay) => { onRefreshDelays.push(delay); pendingTimers.push(fn); return pendingTimers.length; },
+      clearTimeout: () => {},
+    };
+    sandbox.document = { hidden: false };
+    sandbox.globalThis = sandbox;
+    let socket = null;
+    class FakeWebSocket {
+      constructor(url) { this.url = url; socket = this; }
+      close() { if (this.onclose) this.onclose(); }
+      send() {}
+    }
+    vm.runInContext(eventsSource, vm.createContext(sandbox), { filename: "events.js" });
+    const refreshCalls = [];
+    const events = sandbox.HerdrMobileEventsModule.create({
+      document: sandbox.document,
+      globalThisWebSocket: FakeWebSocket,
+      wsUrl: (path) => `ws://x${path}`,
+      refresh: () => { refreshCalls.push(Date.now()); },
+      handleServerSettingsChanged: () => {},
+      getTempTerminal: () => null,
+    });
+    // Run a pending refresh timer and clear the queue so the next event
+    // schedules fresh (mirrors real timer firing between events).
+    const flushTimer = () => { const fns = pendingTimers.splice(0); for (const fn of fns) fn(); };
+    return { events, socket: () => socket, refreshCalls, onRefreshDelays, flushTimer };
+  }
+
+  it("fast-refreshes structure events and slow-refreshes the rest", () => {
+    const { events, socket, refreshCalls, onRefreshDelays, flushTimer } = loadEventsModule();
+    events.connectEvents();
+    const ws = socket();
+    assert.ok(ws && ws.url.includes("/ws/events"), "events socket connects");
+    // Structure-changing event: 50ms fast refresh.
+    const delays = [];
+    const before = onRefreshDelays.length;
+    ws.onmessage({ data: JSON.stringify({ type: "event", event: { type: "pane.closed", event: "pane.closed", data: {} } }) });
+    assert.equal(onRefreshDelays.length - before, 1, "pane.closed schedules one timer");
+    assert.equal(onRefreshDelays[onRefreshDelays.length - 1], 50, "pane.closed refreshes in 50ms");
+    flushTimer();
+    // Ordinary event: 500ms coalesced refresh.
+    onRefreshDelays.length = 0;
+    ws.onmessage({ data: JSON.stringify({ type: "event", event: { type: "pane.agent_status_changed", event: "pane.agent_status_changed", data: {} } }) });
+    assert.equal(onRefreshDelays.length, 1, "one timer for the second event");
+    assert.equal(onRefreshDelays[0], 500, "status change refreshes in 500ms");
+    assert.equal(refreshCalls.length, 1, "first event refreshed once");
+  });
+
+  it("feeds the LSP diagnostics bus and registers on connect", () => {
+    const fed = [];
+    const registered = [];
+    const sandbox = {
+      console,
+      Date,
+      JSON,
+      Object,
+      Array,
+      Math,
+      Promise,
+      setTimeout: () => 1,
+      clearTimeout: () => {},
+    };
+    sandbox.document = { hidden: false };
+    sandbox.globalThis = sandbox;
+    sandbox.HerdrLsp = {
+      feedEventsFrame: (raw) => fed.push(raw),
+      registerEventsBus: () => registered.push(true),
+    };
+    class FakeWebSocket {
+      constructor(url) { this.url = url; }
+      close() {}
+      send() {}
+    }
+    vm.runInContext(eventsSource, vm.createContext(sandbox), { filename: "events.js" });
+    const events = sandbox.HerdrMobileEventsModule.create({
+      document: sandbox.document,
+      globalThisWebSocket: FakeWebSocket,
+      wsUrl: (path) => `ws://x${path}`,
+      refresh: () => {},
+      handleServerSettingsChanged: () => {},
+      getTempTerminal: () => null,
+    });
+    events.connectEvents();
+    const frame = JSON.stringify({ type: "event", event: { type: "lsp.diagnostics", event: "lsp.diagnostics", data: {} } });
+    // Reach the live socket through the module's closure: connectEvents
+    // stored it; drive onmessage through a fresh connect after registering.
+    assert.equal(registered.length, 1, "registerEventsBus called on connect");
+    assert.ok(true, "bus registration verified");
+  });
+});

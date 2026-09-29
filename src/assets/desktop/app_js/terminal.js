@@ -3,6 +3,11 @@ function connectEvents() {
   const eventSession = state.session;
   const ws = new WebSocket(wsUrl("/ws/events"));
   eventWs = ws;
+  // Tell the shared lsp.js module a page-level events socket exists;
+  // while frames keep arriving it will not open its own private one.
+  if (window.HerdrLsp && window.HerdrLsp.registerEventsBus) {
+    try { window.HerdrLsp.registerEventsBus(); } catch (_) {}
+  }
   ws.onmessage = (e) => {
     if (eventWs !== ws || eventSession !== state.session) return;
     let msg;
@@ -11,6 +16,12 @@ function connectEvents() {
     } catch (_) {
       scheduleRefresh();
       return;
+    }
+    // Feed every frame to the LSP diagnostics bus before the per-kind
+    // handling: the shared lsp.js module filters lsp.diagnostics and
+    // skips its own private socket while this feed stays fresh.
+    if (window.HerdrLsp && window.HerdrLsp.feedEventsFrame) {
+      try { window.HerdrLsp.feedEventsFrame(e.data); } catch (_) {}
     }
     if (msg.type === "snapshot") applySnapshot(msg);
     else if (msg.type === "server_settings_changed") {

@@ -11,13 +11,27 @@
     let eventRefreshTimer = null;
     let eventReconnectTimer = null;
 
-    function scheduleEventRefresh() {
+    // Same distinction the desktop makes: structure-changing events get a
+    // fast refresh so close/open transitions feel immediate, everything
+    // else coalesces into the slower refresh.
+    const FAST_REFRESH_EVENTS = new Set([
+      "pane.closed",
+      "pane.exited",
+      "tab.closed",
+      "workspace.closed",
+      "worktree.created",
+      "worktree.opened",
+      "worktree.removed",
+    ]);
+
+    function scheduleEventRefresh(kind) {
       if (eventRefreshTimer || document.hidden) return;
+      const delay = kind && FAST_REFRESH_EVENTS.has(kind) ? 50 : 500;
       eventRefreshTimer = setTimeout(() => {
         eventRefreshTimer = null;
         if (document.hidden) return;
         return refresh();
-      }, 120);
+      }, delay);
     }
 
     function scheduleEventReconnect() {
@@ -33,14 +47,28 @@
       if (eventWs || !globalThisWebSocket || document.hidden) return;
       const ws = new globalThisWebSocket(wsUrl("/ws/events"));
       eventWs = ws;
+      // Tell the shared lsp.js module a page-level events socket exists;
+      // while frames keep arriving it will not open its own private one.
+      const LspRegister = globalThis.HerdrLsp;
+      if (LspRegister && LspRegister.registerEventsBus) {
+        try { LspRegister.registerEventsBus(); } catch (_) {}
+      }
       ws.onmessage = (event) => {
+        // Feed every frame to the LSP diagnostics bus; the shared lsp.js
+        // module filters lsp.diagnostics and skips its own private
+        // socket while this feed stays fresh.
+        const Lsp = globalThis.HerdrLsp;
+        if (Lsp && Lsp.feedEventsFrame) {
+          try { Lsp.feedEventsFrame(event.data); } catch (_) {}
+        }
+        let kind = null;
         try {
           const msg = JSON.parse(event.data);
           if (msg && msg.type === "server_settings_changed") {
             handleServerSettingsChanged(msg);
           }
           const evt = msg && msg.event;
-          const kind = evt && (evt.event || evt.type);
+          kind = evt && (evt.event || evt.type);
           const data = (evt && evt.data) || {};
           if (kind === "pane.exited") {
             const tempTerminal = getTempTerminal();
@@ -48,7 +76,7 @@
               tempTerminal.handlePaneExited(data.pane_id);
           }
         } catch (_) {}
-        scheduleEventRefresh();
+        scheduleEventRefresh(kind);
       };
       ws.onclose = () => {
         if (eventWs === ws) eventWs = null;

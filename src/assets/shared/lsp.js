@@ -18,6 +18,22 @@
   let diagnosticsPushAttempts = 0;
   let diagnosticsPushLive = false;
 
+  // Diagnostics frames can arrive over the page's shared /ws/events
+  // socket instead of the private one lsp.js opens itself. The host page
+  // registers itself with this hook; while it keeps feeding frames the
+  // private socket stays closed. `fedAt`/`live` live on the hook so the
+  // liveness checks below treat a registered-but-stale bus like a dropped
+  // socket (fallback to the fast HTTP poll).
+  const eventsBus = {
+    hook: null,
+    lastFedAt: 0,
+  };
+
+  function diagnosticsBusActive() {
+    if (!eventsBus.hook) return false;
+    return Date.now() - eventsBus.lastFedAt < DIAGNOSTICS_PUSH_SLOW_POLL_MS;
+  }
+
   function esc(value) {
     return String(value == null ? "" : value)
       .replace(/&/g, "&amp;")
@@ -349,8 +365,33 @@
   // Preferred: the backend pushes lsp.diagnostics over /ws/events. The old
   // 2s HTTP poll stays as a fallback for older backends and socket outages.
 
+  // Shared frame handler for both transports (private socket and page
+  // events bus). Anything not a lsp.diagnostics frame is ignored.
+  function handleDiagnosticsFrame(raw) {
+    let msg = null;
+    try {
+      msg = JSON.parse(raw);
+    } catch (_) {
+      return;
+    }
+    const evt = msg && msg.event;
+    const kind = evt && (evt.event || evt.type);
+    if (kind !== "lsp.diagnostics") return;
+    diagnosticsPushLive = true;
+    diagnosticsPushAttempts = 0;
+    const data = (evt && evt.data) || null;
+    const notification = data && (data.notification || data);
+    if (notification && (notification.method === "textDocument/publishDiagnostics" || notification.method === "textDocument/publishDiagnosticsThin")) {
+      applyNotifications([notification]);
+      // Fresh push: reset the slow-drain clock so the poll interval does
+      // not fire a redundant HTTP catch-up right after a live event.
+      markDiagnosticsSlowDrained();
+    }
+  }
+
   function startDiagnosticsPush() {
     if (diagnosticsPushSocket || !globalThis.WebSocket) return;
+    if (diagnosticsBusActive()) return;
     let url;
     try {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -366,25 +407,7 @@
     }
     diagnosticsPushSocket = ws;
     ws.onmessage = (event) => {
-      let msg = null;
-      try {
-        msg = JSON.parse(event.data);
-      } catch (_) {
-        return;
-      }
-      const evt = msg && msg.event;
-      const kind = evt && (evt.event || evt.type);
-      if (kind !== "lsp.diagnostics") return;
-      diagnosticsPushLive = true;
-      diagnosticsPushAttempts = 0;
-      const data = (evt && evt.data) || null;
-      const notification = data && (data.notification || data);
-      if (notification && (notification.method === "textDocument/publishDiagnostics" || notification.method === "textDocument/publishDiagnosticsThin")) {
-        applyNotifications([notification]);
-        // Fresh push: reset the slow-drain clock so the poll interval does
-        // not fire a redundant HTTP catch-up right after a live event.
-        markDiagnosticsSlowDrained();
-      }
+      handleDiagnosticsFrame(event.data);
     };
     ws.onclose = () => {
       if (diagnosticsPushSocket === ws) diagnosticsPushSocket = null;
@@ -414,7 +437,7 @@
       }
       // Push live: only a slow safety drain in case a receiver lagged a
       // burst (broadcast drops old events when the UI is busy).
-      if (diagnosticsPushLive && !diagnosticsPushNeedsFastPoll()) {
+      if ((diagnosticsPushLive || diagnosticsBusActive()) && !diagnosticsPushNeedsFastPoll()) {
         if (!diagnosticsSlowDue()) return;
         markDiagnosticsSlowDrained();
         await drainDiagnosticsQueue();
@@ -426,9 +449,10 @@
 
   let diagnosticsLastSlowDrain = 0;
   function diagnosticsPushNeedsFastPoll() {
-    // While the push socket exists we trust it; if it never connected this
-    // session (or dropped), the fast poll keeps diagnostics fresh.
-    return !diagnosticsPushSocket;
+    // While a push transport exists we trust it; if neither the private
+    // socket nor the page bus ever delivered a frame this session, the
+    // fast poll keeps diagnostics fresh.
+    return !diagnosticsPushSocket && !eventsBus.hook;
   }
 
   function diagnosticsSlowDue() {
@@ -500,5 +524,23 @@
     documentSymbols,
     diagnosticsFor,
     stopServer,
+    // The host page's events socket calls this with every raw /ws/events
+    // frame; the shared handler filters lsp.diagnostics. Registering
+    // suppresses lsp.js's own socket while frames keep arriving; a stale
+    // feed expires after 30s and the private socket takes over again.
+    feedEventsFrame(rawFrame) {
+      if (!eventsBus.hook) return;
+      eventsBus.lastFedAt = Date.now();
+      handleDiagnosticsFrame(rawFrame);
+    },
+    registerEventsBus() {
+      eventsBus.hook = true;
+      eventsBus.lastFedAt = Date.now();
+      if (diagnosticsPushSocket) {
+        const ws = diagnosticsPushSocket;
+        diagnosticsPushSocket = null;
+        try { ws.close(); } catch (_) {}
+      }
+    },
   };
 })();
