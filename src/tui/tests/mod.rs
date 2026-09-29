@@ -6135,3 +6135,98 @@ fn search_palette_scrolls_when_rows_outgrow_the_overlay() {
         "scrolled-off rows leave the window"
     );
 }
+
+#[test]
+fn search_palette_multi_workspace_selection_and_arrow_paging() {
+    let mut app = app_with_snapshot();
+    app.snapshot
+        .workspaces
+        .push(crate::tui::model::TuiWorkspace {
+            id: "ws_2".to_string(),
+            label: "Second".to_string(),
+            cwd: "/two".to_string(),
+            focused: false,
+            agent_status: "idle".to_string(),
+            pane_count: 0,
+            tab_count: 0,
+            active_tab_id: None,
+        });
+    point_web_api_at_dead_port(&mut app);
+
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+
+    // "e" matches only the agent text ("agent jcode ..."), and after
+    // typing, arrows still page through the rows (webui modal parity).
+    let len = app.search_palette.results.len();
+    assert!(len >= 1, "agent matched the query: {len}");
+    for _ in 0..len + 1 {
+        app.handle_key(KeyEvent::from(KeyCode::Down));
+    }
+    assert!(
+        app.search_palette.selected < len,
+        "arrows wrap around with a typed query"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Up));
+    assert!(app.search_palette.selected < len);
+
+    // Navigating an agent row from the second workspace still lands on
+    // a valid agent index and keeps the workspace selection in range.
+    app.search_palette.results = vec![search::SearchCandidate::Workspace {
+        id: "ws_2".to_string(),
+        label: "Second".to_string(),
+    }];
+    app.search_palette.selected = 0;
+    app.search_palette.committed = true;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.selected_workspace, 1, "second workspace selected");
+    assert!(
+        app.selected_workspace < app.snapshot.workspaces.len(),
+        "selection stays in range"
+    );
+}
+
+#[test]
+fn search_palette_render_invariants() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+
+    let backend = TestBackend::new(60, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| render(frame, &app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let area = ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 60,
+        height: 20,
+    };
+    let text: String = buf
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_string())
+        .collect();
+    assert!(
+        text.contains("query: a"),
+        "query line renders: {}",
+        &text[..120.min(text.len())]
+    );
+    assert!(text.contains("SEARCH"), "SEARCH footer label renders");
+    assert!(text.contains("Enter commits"), "hint row renders");
+    // Cursor is painted on the query line, not inside any result row.
+    let cursor_row: String = (0..area.width)
+        .map(|x| buf[(x, area.y + 4)].symbol().to_string())
+        .collect();
+    assert!(
+        cursor_row.contains("│"),
+        "cursor column marker inside overlay"
+    );
+    assert!(
+        !cursor_row.contains("[ws]"),
+        "cursor is not on a result row: {cursor_row}"
+    );
+}

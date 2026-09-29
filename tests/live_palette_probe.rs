@@ -17,13 +17,15 @@ fn live_file_and_content_search_parse_real_responses() {
     }
     let api = WebApiClient::new("127.0.0.1", 8787);
     let cwd = env!("CARGO_MANIFEST_DIR");
-    let mut palette = SearchPalette::default();
-    palette.query = "search".to_string();
+    let mut palette = SearchPalette {
+        query: "search".to_string(),
+        ..Default::default()
+    };
 
     let files = palette
         .commit_file_search(&api, cwd, "")
         .expect("live file search");
-    assert!(palette.results.len() >= 1, "at least one name match");
+    assert!(!palette.results.is_empty(), "at least one name match");
     assert!(
         palette.results.iter().any(
             |c| matches!(c, SearchCandidate::File { path, .. } if path.ends_with("search.rs"))
