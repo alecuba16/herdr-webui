@@ -41,14 +41,14 @@ pub(super) struct GitUiStashDropRequest {
     pub(super) confirmed: Option<bool>,
 }
 
-fn git_ui_stashes_blocking(cwd: String) -> Result<Response, (StatusCode, String)> {
+fn git_ui_stashes_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
     match git_ui_text(&cwd, &["stash", "list", "--format=%gd%x00%h%x00%cr%x00%gs"]) {
         Ok(text) => {
             let stashes = text.lines().filter_map(|line| {
                 let parts: Vec<&str> = line.split('\0').collect();
                 (parts.len() >= 4).then(|| json!({ "name": parts[0], "hash": parts[1], "date": parts[2], "message": parts[3] }))
             }).collect::<Vec<_>>();
-            Ok(Json(json!({ "stashes": stashes })).into_response())
+            Ok(json!({ "stashes": stashes }))
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
@@ -72,7 +72,7 @@ fn git_ui_stash_show_blocking(
     cwd: String,
     stash: String,
     context: usize,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let ctx = context.clamp(0, 200).to_string();
     let args = [
         "stash",
@@ -87,7 +87,7 @@ fn git_ui_stash_show_blocking(
     match git_ui_text(&cwd, &args) {
         Ok(text) => {
             let files = parse_unified_diff(&text);
-            Ok(Json(json!({ "files": files })).into_response())
+            Ok(json!({ "files": files }))
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
@@ -111,7 +111,7 @@ pub(super) async fn git_ui_stash_show(
     let cwd = cwd.to_string();
     match tokio::task::spawn_blocking(move || git_ui_stash_show_blocking(cwd, stash, context)).await
     {
-        Ok(Ok(response)) => response,
+        Ok(Ok(value)) => Json(value).into_response(),
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
@@ -121,14 +121,14 @@ fn git_ui_stash_blocking(
     cwd: String,
     msg: String,
     safe_paths: Option<Vec<String>>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let mut args = vec!["stash", "push", "-u", "-m", &msg];
     if let Some(paths) = &safe_paths {
         args.push("--");
         args.extend(paths.iter().map(String::as_str));
     }
     match git_ui_text(&cwd, &args) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -166,10 +166,10 @@ fn git_ui_stash_apply_blocking(
     cwd: String,
     stash: String,
     pop: bool,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let op = if pop { "pop" } else { "apply" };
     match git_ui_text(&cwd, &["stash", op, &stash]) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -193,9 +193,9 @@ pub(super) async fn git_ui_stash_apply(
 fn git_ui_stash_drop_blocking(
     cwd: String,
     stash: String,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     match git_ui_text(&cwd, &["stash", "drop", &stash]) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }

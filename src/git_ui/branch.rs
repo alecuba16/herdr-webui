@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
@@ -48,7 +48,7 @@ fn split_branch_tip_details(details: &str) -> (String, String, String) {
     (author, date, subject)
 }
 
-fn git_ui_branches_blocking(cwd: String) -> Result<Response, (StatusCode, String)> {
+fn git_ui_branches_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
     let worktree_paths = git_ui_text(&cwd, &["worktree", "list", "--porcelain"])
         .map(|raw| parse_worktree_branch_paths(&raw))
         .unwrap_or_default();
@@ -103,10 +103,7 @@ fn git_ui_branches_blocking(cwd: String) -> Result<Response, (StatusCode, String
         .collect::<Vec<_>>();
     let mut branches = local_json.clone();
     branches.extend(remote.clone());
-    Ok(
-        Json(json!({ "branches": branches, "local": local_json, "remote": remote }))
-            .into_response(),
-    )
+    Ok(json!({ "branches": branches, "local": local_json, "remote": remote }))
 }
 
 fn local_branch_name_for_remote(remote: &str) -> &str {
@@ -151,11 +148,11 @@ fn git_ui_branch_delete_blocking(
     cwd: String,
     branch: String,
     force: bool,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     maybe_switch_before_delete(&cwd, &branch)?;
     let delete_flag = if force { "-D" } else { "-d" };
     match git_ui_text(&cwd, &["branch", delete_flag, "--", &branch]) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -219,10 +216,10 @@ pub(super) async fn git_ui_branch_delete(
 fn git_ui_switch_blocking(
     cwd: String,
     args: Vec<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     match git_ui_text(&cwd, &refs) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }

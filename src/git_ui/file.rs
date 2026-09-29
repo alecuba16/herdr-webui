@@ -5,7 +5,7 @@ use std::process::Command;
 
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
@@ -47,10 +47,10 @@ fn git_ui_blame_blocking(
     cwd: String,
     file: String,
     ref_name: String,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let args = git_blame_args(&file, &ref_name);
     match git_ui_text(&cwd, &args) {
-        Ok(text) => Ok(Json(json!({ "text": text })).into_response()),
+        Ok(text) => Ok(json!({ "text": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -109,7 +109,7 @@ fn git_ui_file_blocking(
     cwd: String,
     file: String,
     ref_name: Option<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let repo = match git_ui_repo(&cwd) {
         Ok(repo) => repo,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
@@ -129,7 +129,7 @@ fn git_ui_file_blocking(
             Ok(hash) => hash,
             Err(err) => return Err((StatusCode::BAD_GATEWAY, err)),
         };
-        return Ok(Json(json!({ "path": file, "content": content, "hash": hash })).into_response());
+        return Ok(json!({ "path": file, "content": content, "hash": hash }));
     }
     let ref_name = match safe_git_token(ref_name, "ref") {
         Ok(v) => v,
@@ -138,7 +138,7 @@ fn git_ui_file_blocking(
     let spec = format!("{ref_name}:{file}");
     match git_ui_text(&repo, &["show", &spec]) {
         Ok(content) => {
-            Ok(Json(json!({ "path": file, "content": content, "hash": "" })).into_response())
+            Ok(json!({ "path": file, "content": content, "hash": "" }))
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
@@ -169,7 +169,7 @@ fn git_ui_write_file_blocking(
     path: String,
     content: String,
     expected_hash: Option<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let repo = match git_ui_repo(&cwd) {
         Ok(repo) => repo,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
@@ -202,7 +202,7 @@ fn git_ui_write_file_blocking(
         Ok(hash) => hash,
         Err(err) => return Err((StatusCode::BAD_GATEWAY, err)),
     };
-    Ok(Json(json!({ "ok": true, "path": path, "hash": hash })).into_response())
+    Ok(json!({ "ok": true, "path": path, "hash": hash }))
 }
 
 pub(super) async fn git_ui_write_file(
@@ -226,7 +226,7 @@ pub(super) async fn git_ui_write_file(
 fn git_ui_file_history_blocking(
     cwd: String,
     file: String,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     match git_ui_text(
         &cwd,
         &[
@@ -243,7 +243,7 @@ fn git_ui_file_history_blocking(
                 let parts: Vec<&str> = line.split('\0').collect();
                 (parts.len() >= 4).then(|| json!({ "hash": parts[0], "author": parts[1], "date": parts[2], "message": parts[3] }))
             }).collect::<Vec<_>>();
-            Ok(Json(json!({ "commits": commits })).into_response())
+            Ok(json!({ "commits": commits }))
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }

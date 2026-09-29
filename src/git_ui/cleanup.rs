@@ -311,7 +311,7 @@ fn git_ui_worktree_remove_blocking(
     cwd: String,
     path: String,
     force: bool,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let path = expand_user_path_string(&path);
     let repo = match git_ui_text(&cwd, &["rev-parse", "--show-toplevel"]) {
         Ok(value) => value.trim().to_string(),
@@ -331,7 +331,7 @@ fn git_ui_worktree_remove_blocking(
         vec!["worktree", "remove", path.as_str()]
     };
     match git_ui_text(&cwd, &args) {
-        Ok(text) => Ok(Json(json!({ "ok": true, "message": text })).into_response()),
+        Ok(text) => Ok(json!({ "ok": true, "message": text })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -358,7 +358,7 @@ pub(super) async fn git_ui_worktree_remove(
 fn git_ui_worktree_prune_blocking(
     cwd: String,
     args: Vec<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     match git_ui_output(&cwd, &refs) {
         Ok(output) => {
@@ -372,7 +372,7 @@ fn git_ui_worktree_prune_blocking(
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             // git writes "Removing worktrees/<name>: <reason>" to stderr
             let pruned: Vec<&str> = stderr.lines().filter(|l| !l.is_empty()).collect();
-            Ok(Json(json!({ "ok": true, "pruned": pruned, "message": stdout })).into_response())
+            Ok(json!({ "ok": true, "pruned": pruned, "message": stdout }))
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }

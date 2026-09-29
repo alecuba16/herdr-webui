@@ -37,10 +37,10 @@ pub(crate) use check_auth;
 /// was duplicated 32 times across the module.
 pub(crate) async fn git_spawn<F>(operation: F) -> Response
 where
-    F: FnOnce() -> Result<Response, (StatusCode, String)> + Send + 'static,
+    F: FnOnce() -> Result<serde_json::Value, (StatusCode, String)> + Send + 'static,
 {
     match tokio::task::spawn_blocking(operation).await {
-        Ok(Ok(response)) => response,
+        Ok(Ok(value)) => Json(value).into_response(),
         Ok(Err((status, msg))) => git_json_error(status, msg),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
@@ -180,7 +180,7 @@ fn repo_relative_path(repo_root: &Path, cwd: &Path, file: &str) -> Result<String
     }
 }
 
-fn git_ui_path_info_blocking(cwd: String, path: String) -> Result<Response, (StatusCode, String)> {
+fn git_ui_path_info_blocking(cwd: String, path: String) -> Result<serde_json::Value, (StatusCode, String)> {
     let path = safe_repo_path(&path).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     let repo_root = git_repo_root(&cwd).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     let repo_root_path = fs::canonicalize(&repo_root).unwrap_or_else(|_| PathBuf::from(&repo_root));
@@ -189,7 +189,7 @@ fn git_ui_path_info_blocking(cwd: String, path: String) -> Result<Response, (Sta
         fs::canonicalize(&expanded_cwd_text).unwrap_or_else(|_| PathBuf::from(&expanded_cwd_text));
     let repo_path = repo_relative_path(&repo_root_path, &expanded_cwd, path)
         .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
-    Ok(Json(json!({ "repo_root": repo_root, "file": repo_path })).into_response())
+    Ok(json!({ "repo_root": repo_root, "file": repo_path }))
 }
 
 async fn git_ui_path_info(
@@ -312,7 +312,7 @@ fn git_permalink_url(
     )
 }
 
-fn git_ui_permalink_blocking(cwd: String, path: String) -> Result<Response, (StatusCode, String)> {
+fn git_ui_permalink_blocking(cwd: String, path: String) -> Result<serde_json::Value, (StatusCode, String)> {
     let path = safe_repo_path(&path).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     let repo_root = git_repo_root(&cwd).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     let repo_root_path = fs::canonicalize(&repo_root).unwrap_or_else(|_| PathBuf::from(&repo_root));
@@ -336,14 +336,13 @@ fn git_ui_permalink_blocking(cwd: String, path: String) -> Result<Response, (Sta
         git_origin_or_upstream_remote(&repo_root).map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     let (url, service) = git_permalink_url(&remote, &commit, &repo_path)
         .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
-    Ok(Json(json!({
+    Ok(json!({
         "url": url,
         "service": service,
         "commit": commit,
         "file": repo_path,
         "remote_url": normalize_git_remote_url(&remote).unwrap_or(remote),
     }))
-    .into_response())
 }
 
 async fn git_ui_permalink(
@@ -468,7 +467,7 @@ fn git_remote_url(cwd: &str, upstream: &str) -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
-fn git_status_blocking(cwd: String) -> Result<Response, (StatusCode, String)> {
+fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
     let repo = match git_ui_repo(&cwd) {
         Ok(repo) => repo,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
@@ -590,7 +589,7 @@ fn git_status_blocking(cwd: String) -> Result<Response, (StatusCode, String)> {
     } else {
         "dirty"
     };
-    Ok(Json(json!({
+    Ok(json!({
         "repo_path": repo,
         "branch": branch,
         "upstream": upstream,
@@ -609,7 +608,6 @@ fn git_status_blocking(cwd: String) -> Result<Response, (StatusCode, String)> {
         "stashes": stashes,
         "warnings": warnings,
     }))
-    .into_response())
 }
 
 async fn git_ui_status(
@@ -636,11 +634,11 @@ fn git_ui_paths(body: &GitUiPathsRequest) -> Result<Vec<&str>, String> {
 fn git_ui_stage_blocking(
     cwd: String,
     paths: Vec<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let mut args = vec!["add".to_string(), "--".to_string()];
     args.extend(paths);
     match git_ui_text_strings(&cwd, &args) {
-        Ok(_) => Ok(Json(json!({ "ok": true })).into_response()),
+        Ok(_) => Ok(json!({ "ok": true })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -664,7 +662,7 @@ async fn git_ui_stage(
 fn git_ui_unstage_blocking(
     cwd: String,
     paths: Vec<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let mut args = vec![
         "restore".to_string(),
         "--staged".to_string(),
@@ -672,7 +670,7 @@ fn git_ui_unstage_blocking(
     ];
     args.extend(paths);
     match git_ui_text_strings(&cwd, &args) {
-        Ok(_) => Ok(Json(json!({ "ok": true })).into_response()),
+        Ok(_) => Ok(json!({ "ok": true })),
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -696,7 +694,7 @@ async fn git_ui_unstage(
 fn git_ui_discard_blocking(
     cwd: String,
     paths: Vec<String>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<serde_json::Value, (StatusCode, String)> {
     let repo = match git_ui_repo(&cwd) {
         Ok(repo) => repo,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
@@ -738,7 +736,7 @@ fn git_ui_discard_blocking(
             }
         }
     }
-    Ok(Json(json!({ "ok": true })).into_response())
+    Ok(json!({ "ok": true }))
 }
 
 async fn git_ui_discard(
@@ -1003,12 +1001,11 @@ mod tests {
         repo.git(&["remote", "add", "origin", "git@bitbucket.org:team/repo.git"]);
         let commit = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
 
-        let response = git_ui_permalink_blocking(
+        let body = git_ui_permalink_blocking(
             repo.path.to_string_lossy().to_string(),
             "tracked.txt".to_string(),
         )
         .unwrap();
-        let body = response_json(response).await;
         assert_eq!(body["service"], "bitbucket");
         assert_eq!(body["commit"], commit);
         assert_eq!(
