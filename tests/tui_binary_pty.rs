@@ -403,7 +403,9 @@ fn tui_binary_worktree_browser_and_picker_pty() {
     let _ = writer.flush();
     wait_for(&log, "Open workspace or worktree");
     assert!(
-        log.lock().unwrap().contains(&format!("this folder: {root_path}")),
+        log.lock()
+            .unwrap()
+            .contains(&format!("this folder: {root_path}")),
         "this-folder row must show the browse root"
     );
     wait_for(&log, "alpha/");

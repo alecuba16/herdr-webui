@@ -1832,7 +1832,11 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
                 },
             ),
             BrowserRow::Worktree(worktree) => {
-                let linked = if worktree.is_linked { " [linked]" } else { " [main]" };
+                let linked = if worktree.is_linked {
+                    " [linked]"
+                } else {
+                    " [main]"
+                };
                 (
                     worktree.title(),
                     if worktree.branch.is_empty() {

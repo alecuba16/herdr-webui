@@ -737,14 +737,11 @@ impl BrowserRow {
     pub fn matches(&self, query: &str) -> bool {
         let haystack = match self {
             Self::ThisFolder { path } => path.to_ascii_lowercase(),
-            Self::Worktree(worktree) => format!(
-                "{} {} {}",
-                worktree.path, worktree.branch, worktree.label
-            )
-            .to_ascii_lowercase(),
-            Self::Folder { path, name } => {
-                format!("{path} {name}").to_ascii_lowercase()
+            Self::Worktree(worktree) => {
+                format!("{} {} {}", worktree.path, worktree.branch, worktree.label)
+                    .to_ascii_lowercase()
             }
+            Self::Folder { path, name } => format!("{path} {name}").to_ascii_lowercase(),
         };
         haystack.contains(query)
     }
@@ -759,12 +756,7 @@ pub(crate) fn list_subdirectories(root: &Path) -> Vec<BrowserRow> {
     };
     let mut dirs: Vec<BrowserRow> = entries
         .flatten()
-        .filter(|entry| {
-            entry
-                .file_type()
-                .map(|kind| kind.is_dir())
-                .unwrap_or(false)
-        })
+        .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.') {
