@@ -341,6 +341,12 @@
       };
       this._mouseMode = { tracking: false, sgrMouse: false };
       this._onWheelMouseReport = typeof options.onWheelMouseReport === "function" ? options.onWheelMouseReport : null;
+      // Optional keyboard focus gate: when provided and returning true, the
+      // terminal never takes DOM focus itself (mobile layout: the on-screen
+      // keyboard must only ever open from the explicit input sheet, never
+      // from touching/typing at the terminal surface).
+      this._inputGate = typeof options.inputGate === "function" ? options.inputGate : null;
+      this._inputGateInstalled = false;
       if (this._onWheelMouseReport) this._trackPointer();
       this.setTheme(options.theme || {});
       this.setFontFamily(options.fontFamily || "monospace");
@@ -373,10 +379,86 @@
         onData: opts.onData,
       });
       const adapter = new HerdrWtermAdapter(container, term, opts);
+      // Install the gate before init(): wterm focuses its hidden textarea
+      // during init and from its own click handlers, which would open the
+      // mobile on-screen keyboard before the adapter is returned.
+      if (typeof opts.inputGate === "function") adapter.applyInputGate(opts.inputGate);
       await term.init();
       adapter.setTheme(opts.theme || {});
       adapter.setFontFamily(opts.fontFamily || "monospace");
+      // wterm appends its textarea during init(); re-sync so the readonly
+      // gate actually lands on the live textarea.
+      if (typeof opts.inputGate === "function") adapter.applyInputGate(opts.inputGate);
       return adapter;
+    }
+
+    /**
+     * Installs a keyboard input gate.  While the gate denies input:
+     *   - adapter.focus() is a no-op, and
+     *   - wterm's hidden textarea is marked readonly and any focus it
+     *     steals (wterm focuses it from its own click/press handlers,
+     *     which opens the on-screen keyboard on mobile) is reverted.
+     *
+     * This lets the mobile layout route every keystroke through the
+     * explicit input sheet instead of the terminal surface, so the OS
+     * keyboard never pops up on its own and IME composition cannot
+     * corrupt terminal input.
+     */
+    applyInputGate(gate) {
+      if (this._destroyed || typeof gate !== "function") return;
+      const container = this.element;
+      if (!this._inputGateInstalled) {
+        this._inputGateInstalled = true;
+        const onBlur = (event) => {
+          if (!this._inputGate || !this._inputGate("focus")) return;
+          const target = event.target;
+          if (target && typeof target.blur === "function") target.blur();
+        };
+        this._inputGateBlurHandler = onBlur;
+        container.addEventListener("focusin", onBlur, true);
+      }
+      this._inputGate = gate;
+      this.syncInputGate();
+    }
+
+    syncInputGate() {
+      if (!this._inputGate) return;
+      const denies = !!this._inputGate("focus");
+      const textarea = this.element ? this.element.querySelector("textarea") : null;
+      if (!textarea) return;
+      textarea.readOnly = denies;
+      if (denies && !textarea.__herdrGatedFocus) {
+        // Every wterm focus path (init, click/press handlers, adapter
+        // focus) funnels into textarea.focus().  Gating it here blocks
+        // them all, which is what keeps the mobile keyboard closed.
+        const adapter = this;
+        textarea.__herdrGatedFocus = textarea.focus;
+        textarea.focus = function (...args) {
+          if (adapter._inputGate && adapter._inputGate("focus")) return;
+          return textarea.__herdrGatedFocus.apply(this, args);
+        };
+      } else if (!denies && textarea.__herdrGatedFocus) {
+        textarea.focus = textarea.__herdrGatedFocus;
+        delete textarea.__herdrGatedFocus;
+      }
+    }
+
+    removeInputGate() {
+      if (!this._inputGate) return;
+      const container = this.element;
+      if (container && this._inputGateBlurHandler)
+        container.removeEventListener("focusin", this._inputGateBlurHandler, true);
+      this._inputGateInstalled = false;
+      const textarea = container ? container.querySelector("textarea") : null;
+      if (textarea) {
+        textarea.readOnly = false;
+        if (textarea.__herdrGatedFocus) {
+          textarea.focus = textarea.__herdrGatedFocus;
+          delete textarea.__herdrGatedFocus;
+        }
+      }
+      this._inputGate = null;
+      this._inputGateBlurHandler = null;
     }
 
     write(data, callback) {
@@ -400,7 +482,9 @@
     }
 
     focus() {
-      if (!this._destroyed && this.wterm) this.wterm.focus();
+      if (this._destroyed || !this.wterm) return;
+      if (this._inputGate && this._inputGate("focus")) return;
+      this.wterm.focus();
     }
 
     dispose() { this.destroy(); }
@@ -408,6 +492,7 @@
     destroy() {
       if (this._destroyed) return;
       this._destroyed = true;
+      this.removeInputGate();
       this.setLinksEnabled(false);
       this.setWheelScrolling(false);
       if (this._pointerBound && this._pointerMove) {

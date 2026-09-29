@@ -931,6 +931,8 @@
     applyTerminalLinks: mobileTerminal.applyLinks,
     reloadTerminal() { mobileTerminal.destroy(false); scheduleTerminalResize(); },
     scrollTerminalToBottom: mobileTerminal.scrollToBottom,
+    openTerminalInputSheet: mobileTerminal.openInputSheet,
+    closeTerminalInputSheet: mobileTerminal.closeInputSheet,
     currentScreen,
     currentSelection,
     refresh,

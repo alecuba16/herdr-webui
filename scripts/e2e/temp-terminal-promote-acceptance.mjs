@@ -386,11 +386,13 @@ await sleep(3000);
   })()`);
   check('mobile shows the terminal screen after promote', !!mobileScreen);
   // The promoted shell must still be alive on mobile too: echo round-trip
-  // through the reconnected terminal.
+  // through the reconnected terminal. Mobile input goes via the pencil
+  // input sheet (the terminal surface is keyboard-gated), so open it,
+  // type the command there, and submit.
   await evalApp(`(function(){
-    const t = document.querySelector('#terminal textarea, #terminal .xterm-helper-textarea');
-    if (t) t.focus();
-    return !!t;
+    const btn = document.getElementById('mobileTerminalInputButton');
+    if (btn) btn.click();
+    return !!btn;
   })()`);
   await typeText('echo MOBILE_PROMOTE_ALIVE');
   await pressEnter();
