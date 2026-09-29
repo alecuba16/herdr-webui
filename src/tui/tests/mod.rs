@@ -1520,15 +1520,16 @@ fn shortcut_dispatch_covers_every_arm() {
     app.handle_key(KeyEvent::from(KeyCode::Char('t')));
     assert_eq!(app.screen, TuiScreen::Terminal);
 
-    // Search on Files starts the filter.
+    // Search opens the palette overlay.
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('f')));
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('/')));
-    assert!(app.file_explorer.filter_active, "search arms the filter");
+    assert_eq!(app.mode, TuiMode::SearchPalette, "search opens the palette");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_ne!(app.mode, TuiMode::SearchPalette);
 
     // Sidebar navigation arms: j/k move workspaces, a/A move agents.
-    app.file_explorer.filter_active = false;
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('j')));
     assert_eq!(app.sidebar_focus, SidebarFocus::Workspaces);
@@ -5852,4 +5853,147 @@ fn depth_helpers_fold_named_colors_and_pick_theme_tones() {
     assert_eq!(border_tone(&plain), 128);
     plain.panel_bg = Color::Black;
     assert!(is_dark(&plain));
+}
+
+#[test]
+fn search_palette_opens_types_commits_and_navigates() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+
+    // Ctrl+B / opens the palette overlay from any screen.
+    let ctrl_b = ctrl('b');
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.mode, TuiMode::SearchPalette);
+    assert_eq!(app.search_palette.query, "");
+    assert!(!app.search_palette.committed);
+
+    // Typing live-filters the local candidates (the fixture has the
+    // "Repo" workspace, the "Shell" tab and the jcode agent).
+    app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    assert_eq!(app.search_palette.query, "rep");
+    assert_eq!(app.search_palette.results.len(), 1);
+    assert!(matches!(
+        app.search_palette.results[0],
+        search::SearchCandidate::Workspace { .. }
+    ));
+
+    // Arrows move the cursor even with a query typed (webui modal
+    // parity); j/k are query letters once text exists.
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert_eq!(app.search_palette.selected, 0, "single row stays at 0");
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.search_palette.query, "repj", "j types into the query");
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.search_palette.query, "rep");
+
+    // First Enter commits: with the API dead, the fetch fails and an
+    // error surfaces without closing the palette.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.search_palette.committed);
+    assert!(app.error.is_some(), "dead API surfaces the fetch error");
+
+    // A second Enter on a local row navigates: the workspace result
+    // selects the workspace and its first pane.
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_ne!(app.mode, TuiMode::SearchPalette, "Enter navigated");
+    assert_eq!(app.selected_workspace, 0);
+    assert_eq!(
+        app.sidebar_focus,
+        SidebarFocus::Agents,
+        "landed on the pane"
+    );
+    assert_eq!(app.selected_agent, 0);
+
+    // Esc while the palette is open closes it without side effects.
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_ne!(app.mode, TuiMode::SearchPalette);
+
+    // Ctrl+U clears the query after typing.
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.search_palette.query, "");
+}
+
+#[test]
+fn search_palette_panel_and_agent_rows_resolve_to_panes() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+
+    // Panel row: the tab resolves to its first pane.
+    app.search_palette.results = vec![search::SearchCandidate::Panel {
+        id: "tab_1".to_string(),
+        label: "Shell".to_string(),
+        workspace_id: "ws_1".to_string(),
+    }];
+    app.search_palette.selected = 0;
+    app.run_search_candidate(&app.search_palette.results[0].clone())
+        .unwrap();
+    assert_eq!(app.sidebar_focus, SidebarFocus::Agents);
+    assert_eq!(app.selected_agent, 0);
+
+    // Agent row: the pane resolves via the agents list.
+    app.search_palette.results = vec![search::SearchCandidate::Agent {
+        pane_id: "pane_1".to_string(),
+        label: "jcode".to_string(),
+    }];
+    app.run_search_candidate(&app.search_palette.results[0].clone())
+        .unwrap();
+    assert_eq!(app.sidebar_focus, SidebarFocus::Agents);
+    assert_eq!(app.selected_agent, 0);
+
+    // A pane id that exists nowhere must not panic (fallback arms).
+    app.search_palette.results = vec![search::SearchCandidate::Agent {
+        pane_id: "ghost".to_string(),
+        label: "ghost".to_string(),
+    }];
+    app.run_search_candidate(&app.search_palette.results[0].clone())
+        .unwrap();
+}
+
+#[test]
+fn search_palette_renders_query_rows_and_empty_state() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.mode, TuiMode::SearchPalette);
+
+    // Freshly opened: the empty state hints at typing.
+    let canvas = draw(&app, 80, 24);
+    assert!(canvas.contains("type to search"), "empty query hint");
+    assert!(canvas.contains("Search"));
+
+    // Typing filters and the rows render with the icon prefix.
+    app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('p')));
+    let canvas = draw(&app, 80, 24);
+    assert!(canvas.contains("query: rep_"), "the query line renders");
+    assert!(canvas.contains("[ws] Repo"), "workspace row with icon");
+    assert!(canvas.contains("1 results"));
+
+    // A committed query with no matches shows the no-results state
+    // (the dead API surfaces the error in the footer, and the rows
+    // list stays empty).
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+    assert!(app.search_palette.results.is_empty());
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.search_palette.committed);
+    let canvas = draw(&app, 80, 24);
+    assert!(
+        canvas.contains("no results"),
+        "committed dead search says none"
+    );
+
+    // The footer shows the palette mode label.
+    assert!(canvas.contains("SEARCH"));
 }

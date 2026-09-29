@@ -2,6 +2,7 @@ pub mod keys;
 pub mod model;
 pub mod panels;
 pub mod render;
+pub mod search;
 pub mod terminal;
 pub mod theme;
 pub mod web_api;
@@ -92,6 +93,9 @@ pub(crate) enum FooterContext {
     SettingsOverlay,
     /// Worktree browser overlay: j/k or arrows move, Enter opens, Esc closes.
     WorktreeList,
+    /// Search palette overlay (prefix `/`): type to filter, Enter
+    /// commits/navigates, Esc closes.
+    SearchPalette,
     /// Commit message modal: typing, Enter commits, Esc cancels.
     CommitInput,
     /// Any typed prompt (rename, confirm, new file, ...).
@@ -123,6 +127,9 @@ impl FooterContext {
             Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
             Self::SettingsOverlay => " t theme · Esc closes ",
             Self::WorktreeList => " Enter opens/enters · o opens folder · h parent · j/k moves · type filters · Esc closes ",
+            Self::SearchPalette => {
+                " Enter commits/navigates · j/k moves · Esc closes · Ctrl+B ? help "
+            }
             Self::CommitInput => {
                 " type the message · Enter commits · Esc cancels · Ctrl+U clears · Ctrl+B ? help "
             }
@@ -184,6 +191,7 @@ impl FooterContext {
             Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
             Self::SettingsOverlay => " t theme · Esc closes ",
             Self::WorktreeList => " Enter opens/enters · o opens folder · h parent · j/k moves · type filters · Esc closes ",
+            Self::SearchPalette => " Enter commits/navigates · j/k moves · Esc closes · Ctrl+B ? help ",
             Self::CommitInput => " Enter commit · Esc cancel · Ctrl+B ? help ",
             Self::PromptInput(PromptKind::ReplaceInFile) => {
                 " Enter replace · ! all · Esc cancel · Ctrl+B ? help "
@@ -293,6 +301,9 @@ pub struct TuiApp {
     /// the webui settings "Search settings" box. Printable keys append,
     /// Backspace edits, Esc clears it before closing the overlay.
     pub help_filter: String,
+    /// Search palette overlay state (webui search palette, prefix `/`):
+    /// query, cursor and committed result rows.
+    pub search_palette: search::SearchPalette,
     /// Mode the user was in when the quit overlay opened; restored on cancel.
     pub(crate) quit_prev_mode: TuiMode,
     /// Modes the user was in before each overlay (help/settings/worktree)
@@ -509,6 +520,7 @@ impl TuiApp {
             rebase_pending_upstream: None,
             help_scroll: 0,
             help_filter: String::new(),
+            search_palette: search::SearchPalette::default(),
             quit_prev_mode: TuiMode::Navigate,
             overlay_stack: Vec::new(),
             dirty: true,
@@ -591,6 +603,7 @@ impl TuiApp {
             TuiMode::Help => return FooterContext::HelpOverlay,
             TuiMode::Settings => return FooterContext::SettingsOverlay,
             TuiMode::WorktreeList => return FooterContext::WorktreeList,
+            TuiMode::SearchPalette => return FooterContext::SearchPalette,
             _ => {}
         }
         // Screens and sub-views.
@@ -714,6 +727,7 @@ impl TuiApp {
                 _ => {}
             },
             TuiMode::WorktreeList => self.handle_worktree_list_key(key),
+            TuiMode::SearchPalette => self.handle_search_palette_key(key),
             TuiMode::Navigate => self.handle_navigation_key(key),
             TuiMode::Attach => {
                 if self.screen == TuiScreen::Terminal {
@@ -965,6 +979,213 @@ impl TuiApp {
         }
     }
 
+    /// Keys while the search palette overlay is open (webui search
+    /// palette): printable keys append to the query and live-filter
+    /// the local candidates (workspaces/panels/agents), Enter commits
+    /// the query (fetching file and content hits over the web API)
+    /// and a second Enter navigates the selected row, Esc closes.
+    fn handle_search_palette_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.close_search_palette();
+            }
+            // Ctrl+U clears the query like the prompt inputs.
+            KeyCode::Char(ch)
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && ch.eq_ignore_ascii_case(&'u') =>
+            {
+                self.search_palette.clear_query(&self.snapshot);
+            }
+            KeyCode::Backspace => {
+                self.search_palette.pop_char(&self.snapshot);
+            }
+            // Arrows always move (webui modal parity): they are not
+            // query letters, so an active query must not swallow them.
+            KeyCode::Down => self.search_palette.move_selection(1),
+            KeyCode::Up => self.search_palette.move_selection(-1),
+            // j/k move the cursor only while the query is empty (the
+            // help/worktree overlay convention); with a query typed
+            // they are letters.
+            KeyCode::Char('j') if self.search_palette.query.is_empty() => {
+                self.search_palette.move_selection(1);
+            }
+            KeyCode::Char('k') if self.search_palette.query.is_empty() => {
+                self.search_palette.move_selection(-1);
+            }
+            KeyCode::Enter => {
+                // First Enter on a fresh palette commits the query (file
+                // and content fetches); a palette with rows navigates.
+                if !self.search_palette.committed {
+                    self.search_palette.committed = true;
+                    let result = self.commit_search_query();
+                    match result {
+                        Ok(()) => {
+                            self.status =
+                                format!("search: {} results", self.search_palette.results.len());
+                        }
+                        Err(err) => self.error = Some(err),
+                    }
+                    return;
+                }
+                let candidate = self.search_palette.selected_candidate().cloned();
+                match candidate {
+                    Some(candidate) => {
+                        self.close_search_palette();
+                        if let Err(err) = self.run_search_candidate(&candidate) {
+                            self.error = Some(err);
+                        }
+                    }
+                    None => self.close_search_palette(),
+                }
+            }
+            KeyCode::Char(ch) if !ch.is_control() => {
+                self.search_palette.push_char(ch, &self.snapshot);
+                self.status = format!("search: {}", self.search_palette.query);
+            }
+            _ => {}
+        }
+    }
+
+    /// Commit the palette query: run the file search and the content
+    /// search over the active cwd, appending hits below the local
+    /// candidates. A query that already has rows keeps them (the
+    /// second Enter navigates instead of re-fetching).
+    fn commit_search_query(&mut self) -> Result<(), String> {
+        let query = self.search_palette.query.trim().to_string();
+        if query.is_empty() {
+            return Ok(());
+        }
+        let Some(cwd) = self.active_cwd() else {
+            return Err("no workspace selected".to_string());
+        };
+        let root = self.file_explorer.root_path.clone();
+        let file_result = self
+            .search_palette
+            .commit_file_search(&self.web_api, &cwd, &root)
+            .map(|_| ())
+            .map_err(|err| err.to_string());
+        let content_result = self
+            .search_palette
+            .commit_content_search(&self.web_api, &cwd, &root)
+            .map(|_| ())
+            .map_err(|err| err.to_string());
+        file_result?;
+        content_result?;
+        Ok(())
+    }
+
+    /// Navigate the selected palette row (desktop `chooseSearchResult`):
+    /// workspaces/panels/agents select their workspace and pane so the
+    /// next Enter attaches; files reveal in the Files tree; content
+    /// opens the preview at the match line.
+    fn run_search_candidate(&mut self, candidate: &search::SearchCandidate) -> Result<(), String> {
+        match candidate {
+            search::SearchCandidate::Workspace { id, .. } => {
+                self.select_search_target(Some(id), None, None);
+                Ok(())
+            }
+            search::SearchCandidate::Panel {
+                id, workspace_id, ..
+            } => {
+                self.select_search_target(Some(workspace_id), Some(id), None);
+                Ok(())
+            }
+            search::SearchCandidate::Agent { pane_id, .. } => {
+                self.select_search_target(None, None, Some(pane_id));
+                Ok(())
+            }
+            search::SearchCandidate::File { path, is_dir, .. } => {
+                self.open_files_screen();
+                if *is_dir {
+                    self.file_explorer.select_path(path);
+                } else {
+                    self.file_explorer
+                        .reveal_path(&self.web_api, path)
+                        .map_err(|err| err.to_string())?;
+                }
+                Ok(())
+            }
+            search::SearchCandidate::Content { file, line, .. } => {
+                self.open_files_screen();
+                self.file_explorer
+                    .open_preview_at_line(&self.web_api, file, *line)
+                    .map_err(|err| err.to_string())?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Focus the concrete navigation target (desktop rule): a pane
+    /// resolves to its agent list entry, a tab to its first pane, a
+    /// workspace to its active tab's first pane. The sidebar selection
+    /// updates so the terminal screen attaches to the right terminal.
+    fn select_search_target(
+        &mut self,
+        workspace_id: Option<&str>,
+        tab_id: Option<&str>,
+        pane_id: Option<&str>,
+    ) {
+        // Pane id wins when present (agent rows).
+        if let Some(pane_id) = pane_id {
+            if let Some(index) = self
+                .snapshot
+                .agents
+                .iter()
+                .position(|agent| agent.pane_id == pane_id)
+            {
+                self.sidebar_focus = SidebarFocus::Agents;
+                self.selected_agent = index;
+                if let Some(workspace_index) = self
+                    .snapshot
+                    .workspaces
+                    .iter()
+                    .position(|ws| ws.id == self.snapshot.agents[index].workspace_id)
+                {
+                    self.selected_workspace = workspace_index;
+                }
+                self.refresh_tail();
+                return;
+            }
+        }
+        if let Some(tab_id) = tab_id {
+            if let Some(pane) = self
+                .snapshot
+                .panes
+                .iter()
+                .find(|pane| pane.tab_id == tab_id)
+            {
+                self.select_search_target(None, None, Some(&pane.id.clone()));
+                return;
+            }
+        }
+        if let Some(workspace_id) = workspace_id {
+            if let Some(index) = self
+                .snapshot
+                .workspaces
+                .iter()
+                .position(|ws| ws.id == workspace_id)
+            {
+                self.selected_workspace = index;
+                self.sidebar_focus = SidebarFocus::Workspaces;
+                // Also land on the workspace's active tab pane so the
+                // selection is concrete (desktop `targetForWorkspace`).
+                let active_tab_id = self.snapshot.workspaces[index].active_tab_id.clone();
+                if let Some(tab_id) = active_tab_id {
+                    if let Some(pane) = self
+                        .snapshot
+                        .panes
+                        .iter()
+                        .find(|pane| pane.workspace_id == workspace_id && pane.tab_id == tab_id)
+                    {
+                        self.select_search_target(None, None, Some(&pane.id.clone()));
+                        return;
+                    }
+                }
+                self.refresh_tail();
+            }
+        }
+    }
+
     /// Keys while content-search results are visible (webui results
     /// view): j/k walk the flat rows, Enter opens the match (or toggles
     /// a file group), `+` appends the next page, `A`/`X` flip the
@@ -1136,12 +1357,7 @@ impl TuiApp {
             Shortcut::Files => self.open_files_screen(),
             Shortcut::Git => self.open_git_screen(),
             Shortcut::Terminal => self.screen = TuiScreen::Terminal,
-            Shortcut::Search => {
-                if self.screen == TuiScreen::Files {
-                    self.file_explorer.start_filter();
-                    self.status = "file filter".to_string();
-                }
-            }
+            Shortcut::Search => self.open_search_palette(),
             Shortcut::Refresh => self.refresh_active_screen(),
             Shortcut::NextWorkspace => self.move_selection(1),
             Shortcut::PrevWorkspace => self.move_selection(-1),
@@ -1453,6 +1669,19 @@ impl TuiApp {
     /// from (falls back to Navigate when the stack is somehow empty).
     pub(crate) fn close_overlay(&mut self) {
         self.mode = self.overlay_stack.pop().unwrap_or(TuiMode::Navigate);
+    }
+
+    /// Open the search palette (prefix `/`): reset the query and
+    /// results, then enter the overlay on top of the current mode.
+    fn open_search_palette(&mut self) {
+        self.search_palette.open();
+        self.open_overlay(TuiMode::SearchPalette);
+        self.status = "search: type query".to_string();
+    }
+
+    /// Close the search palette and restore the previous mode.
+    fn close_search_palette(&mut self) {
+        self.close_overlay();
     }
 
     /// Open the help overlay with a clean filter and scroll. Every
