@@ -231,6 +231,22 @@ impl WebApiClient {
         self.post("/api/recent-workspaces", &body)
     }
 
+    /// `POST /api/recent-workspaces/record`: record a workspace the
+    /// TUI just created/opened through the backend socket (desktop
+    /// fires the same record client-side after `POST
+    /// /api/workspaces`). Best effort by design.
+    pub fn record_recent_workspace(
+        &self,
+        path: &str,
+        label: Option<&str>,
+        kind: Option<&str>,
+    ) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/recent-workspaces/record",
+            &serde_json::json!({ "path": path, "label": label, "kind": kind }),
+        )
+    }
+
     /// `POST /api/recent-workspaces/remove`: drop one entry by path.
     /// The server validates and expands the raw path itself.
     pub fn remove_recent_workspace(&self, path: &str) -> Result<Value, WebApiError> {

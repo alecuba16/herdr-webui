@@ -169,6 +169,14 @@ impl TuiApp {
             .unwrap_or_default()
             .to_string();
         self.workspace_create_stage = None;
+        // Desktop records every created workspace into the recents
+        // list right after the create (fire-and-forget POST after
+        // `POST /api/workspaces`); the TUI's socket-side create never
+        // passes a recording proxy, so record here, best effort: a
+        // failed record must not fail the workspace creation.
+        let _ = self
+            .web_api
+            .record_recent_workspace(expanded_path, label, Some("workspace"));
         self.refresh().map_err(|err| err.to_string())?;
         self.focus_workspace_by_id(&id);
         Ok(format!("workspace created: {expanded_path}"))
@@ -430,9 +438,19 @@ impl TuiApp {
             return Err("worktree path missing".to_string());
         }
         let title = row.title();
+        // The webui's worktree opens go through `/api/worktrees/open`,
+        // which records the opened path into recents server-side
+        // (kind: worktree). The TUI opens through the backend socket,
+        // so record here, best effort: a failed record must not fail
+        // the open.
+        let kind = match &row {
+            BrowserRow::Worktree(_) => Some("worktree"),
+            _ => Some("workspace"),
+        };
         self.client
             .open_worktree(&path, None, None)
             .map_err(|err| err.to_string())?;
+        let _ = self.web_api.record_recent_workspace(&path, None, kind);
         self.refresh().map_err(|err| err.to_string())?;
         // Focus the opened workspace like the webui post-open navigation;
         // the backend keys it by cwd, so resolve the id first.

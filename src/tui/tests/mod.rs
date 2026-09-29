@@ -2291,6 +2291,18 @@ fn fake_backend_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
             "tab.create" | "tab.close" => {
                 json!({"id": request["id"], "result": {"ok": true}})
             }
+            "workspace.create" => json!({
+                "id": request["id"],
+                "result": {"workspace": {"workspace_id": "ws_created"}}
+            }),
+            "worktree.open" => json!({
+                "id": request["id"],
+                "result": {
+                    "workspace": {"workspace_id": "ws_opened"},
+                    "tab": {"tab_id": "tab_opened"},
+                    "root_pane": {"pane_id": "pane_opened"}
+                }
+            }),
             "workspace.close" => {
                 // Built-in backend drops the emptied workspace itself; a
                 // second close reports not-found, which the TUI ignores.
@@ -3626,6 +3638,22 @@ fn fake_recents_server(
                     .unwrap()
                     .retain(|item| item["path"].as_str() != Some(path.as_str()));
                 serde_json::json!({ "ok": true })
+            } else if target == "/api/recent-workspaces/record" {
+                // Record-only endpoint: insert at the top like the
+                // server's push_recent_workspace (dedup by path).
+                let _ = tx.send(body.clone());
+                let path = body["path"].as_str().unwrap_or_default().to_string();
+                let label = body["label"].as_str().map(str::to_string);
+                let kind = body["kind"].as_str().map(str::to_string);
+                let entry = match (label, kind) {
+                    (Some(label), _) => json!({ "path": path, "label": label }),
+                    (None, Some(kind)) => json!({ "path": path, "kind": kind }),
+                    (None, None) => json!({ "path": path }),
+                };
+                let mut list = recents.lock().unwrap();
+                list.retain(|item| item["path"].as_str() != Some(path.as_str()));
+                list.insert(0, entry);
+                serde_json::json!({ "ok": true })
             } else if target == "/api/recent-workspaces/clear" {
                 recents.lock().unwrap().clear();
                 serde_json::json!({ "ok": true })
@@ -3839,6 +3867,67 @@ fn search_palette_recents_load_remove_clear_and_open() {
         .expect("labeled open POST reached the server");
     assert_eq!(posted["path"], "/labored");
     assert_eq!(posted["label"], "custom name");
+}
+
+#[test]
+fn tui_created_workspaces_and_opened_worktrees_record_recents() {
+    // Desktop records every created workspace (fire-and-forget POST
+    // after the create) and every worktree open (`/api/worktrees/open`
+    // records server-side). The TUI talks to the backend socket
+    // directly, so its create/open flows must POST the new record-only
+    // endpoint themselves — best effort, a dead WebUI server must not
+    // fail the operation.
+    let (api_socket, _stop_backend) = fake_backend_socket();
+    let (port, open_requests) = fake_recents_server(vec![]);
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new(api_socket.clone(), api_socket),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", port),
+    );
+    app.snapshot = fixture_snapshot();
+
+    // Create flow: a real temp folder (validation checks the disk),
+    // a custom label, then the record POST must carry both.
+    let dir = std::env::temp_dir().join(format!(
+        "herdr-tui-recent-create-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_string_lossy().to_string();
+    // `create_workspace_at` is the shared tail of both prompt flows
+    // (path-only and path+label); drive it directly with the label.
+    let result = app.create_workspace_at(&path, Some("custom ws"));
+    assert!(result.is_ok(), "create flow: {result:?}");
+    // The worktree-open flow needs the overlay populated; reuse the
+    // same fake backend's worktree.open arm.
+    app.worktree_rows = vec![crate::tui::workspace::WorktreeRow {
+        path: "/wt/branch-x".to_string(),
+        branch: "branch-x".to_string(),
+        label: String::new(),
+        is_linked: false,
+    }];
+    // Row 0 is the "this folder" row; index 1 is the worktree.
+    app.worktree_selected = 1;
+    let result2 = app.worktree_open_selected();
+    assert!(result2.is_ok(), "open flow: {result2:?}");
+
+    let posted_create = open_requests
+        .recv_timeout(Duration::from_secs(5))
+        .expect("create record POST reached the server");
+    assert_eq!(posted_create["path"], json!(path));
+    assert_eq!(posted_create["label"], "custom ws");
+    assert_eq!(posted_create["kind"], "workspace");
+    let posted_open = open_requests
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worktree open record POST reached the server");
+    assert_eq!(posted_open["path"], "/wt/branch-x");
+    assert_eq!(posted_open["kind"], "worktree");
+    assert!(posted_open.get("label").is_none_or(|v| v.is_null()));
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// HTTP fake serving only the rename/delete/read endpoints: every tree

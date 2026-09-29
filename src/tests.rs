@@ -3070,6 +3070,84 @@ async fn recent_workspaces_api_requires_auth_and_clears() {
 
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
+async fn recent_workspaces_record_endpoint_requires_auth_and_records() {
+    let _env = lock_env();
+    // The authed record persists server settings; keep that write inside
+    // a temp config dir so the real operator config is never touched.
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-recent-record-test-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let app = test_app();
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/recent-workspaces/record")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "path": "/repo/x", "label": "X" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let empty_path = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/recent-workspaces/record")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .body(Body::from(json!({ "path": "   " }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty_path.status(), StatusCode::BAD_REQUEST);
+
+    // Recording does not need the folder on disk (unlike GET pruning,
+    // the record happens right after the client created it there).
+    let recorded = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/recent-workspaces/record")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .body(Body::from(
+                    json!({ "path": "/repo/x", "label": "X", "kind": "workspace" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(recorded.status(), StatusCode::OK);
+    assert_eq!(response_json(recorded).await["ok"], json!(true));
+
+    // The record landed in the persisted settings file, with the sent
+    // fields (branch absent like the desktop's create-flow record).
+    let settings_path = config_home.join("herdr-webui").join("webui-settings.json");
+    let text = fs::read_to_string(&settings_path).unwrap_or_default();
+    let persisted: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    let entry = &persisted["recent_workspaces"][0];
+    assert_eq!(entry["path"], json!("/repo/x"), "persisted: {text}");
+    assert_eq!(entry["label"], json!("X"), "persisted: {text}");
+    assert_eq!(entry["kind"], json!("workspace"), "persisted: {text}");
+    assert!(entry["branch"].is_null(), "persisted: {text}");
+    assert!(entry["opened_at"].as_u64().is_some(), "persisted: {text}");
+
+    let _ = fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
 async fn recent_workspaces_prunes_missing_paths_and_persists() {
     let _env = lock_env();
     let config_home = std::env::temp_dir().join(format!(

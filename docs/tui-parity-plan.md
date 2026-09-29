@@ -105,7 +105,12 @@ Panel/workspace management:
    clears the whole list, and `Enter` on an openable recent reopens
    it through `POST /api/recent-workspaces` and lands on its focused
    pane; only a recorded custom label travels with the open request
-   (None keeps the backend naming). The `(already open)` flag compares
+   (None keeps the backend naming). TUI-created workspaces and
+   TUI-opened worktrees also land in the recents list through the new
+   record-only endpoint `POST /api/recent-workspaces/record` (best
+   effort, like the desktop's fire-and-forget record after a
+   workspace create, so a dead WebUI server never fails the
+   create/open itself). The `(already open)` flag compares
    the recent path against the open workspace cwds only; the desktop
    `recentWorkspaceIsOpen` also cross-checks linked worktree paths
    (`state.worktrees` with `open_workspace_id`), but every open
