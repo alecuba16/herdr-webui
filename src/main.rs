@@ -2280,6 +2280,16 @@ async fn sessions(
     let herdr_install = tokio::task::spawn_blocking(move || detect_herdr_install(&herdr_bin))
         .await
         .unwrap_or_default();
+    // known_sessions() probes every candidate session with a blocking
+    // connect_local_stream() (one sync socket connect per session); run it
+    // on a blocking thread so a slow or hung socket never stalls the
+    // async runtime while the session list is built.
+    let probe_state = state.clone();
+    let sessions = tokio::task::spawn_blocking(move || {
+        known_sessions(&probe_state, herdr_install.compatible)
+    })
+    .await
+    .unwrap_or_default();
     Json(json!({
         "backend_mode": state.backend_mode.as_str(),
         "current_backend": backend_target_for_headers(&state, &headers).as_str(),
@@ -2295,7 +2305,7 @@ async fn sessions(
         "herdr_available": herdr_install.available(),
         "herdr_compatible": herdr_install.compatible,
         "herdr_version": herdr_install.version,
-        "sessions": known_sessions(&state, herdr_install.compatible),
+        "sessions": sessions,
     }))
     .into_response()
 }
