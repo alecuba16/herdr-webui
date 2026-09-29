@@ -4673,12 +4673,13 @@ fn round2_shortcuts_git_guards_and_refresh_tail_edges() {
     }
     assert!(app.error.is_some());
 
+    // Prefix N opens the folder picker; the dead socket makes
+    // worktree.list fail, so the pick intent is cancelled and the error
+    // surfaces instead of opening the old path prompt.
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('n')));
-    assert_eq!(
-        app.prompt_input.as_ref().unwrap().kind,
-        PromptKind::NewWorkspace
-    );
+    assert!(app.error.is_some() || app.status.contains("browsing"));
+    assert!(!app.worktree_pick_workspace || app.mode == TuiMode::WorktreeList);
     app.prompt_input = None;
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::SHIFT));
@@ -5503,23 +5504,26 @@ fn worktree_overlay_renders_rows_filter_and_empty_states() {
     assert!(buf.contains("[main]"), "main badge renders");
     assert!(buf.contains("WORKTREES"), "footer context renders");
 
-    // Active filter shows the query and the narrowed count.
+    // Active filter shows the query and the narrowed count. The
+    // browser total includes the "this folder" row (1 + 2 worktrees).
     app.worktree_filter = "feature".to_string();
     let buf = draw(&app, 100, 30);
     assert!(buf.contains("filter: feature_"), "filter query renders");
-    assert!(buf.contains("1/2"), "filtered count renders");
+    assert!(buf.contains("1/3"), "filtered count renders");
     assert!(buf.contains("Esc clears the filter"), "title switches");
 
-    // No match shows the search empty state, not the discovery one.
+    // No match shows the search empty state.
     app.worktree_filter = "zz".to_string();
     let buf = draw(&app, 100, 30);
-    assert!(buf.contains("No worktrees match your search"));
+    assert!(buf.contains("No worktrees or folders match your search"));
 
-    // No discovered rows shows the discovery empty state.
+    // The "this folder" row always renders (Enter opens it as a
+    // workspace), even with no discovered worktrees.
     app.worktree_filter.clear();
     app.worktree_rows.clear();
     let buf = draw(&app, 100, 30);
-    assert!(buf.contains("No worktrees discovered in this folder"));
+    assert!(buf.contains("this folder: /repo"));
+    assert!(buf.contains("[open as workspace]"), "open badge renders");
 }
 
 #[test]

@@ -48,10 +48,13 @@ Panel/workspace management:
 2. No `newWorkspace` (prefix `N`) or `openWorktrees` (prefix `W`) or
    `createWorktree` (prefix `T`) dialogs.
 
-   Closed in the open/theme/help parity pass: prefix `N` runs the
-   two-step workspace create prompt (validated `~`-expanded folder path,
-   then name) and prefix `W` opens a browsable worktree overlay
-   (j/k move, type filters, Enter opens through `worktree.open`).
+   Closed in the open/theme/help parity pass: prefix `N` opens the
+   browser overlay in pick-folder mode (Enter on "this folder",
+   worktree, or folder rows stages the path into the workspace name
+   prompt) and prefix `W` opens a browsable worktree/folder overlay
+   ("this folder" row opens the current folder, Enter on folders
+   descends, `o` opens as workspace, `h` goes to the parent, j/k
+   move, type filters, Enter opens through `worktree.open`).
 3. No `closeWorkspace` (prefix `Shift+X`), `removeWorktree`
    (prefix `Delete`/`Backspace`).
 4. No workspace rename, no panel rename.
@@ -228,8 +231,8 @@ New shortcuts in `keys.rs` + dispatch in `tui/mod.rs`, backed by
 | Desktop default | TUI key | Action |
 | --- | --- | --- |
 | prefix `]` / `[` | next/prev panel | select next/prev tab in selected workspace |
-| prefix `N` | new workspace | prompt for path → `client.create_workspace(path)` → focus it |
-| prefix `W` | worktrees | worktree list modal for selected workspace/repo |
+| prefix `N` | new workspace | browser overlay pick-folder mode: Enter stages path → name prompt → `client.create_workspace` → focus it |
+| prefix `W` | worktrees | browsable worktree/folder overlay for selected workspace/repo (this-folder row, worktrees, subdirectories) |
 | prefix `T` | create worktree | prompt base branch + path → `client.create_worktree*` |
 | prefix `X` | close panel | existing close-tab logic |
 | prefix `Shift+X` | close workspace | confirm prompt → `workspace.close` |

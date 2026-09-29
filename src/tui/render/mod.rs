@@ -8,7 +8,7 @@ use crate::tui::panels::files::{content_rows, ContentRow, SearchKind};
 use crate::tui::panels::GitView;
 use crate::tui::terminal::styled_terminal_line;
 use crate::tui::theme::Palette;
-use crate::tui::workspace::WorkspaceCreateStage;
+use crate::tui::workspace::{BrowserRow, WorkspaceCreateStage};
 use crate::tui::{SidebarFocus, TuiApp, TuiMode, TuiScreen};
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -1779,19 +1779,20 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, p: &Palette, filter: &str, scr
     );
 }
 
-/// Worktree browser overlay (webui worktree open modal, prefix `W`):
-/// discovered checkouts of the discovery root, the typed filter query,
-/// j/k cursor, and Enter-open. Mirrors the webui rows: title (path +
-/// label), branch, linked badge.
+/// Browser overlay (webui worktree open modal, prefix `W`): the
+/// browse root itself ("this folder"), discovered worktree checkouts,
+/// and subdirectories, with the typed filter query, j/k cursor, and
+/// Enter-open/descend. Mirrors the webui rows: title (path + label),
+/// branch, linked badge; folders get a dir badge.
 fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
-    let rows = app.filtered_worktree_rows();
+    let rows = app.filtered_browser_rows();
     let filter_height = if app.worktree_filter.is_empty() { 0 } else { 1 };
     let height = ((rows.len() as u16 + 5 + filter_height).min(24)).max(7 + filter_height);
     let rect = overlay_rect(area, area.width.min(80), height);
     render_shadow(frame, rect, p);
     let mut lines = vec![Line::from(vec![
         Span::styled(
-            " Worktrees ",
+            " Open workspace or worktree ",
             Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -1799,18 +1800,17 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
             Style::default().fg(p.muted),
         ),
     ])];
-    if let Some(line) =
-        filter_query_line(p, &app.worktree_filter, rows.len(), app.worktree_rows.len())
-    {
+    if let Some(line) = filter_query_line(
+        p,
+        &app.worktree_filter,
+        rows.len(),
+        app.browser_rows().len(),
+    ) {
         lines.push(line);
     }
     if rows.is_empty() {
         lines.push(Line::from(Span::styled(
-            if app.worktree_rows.is_empty() {
-                " No worktrees discovered in this folder "
-            } else {
-                " No worktrees match your search "
-            },
+            " No worktrees or folders match your search ",
             Style::default().fg(p.muted),
         )));
     }
@@ -1822,22 +1822,30 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
         } else {
             Style::default().fg(p.text)
         };
-        let linked = if row.is_linked {
-            " [linked]"
-        } else {
-            " [main]"
+        let (title, badge) = match row {
+            BrowserRow::ThisFolder { path } => (
+                format!("this folder: {path}"),
+                " [open as workspace]".to_string(),
+            ),
+            BrowserRow::Worktree(worktree) => {
+                let linked = if worktree.is_linked { " [linked]" } else { " [main]" };
+                (
+                    worktree.title(),
+                    if worktree.branch.is_empty() {
+                        linked.to_string()
+                    } else {
+                        format!("  {}{}", worktree.branch, linked)
+                    },
+                )
+            }
+            BrowserRow::Folder { name, .. } => {
+                (format!("{name}/"), " [folder]".to_string())
+            }
         };
         lines.push(Line::from(vec![
             Span::styled(cursor, Style::default().fg(p.accent)),
-            Span::styled(row.title(), title_style),
-            Span::styled(
-                if row.branch.is_empty() {
-                    linked.to_string()
-                } else {
-                    format!("  {}{}", row.branch, linked)
-                },
-                Style::default().fg(p.muted),
-            ),
+            Span::styled(title, title_style),
+            Span::styled(badge, Style::default().fg(p.muted)),
         ]));
     }
     // Keep the cursor inside the window when the list outgrows the
@@ -1847,8 +1855,10 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
     let scroll = app
         .worktree_selected
         .saturating_sub(visible_rows.saturating_sub(1));
-    let title = if app.worktree_filter.is_empty() {
-        " Worktrees · Enter opens · j/k moves · type to filter · Esc closes "
+    let title = if app.worktree_pick_workspace {
+        " New workspace · pick a folder · Enter stages it · h parent · type to filter · Esc cancels "
+    } else if app.worktree_filter.is_empty() {
+        " Worktrees · Enter opens/enters · o opens · h parent · type to filter · Esc closes "
     } else {
         " Worktrees · Esc clears the filter "
     };

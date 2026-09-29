@@ -122,7 +122,7 @@ impl FooterContext {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
             Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
             Self::SettingsOverlay => " t theme · Esc closes ",
-            Self::WorktreeList => " Enter opens · j/k moves · type filters · Esc closes ",
+            Self::WorktreeList => " Enter opens/enters · o opens folder · h parent · j/k moves · type filters · Esc closes ",
             Self::CommitInput => {
                 " type the message · Enter commits · Esc cancels · Ctrl+U clears · Ctrl+B ? help "
             }
@@ -183,7 +183,7 @@ impl FooterContext {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
             Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
             Self::SettingsOverlay => " t theme · Esc closes ",
-            Self::WorktreeList => " Enter opens · j/k moves · type filters · Esc closes ",
+            Self::WorktreeList => " Enter opens/enters · o opens folder · h parent · j/k moves · type filters · Esc closes ",
             Self::CommitInput => " Enter commit · Esc cancel · Ctrl+B ? help ",
             Self::PromptInput(PromptKind::ReplaceInFile) => {
                 " Enter replace · ! all · Esc cancel · Ctrl+B ? help "
@@ -274,6 +274,16 @@ pub struct TuiApp {
     pub worktree_selected: usize,
     pub worktree_filter: String,
     pub worktree_root: String,
+    /// Subdirectories of the browse root, shown under the worktree
+    /// rows so the overlay doubles as a folder picker (Enter descends,
+    /// `o` opens the folder as a workspace).
+    pub worktree_folder_rows: Vec<workspace::BrowserRow>,
+    /// True when the browser overlay opened with the "pick a folder
+    /// for a new workspace" intent (prefix `N`): Enter stages the
+    /// selected path into the workspace name prompt instead of opening
+    /// it. The webui has one "New workspace" modal with a directory
+    /// picker; the TUI reuses the browser rows as that picker.
+    pub worktree_pick_workspace: bool,
     /// Rebase upstream typed into the RebaseUpstream prompt; consumed by
     /// the follow-up typed confirm (webui rebase modal two-step).
     pub rebase_pending_upstream: Option<String>,
@@ -494,6 +504,8 @@ impl TuiApp {
             worktree_selected: 0,
             worktree_filter: String::new(),
             worktree_root: String::new(),
+            worktree_folder_rows: Vec::new(),
+            worktree_pick_workspace: false,
             rebase_pending_upstream: None,
             help_scroll: 0,
             help_filter: String::new(),
@@ -1152,10 +1164,14 @@ impl TuiApp {
                 self.workspace_status(result);
             }
             Shortcut::NewWorkspace => {
-                self.prompt_input = Some(PromptInput::new(PromptKind::NewWorkspace));
-                self.status = PromptKind::NewWorkspace.title().to_string();
+                // Webui new-workspace modal: browse for the folder first
+                // (prefix `N` reuses the browser rows as the picker),
+                // then chain to the name prompt. Esc cancels back here.
+                let result = self.workspace_pick_folder();
+                self.workspace_status(result);
             }
             Shortcut::OpenWorktrees => {
+                self.worktree_pick_workspace = false;
                 let result = self.worktree_list();
                 self.workspace_status(result);
             }
