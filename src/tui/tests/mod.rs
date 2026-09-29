@@ -3668,6 +3668,11 @@ fn search_palette_recents_load_remove_clear_and_open() {
         search::SearchCandidate::Recent { is_open: false, .. }
     ));
 
+    // Desktop `renderSearchPalette` snaps the cursor off disabled rows:
+    // the selection lands on the openable /side, not the disabled
+    // /repo at index 0.
+    assert_eq!(app.search_palette.selected, 1, "cursor skips the disabled recent");
+
     // The disabled row renders with the hint; the openable row keeps
     // its title and worktree subtitle.
     let canvas = draw(&app, 100, 24);
@@ -3675,18 +3680,21 @@ fn search_palette_recents_load_remove_clear_and_open() {
     assert!(canvas.contains("[wt] side"), "worktree row with icon");
     assert!(canvas.contains("worktree"), "subtitle renders");
 
-    // Enter on the open recent refuses navigation: the palette stays
-    // open and the status explains why. The first Enter only commits
-    // the (empty) query; the second one navigates and hits the
-    // refusal.
+    // The refusal guard still holds when the cursor sits on a
+    // disabled row (desktop `chooseSearchResult` returns early on
+    // disabled rows): park it there manually, Enter commits the
+    // (empty) query first, the second Enter is refused, and the
+    // palette stays open with the status explaining why.
+    app.search_palette.selected = 0;
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert!(app.search_palette.committed, "empty query commits cleanly");
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert_eq!(app.mode, TuiMode::SearchPalette);
     assert_eq!(app.status, "recent workspace already open");
 
-    // Ctrl+X removes the selected recent (/repo, row 0) from the
-    // server list; only /side remains.
+    // Ctrl+X removes the recent under the cursor (/repo, parked at
+    // row 0) from the server list; only /side remains and the
+    // refresh snaps the cursor to it.
     app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
     assert_eq!(app.search_palette.recents.len(), 1);
     assert_eq!(app.search_palette.results.len(), 1);

@@ -265,6 +265,16 @@ impl SearchPalette {
         rows.extend(local_candidates(snapshot, &self.query));
         self.results = rows;
         self.selected = 0;
+        // Desktop moves the cursor off a disabled row after every
+        // render (`renderSearchPalette`): snap to the first
+        // selectable row, or 0 when none qualify.
+        if self.selected_is_disabled() {
+            self.selected = self
+                .selectable_indices()
+                .first()
+                .copied()
+                .unwrap_or(0);
+        }
         self.committed = false;
     }
 
@@ -292,16 +302,48 @@ impl SearchPalette {
         self.results.get(self.selected)
     }
 
-    /// Move the cursor, wrapping around the list (desktop
-    /// `moveSearchSelection`).
+    /// Indices Enter can navigate (desktop `selectableSearchResults`
+    /// filters out disabled recent rows).
+    fn selectable_indices(&self) -> Vec<usize> {
+        self.results
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                !matches!(
+                    candidate,
+                    SearchCandidate::Recent { is_open: true, .. }
+                )
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// True when the cursor sits on a disabled recent row.
+    fn selected_is_disabled(&self) -> bool {
+        matches!(
+            self.selected_candidate(),
+            Some(SearchCandidate::Recent { is_open: true, .. })
+        )
+    }
+
+    /// Move the cursor, wrapping around the selectable rows (desktop
+    /// `moveSearchSelection` skips disabled recents; a cursor parked
+    /// on a disabled row behaves like the desktop's -1 `indexOf`, so a
+    /// forward move lands on the first selectable row).
     pub fn move_selection(&mut self, delta: isize) {
-        let len = self.results.len();
-        if len == 0 {
+        let selectable = self.selectable_indices();
+        if selectable.is_empty() {
             self.selected = 0;
             return;
         }
-        let current = self.selected.min(len - 1) as isize;
-        self.selected = (current + delta).rem_euclid(len as isize) as usize;
+        let position = selectable
+            .iter()
+            .position(|&index| index == self.selected)
+            .map(|position| position as isize)
+            .unwrap_or(-1);
+        let len = selectable.len() as isize;
+        let next = (position + delta).rem_euclid(len) as usize;
+        self.selected = selectable[next];
     }
 
     /// File-search commit (desktop path section): runs the tree search
@@ -586,6 +628,44 @@ mod tests {
         palette.results.clear();
         palette.move_selection(1);
         assert_eq!(palette.selected, 0);
+    }
+
+    #[test]
+    fn selection_skips_disabled_recents_like_desktop() {
+        // Desktop `moveSearchSelection` walks `selectableSearchResults`
+        // (disabled recents filtered) and `renderSearchPalette` snaps
+        // the cursor off a disabled row: with a disabled recent at 0
+        // and an openable one at 1, the cursor lands on 1 and the
+        // arrow keys never visit 0.
+        let snap = snapshot();
+        let mut palette = SearchPalette {
+            recents: vec![
+                RecentWorkspace {
+                    path: "/repo".to_string(),
+                    label: None,
+                    branch: None,
+                    kind: None,
+                },
+                RecentWorkspace {
+                    path: "/side".to_string(),
+                    label: None,
+                    branch: None,
+                    kind: None,
+                },
+            ],
+            ..SearchPalette::default()
+        };
+        palette.refresh_local(&snap);
+        assert_eq!(palette.selected, 1, "refresh snaps off the disabled row");
+        palette.move_selection(1);
+        assert_eq!(palette.selected, 1, "single selectable row stays put");
+        palette.move_selection(-1);
+        assert_eq!(palette.selected, 1);
+        // Cursor parked on a disabled row moves like the desktop's
+        // `indexOf` -1: forward lands on the first selectable row.
+        palette.selected = 0;
+        palette.move_selection(1);
+        assert_eq!(palette.selected, 1);
     }
 
     #[test]
