@@ -211,6 +211,40 @@ impl WebApiClient {
         Ok(value)
     }
 
+    // ---- recent workspaces (desktop search palette Recent section) ----
+
+    /// `GET /api/recent-workspaces`: server-persisted list of recently
+    /// opened workspaces/worktrees, pruned server-side of missing folders.
+    pub fn recent_workspaces(&self) -> Result<Value, WebApiError> {
+        self.get("/api/recent-workspaces")
+    }
+
+    /// `POST /api/recent-workspaces`: reopen the workspace/worktree at
+    /// `path` (the server proxies `worktree.open` with `focus: true` and
+    /// re-records the entry, exactly the desktop palette open flow).
+    pub fn open_recent_workspace(
+        &self,
+        path: &str,
+        label: Option<&str>,
+    ) -> Result<Value, WebApiError> {
+        let body = serde_json::json!({ "path": path, "label": label });
+        self.post("/api/recent-workspaces", &body)
+    }
+
+    /// `POST /api/recent-workspaces/remove`: drop one entry by path.
+    /// The server validates and expands the raw path itself.
+    pub fn remove_recent_workspace(&self, path: &str) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/recent-workspaces/remove",
+            &serde_json::json!({ "path": path }),
+        )
+    }
+
+    /// `POST /api/recent-workspaces/clear`: drop every entry.
+    pub fn clear_recent_workspaces(&self) -> Result<Value, WebApiError> {
+        self.post("/api/recent-workspaces/clear", &serde_json::json!({}))
+    }
+
     fn get(&self, path_and_query: &str) -> Result<Value, WebApiError> {
         self.request_json("GET", path_and_query, None)
     }

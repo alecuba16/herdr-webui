@@ -3531,6 +3531,210 @@ fn files_and_git_panel_error_arms_surface_to_status() {
     assert!(app.prompt_input.is_none());
 }
 
+/// Fake HTTP server for the recent-workspaces endpoints: keeps an
+/// in-memory list so remove/clear mutate it like the real handler, and
+/// records the open POST body (path + label) for assertions. Requests
+/// for any other path get an empty 200 so unrelated best-effort
+/// calls (file/content search) stay harmless.
+fn fake_recents_server(
+    initial: Vec<serde_json::Value>,
+) -> (
+    u16,
+    std::sync::mpsc::Receiver<serde_json::Value>,
+) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::{Arc, Mutex};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let recents = Arc::new(Mutex::new(initial));
+    let (tx, rx) = std::sync::mpsc::channel::<serde_json::Value>();
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let request = {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let target = request_line.split(' ').nth(1).unwrap_or_default().to_string();
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let trimmed = header.trim();
+                    if trimmed.is_empty() {
+                        break;
+                    }
+                    if let Some(value) = trimmed
+                        .to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                    {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; content_length];
+                if content_length > 0 {
+                    let _ = reader.read_exact(&mut body);
+                }
+                let body: serde_json::Value = if body.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null)
+                };
+                (target, body)
+            };
+            let (target, body) = request;
+            let response = if target == "/api/recent-workspaces" {
+                // POST re-records the opened path (top of the list);
+                // GET returns the current list.
+                if body.get("path").and_then(serde_json::Value::as_str).is_some() {
+                    let _ = tx.send(body.clone());
+                    let mut list = recents.lock().unwrap();
+                    let path = body["path"].as_str().unwrap().to_string();
+                    let label = body["label"].as_str().map(str::to_string);
+                    let entry = match label {
+                        Some(label) => serde_json::json!({ "path": path, "label": label }),
+                        None => serde_json::json!({ "path": path }),
+                    };
+                    list.retain(|item| item["path"].as_str() != Some(path.as_str()));
+                    list.insert(0, entry);
+                    serde_json::json!({ "ok": true })
+                } else {
+                    serde_json::json!({ "recent": *recents.lock().unwrap() })
+                }
+            } else if target == "/api/recent-workspaces/remove" {
+                let path = body["path"].as_str().unwrap_or_default().to_string();
+                recents
+                    .lock()
+                    .unwrap()
+                    .retain(|item| item["path"].as_str() != Some(path.as_str()));
+                serde_json::json!({ "ok": true })
+            } else if target == "/api/recent-workspaces/clear" {
+                recents.lock().unwrap().clear();
+                serde_json::json!({ "ok": true })
+            } else {
+                serde_json::json!({ "ok": true })
+            };
+            let body_text = response.to_string();
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body_text.len(),
+                    body_text
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    std::mem::forget(handle);
+    (port, rx)
+}
+
+#[test]
+fn search_palette_recents_load_remove_clear_and_open() {
+    // Fake backend answers ping/snapshot; the fixture workspace cwd is
+    // /repo, so the /repo recent must render disabled while /side stays
+    // openable.
+    let (api_socket, _stop_backend) = fake_backend_socket();
+    let (port, open_requests) = fake_recents_server(vec![
+        json!({ "path": "/repo", "label": "main repo" }),
+        json!({ "path": "/side", "kind": "worktree", "branch": "feature/x" }),
+    ]);
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new(api_socket.clone(), api_socket),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", port),
+    );
+    app.snapshot = fixture_snapshot();
+    let ctrl_b = ctrl('b');
+
+    // Opening the palette loads the recents: with the empty query the
+    // recent section lists both entries above the (empty) local rows.
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.mode, TuiMode::SearchPalette);
+    assert_eq!(app.search_palette.recents.len(), 2);
+    assert_eq!(app.search_palette.results.len(), 2);
+    assert!(matches!(
+        &app.search_palette.results[0],
+        search::SearchCandidate::Recent { is_open: true, .. }
+    ));
+    assert!(matches!(
+        &app.search_palette.results[1],
+        search::SearchCandidate::Recent { is_open: false, .. }
+    ));
+
+    // The disabled row renders with the hint; the openable row keeps
+    // its title and worktree subtitle.
+    let canvas = draw(&app, 100, 24);
+    assert!(canvas.contains("(already open)"), "open recent is dimmed");
+    assert!(canvas.contains("[wt] side"), "worktree row with icon");
+    assert!(canvas.contains("worktree"), "subtitle renders");
+
+    // Enter on the open recent refuses navigation: the palette stays
+    // open and the status explains why. The first Enter only commits
+    // the (empty) query; the second one navigates and hits the
+    // refusal.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.search_palette.committed, "empty query commits cleanly");
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.mode, TuiMode::SearchPalette);
+    assert_eq!(app.status, "recent workspace already open");
+
+    // Ctrl+X removes the selected recent (/repo, row 0) from the
+    // server list; only /side remains.
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+    assert_eq!(app.search_palette.recents.len(), 1);
+    assert_eq!(app.search_palette.results.len(), 1);
+    assert_eq!(app.status, "removed recent: /repo");
+
+    // Reopen the palette to reload from the (mutated) server list,
+    // then Ctrl+Shift+X clears every entry.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.recents.len(), 1, "reload after remove");
+    app.handle_key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    assert_eq!(app.search_palette.recents.len(), 0);
+    assert!(app.search_palette.results.is_empty());
+    assert_eq!(app.status, "recent workspaces cleared");
+
+    // Esc, then reopen with a fresh server list (the fake kept /side
+    // through the remove and clear only affected its own copy: push a
+    // new entry by reopening via the open flow below). Instead of
+    // relying on the shared fake state, drive the open flow directly:
+    // reopen the palette on a second fake preloaded with /side.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    drop(open_requests);
+    let (port2, open_requests2) = fake_recents_server(vec![json!({ "path": "/side", "kind": "worktree" })]);
+    app.web_api = WebApiClient::new("127.0.0.1", port2);
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    assert_eq!(app.search_palette.recents.len(), 1);
+
+    // Enter on the openable recent reopens it: the first Enter commits
+    // the empty query, the second navigates. The palette closes, the
+    // POST body carries the recorded label (here none, kind only), and
+    // the status confirms the open.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.search_palette.committed);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_ne!(app.mode, TuiMode::SearchPalette, "open navigates away");
+    assert!(app.error.is_none(), "open flow: {:?}", app.error);
+    let posted = open_requests2
+        .recv_timeout(Duration::from_secs(5))
+        .expect("open POST reached the server");
+    assert_eq!(posted["path"], "/side");
+    assert!(posted.get("label").is_none_or(|v| v.is_null()));
+}
+
 /// HTTP fake serving only the rename/delete/read endpoints: every tree
 /// refresh fails so success arms with a failing refresh are reachable.
 fn fake_web_api_server(

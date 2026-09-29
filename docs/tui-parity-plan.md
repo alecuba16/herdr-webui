@@ -45,6 +45,11 @@ Desktop shortcuts and features not present in the TUI today (verified against
 Panel/workspace management:
 
 1. No `nextPanel`/`prevPanel` ([/] panel navigation) shortcut.
+
+   Closed: prefix `]`/`[` walk the panel tabs through `move_panel`,
+   which now wraps around the tab list (`rem_euclid`, matching the
+   webui `selectRelativePanel` wrap) and anchors on the selected
+   agent's pane tab instead of the snapshot active tab.
 2. No `newWorkspace` (prefix `N`) or `openWorktrees` (prefix `W`) or
    `createWorktree` (prefix `T`) dialogs.
 
@@ -58,6 +63,10 @@ Panel/workspace management:
 3. No `closeWorkspace` (prefix `Shift+X`), `removeWorktree`
    (prefix `Delete`/`Backspace`).
 4. No workspace rename, no panel rename.
+
+   Partially closed: prefix `Shift+R` renames the selected panel
+   (webui `renamePanel`; plain `r` keeps the refresh binding). Workspace
+   rename stays open.
 5. No search palette (prefix `/`).
 
    Closed: prefix `/` opens the search palette overlay (new module
@@ -76,6 +85,20 @@ Panel/workspace management:
    debounce per keystroke; a synchronous per-key request would stall
    TUI typing) and result caps fit the overlay (12 file / 8 content
    rows vs the desktop's paged 100/50).
+
+   Recents parity: opening the palette also loads the desktop
+   `Recent workspaces` section from `GET /api/recent-workspaces`
+   (best effort; a failed load clears the section and notes it in the
+   status line without blocking the palette). Recent rows list above
+   the local candidates, filter with the query, dim already-open
+   paths (`(already open)` hint) and refuse navigation on them.
+   `Ctrl+X` removes the selected recent server-side, `Ctrl+Shift+X`
+   clears the whole list, and `Enter` on an openable recent reopens
+   it through `POST /api/recent-workspaces` and lands on its focused
+   pane; only a recorded custom label travels with the open request
+   (None keeps the backend naming). Known caveat: the TUI `WebApiClient`
+   sends no auth headers, so these endpoints 401 when server auth is
+   enabled, consistent with every other TUI WebUI-API call.
 6. No settings screen; no shortcut help overlay parity for the new keys.
 
    Closed: prefix `S` (settings) and prefix `?` (help) ship, the help

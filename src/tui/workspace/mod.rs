@@ -68,11 +68,30 @@ impl TuiApp {
         if len == 0 {
             return Err("no panels in this workspace".to_string());
         }
-        let current = tabs
-            .iter()
-            .position(|tab| Some(&tab.id) == active_tab_id.as_ref())
+        // The cursor tracks the pane the TUI actually selected (the
+        // selected agent's tab), because the snapshot's active_tab_id
+        // only follows a real backend focus, not the local selection.
+        // Without this, moving twice from a non-active tab jumps back.
+        let current = self
+            .selected_agent_pane_id()
+            .and_then(|pane_id| {
+                self.snapshot
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == pane_id)
+                    .map(|pane| pane.tab_id.clone())
+            })
+            .and_then(|tab_id| tabs.iter().position(|tab| tab.id == tab_id))
+            .or_else(|| {
+                tabs.iter()
+                    .position(|tab| Some(&tab.id) == active_tab_id.as_ref())
+            })
             .unwrap_or(0);
-        let next = (current as isize + delta).clamp(0, len as isize - 1) as usize;
+        // Webui `selectRelativePanel` wraps around the tab list
+        // (`(current + delta + tabs.length) % tabs.length`), so the
+        // panel cursor cycles instead of sticking at the edges.
+        let next =
+            (current as isize + delta).rem_euclid(len as isize) as usize;
         let tab_id = tabs[next].id.clone();
         // tab.focus is not exposed as a dedicated backend method; the
         // focused tab follows the pane focus in the snapshot refresh.
@@ -95,6 +114,12 @@ impl TuiApp {
         }
         self.refresh_tail();
         Ok(format!("panel {}/{}", next + 1, len))
+    }
+
+    /// Pane id of the agent row the sidebar has selected, if any.
+    fn selected_agent_pane_id(&self) -> Option<String> {
+        self.selected_agent()
+            .map(|agent| agent.pane_id.clone())
     }
 
     /// Webui `newWorkspace` one-shot: validate the typed path and create

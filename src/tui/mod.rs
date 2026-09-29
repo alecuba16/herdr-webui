@@ -996,6 +996,25 @@ impl TuiApp {
             {
                 self.search_palette.clear_query(&self.snapshot);
             }
+            // Ctrl+X removes the selected recent-workspace entry from
+            // the server list (desktop per-row trash button; printable
+            // `x` must keep typing into the query).
+            KeyCode::Char(ch)
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::SHIFT)
+                    && ch.eq_ignore_ascii_case(&'x') =>
+            {
+                self.remove_selected_recent();
+            }
+            // Ctrl+Shift+X clears every recent-workspace entry (desktop
+            // section Clear button).
+            KeyCode::Char(ch)
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.modifiers.contains(KeyModifiers::SHIFT)
+                    && ch.eq_ignore_ascii_case(&'x') =>
+            {
+                self.clear_recent_workspaces();
+            }
             KeyCode::Backspace => {
                 self.search_palette.pop_char(&self.snapshot);
             }
@@ -1034,6 +1053,16 @@ impl TuiApp {
                 let candidate = self.search_palette.selected_candidate().cloned();
                 match candidate {
                     Some(candidate) => {
+                        // Desktop disabled rows refuse navigation with a
+                        // visible hint; the TUI keeps the palette open
+                        // and explains in the status line.
+                        if let search::SearchCandidate::Recent { is_open: true, .. } =
+                            &candidate
+                        {
+                            self.status =
+                                "recent workspace already open".to_string();
+                            return;
+                        }
                         self.close_search_palette();
                         if let Err(err) = self.run_search_candidate(&candidate) {
                             self.error = Some(err);
@@ -1117,6 +1146,43 @@ impl TuiApp {
                 self.file_explorer
                     .open_preview_at_line(&self.web_api, file, *line)
                     .map_err(|err| err.to_string())?;
+                Ok(())
+            }
+            search::SearchCandidate::Recent {
+                path,
+                label,
+                is_open,
+                ..
+            } => {
+                if *is_open {
+                    return Err("recent workspace already open".to_string());
+                }
+                // Desktop `openRecentWorkspace`: POST /api/recent-workspaces
+                // proxies worktree.open (focuses an already-open workspace
+                // instead of duplicating it) and re-records the entry. Only
+                // the recorded custom label travels; None keeps the
+                // backend's own naming for the reopened workspace.
+                let result = self
+                    .web_api
+                    .open_recent_workspace(path, label.as_deref())
+                    .map_err(|err| err.to_string())?;
+                self.refresh().map_err(|err| err.to_string())?;
+                // Land on the reopened workspace like the desktop go()
+                // navigation: the response carries the workspace plus its
+                // focused tab and root pane.
+                let workspace_id = result
+                    .get("result")
+                    .and_then(|result| result.get("workspace"))
+                    .and_then(|ws| ws.get("workspace_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                self.select_search_target(
+                    Some(workspace_id.as_str()),
+                    None,
+                    None,
+                );
+                self.status = format!("opened {path}");
                 Ok(())
             }
         }
@@ -1684,6 +1750,20 @@ impl TuiApp {
     /// refocuses the input) instead of nesting the palette over itself.
     fn open_search_palette(&mut self) {
         self.search_palette.open();
+        // Desktop loads the recent-workspaces section when the palette
+        // opens (`loadRecentWorkspaces`). Best effort: without the WebUI
+        // server the palette stays open and usable for local navigation,
+        // matching how the desktop tolerates a failed recents load.
+        match self.search_palette.load_recents(&self.web_api) {
+            Ok(()) => {}
+            Err(err) => {
+                self.search_palette.recents.clear();
+                self.status = format!("recents unavailable: {err}");
+            }
+        }
+        // Show the recents immediately (empty query lists the recent
+        // section, the desktop counterpart of opening the palette).
+        self.search_palette.refresh_local(&self.snapshot);
         if self.mode == TuiMode::SearchPalette {
             self.status = "search: type query".to_string();
             return;
@@ -1695,6 +1775,43 @@ impl TuiApp {
     /// Close the search palette and restore the previous mode.
     fn close_search_palette(&mut self) {
         self.close_overlay();
+    }
+
+    /// Remove the selected recent-workspace entry from the server list
+    /// (desktop per-row trash button). Keeps the palette open and the
+    /// cursor valid, mirroring the desktop staying in the palette after
+    /// a remove.
+    fn remove_selected_recent(&mut self) {
+        let Some(search::SearchCandidate::Recent { path, .. }) =
+            self.search_palette.selected_candidate()
+        else {
+            self.status = "no recent workspace selected".to_string();
+            return;
+        };
+        let path = path.clone();
+        match self.web_api.remove_recent_workspace(&path) {
+            Ok(_) => {
+                self.search_palette
+                    .recents
+                    .retain(|recent| recent.path != path);
+                self.search_palette.refresh_local(&self.snapshot);
+                self.status = format!("removed recent: {path}");
+            }
+            Err(err) => self.error = Some(err.to_string()),
+        }
+    }
+
+    /// Clear every recent-workspace entry on the server (desktop section
+    /// Clear button). Keeps the palette open with the emptied section.
+    fn clear_recent_workspaces(&mut self) {
+        match self.web_api.clear_recent_workspaces() {
+            Ok(_) => {
+                self.search_palette.recents.clear();
+                self.search_palette.refresh_local(&self.snapshot);
+                self.status = "recent workspaces cleared".to_string();
+            }
+            Err(err) => self.error = Some(err.to_string()),
+        }
     }
 
     /// Open the help overlay with a clean filter and scroll. Every
