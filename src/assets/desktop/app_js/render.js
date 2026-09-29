@@ -197,6 +197,18 @@ function tabActivitySignature(t, panesByTab, agentsByTab) {
   ]);
 }
 function updateTabActivity(panesByTab = new Map(), agentsByTab = new Map()) {
+  // The activity timestamps only feed the optional tab activity labels
+  // (options.showTabActivity, off by default). Building the per-tab
+  // JSON.stringify signature for every tab on every render/poll is pure
+  // waste when the labels are disabled, so skip the whole pass then.
+  if (!options.showTabActivity) {
+    if (!tabActivityPassRecorded) {
+      tabActivity = {};
+      tabActivityPassRecorded = true;
+    }
+    return;
+  }
+  tabActivityPassRecorded = false;
   const now = Date.now(),
     seen = new Set();
   for (const t of state.allTabs.concat(state.tabs)) {
@@ -212,6 +224,9 @@ function updateTabActivity(panesByTab = new Map(), agentsByTab = new Map()) {
       delete tabActivity[key];
   }
 }
+// Whether the disabled-showTabActivity branch already cleared the table,
+// so repeated renders skip even the cleanup.
+let tabActivityPassRecorded = false;
 function tabHoverInfo(t, panesByTab) {
   const panes = panesByTab.get(t.tab_id) || [];
   const pane = panes.find((p) => p.pane_id === state.pane) || panes[0];
