@@ -84,6 +84,8 @@
   let refreshSeq = 0,
     browserFavicon = createFaviconNotifier(document),
     browserFaviconError = false,
+    // Cached .mobile-nav button list; null means re-query on next render.
+    navButtons = null,
     mobileAttention,
     mobileSettings,
     mobileTerminal,
@@ -286,6 +288,9 @@
   }
 
   function renderShell() {
+    // Shell rebuild recreates the nav bar, so the cached button list from a
+    // previous shell is stale.
+    navButtons = null;
     document.body.innerHTML = `
       <div id="mobileApp" class="mobile-app">
         <header class="mobile-header">
@@ -352,13 +357,26 @@
       searchButton.hidden = disabled;
       searchButton.disabled = disabled;
     }
-    document.querySelectorAll(".mobile-nav button").forEach((button) => {
+    // Cache the nav button list once: querySelectorAll ran on every render,
+    // and each render is triggered by every events-WS refresh.
+    if (!navButtons) {
+      navButtons = Array.from(
+        document.querySelectorAll(".mobile-nav button"),
+      );
+    }
+    for (const button of navButtons) {
       const searchNavDisabled = button.dataset.screen === "search" && headerSearchDisabled();
       button.hidden = searchNavDisabled;
       button.disabled = searchNavDisabled;
       button.classList.toggle("active", mobileScreens.mobileNavActive(button.dataset.screen));
-      button.innerHTML = mobileScreens.mobileNavLabel(button.dataset.screen);
-    });
+      // Only rewrite the label when it actually changed; innerHTML writes
+      // invalidate the whole nav bar on every refresh otherwise.
+      const label = mobileScreens.mobileNavLabel(button.dataset.screen);
+      if (button.__navLabel !== label) {
+        button.innerHTML = label;
+        button.__navLabel = label;
+      }
+    }
     const screen = el("mobileScreen");
     screen.classList.toggle("terminal-active", state.screen === "terminal");
     if (state.error) {
