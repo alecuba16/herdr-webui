@@ -6331,14 +6331,20 @@ fn search_palette_boundary_and_regression_checks() {
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert_eq!(app.mode, TuiMode::Navigate, "Esc closes the palette");
 
-    // Enter with an empty query: commit is a no-op, second Enter closes.
+    // Enter with an empty query: commit is a no-op, and with no row
+    // under the cursor the palette stays open (desktop
+    // `chooseSearchResult` returns early on a missing row); Esc is the
+    // exit path there.
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('/')));
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert!(app.search_palette.committed);
     assert!(app.search_palette.results.is_empty());
     app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert_eq!(app.mode, TuiMode::Navigate, "empty commit Enter closes");
+    assert_eq!(app.mode, TuiMode::SearchPalette, "no-row Enter keeps the palette open");
+    assert_eq!(app.status, "search: no matching rows");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate, "Esc closes the palette");
 
     // The palette is reachable from every screen the fixture offers.
     for screen in [TuiScreen::Files, TuiScreen::Git, TuiScreen::Terminal] {

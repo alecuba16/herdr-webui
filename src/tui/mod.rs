@@ -1068,7 +1068,12 @@ impl TuiApp {
                             self.error = Some(err);
                         }
                     }
-                    None => self.close_search_palette(),
+                    // Desktop `chooseSearchResult` returns early when
+                    // no row sits under the cursor: an empty result
+                    // list keeps the palette open instead of closing.
+                    None => {
+                        self.status = "search: no matching rows".to_string();
+                    }
                 }
             }
             KeyCode::Char(ch) if !ch.is_control() => {
