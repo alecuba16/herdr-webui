@@ -16,10 +16,13 @@ function render() {
       (tabCountsByWorkspace.get(tab.workspace_id) || 0) + 1,
     );
   const workspacesHtml = renderSpacesCached();
-  const workspaceRenameActive = !!document.querySelector(
-    ".workspace-rename-input",
-  );
-  const tabRenameActive = !!document.querySelector(".tab-rename-input");
+  // The rename-input queries only matter while a rename is in flight; skip
+  // the two querySelector calls on every poll when nothing is being edited.
+  const workspaceRenameActive =
+    !!state.editingWorkspace &&
+    !!document.querySelector(".workspace-rename-input");
+  const tabRenameActive =
+    !!state.editingTab && !!document.querySelector(".tab-rename-input");
   if (
     workspacesHtml !== lastWorkspacesHtml &&
     !(state.editingWorkspace && workspaceRenameActive) &&
