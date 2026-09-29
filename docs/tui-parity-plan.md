@@ -92,9 +92,12 @@ Panel/workspace management:
    Recents parity: opening the palette also loads the desktop
    `Recent workspaces` section from `GET /api/recent-workspaces`
    (best effort; a failed load clears the section and notes it in the
-   status line without blocking the palette). Recent rows list above
-   the local candidates, filter with the query, dim already-open
-   paths (`(already open)` hint) and refuse navigation on them.
+   status line without blocking the palette). The desktop caches the
+   list 10s client-side (`loadRecent`) including failed loads; the TUI
+   refetches on every palette open instead, which is always fresh.
+   Recent rows list above the local candidates, filter with the
+   query, dim already-open paths (`(already open)` hint) and refuse
+   navigation on them.
    (The desktop's `Actions` section — the HerdrActionRegistry rows —
    stays webui-only; the TUI palette has no action registry, so its
    rows are recents plus local/fetched candidates only.)
