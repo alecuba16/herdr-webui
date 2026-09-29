@@ -59,6 +59,23 @@ Panel/workspace management:
    (prefix `Delete`/`Backspace`).
 4. No workspace rename, no panel rename.
 5. No search palette (prefix `/`).
+
+   Closed: prefix `/` opens the search palette overlay (new module
+   `src/tui/search.rs`). Typing live-filters local candidates
+   (workspaces, panels, agents) with the desktop `searchScore` ranking
+   (exact / prefix / substring+index, cap 12); Enter commits the query
+   and appends file hits (`/api/file-browser/tree?q=`, `search_kind=file`
+   like the desktop default) and content hits (content-search API,
+   first match line as jump target); a second Enter navigates:
+   workspace/panel/agent rows select a concrete pane
+   (desktop `targetForWorkspace` rule), file rows reveal in the Files
+   tree, content rows open the preview at the match line. Arrows always
+   move, j/k move while the query is empty (help/worktree overlay
+   convention), Ctrl+U clears, Esc closes. Two documented deviations
+   from the desktop: fetches commit on Enter (not the desktop's 180ms
+   debounce per keystroke; a synchronous per-key request would stall
+   TUI typing) and result caps fit the overlay (12 file / 8 content
+   rows vs the desktop's paged 100/50).
 6. No settings screen; no shortcut help overlay parity for the new keys.
 
    Closed: prefix `S` (settings) and prefix `?` (help) ship, the help
@@ -246,7 +263,12 @@ parity guard); failed removes surface backend errors in the status line.
 New module `src/tui/workspace/mod.rs` holds the prompt flows and
 `worktrees.rs` the worktree dialog state machine (list → select → action).
 
-### Phase 2 — search palette (gap 5)
+### Phase 2 — search palette (gap 5) — CLOSED
+
+Shipped in `src/tui/search.rs` (see the gap 5 "Closed" note above for
+the behavior): local candidates scored with desktop `searchScore`
+(capped 12), Enter commits file+content fetches, second Enter navigates.
+Original plan kept below.
 
 New module `src/tui/search.rs`:
 

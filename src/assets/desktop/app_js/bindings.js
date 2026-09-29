@@ -211,17 +211,26 @@ registerSettingsCommit("optSidebarWorkspacePercent", () => {
 const sidebarSplitHandle = el("sidebarSplitHandle");
 if (sidebarSplitHandle) {
   let pendingSidebarWorkspacePercent = null;
+  // The split's bounding rect is read on every pointermove and its layout
+  // does not change during the drag (the percent var only stretches the two
+  // child panels, not the split container). Cache it on pointerdown so the
+  // drag does not force a synchronous layout read per move event.
+  let sidebarSplitRect = null;
   const resizeFromClientY = (clientY) => {
-    const split = sidebarSplitHandle.parentElement;
-    if (!split) return;
-    const rect = split.getBoundingClientRect();
-    const percent = ((clientY - rect.top) / rect.height) * 100;
+    if (!sidebarSplitRect) {
+      const split = sidebarSplitHandle.parentElement;
+      if (!split) return;
+      sidebarSplitRect = split.getBoundingClientRect();
+    }
+    if (!sidebarSplitRect.height) return;
+    const percent = ((clientY - sidebarSplitRect.top) / sidebarSplitRect.height) * 100;
     pendingSidebarWorkspacePercent = previewSidebarWorkspacePercent(percent);
   };
   sidebarSplitHandle.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     sidebarSplitHandle.setPointerCapture(e.pointerId);
     sidebarSplitHandle.classList.add("dragging");
+    sidebarSplitRect = null;
     resizeFromClientY(e.clientY);
   });
   sidebarSplitHandle.addEventListener("pointermove", (e) => {
@@ -232,6 +241,7 @@ if (sidebarSplitHandle) {
     if (sidebarSplitHandle.hasPointerCapture(e.pointerId))
       sidebarSplitHandle.releasePointerCapture(e.pointerId);
     sidebarSplitHandle.classList.remove("dragging");
+    sidebarSplitRect = null;
     if (pendingSidebarWorkspacePercent !== null) {
       setSidebarWorkspacePercent(pendingSidebarWorkspacePercent);
       pendingSidebarWorkspacePercent = null;

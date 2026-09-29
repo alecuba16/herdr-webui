@@ -84,6 +84,8 @@
   let refreshSeq = 0,
     browserFavicon = createFaviconNotifier(document),
     browserFaviconError = false,
+    // Cached .mobile-nav button list; null means re-query on next render.
+    navButtons = null,
     mobileAttention,
     mobileSettings,
     mobileTerminal,
@@ -286,6 +288,9 @@
   }
 
   function renderShell() {
+    // Shell rebuild recreates the nav bar, so the cached button list from a
+    // previous shell is stale.
+    navButtons = null;
     document.body.innerHTML = `
       <div id="mobileApp" class="mobile-app">
         <header class="mobile-header">
@@ -352,34 +357,65 @@
       searchButton.hidden = disabled;
       searchButton.disabled = disabled;
     }
-    document.querySelectorAll(".mobile-nav button").forEach((button) => {
+    // Cache the nav button list once: querySelectorAll ran on every render,
+    // and each render is triggered by every events-WS refresh.
+    if (!navButtons) {
+      navButtons = Array.from(
+        document.querySelectorAll(".mobile-nav button"),
+      );
+    }
+    for (const button of navButtons) {
       const searchNavDisabled = button.dataset.screen === "search" && headerSearchDisabled();
       button.hidden = searchNavDisabled;
       button.disabled = searchNavDisabled;
       button.classList.toggle("active", mobileScreens.mobileNavActive(button.dataset.screen));
-      button.innerHTML = mobileScreens.mobileNavLabel(button.dataset.screen);
-    });
+      // Only rewrite the label when it actually changed; innerHTML writes
+      // invalidate the whole nav bar on every refresh otherwise.
+      const label = mobileScreens.mobileNavLabel(button.dataset.screen);
+      if (button.__navLabel !== label) {
+        button.innerHTML = label;
+        button.__navLabel = label;
+      }
+    }
     const screen = el("mobileScreen");
     screen.classList.toggle("terminal-active", state.screen === "terminal");
     if (state.error) {
       syncBrowserFavicon();
       screen.innerHTML = `<div class="mobile-error">${escapeHtml(state.error)}</div>`;
+      // The error markup bypasses the memo; drop it so the next clean
+      // render (same screen, unchanged data) repaints instead of comparing
+      // against stale pre-error HTML.
+      screen.__lastScreenHtml = undefined;
+      screen.__lastScreenName = null;
       return;
     }
-    if (state.screen === "agents") screen.innerHTML = mobileScreens.renderAgents();
-    else if (state.screen === "panels") screen.innerHTML = renderPanels();
-    else if (state.screen === "worktrees")
-      screen.innerHTML = mobileWorktrees.renderScreen();
-    else if (state.screen === "files")
-      screen.innerHTML = mobileFileBrowser.renderScreen();
+    // Build the screen HTML, then only write innerHTML when it actually
+    // changed. Every events-WS refresh calls render(); most carry unchanged
+    // data, and rewriting the screen DOM needlessly reparses hundreds of
+    // nodes (and would drop any focus inside the screen).
+    // The memo is keyed to the screen that produced it: the git and
+    // terminal surfaces write screen.innerHTML directly (they manage their
+    // own partial updates), so the memo must never compare HTML built for
+    // one screen against DOM content left by another.
+    let html = null;
+    if (state.screen === "agents") html = mobileScreens.renderAgents();
+    else if (state.screen === "panels") html = renderPanels();
+    else if (state.screen === "worktrees") html = mobileWorktrees.renderScreen();
+    else if (state.screen === "files") html = mobileFileBrowser.renderScreen();
     else if (state.screen === "git") mobileGit.renderGitScreen(screen);
-    else if (state.screen === "settings")
-      screen.innerHTML = mobileSettings.render();
-    else if (state.screen === "sessions")
-      screen.innerHTML = mobileSessions.renderSessions();
+    else if (state.screen === "settings") html = mobileSettings.render();
+    else if (state.screen === "sessions") html = mobileSessions.renderSessions();
     else if (state.screen === "terminal") renderTerminalScreen(screen);
-    else if (state.screen === "more") screen.innerHTML = mobileScreens.renderMore();
-    else screen.innerHTML = mobileScreens.renderHome();
+    else if (state.screen === "more") html = mobileScreens.renderMore();
+    else html = mobileScreens.renderHome();
+    if (state.screen !== screen.__lastScreenName) {
+      screen.__lastScreenHtml = undefined;
+      screen.__lastScreenName = state.screen;
+    }
+    if (html !== null && screen.__lastScreenHtml !== html) {
+      screen.innerHTML = html;
+      screen.__lastScreenHtml = html;
+    }
     syncBrowserFavicon();
   }
 

@@ -55,7 +55,16 @@
         return;
       }
       const tabs = el("mobileTerminalTabs");
-      if (tabs) tabs.innerHTML = renderTerminalTabsWithAdd();
+      if (tabs) {
+        // Skip the tab-bar innerHTML rewrite when nothing changed: every
+        // events-WS refresh lands here, and rewriting drops scroll state on
+        // wide tab lists.
+        const html = renderTerminalTabsWithAdd();
+        if (tabs.__lastTabsHtml !== html) {
+          tabs.innerHTML = html;
+          tabs.__lastTabsHtml = html;
+        }
+      }
     }
 
     return {

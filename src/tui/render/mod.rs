@@ -46,6 +46,7 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
         || app.mode == TuiMode::ConfirmQuit
         || app.mode == TuiMode::Settings
         || app.mode == TuiMode::WorktreeList
+        || app.mode == TuiMode::SearchPalette
         || app.commit_input.is_some()
         || app.prompt_input.is_some();
     if overlay_active {
@@ -62,6 +63,9 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     }
     if app.mode == TuiMode::WorktreeList {
         render_worktree_list(frame, area, app, p);
+    }
+    if app.mode == TuiMode::SearchPalette {
+        render_search_palette(frame, area, app, p);
     }
     if app.commit_input.is_some() {
         render_commit_input(frame, area, app, p);
@@ -410,7 +414,7 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
     frame.render_widget(Paragraph::new(rendered), list_area);
     if explorer.entries.is_empty() && !explorer.filter_active {
         let empty = Paragraph::new(Span::styled(
-            "No entries. Ctrl+B r refreshes, Ctrl+B / filters.",
+            "No entries. Ctrl+B r refreshes, / filters.",
             Style::default().fg(p.muted),
         ));
         frame.render_widget(empty, inner);
@@ -1508,6 +1512,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         TuiMode::ConfirmQuit => "QUIT?",
         TuiMode::Settings => "SET",
         TuiMode::WorktreeList => "WORKTREES",
+        TuiMode::SearchPalette => "SEARCH",
     };
     let prefix = if app.prefix.is_armed() {
         "Ctrl+B> "
@@ -1878,6 +1883,76 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
     frame.render_widget(
         Paragraph::new(lines)
             .block(overlay_panel(title, p))
+            .style(Style::default().fg(p.text).bg(p.panel_bg))
+            .scroll((scroll as u16, 0)),
+        rect,
+    );
+}
+
+/// Search palette overlay (webui search palette, prefix `/`): query
+/// line plus the result rows (local workspaces/panels/agents while
+/// typing, file and content hits after the Enter commit), j/k moves
+/// the cursor, Enter commits/navigates, Esc closes.
+fn render_search_palette(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let palette = &app.search_palette;
+    let rows = palette.results.len();
+    // border + title + query line + rows (+1 slack), capped at 20.
+    let height = ((rows as u16) + 5).clamp(5, 20);
+    let rect = overlay_rect(area, area.width.min(72), height);
+    render_shadow(frame, rect, p);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            " Search ",
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("{} results ", rows), Style::default().fg(p.muted)),
+    ])];
+    lines.push(Line::from(vec![
+        Span::styled(" query: ", Style::default().fg(p.muted)),
+        Span::styled(format!("{}_", palette.query), Style::default().fg(p.accent)),
+    ]));
+    if rows == 0 {
+        lines.push(Line::from(Span::styled(
+            if palette.query.is_empty() {
+                " type to search workspaces, panels, agents, files, content "
+            } else if palette.committed {
+                " no results "
+            } else {
+                " Enter searches files and content too "
+            },
+            Style::default().fg(p.muted),
+        )));
+    }
+    for (index, candidate) in palette.results.iter().enumerate() {
+        let selected = index == palette.selected;
+        let cursor = if selected { "▸ " } else { "  " };
+        let title_style = if selected {
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.text)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(cursor, Style::default().fg(p.accent)),
+            Span::styled(
+                format!("[{}] ", candidate.icon()),
+                Style::default().fg(p.muted),
+            ),
+            Span::styled(candidate.title(), title_style),
+        ]));
+    }
+    // Keep the cursor inside the window when the rows outgrow the
+    // overlay (scroll like the worktree browser).
+    let header_lines = 4usize; // border + title + query line (+ border bottom)
+    let visible_rows = height.saturating_sub(header_lines as u16 + 1).max(1) as usize;
+    let scroll = palette
+        .selected
+        .saturating_sub(visible_rows.saturating_sub(1));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(overlay_panel(
+                " Search · Enter commits/navigates · j/k moves · Esc closes ",
+                p,
+            ))
             .style(Style::default().fg(p.text).bg(p.panel_bg))
             .scroll((scroll as u16, 0)),
         rect,

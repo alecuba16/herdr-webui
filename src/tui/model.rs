@@ -18,6 +18,10 @@ pub enum TuiMode {
     /// (fallback: the exploration default/home), j/k moves, Enter opens
     /// through `worktree.open`, Esc closes.
     WorktreeList,
+    /// Search palette overlay (webui search palette, prefix `/`):
+    /// single-line query over workspaces, panels, agents, files and
+    /// content; j/k moves, Enter commits/navigates, Esc closes.
+    SearchPalette,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

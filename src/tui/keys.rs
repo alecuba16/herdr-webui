@@ -292,7 +292,7 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B f", "files explorer"),
         ("Ctrl+B g", "git panel"),
         ("Ctrl+B t", "terminal view"),
-        ("Ctrl+B /", "search/filter in panel"),
+        ("Ctrl+B /", "open search palette"),
         ("Ctrl+B ?", "help"),
         ("Ctrl+B r", "refresh"),
         ("Ctrl+B j/k", "next/prev workspace"),

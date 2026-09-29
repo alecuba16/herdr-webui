@@ -16,10 +16,13 @@ function render() {
       (tabCountsByWorkspace.get(tab.workspace_id) || 0) + 1,
     );
   const workspacesHtml = renderSpacesCached();
-  const workspaceRenameActive = !!document.querySelector(
-    ".workspace-rename-input",
-  );
-  const tabRenameActive = !!document.querySelector(".tab-rename-input");
+  // The rename-input queries only matter while a rename is in flight; skip
+  // the two querySelector calls on every poll when nothing is being edited.
+  const workspaceRenameActive =
+    !!state.editingWorkspace &&
+    !!document.querySelector(".workspace-rename-input");
+  const tabRenameActive =
+    !!state.editingTab && !!document.querySelector(".tab-rename-input");
   if (
     workspacesHtml !== lastWorkspacesHtml &&
     !(state.editingWorkspace && workspaceRenameActive) &&
@@ -44,8 +47,17 @@ function render() {
   applySidebarCollapsed();
   syncGitWorkspaceToggle();
   syncFileWorkspaceToggle();
+  // Both of these rebuild static icon markup on every render. Cache the last
+  // written string and only touch the DOM when the theme/icon actually
+  // changed; innerHTML writes here invalidate the head chrome on every poll.
   const themeHead = el("themeToggleHead");
-  if (themeHead) themeHead.innerHTML = themeToggleIcon();
+  if (themeHead) {
+    const iconHtml = themeToggleIcon();
+    if (lastThemeHeadIcon !== iconHtml) {
+      themeHead.innerHTML = iconHtml;
+      lastThemeHeadIcon = iconHtml;
+    }
+  }
   const pane = state.panes.find((p) => p.pane_id === state.pane);
   const tabsHtml = "";
   if (tabsHtml !== lastTabsHtml && !(state.editingTab && tabRenameActive)) {
@@ -68,9 +80,24 @@ function render() {
       input.focus();
     }
   }
-  fitTerminalShell();
-  if (typeof fitTerminalSurface === "function") fitTerminalSurface();
+  // Terminal layout fit is driven by the dedicated resize scheduler
+  // (scheduleTerminalResize, the shell ResizeObserver, and the layout.updated
+  // event). Re-running the fit here forced getComputedStyle + clientHeight +
+  // getBoundingClientRect reads on every refresh (every poll/event), which
+  // interleaved layout reads with the DOM writes above (layout thrash) and
+  // duplicated work the ResizeObserver already does when the DOM actually
+  // changes. If no observer is available, keep the old behavior so the
+  // terminal still fits on constrained engines.
+  if (!terminalShellResizeObserverActive) {
+    fitTerminalShell();
+    if (typeof fitTerminalSurface === "function") fitTerminalSurface();
+  }
 }
+// Tracks whether the dedicated shell ResizeObserver owns terminal fitting.
+let terminalShellResizeObserverActive = false;
+// Last innerHTML written to #themeToggleHead, so render() can skip the
+// write when the theme icon did not change.
+let lastThemeHeadIcon = null;
 
 function panesByTabIndex() {
   const map = new Map();
@@ -92,10 +119,14 @@ function syncWorkspacePanelMenuSize() {
     menu = workspacePane && workspacePane.querySelector && workspacePane.querySelector(".panel-menu");
   if (!workspacePane) return;
   if (!menu) {
-    workspacePane.classList.remove("panel-menu-open");
-    if (workspacePane.style.removeProperty)
-      workspacePane.style.removeProperty("--workspace-panel-menu-min-height");
-    else workspacePane.style.setProperty("--workspace-panel-menu-min-height", "0px");
+    // Skip the class/style writes when the pane is already in the closed
+    // state; this runs on every render so unchanged writes are pure recalc.
+    if (workspacePane.classList.contains("panel-menu-open")) {
+      workspacePane.classList.remove("panel-menu-open");
+      if (workspacePane.style.removeProperty)
+        workspacePane.style.removeProperty("--workspace-panel-menu-min-height");
+      else workspacePane.style.setProperty("--workspace-panel-menu-min-height", "0px");
+    }
     return;
   }
   workspacePane.classList.add("panel-menu-open");
@@ -103,7 +134,14 @@ function syncWorkspacePanelMenuSize() {
     menuRect = menu.getBoundingClientRect ? menu.getBoundingClientRect() : null;
   if (!paneRect || !menuRect) return;
   const minHeight = Math.max(0, Math.ceil(menuRect.bottom - paneRect.top + 10));
-  workspacePane.style.setProperty("--workspace-panel-menu-min-height", `${minHeight}px`);
+  // Setting the property to the same value still dirties style; only write
+  // when the measured min-height actually moved. The typeof guard keeps
+  // DOM-stub test environments (style objects without getPropertyValue) happy.
+  if (
+    typeof workspacePane.style.getPropertyValue !== "function" ||
+    `${minHeight}px` !== workspacePane.style.getPropertyValue("--workspace-panel-menu-min-height")
+  )
+    workspacePane.style.setProperty("--workspace-panel-menu-min-height", `${minHeight}px`);
 }
 window.HerdrDesktopRender = render;
 function syncProjectDashboard() {
@@ -173,6 +211,18 @@ function tabActivitySignature(t, panesByTab, agentsByTab) {
   ]);
 }
 function updateTabActivity(panesByTab = new Map(), agentsByTab = new Map()) {
+  // The activity timestamps only feed the optional tab activity labels
+  // (options.showTabActivity, off by default). Building the per-tab
+  // JSON.stringify signature for every tab on every render/poll is pure
+  // waste when the labels are disabled, so skip the whole pass then.
+  if (!options.showTabActivity) {
+    if (!tabActivityPassRecorded) {
+      tabActivity = {};
+      tabActivityPassRecorded = true;
+    }
+    return;
+  }
+  tabActivityPassRecorded = false;
   const now = Date.now(),
     seen = new Set();
   for (const t of state.allTabs.concat(state.tabs)) {
@@ -188,6 +238,9 @@ function updateTabActivity(panesByTab = new Map(), agentsByTab = new Map()) {
       delete tabActivity[key];
   }
 }
+// Whether the disabled-showTabActivity branch already cleared the table,
+// so repeated renders skip even the cleanup.
+let tabActivityPassRecorded = false;
 function tabHoverInfo(t, panesByTab) {
   const panes = panesByTab.get(t.tab_id) || [];
   const pane = panes.find((p) => p.pane_id === state.pane) || panes[0];
@@ -455,10 +508,21 @@ function syncGitWorkspaceToggle() {
   }
   const workspace = selectedOrDefaultWorkspace();
   const status = window.HerdrGitUi && window.HerdrGitUi.workspaceStatus ? window.HerdrGitUi.workspaceStatus(state.ws, workspace) : "unknown";
-  button.className = `btn worktree-open-trigger shell-action shell-icon-button git-workspace-toggle ${status}`;
-  button.innerHTML = appIcon("git");
-  button.setAttribute("aria-label", status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer");
-  button.title = status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer";
+  const className = `btn worktree-open-trigger shell-action shell-icon-button git-workspace-toggle ${status}`;
+  if (button.className !== className) button.className = className;
+  // The icon markup is static per status; skip the innerHTML rebuild (which
+  // reparses SVG on every render/poll) unless the status class changed it.
+  const iconHtml = appIcon("git");
+  if (button.__herdrGitIcon !== iconHtml || button.__herdrGitIconStatus !== status) {
+    button.innerHTML = iconHtml;
+    button.__herdrGitIcon = iconHtml;
+    button.__herdrGitIconStatus = status;
+  }
+  const ariaLabel = status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer";
+  const title = status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer";
+  if (typeof button.getAttribute === "function" && button.getAttribute("aria-label") !== ariaLabel)
+    button.setAttribute("aria-label", ariaLabel);
+  if (button.title !== title) button.title = title;
   syncShellModeButtons();
 }
 
@@ -673,23 +737,44 @@ function samePath(a, b) {
 }
 function renderAgents(wsById, tabById, tabCountsByWorkspace) {
   const list = state.agents.slice();
-  if (options.agentSortMode !== "off")
-    list.sort(agentAttentionCompare);
+  if (options.agentSortMode !== "off") {
+    // Hoist the normalized order out of the comparator: sorting n agents
+    // used to rebuild it O(n log n) times via normalizeAgentStatusOrder.
+    const order = normalizeAgentStatusOrder(options.agentStatusOrder),
+      orderMap = new Map(),
+      rankOf = (a) => agentAttentionRank(a, order, orderMap);
+    list.sort((a, b) => agentAttentionCompare(a, b, rankOf));
+  }
   return list
     .map((a) => renderAgentRow(a, wsById, tabById, tabCountsByWorkspace))
     .join("");
 }
-function agentAttentionCompare(a, b) {
-  const aRank = agentAttentionRank(a),
-    bRank = agentAttentionRank(b);
-  return aRank - bRank;
+function agentAttentionCompare(a, b, rankOf) {
+  // rankOf is injected by renderAgents so the normalized order is built once
+  // per sort; direct 2-arg callers (tests) fall back to building it here.
+  if (!rankOf) {
+    const order = normalizeAgentStatusOrder(options.agentStatusOrder),
+      orderMap = new Map();
+    rankOf = (x) => agentAttentionRank(x, order, orderMap);
+  }
+  return rankOf(a) - rankOf(b);
 }
-function agentAttentionRank(a) {
+function agentAttentionRank(a, order, orderMap) {
   const status = isWorkingDismissed(a) ? "idle" : statusClass(a.agent_status);
   const group = ["idle", "working", "blocked", "done"].includes(status)
     ? status
     : "other";
-  const order = normalizeAgentStatusOrder(options.agentStatusOrder);
+  // orderMap caches the group -> rank lookup so the sort comparator does not
+  // rebuild the normalized order array per comparison.
+  if (orderMap) {
+    let rank = orderMap.get(group);
+    if (rank === undefined) {
+      rank = order.indexOf(group);
+      rank = rank >= 0 ? rank : order.length;
+      orderMap.set(group, rank);
+    }
+    return rank;
+  }
   const rank = order.indexOf(group);
   return rank >= 0 ? rank : order.length;
 }

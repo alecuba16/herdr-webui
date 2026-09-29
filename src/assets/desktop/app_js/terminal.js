@@ -149,6 +149,27 @@ async function connectTerminal(fitOverride = null) {
     focusTerminal();
     return;
   }
+  // Live resize while the attach socket is still CONNECTING: tearing it
+  // down and opening a fresh one per resize frame was the original storm, so
+  // instead resize the local renderer now and remember the grid; onopen sends
+  // it once. Without this, resize during CONNECTING fell through to a full
+  // teardown + re-attach per frame.
+  if (
+    termWs &&
+    termWs.readyState === 0 &&
+    connectedTerminalId === target &&
+    connectedSize !== size
+  ) {
+    connectedSize = size;
+    pendingTerminalResize = { cols, rows };
+    try { term.resize(cols, rows); } catch (e) {}
+    if (window.HerdrGraphicsBridge) {
+      window.HerdrGraphicsBridge.resize({ cols, rows });
+    }
+    setTerminalLoading(false);
+    fitTerminalSurface();
+    return;
+  }
   // Reconnect backoff: after a failed attach (backend outage, herdr_error
   // teardown), suppress the teardown-and-reattach path until the backoff
   // window elapses. Resize frames during a drag would otherwise reattach
@@ -279,6 +300,15 @@ async function connectTerminal(fitOverride = null) {
   ws.onopen = () => {
     if (termWs === ws) {
       terminalAttachPending = true;
+      // Send the grid that arrived while the socket was still CONNECTING
+      // (see the pendingTerminalResize path in connectTerminal).
+      if (pendingTerminalResize) {
+        const pending = pendingTerminalResize;
+        pendingTerminalResize = null;
+        try {
+          ws.send(JSON.stringify({ type: "resize", cols: pending.cols, rows: pending.rows }));
+        } catch (e) {}
+      }
       scrollTerminalToBottom(false);
       focusTerminal();
     }
@@ -365,6 +395,10 @@ const PASTE_FLUSH_DELAY_MS = 4;
 const LARGE_FRAME_THRESHOLD = 32768;
 // Set true on WS open, cleared after the first large frame is fully written.
 let terminalAttachPending = false;
+
+// Grid that arrived while the attach socket was still CONNECTING; sent
+// once on open instead of tearing the socket down per resize frame.
+let pendingTerminalResize = null;
 
 // Reconnect backoff for terminal attach. The browser-to-webui WebSocket
 // always opens (webui is the endpoint); an attach failure only surfaces
@@ -924,8 +958,10 @@ function updateTerminalPasteProgress(done, total) {
   const pct = Math.max(0, Math.min(100, Math.round((Math.max(0, done) / Math.max(1, total)) * 100)));
   const label = el("terminalPasteProgressLabel");
   if (label) label.textContent = pct >= 100 ? "Paste sent" : "Pasting… " + pct + "%";
+  // Drive the bar with a scaleX variable so progress updates stay on the
+  // compositor instead of triggering layout (width transitions did).
   const bar = el("terminalPasteProgressBar");
-  if (bar) bar.style.width = pct + "%";
+  if (bar) bar.style.setProperty("--paste-progress", String(pct / 100));
 }
 function hideTerminalPasteProgress() {
   if (pasteProgressHideTimer) {
@@ -967,32 +1003,40 @@ function fitTerminalSurface() {
     terminal.style.minWidth = width + "px";
     terminal.style.minHeight = height + "px";
     terminal.style.overflow = "";
-  } else {
-    // Fill the shell vertically so short terminal content never leaves empty
-    // space at the bottom. Grid renegotiation (state.termCols/termRows, see
-    // applyBrowserTerminalSize and the shell ResizeObserver) keeps the actual
-    // rows in sync with the space, so the surface and the grid always match.
-    const visibleHeight = shellHeight > 0 ? shellHeight : height;
-    // Align the surface to whole terminal rows. When the shell height is not
-    // an exact multiple of the row height, a full-shell surface leaves a
-    // sub-row gap at the bottom. wterm's follow-scroll snaps scrollTop to
-    // whole rows while the app's scrollToBottom targets the exact bottom, so
-    // the two fight on every frame (visible "shaking"). Keeping at most one
-    // row of reserved gap at the bottom makes both land on the same value.
-    const alignedHeight =
-      rows > 0 && rowHeight > 0
-        ? Math.min(visibleHeight, Math.floor(visibleHeight / rowHeight) * rowHeight)
-        : visibleHeight;
-    terminal.style.width = "100%";
-    terminal.style.height = alignedHeight > 0 ? alignedHeight + "px" : "";
-    terminal.style.maxHeight = alignedHeight > 0 ? alignedHeight + "px" : "";
-    terminal.style.minWidth = "0";
-    terminal.style.minHeight = "0";
-    // Don't force overflow:hidden - wterm needs overflow:auto on .terminal for internal scrollback
-    // terminal.style.overflow = "hidden";  // REMOVED: breaks wterm scrollTop
+    return;
+  }
+  // Fill the shell vertically so short terminal content never leaves empty
+  // space at the bottom. Grid renegotiation (state.termCols/termRows, see
+  // applyBrowserTerminalSize and the shell ResizeObserver) keeps the actual
+  // rows in sync with the space, so the surface and the grid always match.
+  const visibleHeight = shellHeight > 0 ? shellHeight : height;
+  // Align the surface to whole terminal rows. When the shell height is not
+  // an exact multiple of the row height, a full-shell surface leaves a
+  // sub-row gap at the bottom. wterm's follow-scroll snaps scrollTop to
+  // whole rows while the app's scrollToBottom targets the exact bottom, so
+  // the two fight on every frame (visible "shaking"). Keeping at most one
+  // row of reserved gap at the bottom makes both land on the same value.
+  const alignedHeight =
+    rows > 0 && rowHeight > 0
+      ? Math.min(visibleHeight, Math.floor(visibleHeight / rowHeight) * rowHeight)
+      : visibleHeight;
+  // Skip style writes that did not change: this runs on resize frames, and
+  // redundant writes invalidate style on every frame of a drag.
+  const style = terminal.style;
+  const heightPx = alignedHeight > 0 ? alignedHeight + "px" : "";
+  if (style.width !== "100%") style.width = "100%";
+  if (style.height !== heightPx) style.height = heightPx;
+  if (style.maxHeight !== heightPx) style.maxHeight = heightPx;
+  if (style.minWidth !== "0") style.minWidth = "0";
+  if (style.minHeight !== "0") style.minHeight = "0";
+  // Don't force overflow:hidden - wterm needs overflow:auto on .terminal for internal scrollback
+  // terminal.style.overflow = "hidden";  // REMOVED: breaks wterm scrollTop
+  if (lastFitTerminalHeight !== alignedHeight) {
+    lastFitTerminalHeight = alignedHeight;
     HerdrTerminalFit.fitTerminalToContainer(terminal, { height: alignedHeight });
   }
 }
+let lastFitTerminalHeight = -1;
 function cssPixels(value) {
   const parsed = Number.parseFloat(value || "0");
   return Number.isFinite(parsed) ? parsed : 0;
@@ -1034,13 +1078,20 @@ function browserTerminalSize() {
   const shellSize = fitTerminalShell();
   if (!shellSize) return null;
   const padding = terminalShellPadding(shell);
-  return HerdrTerminalFit.gridSize(shell, term, {
-    paddingX: padding.x,
-    paddingY: padding.y,
-    fallbackCell: { width: 9, height: 20 },
-    minCols: 80,
-    minRows: 24,
-  });
+  // Single-pass: fitTerminalShell() already measured the shell box, so compute
+  // the grid here instead of routing through HerdrTerminalFit.gridSize(),
+  // which re-ran visibleBox (getComputedStyle + getClientRects + clientWidth)
+  // on every call.
+  const cell = HerdrTerminalFit.cellSize(term, terminal, { width: 9, height: 20 });
+  const width = Math.max(0, shellSize.width - padding.x);
+  const height = Math.max(0, shellSize.height - padding.y);
+  return {
+    cols: Math.max(80, Math.floor(width / Math.max(1, cell.width))),
+    rows: Math.max(24, Math.floor(height / Math.max(1, cell.height))),
+    width: shellSize.width,
+    height: shellSize.height,
+    cell,
+  };
 }
 function shouldFitFocusedWebTerminal() {
   return !document.hidden;
@@ -1108,16 +1159,27 @@ function applyScheduledTerminalResize() {
 }
 
 function scheduleTerminalResize() {
+  // Remember that a resize is wanted even while a frame/timer is already
+  // pending: the applied frame may measure before the final layout settles
+  // (mid-drag), and without a trailing run the last drag position would be
+  // dropped.
+  terminalResizeWanted = true;
   if (terminalResizeFrame !== null || terminalResizeTimer !== null) return;
   const elapsed = terminalResizeNow() - terminalResizeLastAppliedAt;
   const delay = Math.max(0, TERMINAL_RESIZE_MIN_INTERVAL_MS - elapsed);
   const queueFrame = () => {
     terminalResizeTimer = null;
-    terminalResizeFrame = requestAnimationFrame(applyScheduledTerminalResize);
+    terminalResizeFrame = requestAnimationFrame(() => {
+      terminalResizeFrame = null;
+      terminalResizeWanted = false;
+      applyScheduledTerminalResize();
+      if (terminalResizeWanted) scheduleTerminalResize();
+    });
   };
   if (delay > 0) terminalResizeTimer = setTimeout(queueFrame, delay);
   else queueFrame();
 }
+let terminalResizeWanted = false;
 
 // Window resize and shell resize can fire together during a drag. Both feed
 // the same scheduler so an expensive renderer resize happens at most once per
@@ -1135,7 +1197,11 @@ window.addEventListener("resize", scheduleTerminalResize);
       document.getElementById("terminalShell"));
   if (!shell || typeof ResizeObserver !== "function") return;
   const refitAfterShellResize = scheduleTerminalResize;
-  new ResizeObserver(refitAfterShellResize).observe(shell);
+  const observer = new ResizeObserver(refitAfterShellResize);
+  observer.observe(shell);
+  // The observer owns refits whenever the shell geometry changes, so render()
+  // does not need to re-fit on every refresh (see render.js).
+  terminalShellResizeObserverActive = true;
 })();
 window.addEventListener("focus", () =>
   requestAnimationFrame(fitFocusedTerminal),

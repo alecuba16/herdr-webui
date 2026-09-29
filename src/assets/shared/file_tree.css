@@ -115,3 +115,11 @@
 .herdr-tree-icon-folder { mask-image: url("/assets/icons/folder.svg"); }
 .herdr-tree-icon-folder-up { mask-image: url("/assets/icons/folder-up.svg"); }
 .herdr-tree-icon-file { mask-image: url("/assets/icons/file.svg"); }
+
+/* Long tree lists: skip layout/paint for offscreen rows. The rows have a
+   stable single-line height, so the intrinsic size keeps scrollbar math
+   correct while offscreen rows stop costing layout/paint on every update. */
+.herdr-tree-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 26px;
+}
