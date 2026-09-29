@@ -194,3 +194,9 @@
 .search-more {
   margin: 8px 10px 10px;
 }
+
+/* Skip layout/paint for offscreen search result rows. */
+.search-result {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 41px;
+}

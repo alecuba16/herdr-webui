@@ -706,3 +706,11 @@ body.light .agent-status.done {
   font-size: 12px;
   line-height: 1.35;
 }
+
+/* Sidebar workspace/agent rows: skip layout/paint for offscreen rows in the
+   scrollable section. Rows are single-line height; the intrinsic size keeps
+   the scrollbar accurate. */
+.section .item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 46px;
+}

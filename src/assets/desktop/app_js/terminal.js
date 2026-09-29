@@ -149,6 +149,27 @@ async function connectTerminal(fitOverride = null) {
     focusTerminal();
     return;
   }
+  // Live resize while the attach socket is still CONNECTING: tearing it
+  // down and opening a fresh one per resize frame was the original storm, so
+  // instead resize the local renderer now and remember the grid; onopen sends
+  // it once. Without this, resize during CONNECTING fell through to a full
+  // teardown + re-attach per frame.
+  if (
+    termWs &&
+    termWs.readyState === 0 &&
+    connectedTerminalId === target &&
+    connectedSize !== size
+  ) {
+    connectedSize = size;
+    pendingTerminalResize = { cols, rows };
+    try { term.resize(cols, rows); } catch (e) {}
+    if (window.HerdrGraphicsBridge) {
+      window.HerdrGraphicsBridge.resize({ cols, rows });
+    }
+    setTerminalLoading(false);
+    fitTerminalSurface();
+    return;
+  }
   // Reconnect backoff: after a failed attach (backend outage, herdr_error
   // teardown), suppress the teardown-and-reattach path until the backoff
   // window elapses. Resize frames during a drag would otherwise reattach
@@ -279,6 +300,15 @@ async function connectTerminal(fitOverride = null) {
   ws.onopen = () => {
     if (termWs === ws) {
       terminalAttachPending = true;
+      // Send the grid that arrived while the socket was still CONNECTING
+      // (see the pendingTerminalResize path in connectTerminal).
+      if (pendingTerminalResize) {
+        const pending = pendingTerminalResize;
+        pendingTerminalResize = null;
+        try {
+          ws.send(JSON.stringify({ type: "resize", cols: pending.cols, rows: pending.rows }));
+        } catch (e) {}
+      }
       scrollTerminalToBottom(false);
       focusTerminal();
     }
@@ -365,6 +395,10 @@ const PASTE_FLUSH_DELAY_MS = 4;
 const LARGE_FRAME_THRESHOLD = 32768;
 // Set true on WS open, cleared after the first large frame is fully written.
 let terminalAttachPending = false;
+
+// Grid that arrived while the attach socket was still CONNECTING; sent
+// once on open instead of tearing the socket down per resize frame.
+let pendingTerminalResize = null;
 
 // Reconnect backoff for terminal attach. The browser-to-webui WebSocket
 // always opens (webui is the endpoint); an attach failure only surfaces
