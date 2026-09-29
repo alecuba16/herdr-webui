@@ -382,12 +382,21 @@
     if (state.error) {
       syncBrowserFavicon();
       screen.innerHTML = `<div class="mobile-error">${escapeHtml(state.error)}</div>`;
+      // The error markup bypasses the memo; drop it so the next clean
+      // render (same screen, unchanged data) repaints instead of comparing
+      // against stale pre-error HTML.
+      screen.__lastScreenHtml = undefined;
+      screen.__lastScreenName = null;
       return;
     }
     // Build the screen HTML, then only write innerHTML when it actually
     // changed. Every events-WS refresh calls render(); most carry unchanged
     // data, and rewriting the screen DOM needlessly reparses hundreds of
     // nodes (and would drop any focus inside the screen).
+    // The memo is keyed to the screen that produced it: the git and
+    // terminal surfaces write screen.innerHTML directly (they manage their
+    // own partial updates), so the memo must never compare HTML built for
+    // one screen against DOM content left by another.
     let html = null;
     if (state.screen === "agents") html = mobileScreens.renderAgents();
     else if (state.screen === "panels") html = renderPanels();
@@ -399,6 +408,10 @@
     else if (state.screen === "terminal") renderTerminalScreen(screen);
     else if (state.screen === "more") html = mobileScreens.renderMore();
     else html = mobileScreens.renderHome();
+    if (state.screen !== screen.__lastScreenName) {
+      screen.__lastScreenHtml = undefined;
+      screen.__lastScreenName = state.screen;
+    }
     if (html !== null && screen.__lastScreenHtml !== html) {
       screen.innerHTML = html;
       screen.__lastScreenHtml = html;
