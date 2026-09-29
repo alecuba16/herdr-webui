@@ -1016,10 +1016,14 @@ impl TuiApp {
                 // First Enter on a fresh palette commits the query (file
                 // and content fetches); a palette with rows navigates.
                 if !self.search_palette.committed {
-                    self.search_palette.committed = true;
                     let result = self.commit_search_query();
                     match result {
                         Ok(()) => {
+                            // Only a successful commit counts: a failed
+                            // one stays uncommitted so the next Enter
+                            // retries the fetch instead of navigating
+                            // stale local-only rows.
+                            self.search_palette.committed = true;
                             self.status =
                                 format!("search: {} results", self.search_palette.results.len());
                         }

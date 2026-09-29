@@ -5889,15 +5889,26 @@ fn search_palette_opens_types_commits_and_navigates() {
     app.handle_key(KeyEvent::from(KeyCode::Backspace));
     assert_eq!(app.search_palette.query, "rep");
 
-    // First Enter commits: with the API dead, the fetch fails and an
-    // error surfaces without closing the palette.
+    // First Enter commits: with the API dead, the fetch fails, the
+    // error surfaces, and the palette stays open and uncommitted (the
+    // next Enter retries instead of navigating stale rows).
     app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert!(app.search_palette.committed);
+    assert!(!app.search_palette.committed);
     assert!(app.error.is_some(), "dead API surfaces the fetch error");
 
-    // A second Enter on a local row navigates: the workspace result
-    // selects the workspace and its first pane.
+    // A second Enter retries the failed fetch, fails again, and stays
+    // in the palette; navigating a local row needs a successful commit
+    // first, so for this dead-API test we force the committed flag the
+    // way a successful commit would and verify navigation still lands.
     app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(
+        !app.search_palette.committed,
+        "retry still fails on dead API"
+    );
+    assert_eq!(app.mode, TuiMode::SearchPalette);
+    app.error = None;
+    app.search_palette.committed = true;
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert_ne!(app.mode, TuiMode::SearchPalette, "Enter navigated");
     assert_eq!(app.selected_workspace, 0);
@@ -5980,18 +5991,18 @@ fn search_palette_renders_query_rows_and_empty_state() {
     assert!(canvas.contains("[ws] Repo"), "workspace row with icon");
     assert!(canvas.contains("1 results"));
 
-    // A committed query with no matches shows the no-results state
-    // (the dead API surfaces the error in the footer, and the rows
-    // list stays empty).
+    // A failed dead-API commit keeps the palette uncommitted, so the
+    // rows area shows the Enter hint rather than "no results" (the
+    // red error in the footer carries the failure).
     app.handle_key(KeyEvent::from(KeyCode::Char('z')));
     app.handle_key(KeyEvent::from(KeyCode::Char('z')));
     assert!(app.search_palette.results.is_empty());
     app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert!(app.search_palette.committed);
+    assert!(!app.search_palette.committed, "dead commit does not commit");
     let canvas = draw(&app, 80, 24);
     assert!(
-        canvas.contains("no results"),
-        "committed dead search says none"
+        canvas.contains("Enter searches files and content too"),
+        "uncommitted empty search shows the hint, not a false none"
     );
 
     // The footer shows the palette mode label.
@@ -6027,13 +6038,17 @@ fn search_palette_boundary_and_regression_checks() {
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert_eq!(app.mode, TuiMode::Navigate, "palette close restores mode");
 
-    // Enter on a palette with no candidate just closes (no panic).
+    // Enter on a palette with no candidate and a dead backend retries
+    // the fetch (stays uncommitted) instead of closing; Esc is the
+    // exit path there.
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('/')));
     app.handle_key(KeyEvent::from(KeyCode::Char('z')));
     app.handle_key(KeyEvent::from(KeyCode::Enter));
-    app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert_eq!(app.mode, TuiMode::Navigate, "empty palette Enter closes");
+    assert!(!app.search_palette.committed, "dead commit retries");
+    assert_eq!(app.mode, TuiMode::SearchPalette, "palette stays open");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate, "Esc closes the palette");
 
     // Enter with an empty query: commit is a no-op, second Enter closes.
     app.handle_key(ctrl('b'));
@@ -6301,4 +6316,49 @@ fn search_palette_scoring_orders_exact_prefix_substring() {
     app.handle_key(KeyEvent::from(KeyCode::Up));
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert_eq!(app.mode, crate::tui::model::TuiMode::SearchPalette);
+}
+
+#[test]
+fn search_palette_shows_error_and_stays_usable_when_backend_fails() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+
+    // First Enter commits: file+content fetches hit a dead port and must
+    // surface an error, keep the palette open, and stay committed=false
+    // so a later Enter retries rather than navigating stale rows.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.error.is_some(), "commit failure surfaces an error");
+    assert_eq!(
+        app.mode,
+        crate::tui::model::TuiMode::SearchPalette,
+        "palette stays open after a failed commit"
+    );
+    assert!(
+        !app.search_palette.committed,
+        "failed commit must not mark the palette committed"
+    );
+    assert_eq!(
+        app.search_palette.results.len(),
+        0,
+        "no local match for 'x' and no fetched rows"
+    );
+
+    // The error must render on the status line (red), next to a query
+    // line that still shows the typed text. 80 cols gives the footer
+    // room for the full message (60 truncates it).
+    let buf = draw_buffer(&app, 80, 24);
+    let text: String = buf
+        .content()
+        .iter()
+        .map(|c| c.symbol().to_string())
+        .collect();
+    assert!(text.contains("query: x"), "query survives the error");
+    assert!(
+        text.contains("connection failed"),
+        "error text rendered: {}",
+        text.chars().take(200).collect::<String>()
+    );
 }
