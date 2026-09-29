@@ -3261,6 +3261,91 @@ async fn web_api_client_authenticates_against_real_authed_server() {
 
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
+async fn web_api_client_recovers_after_real_server_token_rotation() {
+    let _env = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-tui-rotation-e2e-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir_all(config_home.join("herdr-webui")).unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    std::fs::write(
+        config_home.join("herdr-webui").join("webui-settings.json"),
+        json!({ "bind": "127.0.0.1:0", "user": "user", "password": "pass" }).to_string(),
+    )
+    .unwrap();
+
+    // Real authed router (auth on, no localhost bypass). Keep the auth
+    // Arc so the test can rotate the session token live, which is what
+    // a WebUI restart does to a long-running TUI.
+    let state = test_state();
+    let auth = Arc::clone(&state.auth);
+    let old_token = auth.lock().unwrap().token.clone();
+    let app = test_app_with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let port = addr.port();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let client = herdr_webui::tui::web_api::WebApiClient::new("127.0.0.1", port);
+        // Login + authorized call: cookie for the old token.
+        let value = client
+            .recent_workspaces()
+            .expect("initial login and authorized call");
+        assert_eq!(value["recent"], json!([]));
+        client
+            .recent_workspaces()
+            .expect("cached cookie authorizes");
+        (client, ())
+    })
+    .await;
+    let (client, ()) = outcome.expect("initial authed flow");
+
+    // Rotate the live token: same credentials, fresh per-start token.
+    // The client's cached cookie is now stale.
+    {
+        let mut auth = auth.lock().unwrap();
+        let rotated = crate::auth::AuthConfig::from_parts(
+            auth.user.clone(),
+            auth.password.clone(),
+            auth.localhost_no_auth,
+        );
+        assert_ne!(rotated.token, old_token, "rotation must change the token");
+        *auth = rotated;
+    }
+
+    // The same client instance (stale cookie) must re-login through the
+    // real /api/login route, replace the cookie, and recover. The old
+    // `cookie.is_none()` guard surfaces 401 forever here.
+    let recovered = tokio::task::spawn_blocking(move || {
+        let value = client
+            .recent_workspaces()
+            .expect("stale cookie re-logins and the call recovers");
+        assert_eq!(value["recent"], json!([]));
+        // And the new cookie is cached again.
+        client.recent_workspaces().expect("new cookie authorizes");
+    })
+    .await;
+    recovered.expect("rotation recovery flow");
+
+    server_handle.abort();
+    let _ = std::fs::remove_dir_all(&config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
 async fn recent_workspaces_prunes_missing_paths_and_persists() {
     let _env = lock_env();
     let config_home = std::env::temp_dir().join(format!(
