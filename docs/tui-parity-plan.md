@@ -110,7 +110,15 @@ Panel/workspace management:
    record-only endpoint `POST /api/recent-workspaces/record` (best
    effort, like the desktop's fire-and-forget record after a
    workspace create, so a dead WebUI server never fails the
-   create/open itself). The `(already open)` flag compares
+   create/open itself). The same applies to the temporary-terminal
+   promote (`Ctrl+B Shift+P`): the server's promote route records
+   the promoted workspace from the promote result (cwd the backend
+   resolved plus label), and the TUI socket flow POSTs the record
+   endpoint itself with the same shape. The desktop create-flow
+   records by re-POSTing the open endpoint `/api/recent-workspaces`
+   (the server records there anyway), while the TUI uses the
+   record-only endpoint to skip the redundant reopen — same
+   persisted entry, one fewer workspace create. The `(already open)` flag compares
    the recent path against the open workspace cwds only; the desktop
    `recentWorkspaceIsOpen` also cross-checks linked worktree paths
    (`state.worktrees` with `open_workspace_id`), but every open

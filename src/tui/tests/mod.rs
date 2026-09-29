@@ -2303,6 +2303,19 @@ fn fake_backend_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
                     "root_pane": {"pane_id": "pane_opened"}
                 }
             }),
+            // Result shaped like the server's promote route payload:
+            // workspace cwd (the backend resolves the live cwd) plus
+            // label, which the TUI records into recents.
+            "tab.promote" => json!({
+                "id": request["id"],
+                "result": {
+                    "workspace": {
+                        "workspace_id": "ws_promoted",
+                        "cwd": "/promoted/cwd",
+                        "label": "promoted label"
+                    }
+                }
+            }),
             "workspace.close" => {
                 // Built-in backend drops the emptied workspace itself; a
                 // second close reports not-found, which the TUI ignores.
@@ -3915,6 +3928,20 @@ fn tui_created_workspaces_and_opened_worktrees_record_recents() {
     let result2 = app.worktree_open_selected();
     assert!(result2.is_ok(), "open flow: {result2:?}");
 
+    // Promote flow: server route records the promoted workspace from
+    // the result (cwd resolved by the backend + label); the TUI socket
+    // flow must POST the same shape. Push a temp tab into the snapshot.
+    app.snapshot.tabs.push(crate::tui::model::TuiTab {
+        id: "tab_temp".to_string(),
+        workspace_id: "ws_1".to_string(),
+        label: "temp".to_string(),
+        focused: false,
+        pane_count: 1,
+        agent_status: "idle".to_string(),
+    });
+    let result3 = app.temp_terminal_promote();
+    assert!(result3.is_ok(), "promote flow: {result3:?}");
+
     let posted_create = open_requests
         .recv_timeout(Duration::from_secs(5))
         .expect("create record POST reached the server");
@@ -3927,6 +3954,12 @@ fn tui_created_workspaces_and_opened_worktrees_record_recents() {
     assert_eq!(posted_open["path"], "/wt/branch-x");
     assert_eq!(posted_open["kind"], "worktree");
     assert!(posted_open.get("label").is_none_or(|v| v.is_null()));
+    let posted_promote = open_requests
+        .recv_timeout(Duration::from_secs(5))
+        .expect("promote record POST reached the server");
+    assert_eq!(posted_promote["path"], "/promoted/cwd");
+    assert_eq!(posted_promote["label"], "promoted label");
+    assert_eq!(posted_promote["kind"], "workspace");
     std::fs::remove_dir_all(&dir).ok();
 }
 

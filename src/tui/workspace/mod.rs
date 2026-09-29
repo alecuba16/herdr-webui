@@ -966,9 +966,35 @@ impl TuiApp {
         let Some(tab_id) = temp_tab else {
             return Err("no temporary terminal open".to_string());
         };
-        self.client
+        let result = self
+            .client
             .promote_tab(&tab_id)
             .map_err(|err| err.to_string())?;
+        // The server's promote route records the promoted workspace into
+        // recents (path from the result, because the backend resolves
+        // the live cwd). The TUI promotes through the socket, so record
+        // here, best effort: a failed record must not fail the promote.
+        let recorded_path = result
+            .get("workspace")
+            .and_then(|ws| ws.get("cwd"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|cwd| !cwd.is_empty())
+            .map(str::to_string);
+        let recorded_label = result
+            .get("workspace")
+            .and_then(|ws| ws.get("label"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .map(str::to_string);
+        if let Some(cwd) = recorded_path {
+            let _ = self.web_api.record_recent_workspace(
+                &cwd,
+                recorded_label.as_deref(),
+                Some("workspace"),
+            );
+        }
         self.refresh().map_err(|err| err.to_string())?;
         // The promoted tab lands in the workspace at its live cwd; jump
         // the selection there like the webui post-promote navigation.
