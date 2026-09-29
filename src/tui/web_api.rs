@@ -18,9 +18,11 @@ use serde_json::{json, Value};
 /// persisted), so like the desktop the client logs in through `POST
 /// /api/login`. Credentials come from the same `webui-settings.json` the
 /// bind address does (server validation guarantees `user`/`password` are
-/// set whenever auth is required); a first 401 triggers one login and a
-/// single retry with the session cookie, and the cookie is cached for
-/// later calls. `localhost_no_auth` servers never 401, so nothing changes
+/// set whenever auth is required); a 401 triggers one login attempt and a
+/// retry with the session cookie, and the cookie is cached for later
+/// calls. A stale cookie after a WebUI restart (the token rotates per
+/// start) recovers the same way: the next call re-logins and replaces
+/// it. `localhost_no_auth` servers never 401, so nothing changes
 /// for the default local setup.
 #[derive(Debug, Clone)]
 pub struct WebApiClient {
