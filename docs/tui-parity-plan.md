@@ -84,7 +84,10 @@ Panel/workspace management:
    from the desktop: fetches commit on Enter (not the desktop's 180ms
    debounce per keystroke; a synchronous per-key request would stall
    TUI typing) and result caps fit the overlay (12 file / 8 content
-   rows vs the desktop's paged 100/50).
+   rows vs the desktop's paged 100/50). A third deviation: the TUI
+   resets the cursor to row 0 on every keystroke while the desktop
+   keeps `selectedIndex` across re-renders (clamping only when out
+   of range); TUI-acceptable, documented here.
 
    Recents parity: opening the palette also loads the desktop
    `Recent workspaces` section from `GET /api/recent-workspaces`
