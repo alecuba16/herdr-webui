@@ -101,7 +101,7 @@ pub(super) fn socket_diff(params: serde_json::Value, compare: bool) -> Result<se
             }
         }
     }
-    let text = git_ui_text_strings(&cwd, &args).map_err(|err| err)?;
+    let text = git_ui_text_strings(&cwd, &args)?;
     Ok(json!({ "files": parse_unified_diff(&text) }))
 }
 

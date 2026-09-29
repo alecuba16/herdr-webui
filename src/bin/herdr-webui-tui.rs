@@ -32,6 +32,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = cli.options;
     let client = build_client(&options);
 
+    // No explicit `--webui-api` and a live builtin backend socket: route
+    // the git/file panels straight over the control socket (no HTTP
+    // server, no auth dance). When the backend is not running the HTTP
+    // discover fallback keeps the old behavior.
+    let mut web_api = options.web_api;
+    if !cli.web_api_explicit && client.api_socket().exists() {
+        web_api = WebApiClient::from_backend_socket(client.api_socket());
+    }
+
     if cli.summary {
         print_summary(&client)?;
         return Ok(());
@@ -45,12 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    run_interactive(
-        client,
-        options.refresh_interval,
-        options.theme,
-        options.web_api,
-    )
+    run_interactive(client, options.refresh_interval, options.theme, web_api)
 }
 
 fn print_summary(client: &BackendClient) -> Result<(), Box<dyn std::error::Error>> {
@@ -323,12 +327,16 @@ struct Cli {
     options: TuiOptions,
     summary: bool,
     once: bool,
+    /// True when the user passed `--webui-api` explicitly; only then the
+    /// HTTP endpoint wins over an available builtin backend socket.
+    web_api_explicit: bool,
 }
 
 impl Cli {
     fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
         let mut options = TuiOptions::default();
         let mut web_api: Option<WebApiClient> = None;
+        let mut web_api_explicit = false;
         let mut summary = false;
         let mut once = false;
         let mut args = args.into_iter();
@@ -338,6 +346,7 @@ impl Cli {
                 "--summary" => summary = true,
                 "--once" => once = true,
                 "--webui-api" => {
+                    web_api_explicit = true;
                     let value = next_value(&mut args, "--webui-api")?;
                     web_api = Some(
                         WebApiClient::parse_url(&value)
@@ -381,6 +390,7 @@ impl Cli {
             options,
             summary,
             once,
+            web_api_explicit,
         })
     }
 }

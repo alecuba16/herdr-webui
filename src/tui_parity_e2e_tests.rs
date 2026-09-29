@@ -2063,3 +2063,58 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
 
     Ok(())
 }
+
+#[test]
+fn web_api_socket_transport_serves_git_and_file_panels() {
+    let repo = temp_git_repo();
+    let cwd = repo.to_string_lossy().to_string();
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let base = format!("/tmp/herdr-webapi-socket-{now_ms}-{}", std::process::id());
+    let api_socket = PathBuf::from(format!("{base}-api.sock"));
+    let client_socket = PathBuf::from(format!("{base}-client.sock"));
+    let _handle = crate::builtin_backend::BuiltinBackendHandle::start(
+        crate::builtin_backend::BuiltinBackendConfig {
+            api_socket: api_socket.clone(),
+            client_socket,
+            cwd: std::env::temp_dir(),
+            shell: None,
+            jcode_detection_variant: crate::builtin_detection::JcodeDetectionVariant::Vanilla,
+        },
+    )
+    .unwrap();
+
+    let api = WebApiClient::from_backend_socket(&api_socket);
+    assert!(api.is_socket_transport());
+
+    // git panel: status, stage, commit, log
+    let status = api.git_status(&cwd).unwrap();
+    assert!(status["branch"].is_string(), "status payload: {status}");
+    std::fs::write(repo.join("socket-new.txt"), "content\n").unwrap();
+    api.git_stage(&cwd, &["socket-new.txt".to_string()]).unwrap();
+    api.git_commit(&cwd, "add socket-new", None, false).unwrap();
+    let log = api.git_log_scoped(&cwd, "all", "", 10, None).unwrap();
+    assert!(
+        log["commits"].as_array().map(Vec::len) >= Some(2),
+        "log payload: {log}"
+    );
+
+    // file panel: tree, read, write with hash, write with stale hash
+    let tree = api.file_tree(&cwd, "", 1).unwrap();
+    assert!(tree["entries"].as_array().is_some(), "tree payload: {tree}");
+    let read = api.file_read(&cwd, "readme.md").unwrap();
+    let hash = read["hash"].as_str().unwrap().to_string();
+    api.file_write(&cwd, "readme.md", "hello\nsocket\n", Some(&hash))
+        .unwrap();
+    let stale = api.file_write(&cwd, "readme.md", "conflict\n", Some("stale-hash"));
+    assert!(stale.is_err());
+    assert!(stale
+        .unwrap_err()
+        .to_string()
+        .contains("file changed on disk"));
+
+    // HTTP-only endpoints reject cleanly on socket transport.
+    assert!(api.recent_workspaces().is_err());
+}

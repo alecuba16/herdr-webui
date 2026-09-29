@@ -27,7 +27,7 @@ pub(super) struct GitUiLogQuery {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum GitLogScope {
+pub(super) enum GitLogScope {
     All,
     BaseCurrent,
     Base,
