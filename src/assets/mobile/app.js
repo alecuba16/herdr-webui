@@ -11,6 +11,7 @@
     saveSessionSelection,
     selectionPath: mobileSelectionPath,
     sessionPrefix,
+    terminalInputGate,
     writeSessionBackend,
   } = globalThis.HerdrMobileCore;
   const { createFaviconNotifier } = globalThis.HerdrAppHelpers;
@@ -697,6 +698,10 @@
     },
     defaultFolderFn: () => state.defaultFolder || "",
     workspaceIdFn: () => state.ws || (state.workspaces && state.workspaces.length === 1 ? state.workspaces[0].workspace_id : "") || "",
+    // Mobile input model: the temp terminal surface is keyboard-gated too;
+    // input goes through its pencil-button input sheet. The predicate lives
+    // in HerdrMobileCore so all terminal surfaces share one gate.
+    inputGate: terminalInputGate,
   });
   window.addEventListener("resize", () => mobileTempTerminal.handleResize());
   mobileSettings = globalThis.HerdrMobileSettings.create({
@@ -931,6 +936,8 @@
     applyTerminalLinks: mobileTerminal.applyLinks,
     reloadTerminal() { mobileTerminal.destroy(false); scheduleTerminalResize(); },
     scrollTerminalToBottom: mobileTerminal.scrollToBottom,
+    openTerminalInputSheet: mobileTerminal.openInputSheet,
+    closeTerminalInputSheet: mobileTerminal.closeInputSheet,
     currentScreen,
     currentSelection,
     refresh,

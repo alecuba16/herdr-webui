@@ -78,6 +78,43 @@ export async function connectToPage() {
   };
 }
 
+// Navigate to the app's https:// URL with retries. The e2e server uses a
+// self-signed cert, and headless Chrome occasionally fails the first TLS
+// handshake (net_error -202) or shows the privacy interstitial, which used
+// to flake whole suites at startup. Retries navigation until the page has a
+// non-error title, so a single flaky handshake cannot sink a run.
+export async function openApp(cdp, url, { attempts = 8, settleMs = 2500 } = {}) {
+  try {
+    await cdp.send('Page.enable');
+  } catch (_) {}
+  try {
+    await cdp.send('Network.enable');
+  } catch (_) {}
+  try {
+    await cdp.send('Security.enable');
+    await cdp.send('Security.setIgnoreCertificateErrors', { ignore: true });
+  } catch (_) {}
+  let title = '';
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await cdp.send('Page.navigate', { url });
+    } catch (_) {}
+    await new Promise((r) => setTimeout(r, settleMs));
+    try {
+      title = await cdp.evalExpr('document.title');
+    } catch (_) {
+      title = '';
+    }
+    if (title && !String(title).includes('Privacy') && !String(title).includes('Error')) {
+      return title;
+    }
+    // Privacy interstitial: same-tab reload usually clears it once the
+    // setIgnoreCertificateErrors flag took effect; otherwise next loop's
+    // Page.navigate retries the failed handshake.
+  }
+  return title; // caller decides whether the (possibly empty) title is fatal
+}
+
 // Browser-level helpers for teardown checks: Page.navigate can be deferred
 // by the page (unload handlers), so a teardown that must observe the page's
 // WebSockets dying closes the target itself — a real tab close.

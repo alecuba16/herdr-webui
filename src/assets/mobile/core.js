@@ -130,6 +130,17 @@
     );
   }
 
+  // Mobile input model: terminal surfaces (main and temp) never take direct
+  // keyboard input; the OS keyboard must not pop on its own and IME must not
+  // corrupt typed input. All input goes through the pencil-button input
+  // sheet. Single source of truth for the gate predicate: the adapter and
+  // temp terminal only consume it, so a future state-dependent gate (e.g. a
+  // tablet desktop-mode toggle that allows direct focus) is a one-line change
+  // here. Semantics: return true = deny direct keyboard focus.
+  function terminalInputGate() {
+    return true;
+  }
+
   globalThis.HerdrMobileCore = {
     compactScopedId,
     escapeHtml,
@@ -145,6 +156,7 @@
     sessionBackendKey,
     sessionPrefix,
     sessionStateKey,
+    terminalInputGate,
     writeSessionBackend,
   };
 })();
