@@ -7,7 +7,7 @@
 //   - a scratch repo fixture with src/demo.py
 //   - headless Chrome on CDP_PORT
 //   - the server already running (start-e2e.sh) with E2E_BASE_URL pointing at it
-import { connectToPage } from './cdp-driver.mjs';
+import { connectToPage, openApp } from './cdp-driver.mjs';
 import { readFileSync } from 'node:fs';
 
 const REPO = process.env.ACCEPT_REPO;
@@ -24,21 +24,10 @@ function check(name, ok, detail = '') {
 }
 
 const cdp = await connectToPage();
-await cdp.send('Page.enable');
-await cdp.send('Network.enable');
-await cdp.send('Security.enable');
-await cdp.send('Security.setIgnoreCertificateErrors', { ignore: true });
-// Navigate (self-signed cert accepted via CDP flag above).
-await cdp.send('Page.navigate', { url: URL });
-await new Promise((r) => setTimeout(r, 2500));
-
-let title = await cdp.evalExpr('document.title');
-if (!title || title === 'Privacy error' || String(title).includes('Privacy')) {
-  // accept interstitial
-  await cdp.evalExpr('window.location.href = "' + URL + '"');
-  await new Promise((r) => setTimeout(r, 2000));
-  title = await cdp.evalExpr('document.title');
-}
+// Navigate with retries: headless Chrome occasionally fails the first TLS
+// handshake against the self-signed cert (net_error -202), which used to
+// flake the whole suite at startup.
+const title = await openApp(cdp, URL);
 check('app loads (title present)', !!title, `title="${title}"`);
 
 // Fresh browsers must land on the built-in backend: the server's default

@@ -12,7 +12,7 @@
 //   - light (latte) theme renders the backend colors with its own palette
 //   - settings changes flash a green ✓ Applied badge on the changed row that
 //     clears itself, and server settings show a green saved vs red error state
-import { connectToPage } from './cdp-driver.mjs';
+import { connectToPage, openApp } from './cdp-driver.mjs';
 
 const URL = process.env.E2E_BASE_URL || 'https://127.0.0.1:8899/';
 const results = [];
@@ -22,21 +22,10 @@ function check(name, ok, detail = '') {
 }
 
 const cdp = await connectToPage();
-await cdp.send('Page.enable');
-await cdp.send('Network.enable');
-await cdp.send('Security.enable');
-await cdp.send('Security.setIgnoreCertificateErrors', { ignore: true });
 
 // ---------- Desktop layout ----------
-await cdp.send('Page.navigate', { url: URL });
-await new Promise((r) => setTimeout(r, 2500));
-
-let title = await cdp.evalExpr('document.title');
-if (!title || title === 'Privacy error' || String(title).includes('Privacy')) {
-  await cdp.evalExpr('window.location.href = "' + URL + '"');
-  await new Promise((r) => setTimeout(r, 2000));
-}
-check('app loads (title present)', !!(await cdp.evalExpr('document.title')));
+const desktopTitle = await openApp(cdp, URL);
+check('app loads (title present)', !!desktopTitle, `title="${desktopTitle}"`);
 
 // Fresh browser: no stored backend, must land on built-in with "session · built-in".
 // Backend pins are per session (herdr-session-backend:<session>); this run

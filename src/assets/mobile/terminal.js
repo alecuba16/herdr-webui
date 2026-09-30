@@ -96,8 +96,10 @@
           onData: sendInputData,
           onWheelMouseReport: (report) => sendInputData(report, { allowMouseReports: true }),
           // Mobile input model: the terminal surface never takes keyboard
-          // focus.  All input goes through the pencil-button input sheet.
-          inputGate: () => true,
+          // focus. All input goes through the pencil-button input sheet.
+          // The predicate lives in HerdrMobileCore so all terminal surfaces
+          // (main and temp) share one gate.
+          inputGate: globalThis.HerdrMobileCore.terminalInputGate,
         });
         openedTerminalElement = terminal;
       }

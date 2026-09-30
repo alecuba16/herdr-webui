@@ -8,7 +8,7 @@
 //   4. Typed text + Enter is delivered to the PTY and echoed by the shell
 //      (input goes via the sheet, never directly to the terminal).
 //   5. Escape closes the sheet; wterm's textarea stays readonly.
-import { connectToPage } from './cdp-driver.mjs';
+import { connectToPage, openApp } from './cdp-driver.mjs';
 
 const URL = process.env.E2E_BASE_URL || 'https://127.0.0.1:8899/';
 const results = [];
@@ -18,10 +18,6 @@ function check(name, ok, detail = '') {
 }
 
 const cdp = await connectToPage();
-await cdp.send('Page.enable');
-await cdp.send('Network.enable');
-await cdp.send('Security.enable');
-await cdp.send('Security.setIgnoreCertificateErrors', { ignore: true });
 
 await cdp.send('Emulation.setDeviceMetricsOverride', {
   width: 390,
@@ -29,8 +25,10 @@ await cdp.send('Emulation.setDeviceMetricsOverride', {
   deviceScaleFactor: 2,
   mobile: true,
 });
-await cdp.send('Page.navigate', { url: URL });
-await new Promise((r) => setTimeout(r, 2500));
+// openApp enables Page/Network/Security, ignores the self-signed cert, and
+// retries navigation: headless Chrome occasionally fails the first TLS
+// handshake (net_error -202), which used to flake the whole suite at startup.
+await openApp(cdp, URL);
 
 const evalx = (expr) => cdp.evalExpr(expr, true);
 
