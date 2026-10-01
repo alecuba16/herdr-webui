@@ -337,12 +337,11 @@ await sleep(3000);
   // cd into ROOT3: guaranteed no workspace sits there yet, so the promote
   // always moves the tab (the mobile page reloaded onto the workspace at
   // ROOT, and a same-cwd promote would be the rejected case). Mobile input
-  // goes through the temp terminal pencil input sheet (the surface is
-  // keyboard-gated), so open the sheet and type there.
+  // goes directly through the temporary terminal's wterm textarea.
   await evalApp(`(function(){
-    const b = document.querySelector('.temp-terminal-input-button');
-    if (b) b.click();
-    return !!b;
+    const terminal = document.querySelector('.temp-terminal-backdrop .terminal');
+    if (terminal) terminal.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+    return !!(terminal && terminal.querySelector('textarea'));
   })()`);
   // The PTY echoes typed input, so waiting for the marker text alone would
   // match the typed line itself. Require two occurrences (typed echo plus
@@ -367,7 +366,7 @@ await sleep(3000);
   }
   check('mobile cd confirmed by executed output', cdConfirmed);
 
-  // Tap the ⤴ button (mobile has no keyboard prefix path).
+  // Tap the ⤴ button.
   await evalApp(`(function(){
     const b = document.querySelector('.temp-terminal-promote');
     if (b) b.click();
@@ -388,13 +387,11 @@ await sleep(3000);
   })()`);
   check('mobile shows the terminal screen after promote', !!mobileScreen);
   // The promoted shell must still be alive on mobile too: echo round-trip
-  // through the reconnected terminal. Mobile input goes via the pencil
-  // input sheet (the terminal surface is keyboard-gated), so open it,
-  // type the command there, and submit.
+  // through the reconnected terminal's direct textarea input.
   await evalApp(`(function(){
-    const btn = document.getElementById('mobileTerminalInputButton');
-    if (btn) btn.click();
-    return !!btn;
+    const terminal = document.getElementById('terminal');
+    if (terminal) terminal.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
+    return !!(terminal && terminal.querySelector('textarea'));
   })()`);
   await typeText('echo MOBILE_PROMOTE_ALIVE');
   await pressEnter();

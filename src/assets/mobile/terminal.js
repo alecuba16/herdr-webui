@@ -13,7 +13,9 @@
       writeFlushPending = false,
       terminalQueryReplyState = {},
       inputEncoder = new TextEncoder(),
-      terminalAttachPending = false;
+      terminalAttachPending = false,
+      terminalInputGate = null,
+      terminalInputBound = false;
 
     const IMMEDIATE_WRITE_THRESHOLD = 8192;
     const LARGE_FRAME_THRESHOLD = 32768;
@@ -86,6 +88,7 @@
       connectedTerminalKey = terminalKey;
       connectedTerminalSize = terminalSizeKey;
       if (!term) {
+        terminalInputGate = globalThis.HerdrMobileCore.createTerminalInputGate();
         term = await globalThis.HerdrTerminalRenderer.create(terminal, {
           cols: nextSize.cols,
           rows: nextSize.rows,
@@ -95,11 +98,7 @@
           scrollback: 10000,
           onData: sendInputData,
           onWheelMouseReport: (report) => sendInputData(report, { allowMouseReports: true }),
-          // Mobile input model: the terminal surface never takes keyboard
-          // focus. All input goes through the pencil-button input sheet.
-          // The predicate lives in HerdrMobileCore so all terminal surfaces
-          // (main and temp) share one gate.
-          inputGate: globalThis.HerdrMobileCore.terminalInputGate,
+          inputGate: terminalInputGate,
         });
         openedTerminalElement = terminal;
       }
@@ -108,6 +107,14 @@
         terminal.addEventListener("wheel", handleWheel, { passive: false });
         terminal.addEventListener("scroll", () => setTerminalFollowPaused(!terminalAtBottom()), { passive: true });
         terminalScrollBound = true;
+      }
+      if (!terminalInputBound) {
+        const enableDirectInput = () => {
+          if (term && term.enableInput) term.enableInput();
+        };
+        terminal.addEventListener("pointerdown", enableDirectInput, true);
+        terminal.addEventListener("mousedown", enableDirectInput, true);
+        terminalInputBound = true;
       }
       try { term.resize(nextSize.cols, nextSize.rows); } catch (_) {}
       // External-backend Kitty graphics: open the parallel shell-graphics
@@ -192,8 +199,10 @@
         try { term.destroy(); } catch (_) {}
         term = null;
       }
+      terminalInputGate = null;
       openedTerminalElement = null;
       terminalScrollBound = false;
+      terminalInputBound = false;
       setTerminalFollowPaused(false);
     }
 
@@ -261,9 +270,10 @@
     function scrollToBottom(focus = true) {
       setTerminalFollowPaused(false);
       try { if (term) term.scrollToBottom(); } catch (_) {}
-      // On mobile the terminal surface never takes keyboard focus (the
-      // input gate denies it); focusing here would only fight the gate.
-      if (focus && term && !term._inputGate) term.focus();
+      if (focus && term) {
+        if (term.enableInput) term.enableInput();
+        else term.focus();
+      }
     }
 
     function sendInputData(data, inputOptions = {}) {
@@ -294,108 +304,7 @@
       if (inputQueue.length && !inputFlushTimer) inputFlushTimer = setTimeout(() => { inputFlushTimer = null; flushInputQueue(); }, 4);
     }
 
-    // ---- Pencil button + input sheet (mobile input model) ------------------
-    // The terminal surface never accepts direct keyboard input: wterm's
-    // hidden textarea is gated (readonly + focus reverted), so touching or
-    // typing at the terminal can never pop the on-screen keyboard.  All
-    // input goes through the input sheet opened from the floating pencil
-    // button, which keeps IME composition in a real, visible input field
-    // (no corruption) and only opens the keyboard when the user asks.
-
-    function isInputSheetOpen() {
-      const sheet = el("mobileTerminalInputSheet");
-      return !!(sheet && !sheet.hidden);
-    }
-
-    function openInputSheet() {
-      const shell = el("terminalShell");
-      if (!shell) return;
-      // Anchor to the terminal screen: the shell scrolls and has paint
-      // containment, so it cannot host the overlay.
-      const host = shell.closest(".mobile-terminal-screen") || shell;
-      let sheet = el("mobileTerminalInputSheet");
-      if (!sheet) {
-        sheet = document.createElement("div");
-        sheet.className = "mobile-terminal-input-sheet";
-        sheet.id = "mobileTerminalInputSheet";
-        sheet.setAttribute("role", "dialog");
-        sheet.setAttribute("aria-modal", "false");
-        sheet.setAttribute("aria-label", "Terminal input");
-        sheet.innerHTML =
-          '<div class="mobile-sheet-handle" aria-hidden="true"></div>' +
-          '<div class="mobile-terminal-input-row">' +
-          '<input id="mobileTerminalInput" class="mobile-sheet-input" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="send" placeholder="Type a command and press Enter" />' +
-          '<button type="button" class="mobile-terminal-input-send" id="mobileTerminalInputSend" aria-label="Send to terminal">↵</button>' +
-          '<button type="button" class="mobile-terminal-input-close" id="mobileTerminalInputClose" aria-label="Close input">✕</button>' +
-          '</div>';
-        host.appendChild(sheet);
-        const input = sheet.querySelector("#mobileTerminalInput");
-        const sendButton = sheet.querySelector("#mobileTerminalInputSend");
-        const closeButton = sheet.querySelector("#mobileTerminalInputClose");
-        if (input) {
-          input.addEventListener("keydown", (event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              submitInputSheet();
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              closeInputSheet();
-            } else if (event.key === "Backspace" && input.value === "") {
-              // Backspace with an empty field sends DEL to the terminal, so
-              // the prompt line can be edited without a control-key row.
-              event.preventDefault();
-              sendInputData("\x7f");
-            }
-          });
-          input.addEventListener("paste", (event) => {
-            const text = event.clipboardData && event.clipboardData.getData("text/plain");
-            if (text) {
-              event.preventDefault();
-              sendPasteToTerminal(text);
-            }
-          });
-        }
-        if (sendButton) sendButton.addEventListener("click", submitInputSheet);
-        if (closeButton) closeButton.addEventListener("click", closeInputSheet);
-      }
-      sheet.hidden = false;
-      const input = el("mobileTerminalInput");
-      if (input) {
-        // Keep any half-typed draft; the user may have closed the sheet
-        // by accident and reopened it.
-        try { input.focus(); } catch (_) {}
-      }
-    }
-
-    function closeInputSheet() {
-      const sheet = el("mobileTerminalInputSheet");
-      if (sheet) sheet.hidden = true;
-      const input = el("mobileTerminalInput");
-      if (input) { try { input.blur(); } catch (_) {} }
-    }
-
-    function submitInputSheet() {
-      const input = el("mobileTerminalInput");
-      if (!input) return;
-      const value = input.value;
-      if (!value) return;
-      // Send each line with a trailing CR so multi-line pastes behave like
-      // typing them one by one; single-line typing sends one Enter.
-      // User input goes through the default query-reply stripping (no
-      // allowTerminalReplies): typed text must not smuggle terminal
-      // reply sequences into the PTY.
-      const lines = value.replace(/\r\n|\r/g, "\n").split("\n");
-      for (const line of lines) {
-        if (line) sendInputData(line);
-        sendInputData("\r");
-      }
-      input.value = "";
-      if (!termWs || termWs.readyState !== 1) return;
-      setTerminalFollowPaused(false);
-      try { if (term) term.scrollToBottom(); } catch (_) {}
-    }
-
-    return { connect, destroy, disconnect, applyFontFamily, applyLinks, scrollToBottom, openInputSheet, closeInputSheet, isInputSheetOpen };
+    return { connect, destroy, disconnect, applyFontFamily, applyLinks, scrollToBottom };
   }
 
   globalThis.HerdrMobileTerminal = { create: createMobileTerminal };
