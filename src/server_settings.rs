@@ -370,6 +370,7 @@ pub fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Val
         "bind": settings.bind.to_string(),
         "tls_mode": settings.tls_mode.as_str(),
         "scheme": settings.tls_mode.scheme(),
+        "https_bind": settings.tls_mode.https_bind(settings.bind).map(|addr| addr.to_string()),
         "username": settings.user.clone().unwrap_or_default(),
         "has_password": settings.password.is_some(),
         "localhost_no_auth": settings.localhost_no_auth,
@@ -475,6 +476,25 @@ mod tests {
         })
         .unwrap();
         assert!(files.contains("\"files\""));
+        let both = serde_json::to_string(&PersistedServerSettings {
+            tls_mode: Some(crate::TlsMode::Both),
+            ..PersistedServerSettings::default()
+        })
+        .unwrap();
+        assert!(both.contains("\"both\""));
+        let parsed_both: PersistedServerSettings = serde_json::from_str(&both).unwrap();
+        assert_eq!(parsed_both.tls_mode, Some(crate::TlsMode::Both));
+        assert_eq!(crate::TlsMode::Both.scheme(), "http");
+        assert_eq!(
+            crate::TlsMode::Both.https_bind("127.0.0.1:8787".parse().unwrap()),
+            Some("127.0.0.1:8788".parse().unwrap())
+        );
+        assert_eq!(
+            crate::TlsMode::Off.https_bind("127.0.0.1:8787".parse().unwrap()),
+            None
+        );
+        assert!(crate::TlsMode::Both.uses_tls());
+        assert!(!crate::TlsMode::Off.uses_tls());
     }
 
     #[test]

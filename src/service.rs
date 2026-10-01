@@ -550,6 +550,11 @@ fn append_mac_tls_args(config: &WebConfig, args: &mut Vec<String>) {
             args.push("    <string>files</string>".to_string());
             append_mac_tls_file_args(config, args);
         }
+        TlsMode::Both => {
+            args.push("    <string>--https</string>".to_string());
+            args.push("    <string>both</string>".to_string());
+            append_mac_tls_file_args(config, args);
+        }
     }
 }
 
@@ -584,6 +589,10 @@ fn append_systemd_tls_args(config: &WebConfig, exec: &mut String) {
         TlsMode::SelfSigned => exec.push_str(" --https self-signed"),
         TlsMode::Files => {
             exec.push_str(" --https files");
+            append_systemd_tls_file_args(config, exec);
+        }
+        TlsMode::Both => {
+            exec.push_str(" --https both");
             append_systemd_tls_file_args(config, exec);
         }
     }

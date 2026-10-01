@@ -285,6 +285,10 @@ pub enum TlsMode {
     Auto,
     SelfSigned,
     Files,
+    /// HTTP on the configured bind port plus HTTPS on the next port
+    /// (bind port + 1). One TCP port cannot speak both protocols, so
+    /// the dual mode needs a second listener.
+    Both,
 }
 
 /// The address and TLS mode the listener must (re)build with. The rebind
@@ -481,9 +485,10 @@ fn parse_tls_mode(value: &str) -> io::Result<TlsMode> {
         "auto" => Ok(TlsMode::Auto),
         "self-signed" | "selfsigned" | "self" => Ok(TlsMode::SelfSigned),
         "files" | "cert" => Ok(TlsMode::Files),
+        "both" | "http-https" | "http+https" => Ok(TlsMode::Both),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("invalid --https mode: {other}; use off, auto, self-signed, or files"),
+            format!("invalid --https mode: {other}; use off, auto, self-signed, files, or both"),
         )),
     }
 }
@@ -495,14 +500,39 @@ impl TlsMode {
             TlsMode::Auto => "auto",
             TlsMode::SelfSigned => "self-signed",
             TlsMode::Files => "files",
+            TlsMode::Both => "both",
         }
     }
 
+    /// Primary scheme for the configured bind port. `both` serves HTTP on
+    /// the configured port and HTTPS on port+1, so the primary is http.
     pub fn scheme(self) -> &'static str {
         match self {
-            TlsMode::Off => "http",
+            TlsMode::Off | TlsMode::Both => "http",
             TlsMode::Auto | TlsMode::SelfSigned | TlsMode::Files => "https",
         }
+    }
+
+    /// Secondary HTTPS bind when the mode needs a second port (`both`);
+    /// None for single-protocol modes. Saturates so a bind on the last
+    /// possible port cannot overflow.
+    pub fn https_bind(self, bind: SocketAddr) -> Option<SocketAddr> {
+        match self {
+            TlsMode::Both => Some(SocketAddr::new(bind.ip(), bind.port().saturating_add(1))),
+            _ => None,
+        }
+    }
+
+    pub fn uses_tls(self) -> bool {
+        !matches!(self, TlsMode::Off)
+    }
+
+    /// Whether the login cookie may carry the `Secure` flag. Only for
+    /// HTTPS-only modes: in `both` mode the same host also serves plain
+    /// HTTP, and a Secure cookie would make login impossible over the
+    /// HTTP port.
+    pub fn cookie_secure(self) -> bool {
+        matches!(self, TlsMode::Auto | TlsMode::SelfSigned | TlsMode::Files)
     }
 }
 
@@ -534,11 +564,11 @@ fn print_help() {
 }
 
 fn help_text() -> &'static str {
-    "herdr-webui [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME] [--api-socket PATH] [--client-socket PATH] [--backend-mode <external-herdr|builtin|auto>]\n\
+    "herdr-webui [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files|both] [--tls-cert PATH --tls-key PATH] [--session NAME] [--api-socket PATH] [--client-socket PATH] [--backend-mode <external-herdr|builtin|auto>]\n\
 herdr-webui --version\n\
-herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]\n\
+herdr-webui install-mac [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files|both] [--tls-cert PATH --tls-key PATH] [--session NAME]\n\
 herdr-webui update-mac [--verbose]\n\
-herdr-webui install-linux [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files] [--tls-cert PATH --tls-key PATH] [--session NAME]\n\
+herdr-webui install-linux [--verbose] [--bind HOST:PORT] [--https off|auto|self-signed|files|both] [--tls-cert PATH --tls-key PATH] [--session NAME]\n\
 herdr-webui update-linux [--verbose]\n\
 herdr-webui start-mac | start [--verbose]\n\
 herdr-webui stop-mac | stop [--verbose]\n\
@@ -1040,42 +1070,75 @@ async fn serve_rebindable(
             mode: endpoint.tls_mode,
             ..tls.clone()
         };
-        let listener = match tokio::net::TcpListener::bind(bind).await {
-            Ok(listener) => listener,
-            Err(err) => {
-                eprintln!("failed to bind {}://{bind}: {err}", tls.scheme());
+        // In `both` mode the configured port serves HTTP and port+1 serves
+        // HTTPS (one TCP port cannot speak both protocols).
+        let primary_tls = if tls.mode == TlsMode::Both {
+            TlsConfig {
+                mode: TlsMode::Off,
+                ..tls.clone()
+            }
+        } else {
+            tls.clone()
+        };
+        let secondary_bind = tls.mode.https_bind(bind);
+        let secondary_tls = if secondary_bind.is_some() {
+            Some(TlsConfig {
+                mode: TlsMode::Auto,
+                ..tls.clone()
+            })
+        } else {
+            None
+        };
+        let primary_tls_config = primary_tls.rustls_config().await?;
+        // Must derive from secondary_tls (mode Auto), NOT from tls (mode Both):
+        // rustls_config() for Both returns None and the HTTPS port would end up
+        // serving plain HTTP (TLS clients would hang on the handshake).
+        let secondary_tls_config = if let Some(secondary) = secondary_tls.as_ref() {
+            secondary.rustls_config().await?
+        } else {
+            None
+        };
+        let mut shutdown_rx = rebind_rx.clone();
+        // Each listener runs as its own spawned task: awaiting them
+        // sequentially would starve the second listener (the first future
+        // never completes, so the TLS accept loop would never be polled and
+        // handshakes would hang). A completion channel reports the first
+        // listener that stops so the loop can rebuild both.
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<io::Error>(4);
+        let mut bind_descriptions: Vec<String> = Vec::new();
+        if let Err(err) = bind_listener(
+            bind,
+            primary_tls_config,
+            &state,
+            &mut shutdown_rx,
+            done_tx.clone(),
+        )
+        .await
+        {
+            eprintln!("failed to bind {}://{bind}: {err}", tls.scheme());
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            continue;
+        }
+        bind_descriptions.push(format!("{}://{bind}", tls.scheme()));
+        if let Some(secondary) = secondary_bind {
+            if let Err(err) = bind_listener(
+                secondary,
+                secondary_tls_config,
+                &state,
+                &mut shutdown_rx,
+                done_tx.clone(),
+            )
+            .await
+            {
+                eprintln!("failed to bind https://{secondary}: {err}");
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 continue;
             }
-        };
-        eprintln!("herdr-webui listening on {}://{bind}", tls.scheme());
-        let mut shutdown_rx = rebind_rx.clone();
-        let router = app_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
-        let tls_config = tls.rustls_config().await?;
-        let server = async move {
-            match tls_config {
-                Some(tls_config) => {
-                    let handle = axum_server::Handle::new();
-                    let shutdown_handle = handle.clone();
-                    tokio::spawn(async move {
-                        let _ = shutdown_rx.changed().await;
-                        shutdown_handle.graceful_shutdown(None);
-                    });
-                    axum_server::from_tcp_rustls(listener.into_std()?, tls_config)
-                        .map_err(|err| io::Error::other(err.to_string()))?
-                        .handle(handle)
-                        .serve(router)
-                        .await
-                }
-                None => axum::serve(listener, router)
-                    .with_graceful_shutdown(async move {
-                        let _ = shutdown_rx.changed().await;
-                    })
-                    .await
-                    .map_err(io::Error::other),
-            }
-        };
-        tokio::pin!(server);
+            bind_descriptions.push(format!("https://{secondary}"));
+        }
+        eprintln!("herdr-webui listening on {}", bind_descriptions.join(" + "));
+        drop(done_tx);
+        tokio::pin!(shutdown_rx);
         // Best-effort language server sweep; bounded so a hung server cannot
         // delay exit (children are also killed on drop as a backstop).
         let sweep = async {
@@ -1094,19 +1157,70 @@ async fn serve_rebindable(
                 sweep.await;
                 return Ok(());
             }
-            res = &mut server => {
-                res.map_err(io::Error::other)?;
+            _ = shutdown_rx.changed() => {}
+            res = done_rx.recv() => {
+                // A listener stopped (fatal accept loop error). Log it; the
+                // loop continues so the remaining listener keeps serving
+                // until a rebind or signal.
+                if let Some(err) = res {
+                    eprintln!("listener stopped: {err}");
+                }
+                continue;
             }
         }
+        // Rebind requested (or a listener died): the next loop iteration
+        // rebuilds both listeners with the fresh endpoint.
     }
+}
+
+/// Binds one listener (HTTP or HTTPS) and spawns its serving task. The task
+/// reports a fatal error on `done_tx` so `serve_rebindable` can rebuild the
+/// listeners; graceful shutdown comes from the shared rebind watch channel.
+async fn bind_listener(
+    bind: SocketAddr,
+    tls_config: Option<RustlsConfig>,
+    state: &WebState,
+    shutdown_rx: &mut tokio::sync::watch::Receiver<ListenEndpoint>,
+    done_tx: tokio::sync::mpsc::Sender<io::Error>,
+) -> io::Result<()> {
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    let mut shutdown_rx = shutdown_rx.clone();
+    let router = app_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
+    match tls_config {
+        Some(tls_config) => {
+            let handle = axum_server::Handle::new();
+            let shutdown_handle = handle.clone();
+            tokio::spawn(async move {
+                let _ = shutdown_rx.changed().await;
+                shutdown_handle.graceful_shutdown(None);
+            });
+            let server = axum_server::from_tcp_rustls(listener.into_std()?, tls_config)
+                .map_err(|err| io::Error::other(err.to_string()))?
+                .handle(handle)
+                .serve(router);
+            tokio::spawn(async move {
+                if let Err(err) = server.await {
+                    let _ = done_tx.send(io::Error::other(err.to_string())).await;
+                }
+            });
+        }
+        None => {
+            let server = axum::serve(listener, router).with_graceful_shutdown(async move {
+                let _ = shutdown_rx.changed().await;
+            });
+            tokio::spawn(async move {
+                if let Err(err) = server.await {
+                    let _ = done_tx.send(io::Error::other(err)).await;
+                }
+            });
+        }
+    }
+    Ok(())
 }
 
 impl TlsConfig {
     fn scheme(&self) -> &'static str {
-        match self.mode {
-            TlsMode::Off => "http",
-            TlsMode::Auto | TlsMode::SelfSigned | TlsMode::Files => "https",
-        }
+        self.mode.scheme()
     }
 
     async fn rustls_config(&self) -> io::Result<Option<RustlsConfig>> {
@@ -1126,6 +1240,7 @@ impl TlsConfig {
                 let (cert, key) = ensure_self_signed_cert()?;
                 Ok(Some(RustlsConfig::from_pem_file(cert, key).await?))
             }
+            TlsMode::Both => Ok(None),
         }
     }
 
@@ -2304,6 +2419,12 @@ async fn sessions(
         "herdr_available": herdr_install.available(),
         "herdr_compatible": herdr_install.compatible,
         "herdr_version": herdr_install.version,
+        // How many of the listed sessions actually answer a socket probe;
+        // the footer indicator shows this count next to the session name.
+        "running_count": sessions
+            .iter()
+            .filter(|session| session.get("running").and_then(serde_json::Value::as_bool) == Some(true))
+            .count(),
         "sessions": sessions,
     }))
     .into_response()
@@ -2426,7 +2547,11 @@ fn ensure_builtin_session(state: &WebState, session: Option<&str>) -> Result<(),
     if state
         .builtin_sessions
         .lock()
-        .map(|sessions| sessions.contains_key(&session_name))
+        .map(|sessions| {
+            sessions
+                .get(&session_name)
+                .is_some_and(|handle| handle.is_running())
+        })
         .unwrap_or(false)
     {
         return Ok(());
@@ -2439,14 +2564,21 @@ fn ensure_builtin_session(state: &WebState, session: Option<&str>) -> Result<(),
         .builtin_start_lock
         .lock()
         .map_err(|_| "built-in session start lock unavailable".to_string())?;
-    if state
+    // A dead registered handle (crashed listeners, stale socket files) must
+    // be evicted so a fresh backend starts below; otherwise every proxied
+    // request 502s forever against the corpse.
+    state
         .builtin_sessions
         .lock()
-        .map(|sessions| sessions.contains_key(&session_name))
-        .unwrap_or(false)
-    {
-        return Ok(());
-    }
+        .map(|mut sessions| {
+            if sessions
+                .get(&session_name)
+                .is_some_and(|handle| !handle.is_running())
+            {
+                sessions.remove(&session_name);
+            }
+        })
+        .ok();
     let (api_socket, client_socket) = builtin_socket_paths(Some(&session_name));
     if connect_local_stream(&api_socket).is_ok() {
         return Ok(());
@@ -2776,7 +2908,7 @@ async fn login(
     let secure = state
         .server_settings
         .lock()
-        .map(|settings| settings.tls_mode != TlsMode::Off)
+        .map(|settings| settings.tls_mode.cookie_secure())
         .unwrap_or(false);
     let Ok(auth) = state.auth.lock() else {
         return (

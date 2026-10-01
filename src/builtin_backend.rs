@@ -276,6 +276,16 @@ impl BuiltinBackendHandle {
     pub(crate) fn client_socket(&self) -> &Path {
         &self._inner.client_socket
     }
+
+    /// True while the backend listener threads are still accepting. Turns
+    /// false when the handle is dropped (session closed) or the listeners
+    /// exited, so callers can detect a dead session whose socket files may
+    /// still linger.
+    pub(crate) fn is_running(&self) -> bool {
+        self._inner
+            .running
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 fn spawn_api_listener(listener: LocalListener, backend: Arc<BuiltinBackendInner>) {
