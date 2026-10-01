@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end acceptance run for the mobile terminal input model
-# (pencil button -> input sheet; terminal surface never takes keyboard
-# focus, so the on-screen keyboard cannot pop open by itself).
+# (terminal surface tap -> WTerm textarea input; the textarea starts gated
+# until the user taps the terminal, so the on-screen keyboard stays closed
+# until intentional direct input).
 #
 # Usage:
 #   scripts/e2e/run-mobile-terminal-input-e2e.sh [--keep]
