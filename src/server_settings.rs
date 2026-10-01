@@ -489,7 +489,10 @@ mod tests {
             crate::TlsMode::Both.https_bind("127.0.0.1:8787".parse().unwrap()),
             Some("127.0.0.1:8788".parse().unwrap())
         );
-        assert_eq!(crate::TlsMode::Off.https_bind("127.0.0.1:8787".parse().unwrap()), None);
+        assert_eq!(
+            crate::TlsMode::Off.https_bind("127.0.0.1:8787".parse().unwrap()),
+            None
+        );
         assert!(crate::TlsMode::Both.uses_tls());
         assert!(!crate::TlsMode::Off.uses_tls());
     }

@@ -282,7 +282,9 @@ impl BuiltinBackendHandle {
     /// exited, so callers can detect a dead session whose socket files may
     /// still linger.
     pub(crate) fn is_running(&self) -> bool {
-        self._inner.running.load(std::sync::atomic::Ordering::Acquire)
+        self._inner
+            .running
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 }
 

@@ -488,9 +488,7 @@ fn parse_tls_mode(value: &str) -> io::Result<TlsMode> {
         "both" | "http-https" | "http+https" => Ok(TlsMode::Both),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!(
-                "invalid --https mode: {other}; use off, auto, self-signed, files, or both"
-            ),
+            format!("invalid --https mode: {other}; use off, auto, self-signed, files, or both"),
         )),
     }
 }
@@ -1075,13 +1073,19 @@ async fn serve_rebindable(
         // In `both` mode the configured port serves HTTP and port+1 serves
         // HTTPS (one TCP port cannot speak both protocols).
         let primary_tls = if tls.mode == TlsMode::Both {
-            TlsConfig { mode: TlsMode::Off, ..tls.clone() }
+            TlsConfig {
+                mode: TlsMode::Off,
+                ..tls.clone()
+            }
         } else {
             tls.clone()
         };
         let secondary_bind = tls.mode.https_bind(bind);
         let secondary_tls = if secondary_bind.is_some() {
-            Some(TlsConfig { mode: TlsMode::Auto, ..tls.clone() })
+            Some(TlsConfig {
+                mode: TlsMode::Auto,
+                ..tls.clone()
+            })
         } else {
             None
         };
@@ -1102,8 +1106,14 @@ async fn serve_rebindable(
         // listener that stops so the loop can rebuild both.
         let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<io::Error>(4);
         let mut bind_descriptions: Vec<String> = Vec::new();
-        if let Err(err) =
-            bind_listener(bind, primary_tls_config, &state, &mut shutdown_rx, done_tx.clone()).await
+        if let Err(err) = bind_listener(
+            bind,
+            primary_tls_config,
+            &state,
+            &mut shutdown_rx,
+            done_tx.clone(),
+        )
+        .await
         {
             eprintln!("failed to bind {}://{bind}: {err}", tls.scheme());
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
