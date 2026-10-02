@@ -12,7 +12,7 @@ function makeStyle() {
   };
 }
 
-function makeElement() {
+function makeElement(textarea = null) {
   const listeners = new Map();
   const element = {
     listeners,
@@ -35,7 +35,7 @@ function makeElement() {
       if (listeners.get(type) === fn) listeners.delete(type);
     },
     contains() { return false; },
-    querySelector() { return null; },
+    querySelector(selector) { return selector === "textarea" ? textarea : null; },
     getBoundingClientRect() { return { left: 0, top: 0, width: 640, height: 480 }; },
   };
   return element;
@@ -55,9 +55,17 @@ function wheelEvent(deltaY, extra = {}) {
   };
 }
 
-async function createAdapter({ normalBuffer = true, wheelReports = false, rows = 24, cols = 80, core } = {}) {
+async function createAdapter({ normalBuffer = true, wheelReports = false, rows = 24, cols = 80, core, inputGate = null } = {}) {
   const source = readFileSync(new URL("./shared/terminal_adapter.js", import.meta.url), "utf8");
-  const container = makeElement();
+  const textarea = inputGate
+    ? {
+        readOnly: false,
+        blurCount: 0,
+        focus() { this.focusCount = (this.focusCount || 0) + 1; },
+        blur() { this.blurCount += 1; },
+      }
+    : null;
+  const container = makeElement(textarea);
   const reports = [];
   const ctx = {
     console,
@@ -69,6 +77,13 @@ async function createAdapter({ normalBuffer = true, wheelReports = false, rows =
       return { getPropertyValue(name) { return name === "--term-row-height" ? "20" : ""; }, lineHeight: "20px" };
     },
     getSelection() { return null; },
+    document: {
+      listeners: new Map(),
+      addEventListener(type, listener) { this.listeners.set(type, listener); },
+      removeEventListener(type, listener) {
+        if (this.listeners.get(type) === listener) this.listeners.delete(type);
+      },
+    },
     open() {},
     HerdrWtermBundle: {
       WTerm: class FakeWTerm {
@@ -78,7 +93,7 @@ async function createAdapter({ normalBuffer = true, wheelReports = false, rows =
           this.bridge = { usingAltScreen: () => !normalBuffer };
         }
         async init() { return this; }
-        focus() {}
+        focus() { this.focusCount = (this.focusCount || 0) + 1; }
         resize() {}
         write(data) { this.writes.push(data); }
         destroy() { this.destroyed = true; }
@@ -97,8 +112,9 @@ async function createAdapter({ normalBuffer = true, wheelReports = false, rows =
     core,
     links: false,
     ...(wheelReports ? { onWheelMouseReport: (report) => reports.push(report) } : {}),
+    ...(inputGate ? { inputGate } : {}),
   });
-  return { adapter, container, ctx, reports };
+  return { adapter, container, ctx, reports, textarea };
 }
 
 function lastWrite(adapter) {
@@ -151,6 +167,49 @@ describe("terminal adapter wheel scrolling", () => {
     adapter.destroy();
 
     equal(container.listeners.get("wheel"), undefined);
+  });
+});
+
+describe("terminal adapter mobile input gate", () => {
+  it("keeps the textarea and adapter focus gated until input is enabled", async () => {
+    let enabled = false;
+    const gate = () => !enabled;
+    gate.enable = () => { enabled = true; };
+    const { adapter, container, textarea } = await createAdapter({ inputGate: gate });
+
+    equal(textarea.readOnly, true);
+    adapter.focus();
+    equal(adapter.wterm.focusCount, undefined);
+
+    const focusin = container.listeners.get("focusin");
+    ok(focusin);
+    focusin({ target: textarea });
+    equal(textarea.blurCount, 1);
+
+    adapter.enableInput();
+    equal(textarea.readOnly, false);
+    equal(adapter.wterm.focusCount, 1);
+    focusin({ target: textarea });
+    equal(textarea.blurCount, 1);
+  });
+
+  it("cleans up click-focus listeners and interrupted gestures", async () => {
+    const { ctx } = await createAdapter();
+    const target = makeElement();
+    let focused = 0;
+    const cleanup = ctx.HerdrTerminalRenderer.attachClickFocus(target, () => { focused += 1; });
+    const pointerdown = target.listeners.get("pointerdown");
+    ok(pointerdown);
+
+    pointerdown({ button: 0, shiftKey: false, clientX: 10, clientY: 10 });
+    ok(ctx.document.listeners.has("mousemove"));
+    ok(ctx.document.listeners.has("mouseup"));
+
+    cleanup();
+    ok(!target.listeners.has("pointerdown"));
+    ok(!ctx.document.listeners.has("mousemove"));
+    ok(!ctx.document.listeners.has("mouseup"));
+    equal(focused, 0);
   });
 });
 

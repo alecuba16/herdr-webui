@@ -200,6 +200,8 @@
       var promoteErrorDefaultText = "";
       var promoteErrorTimer = null;
       var inputGate = inputGateFactory ? inputGateFactory() : (opts.inputGate || null);
+      var clickFocusCleanup = null;
+      var activeDragCleanup = null;
 
       // Each session creates its own modal and container DOM.
       var modal = null;
@@ -364,17 +366,21 @@
 
       function installInputTrap() {
         if (keyTrapBound) return;
-        if (inputGate && inputGate("focus")) return;
+        if (inputGate && inputGate()) return;
         keyTrapBound = true;
         globalThis.document.addEventListener("keydown", tempTerminalKeydown, true);
         if (modal) {
           if (window.HerdrTerminalRenderer && window.HerdrTerminalRenderer.attachClickFocus) {
-            window.HerdrTerminalRenderer.attachClickFocus(
+            clickFocusCleanup = window.HerdrTerminalRenderer.attachClickFocus(
               modal, focusTerminalSoon,
               function (event) { return isCloseControl(event && event.target); }
             );
           } else {
             modal.addEventListener("pointerdown", focusTerminalFromEvent, true);
+            clickFocusCleanup = function () {
+              modal.removeEventListener("pointerdown", focusTerminalFromEvent, true);
+              cancelActiveDrag();
+            };
           }
           modal.addEventListener("focusin", focusTerminalFromEvent, true);
         }
@@ -385,7 +391,10 @@
         keyTrapBound = false;
         globalThis.document.removeEventListener("keydown", tempTerminalKeydown, true);
         if (modal) {
-          if (!window.HerdrTerminalRenderer || !window.HerdrTerminalRenderer.attachClickFocus) {
+          if (clickFocusCleanup) {
+            clickFocusCleanup();
+            clickFocusCleanup = null;
+          } else {
             modal.removeEventListener("pointerdown", focusTerminalFromEvent, true);
           }
           modal.removeEventListener("focusin", focusTerminalFromEvent, true);
@@ -460,22 +469,32 @@
       function focusTerminalFromEvent(event) {
         if (isCloseControl(event && event.target)) return;
         if (event.type === "pointerdown" && event.button === 0 && !event.shiftKey) {
+          cancelActiveDrag();
           var startX = event.clientX, startY = event.clientY;
           var dragged = false;
           var onMove = function (ev) {
             if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3)
               dragged = true;
           };
-          var onUp = function () {
+          var cleanup = function () {
             globalThis.document.removeEventListener("mousemove", onMove);
             globalThis.document.removeEventListener("mouseup", onUp);
+            if (activeDragCleanup === cleanup) activeDragCleanup = null;
+          };
+          var onUp = function () {
+            cleanup();
             if (!dragged) focusTerminalSoon();
           };
+          activeDragCleanup = cleanup;
           globalThis.document.addEventListener("mousemove", onMove);
           globalThis.document.addEventListener("mouseup", onUp);
           return;
         }
         focusTerminalSoon();
+      }
+
+      function cancelActiveDrag() {
+        if (activeDragCleanup) activeDragCleanup();
       }
 
       function focusTerminalSoon() {

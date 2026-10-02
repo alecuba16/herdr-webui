@@ -343,8 +343,7 @@ body.light {
   min-height: 0;
   min-width: 0;
   padding: 0;
-  /* Positioning context for the input sheet (the shell scrolls and
-     paints-contained, so it cannot host absolutely positioned overlays). */
+  /* Positioning context for the follow button overlay. */
   position: relative;
 }
 .mobile-tabs {

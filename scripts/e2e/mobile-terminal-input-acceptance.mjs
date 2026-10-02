@@ -13,6 +13,22 @@ function check(name, ok, detail = '') {
   results.push({ name, ok, detail });
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ' :: ' + detail : ''}`);
 }
+async function pressEnter() {
+  await cdp.send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'Enter',
+    code: 'Enter',
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await cdp.send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Enter',
+    code: 'Enter',
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+}
 
 const cdp = await connectToPage();
 
@@ -64,8 +80,8 @@ const opened = await evalx(`(async () => {
 check('terminal screen opened', opened === true, String(opened));
 await new Promise((r) => setTimeout(r, 1500));
 
-const inputButtonPresent = await evalx('!!document.getElementById("mobileTerminalInputButton")');
-check('floating pencil button removed', !inputButtonPresent);
+const pencilButtonPresent = await evalx('!!document.getElementById("mobileTerminalInputButton")');
+check('floating pencil button removed', !pencilButtonPresent);
 
 // wterm's textarea is the direct mobile input target.
 const textareaState = await evalx(`(() => {
@@ -97,12 +113,7 @@ check('tap enables writable terminal input', !!(textareaAfterTap && textareaAfte
 
 // Type a command and press Enter via the terminal textarea; verify it reached the PTY.
 await cdp.send('Input.insertText', { text: 'echo HERDR_MOBILE_INPUT_OK' });
-await evalx(`(() => {
-  const input = document.querySelector('#terminal textarea');
-  if (!input) return false;
-  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  return true;
-})()`);
+await pressEnter();
 // Wait for the shell to echo and execute.
 let echoed = false;
 let tailText = '';
@@ -144,12 +155,7 @@ const tempAfterTap = await evalx(`(() => {
 })()`);
 check('temp terminal tap enables writable input', !!(tempAfterTap && tempAfterTap.readOnly === false && tempAfterTap.active), JSON.stringify(tempAfterTap));
 await cdp.send('Input.insertText', { text: 'echo TEMP_DIRECT_INPUT_OK' });
-await evalx(`(() => {
-  const i = document.querySelector('.temp-terminal-backdrop .terminal textarea');
-  if (!i) return false;
-  i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  return true;
-})()`);
+await pressEnter();
 let tempEchoed = false;
 let tempTail = '';
 for (let i = 0; i < 25; i++) {
@@ -170,9 +176,9 @@ let followDetail = '';
 for (let i = 0; i < 20; i++) {
   followDetail = await evalx(`(() => {
     const b = document.querySelector('.temp-terminal-backdrop .terminal-follow-button');
-    const p = document.querySelector('.temp-terminal-backdrop .temp-terminal-input-button');
+    const pencil = document.querySelector('.temp-terminal-backdrop .temp-terminal-input-button');
     if (!b) return 'missing';
-    return JSON.stringify({ hidden: b.hidden, pencilPresent: !!p });
+    return JSON.stringify({ hidden: b.hidden, pencilPresent: !!pencil });
   })()`);
   try {
     const detail = JSON.parse(followDetail);

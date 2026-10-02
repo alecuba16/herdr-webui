@@ -135,13 +135,7 @@
     // the user taps the terminal, then let wterm handle all text and control
     // keys directly.
     let enabled = false;
-    const gate = (reason) => {
-      if (reason === "enable") {
-        enabled = true;
-        return false;
-      }
-      return !enabled;
-    };
+    const gate = () => !enabled;
     gate.enable = () => { enabled = true; };
     return gate;
   }

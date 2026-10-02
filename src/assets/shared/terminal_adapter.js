@@ -388,13 +388,13 @@
       const container = this.element;
       if (!this._inputGateInstalled) {
         this._inputGateInstalled = true;
-        const onBlur = (event) => {
-          if (!this._inputGate || !this._inputGate("focus")) return;
+        const onFocusIn = (event) => {
+          if (!this._inputGate || !this._inputGate()) return;
           const target = event.target;
           if (target && typeof target.blur === "function") target.blur();
         };
-        this._inputGateBlurHandler = onBlur;
-        container.addEventListener("focusin", onBlur, true);
+        this._inputGateFocusHandler = onFocusIn;
+        container.addEventListener("focusin", onFocusIn, true);
       }
       this._inputGate = gate;
       this.syncInputGate();
@@ -402,7 +402,7 @@
 
     syncInputGate() {
       if (!this._inputGate) return;
-      const denies = !!this._inputGate("focus");
+      const denies = !!this._inputGate();
       const textarea = this.element ? this.element.querySelector("textarea") : null;
       if (!textarea) return;
       textarea.readOnly = denies;
@@ -410,7 +410,7 @@
         const adapter = this;
         textarea.__herdrGatedFocus = textarea.focus;
         textarea.focus = function (...args) {
-          if (adapter._inputGate && adapter._inputGate("focus")) return;
+          if (adapter._inputGate && adapter._inputGate()) return;
           return textarea.__herdrGatedFocus.apply(this, args);
         };
       } else if (!denies && textarea.__herdrGatedFocus) {
@@ -431,8 +431,8 @@
     removeInputGate() {
       if (!this._inputGate) return;
       const container = this.element;
-      if (container && this._inputGateBlurHandler)
-        container.removeEventListener("focusin", this._inputGateBlurHandler, true);
+      if (container && this._inputGateFocusHandler)
+        container.removeEventListener("focusin", this._inputGateFocusHandler, true);
       this._inputGateInstalled = false;
       const textarea = container ? container.querySelector("textarea") : null;
       if (textarea) {
@@ -443,7 +443,7 @@
         }
       }
       this._inputGate = null;
-      this._inputGateBlurHandler = null;
+      this._inputGateFocusHandler = null;
     }
 
     write(data, callback) {
@@ -468,7 +468,7 @@
 
     focus() {
       if (this._destroyed || !this.wterm) return;
-      if (this._inputGate && this._inputGate("focus")) return;
+      if (this._inputGate && this._inputGate()) return;
       this.wterm.focus();
     }
 
@@ -694,25 +694,38 @@
    * @param {HTMLElement} element - Element to listen on.
    * @param {function} focus - Called when the gesture is a click, not a drag.
    * @param {function} [shouldIgnore] - Return true to skip focus for this event.
+   * @returns {function} Cleanup function for the listener and active gesture.
    */
   function attachClickFocus(element, focus, shouldIgnore) {
-    element.addEventListener("pointerdown", function (event) {
+    let activeCleanup = null;
+    const onPointerDown = function (event) {
       if (shouldIgnore && shouldIgnore(event)) return;
       if (event.button !== 0 || event.shiftKey) return;
+      if (activeCleanup) activeCleanup();
       var startX = event.clientX, startY = event.clientY;
       var dragged = false;
       var onMove = function (ev) {
         if (Math.abs(ev.clientX - startX) > 3 || Math.abs(ev.clientY - startY) > 3)
           dragged = true;
       };
-      var onUp = function () {
+      var cleanup = function () {
         root.document.removeEventListener("mousemove", onMove);
         root.document.removeEventListener("mouseup", onUp);
+        if (activeCleanup === cleanup) activeCleanup = null;
+      };
+      var onUp = function () {
+        cleanup();
         if (!dragged) focus();
       };
+      activeCleanup = cleanup;
       root.document.addEventListener("mousemove", onMove);
       root.document.addEventListener("mouseup", onUp);
-    });
+    };
+    element.addEventListener("pointerdown", onPointerDown);
+    return function () {
+      element.removeEventListener("pointerdown", onPointerDown);
+      if (activeCleanup) activeCleanup();
+    };
   }
 
   root.HerdrTerminalRenderer = {

@@ -271,8 +271,7 @@
       setTerminalFollowPaused(false);
       try { if (term) term.scrollToBottom(); } catch (_) {}
       if (focus && term) {
-        if (term.enableInput) term.enableInput();
-        else term.focus();
+        if (term.focus) term.focus();
       }
     }
 

@@ -540,6 +540,15 @@ describe("mobile bundle load", () => {
     ok(ctx.HerdrMobile);
   });
 
+  it("keeps mobile terminal input gated until the terminal is tapped", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const gate = ctx.HerdrMobileCore.createTerminalInputGate();
+    equal(gate(), true);
+    gate.enable();
+    equal(gate(), false);
+  });
+
   it("renders mobile task hub and action search", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
@@ -1111,6 +1120,7 @@ describe("mobile bundle load", () => {
     ok(source.includes("term.usesNormalBuffer"));
     ok(source.includes("term.scrollLines"));
     equal(typeof ctx.HerdrMobile.scrollTerminalToBottom, "function");
+    ok(source.includes('onclick="HerdrMobile.scrollTerminalToBottom(false)"'));
     ctx.lastTerminal._atBottom = false;
     ctx.terminalAtBottomOverride = false;
     const terminalEl = ctx.document.getElementById("terminal");
