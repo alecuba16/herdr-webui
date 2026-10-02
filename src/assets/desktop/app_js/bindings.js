@@ -13,7 +13,7 @@ document.addEventListener("click", (e) => {
   const option = e.target && e.target.closest && e.target.closest(".no-sleep-menu [data-mode]");
   if (option) {
     closeNoSleepMenus();
-    setNoSleepMode(option.dataset.mode || "off");
+    setNoSleepMode(option.dataset.mode || "off", option.closest(".no-sleep-wrap") || option);
     return;
   }
   const control = e.target && e.target.closest && e.target.closest(".no-sleep-control");
@@ -685,6 +685,23 @@ loadNoSleep();
 // rule): refresh() only restores what the URL itself describes.
 parseRoute();
 state.sessionBackend = readSessionBackend(state.session || "default");
+// Paint skeleton placeholders (same shape as the real rows) into the
+// sections that wait on connectivity at boot: the versions line (/api/versions),
+// the workspace list and agents list (first refresh), and the terminal
+// surface (websocket attach). The caches are seeded with the skeleton HTML
+// so the first real render() overwrites them ("" !== skeleton).
+(function paintBootSkeletons() {
+  const skeleton = window.HerdrSkeleton;
+  const versionsEl = el("versions");
+  if (versionsEl && skeleton) versionsEl.innerHTML = skeleton.banner();
+  if (skeleton) {
+    workspaces.innerHTML = skeleton.workspaces(3);
+    lastWorkspacesHtml = skeleton.workspaces(3);
+    agents.innerHTML = skeleton.agents(2);
+    lastAgentsHtml = skeleton.agents(2);
+  }
+  setTerminalLoading(true);
+})();
 loadVersions();
 loadServerSettings();
 refresh();

@@ -37,7 +37,13 @@
       const attention = mobileAttention
         .sortAgents(state.agents)
         .filter((agent) => ["blocked", "done"].includes(mobileAttention.statusClass(agent.agent_status)));
-      if (!attention.length) return '<div class="mobile-loading">No blocked or done agents</div>';
+      if (!attention.length) {
+        // During boot the agents fetch is still pending: show the skeleton
+        // (same row shape) instead of "No blocked or done agents".
+        const bootSkeleton = skeleton("agents", 2);
+        if (bootSkeleton) return bootSkeleton;
+        return '<div class="mobile-loading">No blocked or done agents</div>';
+      }
       const previousAgents = state.agents;
       state.agents = attention;
       try {
@@ -63,7 +69,17 @@
     }
 
     // Workspace rows (mobile parity with the desktop workspace list).
+    // Skeleton placeholder (same row shape as the real content) shown while
+    // the first refresh fetch / websocket connect is still pending at boot.
+    function skeleton(kind, count) {
+      const helper = globalThis.HerdrSkeleton;
+      if (!helper || !state.booting) return null;
+      return kind === "agents" ? helper.agents(count) : helper.workspaces(count);
+    }
+
     function renderWorkspaces() {
+      const bootSkeleton = skeleton("workspaces", 3);
+      if (bootSkeleton) return bootSkeleton;
       if (!state.workspaces.length)
         return '<div class="mobile-loading">No workspaces</div>';
       return state.workspaces
@@ -79,6 +95,8 @@
     }
 
     function renderAgentsRows() {
+      const bootSkeleton = skeleton("agents", 2);
+      if (bootSkeleton) return bootSkeleton;
       if (!state.agents.length)
         return '<div class="mobile-loading">No agents</div>';
       const workingDismissals = getWorkingDismissals();

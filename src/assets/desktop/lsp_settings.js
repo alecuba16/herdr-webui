@@ -137,13 +137,21 @@
       command: existing.command || null,
       args: existing.args || [],
     });
+    // Pending badge on the row while the config POST is in flight; swaps
+    // to saved/failed next to the toggle the user just flipped.
+    const row = input.closest && input.closest(".lsp-server-row");
+    const handle = window.HerdrSettingsFeedback && row
+      ? window.HerdrSettingsFeedback.create({ document, setTimeout, clearTimeout }).flashSavingRow(row)
+      : null;
     try {
       const body = await window.HerdrLsp.updateConfig(settings);
       config.settings = body.settings;
       if (error) error.textContent = "";
+      if (handle) handle.done("Saved");
     } catch (err) {
       if (error) error.textContent = err.message || String(err);
       input.checked = !input.checked;
+      if (handle) handle.fail(err.message || String(err));
     }
   }
 

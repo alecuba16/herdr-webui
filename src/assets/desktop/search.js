@@ -394,7 +394,7 @@ function activeWorkspaceLabel() {
 async function loadRecentWorkspaces() {
   if (!window.HerdrActionRegistry || !window.HerdrActionRegistry.loadRecent) return;
   const recent = await window.HerdrActionRegistry.loadRecent();
-  if (recent !== searchPaletteState.recent) {
+  if (recent !== searchPaletteState.recent || !searchPaletteState.recentLoaded) {
     searchPaletteState.recent = recent;
     searchPaletteState.recentLoaded = true;
     if (el("searchPalette") && el("searchPalette").style.display !== "none") renderSearchPalette();
@@ -495,6 +495,11 @@ function renderSearchPalette() {
 
 function renderRecentSection(recent) {
   const expanded = searchPaletteState.sectionsExpanded.recent !== false;
+  // While the recent-workspaces fetch (/api/recent-workspaces) is still in
+  // flight (palette just opened), show a skeleton with the same row shape
+  // instead of no section at all.
+  if (!recent.length && !searchPaletteState.recentLoaded && window.HerdrSkeleton)
+    return `<section class="search-section"><div class="search-section-head"><strong><span class="herdr-tree-icon herdr-tree-icon-chevron-down" aria-hidden="true"></span>Recent workspaces</strong><span>…</span></div>${window.HerdrSkeleton.workspaces(2)}</section>`;
   if (!recent.length) return "";
   const rows = recent.map((result) => renderRecentRowResult(result)).join("");
   const clear = `<button class="git-ui-btn" onclick="HerdrSearchPalette.clearRecent(event)" title="Clear recent workspaces">Clear</button>`;

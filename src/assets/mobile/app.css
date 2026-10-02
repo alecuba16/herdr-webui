@@ -387,6 +387,38 @@ body.light {
   overflow: auto;
   padding: 8px;
 }
+.mobile-terminal-loading {
+  align-items: center;
+  background: color-mix(in srgb, var(--bg), transparent 4%);
+  color: var(--muted);
+  display: grid;
+  font-weight: 700;
+  inset: 0;
+  justify-items: center;
+  letter-spacing: 0.04em;
+  position: absolute;
+  z-index: 3;
+}
+.mobile-terminal-loading span {
+  align-items: center;
+  display: inline-flex;
+  gap: 10px;
+}
+.mobile-terminal-loading span::before {
+  animation: herdr-mobile-terminal-spin 0.8s linear infinite;
+  border: 2px solid var(--border2);
+  border-radius: 50%;
+  border-top-color: var(--accent);
+  content: "";
+  height: 14px;
+  width: 14px;
+}
+.mobile-terminal-loading[hidden] {
+  display: none;
+}
+@keyframes herdr-mobile-terminal-spin {
+  to { transform: rotate(360deg); }
+}
 .mobile-terminal-follow-button {
   align-items: center;
   background: var(--accent);
@@ -1788,7 +1820,8 @@ body.light .mobile-nav-status.working {
 
 /* Settings applied badge: emitted inline by the mobile settings renderer
    after a value change survives the re-render. */
-.settings-applied {
+.settings-applied,
+.settings-saving {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1798,6 +1831,30 @@ body.light .mobile-nav-status.working {
   justify-self: start;
   padding: 3px 8px;
   border-radius: 999px;
+}
+.settings-saving {
+  color: #f9e2af;
+  border: 1px solid #f9e2af;
+}
+.settings-saving::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: settings-saving-spin 0.7s linear infinite;
+}
+@keyframes settings-saving-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.settings-error-flash {
+  color: var(--error, #f38ba8);
+  border: 1px solid var(--error, #f38ba8);
+}
+.settings-applied {
   color: var(--git-added-color);
   border: 1px solid var(--git-added-color);
 }

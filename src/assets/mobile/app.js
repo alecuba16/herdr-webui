@@ -58,6 +58,7 @@
     pane: null,
     terminalId: null,
     screen: "home",
+    terminalConnecting: false,
     error: "",
     worktreeError: "",
     worktreeDiscoverPath: "",
@@ -81,6 +82,10 @@
     gitBusy: "",
     gitMutating: false,
     defaultFolder: "",
+    // True until the first refresh() succeeds; screens that wait on
+    // connectivity render skeleton placeholders instead of empty rows
+    // (see shared/skeleton.js).
+    booting: true,
   };
 
   let refreshSeq = 0,
@@ -341,6 +346,7 @@
     if (screen === "settings" && mobileSettings.loadNoSleep) mobileSettings.loadNoSleep();
     if (screen === "sessions" && !state.sessionBusy) mobileSessions.refreshSessions();
     if (screen === "worktrees" && mobileWorktrees.loadRecent) mobileWorktrees.loadRecent();
+    if (screen === "terminal") state.terminalConnecting = true;
     render();
     if (screen === "terminal") mobileTerminal.connect();
   }
@@ -555,10 +561,14 @@
             selectionPath(state.ws, state.tab, state.pane),
           );
       }
+      // Clear the boot flag BEFORE the final render so the first successful
+      // render paints real rows, not the boot skeletons.
+      state.booting = false;
       render();
       if (state.screen === "terminal") mobileTerminal.connect();
     } catch (error) {
       browserFaviconError = true;
+      state.booting = false;
       state.error = error.message || String(error);
       render();
     }
@@ -675,7 +685,18 @@
         onRender: null,
       })
     : null;
-  mobileTerminal = globalThis.HerdrMobileTerminal.create({ el, state, wsUrl, onHerdrError: handleHerdrErrorFrame, onTerminalOutput: (...args) => mobileScreens.clearDismissedWorkingForTerminal(...args) });
+  mobileTerminal = globalThis.HerdrMobileTerminal.create({
+    el,
+    state,
+    wsUrl,
+    onHerdrError: handleHerdrErrorFrame,
+    onTerminalOutput: (...args) => mobileScreens.clearDismissedWorkingForTerminal(...args),
+    onConnectionState: (connecting) => {
+      state.terminalConnecting = !!connecting;
+      const loading = el("mobileTerminalLoading");
+      if (loading) loading.hidden = !connecting;
+    },
+  });
   mobileTempTerminal = globalThis.HerdrTempTerminal.create({
     el,
     state,

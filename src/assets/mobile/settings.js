@@ -14,6 +14,13 @@
     // the badge into the row keyed by data-settings-id, and a timer clears it
     // with one extra re-render.
     const pendingAppliedFlash = new Map();
+    // Row id -> "saving" while an async backend save (no-sleep mode) is in
+    // flight; render() bakes an amber pending badge instead of the green one.
+    const pendingSavingFlash = new Set();
+    // Row id -> error message for failed async saves; rendered as a red
+    // badge instead of the green applied one (the Energy group also shows
+    // the full error text through its error note).
+    const pendingErrorFlash = new Map();
     let appliedFlashTimer = null;
     let pendingSearchOrderFlash = null;
     const APPLIED_FLASH_MS = 2500;
@@ -95,19 +102,43 @@
 
     function queueAppliedFlash(settingsId, label) {
       if (!settingsId) return;
+      pendingSavingFlash.delete(String(settingsId));
+      pendingErrorFlash.delete(String(settingsId));
       pendingAppliedFlash.set(String(settingsId), { label: label || "Applied" });
+      if (appliedFlashTimer) clearTimeout(appliedFlashTimer);
+      appliedFlashTimer = setTimeout(clearAppliedFlash, APPLIED_FLASH_MS);
+    }
+
+    function queueSavingFlash(settingsId) {
+      if (!settingsId) return;
+      pendingAppliedFlash.delete(String(settingsId));
+      pendingSavingFlash.add(String(settingsId));
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
+    function queueErrorFlash(settingsId, message) {
+      if (!settingsId) return;
+      pendingSavingFlash.delete(String(settingsId));
+      pendingErrorFlash.set(String(settingsId), String(message || "Save failed"));
       if (appliedFlashTimer) clearTimeout(appliedFlashTimer);
       appliedFlashTimer = setTimeout(clearAppliedFlash, APPLIED_FLASH_MS);
     }
 
     function clearAppliedFlash() {
       pendingAppliedFlash.clear();
+      pendingSavingFlash.clear();
+      pendingErrorFlash.clear();
       appliedFlashTimer = null;
       pendingSearchOrderFlash = null;
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
     function appliedFlashHtml(settingsId) {
+      if (pendingSavingFlash.has(String(settingsId)))
+        return `<span class="settings-saving" aria-live="polite" data-state="settings-applied-saving">Saving...</span>`;
+      const error = pendingErrorFlash.get(String(settingsId));
+      if (error)
+        return `<span class="settings-error-flash" aria-live="polite" data-state="settings-applied-error">${escapeHtml(error)}</span>`;
       if (!pendingAppliedFlash.size) return "";
       const pending = pendingAppliedFlash.get(String(settingsId));
       if (!pending) return "";
@@ -225,7 +256,7 @@
         : noSleepError
           ? `<div class="mobile-error">${escapeHtml(noSleepError)}</div>`
           : "";
-      return `<div class="mobile-settings-group"><h3>Energy</h3><label data-settings-id="noSleepMode"><span>No-sleep mode</span><select onchange="HerdrMobile.setNoSleepMode(this.value)" ${noSleepUnsupported ? "disabled" : ""}><option value="off" ${mode === "off" ? "selected" : ""}>Off</option><option value="auto" ${mode === "auto" ? "selected" : ""}>Auto</option><option value="1h" ${mode === "1h" ? "selected" : ""}>1 hour</option><option value="2h" ${mode === "2h" ? "selected" : ""}>2 hours</option><option value="4h" ${mode === "4h" ? "selected" : ""}>4 hours</option><option value="infinite" ${mode === "infinite" ? "selected" : ""}>Infinite</option></select><small>Prevent computer sleep from the WebUI server. Auto keeps the host awake while agents work.</small></label>${note}</div>`;
+      return `<div class="mobile-settings-group"><h3>Energy</h3><label data-settings-id="noSleepMode">${appliedFlashHtml("noSleepMode")}<span>No-sleep mode</span><select onchange="HerdrMobile.setNoSleepMode(this.value)" ${noSleepUnsupported ? "disabled" : ""}><option value="off" ${mode === "off" ? "selected" : ""}>Off</option><option value="auto" ${mode === "auto" ? "selected" : ""}>Auto</option><option value="1h" ${mode === "1h" ? "selected" : ""}>1 hour</option><option value="2h" ${mode === "2h" ? "selected" : ""}>2 hours</option><option value="4h" ${mode === "4h" ? "selected" : ""}>4 hours</option><option value="infinite" ${mode === "infinite" ? "selected" : ""}>Infinite</option></select><small>Prevent computer sleep from the WebUI server. Auto keeps the host awake while agents work.</small></label>${note}</div>`;
     }
 
     function terminalSection(font, core, links, mouseReporting) {
@@ -480,14 +511,19 @@
       const mode = ["off", "auto", "1h", "2h", "4h", "infinite"].includes(value)
         ? value
         : "off";
+      // Pending badge on the row while the POST is in flight, then the
+      // green applied / red error badge once the server answers.
+      queueSavingFlash("noSleepMode");
       try {
         state.noSleep = await api("/api/no-sleep", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ mode }),
         });
+        queueAppliedFlash("noSleepMode");
       } catch (error) {
         state.noSleep = { mode: "off", error: (error && error.message) || String(error), supported: true };
+        queueErrorFlash("noSleepMode", error && error.message ? error.message : "Save failed");
       }
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }

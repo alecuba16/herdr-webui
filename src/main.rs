@@ -68,10 +68,10 @@ use assets::{
     shared_file_icons_js, shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js,
     shared_http_js, shared_line_context_js, shared_lsp_js, shared_markdown_preview_css,
     shared_markdown_preview_js, shared_options_js, shared_settings_confirm_js,
-    shared_settings_feedback_js, shared_temp_terminal_js, shared_terminal_adapter_js,
-    shared_terminal_fit_js, shared_terminal_scroll_js, shared_workspace_search_js,
-    vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js,
-    vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
+    shared_settings_feedback_js, shared_skeleton_css, shared_skeleton_js, shared_temp_terminal_js,
+    shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
+    shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm,
+    vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
 };
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
@@ -1384,6 +1384,8 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/app-boot.js", get(app_boot_js))
         .route("/assets/shared/core.js", get(shared_core_js))
         .route("/assets/shared/http.js", get(shared_http_js))
+        .route("/assets/shared/skeleton.js", get(shared_skeleton_js))
+        .route("/assets/shared/skeleton.css", get(shared_skeleton_css))
         .route("/assets/shared/attention.js", get(shared_attention_js))
         .route("/assets/shared/options.js", get(shared_options_js))
         .route("/assets/shared/actions.js", get(shared_actions_js))

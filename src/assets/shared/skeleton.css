@@ -1,0 +1,53 @@
+/* Skeleton loading placeholders, shared by desktop and mobile layouts.
+   Shown inside a section (workspace list, agents, sessions, versions line)
+   while its connectivity-dependent work is pending: first refresh fetches,
+   websocket attaches, session-list loads. Blocks mimic the shape of the
+   real rows so the layout does not jump when the data arrives. The markup
+   comes from shared/skeleton.js (window.HerdrSkeleton). */
+.herdr-skeleton {
+  display: grid;
+  gap: 8px;
+  padding: 8px 4px;
+}
+.herdr-skeleton-block {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--border2), transparent 72%);
+}
+.herdr-skeleton-block::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--muted), transparent 82%),
+    transparent
+  );
+  animation: herdr-skeleton-shimmer 1.3s ease-in-out infinite;
+}
+.herdr-skeleton-banner {
+  height: 14px;
+  border-radius: 7px;
+  width: 82%;
+}
+.herdr-skeleton-title {
+  height: 12px;
+  width: 62%;
+}
+.herdr-skeleton-line {
+  height: 10px;
+  width: 40%;
+}
+.herdr-skeleton-row {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+}
+@keyframes herdr-skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
