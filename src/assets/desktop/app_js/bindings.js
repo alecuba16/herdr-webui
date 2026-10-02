@@ -13,7 +13,7 @@ document.addEventListener("click", (e) => {
   const option = e.target && e.target.closest && e.target.closest(".no-sleep-menu [data-mode]");
   if (option) {
     closeNoSleepMenus();
-    setNoSleepMode(option.dataset.mode || "off");
+    setNoSleepMode(option.dataset.mode || "off", option.closest(".no-sleep-wrap") || option);
     return;
   }
   const control = e.target && e.target.closest && e.target.closest(".no-sleep-control");

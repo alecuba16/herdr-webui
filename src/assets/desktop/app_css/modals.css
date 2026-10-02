@@ -428,8 +428,11 @@
   margin-top: 2px;
 }
 
-/* Applied / error confirmation badges injected next to settings controls. */
+/* Saving / applied / error confirmation badges injected next to settings
+   controls. Saving shows while a backend store is in flight; the handle
+   then swaps it to applied or error. */
 .settings-applied,
+.settings-saving,
 .settings-error-flash {
   align-self: center;
   display: inline-flex;
@@ -443,6 +446,24 @@
   border-radius: 999px;
   pointer-events: none;
   white-space: nowrap;
+}
+.settings-saving {
+  color: #f9e2af;
+  border: 1px solid #f9e2af;
+}
+.settings-saving::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: settings-saving-spin 0.7s linear infinite;
+}
+@keyframes settings-saving-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .settings-applied {
   color: var(--git-added-color);

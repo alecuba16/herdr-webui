@@ -202,4 +202,47 @@ describe("HerdrSettingsFeedback", () => {
     equal(api.flashError(null, "x"), null);
     equal(api.clear(null), undefined);
   });
+
+  it("flashSaving shows a pending badge that survives the timeout", () => {
+    const { api, timers } = createContext();
+    const row = createNodeStub({ className: "option" });
+    const control = createNodeStub();
+    row.appendChild(control);
+
+    const handle = api.flashSaving(control, "Saving...");
+    ok(handle && typeof handle.done === "function", "returns a handle");
+    const badge = row.children[1];
+    equal(badge.className, "settings-saving");
+    equal(badge.dataset.state, "settings-applied-saving");
+    ok(timers.every((timer) => timer.cleared), "no self-clear timer while pending");
+  });
+
+  it("flashSaving handle done swaps to the applied badge", () => {
+    const { api, timers } = createContext();
+    const row = createNodeStub({ className: "option" });
+    const control = createNodeStub();
+    row.appendChild(control);
+
+    const handle = api.flashSaving(control);
+    handle.done("Saved");
+    const badge = row.children[1];
+    equal(badge.className, "settings-applied");
+    equal(badge.textContent, "✓ Saved");
+    equal(badge.dataset.state, "settings-applied-ok");
+    ok(timers.some((timer) => !timer.cleared), "applied badge self-clears");
+  });
+
+  it("flashSaving handle fail swaps to the error badge", () => {
+    const { api } = createContext();
+    const row = createNodeStub({ className: "option" });
+    const control = createNodeStub();
+    row.appendChild(control);
+
+    const handle = api.flashSaving(control);
+    handle.fail("network down");
+    const badge = row.children[1];
+    equal(badge.className, "settings-error-flash");
+    equal(badge.textContent, "network down");
+    equal(badge.dataset.state, "settings-applied-error");
+  });
 });

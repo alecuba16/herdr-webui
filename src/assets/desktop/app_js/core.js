@@ -1917,8 +1917,15 @@ function scheduleNoSleepPoll() {
   if (document.hidden || (noSleepState.mode === "off" && !noSleepState.error)) return;
   noSleepPollTimer = setTimeout(loadNoSleep, 10000);
 }
-async function setNoSleepMode(mode) {
+async function setNoSleepMode(mode, trigger) {
   const seq = ++noSleepRequestSeq;
+  // Pending badge near the control that opened the menu while the POST is
+  // in flight; the button text swaps to the new mode only after the server
+  // confirms.
+  const target = trigger || noSleepControls()[0];
+  const sleepHandle = settingsFeedback && target
+    ? settingsFeedback.flashSaving(target, "Saving...")
+    : null;
   try {
     const next = await api("/api/no-sleep", {
       method: "POST",
@@ -1927,9 +1934,11 @@ async function setNoSleepMode(mode) {
     });
     if (seq !== noSleepRequestSeq) return;
     noSleepState = next;
+    if (sleepHandle) sleepHandle.done("Saved");
   } catch (ex) {
     if (seq !== noSleepRequestSeq) return;
     noSleepState = { mode: "off", until_ms: null, error: ex.message || String(ex), supported: true };
+    if (sleepHandle) sleepHandle.fail(ex.message || String(ex));
   }
   syncNoSleepControls();
   scheduleNoSleepPoll();
@@ -2497,6 +2506,11 @@ function applyThemeColorsFromSettings() {
   syncThemeColorInputs();
   applyTheme();
   render();
+  // Buttons do not reliably take focus on click (Safari), so the
+  // activeElement fallback in saveOptions() may miss; flash the row
+  // explicitly for a guaranteed saved confirmation.
+  const row = el("themeColorsApply");
+  if (row && row.closest) flashSettingsApplied(row.closest(".theme-customizer"));
 }
 function applyThemeColorProfile(name) {
   options.themeColors = normalizeThemeColors(
@@ -2507,6 +2521,8 @@ function applyThemeColorProfile(name) {
   syncThemeColorInputs();
   applyTheme();
   render();
+  const row = el("themeColorsApply");
+  if (row && row.closest) flashSettingsApplied(row.closest(".theme-customizer"));
 }
 function effectiveTheme() {
   const mode = normalizeThemeMode(themeMode);
@@ -3361,6 +3377,11 @@ async function loadServerSettings() {
     err.classList.remove("saved");
   }
   const loadButton = el("serverSettingsLoad");
+  // Pending feedback next to the button while the settings fetch is in
+  // flight; swaps to the green "Loaded" badge when it lands.
+  const loadHandle = settingsFeedback && loadButton
+    ? settingsFeedback.flashSaving(loadButton, "Loading...")
+    : null;
   try {
     const settings = await api("/api/server-settings");
     el("optServerBind").value = settings.bind || "127.0.0.1:8787";
@@ -3399,6 +3420,7 @@ async function loadServerSettings() {
     );
     flashSettingsApplied(loadButton, "Loaded");
   } catch (ex) {
+    if (loadHandle) loadHandle.fail(ex.message || String(ex));
     if (err) err.textContent = ex.message || String(ex);
   }
 }
@@ -3444,6 +3466,12 @@ async function applyServerSettings() {
     return;
   }
   submit.disabled = true;
+  // Pending badge right next to the Apply button while the POST is in
+  // flight; the blocking overlay already freezes the UI, this makes the
+  // save itself visible at the button.
+  const saveHandle = settingsFeedback && submit
+    ? settingsFeedback.flashSaving(submit, "Saving...")
+    : null;
   showBlocking("Saving settings...");
   try {
     const updatedSettings = await api("/api/server-settings", {
@@ -3505,8 +3533,10 @@ async function applyServerSettings() {
         "Saved. If Bind changed, listener is restarting. If Backend mode changed, restart WebUI, then reload this page.";
       err.classList.add("saved");
     }
+    if (saveHandle) saveHandle.done("Saved");
     el("optServerPassword").value = "";
   } catch (ex) {
+    if (saveHandle) saveHandle.fail(ex.message || String(ex));
     if (err) err.textContent = ex.message || String(ex);
   } finally {
     submit.disabled = false;

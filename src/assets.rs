@@ -722,6 +722,14 @@ mod tests {
     }
 
     #[test]
+    fn settings_feedback_supports_saving_pending_badges() {
+        // Settings rows must expose a pending "Saving..." state for saves
+        // that wait on the backend, not only the final applied/error badge.
+        assert!(SHARED_SETTINGS_FEEDBACK_JS.contains("flashSaving"));
+        assert!(SHARED_SETTINGS_FEEDBACK_JS.contains("settings-applied-saving"));
+    }
+
+    #[test]
     fn app_html_contains_blocking_overlay() {
         assert!(APP_HTML.contains(r#"id="blockingOverlay""#));
         assert!(APP_HTML.contains(r#"class="blocking-overlay""#));

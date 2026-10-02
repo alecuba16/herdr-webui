@@ -1820,7 +1820,8 @@ body.light .mobile-nav-status.working {
 
 /* Settings applied badge: emitted inline by the mobile settings renderer
    after a value change survives the re-render. */
-.settings-applied {
+.settings-applied,
+.settings-saving {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1830,6 +1831,30 @@ body.light .mobile-nav-status.working {
   justify-self: start;
   padding: 3px 8px;
   border-radius: 999px;
+}
+.settings-saving {
+  color: #f9e2af;
+  border: 1px solid #f9e2af;
+}
+.settings-saving::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: settings-saving-spin 0.7s linear infinite;
+}
+@keyframes settings-saving-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.settings-error-flash {
+  color: var(--error, #f38ba8);
+  border: 1px solid var(--error, #f38ba8);
+}
+.settings-applied {
   color: var(--git-added-color);
   border: 1px solid var(--git-added-color);
 }

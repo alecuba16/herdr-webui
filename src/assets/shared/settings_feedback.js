@@ -1,4 +1,4 @@
-// Settings "applied" confirmation feedback.
+// Settings "saving" (pending) and "applied" confirmation feedback.
 //
 // Local settings (terminal, theme, agents, editor, module options) persist to
 // browser storage on every change, and server settings save through the
@@ -6,11 +6,14 @@
 // users could not tell whether a change actually took effect. This helper
 // gives every settings row a short-lived green "Applied" badge (or a red
 // error message) with a screen-reader live region, and clears itself after a
-// timeout. It is layout-agnostic: desktop passes the `.option` row ancestor,
-// mobile passes the label/control container.
+// timeout. Saves that wait on the backend get an amber "Saving..." badge
+// first; flashSaving() returns a handle whose done()/fail() swaps the badge
+// to the final state. It is layout-agnostic: desktop passes the `.option` row
+// ancestor, mobile passes the label/control container.
 (function (root) {
   const APPLIED_MS = 2500;
   const APPLIED_CLASS = "settings-applied";
+  const SAVING_CLASS = "settings-saving";
   const ERROR_CLASS = "settings-error-flash";
   const BADGE_ID_PREFIX = "settings-applied-badge-";
 
@@ -51,11 +54,21 @@
 
     function ensureBadge(row, kind) {
       const key = String(row.id || row.dataset.settingsRow || "");
-      const wantedClass = kind === "error" ? ERROR_CLASS : APPLIED_CLASS;
-      // A row shows at most one badge; reuse it across ok/error kinds so a
-      // save failure followed by a successful save swaps in place.
-      let badge = row.querySelector(`.${APPLIED_CLASS}, .${ERROR_CLASS}`);
-      const wanted = kind === "error" ? "settings-applied-error" : "settings-applied-ok";
+      const wantedClass =
+        kind === "error"
+          ? ERROR_CLASS
+          : kind === "saving"
+            ? SAVING_CLASS
+            : APPLIED_CLASS;
+      // A row shows at most one badge; reuse it across ok/saving/error kinds
+      // so a save failure followed by a successful save swaps in place.
+      let badge = row.querySelector(`.${APPLIED_CLASS}, .${ERROR_CLASS}, .${SAVING_CLASS}`);
+      const wanted =
+        kind === "error"
+          ? "settings-applied-error"
+          : kind === "saving"
+            ? "settings-applied-saving"
+            : "settings-applied-ok";
       if (!badge) {
         badge = doc.createElement("span");
         badge.className = wantedClass;
@@ -76,7 +89,11 @@
       badge.textContent = message;
       // Re-append so the badge lands after any content the row re-rendered.
       if (badge.parentNode !== row) row.appendChild(badge);
-      scheduleClear(row, badge);
+      // Saving badges persist until the async save resolves (flashSaving
+      // returns a handle whose done()/fail() swaps the badge); ok/error
+      // badges self-clear on the timeout.
+      if (kind !== "saving") scheduleClear(row, badge);
+      else clearTimer(row);
       return badge;
     }
 
@@ -86,6 +103,32 @@
       },
       flashAppliedRow(row, label = "Applied") {
         return show(row, "ok", `✓ ${label}`);
+      },
+      // Pending feedback for saves that wait on the backend. Returns a
+      // handle; call done(label) or fail(message) when the request settles
+      // and the badge swaps to the green applied / red error state.
+      flashSaving(control, label = "Saving...") {
+        const row = findRow(control);
+        show(row, "saving", label);
+        return {
+          done(doneLabel = "Saved") {
+            show(row, "ok", `✓ ${doneLabel}`);
+          },
+          fail(message) {
+            show(row, "error", message || "Save failed");
+          },
+        };
+      },
+      flashSavingRow(row, label = "Saving...") {
+        show(row, "saving", label);
+        return {
+          done(doneLabel = "Saved") {
+            show(row, "ok", `✓ ${doneLabel}`);
+          },
+          fail(message) {
+            show(row, "error", message || "Save failed");
+          },
+        };
       },
       flashError(control, message) {
         return show(findRow(control), "error", message);
@@ -97,7 +140,7 @@
         const row = findRow(control);
         if (!row) return;
         clearTimer(row);
-        const badge = row.querySelector(`.${APPLIED_CLASS}, .${ERROR_CLASS}`);
+        const badge = row.querySelector(`.${APPLIED_CLASS}, .${ERROR_CLASS}, .${SAVING_CLASS}`);
         if (badge) badge.remove();
       },
       APPLIED_MS,
