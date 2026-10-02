@@ -36,6 +36,9 @@ fn test_state() -> WebState {
             password: Some("pass".to_string()),
             localhost_no_auth: false,
             token: "token-123".to_string(),
+            token_expires_at: SystemTime::now()
+                + Duration::from_secs(DEFAULT_SESSION_EXPIRATION_MINUTES * 60),
+            session_expiration_minutes: DEFAULT_SESSION_EXPIRATION_MINUTES,
         })),
         login_limiter: Arc::new(LoginRateLimiter::new()),
         server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
@@ -44,6 +47,7 @@ fn test_state() -> WebState {
             user: Some("user".to_string()),
             password: Some("pass".to_string()),
             localhost_no_auth: false,
+            session_expiration_minutes: DEFAULT_SESSION_EXPIRATION_MINUTES,
             no_sleep_auto_cooldown_seconds: 60,
             backend_mode: BackendMode::ExternalHerdr,
             builtin_shell: None,
@@ -903,6 +907,10 @@ fn default_runtime_server_settings_use_no_credentials_local_bypass_and_builtin_b
     assert_eq!(settings.user, None);
     assert_eq!(settings.password, None);
     assert!(settings.localhost_no_auth);
+    assert_eq!(
+        settings.session_expiration_minutes,
+        DEFAULT_SESSION_EXPIRATION_MINUTES
+    );
     assert_eq!(settings.no_sleep_auto_cooldown_seconds, 60);
     assert_eq!(settings.backend_mode, BackendMode::Builtin);
     assert_eq!(settings.builtin_shell, None);
@@ -929,6 +937,7 @@ fn missing_runtime_settings_file_creates_defaults() {
     assert!(server_settings_path().exists());
     let raw = fs::read_to_string(server_settings_path()).unwrap();
     assert!(raw.contains("localhost_no_auth"));
+    assert!(raw.contains("session_expiration_minutes"));
     assert!(raw.contains("no_sleep_auto_cooldown_seconds"));
     assert!(raw.contains("backend_mode"));
     assert!(raw.contains(r#""backend_mode": "builtin""#));
@@ -961,12 +970,17 @@ fn existing_runtime_settings_file_backfills_missing_keys() {
     assert_eq!(settings.user, None);
     assert_eq!(settings.password, None);
     assert!(settings.localhost_no_auth);
+    assert_eq!(
+        settings.session_expiration_minutes,
+        DEFAULT_SESSION_EXPIRATION_MINUTES
+    );
     assert_eq!(settings.no_sleep_auto_cooldown_seconds, 60);
     assert_eq!(settings.backend_mode, BackendMode::Builtin);
     assert_eq!(settings.builtin_shell, None);
     assert!(!settings.default_folder.is_empty());
     let raw = fs::read_to_string(path).unwrap();
     assert!(raw.contains("localhost_no_auth"));
+    assert!(raw.contains("session_expiration_minutes"));
     assert!(raw.contains("tls_mode"));
     assert!(raw.contains("user"));
     assert!(raw.contains("password"));
@@ -1026,6 +1040,7 @@ fn loads_auth_from_runtime_settings() {
         user: Some("test-user".to_string()),
         password: Some("test-password".to_string()),
         localhost_no_auth: false,
+        session_expiration_minutes: DEFAULT_SESSION_EXPIRATION_MINUTES,
         no_sleep_auto_cooldown_seconds: 60,
         backend_mode: BackendMode::ExternalHerdr,
         builtin_shell: None,
@@ -1053,6 +1068,7 @@ fn rejects_public_bind_without_credentials() {
         user: None,
         password: None,
         localhost_no_auth: true,
+        session_expiration_minutes: DEFAULT_SESSION_EXPIRATION_MINUTES,
         no_sleep_auto_cooldown_seconds: 60,
         backend_mode: BackendMode::ExternalHerdr,
         builtin_shell: None,
@@ -2795,7 +2811,8 @@ async fn index_serves_login_without_auth_and_app_with_auth() {
 
 #[tokio::test]
 async fn login_route_sets_cookie_for_valid_credentials() {
-    let app = test_app();
+    let state = test_state();
+    let app = test_app_with_state(state.clone());
     let body = Body::from(r#"{"username":"user","password":"pass"}"#);
 
     let response = app
@@ -2813,7 +2830,8 @@ async fn login_route_sets_cookie_for_valid_credentials() {
         .headers()
         .get(header::SET_COOKIE)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.contains("herdr_web_session=token-123")));
+        .is_some_and(|value| value.contains("herdr_web_session=") && value.contains("Max-Age=")));
+    assert_ne!(state.auth.lock().unwrap().token, "token-123");
     assert_eq!(response_json(response).await["ok"], true);
 }
 
@@ -3316,10 +3334,11 @@ async fn web_api_client_recovers_after_real_server_token_rotation() {
     // The client's cached cookie is now stale.
     {
         let mut auth = auth.lock().unwrap();
-        let rotated = crate::auth::AuthConfig::from_parts(
+        let rotated = crate::auth::AuthConfig::from_parts_with_expiration(
             auth.user.clone(),
             auth.password.clone(),
             auth.localhost_no_auth,
+            DEFAULT_SESSION_EXPIRATION_MINUTES,
         );
         assert_ne!(rotated.token, old_token, "rotation must change the token");
         *auth = rotated;
@@ -3626,6 +3645,7 @@ async fn runtime_settings_persist_recent_workspaces_round_trip() {
         user: settings.user.clone(),
         password: settings.password.clone(),
         localhost_no_auth: Some(settings.localhost_no_auth),
+        session_expiration_minutes: Some(settings.session_expiration_minutes),
         no_sleep_auto_cooldown_seconds: Some(settings.no_sleep_auto_cooldown_seconds),
         backend_mode: Some(settings.backend_mode),
         builtin_shell: settings.builtin_shell.clone(),
@@ -7319,6 +7339,7 @@ async fn update_server_settings_saves_and_returns_updated_settings() {
                         "username": "user",
                         "password": "pass",
                         "localhost_no_auth": false,
+                        "session_expiration_minutes": 30,
                         "no_sleep_auto_cooldown_seconds": 120,
                         "backend_mode": "builtin",
                         "builtin_backend_enabled": true,
@@ -7334,6 +7355,7 @@ async fn update_server_settings_saves_and_returns_updated_settings() {
     let body = response_json(response).await;
     assert_eq!(body["bind"], "127.0.0.1:9999");
     assert_eq!(body["no_sleep_auto_cooldown_seconds"], 120);
+    assert_eq!(body["session_expiration_minutes"], 30);
     assert_eq!(body["backend_mode"], "builtin");
     assert!(server_settings_path().exists());
 

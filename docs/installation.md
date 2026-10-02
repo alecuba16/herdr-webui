@@ -263,9 +263,12 @@ Server access settings are stored in `~/.config/herdr-webui/webui-settings.json`
 - Username.
 - Password.
 - Localhost auth bypass.
+- Session expiration in minutes, defaulting to 1,440 minutes (24 hours).
 - No-sleep Auto cooldown.
 
 Non-localhost binds require both username and password. WebUI rejects `0.0.0.0` or any other non-loopback bind until both credentials are configured.
+
+Successful login cookies and their server-side tokens expire after the configured session duration. Saving server settings rotates the token and invalidates existing sessions. The allowed range is 1 minute through 525,600 minutes (365 days).
 
 An explicit `--bind HOST:PORT` on the command line wins over the bind saved in `webui-settings.json`; without the flag, the saved bind stays authoritative. This keeps preview instances on their own port from being silently redirected to the saved port.
 

@@ -131,6 +131,11 @@ fn localhost_no_auth_state(default_folder: PathBuf) -> WebState {
             password: None,
             localhost_no_auth: true,
             token: "e2e-token".to_string(),
+            token_expires_at: std::time::SystemTime::now()
+                + std::time::Duration::from_secs(
+                    crate::auth::DEFAULT_SESSION_EXPIRATION_MINUTES * 60,
+                ),
+            session_expiration_minutes: crate::auth::DEFAULT_SESSION_EXPIRATION_MINUTES,
         })),
         login_limiter: Arc::new(LoginRateLimiter::new()),
         server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
@@ -139,6 +144,7 @@ fn localhost_no_auth_state(default_folder: PathBuf) -> WebState {
             user: None,
             password: None,
             localhost_no_auth: true,
+            session_expiration_minutes: crate::auth::DEFAULT_SESSION_EXPIRATION_MINUTES,
             no_sleep_auto_cooldown_seconds: 60,
             backend_mode: BackendMode::ExternalHerdr,
             builtin_shell: None,

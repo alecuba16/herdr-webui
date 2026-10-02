@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::auth::{AuthConfig, LoginRateLimiter, LoginRequest};
+use crate::auth::{AuthConfig, LoginRateLimiter, LoginRequest, DEFAULT_SESSION_EXPIRATION_MINUTES};
 #[cfg(test)]
 use crate::builtin_detection::JcodeDetectionVariant;
 use server_settings::{
@@ -1967,6 +1967,7 @@ struct UpdateServerSettingsRequest {
     username: Option<String>,
     password: Option<String>,
     localhost_no_auth: bool,
+    session_expiration_minutes: Option<u64>,
     no_sleep_auto_cooldown_seconds: Option<u64>,
     backend_mode: Option<BackendMode>,
     #[serde(default)]
@@ -2268,6 +2269,14 @@ async fn update_server_settings(
                     .and_then(|settings| settings.password.clone())
             }),
         localhost_no_auth: body.localhost_no_auth,
+        session_expiration_minutes: body
+            .session_expiration_minutes
+            .or_else(|| {
+                current
+                    .as_ref()
+                    .map(|settings| settings.session_expiration_minutes)
+            })
+            .unwrap_or(DEFAULT_SESSION_EXPIRATION_MINUTES),
         no_sleep_auto_cooldown_seconds: body.no_sleep_auto_cooldown_seconds.unwrap_or(60),
         backend_mode: body
             .backend_mode

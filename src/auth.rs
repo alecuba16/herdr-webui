@@ -18,6 +18,9 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 pub(crate) const COOKIE_NAME: &str = "herdr_web_session";
+pub(crate) const DEFAULT_SESSION_EXPIRATION_MINUTES: u64 = 24 * 60;
+pub(crate) const MIN_SESSION_EXPIRATION_MINUTES: u64 = 1;
+pub(crate) const MAX_SESSION_EXPIRATION_MINUTES: u64 = 365 * 24 * 60;
 
 /// Auth credentials and the per-run session token derived from them.
 pub(crate) struct AuthConfig {
@@ -25,6 +28,8 @@ pub(crate) struct AuthConfig {
     pub(crate) password: Option<String>,
     pub(crate) localhost_no_auth: bool,
     pub(crate) token: String,
+    pub(crate) token_expires_at: SystemTime,
+    pub(crate) session_expiration_minutes: u64,
 }
 
 impl AuthConfig {
@@ -33,10 +38,27 @@ impl AuthConfig {
     /// with credentials and a time value, so a token cannot be
     /// predicted from timing alone the way a pure nanos seed could.
     /// Settings validation happens before construction in the caller.
-    pub(crate) fn from_parts(
+    pub(crate) fn from_parts_with_expiration(
         user: Option<String>,
         password: Option<String>,
         localhost_no_auth: bool,
+        session_expiration_minutes: u64,
+    ) -> Self {
+        Self::from_parts_at(
+            user,
+            password,
+            localhost_no_auth,
+            session_expiration_minutes,
+            SystemTime::now(),
+        )
+    }
+
+    fn from_parts_at(
+        user: Option<String>,
+        password: Option<String>,
+        localhost_no_auth: bool,
+        session_expiration_minutes: u64,
+        issued_at: SystemTime,
     ) -> Self {
         use std::hash::BuildHasher;
         let mut seed = Sha256::new();
@@ -66,7 +88,21 @@ impl AuthConfig {
             password,
             localhost_no_auth,
             token,
+            token_expires_at: issued_at
+                + Duration::from_secs(session_expiration_minutes.saturating_mul(60)),
+            session_expiration_minutes,
         }
+    }
+
+    pub(crate) fn rotate_token(&mut self) {
+        let refreshed = Self::from_parts_with_expiration(
+            self.user.clone(),
+            self.password.clone(),
+            self.localhost_no_auth,
+            self.session_expiration_minutes,
+        );
+        self.token = refreshed.token;
+        self.token_expires_at = refreshed.token_expires_at;
     }
 
     /// True when this remote matches the stored username and password.
@@ -82,6 +118,10 @@ impl AuthConfig {
 
     pub(crate) fn localhost_bypass(&self, remote: SocketAddr) -> bool {
         remote.ip().is_loopback() && self.localhost_no_auth
+    }
+
+    pub(crate) fn token_is_valid(&self) -> bool {
+        SystemTime::now() < self.token_expires_at
     }
 }
 
@@ -168,6 +208,9 @@ pub(crate) fn authorized(
     if auth.localhost_bypass(remote) {
         return true;
     }
+    if !auth.token_is_valid() {
+        return false;
+    }
     let Some(cookie) = headers
         .get(header::COOKIE)
         .and_then(|value| value.to_str().ok())
@@ -209,16 +252,25 @@ pub(crate) struct LoginRequest {
 /// marks the cookie `Secure` when the listener actually speaks TLS,
 /// so no proxy downgrade can strip it in the common deployment.
 pub(crate) fn login_response(auth: &Mutex<AuthConfig>, secure: bool) -> Response {
-    let token = auth
+    let (token, max_age) = auth
         .lock()
-        .map(|auth| auth.token.clone())
+        .map(|mut auth| {
+            auth.rotate_token();
+            let max_age = auth
+                .token_expires_at
+                .duration_since(SystemTime::now())
+                .unwrap_or_default()
+                .as_secs()
+                .max(1);
+            (auth.token.clone(), max_age)
+        })
         .unwrap_or_default();
     let mut response = Json(json!({ "ok": true })).into_response();
     let secure_flag = if secure { "; Secure" } else { "" };
     response.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_str(&format!(
-            "{COOKIE_NAME}={token}; HttpOnly; SameSite=Lax{secure_flag}; Path=/"
+            "{COOKIE_NAME}={token}; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure_flag}; Path=/"
         ))
         .expect("valid cookie"),
     );
@@ -231,10 +283,11 @@ mod tests {
 
     fn make_auth(localhost_no_auth: bool) -> (Mutex<AuthConfig>, SocketAddr) {
         (
-            Mutex::new(AuthConfig::from_parts(
+            Mutex::new(AuthConfig::from_parts_with_expiration(
                 Some("user".to_string()),
                 Some("pass".to_string()),
                 localhost_no_auth,
+                DEFAULT_SESSION_EXPIRATION_MINUTES,
             )),
             "127.0.0.1:9000".parse().unwrap(),
         )
@@ -259,8 +312,18 @@ mod tests {
 
     #[test]
     fn generated_tokens_differ_between_runs() {
-        let a = AuthConfig::from_parts(None, None, true);
-        let b = AuthConfig::from_parts(None, None, true);
+        let a = AuthConfig::from_parts_with_expiration(
+            None,
+            None,
+            true,
+            DEFAULT_SESSION_EXPIRATION_MINUTES,
+        );
+        let b = AuthConfig::from_parts_with_expiration(
+            None,
+            None,
+            true,
+            DEFAULT_SESSION_EXPIRATION_MINUTES,
+        );
         assert_ne!(a.token, b.token, "time seed must vary session tokens");
     }
 
@@ -303,16 +366,37 @@ mod tests {
     }
 
     #[test]
+    fn expired_session_cookie_is_rejected() {
+        let now = SystemTime::now();
+        let auth = Mutex::new(AuthConfig::from_parts_at(
+            Some("user".to_string()),
+            Some("pass".to_string()),
+            false,
+            DEFAULT_SESSION_EXPIRATION_MINUTES,
+            now - Duration::from_secs(DEFAULT_SESSION_EXPIRATION_MINUTES * 60 + 1),
+        ));
+        let token = auth.lock().unwrap().token.clone();
+        let remote: SocketAddr = "192.0.2.1:1234".parse().unwrap();
+        assert!(!authorized(&auth, &headers_with_cookie(&token), remote));
+    }
+
+    #[test]
     fn login_response_sets_http_only_cookie() {
         let (auth, _) = make_auth(false);
-        let token = auth.lock().unwrap().token.clone();
         let response = login_response(&auth, false);
+        let token = auth.lock().unwrap().token.clone();
         let cookie = response
             .headers()
             .get(header::SET_COOKIE)
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default();
         assert!(cookie.contains(&format!("{COOKIE_NAME}={token}")));
+        let max_age = cookie
+            .split(';')
+            .find_map(|part| part.trim().strip_prefix("Max-Age="))
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap();
+        assert!((1..=86400).contains(&max_age));
         assert!(cookie.contains("HttpOnly"));
         assert!(cookie.contains("SameSite=Lax"));
         assert!(!cookie.contains("Secure"), "plain http must not pin Secure");

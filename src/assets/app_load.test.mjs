@@ -2277,6 +2277,7 @@ describe("app bundle load", () => {
     match(html, /id="optServerUser"/);
     match(html, /id="optServerPassword"/);
     match(html, /id="optServerLocalBypass"/);
+    match(html, /id="optServerSessionExpiration"/);
     match(html, /id="optBackendMode"/);
     match(html, /id="optBuiltinBackendEnabled"/);
     match(html, /id="optExternalHerdrBackendEnabled"/);
@@ -2294,6 +2295,8 @@ describe("app bundle load", () => {
     match(source, /backend_mode: backendMode,/);
     match(source, /builtin_backend_enabled: builtinBackendEnabled,/);
     match(source, /external_herdr_backend_enabled: externalHerdrBackendEnabled,/);
+    match(source, /session_expiration_minutes: sessionExpirationMinutes,/);
+    match(source, /settings\.session_expiration_minutes \?\? 1440/);
     match(source, /builtin_shell: builtinShell \|\| null,/);
     match(source, /default_folder: defaultFolder \|\| null,/);
     match(source, /state\.defaultFolder = settings\.default_folder/);
@@ -4113,6 +4116,26 @@ describe("app bundle load", () => {
     equal(ctx.serverSettingsValidationError("0.0.0.0:8787", "user", "pass", false), "");
     equal(ctx.serverSettingsValidationError("0.0.0.0:8787", "user", "", true), "");
     equal(ctx.serverSettingsValidationError("127.0.0.1:8787", "", "", false), "");
+  });
+
+  it("rejects invalid session expiration before posting server settings", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.document.getElementById("optServerBind").value = "127.0.0.1:8787";
+    ctx.document.getElementById("optServerSessionExpiration").value = "0";
+    let posted = false;
+    ctx.fetch = async () => {
+      posted = true;
+      return { ok: true, json: async () => ({}) };
+    };
+
+    await ctx.applyServerSettings();
+
+    ok(!posted, "invalid expiration never reaches the server");
+    match(
+      ctx.document.getElementById("serverSettingsError").textContent,
+      /between 1 and 525600 minutes/,
+    );
   });
 
   it("flashes a settings applied badge on saveOptions", async () => {

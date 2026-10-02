@@ -12,7 +12,13 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::builtin_detection::JcodeDetectionVariant;
-use crate::{auth::AuthConfig, lsp, TlsMode, WebConfig};
+use crate::{
+    auth::{
+        AuthConfig, DEFAULT_SESSION_EXPIRATION_MINUTES, MAX_SESSION_EXPIRATION_MINUTES,
+        MIN_SESSION_EXPIRATION_MINUTES,
+    },
+    lsp, TlsMode, WebConfig,
+};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PersistedServerSettings {
@@ -21,6 +27,7 @@ pub struct PersistedServerSettings {
     pub user: Option<String>,
     pub password: Option<String>,
     pub localhost_no_auth: Option<bool>,
+    pub session_expiration_minutes: Option<u64>,
     pub no_sleep_auto_cooldown_seconds: Option<u64>,
     pub backend_mode: Option<BackendMode>,
     pub builtin_shell: Option<String>,
@@ -118,6 +125,7 @@ pub struct RuntimeServerSettings {
     pub user: Option<String>,
     pub password: Option<String>,
     pub localhost_no_auth: bool,
+    pub session_expiration_minutes: u64,
     pub no_sleep_auto_cooldown_seconds: u64,
     pub backend_mode: BackendMode,
     pub builtin_shell: Option<String>,
@@ -134,15 +142,26 @@ impl AuthConfig {
     /// Builds the auth config from validated settings.
     pub fn from_settings(settings: &RuntimeServerSettings) -> io::Result<Self> {
         validate_runtime_server_settings(settings)?;
-        Ok(AuthConfig::from_parts(
+        Ok(AuthConfig::from_parts_with_expiration(
             settings.user.clone(),
             settings.password.clone(),
             settings.localhost_no_auth,
+            settings.session_expiration_minutes,
         ))
     }
 }
 
 pub fn validate_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Result<()> {
+    if !(MIN_SESSION_EXPIRATION_MINUTES..=MAX_SESSION_EXPIRATION_MINUTES)
+        .contains(&settings.session_expiration_minutes)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "session expiration must be between {MIN_SESSION_EXPIRATION_MINUTES} and {MAX_SESSION_EXPIRATION_MINUTES} minutes"
+            ),
+        ));
+    }
     let local_bind = settings.bind.ip().is_loopback();
     if !local_bind && (settings.user.is_none() || settings.password.is_none()) {
         return Err(io::Error::new(
@@ -181,6 +200,7 @@ pub fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSetting
         user: None,
         password: None,
         localhost_no_auth: true,
+        session_expiration_minutes: DEFAULT_SESSION_EXPIRATION_MINUTES,
         no_sleep_auto_cooldown_seconds: 60,
         backend_mode: BackendMode::Builtin,
         builtin_shell: None,
@@ -236,6 +256,7 @@ pub fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<Runt
         "user",
         "password",
         "localhost_no_auth",
+        "session_expiration_minutes",
         "no_sleep_auto_cooldown_seconds",
         "backend_mode",
         "builtin_shell",
@@ -271,6 +292,9 @@ pub fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<Runt
     }
     if let Some(localhost_no_auth) = persisted.localhost_no_auth {
         settings.localhost_no_auth = localhost_no_auth;
+    }
+    if let Some(session_expiration_minutes) = persisted.session_expiration_minutes {
+        settings.session_expiration_minutes = session_expiration_minutes;
     }
     if let Some(cooldown) = persisted.no_sleep_auto_cooldown_seconds {
         settings.no_sleep_auto_cooldown_seconds = cooldown;
@@ -345,6 +369,7 @@ pub fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Res
         user: settings.user.clone(),
         password: settings.password.clone(),
         localhost_no_auth: Some(settings.localhost_no_auth),
+        session_expiration_minutes: Some(settings.session_expiration_minutes),
         no_sleep_auto_cooldown_seconds: Some(settings.no_sleep_auto_cooldown_seconds),
         backend_mode: Some(settings.backend_mode),
         builtin_shell: settings.builtin_shell.clone(),
@@ -374,6 +399,7 @@ pub fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Val
         "username": settings.user.clone().unwrap_or_default(),
         "has_password": settings.password.is_some(),
         "localhost_no_auth": settings.localhost_no_auth,
+        "session_expiration_minutes": settings.session_expiration_minutes,
         "no_sleep_auto_cooldown_seconds": settings.no_sleep_auto_cooldown_seconds,
         "backend_mode": settings.backend_mode.as_str(),
         "builtin_shell": settings.builtin_shell.clone(),
@@ -430,6 +456,31 @@ mod tests {
         settings.no_sleep_auto_cooldown_seconds = 3601;
         let err = validate_runtime_server_settings(&settings).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn validates_session_expiration_range() {
+        let mut settings = valid_settings();
+        settings.session_expiration_minutes = MIN_SESSION_EXPIRATION_MINUTES - 1;
+        assert_eq!(
+            validate_runtime_server_settings(&settings)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        settings.session_expiration_minutes = MAX_SESSION_EXPIRATION_MINUTES + 1;
+        assert_eq!(
+            validate_runtime_server_settings(&settings)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        settings.session_expiration_minutes = MIN_SESSION_EXPIRATION_MINUTES;
+        assert!(validate_runtime_server_settings(&settings).is_ok());
+        settings.session_expiration_minutes = MAX_SESSION_EXPIRATION_MINUTES;
+        assert!(validate_runtime_server_settings(&settings).is_ok());
     }
 
     #[test]
