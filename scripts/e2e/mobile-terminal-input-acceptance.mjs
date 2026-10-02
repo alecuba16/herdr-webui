@@ -165,10 +165,31 @@ for (let i = 0; i < 25; i++) {
 }
 check('temp direct input reaches PTY and echoes', tempEchoed, tempTail.slice(-120));
 
+// Produce enough shell output to create real scrollback before testing the
+// follow control. A single echoed command may fit in the viewport.
+await cdp.send('Input.insertText', {
+  text: 'seq 1 120 | sed "s/^/HERDR_SCROLL_/"',
+});
+await pressEnter();
+let scrollbackMetrics = null;
+for (let i = 0; i < 25; i++) {
+  scrollbackMetrics = await evalx(`(() => {
+    const terminal = document.querySelector('.temp-terminal-backdrop .terminal');
+    return terminal ? { scrollHeight: terminal.scrollHeight, clientHeight: terminal.clientHeight } : null;
+  })()`);
+  if (scrollbackMetrics && scrollbackMetrics.scrollHeight > scrollbackMetrics.clientHeight) break;
+  await new Promise((r) => setTimeout(r, 300));
+}
+check(
+  'temp terminal creates scrollback for follow control',
+  !!(scrollbackMetrics && scrollbackMetrics.scrollHeight > scrollbackMetrics.clientHeight),
+  JSON.stringify(scrollbackMetrics),
+);
+
 // Scrolling up still exposes the follow pill without any input overlay.
 await evalx(`(() => {
-  const grid = document.querySelector('.temp-terminal-backdrop .term-grid');
-  if (grid) { grid.scrollTop = 0; grid.dispatchEvent(new Event('scroll', { bubbles: false })); }
+  const terminal = document.querySelector('.temp-terminal-backdrop .terminal');
+  if (terminal) { terminal.scrollTop = 0; terminal.dispatchEvent(new Event('scroll', { bubbles: false })); }
   return true;
 })()`);
 let followVisible = false;
