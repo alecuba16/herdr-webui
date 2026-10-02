@@ -9730,3 +9730,173 @@ fn fake_api_socket_events_streaming() -> (PathBuf, thread::JoinHandle<()>) {
     });
     (path, handle)
 }
+
+#[cfg(unix)]
+// lock_env() serializes env-mutating tests; held across await on purpose
+// so no other test touches process env while handlers run.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn cleanup_sessions_removes_stale_builtin_dirs_and_keeps_default_and_running() {
+    // Three built-in session directories: a stale one (dead-listener
+    // socket, the crash leftover), the default slot (always kept), and a
+    // running one (live listener, kept). Plus a non-session directory that
+    // must never be touched.
+    let _guard = lock_env();
+    let config_home = PathBuf::from(format!(
+        "/tmp/hw-cleanup-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let stale_name = "stale-session";
+    let running_name = "running-session";
+    let (stale_api, _) = builtin_socket_paths(Some(stale_name));
+    let (running_api, _) = builtin_socket_paths(Some(running_name));
+    let (default_api, _) = builtin_socket_paths(Some("default"));
+    for dir in [
+        stale_api.parent(),
+        running_api.parent(),
+        default_api.parent(),
+    ] {
+        fs::create_dir_all(dir.unwrap()).unwrap();
+    }
+    // Dead-listener socket: bound then dropped, exactly what a crashed
+    // backend leaves behind.
+    {
+        let listener = std::os::unix::net::UnixListener::bind(&stale_api).unwrap();
+        drop(listener);
+    }
+    let running_listener = std::os::unix::net::UnixListener::bind(&running_api).unwrap();
+    // Not a session slot (not canonical name output).
+    fs::create_dir_all(config_home.join("builtin/keep-not-a-session")).unwrap();
+
+    let mut state = test_state();
+    state.builtin_sessions = Arc::new(Mutex::new(HashMap::new()));
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            request(Method::POST, "/api/session/cleanup")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "backend": "builtin" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["removed_count"], 1);
+    assert_eq!(body["removed"][0], stale_name);
+    assert!(
+        !stale_api.parent().unwrap().exists(),
+        "stale session directory must be removed"
+    );
+    assert!(
+        running_api.parent().unwrap().exists(),
+        "running session directory must be kept"
+    );
+    assert!(
+        default_api.parent().unwrap().exists(),
+        "default session directory must be kept"
+    );
+    assert!(
+        config_home.join("builtin/keep-not-a-session").exists(),
+        "non-session directories must be untouched"
+    );
+    drop(running_listener);
+    let _ = fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[cfg(unix)]
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn cleanup_sessions_removes_session_even_when_registry_pins_it_closed() {
+    // A closed session is in closed_builtin_sessions; cleanup must remove
+    // that marker too, otherwise the directory is gone but the marker keeps
+    // telling the server the session was explicitly closed (harmless but
+    // stale state, and it would resurrect in a fresh process if the socket
+    // path somehow reappeared).
+    let _guard = lock_env();
+    let config_home = PathBuf::from(format!(
+        "/tmp/hw-cleanup-marker-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let session_name = "closed-marker-session";
+    let (api_socket, _) = builtin_socket_paths(Some(session_name));
+    fs::create_dir_all(api_socket.parent().unwrap()).unwrap();
+    // Long XDG prefixes push the session socket path past sun_path, so the
+    // sockets live in the hashed fallback dir; the sessions list directory
+    // stays at <config>/herdr-webui/builtin. Recreate the canonical session
+    // directory there too, matching what the real discovery/launch flow
+    // leaves behind.
+    let session_dir = server_settings_path()
+        .parent()
+        .unwrap()
+        .join("builtin")
+        .join(session_name);
+    fs::create_dir_all(&session_dir).unwrap();
+
+    let mut state = test_state();
+    state.builtin_sessions = Arc::new(Mutex::new(HashMap::new()));
+    state
+        .closed_builtin_sessions
+        .lock()
+        .unwrap()
+        .insert(session_name.to_string());
+    let closed_marker = state.closed_builtin_sessions.clone();
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            request(Method::POST, "/api/session/cleanup")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "backend": "builtin" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["removed_count"], 1);
+    assert!(
+        !closed_marker.lock().unwrap().contains(session_name),
+        "cleanup must clear the closed-session marker for removed sessions"
+    );
+    let _ = fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn cleanup_sessions_rejects_non_builtin_backend() {
+    let app = test_app_with_state(test_state());
+    let response = app
+        .oneshot(
+            request(Method::POST, "/api/session/cleanup")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "backend": "external-herdr" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["ok"], false);
+}

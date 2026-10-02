@@ -45,7 +45,13 @@
         return `<button class="mobile-row${active ? " active" : ""}" onclick="HerdrMobile.selectSession(${jsArg(label)},${jsArg(backend)})"><strong>${escapeHtml(label)}${active ? " · current" : ""}</strong><span>${controls}</span></button>`;
       }).join("");
       const herdrUsable = state.herdrCompatible && backendEnabled("external-herdr");
-      return `<section class="mobile-section mobile-form"><h2>Sessions</h2><p class="mobile-help">Current target: ${escapeHtml(current)}. Tap a session to switch, or create a new one.</p><div class="mobile-settings-group"><h3>Known sessions</h3>${rows ? rows : '<div class="mobile-loading">No sessions found yet</div>'}${loading}${error}</div><details class="mobile-settings-group mobile-disclosure" ${state.sessionCreateExpanded ? "open" : ""} onchange="HerdrMobile.setSessionCreateExpanded(this.open)"><summary>Create new session</summary><label><span>Session name</span><input value="${escapeHtml(state.sessionNameInput)}" oninput="HerdrMobile.updateSessionField('sessionNameInput', this.value)" placeholder="revolut"></label><div class="mobile-session-actions"><button class="mobile-btn primary" ${busy ? "disabled" : ""} onclick="HerdrMobile.newSession('builtin')">New built-in</button>${herdrUsable ? `<button class="mobile-btn" ${busy ? "disabled" : ""} onclick="HerdrMobile.newSession('external-herdr')">New Herdr</button>` : ""}</div></details></section>`;
+      // Offline, non-default built-in rows are exactly what cleanup removes;
+      // the count tells the user what the button will do before they tap.
+      const staleBuiltin = (state.sessions || []).filter(
+        (row) => row.backend !== "external-herdr" && !row.running && row.name !== "default",
+      );
+      const staleCount = staleBuiltin.length;
+      return `<section class="mobile-section mobile-form"><h2>Sessions</h2><p class="mobile-help">Current target: ${escapeHtml(current)}. Tap a session to switch, or create a new one.</p><div class="mobile-settings-group"><h3>Known sessions</h3>${rows ? rows : '<div class="mobile-loading">No sessions found yet</div>'}${loading}${error}</div><details class="mobile-settings-group mobile-disclosure" ${state.sessionCreateExpanded ? "open" : ""} onchange="HerdrMobile.setSessionCreateExpanded(this.open)"><summary>Create new session</summary><label><span>Session name</span><input value="${escapeHtml(state.sessionNameInput)}" oninput="HerdrMobile.updateSessionField('sessionNameInput', this.value)" placeholder="revolut"></label><div class="mobile-session-actions"><button class="mobile-btn primary" ${busy ? "disabled" : ""} onclick="HerdrMobile.newSession('builtin')">New built-in</button>${herdrUsable ? `<button class="mobile-btn" ${busy ? "disabled" : ""} onclick="HerdrMobile.newSession('external-herdr')">New Herdr</button>` : ""}</div></details><details class="mobile-settings-group mobile-disclosure" ${state.sessionCleanupExpanded ? "open" : ""} onchange="HerdrMobile.setSessionCleanupExpanded(this.open)"><summary>Clean up closed sessions${staleCount ? ` (${staleCount})` : ""}</summary><p class="mobile-help">Remove stale built-in sessions left behind by crashes or closes. Running sessions and the default slot are kept.</p><div class="mobile-session-actions"><button class="mobile-btn" ${busy || !staleCount ? "disabled" : ""} onclick="HerdrMobile.cleanupSessions()">Clean up closed sessions</button></div></details></section>`;
     }
 
     async function refreshSessions() {
@@ -68,6 +74,45 @@
 
     function setSessionCreateExpanded(open) {
       state.sessionCreateExpanded = !!open;
+    }
+
+    function setSessionCleanupExpanded(open) {
+      state.sessionCleanupExpanded = !!open;
+    }
+
+    // Remove stale built-in sessions (mobile parity with the desktop
+    // cleanupClosedSessions). The server deletes only sessions whose socket
+    // probe fails and never touches `default` or live handles, so this is
+    // safe to run anytime; after it the list refreshes without the removed
+    // offline rows.
+    async function cleanupSessions() {
+      if (state.sessionBusy) return;
+      if (!confirmFn("Remove stale closed built-in sessions?")) return;
+      state.sessionBusy = true;
+      state.sessionBusyLabel = "Cleaning up sessions...";
+      render();
+      try {
+        const r = await api("/api/session/cleanup", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ backend: "builtin" }),
+        });
+        const removed = (r && r.removed_count) || 0;
+        const names = (r && r.removed) || [];
+        for (const name of names) forgetSessionState(name);
+        state.sessionsError =
+          removed > 0
+            ? `Removed ${removed} closed session${removed === 1 ? "" : "s"}: ${names.join(", ")}`
+            : "No stale built-in sessions found.";
+      } catch (e) {
+        state.sessionsError = e.message || String(e);
+      } finally {
+        state.sessionBusy = false;
+        state.sessionBusyLabel = "";
+        state.sessionCleanupExpanded = false;
+        render();
+        setTimeout(refreshSessions, 400);
+      }
     }
 
     // Launch a new session on the chosen backend and switch the browser to
@@ -293,10 +338,12 @@
       refreshSessions,
       updateSessionField,
       setSessionCreateExpanded,
+      setSessionCleanupExpanded,
       newSession,
       selectSession,
       closeSession,
       closeSessionRow,
+      cleanupSessions,
     };
   }
 

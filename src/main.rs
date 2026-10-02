@@ -1318,6 +1318,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/no-sleep", get(no_sleep).post(update_no_sleep))
         .route("/api/session/launch", post(launch_session))
         .route("/api/session/close", post(close_session))
+        .route("/api/session/cleanup", post(cleanup_sessions))
         .route("/api/login", post(login))
         .route("/api/workspaces", get(workspaces).post(create_workspace))
         .route(
@@ -2829,6 +2830,150 @@ fn mark_closed_builtin_session(state: &WebState, session_name: &str) {
             let _ = fs::remove_dir(dir);
         }
     }
+}
+
+/// Directory names under `builtin/` that a cleanup must never remove.
+/// `default` is the slot fresh sessions relaunch into (see
+/// mark_closed_builtin_session), and a live in-process handle means the
+/// backend is running right now.
+fn cleanup_safe_builtin_names(state: &WebState) -> HashSet<String> {
+    let mut safe = HashSet::new();
+    safe.insert("default".to_string());
+    if let Ok(sessions) = state.builtin_sessions.lock() {
+        safe.extend(sessions.keys().cloned());
+    }
+    safe
+}
+
+/// Removes one stale built-in session directory: the socket files inside
+/// (crashed backends leave dead-listener sockets behind, which keep the
+/// row listed as offline forever) and then the directory itself. Returns
+/// true when the session is fully gone afterwards.
+fn cleanup_builtin_session_dir(session_name: &str) -> bool {
+    let (api_socket, client_socket) = builtin_socket_paths(Some(session_name));
+    for socket in [&api_socket, &client_socket] {
+        if socket.is_file() {
+            let _ = fs::remove_file(socket);
+        }
+    }
+    match api_socket.parent() {
+        Some(dir) => fs::remove_dir_all(dir).is_ok(),
+        None => false,
+    }
+}
+
+/// Deletes stale built-in sessions: directories under `builtin/` whose
+/// backend is not running (socket connect fails), excluding `default` (the
+/// relaunch slot) and any session with a live in-process handle. This is the
+/// server half of the manager's "Clean up closed sessions" button; a
+/// crashed backend leaves a dead socket file behind, and those leftovers are
+/// exactly what accumulates as "old closed sessions" in the list.
+async fn cleanup_sessions(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    body: Option<Json<SessionActionRequest>>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let body = body.map(|Json(body)| body).unwrap_or_default();
+    let backend = action_backend(&state, &headers, &body);
+    if backend != SessionBackendTarget::Builtin {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "backend": backend.as_str(),
+                "error": "cleanup is only supported for built-in sessions",
+            })),
+        )
+            .into_response();
+    }
+    if !backend_target_enabled(&state, backend) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "backend": backend.as_str(),
+                "error": "backend type is disabled in settings",
+            })),
+        )
+            .into_response();
+    }
+    // Probe + remove runs one blocking connect and filesystem ops per
+    // session; keep it off the async runtime like the other session probes.
+    let probe_state = state.clone();
+    let (removed, kept_running, kept_default) = tokio::task::spawn_blocking(move || {
+        let safe = cleanup_safe_builtin_names(&probe_state);
+        let sessions_dir = builtin_socket_paths(Some("default"))
+            .0
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| config_dir().join("builtin"));
+        let mut removed = Vec::new();
+        let mut kept_running = 0usize;
+        let mut kept_default = 0usize;
+        let Ok(entries) = fs::read_dir(&sessions_dir) else {
+            return (removed, kept_running, kept_default);
+        };
+        let mut names = Vec::new();
+        for entry in entries.filter_map(Result::ok) {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            if let Ok(name) = entry.file_name().into_string() {
+                names.push(name);
+            }
+        }
+        names.sort();
+        for name in names {
+            // The default slot is the relaunch target for every fresh
+            // session and the empty-socket state is normal there: never
+            // remove it.
+            if name == "default" {
+                kept_default += 1;
+                continue;
+            }
+            // Non-default session names are always safe_socket_component
+            // output, so a different canonical name means the directory is
+            // not a session slot; leave it alone.
+            if name != canonical_session_name(Some(&name)) {
+                continue;
+            }
+            if safe.contains(&name) {
+                kept_running += 1;
+                continue;
+            }
+            let (api_socket, _) = builtin_socket_paths(Some(&name));
+            if connect_local_stream(&api_socket).is_ok() {
+                kept_running += 1;
+                continue;
+            }
+            if cleanup_builtin_session_dir(&name) {
+                removed.push(name);
+            }
+        }
+        (removed, kept_running, kept_default)
+    })
+    .await
+    .unwrap_or_else(|_| (Vec::new(), 0, 0));
+    debug_assert!(kept_default <= 1, "default session dir is never removed");
+    let mut removed_count = 0usize;
+    if let Ok(mut closed) = state.closed_builtin_sessions.lock() {
+        for name in &removed {
+            closed.remove(name);
+        }
+        removed_count = removed.len();
+    }
+    Json(json!({
+        "ok": true,
+        "removed": removed,
+        "removed_count": removed_count,
+        "kept_running_count": kept_running,
+    }))
+    .into_response()
 }
 
 /// Sends `server.stop` to the backend and treats a connection drop as success.

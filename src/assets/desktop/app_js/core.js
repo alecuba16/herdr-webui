@@ -2788,7 +2788,7 @@ function setupSessionChrome() {
     m.className = "session-manager";
     m.id = "sessionManager";
     m.innerHTML =
-      '<div class="session-card"><div class="session-hero"><div><h1 id="sessionManagerTitle">Sessions</h1><p id="sessionManagerText">Choose a built-in or Herdr backend session to open.</p></div><div class="session-current"><span class="dot unknown"></span><span id="sessionCurrentLabel">default · built-in</span></div><button class="mini settings-close" id="sessionManagerClose" title="Close" aria-label="Close session manager">✕</button></div><div class="session-actions"><div class="session-list" id="sessionList"></div><div class="session-line session-new"><span><strong>Create or target session</strong><small>Choose where to create/open it. Built-in starts inside WebUI. Herdr starts external daemon.</small></span><span class="session-controls"><button class="session-button primary" id="newBuiltinSessionTarget">New built-in</button><button class="session-button" id="newHerdrSessionTarget">New Herdr</button></span></div></div></div>';
+      '<div class="session-card"><div class="session-hero"><div><h1 id="sessionManagerTitle">Sessions</h1><p id="sessionManagerText">Choose a built-in or Herdr backend session to open.</p></div><div class="session-current"><span class="dot unknown"></span><span id="sessionCurrentLabel">default · built-in</span></div><button class="mini settings-close" id="sessionManagerClose" title="Close" aria-label="Close session manager">✕</button></div><div class="session-actions"><div class="session-list" id="sessionList"></div><div class="session-line session-new"><span><strong>Create or target session</strong><small>Choose where to create/open it. Built-in starts inside WebUI. Herdr starts external daemon.</small></span><span class="session-controls"><button class="session-button primary" id="newBuiltinSessionTarget">New built-in</button><button class="session-button" id="newHerdrSessionTarget">New Herdr</button></span></div><div class="session-line session-cleanup"><span><strong>Clean up closed sessions</strong><small>Remove stale built-in sessions left behind by crashes or closes. Running sessions and the default slot are kept.</small></span><span class="session-controls"><button class="session-button" id="cleanupSessionsButton" title="Remove stale built-in sessions">Clean up</button></span></div></div></div>';
     document.querySelector(".main").prepend(m);
     // Backdrop click closes: only clicks on the manager itself (outside the
     // card) dismiss it.
@@ -2798,6 +2798,7 @@ function setupSessionChrome() {
     el("sessionManagerClose").onclick = hideSessionManager;
     el("newBuiltinSessionTarget").onclick = () => newSessionTarget("builtin");
     el("newHerdrSessionTarget").onclick = () => newSessionTarget("external-herdr");
+    el("cleanupSessionsButton").onclick = cleanupClosedSessions;
   }
   syncShortcutTooltips();
 }
@@ -3241,6 +3242,40 @@ async function closeSessionRow(name, backend) {
         : "Session stopped. You can launch it again.",
     );
   } finally {
+    hideBlocking();
+  }
+}
+// Remove stale built-in sessions (crash leftovers: dead sockets and empty
+// dirs that keep showing as offline rows). The server only deletes sessions
+// whose socket probe fails, so anything running or pinned to a live handle is
+// untouched; the default slot is never removed.
+async function cleanupClosedSessions() {
+  if (!confirm("Remove stale closed built-in sessions? Running sessions and the default slot are kept."))
+    return;
+  const button = el("cleanupSessionsButton");
+  if (button) button.disabled = true;
+  showBlocking("Cleaning up closed sessions...");
+  try {
+    const r = await api("/api/session/cleanup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ backend: "builtin" }),
+    });
+    const removed = (r && r.removed_count) || 0;
+    const names = (r && r.removed) || [];
+    showSessionManager(
+      removed > 0 ? `Removed ${removed} closed session${removed === 1 ? "" : "s"}` : "Nothing to clean up",
+      removed > 0
+        ? `Removed: ${names.join(", ")}.`
+        : "No stale built-in sessions found.",
+    );
+    // Forget browser state for everything the server just deleted so no
+    // reopen path resurrects a removed session.
+    for (const name of names) forgetSessionState(name);
+  } catch (e) {
+    showSessionManager("Cleanup failed", e.message || String(e));
+  } finally {
+    if (button) button.disabled = false;
     hideBlocking();
   }
 }

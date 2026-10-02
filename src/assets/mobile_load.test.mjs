@@ -299,6 +299,18 @@ function context(pathname = "/", options = {}) {
           status: 200,
           json: async () => optionValue("sessionMutation", { ok: true, pid: 4242 }),
         };
+      if (url === "/api/session/cleanup")
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            optionValue("sessionCleanup", {
+              ok: true,
+              removed: ["revolut"],
+              removed_count: 1,
+              kept_running_count: 0,
+            }),
+        };
       if (url === "/api/recent-workspaces" && opt.method === "POST")
         return {
           ok: true,
@@ -706,6 +718,71 @@ describe("mobile bundle load", () => {
     const screen = ctx.document.getElementById("mobileScreen");
     ok(screen.innerHTML.includes("Session name is required."));
     ok(!ctx.requests.some((r) => r.url === "/api/session/launch"));
+  });
+
+  it("cleans up stale closed sessions from the sessions screen", async () => {
+    const ctx = context("/session/default");
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.showScreen("sessions");
+    await ctx.settle();
+    await ctx.flushTimers();
+    const screen = ctx.document.getElementById("mobileScreen");
+    // The mock lists revolut as offline built-in: exactly one stale row, so
+    // the summary counts it and the button is enabled.
+    ok(screen.innerHTML.includes("Clean up closed sessions (1)"));
+    ok(!screen.innerHTML.includes("Clean up closed sessions (0)"));
+    await ctx.HerdrMobile.cleanupSessions();
+    const cleanup = ctx.requests.find((r) => r.url === "/api/session/cleanup");
+    ok(cleanup, "cleanup request missing");
+    equal(cleanup.opt.method, "POST");
+    equal(cleanup.opt.body, JSON.stringify({ backend: "builtin" }));
+    // The result lands in the screen before the delayed list refresh clears
+    // the message (refreshSessions reloads the list).
+    ok(
+      ctx.document
+        .getElementById("mobileScreen")
+        .innerHTML.includes("Removed 1 closed session: revolut"),
+      "cleanup result message missing from sessions screen",
+    );
+    // The removed session's stored state is forgotten (closed means closed).
+    equal(ctx.localStorage.getItem("herdr-session-state:builtin:revolut"), null);
+  });
+
+  it("reports nothing to clean up when no stale sessions exist", async () => {
+    const ctx = context("/session/default", {
+      sessionsResponse: () => ({
+        sessions: [
+          { name: "default", backend: "builtin", backend_label: "built-in", running: true },
+        ],
+        herdr_available: true,
+        herdr_compatible: true,
+        default_backend: "builtin",
+        enabled_backends: { builtin: true, "external-herdr": true },
+      }),
+      sessionCleanup: { ok: true, removed: [], removed_count: 0, kept_running_count: 0 },
+    });
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.showScreen("sessions");
+    await ctx.settle();
+    await ctx.flushTimers();
+    const screen = ctx.document.getElementById("mobileScreen");
+    ok(screen.innerHTML.includes("Clean up closed sessions"));
+    ok(!screen.innerHTML.includes("Clean up closed sessions ("));
+    await ctx.HerdrMobile.cleanupSessions();
+    ok(
+      ctx.document
+        .getElementById("mobileScreen")
+        .innerHTML.includes("No stale built-in sessions found."),
+      "empty cleanup message missing from sessions screen",
+    );
+  });
+
+  it("skips the cleanup request when the user cancels the confirm", async () => {
+    const ctx = context("/session/default");
+    vm.runInContext(source, ctx);
+    ctx.confirm = () => false;
+    await ctx.HerdrMobile.cleanupSessions();
+    ok(!ctx.requests.some((r) => r.url === "/api/session/cleanup"));
   });
 
 

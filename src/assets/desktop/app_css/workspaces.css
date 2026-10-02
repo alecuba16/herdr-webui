@@ -499,6 +499,12 @@ body.light .agent-sort-chip.blue {
 .session-new .btn {
   white-space: nowrap;
 }
+.session-cleanup {
+  margin-top: 0;
+}
+.session-cleanup small {
+  color: var(--muted, inherit);
+}
 .worktree-form {
   display: grid;
   gap: 12px;
