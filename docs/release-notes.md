@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.4.56 Release Notes
+- Boot-time skeleton placeholders (shared `skeleton.js`/`skeleton.css`) now
+  fill the sections that wait on connectivity: the versions line, the
+  workspace and agents lists, session manager rows, and the mobile screens.
+  Each placeholder copies the shape of the real rows, so sections keep their
+  size and do not jump when the first refresh lands.
+- Login page gets a password show/hide toggle with correct ARIA state
+  (`aria-pressed`, `aria-label`) and a busy spinner on the submit button
+  while the login request is in flight.
+- All settings rows that save through the backend now show pending feedback:
+  an amber "Saving..." badge while the request is in flight, then a green
+  "Saved"/"Loaded" or red error badge when it settles. Wired on server
+  settings reload + apply, theme color buttons, LSP server toggles, the
+  desktop no-sleep menu, and the mobile no-sleep row.
+
 ## 0.4.55 Release Notes
 - The session manager (desktop) and the sessions panel (mobile) both get a
   "Clean up closed sessions" button. It removes stale built-in session
