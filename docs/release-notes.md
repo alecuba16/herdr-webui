@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.4.55 Release Notes
+- The session manager (desktop) and the sessions panel (mobile) both get a
+  "Clean up closed sessions" button. It removes stale built-in session
+  entries: directories left behind by crashed or closed backends whose
+  socket no longer answers. Running sessions, sessions with live handles,
+  and the `default` slot are never touched, and both UIs ask for
+  confirmation first.
+- New `POST /api/session/cleanup` backs the button. It follows the same
+  auth and backend gating as `/api/session/close`, clears the server's
+  closed-session markers for what it removes, and reports the removed
+  names so the browser can forget their stored state.
+- Mobile shows the stale count on the disclosure (`Clean up closed
+  sessions (2)`) and disables the button when there is nothing to clean,
+  so the user sees what the action will do before tapping.
+
 ## 0.4.47 Release Notes
 - The statusbar hint is now fully contextual: it describes the keys that
   are live in the focused window instead of a generic per-screen string.
