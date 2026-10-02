@@ -957,10 +957,12 @@
     refreshSessions: (...args) => mobileSessions.refreshSessions(...args),
     updateSessionField: (...args) => mobileSessions.updateSessionField(...args),
     setSessionCreateExpanded: (...args) => mobileSessions.setSessionCreateExpanded(...args),
+    setSessionCleanupExpanded: (...args) => mobileSessions.setSessionCleanupExpanded(...args),
     newSession: (...args) => mobileSessions.newSession(...args),
     selectSession: (...args) => mobileSessions.selectSession(...args),
     closeSession: (...args) => mobileSessions.closeSession(...args),
     closeSessionRow: (...args) => mobileSessions.closeSessionRow(...args),
+    cleanupSessions: (...args) => mobileSessions.cleanupSessions(...args),
   };
 
   globalThis.HerdrMobileFiles = {
