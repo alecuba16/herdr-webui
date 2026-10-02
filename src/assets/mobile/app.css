@@ -387,6 +387,38 @@ body.light {
   overflow: auto;
   padding: 8px;
 }
+.mobile-terminal-loading {
+  align-items: center;
+  background: color-mix(in srgb, var(--bg), transparent 4%);
+  color: var(--muted);
+  display: grid;
+  font-weight: 700;
+  inset: 0;
+  justify-items: center;
+  letter-spacing: 0.04em;
+  position: absolute;
+  z-index: 3;
+}
+.mobile-terminal-loading span {
+  align-items: center;
+  display: inline-flex;
+  gap: 10px;
+}
+.mobile-terminal-loading span::before {
+  animation: herdr-mobile-terminal-spin 0.8s linear infinite;
+  border: 2px solid var(--border2);
+  border-radius: 50%;
+  border-top-color: var(--accent);
+  content: "";
+  height: 14px;
+  width: 14px;
+}
+.mobile-terminal-loading[hidden] {
+  display: none;
+}
+@keyframes herdr-mobile-terminal-spin {
+  to { transform: rotate(360deg); }
+}
 .mobile-terminal-follow-button {
   align-items: center;
   background: var(--accent);

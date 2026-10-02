@@ -2961,11 +2961,21 @@ async function showSessionManager(title, text, { auto = false } = {}) {
   // reading (e.g. the "Session closed" confirmation right after closing a
   // session while the closed backend's refresh is still failing).
   if (auto && managerShownForUser()) return;
+  const managerEl = el("sessionManager"),
+    listEl = el("sessionList");
+  // Make the manager visible BEFORE loadSessions paints its skeleton, so
+  // the session list shows a placeholder (same row shape) during the fetch.
+  // The auto-opened flag is set up front too: while the fetch is in flight
+  // the manager is already visible, so a concurrent auto-open must still be
+  // recognized as auto-opened (and a user-opened one must not be clobbered).
+  sessionManagerAutoOpened = !!auto;
+  if (managerEl) managerEl.style.display = "block";
+  if (listEl && window.HerdrSkeleton) listEl.innerHTML = window.HerdrSkeleton.sessions(2);
   await loadSessions();
   const titleEl = el("sessionManagerTitle"),
     textEl = el("sessionManagerText"),
-    manager = el("sessionManager"),
-    list = el("sessionList"),
+    manager = managerEl,
+    list = listEl,
     current = el("sessionCurrentLabel"),
     currentDot = manager && manager.querySelector(".session-current .dot");
   if (titleEl) titleEl.textContent = title || "Session manager";
@@ -3001,7 +3011,6 @@ async function showSessionManager(title, text, { auto = false } = {}) {
       herdrButton.title = "No compatible herdr install detected; install herdr to use external Herdr sessions";
     }
   }
-  sessionManagerAutoOpened = !!auto;
   if (manager) manager.style.display = "block";
 }
 function hideSessionManager() {
@@ -4008,6 +4017,7 @@ async function refresh() {
     updateFooterSessionButton();
   } catch (e) {
     state.backendOnline = false;
+    setTerminalLoading(false);
     state.workspaces = [];
     state.tabs = [];
     state.panes = [];

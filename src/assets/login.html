@@ -13,13 +13,25 @@
         <img src="/favicon.svg" alt="" />
         <div><strong>Herdr</strong><span>WebUI</span></div>
       </div>
-      <input name="username" autocomplete="username" placeholder="user" /><input
-        name="password"
-        type="password"
-        autocomplete="current-password"
-        placeholder="password"
-      /><button>Login</button>
-      <p id="error"></p>
+      <input name="username" autocomplete="username" placeholder="user" />
+      <div class="password-field">
+        <input
+          id="password"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          placeholder="password"
+        /><button
+          type="button"
+          id="passwordToggle"
+          class="password-toggle"
+          aria-label="Show password"
+          aria-pressed="false"
+          title="Show password"
+        >👁</button>
+      </div>
+      <button id="loginSubmit">Login</button>
+      <p id="error" aria-live="polite"></p>
     </form>
     <script src="/assets/login.js"></script>
   </body>

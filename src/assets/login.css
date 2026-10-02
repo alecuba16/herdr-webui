@@ -43,6 +43,7 @@ form {
 }
 input,
 button {
+  box-sizing: border-box;
   font: inherit;
   border-radius: 10px;
   border: 1px solid #45475a;
@@ -50,11 +51,63 @@ button {
   color: #cdd6f4;
   padding: 10px;
 }
+.password-field {
+  position: relative;
+  display: grid;
+}
+.password-field input {
+  width: 100%;
+  padding-right: 40px;
+}
+.password-toggle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #a6adc8;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.password-toggle:hover {
+  background: #313244;
+  color: #cdd6f4;
+}
 button {
   background: #89b4fa;
   color: #11111b;
   border: 0;
   font-weight: 700;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+/* Spinner shown in the login button while the auth request is in flight. */
+.login-spinner {
+  display: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #11111b;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: login-spin 0.7s linear infinite;
+  vertical-align: -2px;
+}
+button.busy .login-spinner {
+  display: inline-block;
+}
+@keyframes login-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 p {
   color: #f38ba8;

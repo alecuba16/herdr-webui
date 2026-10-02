@@ -10,6 +10,9 @@
     setBrowserFaviconError,
   }) {
     function renderPanels() {
+      // Skeleton (same row shape) while the first refresh fetch is pending.
+      if (globalThis.HerdrSkeleton && state.booting)
+        return globalThis.HerdrSkeleton.sessions(2);
       if (!state.ws)
         return '<div class="mobile-loading">Select workspace first</div>';
       const close = state.tab ? `<button class="mobile-btn danger mobile-wide" onclick="HerdrMobile.closeCurrentPanel()">Close current panel</button>` : "";
@@ -27,7 +30,7 @@
     function renderTerminal() {
       if (!state.terminalId)
         return '<div class="mobile-loading">No terminal selected</div>';
-      return `<div class="mobile-terminal-screen"><div class="mobile-tabs" id="mobileTerminalTabs">${renderTerminalTabsWithAdd()}</div><div class="mobile-terminal-shell" id="terminalShell"><button class="mobile-terminal-follow-button" id="mobileTerminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow" onclick="HerdrMobile.scrollTerminalToBottom(false)">↓ Tail</button><div class="mobile-terminal" id="terminal"></div></div></div>`;
+      return `<div class="mobile-terminal-screen"><div class="mobile-tabs" id="mobileTerminalTabs">${renderTerminalTabsWithAdd()}</div><div class="mobile-terminal-shell" id="terminalShell"><div class="mobile-terminal-loading" id="mobileTerminalLoading"${state.terminalConnecting ? "" : " hidden"}><span>Loading panel</span></div><button class="mobile-terminal-follow-button" id="mobileTerminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow" onclick="HerdrMobile.scrollTerminalToBottom(false)">↓ Tail</button><div class="mobile-terminal" id="terminal"></div></div></div>`;
     }
 
     function renderTerminalTabsWithAdd() {

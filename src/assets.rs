@@ -9,6 +9,8 @@ const LOGIN_CSS: &str = include_str!("assets/login.css");
 const LOGIN_JS: &str = include_str!("assets/login.js");
 const SHARED_CORE_JS: &str = include_str!("assets/shared/core.js");
 const SHARED_HTTP_JS: &str = include_str!("assets/shared/http.js");
+const SHARED_SKELETON_JS: &str = include_str!("assets/shared/skeleton.js");
+const SHARED_SKELETON_CSS: &str = include_str!("assets/shared/skeleton.css");
 const SHARED_ATTENTION_JS: &str = include_str!("assets/shared/attention.js");
 const SHARED_OPTIONS_JS: &str = include_str!("assets/shared/options.js");
 const SHARED_ACTIONS_JS: &str = include_str!("assets/shared/actions.js");
@@ -184,6 +186,14 @@ pub(crate) async fn shared_core_js() -> Response {
 
 pub(crate) async fn shared_http_js() -> Response {
     static_text(SHARED_HTTP_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn shared_skeleton_js() -> Response {
+    static_text(SHARED_SKELETON_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn shared_skeleton_css() -> Response {
+    static_text(SHARED_SKELETON_CSS, "text/css; charset=utf-8")
 }
 
 pub(crate) async fn shared_attention_js() -> Response {
@@ -666,6 +676,8 @@ mod tests {
         );
         assert_eq!(content_type(&mobile_file_browser_js().await), javascript);
         assert_eq!(content_type(&login_js().await), javascript);
+        assert_eq!(content_type(&shared_skeleton_js().await), javascript);
+        assert_eq!(content_type(&shared_skeleton_css().await), css);
         assert_eq!(content_type(&shared_colors_css().await), css);
         assert_eq!(content_type(&shared_content_search_css().await), css);
         assert_eq!(content_type(&desktop_git_ui_css().await), css);
@@ -694,6 +706,19 @@ mod tests {
         assert_eq!(content_type(&icon_lock_open_svg().await), svg);
         assert_eq!(content_type(&icon_eye_svg().await), svg);
         assert_eq!(content_type(&icon_eye_off_svg().await), svg);
+    }
+
+    #[test]
+    fn login_html_contains_password_toggle() {
+        assert!(LOGIN_HTML.contains(r#"id="passwordToggle""#));
+        assert!(LOGIN_HTML.contains(r#"aria-label="Show password""#));
+        assert!(LOGIN_HTML.contains(r#"aria-pressed="false""#));
+    }
+
+    #[test]
+    fn shared_skeleton_assets_define_runtime_contract() {
+        assert!(SHARED_SKELETON_JS.contains("HerdrSkeleton"));
+        assert!(SHARED_SKELETON_CSS.contains(".herdr-skeleton"));
     }
 
     #[test]

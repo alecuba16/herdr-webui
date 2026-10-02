@@ -1,5 +1,5 @@
 (function () {
-  function createMobileTerminal({ el, state, wsUrl, onHerdrError, onTerminalOutput }) {
+  function createMobileTerminal({ el, state, wsUrl, onHerdrError, onTerminalOutput, onConnectionState }) {
     let term = null,
       termWs = null,
       openedTerminalElement = null,
@@ -19,6 +19,11 @@
 
     const IMMEDIATE_WRITE_THRESHOLD = 8192;
     const LARGE_FRAME_THRESHOLD = 32768;
+
+    function setConnectionState(connecting) {
+      state.terminalConnecting = !!connecting;
+      if (typeof onConnectionState === "function") onConnectionState(!!connecting);
+    }
 
     function options() {
       try {
@@ -68,12 +73,16 @@
 
     async function connect() {
       const terminal = el("terminal");
-      if (!terminal || !state.terminalId || !globalThis.HerdrTerminalRenderer) return;
+      if (!terminal || !state.terminalId || !globalThis.HerdrTerminalRenderer) {
+        setConnectionState(false);
+        return;
+      }
       if (term && openedTerminalElement && openedTerminalElement !== terminal) destroy(false);
       const nextSize = size();
       const terminalKey = `${state.session}|${state.ws}|${state.tab}|${state.pane}|${state.terminalId}|${terminalCore()}`;
       const terminalSizeKey = `${nextSize.cols}x${nextSize.rows}`;
       if (termWs && termWs.readyState === 1 && connectedTerminalKey === terminalKey) {
+        setConnectionState(false);
         if (connectedTerminalSize === terminalSizeKey) return;
         connectedTerminalSize = terminalSizeKey;
         try { term.resize(nextSize.cols, nextSize.rows); } catch (_) {}
@@ -85,6 +94,7 @@
         return;
       }
       disconnect(false);
+      setConnectionState(true);
       connectedTerminalKey = terminalKey;
       connectedTerminalSize = terminalSizeKey;
       if (!term) {
@@ -128,7 +138,12 @@
       const ws = new WebSocket(wsUrl(`/ws/terminal?terminal_id=${encodeURIComponent(state.terminalId)}&cols=${nextSize.cols}&rows=${nextSize.rows}`));
       termWs = ws;
       ws.binaryType = "arraybuffer";
-      ws.onopen = () => { if (termWs === ws) terminalAttachPending = true; };
+      ws.onopen = () => {
+        if (termWs === ws) {
+          setConnectionState(false);
+          terminalAttachPending = true;
+        }
+      };
       ws.onmessage = (event) => {
         if (termWs !== ws) return;
         if (
@@ -149,6 +164,7 @@
           termWs = null;
           connectedTerminalKey = "";
           connectedTerminalSize = "";
+          setConnectionState(false);
         }
       };
     }
@@ -181,6 +197,7 @@
       }
       connectedTerminalKey = "";
       connectedTerminalSize = "";
+      setConnectionState(false);
       inputQueue = [];
       terminalQueryReplyState = {};
       writeQueue = [];
