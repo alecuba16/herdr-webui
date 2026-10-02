@@ -127,6 +127,56 @@ for (let i = 0; i < 25; i++) {
 }
 check('direct terminal input reaches PTY and echoes', echoed, tailText.slice(-160));
 
+// Switching between mobile panels must not be undone by overlapping refreshes.
+// This uses the production panel creation, selection, and refresh paths.
+const initialPanelIds = await evalx(`(async () => {
+  const selection = HerdrMobile.currentSelection();
+  const response = await fetch('/api/tabs?workspace_id=' + encodeURIComponent(selection.ws));
+  const body = await response.json();
+  return (body.result && body.result.tabs || []).map((tab) => tab.tab_id);
+})()`);
+let panelCreated = false;
+await evalx('HerdrMobile.createPanel()');
+for (let i = 0; i < 25; i++) {
+  const currentPanelIds = await evalx(`(async () => {
+    const selection = HerdrMobile.currentSelection();
+    const response = await fetch('/api/tabs?workspace_id=' + encodeURIComponent(selection.ws));
+    const body = await response.json();
+    return (body.result && body.result.tabs || []).map((tab) => tab.tab_id);
+  })()`);
+  panelCreated = Array.isArray(currentPanelIds) && currentPanelIds.length > (initialPanelIds || []).length;
+  if (panelCreated) break;
+  await new Promise((r) => setTimeout(r, 200));
+}
+check('second mobile panel created for stability check', panelCreated);
+
+if (panelCreated) {
+  const panelIds = await evalx(`(async () => {
+    const selection = HerdrMobile.currentSelection();
+    const response = await fetch('/api/tabs?workspace_id=' + encodeURIComponent(selection.ws));
+    const body = await response.json();
+    return (body.result && body.result.tabs || []).map((tab) => tab.tab_id);
+  })()`);
+  const selection = await evalx('HerdrMobile.currentSelection()');
+  const scopedPanelId = (id) => String(id).startsWith(`${selection.ws}:`) ? String(id) : `${selection.ws}:${id}`;
+  const firstPanel = scopedPanelId(panelIds[0]);
+  const secondPanel = scopedPanelId(panelIds[1]);
+  await evalx(`HerdrMobile.selectTab(${JSON.stringify(secondPanel)})`);
+  await new Promise((r) => setTimeout(r, 500));
+  const selectedSecond = await evalx('HerdrMobile.currentSelection()');
+  check('mobile panel selection moves to second panel', selectedSecond.tab === secondPanel, JSON.stringify(selectedSecond));
+
+  await evalx(`HerdrMobile.selectTab(${JSON.stringify(firstPanel)})`);
+  await new Promise((r) => setTimeout(r, 500));
+  await evalx('Promise.all(Array.from({ length: 6 }, () => HerdrMobile.refresh()))');
+  const selectedAfterRefreshes = await evalx('HerdrMobile.currentSelection()');
+  check(
+    'mobile panel selection stays on first panel after refreshes',
+    scopedPanelId(selectedAfterRefreshes.tab) === firstPanel,
+    JSON.stringify(selectedAfterRefreshes),
+  );
+}
+
 // Temporary terminal on mobile uses the same direct wterm input path.
 await evalx(`HerdrMobile.runAction('temp-terminal')`);
 let tempOpen = false;

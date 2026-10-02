@@ -23,6 +23,11 @@
     return `${ws}:${id}`;
   }
 
+  function sameScopedId(ws, left, right) {
+    if (left == null || right == null) return left === right;
+    return compactScopedId(ws, String(left)) === compactScopedId(ws, String(right));
+  }
+
   // Per-session storage keys (mobile parity with the desktop core helpers).
   // The backend pin used to be a single global `herdr-session-backend` value,
   // which leaked the last-used backend into every other session; each session
@@ -155,6 +160,7 @@
     selectionPath,
     sessionBackendKey,
     sessionPrefix,
+    sameScopedId,
     sessionStateKey,
     writeSessionBackend,
   };

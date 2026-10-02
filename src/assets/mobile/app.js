@@ -9,6 +9,7 @@
     readSessionBackend,
     readSessionSelection,
     samePath,
+    sameScopedId,
     saveSessionSelection,
     selectionPath: mobileSelectionPath,
     sessionPrefix,
@@ -514,22 +515,36 @@
         browserFaviconError = false;
         mobileAttention.handleSound();
         mobileWorktrees.applyResult(worktrees);
-        if (!state.tabs.some((tab) => tab.tab_id === state.tab)) {
+        const selectedTab = state.tabs.find((tab) => sameScopedId(state.ws, tab.tab_id, state.tab));
+        if (!selectedTab) {
           const focused = state.tabs.find((tab) => tab.focused);
           state.tab = (focused || state.tabs[0] || {}).tab_id || null;
+        } else {
+          state.tab = selectedTab.tab_id;
         }
-        if (!state.panes.some((pane) => pane.pane_id === state.pane)) {
+        const selectedPane = state.panes.find(
+          (pane) =>
+            sameScopedId(state.ws, pane.pane_id, state.pane) &&
+            sameScopedId(state.ws, pane.tab_id, state.tab),
+        );
+        if (!selectedPane) {
           const pane =
-            state.panes.find((item) => item.tab_id === state.tab && item.focused) ||
-            state.panes.find((item) => item.tab_id === state.tab) ||
-            state.panes[0];
+            state.panes.find(
+              (item) => sameScopedId(state.ws, item.tab_id, state.tab) && item.focused,
+            ) ||
+            state.panes.find((item) => sameScopedId(state.ws, item.tab_id, state.tab)) ||
+            null;
           state.pane = pane && pane.pane_id;
+        } else {
+          state.pane = selectedPane.pane_id;
         }
         const pane = currentPane();
         state.terminalId = pane && pane.terminal_id;
         if (
           routeWs &&
-          (routeWs !== state.ws || routeTab !== state.tab || routePane !== state.pane)
+          (routeWs !== state.ws ||
+            !sameScopedId(state.ws, routeTab, state.tab) ||
+            !sameScopedId(state.ws, routePane, state.pane))
         ) {
           mobileTerminal.destroy(true);
         }
@@ -627,6 +642,7 @@
     showScreen,
     selectionPath,
     currentSessionBackend,
+    sameScopedId,
     saveSessionSelection,
     currentWorkspaceCwd,
     tabTitle,

@@ -1093,6 +1093,40 @@ describe("mobile bundle load", () => {
     equal(last.path, "/session/default/workspace/w1/tab/t2/pane/p2");
   });
 
+  it("keeps compact panel IDs connected to their scoped pane IDs", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      tabs: [
+        { workspace_id: "w1", tab_id: "t1", number: 1 },
+        { workspace_id: "w1", tab_id: "t2", number: 2 },
+      ],
+      panes: [
+        { tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" },
+        { tab_id: "w1:t2", pane_id: "w1:p2", terminal_id: "term2" },
+      ],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    ctx.HerdrMobile.selectTab("t2");
+    equal(ctx.HerdrMobile.currentSelection().tab, "t2");
+    equal(ctx.HerdrMobile.currentSelection().pane, "w1:p2");
+  });
+
+  it("does not select a pane from another tab while panel data is settling", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      panes: ({ url }) =>
+        String(url).includes("workspace_id=w1")
+          ? [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }]
+          : [],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    ctx.HerdrMobile.selectTab("w1:t2");
+    equal(ctx.HerdrMobile.currentSelection().tab, "w1:t2");
+    equal(ctx.HerdrMobile.currentSelection().pane, null);
+  });
+
   it("recreates terminal after leaving and returning to terminal screen", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
