@@ -1,13 +1,10 @@
 // Real-browser acceptance checks for the mobile terminal input model.
 // Boots the app in a mobile viewport, opens the terminal screen, and
 // verifies:
-//   1. The floating pencil button exists.
-//   2. Tapping the terminal surface does NOT focus wterm's hidden textarea
-//      (no spontaneous on-screen keyboard / no focus fights).
-//   3. Pressing the pencil opens the input sheet and focuses its input.
-//   4. Typed text + Enter is delivered to the PTY and echoed by the shell
-//      (input goes via the sheet, never directly to the terminal).
-//   5. Escape closes the sheet; wterm's textarea stays readonly.
+//   1. The terminal surface owns a writable wterm textarea.
+//   2. Tapping the terminal surface focuses that textarea for direct input.
+//   3. Typed text + Enter is delivered to the PTY and echoed by the shell.
+//   4. The temporary terminal uses the same direct input path.
 import { connectToPage, openApp } from './cdp-driver.mjs';
 
 const URL = process.env.E2E_BASE_URL || 'https://127.0.0.1:8899/';
@@ -15,6 +12,22 @@ const results = [];
 function check(name, ok, detail = '') {
   results.push({ name, ok, detail });
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ' :: ' + detail : ''}`);
+}
+async function pressEnter() {
+  await cdp.send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'Enter',
+    code: 'Enter',
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await cdp.send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Enter',
+    code: 'Enter',
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
 }
 
 const cdp = await connectToPage();
@@ -67,59 +80,40 @@ const opened = await evalx(`(async () => {
 check('terminal screen opened', opened === true, String(opened));
 await new Promise((r) => setTimeout(r, 1500));
 
-const pencilPresent = await evalx('!!document.getElementById("mobileTerminalInputButton")');
-check('floating pencil button present', pencilPresent);
+const pencilButtonPresent = await evalx('!!document.getElementById("mobileTerminalInputButton")');
+check('floating pencil button removed', !pencilButtonPresent);
 
-// wterm hidden textarea is gated readonly.
+// wterm's textarea is the direct mobile input target.
 const textareaState = await evalx(`(() => {
   const ta = document.querySelector('#terminal textarea');
   if (!ta) return { found: false };
-  return { found: true, readOnly: ta.readOnly };
+  return { found: true, readOnly: ta.readOnly, inputMode: ta.getAttribute('inputmode') };
 })()`);
 check('wterm textarea present', !!(textareaState && textareaState.found));
-check('wterm textarea readonly (input gated)', !!(textareaState && textareaState.found && textareaState.readOnly === true), JSON.stringify(textareaState));
+check('wterm textarea starts gated', !!(textareaState && textareaState.found && textareaState.readOnly === true), JSON.stringify(textareaState));
 
-// Tap the terminal surface: activeElement must not become the textarea.
+// Tap the terminal surface: wterm must focus its input textarea.
 await evalx(`(() => {
   const el = document.getElementById('terminal');
   if (el) {
     el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
     el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
   }
   return true;
 })()`);
 await new Promise((r) => setTimeout(r, 400));
 const activeAfterTap = await evalx('document.activeElement && document.activeElement.tagName + "#" + (document.activeElement.id || "")');
-check('tap on terminal does not focus its textarea', !/TEXTAREA/i.test(String(activeAfterTap)), activeAfterTap);
-
-// Open the input sheet via the pencil.
-const sheetOpened = await evalx(`(() => {
-  const btn = document.getElementById('mobileTerminalInputButton');
-  if (!btn) return false;
-  btn.click();
-  return true;
+check('tap on terminal focuses its textarea', /TEXTAREA/i.test(String(activeAfterTap)), activeAfterTap);
+const textareaAfterTap = await evalx(`(() => {
+  const input = document.querySelector('#terminal textarea');
+  return input ? { readOnly: input.readOnly, active: document.activeElement === input } : null;
 })()`);
-check('pencil opens input sheet', sheetOpened);
-const sheetState = await evalx(`(() => {
-  const sheet = document.getElementById('mobileTerminalInputSheet');
-  const input = document.getElementById('mobileTerminalInput');
-  return {
-    sheetVisible: !!sheet && !sheet.hidden,
-    inputPresent: !!input,
-    inputFocused: !!input && document.activeElement === input,
-  };
-})()`);
-check('input sheet visible', !!(sheetState && sheetState.sheetVisible));
-check('input field focused (keyboard intent)', !!(sheetState && sheetState.inputFocused), JSON.stringify(sheetState));
+check('tap enables writable terminal input', !!(textareaAfterTap && textareaAfterTap.readOnly === false && textareaAfterTap.active), JSON.stringify(textareaAfterTap));
 
-// Type a command and press Enter via the input field; verify it reached the PTY.
+// Type a command and press Enter via the terminal textarea; verify it reached the PTY.
 await cdp.send('Input.insertText', { text: 'echo HERDR_MOBILE_INPUT_OK' });
-await evalx(`(() => {
-  const input = document.getElementById('mobileTerminalInput');
-  if (!input) return false;
-  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  return true;
-})()`);
+await pressEnter();
 // Wait for the shell to echo and execute.
 let echoed = false;
 let tailText = '';
@@ -131,43 +125,59 @@ for (let i = 0; i < 25; i++) {
   }
   await new Promise((r) => setTimeout(r, 300));
 }
-check('sheet input reaches PTY and echoes', echoed, tailText.slice(-160));
+check('direct terminal input reaches PTY and echoes', echoed, tailText.slice(-160));
 
-// Escape closes the sheet.
-await evalx(`(() => {
-  const input = document.getElementById('mobileTerminalInput');
-  if (input) input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  return true;
+// Switching between mobile panels must not be undone by overlapping refreshes.
+// This uses the production panel creation, selection, and refresh paths.
+const initialPanelIds = await evalx(`(async () => {
+  const selection = HerdrMobile.currentSelection();
+  const response = await fetch('/api/tabs?workspace_id=' + encodeURIComponent(selection.ws));
+  const body = await response.json();
+  return (body.result && body.result.tabs || []).map((tab) => tab.tab_id);
 })()`);
-const sheetClosed = await evalx(`(() => {
-  const sheet = document.getElementById('mobileTerminalInputSheet');
-  return !!sheet && sheet.hidden;
-})()`);
-check('Escape closes input sheet', sheetClosed);
-
-// Multi-line submit: each line must execute as its own command.
-await evalx(`HerdrMobile.openTerminalInputSheet()`);
-await cdp.send('Input.insertText', { text: 'echo LINE_ONE_OK\necho LINE_TWO_OK' });
-await evalx(`(() => {
-  const input = document.getElementById('mobileTerminalInput');
-  if (!input) return false;
-  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  return true;
-})()`);
-let bothLines = false;
-let multiTail = '';
+let panelCreated = false;
+await evalx('HerdrMobile.createPanel()');
 for (let i = 0; i < 25; i++) {
-  multiTail = await evalx(`((document.querySelector('#terminal .term-grid') || {}).textContent || '').trim().slice(-400)`);
-  const one = /LINE_ONE_OK[\s\S]*LINE_ONE_OK/.test(multiTail);
-  const two = /LINE_TWO_OK[\s\S]*LINE_TWO_OK/.test(multiTail);
-  if (one && two) { bothLines = true; break; }
-  await new Promise((r) => setTimeout(r, 300));
+  const currentPanelIds = await evalx(`(async () => {
+    const selection = HerdrMobile.currentSelection();
+    const response = await fetch('/api/tabs?workspace_id=' + encodeURIComponent(selection.ws));
+    const body = await response.json();
+    return (body.result && body.result.tabs || []).map((tab) => tab.tab_id);
+  })()`);
+  panelCreated = Array.isArray(currentPanelIds) && currentPanelIds.length > (initialPanelIds || []).length;
+  if (panelCreated) break;
+  await new Promise((r) => setTimeout(r, 200));
 }
-check('multi-line submit executes each line', bothLines, multiTail.slice(-160));
-await evalx(`HerdrMobile.closeTerminalInputSheet()`);
+check('second mobile panel created for stability check', panelCreated);
 
-// Temporary terminal on mobile is keyboard-gated too: opening it must not
-// focus wterm's textarea, and its pencil input sheet must deliver input.
+if (panelCreated) {
+  const panelIds = await evalx(`(async () => {
+    const selection = HerdrMobile.currentSelection();
+    const response = await fetch('/api/tabs?workspace_id=' + encodeURIComponent(selection.ws));
+    const body = await response.json();
+    return (body.result && body.result.tabs || []).map((tab) => tab.tab_id);
+  })()`);
+  const selection = await evalx('HerdrMobile.currentSelection()');
+  const scopedPanelId = (id) => String(id).startsWith(`${selection.ws}:`) ? String(id) : `${selection.ws}:${id}`;
+  const firstPanel = scopedPanelId(panelIds[0]);
+  const secondPanel = scopedPanelId(panelIds[1]);
+  await evalx(`HerdrMobile.selectTab(${JSON.stringify(secondPanel)})`);
+  await new Promise((r) => setTimeout(r, 500));
+  const selectedSecond = await evalx('HerdrMobile.currentSelection()');
+  check('mobile panel selection moves to second panel', selectedSecond.tab === secondPanel, JSON.stringify(selectedSecond));
+
+  await evalx(`HerdrMobile.selectTab(${JSON.stringify(firstPanel)})`);
+  await new Promise((r) => setTimeout(r, 500));
+  await evalx('Promise.all(Array.from({ length: 6 }, () => HerdrMobile.refresh()))');
+  const selectedAfterRefreshes = await evalx('HerdrMobile.currentSelection()');
+  check(
+    'mobile panel selection stays on first panel after refreshes',
+    scopedPanelId(selectedAfterRefreshes.tab) === firstPanel,
+    JSON.stringify(selectedAfterRefreshes),
+  );
+}
+
+// Temporary terminal on mobile uses the same direct wterm input path.
 await evalx(`HerdrMobile.runAction('temp-terminal')`);
 let tempOpen = false;
 for (let i = 0; i < 24; i++) {
@@ -178,50 +188,76 @@ for (let i = 0; i < 24; i++) {
 check('temp terminal opens on mobile', tempOpen);
 const tempActive = await evalx(`document.activeElement ? document.activeElement.tagName : 'none'`);
 check('temp terminal does not autofocus its textarea', !/TEXTAREA/i.test(String(tempActive)), tempActive);
-const tempTyped = await evalx(`(() => {
-  const b = document.querySelector('.temp-terminal-input-button');
-  if (!b) return 'no pencil';
-  b.click();
-  const i = document.querySelector('.temp-terminal-input-sheet .temp-terminal-input-field');
-  return i && document.activeElement === i ? 'focused' : 'not focused';
+const tempTextarea = await evalx(`(() => {
+  const input = document.querySelector('.temp-terminal-backdrop .terminal textarea');
+  return input ? { readOnly: input.readOnly } : null;
 })()`);
-check('temp terminal pencil focuses input sheet', tempTyped === 'focused', tempTyped);
-await cdp.send('Input.insertText', { text: 'echo TEMP_SHEET_OK' });
+check('temp terminal textarea starts gated', !!(tempTextarea && tempTextarea.readOnly === true), JSON.stringify(tempTextarea));
 await evalx(`(() => {
-  const i = document.querySelector('.temp-terminal-input-sheet .temp-terminal-input-field');
-  if (!i) return false;
-  i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  const terminal = document.querySelector('.temp-terminal-backdrop .terminal');
+  if (terminal) terminal.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }));
   return true;
 })()`);
+await new Promise((r) => setTimeout(r, 100));
+const tempAfterTap = await evalx(`(() => {
+  const input = document.querySelector('.temp-terminal-backdrop .terminal textarea');
+  return input ? { readOnly: input.readOnly, active: document.activeElement === input } : null;
+})()`);
+check('temp terminal tap enables writable input', !!(tempAfterTap && tempAfterTap.readOnly === false && tempAfterTap.active), JSON.stringify(tempAfterTap));
+await cdp.send('Input.insertText', { text: 'echo TEMP_DIRECT_INPUT_OK' });
+await pressEnter();
 let tempEchoed = false;
 let tempTail = '';
 for (let i = 0; i < 25; i++) {
   tempTail = await evalx(`((document.querySelector('.temp-terminal-backdrop .term-grid') || {}).textContent || '').trim().slice(-200)`);
-  if (/TEMP_SHEET_OK[\s\S]*TEMP_SHEET_OK/.test(tempTail)) { tempEchoed = true; break; }
+  if (/TEMP_DIRECT_INPUT_OK[\s\S]*TEMP_DIRECT_INPUT_OK/.test(tempTail)) { tempEchoed = true; break; }
   await new Promise((r) => setTimeout(r, 300));
 }
-check('temp sheet input reaches PTY and echoes', tempEchoed, tempTail.slice(-120));
+check('temp direct input reaches PTY and echoes', tempEchoed, tempTail.slice(-120));
 
-// Pencil/follow overlap: scrolling up shows the follow pill; the pencil
-// must get .shifted and move above it instead of covering it.
+// Produce enough shell output to create real scrollback before testing the
+// follow control. A single echoed command may fit in the viewport.
+await cdp.send('Input.insertText', {
+  text: 'seq 1 120 | sed "s/^/HERDR_SCROLL_/"',
+});
+await pressEnter();
+let scrollbackMetrics = null;
+for (let i = 0; i < 25; i++) {
+  scrollbackMetrics = await evalx(`(() => {
+    const terminal = document.querySelector('.temp-terminal-backdrop .terminal');
+    return terminal ? { scrollHeight: terminal.scrollHeight, clientHeight: terminal.clientHeight } : null;
+  })()`);
+  if (scrollbackMetrics && scrollbackMetrics.scrollHeight > scrollbackMetrics.clientHeight) break;
+  await new Promise((r) => setTimeout(r, 300));
+}
+check(
+  'temp terminal creates scrollback for follow control',
+  !!(scrollbackMetrics && scrollbackMetrics.scrollHeight > scrollbackMetrics.clientHeight),
+  JSON.stringify(scrollbackMetrics),
+);
+
+// Scrolling up still exposes the follow pill without any input overlay.
 await evalx(`(() => {
-  const grid = document.querySelector('.temp-terminal-backdrop .term-grid');
-  if (grid) { grid.scrollTop = 0; grid.dispatchEvent(new Event('scroll', { bubbles: false })); }
+  const terminal = document.querySelector('.temp-terminal-backdrop .terminal');
+  if (terminal) { terminal.scrollTop = 0; terminal.dispatchEvent(new Event('scroll', { bubbles: false })); }
   return true;
 })()`);
-let shifted = false;
-let shiftDetail = '';
+let followVisible = false;
+let followDetail = '';
 for (let i = 0; i < 20; i++) {
-  shiftDetail = await evalx(`(() => {
+  followDetail = await evalx(`(() => {
     const b = document.querySelector('.temp-terminal-backdrop .terminal-follow-button');
-    const p = document.querySelector('.temp-terminal-backdrop .temp-terminal-input-button');
-    if (!b || !p) return 'missing';
-    return JSON.stringify({ hidden: b.hidden, shifted: p.className.indexOf('shifted') !== -1 });
+    const pencil = document.querySelector('.temp-terminal-backdrop .temp-terminal-input-button');
+    if (!b) return 'missing';
+    return JSON.stringify({ hidden: b.hidden, pencilPresent: !!pencil });
   })()`);
-  try { if (JSON.parse(shiftDetail).shifted) { shifted = true; break; } } catch (e) {}
+  try {
+    const detail = JSON.parse(followDetail);
+    if (!detail.hidden && detail.pencilPresent === false) { followVisible = true; break; }
+  } catch (e) {}
   await new Promise((r) => setTimeout(r, 300));
 }
-check('pencil shifts above follow pill on scroll', shifted, shiftDetail);
+check('follow pill appears without pencil overlay', followVisible, followDetail);
 
 await evalx(`(function(){ const c = document.querySelector('.temp-terminal-close'); if (c) c.click(); return true; })()`);
 await new Promise((r) => setTimeout(r, 300));

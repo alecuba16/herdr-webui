@@ -23,6 +23,11 @@
     return `${ws}:${id}`;
   }
 
+  function sameScopedId(ws, left, right) {
+    if (left == null || right == null) return left === right;
+    return compactScopedId(ws, String(left)) === compactScopedId(ws, String(right));
+  }
+
   // Per-session storage keys (mobile parity with the desktop core helpers).
   // The backend pin used to be a single global `herdr-session-backend` value,
   // which leaked the last-used backend into every other session; each session
@@ -130,19 +135,19 @@
     );
   }
 
-  // Mobile input model: terminal surfaces (main and temp) never take direct
-  // keyboard input; the OS keyboard must not pop on its own and IME must not
-  // corrupt typed input. All input goes through the pencil-button input
-  // sheet. Single source of truth for the gate predicate: the adapter and
-  // temp terminal only consume it, so a future state-dependent gate (e.g. a
-  // tablet desktop-mode toggle that allows direct focus) is a one-line change
-  // here. Semantics: return true = deny direct keyboard focus.
-  function terminalInputGate() {
-    return true;
+  function createTerminalInputGate() {
+    // wterm owns the hidden textarea and IME lifecycle. Keep it inactive until
+    // the user taps the terminal, then let wterm handle all text and control
+    // keys directly.
+    let enabled = false;
+    const gate = () => !enabled;
+    gate.enable = () => { enabled = true; };
+    return gate;
   }
 
   globalThis.HerdrMobileCore = {
     compactScopedId,
+    createTerminalInputGate,
     escapeHtml,
     forgetSessionState,
     jsArg,
@@ -155,8 +160,8 @@
     selectionPath,
     sessionBackendKey,
     sessionPrefix,
+    sameScopedId,
     sessionStateKey,
-    terminalInputGate,
     writeSessionBackend,
   };
 })();

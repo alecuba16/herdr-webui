@@ -343,8 +343,7 @@ body.light {
   min-height: 0;
   min-width: 0;
   padding: 0;
-  /* Positioning context for the input sheet (the shell scrolls and
-     paints-contained, so it cannot host absolutely positioned overlays). */
+  /* Positioning context for the follow button overlay. */
   position: relative;
 }
 .mobile-tabs {
@@ -407,72 +406,6 @@ body.light {
 }
 .mobile-terminal-follow-button[hidden] {
   display: none;
-}
-.mobile-terminal-input-button {
-  align-items: center;
-  background: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  bottom: 18px;
-  box-shadow: 0 10px 28px #0008;
-  color: var(--accent-fg);
-  display: inline-grid;
-  font-size: 18px;
-  font-weight: 900;
-  min-height: 46px;
-  min-width: 46px;
-  padding: 0;
-  position: absolute;
-  right: 18px;
-  z-index: 4;
-}
-/* When the follow pill is visible, stack the pencil above it. */
-.mobile-terminal-follow-button:not([hidden]) ~ .mobile-terminal-input-button {
-  bottom: 66px;
-}
-.mobile-terminal-input-sheet {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
-  background: var(--panel, #1e1e2e);
-  border-top: 1px solid var(--border);
-  border-radius: 14px 14px 0 0;
-  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 6;
-}
-.mobile-terminal-input-sheet[hidden] {
-  display: none;
-}
-.mobile-terminal-input-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-.mobile-terminal-input-row .mobile-sheet-input {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.mobile-terminal-input-send,
-.mobile-terminal-input-close {
-  flex: 0 0 auto;
-  min-height: 44px;
-  min-width: 44px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel2, #2a2a3c);
-  color: var(--fg);
-  font-size: 16px;
-  font-weight: 700;
-}
-.mobile-terminal-input-send {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-fg);
 }
 .mobile-terminal {
   /* max-content intrinsic sizing forced a full intrinsic layout pass on
@@ -1498,73 +1431,6 @@ body.light .mobile-nav-status.working {
   bottom: 14px;
   right: 14px;
   z-index: 10;
-}
-.temp-terminal-input-button {
-  position: absolute;
-  bottom: 14px;
-  right: 14px;
-  z-index: 10;
-  min-height: 46px;
-  min-width: 46px;
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--accent-fg);
-  font-size: 18px;
-  font-weight: 900;
-  box-shadow: 0 10px 28px #0008;
-}
-/* Follow pill visible: setFollowPaused() adds .shifted to stack the
- pencil above the pill (different subtrees, so no pure-CSS selector). */
-.temp-terminal-input-button.shifted {
-  bottom: 62px;
-}
-.temp-terminal-input-sheet {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 11;
-  display: flex;
-  padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
-  background: var(--panel, #1e1e2e);
-  border-top: 1px solid var(--border);
-}
-.temp-terminal-input-sheet[hidden] {
-  display: none;
-}
-.temp-terminal-input-row {
-  display: flex;
-  gap: 8px;
-  width: 100%;
-  align-items: center;
-}
-.temp-terminal-input-field {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.04);
-  color: inherit;
-  font-size: 15px;
-}
-.temp-terminal-input-send,
-.temp-terminal-input-close {
-  flex: 0 0 auto;
-  min-height: 44px;
-  min-width: 44px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel2, #2a2a3c);
-  color: var(--fg);
-  font-size: 16px;
-  font-weight: 700;
-}
-.temp-terminal-input-send {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-fg);
 }
 .temp-terminal-confirm {
   position: absolute;

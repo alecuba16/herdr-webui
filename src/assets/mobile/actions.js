@@ -9,6 +9,7 @@
     selectionPath,
     currentSessionBackend,
     saveSessionSelection,
+    sameScopedId,
     currentWorkspaceCwd,
     tabTitle,
     getMobileFileBrowser,
@@ -57,9 +58,10 @@
     }
 
     function selectTab(tab) {
-      state.tab = tab;
+      const selectedTab = state.tabs.find((item) => sameScopedId(state.ws, item.tab_id, tab));
+      state.tab = selectedTab ? selectedTab.tab_id : tab;
       const pane =
-        state.panes.find((item) => item.tab_id === tab) || state.panes[0];
+        state.panes.find((item) => sameScopedId(state.ws, item.tab_id, state.tab)) || null;
       state.pane = pane && pane.pane_id;
       state.terminalId = pane && pane.terminal_id;
       state.screen = "terminal";
