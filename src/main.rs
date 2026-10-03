@@ -5045,10 +5045,10 @@ async fn terminal_socket(
     // paints the recent output immediately. Fresh attaches get the
     // backend's own full-history frame through the live queue; the
     // snapshot is empty there and costs nothing.
-    if !replay.is_empty() {
-        if socket.send(Message::Binary(replay.into())).await.is_err() {
-            return;
-        }
+    if !replay.is_empty()
+        && socket.send(Message::Binary(replay.into())).await.is_err()
+    {
+        return;
     }
 
     loop {

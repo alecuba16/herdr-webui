@@ -19,7 +19,13 @@ export async function connectToPage() {
   const targets = await getJson('/json/list');
   const page = targets.find((t) => t.type === 'page');
   if (!page) throw new Error('no CDP page target found (is headless Chrome running?)');
-  const ws = new WebSocket(page.webSocketDebuggerUrl);
+  return connectToTarget(page.webSocketDebuggerUrl);
+}
+
+// Connect to a specific page target's DevTools websocket (multi-viewer
+// scenarios drive several pages in the same browser).
+export async function connectToTarget(webSocketDebuggerUrl) {
+  const ws = new WebSocket(webSocketDebuggerUrl);
   await new Promise((res, rej) => {
     ws.onopen = res;
     ws.onerror = rej;
@@ -122,6 +128,26 @@ export async function currentPageTargetId() {
   const targets = await getJson('/json/list');
   const page = targets.find((t) => t.type === 'page');
   return page ? page.id : null;
+}
+
+// Create a fresh page target (a real second tab) and return its target info.
+// Newer Chrome builds only accept PUT on /json/new (GET is rejected as an
+// unsafe verb), so send an explicit PUT request.
+export async function createTarget(url = 'about:blank') {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port: CDP_PORT, path: '/json/new?' + encodeURIComponent(url), method: 'PUT' },
+      (res) => {
+        let d = '';
+        res.on('data', (c) => (d += c));
+        res.on('end', () => {
+          try { resolve(JSON.parse(d)); } catch (e) { reject(e); }
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 export function closeTargetViaBrowser(targetId) {
