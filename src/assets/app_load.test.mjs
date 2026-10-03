@@ -3198,6 +3198,10 @@ describe("app bundle load", () => {
     match(source, /id="optGlobalShortcutPrefixCapture"/);
     match(source, /DEFAULT_GLOBAL_SHORTCUT_PREFIX/);
     match(source, /id="optTerminalFontFamily"/);
+    match(source, /id="optTerminalFontSize"/);
+    match(source, /terminalFontSize: 14/);
+    match(source, /next\.terminalFontSize = Math\.max\(10, Math\.min\(22/);
+    match(source, /term\.setFontSize\(options\.terminalFontSize \|\| 14\)/);
     match(source, /id="optTerminalLinks"/);
     match(source, /id="optTerminalMouseReporting"/);
     match(source, /terminalMouseReporting: false/);

@@ -173,6 +173,18 @@ function commitTerminalFontFamily() {
   fitTerminalShell();
 }
 registerSettingsCommit("optTerminalFontFamily", commitTerminalFontFamily, () => options.terminalFontFamily || "");
+el("optTerminalFontSize").oninput = () => {
+  options.terminalFontSize = Math.max(10, Math.min(22, Math.round(Number(el("optTerminalFontSize").value) || 14)));
+  saveOptions();
+  applyTerminalFont();
+  fitTerminalShell();
+};
+registerSettingsCommit("optTerminalFontSize", () => {
+  options.terminalFontSize = Math.max(10, Math.min(22, Math.round(Number(el("optTerminalFontSize").value) || 14)));
+  saveOptions();
+  applyTerminalFont();
+  fitTerminalShell();
+}, () => options.terminalFontSize);
 const optTerminalCore = el("optTerminalCore");
 if (optTerminalCore)
   optTerminalCore.onchange = () => {
@@ -731,6 +743,7 @@ if (globalThis.HerdrTempTerminal) {
     modalId: "tempTerminalModal",
     onHerdrError: typeof handleHerdrErrorFrame === "function" ? handleHerdrErrorFrame : null,
     fontFamilyFn: terminalFontFamily,
+    fontSizeFn: () => options.terminalFontSize || 14,
     themeFn: terminalTheme,
     defaultFolderFn: defaultFolderPath,
     workspaceIdFn: tempTerminalWorkspaceId,

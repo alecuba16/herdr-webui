@@ -245,6 +245,7 @@ async function connectTerminal(fitOverride = null) {
         core: options.terminalCore,
         theme: terminalTheme(),
         fontFamily: terminalFontFamily(),
+        fontSize: options.terminalFontSize || 14,
         links: options.terminalLinks !== false,
         scrollback: 10000,
         onData: sendInputData,
