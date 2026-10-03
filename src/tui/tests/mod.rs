@@ -7148,3 +7148,202 @@ fn lens_render_shapes_user_turns_and_meta() {
         "unread hint rendered: {canvas}"
     );
 }
+
+#[test]
+fn composer_shortcut_opens_prompt_with_per_pane_draft() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    // No draft yet: prompt opens empty.
+    app.screen = TuiScreen::Terminal;
+    app.run_shortcut(Shortcut::Composer);
+    assert!(app.prompt_input.is_some());
+    assert_eq!(
+        app.prompt_input.as_ref().unwrap().kind,
+        crate::tui::PromptKind::ComposerMessage
+    );
+    // Typing syncs the per-pane draft (pane_1 in the fixture).
+    app.handle_key(KeyEvent::from(KeyCode::Char('h')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+    assert_eq!(
+        app.composer_drafts.get("pane_1").map(String::as_str),
+        Some("hi")
+    );
+    // Esc keeps the draft.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.prompt_input.is_none());
+    assert_eq!(
+        app.composer_drafts.get("pane_1").map(String::as_str),
+        Some("hi")
+    );
+    // Reopening prefills from the draft (webui per-pane draft restore).
+    app.run_shortcut(Shortcut::Composer);
+    assert_eq!(app.prompt_input.as_ref().unwrap().text, "hi");
+}
+
+#[test]
+fn composer_prompt_shows_target_pane_and_enter_submits() {
+    let (port, _stop) = fake_composer_server(Some("ok"));
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", port),
+    );
+    app.snapshot = fixture_snapshot();
+    app.screen = TuiScreen::Terminal;
+    app.run_shortcut(Shortcut::Composer);
+    // The subject line renders the target pane (agent · pane id).
+    let canvas = draw(&app, 80, 24);
+    assert!(canvas.contains("Send a message"), "prompt title: {canvas}");
+    assert!(canvas.contains("jcode · pane_1"), "target pane: {canvas}");
+    // Type and send: the submit route answers, the draft clears.
+    for ch in "echo hello".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    assert_eq!(
+        app.composer_drafts.get("pane_1").map(String::as_str),
+        Some("echo hello")
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.prompt_input.is_none(), "prompt closed after submit");
+    assert!(
+        !app.composer_drafts.contains_key("pane_1"),
+        "draft cleared on success"
+    );
+    assert_eq!(app.status, "message sent");
+}
+
+#[test]
+fn composer_blocked_refusal_shows_server_note_and_keeps_draft() {
+    let (port, _stop) = fake_composer_server(Some("blocked"));
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", port),
+    );
+    app.snapshot = fixture_snapshot();
+    app.screen = TuiScreen::Terminal;
+    app.run_shortcut(Shortcut::Composer);
+    for ch in "deploy now".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    // The server wrote the note; it lands in the status line verbatim
+    // and the draft stays.
+    assert_eq!(
+        app.status,
+        "Not sent: the agent is waiting for an answer in the terminal. Answer it first."
+    );
+    assert_eq!(
+        app.composer_drafts.get("pane_1").map(String::as_str),
+        Some("deploy now"),
+        "refusal keeps the draft"
+    );
+}
+
+#[test]
+fn composer_empty_message_sends_nothing() {
+    let (port, _stop) = fake_composer_server(Some("ok"));
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", port),
+    );
+    app.snapshot = fixture_snapshot();
+    app.screen = TuiScreen::Terminal;
+    app.run_shortcut(Shortcut::Composer);
+    // Only whitespace: no request leaves, the status says so.
+    app.handle_key(KeyEvent::from(KeyCode::Char(' ')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.status, "message empty, nothing sent");
+    // The draft (whitespace) is kept, nothing was submitted.
+    assert!(app.composer_drafts.contains_key("pane_1"));
+}
+
+#[test]
+fn composer_ignores_other_screens() {
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Git;
+    app.run_shortcut(Shortcut::Composer);
+    assert!(
+        app.prompt_input.is_none(),
+        "no composer off the Terminal screen"
+    );
+}
+
+/// Fake WebUI server answering `POST /api/panes/{id}/submit`:
+/// `Some("ok")` returns the success body, `Some("blocked")` the
+/// agent_blocked refusal shape the real route emits (HTTP 409 with
+/// `{error, code, note}`), `None` drops the connection.
+fn fake_composer_server(mode: Option<&str>) -> (u16, std::sync::mpsc::Sender<()>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let mode = mode.map(str::to_string);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            if rx.try_recv().is_ok() {
+                break;
+            }
+            let Ok(stream) = stream else { break };
+            let mut stream = stream;
+            let mut request_line = String::new();
+            let mut content_length = 0usize;
+            {
+                let mut reader = BufReader::new(&mut stream);
+                if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let lower = header.trim().to_ascii_lowercase();
+                    if let Some(value) = lower.strip_prefix("content-length:") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                }
+                // Drain the body so the request completes.
+                let mut body = vec![0u8; content_length];
+                if content_length > 0 {
+                    use std::io::Read;
+                    let _ = reader.read_exact(&mut body);
+                }
+            }
+            if !request_line.contains("/api/panes/") || !request_line.contains("/submit") {
+                continue;
+            }
+            let Some(mode) = mode.as_deref() else {
+                continue;
+            };
+            let (status, body) = match mode {
+                "ok" => ("200 OK", json!({ "type": "agent_prompt", "ok": true })),
+                "blocked" => (
+                    "409 Conflict",
+                    json!({
+                        "error": "agent_blocked: the agent is waiting for an answer in the terminal",
+                        "code": "agent_blocked",
+                        "note": "Not sent: the agent is waiting for an answer in the terminal. Answer it first."
+                    }),
+                ),
+                _ => continue,
+            };
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.to_string().len(),
+                    body
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    (port, tx)
+}

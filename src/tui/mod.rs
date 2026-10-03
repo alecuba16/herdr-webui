@@ -144,6 +144,9 @@ impl FooterContext {
             Self::PromptInput(PromptKind::ReplaceInFile) => {
                 " type the replacement · Enter replaces · ! all · Esc cancels · Ctrl+B ? help "
             }
+            Self::PromptInput(PromptKind::ComposerMessage) => {
+                " type the message · Enter sends · Ctrl+U clears · Esc cancels · Ctrl+B ? help "
+            }
             Self::PromptInput(_) => " type · Enter accepts · Esc cancels · Ctrl+B ? help ",
             Self::DiffSearch => {
                 " type to search · n/N cycle · Enter keeps · Esc closes · Ctrl+B ? help "
@@ -203,6 +206,9 @@ impl FooterContext {
             Self::CommitInput => " Enter commit · Esc cancel · Ctrl+B ? help ",
             Self::PromptInput(PromptKind::ReplaceInFile) => {
                 " Enter replace · ! all · Esc cancel · Ctrl+B ? help "
+            }
+            Self::PromptInput(PromptKind::ComposerMessage) => {
+                " Enter send · Ctrl+U clear · Esc cancel · Ctrl+B ? help "
             }
             Self::PromptInput(_) => " Enter accept · Esc cancel · Ctrl+B ? help ",
             Self::DiffSearch => " n/N cycle · Esc close · Ctrl+B ? help ",
@@ -317,6 +323,9 @@ pub struct TuiApp {
     /// `L`): transcript overlay over the terminal pane, follow/unread
     /// scroller semantics.
     pub lens: LensState,
+    /// Per-pane composer drafts (webui composer box keeps its content
+    /// per pane, not per view). Keyed by pane id.
+    pub composer_drafts: std::collections::HashMap<String, String>,
     /// Mode the user was in when the quit overlay opened; restored on cancel.
     pub(crate) quit_prev_mode: TuiMode,
     /// Modes the user was in before each overlay (help/settings/worktree)
@@ -402,6 +411,10 @@ pub enum PromptKind {
     /// selected one (documented deviation from the webui replace bar,
     /// which has separate replace/replace-all buttons).
     ReplaceInFile,
+    /// Composer message (ux overhaul, webui chat composer): the text
+    /// is submitted through the server's pane submit route (agent.prompt
+    /// semantics). Per-pane draft like the webui composer box.
+    ComposerMessage,
 }
 
 impl PromptKind {
@@ -443,6 +456,7 @@ impl PromptKind {
             Self::CreateFile => "New file",
             Self::CreateDirectory => "New directory",
             Self::ReplaceInFile => "Replace in file",
+            Self::ComposerMessage => "Send a message",
         }
     }
 
@@ -465,6 +479,7 @@ impl PromptKind {
             Self::ReplaceInFile => {
                 "type the replacement, Enter replaces the current match (! = all)"
             }
+            Self::ComposerMessage => "type the message, Enter sends it to the selected panel",
             _ => "type y then Enter to confirm, Esc cancels",
         }
     }
@@ -535,6 +550,7 @@ impl TuiApp {
             help_filter: String::new(),
             search_palette: search::SearchPalette::default(),
             lens: LensState::default(),
+            composer_drafts: std::collections::HashMap::new(),
             quit_prev_mode: TuiMode::Navigate,
             overlay_stack: Vec::new(),
             dirty: true,
@@ -770,14 +786,28 @@ impl TuiApp {
     }
 
     fn handle_prompt_key(&mut self, key: KeyEvent) {
-        let Some(prompt) = self.prompt_input.as_mut() else {
+        // No prompt open: nothing to edit or submit. Kept as a hard guard
+        // (not an expect) because handle_prompt_key is directly callable
+        // and the no-prompt arm is part of its contract.
+        if self.prompt_input.is_none() {
             return;
-        };
+        }
+        // Mutate the prompt text first, then sync the composer draft from
+        // the stored prompt (a helper taking &mut self would collide with
+        // the prompt borrow; the inline write is the same one-liner).
         match key.code {
             KeyCode::Esc => self.prompt_input = None,
             KeyCode::Enter => {
-                let kind = prompt.kind;
-                let text = prompt.text.trim().to_string();
+                let kind = self
+                    .prompt_input
+                    .as_ref()
+                    .map(|prompt| prompt.kind)
+                    .expect("handle_prompt_key requires an active prompt");
+                let text = self
+                    .prompt_input
+                    .as_ref()
+                    .map(|prompt| prompt.text.trim().to_string())
+                    .unwrap_or_default();
                 self.prompt_input = None;
                 if kind.needs_confirm() && text != "y" {
                     self.status = "cancelled".to_string();
@@ -786,16 +816,40 @@ impl TuiApp {
                 self.run_prompt_action(kind, &text);
             }
             KeyCode::Backspace => {
-                prompt.text.pop();
+                if let Some(prompt) = self.prompt_input.as_mut() {
+                    prompt.text.pop();
+                }
+                self.sync_composer_draft();
             }
             KeyCode::Char(ch) => {
                 if key.modifiers.contains(KeyModifiers::CONTROL) && ch.eq_ignore_ascii_case(&'u') {
-                    prompt.text.clear();
-                } else {
+                    if let Some(prompt) = self.prompt_input.as_mut() {
+                        prompt.text.clear();
+                    }
+                } else if let Some(prompt) = self.prompt_input.as_mut() {
                     prompt.text.push(ch);
                 }
+                self.sync_composer_draft();
             }
             _ => {}
+        }
+    }
+
+    /// Keep the per-pane composer draft in sync while the composer
+    /// prompt is open (webui composer: every input event writes the
+    /// box content into the pane's draft slot). Other prompt kinds are
+    /// unaffected.
+    fn sync_composer_draft(&mut self) {
+        let Some(prompt) = self.prompt_input.as_ref() else {
+            return;
+        };
+        if prompt.kind != PromptKind::ComposerMessage {
+            return;
+        }
+        let text = prompt.text.clone();
+        if let Some(pane) = self.selected_pane() {
+            let pane_id = pane.id.clone();
+            self.composer_drafts.insert(pane_id, text);
         }
     }
 
@@ -1003,6 +1057,55 @@ impl TuiApp {
                     }
                     Err(err) => self.error = Some(err.to_string()),
                 }
+            }
+            PromptKind::ComposerMessage => {
+                self.submit_composer_message(text);
+            }
+        }
+    }
+
+    /// Submit one composer message for the selected pane through the
+    /// server's pane submit route (webui composer parity). The message
+    /// is shaped exactly like the browser composer does before the
+    /// POST: trailing newlines are the composer's own Enter, CRLF reads
+    /// as one newline, and the length gets an early out at the server's
+    /// MAX_COMPOSER_CHARS (the server re-checks; this only avoids a
+    /// fat request). On success the per-pane draft clears; on refusal
+    /// the server's note lands in the status line and the draft stays.
+    fn submit_composer_message(&mut self, text: &str) {
+        const MAX_COMPOSER_CHARS: usize = 20_000;
+        let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
+            self.error = Some("no pane selected".to_string());
+            return;
+        };
+        // Shape: strip trailing newlines (the composer's Enter), then
+        // CRLF -> LF (browser composer's own pre-send shaping).
+        let message = text
+            .trim_end_matches(['\r', '\n'])
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
+        if message.trim().is_empty() {
+            // Nothing to send; keep the prompt closed without an error
+            // (the webui composer just keeps the text).
+            self.status = "message empty, nothing sent".to_string();
+            return;
+        }
+        if message.chars().count() > MAX_COMPOSER_CHARS {
+            self.status = "Not sent: message is too long (20000 characters max).".to_string();
+            return;
+        }
+        match self.web_api.submit_pane(&pane_id, &message) {
+            Ok(_) => {
+                self.composer_drafts.remove(&pane_id);
+                self.status = "message sent".to_string();
+                self.refresh_tail();
+            }
+            Err(err) => {
+                // Server-owned refusal copy (`{error, code, note}`), shown
+                // verbatim like the browser composer shows `details.note`
+                // (the note already reads "Not sent: ..."; unknown
+                // refusals fall back to the error string).
+                self.status = err.note();
             }
         }
     }
@@ -1596,6 +1699,20 @@ impl TuiApp {
                     } else {
                         "lens closed".to_string()
                     };
+                }
+            }
+            Shortcut::Composer => {
+                // Chat composer (webui composer box): message prompt for
+                // the selected pane, prefilled with the pane's draft.
+                if self.screen == TuiScreen::Terminal {
+                    let mut input = PromptInput::new(PromptKind::ComposerMessage);
+                    if let Some(pane) = self.selected_pane() {
+                        if let Some(draft) = self.composer_drafts.get(&pane.id) {
+                            input.text = draft.clone();
+                        }
+                    }
+                    self.prompt_input = Some(input);
+                    self.status = "composer: type the message, Enter sends".to_string();
                 }
             }
             Shortcut::Quit => self.request_quit(),

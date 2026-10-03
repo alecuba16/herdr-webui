@@ -1517,6 +1517,22 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
                 )
             }
         }
+        // Composer: show the target pane (agent · pane id), the TUI
+        // counterpart of the webui box's aria-label "Message to this
+        // panel".
+        crate::tui::PromptKind::ComposerMessage => app
+            .selected_pane()
+            .map(|pane| {
+                format!(
+                    "{} · {}",
+                    pane.display_agent
+                        .as_deref()
+                        .or(pane.agent.as_deref())
+                        .unwrap_or("shell"),
+                    pane.id
+                )
+            })
+            .unwrap_or_default(),
     };
     let title = format!(" {} ", prompt.kind.title());
     let lines = vec![

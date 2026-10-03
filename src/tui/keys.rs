@@ -125,6 +125,10 @@ pub enum Shortcut {
     // terminal screen; ux overhaul 2/3). Prefix L; plain l stays git
     // log from the git shortcut table.
     Lens,
+    // Chat composer (webui composer box under the lens; ux overhaul
+    // server-side submit). Opens the message prompt for the selected
+    // pane; the server owns validation and refusal copy.
+    Composer,
 }
 
 impl Shortcut {
@@ -177,6 +181,7 @@ impl Shortcut {
             Self::TempTerminalToggle => "temporary terminal",
             Self::TempTerminalPromote => "promote temporary terminal",
             Self::Lens => "chat lens",
+            Self::Composer => "composer",
         }
     }
 }
@@ -244,6 +249,10 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // Webui tempTerminalToggle: Shift+KeyM (plain m stays git blame
         // from DEFAULT_GIT_SHORTCUTS).
         (KeyCode::Char('M'), true) => Some(Shortcut::TempTerminalToggle),
+        // Chat composer (ux overhaul): the webui box rides under the
+        // lens; the TUI opens it as a prompt from any terminal-screen
+        // state. Shift+C for compose while plain c stays git commit.
+        (KeyCode::Char('C'), true) => Some(Shortcut::Composer),
         // Webui tempTerminalPromote: Shift+KeyP. The old TUI-only prefix
         // GitPush moved aside for parity (the git screen keeps the
         // in-screen P push).
@@ -331,6 +340,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         (
             "Ctrl+B Shift+L",
             "chat lens: transcript view (j/k scroll, Esc close)",
+        ),
+        (
+            "Ctrl+B Shift+C",
+            "composer: send a message to the selected panel",
         ),
         ("", ""),
         ("Ctrl+B 1", "git: changes"),

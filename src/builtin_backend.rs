@@ -6613,8 +6613,13 @@ mod tests {
 
         // Seed last_agent_state with a live jcode detection via screen text.
         terminal.append_output(b"jcode session ready\nready for input\n\xe2\x9d\xaf\n");
+        // The plain publish is double-throttled (outer gate arms the
+        // window, inner gate re-checks it and defers to the sweeper), so
+        // use the force entry point to run detection synchronously here;
+        // under full-suite parallel load the sweeper can starve past the
+        // 1s recv window and flake the test.
         terminal.reset_status_throttle();
-        terminal.publish_agent_status_if_changed();
+        terminal.publish_agent_status_if_changed_force();
         let event = events.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(event["event"], "pane.agent_status_changed");
         assert_eq!(event["data"]["agent"], "jcode");
@@ -6625,7 +6630,7 @@ mod tests {
 
         // Next detection run must publish a null-agent transition event.
         terminal.reset_status_throttle();
-        terminal.publish_agent_status_if_changed();
+        terminal.publish_agent_status_if_changed_force();
         let event = events.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(event["event"], "pane.agent_status_changed");
         assert_eq!(
@@ -6636,7 +6641,7 @@ mod tests {
 
         // Further runs with no agent must not spam: same state, no publish.
         terminal.reset_status_throttle();
-        terminal.publish_agent_status_if_changed();
+        terminal.publish_agent_status_if_changed_force();
         assert!(
             events.try_recv().is_err(),
             "no further events expected for unchanged None state"

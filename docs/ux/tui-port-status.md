@@ -13,7 +13,7 @@ Webui features that are terminal-surface UX (all three shipped on
 | Feature | Webui module | Status | Plan |
 | --- | --- | --- | --- |
 | Chat lens (transcript view) | `lens.js` (73e6902) | done | P1 |
-| Chat composer (server submit) | `composer.js` (9a7abc2, SOLID 3a29edd) | todo | P2 |
+| Chat composer (server submit) | `composer.js` (9a7abc2, SOLID 3a29edd) | done | P2 |
 | Prompt cards (blocked answers) | `prompt_cards.js` (3b2a4ab, 626c80f, 9c745a2) | todo | P3 |
 
 Out of scope for the TUI (browser concerns, no TUI counterpart):
@@ -68,20 +68,24 @@ the final docs pass, not ported.
   integration (prefix toggle, other-screen ignore, unread flow,
   render shaping + meta).
 
-## P2 — Composer (todo)
+## P2 — Composer (done)
 
-- `PromptKind::Composer` input (existing modal prompt infrastructure,
-  `needs_confirm() == false`), per-pane draft map on `TuiApp`
-  (`composer_drafts: HashMap<String, String>`) keyed by pane id.
-- Enter submits: shape the text (strip trailing newlines, CRLF to LF,
-  `MAX_COMPOSER_CHARS = 20000` early out) then
-  `WebApiClient::submit_pane(pane_id, text)`.
-- Success clears the draft; failure shows the server `note` in the
-  status line and keeps the draft.
-- `WebApiClient::submit_pane` added next to the existing endpoints,
-  reusing `request_json` (login/401 handled there).
-- `Ctrl+B m` while the lens is open or not; the pane context is the
-  selected pane.
+Landed as committed work; details kept short since the board folds into
+features.md at P5.
+
+- `PromptKind::ComposerMessage` (title "Send a message"), per-pane draft
+  map `composer_drafts: HashMap<String, String>` on `TuiApp`, synced on
+  every keystroke (`sync_composer_draft`).
+- Enter submits via `WebApiClient::submit_pane(pane_id, text)` →
+  `POST /api/panes/{id}/submit` (existing server route, no protocol
+  change; server owns shaping/validation/copy).
+- Success clears the draft + `refresh_tail`; refusal shows the server
+  `note` verbatim in the status line and keeps the draft
+  (`WebApiError::HttpDetailed` reads `{error, code, note}` bodies).
+- `Ctrl+B Shift+C` opens the composer prefilled with the stored draft
+  (plain `c` stays git commit). Key gated to the Terminal screen.
+- 5 TUI integration tests with a fake composer server (ok / blocked /
+  note-copy fidelity / draft prefill / empty-message early out).
 
 ## P3 — Prompt cards (todo)
 
@@ -101,12 +105,24 @@ the final docs pass, not ported.
 - Stale-send guard: re-parse the tail before sending (webui invariant);
   if the dialog changed, do nothing.
 
-## P4 — e2e (todo)
+## P4 — e2e (done)
 
-- `src/tui_parity_e2e_tests.rs`: real axum server + `WebApiClient`:
-  composer submit round-trip against a builtin backend pane
-  (`cat`-echo style), refusal path against a blocked pane (agent
-  answers land, blocked refusal carries the server note).
+- `src/tui_parity_e2e_tests.rs`
+  `tui_composer_submit_round_trips_and_refuses_when_blocked`: real axum
+  server + builtin backend + real PTY against the TUI's
+  `WebApiClient::submit_pane`. Echo-script pane proves the round trip
+  (message lands in the pane tail); the script's second line prints a
+  Claurst-style dialog that the real detector + status sweeper must
+  catch, then the submit must refuse with the exact 409
+  `{error, code, note}` copy. Env redirect (`XDG_CONFIG_HOME`) lives
+  inside the `spawn_blocking` closure under the shared env lock, with a
+  Drop guard restoring it.
+- Two latent flakes surfaced by the new load, both fixed in code:
+  the double-throttled `publish_agent_status_if_changed` (detection
+  always deferred to the sweeper; test now uses
+  `publish_agent_status_if_changed_force` to run synchronously) and the
+  lost no-prompt guard in `handle_prompt_key` (Enter with no prompt
+  panicked; guard restored at the top).
 
 ## P5 — Docs (todo)
 

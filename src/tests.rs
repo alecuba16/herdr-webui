@@ -88,14 +88,17 @@ async fn response_json(response: Response) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-fn env_lock() -> &'static StdMutex<()> {
+pub(crate) fn env_lock() -> &'static StdMutex<()> {
     static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| StdMutex::new(()))
 }
 
 /// Lock the env mutex, recovering from a poisoned state so a panicking
 /// test does not cascade failures into every other env-lock test.
-fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+/// Shared with the TUI parity e2e module (it redirects
+/// `XDG_CONFIG_HOME` for its builtin-backend tests and must not race
+/// these).
+pub(crate) fn lock_env() -> std::sync::MutexGuard<'static, ()> {
     env_lock()
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())

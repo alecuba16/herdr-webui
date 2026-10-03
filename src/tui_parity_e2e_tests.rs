@@ -2126,3 +2126,198 @@ fn web_api_socket_transport_serves_git_and_file_panels() {
     // HTTP-only endpoints reject cleanly on socket transport.
     assert!(api.recent_workspaces().is_err());
 }
+
+/// Composer submit e2e: the TUI's `WebApiClient::submit_pane` against the
+/// real axum route backed by a real built-in session. Covers the loopback
+/// contract the TUI composer depends on: the echo round-trip (message
+/// lands in the pane), and the blocked refusal (server-owned note with
+/// the 409 `{error, code, note}` shape).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tui_composer_submit_round_trips_and_refuses_when_blocked() {
+    // A shell that echoes its input line by line, so the pane tail shows
+    // the submitted message deterministically (a plain shell prompt is
+    // not guaranteed to echo before the read timeout). The second read
+    // line makes it a Claurst-style permission dialog, which the real
+    // blocked-detector + status sweeper must catch, flipping the pane
+    // to blocked for the refusal half of the test.
+    let repo = temp_git_repo();
+    let echo_script = repo.join("echo-pane.sh");
+    std::fs::write(
+        &echo_script,
+        "#!/bin/sh\ncount=0\nwhile IFS= read -r line; do\n  count=$((count+1))\n  if [ \"$count\" -eq 1 ]; then\n    echo \"got: $line\"\n  else\n    printf 'Do you want to run this command?\\nYes, allow once\\nNo, deny\\n'\n  fi\ndone\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&echo_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let state = localhost_no_auth_state(repo.clone());
+    // Target the built-in backend so the submit route auto-starts a
+    // built-in session in the redirected config tree.
+    {
+        let mut settings = state.server_settings.lock().unwrap();
+        settings.backend_mode = BackendMode::Builtin;
+    }
+    let state = WebState {
+        backend_mode: BackendMode::Builtin,
+        ..state
+    };
+    let app = app_router(state);
+
+    // Sync bind: the listener is up before the env redirect below, so no
+    // await is ever needed while the env lock is held (clippy:
+    // await_holding_lock). from_std requires nonblocking mode, set it
+    // on the std socket before handing it to tokio.
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = std_listener.local_addr().unwrap();
+    std_listener.set_nonblocking(true).unwrap();
+    let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let api = WebApiClient::new("127.0.0.1", addr.port());
+    let echo = echo_script.to_string_lossy().to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        // The settings-tree redirect and the env lock both live inside
+        // this sync closure: the route derives builtin socket paths from
+        // XDG_CONFIG_HOME at request time, so the redirect must cover
+        // every request made here, and the lock keeps the other
+        // env-sensitive tests from observing it (or flipping it mid-run).
+        let _env_guard = crate::tests::lock_env();
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-composer-e2e-config-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&config_home).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        // Drop-restore so a failing assertion cannot leak the redirect
+        // into later tests in the same process.
+        let _restore = EnvRedirectGuard(config_home);
+        composer_submit_assertions(&api, &echo)
+    })
+    .await;
+    result
+        .unwrap()
+        .unwrap_or_else(|err| panic!("composer e2e failed: {err}"));
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(&repo);
+    let bare = std::env::temp_dir().join(
+        repo.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .replace("herdr-tui-e2e-repo-", "herdr-tui-e2e-bare-"),
+    );
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+/// Restores `XDG_CONFIG_HOME` and removes the redirected config tree
+/// when dropped, even when the guarded assertions panic.
+struct EnvRedirectGuard(PathBuf);
+
+impl Drop for EnvRedirectGuard {
+    fn drop(&mut self) {
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn composer_submit_assertions(api: &WebApiClient, echo: &str) -> Result<(), String> {
+    // Warm-up: the submit route auto-starts the built-in session on its
+    // first call, so a submit to a pane that does not exist yet both
+    // verifies the agent_not_found refusal shape and leaves the backend
+    // ready for the raw socket connection below.
+    let missing = api
+        .submit_pane("pane_missing", "warm-up")
+        .expect_err("missing pane must refuse");
+    assert!(
+        missing.to_string().contains("agent_not_found"),
+        "expected an agent_not_found refusal, got: {missing}"
+    );
+
+    // One agent pane running the echo script through the backend socket
+    // (the submit route's agent.prompt targets panes the backend owns).
+    let (api_socket, _) = builtin_socket_paths(Some("default"));
+    let backend = herdr_webui::backend_client::BackendClient::new(api_socket, PathBuf::new());
+    let mut pane_id = None;
+    for _ in 0..50 {
+        if let Ok(started) = backend.request("agent.start", json!({ "name": echo, "argv": [echo] }))
+        {
+            pane_id = started["agent"]["pane_id"].as_str().map(str::to_string);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let pane_id = pane_id.ok_or("agent.start never succeeded")?;
+
+    // Round trip: submit a message, the echo script prints it back into
+    // the pane tail. The Enter gap is 300ms server-side, so allow a few
+    // polls for the line to land.
+    api.submit_pane(&pane_id, "hello from the tui composer")
+        .map_err(|err| format!("submit failed: {err}"))?;
+    let mut tail = String::new();
+    for _ in 0..40 {
+        let read = backend
+            .request("pane.read", json!({ "pane_id": pane_id }))
+            .map_err(|err| format!("pane.read failed: {err}"))?;
+        tail = read["read"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if tail.contains("hello from the tui composer") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(
+        tail.contains("hello from the tui composer"),
+        "echoed message never landed in the pane tail: {tail:?}"
+    );
+
+    // Blocked refusal: the second submitted line makes the echo script
+    // print a Claurst-style permission dialog, the real detector +
+    // status sweeper flip the pane to blocked, and further submits must
+    // refuse with the server-owned note. The refusal gate reads the
+    // cached status (updated by the throttled sweeper), which can lag
+    // the live tail, so poll the submit itself until it refuses; every
+    // accepted attempt just pastes another line past the dialog, which
+    // keeps the tail matching the detector.
+    api.submit_pane(&pane_id, "please print the dialog")
+        .map_err(|err| format!("dialog submit failed: {err}"))?;
+    let mut refusal = None;
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        match api.submit_pane(&pane_id, "should refuse") {
+            Err(err) if err.to_string().contains("agent_blocked") => {
+                refusal = Some(err);
+                break;
+            }
+            // Not refused yet: the cached status has not caught up with
+            // the dialog in the tail. Keep going.
+            Ok(_) => continue,
+            Err(other) => return Err(format!("submit errored unexpectedly: {other}")),
+        }
+    }
+    let err = refusal.expect("blocked pane must refuse the submit");
+    assert_eq!(
+        err.to_string(),
+        "WebUI API error 409: agent_blocked: the agent is waiting for an answer in the terminal"
+    );
+    assert_eq!(
+        err.note(),
+        "Not sent: the agent is waiting for an answer in the terminal. Answer it first."
+    );
+    Ok(())
+}
