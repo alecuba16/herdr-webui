@@ -586,6 +586,8 @@ mod tests {
             Shortcut::FocusPrev,
             Shortcut::TempTerminalToggle,
             Shortcut::TempTerminalPromote,
+            Shortcut::Lens,
+            Shortcut::Composer,
         ] {
             assert!(!shortcut.label().is_empty());
         }

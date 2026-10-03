@@ -3102,9 +3102,16 @@ impl TuiApp {
             self.status = "question changed, not sent".to_string();
             return;
         };
+        // Defensive: the card was Options when the key was pressed, but
+        // a tail refresh between press and answer could have swapped the
+        // kind; a Text card has no option payload to send (its Enter
+        // opens the answer modal instead of calling here).
         if card.kind != crate::tui::prompt_cards::PromptCardKind::Options {
             return;
         }
+        // Defensive: evaluate_prompt_card keeps the cursor inside the
+        // option list on every card update, so an out-of-range cursor
+        // needs a mid-press tail swap; refuse rather than panic.
         let Some(option) = card.options.get(self.prompt_card_cursor) else {
             return;
         };
@@ -3158,12 +3165,24 @@ impl TuiApp {
     /// Write raw input bytes into the selected pane's terminal (the
     /// webui sendInputData counterpart): attach, send, detach.
     fn send_pane_input(&mut self, payload: &str) {
+        // Defensive: no pane selected (empty workspace) cannot coexist
+        // with a visible card (every selection move refreshes the
+        // tail, which collapses the card), so the guard below is
+        // unreachable from the card route; it protects attach-mode
+        // and future callers the same way.
         let Some(terminal_id) = self.selected_terminal_id().map(str::to_string) else {
             self.error = Some("selected pane has no terminal".to_string());
             return;
         };
         match self.client.attach_terminal(&terminal_id, 120, 32) {
             Ok(mut terminal) => {
+                // Production-reachable error arm (the backend dies
+                // between the input and detach writes) but not
+                // deterministically injectable from tests: the two
+                // writes are adjacent with no blocking point between
+                // them, so no fake server can land its close inside
+                // that window on demand. The attach-failure arm
+                // below is the tested deterministic surrogate.
                 let send = terminal
                     .send_input(payload.as_bytes())
                     .and_then(|_| terminal.detach());
@@ -3183,6 +3202,11 @@ impl TuiApp {
     /// CardAnswer prompt (a separate modal kind; its Enter runs the
     /// hybrid transport). Returns true when the key was consumed.
     fn handle_prompt_card_key(&mut self, key: KeyEvent) -> bool {
+        // Defensive: handle_key only routes here while the card is
+        // visible, and evaluate keeps `current` populated whenever it
+        // is; a visible card without a parsed card is a state bug, and
+        // falling through (returning false) degrades to navigation
+        // instead of a panic.
         let Some(card) = self.prompt_card.current_card().cloned() else {
             return false;
         };

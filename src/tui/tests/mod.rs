@@ -7427,6 +7427,25 @@ fn fake_terminal_socket() -> (std::path::PathBuf, std::sync::mpsc::Receiver<Vec<
                 crate::protocol::ClientMessage::Input { data } => {
                     let _ = tx.send(data);
                 }
+                crate::protocol::ClientMessage::AttachTerminal { .. } => {
+                    // Attach-mode history read: one full-frame render so
+                    // `read_output` returns instead of blocking forever.
+                    // A send-then-detach caller (send_pane_input) never
+                    // reads this frame and drops the socket right after
+                    // its Detach: the write can hit EPIPE from that RST.
+                    // Pushing the frame is best-effort; the buffered
+                    // Input frames behind it must still be read, so a
+                    // write error never breaks the serve loop.
+                    let output =
+                        crate::protocol::ServerMessage::Terminal(crate::protocol::TerminalFrame {
+                            seq: 1,
+                            width: 120,
+                            height: 32,
+                            full: true,
+                            bytes: b"fake history".to_vec(),
+                        });
+                    let _ = crate::protocol::write_message(&mut stream, &output);
+                }
                 crate::protocol::ClientMessage::Detach => break,
                 _ => {}
             }
@@ -7720,6 +7739,242 @@ fn narrow_footer_keeps_lens_and_prompt_card_discovery_hints() {
     assert!(
         rendered.contains("Ctrl+B ? help"),
         "prompt-card compact hint keeps the discovery tail"
+    );
+}
+
+#[test]
+fn lens_arrow_and_k_keys_scroll_toward_the_tail() {
+    // k and Up share the scroll-toward-tail arm (the lens's
+    // down-scroll): PageUp covers the 10-line jump, this covers the
+    // single-step one, plus the Down alias of the up-scroll.
+    let mut app = app_with_snapshot();
+    app.pane_tail = (0..30).map(|i| format!("line {i}")).collect();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert!(app.lens.active);
+    // Down aliases j: one line away from the tail.
+    app.handle_key(KeyEvent::from(KeyCode::Down));
+    assert!(!app.lens.follow);
+    assert_eq!(app.lens.scroll_up, 1);
+    // k scrolls one line back toward the tail.
+    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.lens.scroll_up, 0);
+    assert!(app.lens.follow, "back at the tail re-arms follow");
+    // Up aliases k from a scrolled position.
+    app.handle_key(KeyEvent::from(KeyCode::PageDown));
+    assert_eq!(app.lens.scroll_up, 10);
+    app.handle_key(KeyEvent::from(KeyCode::Up));
+    assert_eq!(app.lens.scroll_up, 9);
+    // End aliases G: straight to the tail.
+    app.handle_key(KeyEvent::from(KeyCode::End));
+    assert_eq!(app.lens.scroll_up, 0);
+    assert!(app.lens.follow);
+    // A key the lens does not own falls through to the handler's
+    // catch-all: the lens stays open, nothing scrolls.
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert!(app.lens.active, "unknown key leaves the lens open");
+    assert_eq!(app.lens.scroll_up, 0);
+}
+
+#[test]
+fn lens_meta_line_shows_scrolled_while_away_from_the_tail() {
+    // The meta line's "scrolled" branch: while the reader sits away
+    // from the tail the lens says so instead of "following".
+    let mut app = app_with_snapshot();
+    app.pane_tail = (0..30).map(|i| format!("line {i}")).collect();
+    app.lens.open();
+    app.lens.scroll_up(3, app.pane_tail.len());
+    let rendered = draw(&app, 100, 30);
+    assert!(
+        rendered.contains("scrolled"),
+        "meta line shows scrolled state"
+    );
+    assert!(
+        !rendered.contains("· following"),
+        "follow is off while scrolled"
+    );
+}
+
+#[test]
+fn prompt_card_unhandled_key_falls_through_to_navigation() {
+    // The card's catch-all arm: keys it does not own (x) must fall
+    // through to navigation so pane/list movement works while the
+    // card floats. x moves the FILES selection when the screen is
+    // Files, but on the Terminal screen x reaches the terminal
+    // pane's own keys: the sentinel is that the card survives and no
+    // answer status appears.
+    let mut app = app_with_blocked_pane();
+    app.set_pane_tail_from_text(&blocked_dialog_tail().join("\n"));
+    assert!(app.prompt_card.visible);
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    assert!(app.prompt_card.visible, "unknown key leaves the card up");
+    assert!(
+        !app.status.starts_with("answered"),
+        "unknown key never answers (status: {0})",
+        app.status
+    );
+    // q stays the quit key even with the card visible: it reaches the
+    // quit confirm (never stolen by the card).
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert_eq!(app.mode, TuiMode::ConfirmQuit);
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert!(app.prompt_card.visible, "canceling quit keeps the card");
+}
+
+#[test]
+fn attach_mode_types_keys_into_the_live_terminal_socket() {
+    // Attach mode's raw key path against the live fake socket: the
+    // key bytes reach the terminal stream and the status confirms
+    // (the dead API refresh after is noise, as everywhere).
+    let (mut app, rx) = app_with_fake_terminal_socket();
+    app.attach_selected();
+    assert_eq!(app.mode, TuiMode::Attach);
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    let sent = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("attach-mode key reaches the terminal");
+    assert_eq!(sent, b"a");
+    assert_eq!(app.status, "sent input");
+    // Ctrl-G detaches back to Navigate.
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert_eq!(app.status, "detached");
+}
+
+#[test]
+fn question_title_skips_prompt_marker_captures_that_trim_to_nothing() {
+    // A marker line of only spaces ("❯   ": the lazy capture is a
+    // bare space that trims to empty) falls through the prompt-marked
+    // pass instead of producing an empty title; the title comes from
+    // the next real line.
+    let lines: Vec<String> = ["❯   ", "esc cancel", "1. Postgres", "2. MySQL"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let card = crate::tui::prompt_cards::parse_prompt(&lines).expect("parses");
+    // Every other line is noise (cancel hint, options): the empty
+    // capture must not leak as the title, the dialog default applies.
+    assert_eq!(
+        card.title, "Select an option",
+        "an empty capture never becomes the title; the default applies"
+    );
+}
+
+#[test]
+fn prompt_card_answer_attach_failure_surfaces_the_error() {
+    // The card-answer attach arm against a socket nobody listens on
+    // (the deterministic surrogate for a mid-send death: the raw
+    // answer path reports the failure through `error` while the
+    // optimistic status stays, webui parity).
+    let mut app = app_with_snapshot();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.set_pane_tail_from_text(&blocked_dialog_tail().join("\n"));
+    assert!(app.prompt_card.visible);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.status, "answered: Deploy now");
+    assert!(
+        app.error.is_some(),
+        "attach failure surfaces instead of a silent success"
+    );
+}
+
+#[test]
+fn attach_mode_key_attach_failure_surfaces_the_error() {
+    // The attach-mode send route against a dead socket: the key is
+    // mapped to bytes but the attach fails, so nothing is sent and
+    // the error arm reports it (no status overwrite).
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Attach;
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert_ne!(app.status, "sent input");
+    assert!(app.error.is_some());
+    // A key with no terminal byte mapping (F5) falls through the
+    // if-let: nothing is sent, no error, attach mode unchanged.
+    app.error = None;
+    app.handle_key(KeyEvent::from(KeyCode::F(5)));
+    assert!(app.error.is_none(), "unmapped key sends nothing");
+    assert_eq!(app.mode, TuiMode::Attach);
+}
+
+#[test]
+fn history_load_without_a_terminal_is_a_silent_no_op() {
+    // The no-terminal early return: no panes means no history to
+    // load, so the call must not touch the backend at all.
+    let mut app = app_with_snapshot();
+    app.snapshot.panes.clear();
+    app.load_selected_terminal_history(120, 32);
+    assert!(
+        app.error.is_none(),
+        "no terminal means no attach attempt, no error"
+    );
+}
+
+#[test]
+fn attach_selected_without_a_terminal_reports_an_error() {
+    // Enter on the Terminal screen with no terminal in the selected
+    // pane: attach mode is refused instead of half-entered.
+    let mut app = app_with_snapshot();
+    // No panes at all: the selected pane (and its terminal) resolve
+    // to None, so Enter must refuse instead of half-entering attach.
+    app.snapshot.panes.clear();
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.mode, TuiMode::Navigate);
+    assert_eq!(
+        app.error.as_deref(),
+        Some("no terminal selected"),
+        "attach refused with a clear error"
+    );
+}
+
+#[test]
+fn history_load_mid_stream_death_surfaces_read_and_detach_errors() {
+    // `load_selected_terminal_history` against a server that hangs up
+    // right after the AttachTerminal handshake: read_output blocks on
+    // its read (the synchronization point), sees EOF, and the detach
+    // write on the dead stream fails too — both error arms run in a
+    // fixed order, deterministically (unlike the send-then-detach
+    // window in send_pane_input, the blocking read guarantees the
+    // peer close is processed before the next write).
+    let path = crate::backend_client::unique_test_path("herdr-tui-hist-die");
+    let _ = std::fs::remove_file(&path);
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    std::thread::spawn(move || {
+        let Ok(mut stream) = listener.accept() else {
+            return;
+        };
+        let _ = crate::protocol::read_message::<_, crate::protocol::ClientMessage>(
+            &mut stream,
+            crate::backend_client::MAX_TUI_TERMINAL_FRAME_SIZE,
+        );
+        let welcome = crate::protocol::ServerMessage::Welcome {
+            version: 22,
+            encoding: crate::protocol::RenderEncoding::TerminalAnsi,
+            error: None,
+        };
+        let _ = crate::protocol::write_message(&mut stream, &welcome);
+        // Consume the AttachTerminal frame so the handshake completes,
+        // then hang up: read_output's blocking read observes the EOF
+        // before the detach write runs.
+        let _ = crate::protocol::read_message::<_, crate::protocol::ClientMessage>(
+            &mut stream,
+            crate::backend_client::MAX_TUI_TERMINAL_FRAME_SIZE,
+        );
+        drop(stream);
+    });
+    let client = BackendClient::new("/nonexistent.sock", &path);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = fixture_snapshot();
+    app.load_selected_terminal_history(120, 32);
+    assert!(
+        app.error.is_some(),
+        "mid-stream death surfaces through the error channel"
     );
 }
 
