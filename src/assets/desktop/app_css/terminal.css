@@ -375,3 +375,73 @@ input {
 .session-line .mini {
   white-space: nowrap;
 }
+
+/* ---- chat lens over the terminal (ux overhaul backlog 2/3) ---- */
+/* The lens overlays the still-attached terminal surface: switching views
+ * never touches the terminal socket. The switch sits in the shell's
+ * top-right corner; the transcript column centers with a readable cap. */
+.terminal-lens-switch {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: var(--z-popover, 10);
+}
+.terminal-lens {
+  position: absolute;
+  inset: 0;
+  z-index: calc(var(--z-popover, 10) + 1);
+  background: var(--bg);
+  display: block;
+}
+.terminal-lens[hidden] {
+  display: none;
+}
+.terminal-lens-scroller {
+  height: 100%;
+  overflow-y: auto;
+  padding: 24px 16px 32px;
+  scroll-behavior: auto;
+}
+.terminal-lens-content {
+  max-width: 720px;
+  margin: 0 auto;
+  font-size: var(--fs-sm, 13px);
+  line-height: 1.55;
+}
+.lens-line {
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 1px 0;
+}
+.lens-turn-user {
+  display: flex;
+  justify-content: flex-end;
+  margin: 10px 0 2px;
+}
+.lens-turn-user > span {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 12px);
+  border-bottom-right-radius: 4px;
+  padding: 6px 12px;
+  max-width: 80%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.lens-gap {
+  height: 8px;
+}
+.terminal-lens-new {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: pointer;
+}
+/* Focus ring contract applies inside the lens like everywhere else. */
+.terminal-lens-scroller:focus-visible,
+.terminal-lens-new:focus-visible {
+  outline: var(--ring, 2px solid var(--accent, #89b4fa));
+  outline-offset: var(--ring-offset, 2px);
+}

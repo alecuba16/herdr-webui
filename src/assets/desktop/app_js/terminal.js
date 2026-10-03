@@ -615,6 +615,11 @@ function flushTerminalFrames() {
         focusTerminal();
       });
     });
+    // Chat lens re-reads the live bridge AFTER the write so the transcript
+    // view reflects the bytes that just landed (reading before the write
+    // would show the pre-write grid).
+    if (globalThis.HerdrLens && globalThis.HerdrLens.isActive())
+      globalThis.HerdrLens.onTerminalFrame();
     return;
   }
   // Clear attach flag if it was set but the coalesced frame ended up small
@@ -624,6 +629,8 @@ function flushTerminalFrames() {
   }
   writeTerminalFrame(data);
   clearDismissedWorkingForTerminal(state.terminalId);
+  if (globalThis.HerdrLens && globalThis.HerdrLens.isActive())
+    globalThis.HerdrLens.onTerminalFrame();
 }
 function flushTerminalFramesFor(terminalId) {
   if (!terminalWriteQueue.length || !term || !terminalId) return;

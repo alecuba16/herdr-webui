@@ -696,6 +696,8 @@ setupSessionChrome();
 applyTheme();
 applyDensity();
 applyOptions();
+if (globalThis.HerdrLens && globalThis.HerdrLens.insertLensSwitch)
+  HerdrLens.insertLensSwitch();
 syncNoSleepControls();
 loadNoSleep();
 // Deep-URL boots land straight on a routed session (/session/work/...).
