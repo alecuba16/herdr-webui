@@ -306,7 +306,7 @@
       <div id="mobileApp" class="mobile-app">
         <header class="mobile-header">
           <button class="mobile-btn" id="mobileBack" title="Home">←</button>
-          <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span id="mobileMeta">Loading</span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button></div>
+          <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span class="mobile-context-meta"><span id="mobileMeta">Loading</span><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button></span></div>
           <button class="mobile-btn" id="mobileSearch" title="Search">⌕</button>
           <button class="mobile-btn" id="mobileSettings" title="Settings">⚙</button>
           <button class="mobile-btn temp-terminal-toggle" id="mobileTempTerminal" title="Temporary terminal" aria-label="Temporary terminal"><span class="temp-terminal-icon" aria-hidden="true"><span class="temp-terminal-icon-glyph"></span><span class="temp-terminal-icon-label">T</span></span></button>
@@ -898,6 +898,14 @@
     refresh,
     handleServerSettingsChanged,
     getTempTerminal: () => mobileTempTerminal,
+  });
+  // Connection dot in the header context: reflects the events stream state.
+  mobileEvents.onEventState((connected) => {
+    const dot = el("mobileConnectionDot");
+    if (dot) {
+      dot.dataset.state = connected ? "connected" : "connecting";
+      dot.title = connected ? "Connected: events stream live" : "Connecting: events stream retrying";
+    }
   });
 
   mobileSessions = globalThis.HerdrMobileSessionsModule.create({

@@ -146,6 +146,53 @@ body.light {
   font-size: 12px;
   margin-top: 2px;
 }
+.mobile-context-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.mobile-context-meta #mobileMeta {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* Label shedding at narrow widths: keep the status dot, drop the text. */
+@media (max-width: 480px) {
+  .mobile-context-meta #mobileMeta {
+    display: none;
+  }
+  .mobile-context .mobile-backend-badge {
+    font-size: 9px;
+    padding: 3px 6px;
+  }
+}
+.mobile-connection-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+.mobile-connection-dot[data-state="connected"] {
+  background: var(--status-working, #a6e3a1);
+}
+.mobile-connection-dot[data-state="connecting"] {
+  background: var(--status-idle, #f9e2af);
+  animation: mobile-connection-pulse 1.4s ease-in-out infinite;
+}
+@keyframes mobile-connection-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mobile-connection-dot[data-state="connecting"] {
+    animation: none;
+  }
+}
 .mobile-context .mobile-backend-badge {
   align-self: flex-start;
   -webkit-appearance: none;
