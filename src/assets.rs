@@ -18,6 +18,8 @@ const SHARED_FILE_ICONS_JS: &str = include_str!("assets/shared/file_icons.js");
 const SHARED_FILE_ICONS_CSS: &str = include_str!("assets/shared/file_icons.css");
 const SHARED_FILE_TREE_CSS: &str = include_str!("assets/shared/file_tree.css");
 const SHARED_COLORS_CSS: &str = include_str!("assets/shared/colors.css");
+const SHARED_TOKENS_CSS: &str = include_str!("assets/shared/tokens.css");
+const SHARED_PRIMITIVES_CSS: &str = include_str!("assets/shared/primitives.css");
 const SHARED_CONTENT_SEARCH_CSS: &str = include_str!("assets/shared/content_search.css");
 const SHARED_FILE_TREE_JS: &str = include_str!("assets/shared/file_tree.js");
 const SHARED_FILE_CONTENT_SEARCH_JS: &str = include_str!("assets/shared/file_content_search.js");
@@ -225,6 +227,14 @@ pub(crate) async fn shared_file_tree_css() -> Response {
 
 pub(crate) async fn shared_colors_css() -> Response {
     static_text(SHARED_COLORS_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn shared_tokens_css() -> Response {
+    static_text(SHARED_TOKENS_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn shared_primitives_css() -> Response {
+    static_text(SHARED_PRIMITIVES_CSS, "text/css; charset=utf-8")
 }
 
 pub(crate) async fn shared_content_search_css() -> Response {

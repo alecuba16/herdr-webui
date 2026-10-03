@@ -106,8 +106,6 @@ input[type="checkbox"] {
   color: var(--action-fg);
   border-color: var(--action-border);
 }
-.mini:hover,
-.mini:focus,
 .tab.active .mini:hover,
 .tab.active .mini:focus {
   background: var(--control-hover);
@@ -118,22 +116,22 @@ input[type="checkbox"] {
 .mini.danger:focus,
 .tab.active .mini.danger:hover,
 .tab.active .mini.danger:focus {
-  background: #5a2734;
-  color: #ffccd5;
-  border-color: #f38ba8;
+  background: var(--danger-bg-hover, #5a2734);
+  color: var(--danger-hover, #ffccd5);
+  border-color: var(--danger, #f38ba8);
 }
 .mini.warn:hover,
 .mini.warn:focus,
 .tab.active .mini.warn:hover,
 .tab.active .mini.warn:focus {
-  background: #56401b;
-  color: #f9e2af;
-  border-color: #f9e2af;
+  background: var(--warn-hover, #56401b);
+  color: var(--warn, #f9e2af);
+  border-color: var(--warn, #f9e2af);
 }
 .mini.tree:hover,
 .mini.tree:focus {
   background: #315044;
-  color: #a6e3a1;
+  color: var(--git-added-color, #a6e3a1);
   border-color: #74c7a3;
 }
 
@@ -174,20 +172,6 @@ input[type="checkbox"] {
 .git-ui-btn:focus-visible {
   box-shadow: var(--focus-ring, 0 0 0 2px rgba(56, 139, 253, 0.22));
   outline: none;
-}
-.git-ui-btn.primary {
-  background: var(--accent-1, var(--accent));
-  border-color: var(--accent-1, var(--accent));
-  color: var(--accent-fg, var(--bg));
-  font-weight: 800;
-}
-.git-ui-btn.primary:hover {
-  background: var(--accent-hover, var(--accent));
-  color: var(--accent-fg, var(--bg));
-}
-.git-ui-btn.danger {
-  border-color: #f38ba8;
-  color: #f38ba8;
 }
 a.item,
 a.item:visited,

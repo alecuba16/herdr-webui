@@ -1176,25 +1176,17 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   line-height: 1.1;
   margin-top: 2px;
 }
-.mobile-nav-status.blocked,
+.mobile-nav-status.blocked {
+  color: var(--status-blocked, #f38ba8);
+}
 .mobile-nav-status.done {
-  color: #f38ba8;
+  color: var(--status-done, #89b4fa);
 }
 .mobile-nav-status.idle {
-  color: #a6e3a1;
+  color: var(--status-idle, #a6e3a1);
 }
 .mobile-nav-status.working {
-  color: #f9e2af;
-}
-body.light .mobile-nav-status.blocked,
-body.light .mobile-nav-status.done {
-  color: #a81c1c;
-}
-body.light .mobile-nav-status.idle {
-  color: #13661b;
-}
-body.light .mobile-nav-status.working {
-  color: #6f4a04;
+  color: var(--status-working, #f9e2af);
 }
 .mobile-form {
   display: grid;

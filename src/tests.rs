@@ -4077,6 +4077,24 @@ async fn static_asset_routes_serve_embedded_content() {
         )
         .await
         .unwrap();
+    let shared_tokens_css = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/assets/shared/tokens.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let shared_primitives_css = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/assets/shared/primitives.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     let shared_content_search_css = app
         .clone()
         .oneshot(
@@ -4332,6 +4350,8 @@ async fn static_asset_routes_serve_embedded_content() {
     assert_eq!(file_icons_js.status(), StatusCode::OK);
     assert_eq!(file_icons_css.status(), StatusCode::OK);
     assert_eq!(shared_colors_css.status(), StatusCode::OK);
+    assert_eq!(shared_tokens_css.status(), StatusCode::OK);
+    assert_eq!(shared_primitives_css.status(), StatusCode::OK);
     assert_eq!(shared_content_search_css.status(), StatusCode::OK);
     assert_eq!(file_content_search_js.status(), StatusCode::OK);
     assert_eq!(desktop_search_js.status(), StatusCode::OK);
@@ -4392,6 +4412,14 @@ async fn static_asset_routes_serve_embedded_content() {
         .unwrap()
         .contains("text/css"));
     assert!(shared_colors_css.headers()[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .contains("text/css"));
+    assert!(shared_tokens_css.headers()[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .contains("text/css"));
+    assert!(shared_primitives_css.headers()[header::CONTENT_TYPE]
         .to_str()
         .unwrap()
         .contains("text/css"));

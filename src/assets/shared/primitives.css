@@ -1,0 +1,292 @@
+/*
+ * Shared UI primitives: badge, buttons, keycap, segmented control, focus ring.
+ *
+ * Consumes only tokens from tokens.css (plus the layout base tokens
+ * --accent/--accent-fg/--bg/--fg/--panel2/--border/--border2/--muted).
+ * Legacy class aliases (.mini, .git-ui-btn) keep existing markup working;
+ * new markup should use the .btn family.
+ */
+
+/* ---- global focus: one ring language, keyboard only ---- */
+:focus-visible {
+  outline: var(--ring);
+  outline-offset: var(--ring-offset);
+}
+
+/* ---- badge: a written status label on a tint; color is never the only signal ---- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--chip-h);
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.badge.idle {
+  color: var(--muted);
+  background: var(--panel2);
+  border-color: var(--border);
+}
+.badge.working {
+  color: var(--status-working);
+  background: var(--status-working-tint);
+}
+/* the one state that moves: the dot breathes, the word stands still */
+.badge.working::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+  animation: herdr-pulse var(--dur-pulse) var(--ease-pulse) infinite;
+}
+.badge.blocked {
+  color: var(--status-blocked);
+  background: var(--status-blocked-tint);
+}
+.badge.done {
+  color: var(--status-done);
+  background: var(--status-done-tint);
+}
+.badge.unknown {
+  color: var(--muted);
+  border-color: var(--border);
+  border-style: dashed;
+}
+@keyframes herdr-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ---- buttons: one family, four variants, one size modifier ---- */
+.btn,
+.mini,
+.git-ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border-radius: var(--radius-md);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform 80ms var(--ease-out);
+}
+
+/* neutral: elevated surface + hairline; .mini and .git-ui-btn adopt the same base */
+.btn,
+.mini,
+.git-ui-btn {
+  background: var(--panel2);
+  color: var(--fg);
+  border: 1px solid var(--border2);
+  padding: 6px var(--space-3);
+}
+.git-ui-btn {
+  font-size: var(--fs-xs);
+  padding: 5px var(--space-2);
+}
+
+/* primary: the user's own action. Accent fill, accent text color */
+.btn-primary,
+.btn.primary,
+.mini.active,
+.no-sleep-control.active,
+.git-ui-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg, var(--bg));
+  font-weight: var(--fw-bold);
+}
+
+/* danger: destructive intent; tinted background, blocked border */
+.btn-danger,
+.btn.danger,
+.mini.danger,
+.git-ui-btn.danger {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+  color: var(--danger-hover);
+}
+.btn-danger:hover:not(:disabled),
+.btn.danger:hover:not(:disabled),
+.mini.danger:hover:not(:disabled),
+.git-ui-btn.danger:hover:not(:disabled) {
+  background: var(--danger-bg-hover);
+}
+
+/* warn: reversible-but-loud */
+.btn.warn,
+.mini.warn {
+  background: var(--panel2);
+  color: var(--fg);
+  border-color: var(--border2);
+}
+.btn.warn:hover:not(:disabled),
+.btn.warn:focus-visible,
+.mini.warn:hover:not(:disabled),
+.mini.warn:focus-visible {
+  background: var(--warn-hover);
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+/* ghost: quiet actions in dense rows */
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg);
+}
+
+/* small modifier for table rows and tab strips */
+.btn-sm,
+.mini {
+  padding: 2px 6px;
+  font-size: var(--fs-xs);
+  margin-left: 4px;
+  border-radius: 7px;
+}
+
+/* icon button: square, transparent, mandatory aria-label in markup */
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--control-h);
+  height: var(--control-h);
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--fg);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.icon-button.is-outlined {
+  border-color: var(--border);
+}
+
+/* ---- hover lift only where a pointer can hover ---- */
+@media (hover: hover) {
+  .btn:hover:not(:disabled),
+  .mini:hover:not(:disabled),
+  .git-ui-btn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--panel2), var(--accent) 12%);
+    border-color: color-mix(in srgb, var(--accent), transparent 45%);
+    transform: translateY(-1px);
+  }
+  .icon-button:hover:not(:disabled) {
+    background: var(--border);
+  }
+}
+.btn:active:not(:disabled),
+.mini:active:not(:disabled),
+.git-ui-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+.btn:disabled,
+.mini:disabled,
+.git-ui-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* coarse pointers grow to the touch target */
+@media (pointer: coarse) {
+  .btn,
+  .git-ui-btn {
+    min-height: var(--touch-target);
+  }
+  .icon-button {
+    width: var(--touch-target);
+    height: var(--touch-target);
+  }
+}
+
+/* ---- keycap: inline mono shortcut hint ---- */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--border2);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--panel2);
+  color: var(--muted);
+  font-family: var(--mono-font, monospace);
+  font-size: var(--fs-2xs);
+  line-height: 1;
+}
+
+/* ---- segmented control: one selected option, the rest quiet ---- */
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-md);
+}
+.segmented > button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: calc(var(--control-h) - 8px);
+  padding: 0 var(--space-3);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.segmented > button[aria-pressed="true"],
+.segmented > button.active {
+  background: var(--accent);
+  color: var(--accent-fg, var(--bg));
+  font-weight: var(--fw-bold);
+}
+
+/* ---- reduced motion: state stays legible, nothing moves ---- */
+@media (prefers-reduced-motion: reduce) {
+  .badge.working::before {
+    animation: none;
+  }
+  .btn,
+  .mini,
+  .git-ui-btn,
+  .icon-button,
+  .segmented > button {
+    transition: none;
+  }
+}

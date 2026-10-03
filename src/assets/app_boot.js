@@ -63,7 +63,9 @@
       loadCss("/assets/shared/file-tree.css");
     }
     loadCss("/assets/shared/colors.css");
+    loadCss("/assets/shared/tokens.css");
     loadCss("/assets/shared/skeleton.css");
+    loadCss("/assets/shared/primitives.css");
     loadCss("/assets/vendor/wterm.css");
     loadCss("/assets/shared/file-icons.css");
     loadCss("/assets/shared/content-search.css");

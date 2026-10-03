@@ -1,0 +1,136 @@
+/*
+ * Shared design tokens: the machine-readable design system.
+ *
+ * Layer 1 (this file): semantic tokens that both layouts consume. Colors live
+ * here; every component rule should reference these, never raw hex values.
+ * The existing layout tokens (--bg, --fg, --panel, --panel2, --border,
+ * --border2, --muted, --accent, --accent-fg, ...) stay defined by each
+ * layout's base CSS (dark default + body.light override), because desktop and
+ * mobile ship slightly different base palettes today. This file derives the
+ * shared semantic layer on top of them with color-mix, so a layout change
+ * flows through automatically, and adds token groups that never existed
+ * (status tints, spacing, radii, type scale, motion, focus, layers, shadows).
+ *
+ * Rules:
+ * - This block must not contain selectors other than :root and light overrides.
+ * - docs/ux/design-system.md mirrors these tokens; both must not drift.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---- semantic status colors: one meaning per state, never chrome accent ----
+   * Catppuccin-based, aligned with the existing sidebar-count and
+   * mobile-nav-status colors so nothing shifts visually. */
+  --status-idle: #a6e3a1;
+  --status-working: #f9e2af;
+  --status-blocked: #f38ba8;
+  --status-done: #89b4fa;
+  --status-unknown: var(--muted, #a6adc8);
+
+  /* tinted surfaces for badges/chips: same hue, mostly transparent */
+  --status-idle-tint: color-mix(in srgb, var(--status-idle), transparent 86%);
+  --status-working-tint: color-mix(in srgb, var(--status-working), transparent 86%);
+  --status-blocked-tint: color-mix(in srgb, var(--status-blocked), transparent 86%);
+  --status-done-tint: color-mix(in srgb, var(--status-done), transparent 86%);
+
+  /* danger: destructive actions and failures, blocked-adjacent but distinct */
+  --danger: #f38ba8;
+  --danger-tint: color-mix(in srgb, var(--danger), transparent 86%);
+  --danger-hover: #ffccd5;
+  --danger-bg: #3b2028;
+  --danger-bg-hover: #5a2734;
+
+  /* warn: reversible-but-loud actions (discard, stash drop confirmations) */
+  --warn: #f9e2af;
+  --warn-hover: #56401b;
+
+  /* git colors already exist per layout; alias the shared names */
+  --git-modified: var(--git-modified-color, #e9d07a);
+  --git-added: var(--git-added-color, #a6e3a1);
+  --git-deleted: var(--git-deleted-color, #f38ba8);
+  --git-changed: var(--git-changed-color, #89b4fa);
+  --git-conflict: var(--git-conflict-color, #fab387);
+
+  /* ---- spacing: 4px base ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ---- radii ---- */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* ---- type scale ---- */
+  --fs-2xs: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 18px;
+  /* the one size iOS Safari does not zoom on focus */
+  --fs-input: 16px;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --tracking-caps: 0.06em;
+
+  /* ---- control sizing ---- */
+  --control-h: 34px;
+  /* coarse-pointer minimum; 44px keeps our existing mobile audit target */
+  --touch-target: 44px;
+  --chip-h: 20px;
+  --rail-w: 3px;
+
+  /* ---- focus: single ring language ---- */
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent, #89b4fa), transparent 68%);
+  --ring: 2px solid var(--accent, #89b4fa);
+  --ring-offset: 2px;
+
+  /* ---- motion ---- */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-pulse: 1600ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  /* endless dots jump between two looks: a smooth pulse draws every display
+   * refresh for as long as an agent works; steps draw about one frame a second */
+  --ease-pulse: steps(2, jump-none);
+
+  /* ---- layers ---- */
+  --z-popover: 10;
+  --z-scrim: 15;
+  --z-drawer: 20;
+  --z-modal: 30;
+  --z-banner: 40;
+
+  /* ---- shadows: overlays only; resting surfaces separate by tone + hairline ---- */
+  --shadow-pop: 0 16px 48px #000a, 0 0 0 1px var(--border, #313244);
+  --shadow-drawer: 0 0 40px #000a;
+  --shadow-card: 0 4px 16px #0006;
+}
+
+/* Light theme: only the status/danger hues need darkening for contrast on
+ * light surfaces; spacing, type, motion, and layers are theme-invariant.
+ * Matches the existing mobile-nav-status light overrides. */
+body.light {
+  color-scheme: light;
+  --status-idle: #13661b;
+  --status-working: #6f4a04;
+  --status-blocked: #a81c1c;
+  --status-done: #2150ae;
+  --danger: #a61b1b;
+  --danger-hover: #7a1212;
+  --danger-bg: #f3d9dc;
+  --danger-bg-hover: #e5c0c5;
+  --warn: #8a4708;
+  --warn-hover: #f2e3c2;
+}
