@@ -121,6 +121,52 @@ keeps working on top of the shared ANSI palette.
 - All primitives drop transitions and the pulse under
   `prefers-reduced-motion: reduce`.
 
+## Mobile patterns
+
+- **Bottom-sheet modals** (`modals.css`, `<=640px`): desktop modal markup
+  keeps one implementation; the phone override pins it to the bottom edge
+  with `--radius-xl` top corners, safe-area padding, drag handle on the
+  `h2::before`, and an upward shadow. Scrim tap closes (settings modal has
+  the pointerdown guard). Mobile-native sheets (`.mobile-sheet`, z 91)
+  remain for file browser action sheets.
+- **Terminal key bar** (`.mobile-keybar`): Esc/Tab/one-shot Ctrl/arrows/^C
+  above the terminal shell. Bytes go through `sendInputData` (strip helpers
+  intact); every button uses `onmousedown preventDefault` so wterm's
+  textarea keeps focus. Ctrl arms via `aria-pressed` on the key plus a
+  module-level flag (source of truth), disarms after any key send and on
+  screen leave. Hides with header/nav while the OS keyboard is open
+  (`body.mobile-keyboard-open`).
+- **Drawer navigation** (`.mobile-drawer`, z 92/93): secondary screens
+  (Agents/Panels/Worktrees/Files/Git/Sessions/Settings) slide from the left
+  over a scrim; 24px edge swipe opens, 56px left swipe closes, scrim tap
+  closes. Home/Search/Terminal stay fixed in the bottom nav; deep links via
+  `showScreen` keep working.
+- **Header meta row** (`.mobile-context-meta`): status text + connection
+  dot (events-WS state via `onEventState`) + backend pill;
+  `<=480px` sheds the text label and shrinks the pill.
+
+## Accessibility contract
+
+Enforced by the `a11y audit contract` suite in `app_load.test.mjs`:
+
+- Every icon-only button carries `aria-label` (header toggles, modal
+  closes, tab close, mobile header). Glyph bodies are `aria-hidden` spans.
+- Dialogs: `role="dialog"` + `aria-modal="true"` (settings via
+  `aria-labelledby`, search palette via `aria-label`), Escape closes,
+  scrim closes, focus is trapped (existing tab handler).
+- Live regions: connection chips and the mobile meta row are
+  `role="status"`/`aria-live="polite"`; paste progress already carries
+  `aria-live="polite"`.
+- Selected desktop tab exposes `aria-current="page"`.
+- Toggles expose `aria-pressed` (theme toggle, key-bar Ctrl, segmented
+  controls).
+- Contrast: WCAG AA measured in `theme_contrast.test.mjs` on every actual
+  backing surface, resolving `var(--status-*)` light tokens from
+  tokens.css.
+- Motion: the global `prefers-reduced-motion` block in `tokens.css` kills
+  every transition/animation on both layouts (per-component blocks remain
+  as belt-and-braces).
+
 ## Debt / accepted gaps
 
 - `.mini` keeps a `margin-left: 4px` from its old inline usage; new markup
