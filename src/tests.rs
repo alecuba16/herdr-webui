@@ -9955,3 +9955,82 @@ async fn cleanup_sessions_rejects_non_builtin_backend() {
     let body = response_json(response).await;
     assert_eq!(body["ok"], false);
 }
+
+/// The composer submit route owns the refusal classification AND copy: one
+/// step produces the status code, the wire code, and the human note. The
+/// browser displays `note` verbatim (falling back to the error string when
+/// absent), so these strings are the UI contract.
+#[test]
+fn submit_pane_error_classifies_code_status_and_note() {
+    let (status, code, note) = submit_pane_error(
+        "agent_blocked: the agent is waiting for an answer in the terminal",
+        "agent_blocked",
+    );
+    assert_eq!(code, "agent_blocked");
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(note.contains("waiting for an answer"), "note={note}");
+
+    let (status, code, note) =
+        submit_pane_error("agent_not_found: pane x not found", "agent_not_found");
+    assert_eq!(code, "agent_not_found");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(note.contains("gone"), "note={note}");
+
+    let (status, code, note) =
+        submit_pane_error("agent_exited: terminal has exited", "agent_exited");
+    assert_eq!(code, "agent_exited");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(note.contains("gone"), "note={note}");
+
+    let (status, code, note) = submit_pane_error(
+        "message_too_long: composer message exceeds 20000 characters",
+        "message_too_long",
+    );
+    assert_eq!(code, "message_too_long");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(note.contains("20000"), "note={note}");
+
+    let (status, code, note) = submit_pane_error(
+        "empty_agent_prompt: agent prompt must not be empty",
+        "empty_agent_prompt",
+    );
+    assert_eq!(code, "empty_agent_prompt");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(note.contains("empty"), "note={note}");
+
+    // Unknown codes degrade: 502, the raw wire prefix, and a wrapped note
+    // ("Not sent: " + the server's error string) so the UI reads the same.
+    let (status, code, note) = submit_pane_error("io_error: write failed", "io_error");
+    assert_eq!(code, "io_error");
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(note, "Not sent: io_error: write failed");
+}
+
+/// The two backends shape their errors differently: the builtin one puts
+/// the machine code in the message prefix ("agent_blocked: ...") with a
+/// generic wire code, external herdr puts herdr codes in `code` with a
+/// human message. submit_pane_code must classify both identically.
+#[test]
+fn submit_pane_code_reads_builtin_prefix_and_herdr_code() {
+    // Builtin shape: {code: "builtin_error", message: "<code>: <detail>"}.
+    let builtin = json!({
+        "code": "builtin_error",
+        "message": "agent_blocked: the agent is waiting for an answer in the terminal"
+    });
+    assert_eq!(submit_pane_code(&builtin), "agent_blocked");
+
+    // herdr shape: {code: "agent_blocked", message: "human text"}.
+    let herdr = json!({ "code": "agent_blocked", "message": "agent is blocked" });
+    assert_eq!(submit_pane_code(&herdr), "agent_blocked");
+
+    // herdr's empty_prompt carries no code prefix in the message.
+    let herdr_empty = json!({ "code": "empty_agent_prompt", "message": "prompt is empty" });
+    assert_eq!(submit_pane_code(&herdr_empty), "empty_agent_prompt");
+
+    // Builtin unknown error: the message prefix names the failure.
+    let builtin_unknown = json!({ "code": "builtin_error", "message": "io_error: write failed" });
+    assert_eq!(submit_pane_code(&builtin_unknown), "io_error");
+
+    // Nothing recognizable: empty string, not a panic.
+    assert_eq!(submit_pane_code(&json!({})), "");
+}

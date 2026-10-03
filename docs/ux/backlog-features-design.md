@@ -115,11 +115,14 @@ Decisions:
   `state.pane`, restored on pane switch), Enter submits / Shift+Enter is a
   newline, over-cap and empty drafts never reach the server. Refusal notes
   land in a `role=status` row and the draft stays in the box.
-- **Shared shaping policy** (`src/assets/shared/compose.js`, DOM-free):
-  `composerMessage` (trailing-newline strip, CRLF→LF) mirrors the server's
-  `composer_message`; `submitNote` maps wire codes to actionable copy;
-  `QUEUE_READY_STATUS` is the closed set of statuses a held message could be
-  released on (done/idle; working/blocked never).
+- **Thin browser, thick server** (SOLID pass): validation, error
+  classification, and the human-facing refusal copy all live server-side —
+  `submit_pane` classifies each wire code once into (status, code, note) and
+  the response body carries `{error, code, note}`. The browser module owns
+  only UI state: visibility, per-pane drafts, key handling, and displaying
+  `error.details.note` (falling back to the raw error string). A first cut
+  had a duplicated browser-side shaping/copy module (`shared/compose.js`);
+  the refactor deleted it — one policy, one implementation, in Rust.
 - Protocol 22 stays frozen: this is a new HTTP route + herdr RPC, not a
   wire-protocol change.
 
@@ -151,10 +154,20 @@ All three features shipped on `ux_improvements`:
   option dialogs, free-text prompts, dismissal, and the stale-send guard.
 - **Composer** (`ux_improvements`, after the parity audit): 5 Rust tests
   (shaping pair, paste+Enter sequence, blocked refusal, validation) +
-  19 vm tests (compose 5, composer 14: drafts, refusals, key handling,
-  guards) + 13-check real-browser e2e (echo round-trip through the real
-  route, per-pane draft across workspace switches, blocked refusal with
-  the draft kept and nothing reaching the pane, lens visibility).
+  2 route classification tests (builtin message-prefix shape AND herdr
+  code shape classify identically; status + wire code + note from one
+  step) + 15 vm tests (composer 15: drafts, refusals incl. server-owned
+  note and raw-error fallback, key handling, guards) + 13-check
+  real-browser e2e (echo round-trip through the real route, per-pane
+  draft across workspace switches, blocked refusal with the draft kept
+  and nothing reaching the pane, lens visibility; the refusal copy is
+  pinned to the server's exact string).
+  A SOLID pass moved validation, error classification, and refusal copy
+  from the browser to the Rust route (`{error, code, note}` bodies) and
+  deleted the duplicated browser shaping module; it also fixed a hidden
+  route bug found by the probe: backend refusals arrive as Ok wire
+  responses carrying `error`, so the status mapping was dead code and
+  every refusal answered 200.
 - **Coverage**: terminal_hub.rs 92.5% regions / 91.9% lines under
   `cargo llvm-cov` (the remainder is the live-socket join/detach path,
   exercised by the multi-viewer e2e's fake herdr server, not unit-reachable).

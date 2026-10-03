@@ -6,6 +6,10 @@
 // for the shell, createElement + appendChild, querySelector for the note /
 // input / send trio parsed out of the overlay's innerHTML, addEventListener
 // for keydown/input, and `hidden` as a plain boolean.
+//
+// The server owns refusal copy: api() throws with error.details carrying
+// {error, code, note} and the composer displays details.note (falling back
+// to the error string). These tests throw server-shaped errors.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { equal, match, ok } from "node:assert/strict";
@@ -96,18 +100,15 @@ function loadComposer(overrides = {}) {
   ctx.globalThis = ctx;
   ctx.window = ctx;
   const contextObject = vm.createContext(ctx);
-  // HerdrCompose must exist before composer.js runs (app_boot loads
-  // compose.js first); default to the real policy.
-  if (overrides.compose !== null) {
-    const composeSrc = readFileSync(
-      new URL("./shared/compose.js", import.meta.url),
-      "utf8",
-    );
-    vm.runInContext(composeSrc, contextObject);
-    if (overrides.compose) Object.assign(ctx.HerdrCompose, overrides.compose);
-  }
   vm.runInContext(SOURCE, contextObject);
   return { ctx, shell, created, apiCalls };
+}
+
+// Server-shaped refusal error, like http.js throws for !ok bodies.
+function refusalError(code, message, note) {
+  const error = Error(message);
+  error.details = { error: message, code, note };
+  return error;
 }
 
 // The overlay element is the one node created and appended to the shell.
@@ -227,8 +228,10 @@ describe("composer module", () => {
   it("submit shows a refusal note and keeps the draft on error", async () => {
     const result = loadComposer({
       api: async () => {
-        throw Error(
+        throw refusalError(
+          "agent_blocked",
           "agent_blocked: the agent is waiting for an answer in the terminal",
+          "Not sent: the agent is waiting for an answer in the terminal. Answer it first.",
         );
       },
     });
@@ -244,15 +247,32 @@ describe("composer module", () => {
     );
   });
 
-  it("submit maps unknown error prefixes through submitNote", async () => {
+  it("submit falls back to the raw error string without a server note", async () => {
     const result = loadComposer({
       api: async () => {
-        throw Error("io_error: write failed");
+        const error = Error("io_error: write failed");
+        error.details = { error: "io_error: write failed", code: "io_error" };
+        throw error;
       },
     });
     typeDraft(result, "x");
     await result.ctx.HerdrComposer.submit();
-    equal(noteOf(result).textContent, "Not sent: io_error: write failed");
+    // details.note is absent (non-JSON body or older server): the browser
+    // shows the server's own error string, verbatim, no client-side copy.
+    equal(noteOf(result).textContent, "io_error: write failed");
+  });
+
+  it("submit shows the server note verbatim", async () => {
+    const result = loadComposer({
+      api: async () => {
+        throw refusalError("message_too_long", "message_too_long: too big",
+          "Not sent: message is too long (20000 characters max).");
+      },
+    });
+    typeDraft(result, "x");
+    await result.ctx.HerdrComposer.submit();
+    equal(noteOf(result).textContent,
+      "Not sent: message is too long (20000 characters max).");
   });
 
   it("submit refuses drafts over MAX_COMPOSER_CHARS without calling api", async () => {
@@ -305,16 +325,11 @@ describe("composer module", () => {
     equal(note.hidden, true, "empty note hides the row");
   });
 
-  it("guards against missing HerdrCompose and missing pane", async () => {
+  it("guards against a missing active pane", async () => {
     let calls = 0;
     const result = loadComposer({
-      compose: null,
       api: async () => { calls++; return {}; },
     });
-    typeDraft(result, "hello");
-    await result.ctx.HerdrComposer.submit();
-    equal(calls, 0, "no api call without the compose policy");
-    match(noteOf(result).textContent, /unavailable/i);
     // No active pane: submit is a no-op, not a crash.
     result.ctx.state.pane = null;
     typeDraft(result, "hello again");

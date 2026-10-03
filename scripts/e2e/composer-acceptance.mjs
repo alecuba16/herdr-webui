@@ -255,8 +255,9 @@ for (let i = 0; i < 30 && !refusal; i++) {
   })()`);
   if (!refusal) await sleep(400);
 }
-check('blocked submit refused server-side with a visible note',
-  !!refusal && /waiting for an answer/i.test(refusal.text),
+check('blocked submit refused server-side with the server-owned note',
+  !!refusal && refusal.text ===
+    'Not sent: the agent is waiting for an answer in the terminal. Answer it first.',
   JSON.stringify(refusal));
 check('draft kept after the refusal', refusal && refusal.value === 'must be refused',
   JSON.stringify(refusal && refusal.value));

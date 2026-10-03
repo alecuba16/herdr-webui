@@ -65,8 +65,8 @@ use assets::{
     mobile_screens_js, mobile_search_js, mobile_sessions_js, mobile_settings_js,
     mobile_terminal_js, mobile_theme_js, mobile_workmeta_js, mobile_worktrees_js,
     shared_actions_js, shared_alert_card_css, shared_alert_card_js, shared_attention_js,
-    shared_colors_css, shared_compose_js, shared_content_search_css, shared_core_js,
-    shared_editor_js, shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
+    shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
+    shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
     shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js, shared_http_js,
     shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
     shared_options_js, shared_primitives_css, shared_settings_confirm_js,
@@ -1398,7 +1398,6 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/shared/alert-card.js", get(shared_alert_card_js))
         .route("/assets/shared/alert-card.css", get(shared_alert_card_css))
         .route("/assets/shared/options.js", get(shared_options_js))
-        .route("/assets/shared/compose.js", get(shared_compose_js))
         .route("/assets/shared/actions.js", get(shared_actions_js))
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
         .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
@@ -4593,9 +4592,84 @@ async fn close_pane(
 /// Composer submit: types one message into the pane's agent through the
 /// backend's `agent.prompt` (built-in backend and external herdr implement
 /// the same method, including the `agent_blocked` refusal while the agent
-/// waits for an answer). Refusal errors keep their machine-readable code in
-/// the response body so the composer can say what happened ("blocked" vs
-/// "gone") instead of a generic 502.
+/// waits for an answer). Refusal errors keep their machine-readable code AND
+/// the human-facing note in the response body: the server owns the copy so
+/// every client (desktop, mobile, future integrations) says the same thing
+/// and the browser only displays.
+///
+/// Human-facing copy for a composer submit refusal. The route classifies the
+/// wire code anyway (for the status mapping), so the same match owns the
+/// note: one classification, two projections, no drift. Unknown codes get
+/// the generic "Not sent" prefix around the server's own error string so
+/// every refusal reads consistently in the UI.
+fn submit_pane_note(code: &str, err: &str) -> String {
+    match code {
+        "agent_blocked" => {
+            "Not sent: the agent is waiting for an answer in the terminal. Answer it first.".into()
+        }
+        "agent_not_found" | "agent_exited" => {
+            "Not sent: this panel is gone. Pick another panel.".into()
+        }
+        "message_too_long" => "Not sent: message is too long (20000 characters max).".into(),
+        "empty_agent_prompt" => "Not sent: the message is empty.".into(),
+        "unauthorized" => "Not sent: session expired. Reload.".into(),
+        _ => format!("Not sent: {err}"),
+    }
+}
+
+/// Extracts the machine wire code from a backend submit error.
+///
+/// The builtin backend reports `code: "builtin_error"` with the real code
+/// as the MESSAGE prefix (`"agent_blocked: ..."`); external herdr reports
+/// its own codes (`"agent_blocked"`, `"empty_agent_prompt"`) as the error
+/// code with a human message. Try the message prefix first (builtin),
+/// then the error code (herdr), so both backends classify identically.
+fn submit_pane_code(error: &serde_json::Value) -> String {
+    let message = error
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let prefix = message.split(':').next().unwrap_or("");
+    const KNOWN: [&str; 6] = [
+        "agent_blocked",
+        "agent_not_found",
+        "agent_exited",
+        "message_too_long",
+        "empty_agent_prompt",
+        "unauthorized",
+    ];
+    if KNOWN.contains(&prefix) {
+        return prefix.to_string();
+    }
+    let code = error
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if KNOWN.contains(&code) {
+        return code.to_string();
+    }
+    // Unknown: keep the message prefix (builtin) or the raw code (herdr)
+    // so the note still names what failed.
+    if !prefix.is_empty() {
+        prefix.to_string()
+    } else {
+        code.to_string()
+    }
+}
+
+/// Maps a backend submit error to (status, code, note). Kept beside the
+/// note map so the route reads as one classification step.
+fn submit_pane_error(message: &str, code: &str) -> (StatusCode, String, String) {
+    let status = match code {
+        "agent_blocked" => StatusCode::CONFLICT,
+        "agent_not_found" | "agent_exited" => StatusCode::NOT_FOUND,
+        "message_too_long" | "empty_agent_prompt" => StatusCode::BAD_REQUEST,
+        _ => StatusCode::BAD_GATEWAY,
+    };
+    let note = submit_pane_note(code, message);
+    (status, code.to_string(), note)
+}
+
 async fn submit_pane(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -4618,25 +4692,43 @@ async fn submit_pane(
             .into_response();
     };
     let api = api_for_headers_ensured(&state, &headers).await;
-    match tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         api.request_value(json!({
             "id": "web:pane:submit",
             "method": "agent.prompt",
             "params": { "pane_id": pane_id, "text": text },
         }))
     })
-    .await
-    {
-        Ok(Ok(value)) => Json(value).into_response(),
+    .await;
+    // Both backends deliver refusals as an Ok wire response carrying an
+    // `error` object ({code, message}); the Err arm is transport only.
+    // The route classifies once (status + code + note) so the browser
+    // never needs to know which backend answered or how it shaped its
+    // error fields.
+    match result {
+        Ok(Ok(value)) => {
+            if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
+                let code = submit_pane_code(error);
+                let message = error
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("submit failed");
+                let (status, code, note) = submit_pane_error(message, &code);
+                return (
+                    status,
+                    Json(json!({ "error": message, "code": code, "note": note })),
+                )
+                    .into_response();
+            }
+            Json(value).into_response()
+        }
         Ok(Err(err)) => {
-            let code = err.split(':').next().unwrap_or("error");
-            let status = match code {
-                "agent_blocked" => StatusCode::CONFLICT,
-                "agent_not_found" | "agent_exited" => StatusCode::NOT_FOUND,
-                "message_too_long" | "empty_agent_prompt" => StatusCode::BAD_REQUEST,
-                _ => StatusCode::BAD_GATEWAY,
-            };
-            (status, Json(json!({ "error": err, "code": code }))).into_response()
+            let (status, code, note) = submit_pane_error(&err, "error");
+            (
+                status,
+                Json(json!({ "error": err, "code": code, "note": note })),
+            )
+                .into_response()
         }
         Err(err) => (
             StatusCode::BAD_GATEWAY,

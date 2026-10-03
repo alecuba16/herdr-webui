@@ -9,9 +9,16 @@
 //
 // Per-pane draft: the box keeps its content per pane (not per view), so
 // switching panes mid-thought loses nothing.
+//
+// Thin on purpose: validation, error classification, and the human copy
+// all live server-side (the submit route returns {error, code, note});
+// this module only owns UI state (visibility, drafts, key handling).
 (function () {
   const drafts = new Map();
   let sending = false;
+  // Matches the server's MAX_COMPOSER_CHARS; the server re-checks, this is
+  // just the early out so a fat draft never leaves the browser.
+  const MAX_COMPOSER_CHARS = 20000;
 
   function shellElement() {
     return document.getElementById("terminalShell");
@@ -83,13 +90,13 @@
     const input = inputEl();
     const paneId = activePaneId();
     if (!input || !paneId || sending) return;
-    const compose = globalThis.HerdrCompose;
-    if (!compose) return note("Composer unavailable.");
-    const raw = input.value;
-    const message = compose.composerMessage(raw);
+    // Trailing newlines are the composer's Enter, not the text's; CRLF
+    // reads as one newline. The server shapes again, this only avoids
+    // sending the composer's own line-break residue.
+    const message = input.value.replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
     if (!message.trim()) return; // nothing to send; the box keeps the draft
-    if (message.length > compose.MAX_COMPOSER_CHARS)
-      return note(compose.submitNote("message_too_long"));
+    if (message.length > MAX_COMPOSER_CHARS)
+      return note("Not sent: message is too long (20000 characters max).");
     sending = true;
     note("");
     try {
@@ -101,20 +108,17 @@
           body: JSON.stringify({ text: message }),
         },
       );
-      if (response && (response.error || response.code)) {
-        note(compose.submitNote(response.code, response.error));
-      } else {
-        input.value = "";
-        drafts.delete(paneId);
-        note("");
-      }
+      input.value = "";
+      drafts.delete(paneId);
+      note("");
     } catch (error) {
-      // api() throws on !ok with the server's error string; refusal
-      // bodies are "<code>: <message>" so the machine code can be
-      // recovered from the prefix and mapped to composer copy.
-      const text = String(error && error.message ? error.message : error);
-      const code = text.split(":")[0];
-      note(compose.submitNote(code, text));
+      // api() throws on !ok with error.details carrying the refusal body
+      // {error, code, note}. The server wrote the note; display it and
+      // keep the draft. Older/unknown refusals fall back to the error
+      // string. 401 is handled by api() (redirects to the login).
+      const details = error && error.details;
+      const text = String((error && error.message) || error);
+      note((details && details.note) || text);
     } finally {
       sending = false;
     }
