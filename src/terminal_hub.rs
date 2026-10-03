@@ -116,6 +116,8 @@ impl ReplayRing {
         self.bytes.iter().copied().collect()
     }
 
+    /// Replay size in bytes. Used by tests; kept for diagnostics.
+    #[cfg(test)]
     fn len(&self) -> usize {
         self.bytes.len()
     }
