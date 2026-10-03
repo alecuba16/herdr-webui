@@ -65,15 +65,15 @@ use assets::{
     mobile_screens_js, mobile_search_js, mobile_sessions_js, mobile_settings_js,
     mobile_terminal_js, mobile_theme_js, mobile_workmeta_js, mobile_worktrees_js,
     shared_actions_js, shared_alert_card_css, shared_alert_card_js, shared_attention_js,
-    shared_colors_css, shared_content_search_css,
-    shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
-    shared_file_icons_js, shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js,
-    shared_http_js, shared_line_context_js, shared_lsp_js, shared_markdown_preview_css,
-    shared_markdown_preview_js, shared_options_js, shared_settings_confirm_js,
+    shared_colors_css, shared_compose_js, shared_content_search_css, shared_core_js,
+    shared_editor_js, shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
+    shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js, shared_http_js,
+    shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
+    shared_options_js, shared_primitives_css, shared_settings_confirm_js,
     shared_settings_feedback_js, shared_skeleton_css, shared_skeleton_js, shared_temp_terminal_js,
     shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
-    shared_tokens_css, shared_primitives_css, shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm,
-    vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
+    shared_tokens_css, shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js,
+    vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
 };
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
@@ -1373,6 +1373,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/tabs/{tab_id}/promote", post(promote_tab))
         .route("/api/panes", get(panes))
         .route("/api/panes/{pane_id}/close", post(close_pane))
+        .route("/api/panes/{pane_id}/submit", post(submit_pane))
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/session-snapshot", get(session_snapshot))
         .route("/api/agents", get(agents))
@@ -1397,6 +1398,7 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/shared/alert-card.js", get(shared_alert_card_js))
         .route("/assets/shared/alert-card.css", get(shared_alert_card_css))
         .route("/assets/shared/options.js", get(shared_options_js))
+        .route("/assets/shared/compose.js", get(shared_compose_js))
         .route("/assets/shared/actions.js", get(shared_actions_js))
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
         .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
@@ -4588,6 +4590,62 @@ async fn close_pane(
     .await
 }
 
+/// Composer submit: types one message into the pane's agent through the
+/// backend's `agent.prompt` (built-in backend and external herdr implement
+/// the same method, including the `agent_blocked` refusal while the agent
+/// waits for an answer). Refusal errors keep their machine-readable code in
+/// the response body so the composer can say what happened ("blocked" vs
+/// "gone") instead of a generic 502.
+async fn submit_pane(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    AxumPath(pane_id): AxumPath<String>,
+    body: axum::extract::Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let Some(text) = body
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "missing text" })),
+        )
+            .into_response();
+    };
+    let api = api_for_headers_ensured(&state, &headers).await;
+    match tokio::task::spawn_blocking(move || {
+        api.request_value(json!({
+            "id": "web:pane:submit",
+            "method": "agent.prompt",
+            "params": { "pane_id": pane_id, "text": text },
+        }))
+    })
+    .await
+    {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(err)) => {
+            let code = err.split(':').next().unwrap_or("error");
+            let status = match code {
+                "agent_blocked" => StatusCode::CONFLICT,
+                "agent_not_found" | "agent_exited" => StatusCode::NOT_FOUND,
+                "message_too_long" | "empty_agent_prompt" => StatusCode::BAD_REQUEST,
+                _ => StatusCode::BAD_GATEWAY,
+            };
+            (status, Json(json!({ "error": err, "code": code }))).into_response()
+        }
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 /// Folds a failed `spawn_blocking` join into the promote route's error
 /// channel. A panic in the backend call must still propagate (it may hold
 /// poisoned locks or invariant breakage worth crashing on), while a plain
@@ -5039,15 +5097,12 @@ async fn terminal_socket(
     // backend after a short grace window. Backpressure drops stalled
     // browser clients (they see the 4404 stall close) instead of ever
     // blocking the shared reader.
-    let (mut out_rx, replay, join_guard) =
-        hub.join(&path, &terminal_id, cols, rows);
+    let (mut out_rx, replay, join_guard) = hub.join(&path, &terminal_id, cols, rows);
     // Replay tail first, so a re-join of a still-attached terminal
     // paints the recent output immediately. Fresh attaches get the
     // backend's own full-history frame through the live queue; the
     // snapshot is empty there and costs nothing.
-    if !replay.is_empty()
-        && socket.send(Message::Binary(replay.into())).await.is_err()
-    {
+    if !replay.is_empty() && socket.send(Message::Binary(replay.into())).await.is_err() {
         return;
     }
 

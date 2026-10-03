@@ -1,8 +1,11 @@
-# Backlog features design: density toggle, chat lens, prompt cards
+# Backlog features design: density toggle, chat lens, prompt cards, composer
 
-Scope decisions and implementation notes for the three deferred backlog items
-(`ux-overhaul-plan.md` 3.3, "Optional big items [DECISION]"). User approved the
-full sweep on 2026-10-03, plus coverage closure on branch-added code.
+Scope decisions and implementation notes for the deferred backlog items
+(`ux-overhaul-plan.md` 3.3, "Optional big items [DECISION]"): the original
+three shipped on 2026-10-03; the composer (server-side message submit, parity
+with upstream `devswha/herdr-web-ui`) was added after a features audit on the
+same branch. User approved the full sweep plus coverage closure on
+branch-added code.
 
 ## 1. Density toggle (S)
 
@@ -81,6 +84,45 @@ Decisions:
   re-evaluates, so a stale card can never send stale input (re-evaluated
   against the current tail before sending).
 
+## 4. Chat composer over terminal (L)
+
+Upstream parity audit (2026-10-03) named the composer the one major missing
+feature: upstream herdr-web-ui submits messages SERVER-side through herdr's
+`agent.prompt`, so the paste + Enter survives a locked phone or a dropped
+connection, and a blocked pane can be refused before anything is typed.
+
+Decisions:
+- **Server owns submit authority** (same model as upstream): new builtin
+  backend method `agent.prompt` (`pane_id` or `target` alias for herdr wire
+  compat) pastes the message as ONE bracketed paste (`\e[200~ ... \e[201~`,
+  newlines as CR inside the block), then sends its `\r` after a 300ms gap on
+  a detached thread holding only the runtime Arc. The gap is deliberately
+  outside jcode's 150ms paste-guard window (`paste_guard.rs`): a trailing
+  Enter inside that window is swallowed as paste residue, so the submit would
+  silently not happen. Never shorten below ~200ms.
+- **Refusals before typing**: `agent_blocked` (the pane waits on a question
+  dialog; typing would answer the dialog, never the composer),
+  `agent_not_found`, `agent_exited`, `message_too_long` (20000 chars),
+  `empty_agent_prompt`. Error strings are `<code>: <message>` so the wire
+  code survives both transports.
+- **HTTP route**: `POST /api/panes/{id}/submit` with `{text}`. Goes through
+  the same ApiClient socket path, so it works for builtin AND external herdr
+  backends (passthrough free). Status mapping: blocked 409, gone 404,
+  validation 400, else 502; body carries `{error, code}`.
+- **Browser never types into the pane**: desktop composer
+  (`src/assets/desktop/app_js/composer.js`) rides with the lens surface
+  (visible only while the lens is on), keeps per-pane drafts (Map keyed by
+  `state.pane`, restored on pane switch), Enter submits / Shift+Enter is a
+  newline, over-cap and empty drafts never reach the server. Refusal notes
+  land in a `role=status` row and the draft stays in the box.
+- **Shared shaping policy** (`src/assets/shared/compose.js`, DOM-free):
+  `composerMessage` (trailing-newline strip, CRLF→LF) mirrors the server's
+  `composer_message`; `submitNote` maps wire codes to actionable copy;
+  `QUEUE_READY_STATUS` is the closed set of statuses a held message could be
+  released on (done/idle; working/blocked never).
+- Protocol 22 stays frozen: this is a new HTTP route + herdr RPC, not a
+  wire-protocol change.
+
 ## Coverage targets ("100% if possible")
 
 Whole-repo 100% is not realistic for a Rust-served webui (main.rs is 7k+
@@ -90,7 +132,8 @@ exercised by unit and/or real-browser e2e tests, measured with:
 - Rust: `cargo llvm-cov` on the bin, terminal_hub.rs module coverage closed
   to 100% (test the hub paths; main.rs relay paths covered by the e2e).
 - Frontend: the existing vm-based suites cover new modules; new e2e checks
-  drive density toggle, lens switch, and prompt cards through the real UI.
+  drive density toggle, lens switch, prompt cards, and the composer through
+  the real UI.
 
 ## Validation plan
 
@@ -106,6 +149,12 @@ All three features shipped on `ux_improvements`:
 - **Prompt cards** (`3b2a4ab`, extended in `626c80f`): 13 vm tests
   (parse/answer/stale-guard/dismiss/XSS-escape) + 15-check e2e covering
   option dialogs, free-text prompts, dismissal, and the stale-send guard.
+- **Composer** (`ux_improvements`, after the parity audit): 5 Rust tests
+  (shaping pair, paste+Enter sequence, blocked refusal, validation) +
+  19 vm tests (compose 5, composer 14: drafts, refusals, key handling,
+  guards) + 13-check real-browser e2e (echo round-trip through the real
+  route, per-pane draft across workspace switches, blocked refusal with
+  the draft kept and nothing reaching the pane, lens visibility).
 - **Coverage**: terminal_hub.rs 92.5% regions / 91.9% lines under
   `cargo llvm-cov` (the remainder is the live-socket join/detach path,
   exercised by the multi-viewer e2e's fake herdr server, not unit-reachable).

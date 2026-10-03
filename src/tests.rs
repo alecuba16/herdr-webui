@@ -1507,10 +1507,10 @@ fn terminal_attach_errors_classify_for_graceful_degradation() {
     // (socket missing, attach send failing) do not, since the backend
     // may just be restarting.
     assert!(AttachError::ReadHandshake.suggests_builtin());
-    assert!(AttachError::Rejected(
-        "client version 22 is newer than server version 21".into()
-    )
-    .suggests_builtin());
+    assert!(
+        AttachError::Rejected("client version 22 is newer than server version 21".into())
+            .suggests_builtin()
+    );
     assert!(!AttachError::Connect.suggests_builtin());
     assert!(!AttachError::SendHandshake.suggests_builtin());
     assert!(!AttachError::Attach.suggests_builtin());

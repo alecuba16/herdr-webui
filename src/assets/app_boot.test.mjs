@@ -28,6 +28,7 @@ const SHARED_SCRIPTS = [
   "/assets/shared/attention.js",
   "/assets/shared/alert-card.js",
   "/assets/shared/options.js",
+  "/assets/shared/compose.js",
   "/assets/shared/actions.js",
   "/assets/shared/file-icons.js",
   "/assets/shared/file-tree.js",

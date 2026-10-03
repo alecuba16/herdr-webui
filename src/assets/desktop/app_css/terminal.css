@@ -399,7 +399,8 @@ input {
 .terminal-lens-scroller {
   height: 100%;
   overflow-y: auto;
-  padding: 24px 16px 32px;
+  /* Bottom padding clears the docked composer when the lens is on. */
+  padding: 24px 16px 120px;
   scroll-behavior: auto;
 }
 .terminal-lens-content {
@@ -442,6 +443,56 @@ input {
 /* Focus ring contract applies inside the lens like everywhere else. */
 .terminal-lens-scroller:focus-visible,
 .terminal-lens-new:focus-visible {
+  outline: var(--ring, 2px solid var(--accent, #89b4fa));
+  outline-offset: var(--ring-offset, 2px);
+}
+
+/* ---- chat composer over the terminal (server-side submit) ---- */
+/* The composer rides with the lens: same column, docked at the shell's
+ * bottom so the transcript scrolls above it. Enter sends, Shift+Enter
+ * adds a newline; refusals show in the note row (role=status). */
+.terminal-composer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: calc(var(--z-popover, 10) + 2);
+  padding: 8px 16px 14px;
+  background: linear-gradient(to top, var(--bg) 70%, transparent);
+  pointer-events: none;
+}
+.terminal-composer[hidden] {
+  display: none;
+}
+.terminal-composer-note {
+  max-width: 720px;
+  margin: 0 auto 6px;
+  font-size: var(--fs-2xs, 11px);
+  color: var(--fg-dim, #a6adc8);
+  pointer-events: auto;
+}
+.terminal-composer-row {
+  display: flex;
+  gap: 8px;
+  max-width: 720px;
+  margin: 0 auto;
+  align-items: flex-end;
+  pointer-events: auto;
+}
+.terminal-composer-row textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 44px;
+  max-height: 40vh;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: 8px 10px;
+  font: inherit;
+}
+.terminal-composer-row textarea:focus-visible,
+.terminal-composer-send:focus-visible {
   outline: var(--ring, 2px solid var(--accent, #89b4fa));
   outline-offset: var(--ring-offset, 2px);
 }

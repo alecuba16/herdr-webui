@@ -189,6 +189,9 @@
       // scroller held focus while open, so hand it back explicitly.
       try { focusTerminal(true); } catch (_) {}
     }
+    // The composer rides with the lens: same surface, same visibility,
+    // and it swaps its per-pane draft when the pane changes.
+    if (globalThis.HerdrComposer) globalThis.HerdrComposer.sync();
     syncLensToggleUi();
   }
 

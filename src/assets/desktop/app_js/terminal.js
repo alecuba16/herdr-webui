@@ -156,6 +156,9 @@ async function connectTerminal(fitOverride = null) {
     rows = state.termRows || 30,
     size = `${cols}x${rows}`;
   const target = `${state.session}|${currentSessionBackend()}|${state.ws}|${state.tab}|${state.pane}|${state.terminalId}`;
+  // Pane switch converges here: the composer swaps its per-pane draft so
+  // the box shows what was typed for the pane now in view.
+  if (globalThis.HerdrComposer) globalThis.HerdrComposer.sync();
   if (
     termWs &&
     termWs.readyState === 1 &&

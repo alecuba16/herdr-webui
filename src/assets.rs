@@ -15,6 +15,7 @@ const SHARED_ATTENTION_JS: &str = include_str!("assets/shared/attention.js");
 const SHARED_ALERT_CARD_JS: &str = include_str!("assets/shared/alert_card.js");
 const SHARED_ALERT_CARD_CSS: &str = include_str!("assets/shared/alert_card.css");
 const SHARED_OPTIONS_JS: &str = include_str!("assets/shared/options.js");
+const SHARED_COMPOSE_JS: &str = include_str!("assets/shared/compose.js");
 const SHARED_ACTIONS_JS: &str = include_str!("assets/shared/actions.js");
 const SHARED_FILE_ICONS_JS: &str = include_str!("assets/shared/file_icons.js");
 const SHARED_FILE_ICONS_CSS: &str = include_str!("assets/shared/file_icons.css");
@@ -98,6 +99,7 @@ const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/terminal.js"),
     include_str!("assets/desktop/app_js/lens.js"),
     include_str!("assets/desktop/app_js/prompt_cards.js"),
+    include_str!("assets/desktop/app_js/composer.js"),
     include_str!("assets/desktop/app_js/worktrees.js"),
     include_str!("assets/desktop/app_js/shortcuts.js"),
     include_str!("assets/desktop/app_js/workspace_create.js"),
@@ -207,7 +209,10 @@ pub(crate) async fn shared_attention_js() -> Response {
 }
 
 pub(crate) async fn shared_alert_card_js() -> Response {
-    static_text(SHARED_ALERT_CARD_JS, "application/javascript; charset=utf-8")
+    static_text(
+        SHARED_ALERT_CARD_JS,
+        "application/javascript; charset=utf-8",
+    )
 }
 
 pub(crate) async fn shared_alert_card_css() -> Response {
@@ -216,6 +221,10 @@ pub(crate) async fn shared_alert_card_css() -> Response {
 
 pub(crate) async fn shared_options_js() -> Response {
     static_text(SHARED_OPTIONS_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn shared_compose_js() -> Response {
+    static_text(SHARED_COMPOSE_JS, "application/javascript; charset=utf-8")
 }
 
 pub(crate) async fn shared_actions_js() -> Response {

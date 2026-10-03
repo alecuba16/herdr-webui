@@ -31,6 +31,27 @@ const PROTOCOL_VERSION: u32 = 22;
 const MAX_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MAX_SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
 const DETECTION_TAIL_BYTES: usize = 64 * 1024;
+/// Gap between a composer message's bracketed paste and its Enter. Must
+/// exceed jcode's 150ms paste-trailing-Enter suppression window
+/// (`paste_guard.rs`, jcode issue #544) or the submit is swallowed.
+const AGENT_PROMPT_ENTER_GAP_MS: u64 = 300;
+/// Composer message cap, matching the upstream reference (one message must
+/// fit in a single submit; larger input goes through the terminal itself).
+const MAX_COMPOSER_CHARS: usize = 20_000;
+
+/// A composer message as sent: trailing newlines are the composer's, not the
+/// text's; CRLF reads as one newline. Mirrors upstream `composerMessage`.
+fn composer_message(text: &str) -> String {
+    let trimmed = text.trim_end_matches(['\r', '\n']);
+    trimmed.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// One bracketed paste: newlines become CR inside the paste block so a
+/// multi-line message stays one prompt instead of one submit per line.
+fn bracketed_paste_payload(message: &str) -> String {
+    let body = message.replace('\n', "\r");
+    format!("\u{1b}[200~{body}\u{1b}[201~")
+}
 /// Optional TTL for `RecentAgentProcessExit` records. `None` matches upstream
 /// herdr: the record never expires on its own in production and is only
 /// cleared when a live agent process is detected again (or the record is
@@ -824,6 +845,48 @@ impl BuiltinState {
                 Ok(
                     json!({ "type": "pane_read", "read": { "pane_id": pane_id, "text": text, "format": "text" } }),
                 )
+            }
+            "agent.prompt" => {
+                // herdr's own agent.prompt takes `target` (agent name or
+                // pane_id); our built-in accepts pane_id, with `target` as
+                // the external-herdr-compatible alias so the same request
+                // body works against both backends.
+                let pane_id = params
+                    .get("pane_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| params.get("target").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .ok_or_else(|| "missing param pane_id".to_string())?;
+                let text = params
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| "text is required".to_string())?;
+                // herdr refuses an empty prompt with `empty_agent_prompt`;
+                // trim check here because required_string-style filtering
+                // would report a generic "required" instead.
+                if text.trim().is_empty() {
+                    return Err("empty_agent_prompt: agent prompt must not be empty".to_string());
+                }
+                let terminal = {
+                    let data = self
+                        .data
+                        .lock()
+                        .map_err(|_| "state unavailable".to_string())?;
+                    let pane = data
+                        .panes
+                        .get(&pane_id)
+                        .ok_or_else(|| format!("agent_not_found: pane {pane_id} not found"))?;
+                    data.terminals.get(&pane.terminal_id).cloned()
+                }
+                .ok_or_else(|| "agent_not_found: terminal not found".to_string())?;
+                if text.chars().count() > MAX_COMPOSER_CHARS {
+                    return Err(
+                        "message_too_long: composer message exceeds 20000 characters".to_string(),
+                    );
+                }
+                terminal.agent_prompt(&text)?;
+                Ok(json!({ "type": "agent_prompt", "pane_id": pane_id, "ok": true }))
             }
             other => Err(format!("built-in backend does not implement {other}")),
         }
@@ -1845,7 +1908,10 @@ impl TerminalRuntime {
                 if sweeper_runtime.exited.load(Ordering::Acquire) {
                     return;
                 }
-                if !sweeper_runtime.pending_status_check.swap(false, Ordering::AcqRel) {
+                if !sweeper_runtime
+                    .pending_status_check
+                    .swap(false, Ordering::AcqRel)
+                {
                     continue;
                 }
                 sweeper_runtime.publish_agent_status_if_changed_force();
@@ -2116,6 +2182,60 @@ impl TerminalRuntime {
     /// detection while output keeps flowing.
     fn publish_agent_status_if_changed_force(&self) {
         self.run_status_detection();
+    }
+
+    /// The pane's last published agent status ("working"/"blocked"/"done"/
+    /// "idle"), or None when no agent has been detected yet. The sweeper
+    /// guarantees this is fresh even when the flip rode the last bytes of an
+    /// output burst (see `pending_status_check`).
+    fn last_agent_status(&self) -> Option<String> {
+        self.last_agent_state
+            .lock()
+            .ok()
+            .and_then(|state| state.as_ref().map(|(_, status)| status.clone()))
+    }
+
+    /// Server-side composer submit ("agent.prompt" semantics): paste the
+    /// message into the pane's PTY as one bracketed paste, then its Enter
+    /// after a gap. Runs on the server so the paste→Enter sequence survives
+    /// a jittery connection and a locked phone, and so a blocked pane can
+    /// refuse before anything is typed (a message typed into an open
+    /// permission/question dialog would answer the dialog, never the
+    /// composer).
+    ///
+    /// The Enter gap (300ms) is deliberately outside jcode's 150ms
+    /// paste-guard window (`paste_guard.rs`, the #544 Windows Terminal fix):
+    /// a trailing Enter inside that window is swallowed as paste residue, so
+    /// the submit would silently not happen. Never shorten below ~200ms.
+    ///
+    /// Takes the runtime Arc because the delayed Enter runs on a detached
+    /// thread that must outlive the submitting HTTP request (the phone can
+    /// lock or the connection drop between paste and Enter).
+    fn agent_prompt(self: &Arc<Self>, text: &str) -> Result<(), String> {
+        if self.exited.load(Ordering::Acquire) {
+            return Err("agent_exited: terminal has exited".to_string());
+        }
+        if self.last_agent_status().as_deref() == Some("blocked") {
+            return Err(
+                "agent_blocked: the agent is waiting for an answer in the terminal".to_string(),
+            );
+        }
+        let message = composer_message(text);
+        let payload = bracketed_paste_payload(&message);
+        self.write_input(payload.as_bytes())
+            .map_err(|err| format!("io_error: {err}"))?;
+        // The Enter must go even if the submitting client disconnects or
+        // locks, so the gap + CR run on a detached thread holding only the
+        // runtime Arc.
+        let runtime = Arc::clone(self);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(AGENT_PROMPT_ENTER_GAP_MS));
+            if runtime.exited.load(Ordering::Acquire) {
+                return;
+            }
+            let _ = runtime.write_input(b"\r");
+        });
+        Ok(())
     }
 
     fn run_status_detection(&self) {
@@ -5691,8 +5811,14 @@ mod tests {
                 Err(_) => break,
             }
         }
-        assert!(saw_blocked, "a blocked flip must be published during the bursty sequence");
-        assert_eq!(last_status, "blocked", "final status must settle on blocked");
+        assert!(
+            saw_blocked,
+            "a blocked flip must be published during the bursty sequence"
+        );
+        assert_eq!(
+            last_status, "blocked",
+            "final status must settle on blocked"
+        );
     }
 
     #[test]
@@ -5777,14 +5903,185 @@ mod tests {
             "exited terminal must not consume the throttle window"
         );
         assert_eq!(
-            state
-                .handle_request("seed", "workspace.list", json!({}))
-                ["result"]["workspaces"]
+            state.handle_request("seed", "workspace.list", json!({}))["result"]["workspaces"]
                 .as_array()
                 .unwrap()
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn composer_message_normalizes_line_ends() {
+        // Trailing newlines are the composer's, not the text's; CRLF and
+        // bare CR read as one newline. Mirrors upstream composerMessage.
+        assert_eq!(composer_message("hello\n\n"), "hello");
+        assert_eq!(composer_message("hello\r\n\r\n"), "hello");
+        assert_eq!(composer_message("a\r\nb"), "a\nb");
+        assert_eq!(composer_message("a\rb"), "a\nb");
+        assert_eq!(composer_message("\n\nhello"), "\n\nhello");
+    }
+
+    #[test]
+    fn bracketed_paste_payload_wraps_one_block() {
+        // Newlines become CR INSIDE the paste markers: a multi-line message
+        // stays one paste (one prompt) instead of one submit per line.
+        assert_eq!(
+            bracketed_paste_payload("hello"),
+            "\u{1b}[200~hello\u{1b}[201~"
+        );
+        assert_eq!(
+            bracketed_paste_payload("a\nb\nc"),
+            "\u{1b}[200~a\rb\rc\u{1b}[201~"
+        );
+    }
+
+    #[test]
+    fn agent_prompt_types_message_then_enter() {
+        // /bin/cat echoes its stdin back, so both the bracketed paste AND
+        // the delayed Enter must appear in the scrollback. This pins the
+        // whole server-side submit contract: refusal-free pane gets the
+        // full payload, and the Enter follows after the gap even though
+        // agent_prompt returns before it is sent.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let pane_id = {
+            let data = state.data.lock().unwrap();
+            data.panes.keys().next().unwrap().clone()
+        };
+
+        let response = state.handle_request(
+            "test",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": "hello from composer\nsecond line\n" }),
+        );
+        assert!(
+            response.get("error").is_none(),
+            "agent.prompt must succeed on a plain shell pane: {response}"
+        );
+
+        // cat echoes paste bytes immediately, the CR lands after the 300ms
+        // gap; allow generous headroom for CI scheduling.
+        std::thread::sleep(Duration::from_millis(AGENT_PROMPT_ENTER_GAP_MS + 700));
+        let text = state.handle_request("t2", "pane.read", json!({ "pane_id": pane_id }));
+        let text = text["result"]["read"]["text"].as_str().unwrap_or("");
+        // pane.read strips ANSI, so the paste markers are gone from the
+        // echo; the message body must have arrived in ONE piece (both
+        // lines) and the delayed Enter as a trailing CR-derived newline.
+        assert!(
+            text.contains("hello from composer\nsecond line"),
+            "paste payload missing from pane output: {text:?}"
+        );
+        assert!(
+            text.contains("second line\n"),
+            "delayed Enter missing from pane output: {text:?}"
+        );
+    }
+
+    #[test]
+    fn agent_prompt_refuses_when_blocked() {
+        // A blocked pane must refuse BEFORE anything is typed: a message
+        // typed into an open permission/question dialog would answer the
+        // dialog. Seed a blocked status directly into last_agent_state.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let (pane_id, terminal) = {
+            let data = state.data.lock().unwrap();
+            let (pane_id, pane) = data.panes.iter().next().unwrap();
+            let terminal = data.terminals.get(&pane.terminal_id).unwrap().clone();
+            (pane_id.clone(), terminal)
+        };
+        {
+            let mut previous = terminal.last_agent_state.lock().unwrap();
+            *previous = Some((Some("jcode".to_string()), "blocked".to_string()));
+        }
+
+        let response = state.handle_request(
+            "test",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": "should be refused" }),
+        );
+        assert_eq!(
+            response["error"]["message"],
+            "agent_blocked: the agent is waiting for an answer in the terminal"
+        );
+
+        // Nothing was typed: /bin/cat echoes stdin, so any leaked input
+        // would show in the scrollback within the Enter-gap window.
+        std::thread::sleep(Duration::from_millis(AGENT_PROMPT_ENTER_GAP_MS + 300));
+        let text = state.handle_request("t2", "pane.read", json!({ "pane_id": pane_id }));
+        let text = text["result"]["read"]["text"].as_str().unwrap_or("");
+        assert!(
+            !text.contains("should be refused"),
+            "refused message leaked into the pane: {text:?}"
+        );
+    }
+
+    #[test]
+    fn agent_prompt_validates_input() {
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let pane_id = {
+            let data = state.data.lock().unwrap();
+            data.panes.keys().next().unwrap().clone()
+        };
+
+        // Empty message refused, herdr-compatible code.
+        let response = state.handle_request(
+            "t1",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": "  \n" }),
+        );
+        assert_eq!(
+            response["error"]["message"],
+            "empty_agent_prompt: agent prompt must not be empty"
+        );
+
+        // Over-cap message refused.
+        let long = "x".repeat(MAX_COMPOSER_CHARS + 1);
+        let response = state.handle_request(
+            "t2",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": long }),
+        );
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("message_too_long"));
+
+        // Unknown pane refused with agent_not_found (herdr-compatible).
+        let response = state.handle_request(
+            "t3",
+            "agent.prompt",
+            json!({ "pane_id": "no-such-pane", "text": "hi" }),
+        );
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("agent_not_found"));
+
+        // `target` alias works like pane_id (external-herdr wire compat).
+        let response = state.handle_request(
+            "t4",
+            "agent.prompt",
+            json!({ "target": pane_id, "text": "via target" }),
+        );
+        assert_eq!(response["result"]["ok"], json!(true));
     }
 
     #[test]

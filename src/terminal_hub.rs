@@ -64,7 +64,11 @@ impl std::fmt::Debug for HubClientEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Bytes(bytes) => write!(f, "Bytes({} bytes)", bytes.len()),
-            Self::Error { kind, message, suggests_builtin } => {
+            Self::Error {
+                kind,
+                message,
+                suggests_builtin,
+            } => {
                 write!(f, "Error {{ kind: {kind}, message: {message}, suggests_builtin: {suggests_builtin} }}")
             }
         }
@@ -94,7 +98,8 @@ impl ReplayRing {
         // A chunk bigger than the whole ring keeps only its tail.
         if chunk.len() >= self.cap {
             self.bytes.clear();
-            self.bytes.extend(chunk[chunk.len() - self.cap..].iter().copied());
+            self.bytes
+                .extend(chunk[chunk.len() - self.cap..].iter().copied());
             return;
         }
         if self.bytes.len() + chunk.len() <= self.cap {
@@ -184,15 +189,9 @@ impl SharedAttach {
     /// bytes published after are delivered live only — never both.
     fn join(&self) -> (Receiver<HubClientEvent>, Vec<u8>) {
         let (tx, rx) = tokio::sync::mpsc::channel(CLIENT_QUEUE_CAP);
-        let replay_guard = self
-            .replay
-            .lock()
-            .expect("terminal hub replay lock");
+        let replay_guard = self.replay.lock().expect("terminal hub replay lock");
         let snapshot = replay_guard.snapshot();
-        let mut clients = self
-            .clients
-            .lock()
-            .expect("terminal hub clients lock");
+        let mut clients = self.clients.lock().expect("terminal hub clients lock");
         clients.retain(|slot| slot.is_some());
         clients.push(Some(tx));
         drop(clients);
@@ -621,10 +620,7 @@ mod tests {
 
         attach.publish(HubClientEvent::Bytes(b"hello".to_vec()));
         // Replay ring got the bytes for future joiners.
-        assert_eq!(
-            attach.replay.lock().unwrap().snapshot(),
-            b"hello".to_vec()
-        );
+        assert_eq!(attach.replay.lock().unwrap().snapshot(), b"hello".to_vec());
 
         // Force-queue rx2's sender to capacity to simulate a stalled
         // client, then publish: the stalled slot must be dropped while
@@ -633,7 +629,10 @@ mod tests {
             // rx2 is the second joined client (slot index 1); stall
             // only that one so rx1 stays a healthy consumer.
             if let Some(Some(client)) = clients.get_mut(1) {
-                while client.try_send(HubClientEvent::Bytes(b"x".to_vec())).is_ok() {}
+                while client
+                    .try_send(HubClientEvent::Bytes(b"x".to_vec()))
+                    .is_ok()
+                {}
             }
         }
         attach.publish(HubClientEvent::Bytes(b"after-stall".to_vec()));
