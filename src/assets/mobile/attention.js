@@ -1,5 +1,5 @@
 (function () {
-  function createMobileAttention({ localStorage, state, window }) {
+  function createMobileAttention({ localStorage, state, window, onAttentionAlert }) {
     let audioCtx = null,
       audioUnlocked = false,
       knownAttention = null,
@@ -89,6 +89,7 @@
       knownAttention = current;
       if (newlyAttentioned.length && shouldPlay(newlyAttentioned)) play();
       if (newlyAttentioned.length) notify(newlyAttentioned);
+      if (newlyAttentioned.length && typeof onAttentionAlert === "function") onAttentionAlert(newlyAttentioned);
     }
 
     function notify(agents) {

@@ -12,6 +12,8 @@ const SHARED_HTTP_JS: &str = include_str!("assets/shared/http.js");
 const SHARED_SKELETON_JS: &str = include_str!("assets/shared/skeleton.js");
 const SHARED_SKELETON_CSS: &str = include_str!("assets/shared/skeleton.css");
 const SHARED_ATTENTION_JS: &str = include_str!("assets/shared/attention.js");
+const SHARED_ALERT_CARD_JS: &str = include_str!("assets/shared/alert_card.js");
+const SHARED_ALERT_CARD_CSS: &str = include_str!("assets/shared/alert_card.css");
 const SHARED_OPTIONS_JS: &str = include_str!("assets/shared/options.js");
 const SHARED_ACTIONS_JS: &str = include_str!("assets/shared/actions.js");
 const SHARED_FILE_ICONS_JS: &str = include_str!("assets/shared/file_icons.js");
@@ -200,6 +202,14 @@ pub(crate) async fn shared_skeleton_css() -> Response {
 
 pub(crate) async fn shared_attention_js() -> Response {
     static_text(SHARED_ATTENTION_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn shared_alert_card_js() -> Response {
+    static_text(SHARED_ALERT_CARD_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn shared_alert_card_css() -> Response {
+    static_text(SHARED_ALERT_CARD_CSS, "text/css; charset=utf-8")
 }
 
 pub(crate) async fn shared_options_js() -> Response {

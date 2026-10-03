@@ -626,6 +626,21 @@
     localStorage,
     state,
     window,
+    onAttentionAlert: (agents) => {
+      const card = globalThis.HerdrAlertCard;
+      if (!card || !state) return;
+      const agent = agents[0];
+      if (!agent) return;
+      const status = mobileAttention.statusClass(agent.agent_status);
+      const name = agent.name || agent.display_agent || agent.agent || agent.terminal_id || "agent";
+      card.show({
+        key: agent.terminal_id || `${agent.workspace_id}:${agent.tab_id}:${agent.pane_id}`,
+        status,
+        title: status === "blocked" ? "Agent blocked" : "Agent done",
+        subtitle: `${name} in ${agent.workspace_id || "workspace"}`,
+        onOpen: () => selectAgent(agent.workspace_id, agent.tab_id, agent.pane_id),
+      });
+    },
   });
   mobileWorkmeta = globalThis.HerdrMobileWorkmetaModule.create({
     state,

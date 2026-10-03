@@ -4095,6 +4095,24 @@ async fn static_asset_routes_serve_embedded_content() {
         )
         .await
         .unwrap();
+    let shared_alert_card_js = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/assets/shared/alert-card.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let shared_alert_card_css = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/assets/shared/alert-card.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     let shared_content_search_css = app
         .clone()
         .oneshot(
@@ -4352,6 +4370,8 @@ async fn static_asset_routes_serve_embedded_content() {
     assert_eq!(shared_colors_css.status(), StatusCode::OK);
     assert_eq!(shared_tokens_css.status(), StatusCode::OK);
     assert_eq!(shared_primitives_css.status(), StatusCode::OK);
+    assert_eq!(shared_alert_card_js.status(), StatusCode::OK);
+    assert_eq!(shared_alert_card_css.status(), StatusCode::OK);
     assert_eq!(shared_content_search_css.status(), StatusCode::OK);
     assert_eq!(file_content_search_js.status(), StatusCode::OK);
     assert_eq!(desktop_search_js.status(), StatusCode::OK);
@@ -4420,6 +4440,14 @@ async fn static_asset_routes_serve_embedded_content() {
         .unwrap()
         .contains("text/css"));
     assert!(shared_primitives_css.headers()[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .contains("text/css"));
+    assert!(shared_alert_card_js.headers()[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .contains("javascript"));
+    assert!(shared_alert_card_css.headers()[header::CONTENT_TYPE]
         .to_str()
         .unwrap()
         .contains("text/css"));

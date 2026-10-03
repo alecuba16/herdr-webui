@@ -4285,6 +4285,20 @@ function handleAttentionSound() {
   if (newlyAttentioned.length && shouldPlayAttentionSound(newlyAttentioned))
     playAttentionSound();
   if (newlyAttentioned.length) notifyAttention(newlyAttentioned);
+  if (newlyAttentioned.length) showAlertCard(newlyAttentioned[0]);
+}
+function showAlertCard(agent) {
+  if (!window.HerdrAlertCard || !agent) return;
+  const status = statusClass(agent.agent_status);
+  window.HerdrAlertCard.show({
+    key: agentKey(agent),
+    status,
+    title: notificationTitle(agent),
+    subtitle: notificationBody(agent),
+    onOpen: () => {
+      if (agent.workspace_id) go(agent.workspace_id, agent.tab_id, agent.pane_id);
+    },
+  });
 }
 function notificationTitle(agent) {
   const status = statusClass(agent.agent_status);

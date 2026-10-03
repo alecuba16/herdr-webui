@@ -25,7 +25,12 @@ function element(id = "") {
     innerHTML: "",
     title: "",
     setAttribute(name, value) {
+      this.attributes = this.attributes || {};
+      this.attributes[name] = value;
       this[name] = value;
+    },
+    getAttribute(name) {
+      return (this.attributes && this.attributes[name]) != null ? this.attributes[name] : null;
     },
     closest() {
       return this;
@@ -5225,5 +5230,79 @@ describe("app bundle load", () => {
     // explicitly chosen one.
     equal(ctx.localStorage.getItem("herdr-session-backend:work"), "builtin");
     equal(ctx.localStorage.getItem("herdr-session-backend:default"), "external-herdr");
+  });
+});
+
+describe("alert card module", () => {
+  const alertCardSource = () =>
+    readFileSync(new URL("./shared/alert_card.js", import.meta.url), "utf8");
+
+  it("exposes a global HerdrAlertCard with show and hide", () => {
+    const ctx = context();
+    vm.runInContext(alertCardSource(), ctx);
+    ok(ctx.HerdrAlertCard, "HerdrAlertCard global exists");
+    equal(typeof ctx.HerdrAlertCard.show, "function");
+    equal(typeof ctx.HerdrAlertCard.hide, "function");
+  });
+
+  it("renders one card with status, role, and auto-dismiss timer", () => {
+    const ctx = context();
+    vm.runInContext(alertCardSource(), ctx);
+    let timeoutFn = null;
+    ctx.setTimeout = (fn) => {
+      timeoutFn = fn;
+      return 2;
+    };
+    vm.runInContext(
+      `HerdrAlertCard.show({ key: "t1", status: "blocked", title: "Agent blocked", subtitle: "agent in ws" })`,
+      ctx,
+    );
+    const state = vm.runInContext("HerdrAlertCard._state", ctx);
+    ok(state.card, "card element rendered");
+    equal(state.card.getAttribute("role"), "alert");
+    equal(state.card.getAttribute("data-status"), "blocked");
+    ok(state.timer, "auto-dismiss timer armed");
+    ok(typeof timeoutFn === "function", "auto-dismiss callback registered");
+
+    // Dismissing the live card pumps the queue: the next alert replaces it.
+    vm.runInContext(
+      `HerdrAlertCard._state.queue.push({ key: "t2", status: "done", title: "Agent done", subtitle: "agent2" })`,
+      ctx,
+    );
+    vm.runInContext("HerdrAlertCard.hide()", ctx);
+    const after = vm.runInContext("HerdrAlertCard._state", ctx);
+    equal(after.card.getAttribute("data-status"), "done");
+    equal(after.queue.length, 0);
+  });
+
+  it("updates the live card in place when the same pane alerts again", () => {
+    const ctx = context();
+    vm.runInContext(alertCardSource(), ctx);
+    vm.runInContext(
+      `HerdrAlertCard.show({ key: "t1", status: "done", title: "Agent done", subtitle: "s" })`,
+      ctx,
+    );
+    vm.runInContext(
+      `HerdrAlertCard.show({ key: "t1", status: "blocked", title: "Agent blocked", subtitle: "s" })`,
+      ctx,
+    );
+    const state = vm.runInContext("HerdrAlertCard._state", ctx);
+    equal(state.card.getAttribute("data-status"), "blocked");
+    equal(state.queue.length, 0, "same-key alert replaces instead of queueing");
+  });
+
+  it("queues a different-pane alert behind the live card", () => {
+    const ctx = context();
+    vm.runInContext(alertCardSource(), ctx);
+    vm.runInContext(
+      `HerdrAlertCard.show({ key: "t1", status: "blocked", title: "Agent blocked", subtitle: "s" })`,
+      ctx,
+    );
+    vm.runInContext(
+      `HerdrAlertCard.show({ key: "t2", status: "done", title: "Agent done", subtitle: "s" })`,
+      ctx,
+    );
+    const state = vm.runInContext("HerdrAlertCard._state", ctx);
+    equal(state.queue.length, 1, "different-key alert queued");
   });
 });
