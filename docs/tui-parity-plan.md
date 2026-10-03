@@ -443,6 +443,14 @@ after the original parity phases (tracked on the temporary board
   stayed frozen, no new wire frames. Webui-only concerns stayed
   webui-only (density toggle, a11y attributes, mobile drawer/header,
   stall banner, multi-viewer replay, lens scroller CSS).
+- Regression found and fixed while testing the port: the card's
+  shadow painted one row below its rect and rendered after the
+  footer, so any visible card blanked the `Ctrl+B ? help` hint tail;
+  the card now lifts two rows above the footer and clamps its height
+  so the shadow never touches it.
+- User-facing key reference consolidated in `docs/tui-shortcuts.md`
+  (navigation, prefix shortcuts, attach mode, lens, composer, prompt
+  cards); the in-app help overlay carries the same list.
 
 ## Order and dependency rationale
 
