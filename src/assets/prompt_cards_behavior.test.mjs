@@ -361,4 +361,35 @@ describe("prompt cards module", () => {
     buttons[0].onclick();
     equal(sent.length, 0, "stale click must not send");
   });
+
+  it("escapes hostile terminal text in every rendered slot", () => {
+    // Terminal output is attacker-influenceable: a malicious agent or
+    // program can print a dialog whose title/labels carry markup. Every
+    // dynamic slot in the card HTML must route through escapeHtml.
+    const { ctx, card } = loadModule({
+      state: {
+        ws: "ws_1",
+        workspaces: [{ workspace_id: "ws_1", agent_status: "blocked" }],
+      },
+    });
+    const hostileGrid = [
+      "old output",
+      '? <img src=x onerror="steal()"> allow <b>evil</b> now?',
+      '> 1. <script>alert(1)</script>',
+      '> 2. " onclick="steal()',
+      "↑↓ select · esc cancel",
+    ];
+    ctx.term.wterm.bridge = makeBridge(hostileGrid);
+    const prompt = ctx.HerdrPromptCards.parsePrompt(hostileGrid);
+    ok(prompt, "hostile dialog still parses");
+    ctx.HerdrPromptCards.evaluate();
+    const html = card._innerHTML;
+    // No raw markup can survive into any attribute or body slot.
+    ok(!html.includes("<img"), "img tag must be escaped");
+    ok(!html.includes("<script"), "script tag must be escaped");
+    ok(!html.includes("<b>evil"), "b tag must be escaped");
+    ok(!html.includes('" onclick="'), "attribute breakout must be escaped");
+    ok(html.includes("&lt;img"), "escaped entities present");
+    ok(html.includes("&lt;script&gt;"), "script escaped to entities");
+  });
 });

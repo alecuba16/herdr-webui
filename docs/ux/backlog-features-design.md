@@ -96,3 +96,22 @@ exercised by unit and/or real-browser e2e tests, measured with:
 
 Per feature: unit suite (vm harness) + one e2e acceptance path + full
 batteries (Rust bin+lib, 25 frontend suites, e2e scripts) before commit.
+
+## Delivered status (measured, not aspirational)
+
+All three features shipped on `ux_improvements`:
+- **Density toggle** (`06f9ee4`): vm coverage in app_load.
+- **Chat lens** (`73e6902`): 9 vm tests + 11-check real-browser e2e
+  (includes zero-socket assertion across toggles).
+- **Prompt cards** (`3b2a4ab`, extended in `626c80f`): 13 vm tests
+  (parse/answer/stale-guard/dismiss/XSS-escape) + 15-check e2e covering
+  option dialogs, free-text prompts, dismissal, and the stale-send guard.
+- **Coverage**: terminal_hub.rs 92.5% regions / 91.9% lines under
+  `cargo llvm-cov` (the remainder is the live-socket join/detach path,
+  exercised by the multi-viewer e2e's fake herdr server, not unit-reachable).
+  Frontend branch-added modules each have a dedicated vm suite.
+- Prompt cards also fixed a real backend bug found by the e2e: status
+  flips swallowed by the 500ms detection throttle when the pane goes
+  silent right after a burst. A pending flag + trailing-edge sweeper
+  thread recovers them (regression + burst-stress tests in
+  `builtin_backend.rs`).
