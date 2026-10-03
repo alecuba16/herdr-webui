@@ -64,6 +64,7 @@ fn test_state() -> WebState {
         settings_tx,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         lsp: Arc::new(lsp::LspRegistry::new(Default::default())),
+        terminal_hub: Arc::new(terminal_hub::TerminalHub::new()),
     }
 }
 
@@ -1501,30 +1502,28 @@ fn terminal_handshake_requires_exact_protocol_version() {
 
 #[test]
 fn terminal_attach_errors_classify_for_graceful_degradation() {
+    use crate::terminal_hub::AttachError;
     // Handshake failures offer a built-in session; transport failures
     // (socket missing, attach send failing) do not, since the backend
     // may just be restarting.
-    assert!(TerminalAttachError::ReadHandshake.suggests_builtin());
-    assert!(TerminalAttachError::Rejected(
+    assert!(AttachError::ReadHandshake.suggests_builtin());
+    assert!(AttachError::Rejected(
         "client version 22 is newer than server version 21".into()
     )
     .suggests_builtin());
-    assert!(!TerminalAttachError::Connect.suggests_builtin());
-    assert!(!TerminalAttachError::SendHandshake.suggests_builtin());
-    assert!(!TerminalAttachError::Attach.suggests_builtin());
+    assert!(!AttachError::Connect.suggests_builtin());
+    assert!(!AttachError::SendHandshake.suggests_builtin());
+    assert!(!AttachError::Attach.suggests_builtin());
 
+    assert_eq!(AttachError::ReadHandshake.error_kind(), "handshake_failed");
     assert_eq!(
-        TerminalAttachError::ReadHandshake.error_kind(),
-        "handshake_failed"
-    );
-    assert_eq!(
-        TerminalAttachError::Rejected("mismatch".into()).error_kind(),
+        AttachError::Rejected("mismatch".into()).error_kind(),
         "handshake_rejected"
     );
-    assert_eq!(TerminalAttachError::Connect.error_kind(), "connect_failed");
+    assert_eq!(AttachError::Connect.error_kind(), "connect_failed");
     // User-facing messages keep the legacy terminal text for direct
     // display when the UI cannot parse the structured frame.
-    assert!(TerminalAttachError::Rejected("boom".into())
+    assert!(AttachError::Rejected("boom".into())
         .user_message()
         .starts_with("herdr rejected terminal connection: boom"));
 }

@@ -206,24 +206,26 @@ Everything else depends on this. No visual change yet beyond unification.
 
 ---
 
-## Phase 5: Terminal transport robustness (backend, optional but recommended)
+## Phase 5: Terminal transport robustness (backend) — DONE (see docs/ux/phase5-transport-design.md)
 
 Not visual, but UX-visible: fewer stalls and dead-session surprises. Own protocol, keep
 wterm.
 
-1. **Shared PTY per terminal** (L): server keeps one attach per terminal_id, fans frames
-   to all attached clients, closes when last detaches. Mirrors reference
-   `PaneAttachment`. Touches `builtin_backend.rs`/`backend_client.rs`; protocol version
-   bump (`PROTOCOL_VERSION` guard exists).
-2. **Replay buffer** (M): bounded tail so a late joiner sees the current screen at once.
-3. **Input queue policy** (S): stop replaying queued input after a disconnect older than
-   N seconds; surface "input was not sent" as a draft for review instead of silently
-   firing into a dead session.
-4. **Backpressure** (M): pause PTY reads when client send buffers saturate, resume on
-   drain; Ctrl+C stays live. portable-pty does not expose pause/resume directly; a
-   bounded output buffer in the reader thread gives the same effect.
-5. **Explicit stall close code** (S): clients get a distinct close event + banner
-   instead of hanging.
+1. **Shared PTY per terminal** (L): DONE — one attach per (client socket,
+   terminal_id) in the new `src/terminal_hub.rs`, fanned out to every viewer;
+   1.5s grace window after the last viewer. No protocol bump needed (item 1's
+   suggested bump was dropped after the survey: protocol 22 already allows
+   multiple attaches, and 0.9.x compatibility is a hard constraint).
+2. **Replay buffer** (M): DONE — 8 MiB bounded ring in the hub (matches the
+   backend's scrollback bound), full backend frames replace it,
+   `HERDR_REPLAY_CAP_BYTES` override.
+3. **Input queue policy** (S): MOOT — input is one FIFO per shared attach;
+   no per-client input queue exists anymore, stale-input-into-dead-session
+   cannot happen.
+4. **Backpressure** (M): DONE — bounded 512-frame per-client output queues;
+   stalled browser clients are dropped and see the 4404 stall banner.
+5. **Explicit stall close code** (S): DONE (earlier slice) — 4404 + banner
+   on both layouts.
 
 ## Phase 6: Accessibility and final polish
 

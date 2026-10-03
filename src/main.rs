@@ -47,6 +47,7 @@ mod lsp;
 mod protocol;
 mod server_settings;
 mod service;
+mod terminal_hub;
 mod terminal_text;
 
 use assets::{
@@ -610,6 +611,10 @@ pub(crate) struct WebState {
     settings_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
     lsp: Arc<lsp::LspRegistry>,
+    /// Shared terminal attach hub: one backend attach per
+    /// `(client socket, terminal_id)`, fanned out to every connected
+    /// viewer (Phase 5 transport work, see docs/ux/phase5-transport-design.md).
+    terminal_hub: Arc<terminal_hub::TerminalHub>,
 }
 
 impl WebState {
@@ -945,6 +950,7 @@ async fn main() -> io::Result<()> {
         settings_tx,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         lsp: lsp_registry,
+        terminal_hub: Arc::new(terminal_hub::TerminalHub::new()),
     };
 
     serve_rebindable(state, rebind_rx, config.tls).await
@@ -4980,6 +4986,7 @@ async fn terminal_ws(
             query,
             socket,
             promoted_temporary_tabs,
+            state.terminal_hub.clone(),
         )
     })
 }
@@ -4991,6 +4998,7 @@ async fn terminal_socket(
     query: TerminalQuery,
     mut socket: WebSocket,
     promoted_temporary_tabs: PromotedTemporaryTabs,
+    hub: Arc<terminal_hub::TerminalHub>,
 ) {
     let terminal_id = query.terminal_id.clone();
     let cols = query.cols.unwrap_or(100).max(1);
@@ -5024,88 +5032,45 @@ async fn terminal_socket(
         }
         return;
     }
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<TerminalEvent>();
-    let (in_tx, in_rx) = std::sync::mpsc::channel::<ClientMessage>();
-
-    std::thread::spawn(move || {
-        let mut stream = match connect_terminal_attach(&path, &terminal_id, cols, rows) {
-            Ok(stream) => stream,
-            Err(error) => {
-                // Order matters: the STRUCTURED error first, then the raw
-                // text, through ONE channel. The browser treats any binary
-                // frame as a live-backend signal (attach success) and only
-                // herdr_error text re-arms its reconnect backoff, so the
-                // structured frame must arrive first or every failed
-                // reconnect resets the backoff and a resize drag rebuilds
-                // a per-frame WebSocket storm. (With a separate error
-                // channel, a closed out_rx could win the select race and
-                // the browser would never see the JSON frame offering a
-                // built-in session.)
-                let _ = out_tx.send(TerminalEvent::Error(error.clone()));
-                let _ = out_tx.send(TerminalEvent::Bytes(error.user_message().into_bytes()));
-                return;
-            }
-        };
-
-        let Ok(mut writer) = stream.try_clone() else {
-            let _ = out_tx.send(TerminalEvent::Bytes(
-                b"failed to clone herdr terminal socket\r\n".to_vec(),
-            ));
+    // Shared attach hub: one backend attach per (client socket,
+    // terminal_id), fanned out to every connected viewer. Late joiners
+    // and quick reconnects reuse the live attach and receive the replay
+    // tail immediately; the last viewer's departure detaches the
+    // backend after a short grace window. Backpressure drops stalled
+    // browser clients (they see the 4404 stall close) instead of ever
+    // blocking the shared reader.
+    let (mut out_rx, replay, join_guard) =
+        hub.join(&path, &terminal_id, cols, rows);
+    // Replay tail first, so a re-join of a still-attached terminal
+    // paints the recent output immediately. Fresh attaches get the
+    // backend's own full-history frame through the live queue; the
+    // snapshot is empty there and costs nothing.
+    if !replay.is_empty() {
+        if socket.send(Message::Binary(replay.into())).await.is_err() {
             return;
-        };
-        std::thread::spawn(move || {
-            for message in in_rx {
-                if write_message(&mut writer, &message).is_err() {
-                    break;
-                }
-            }
-        });
-
-        loop {
-            match read_message::<_, ServerMessage>(&mut stream, MAX_GRAPHICS_FRAME_SIZE) {
-                Ok(ServerMessage::Terminal(frame)) => {
-                    if out_tx.send(TerminalEvent::Bytes(frame.bytes)).is_err() {
-                        break;
-                    }
-                }
-                Ok(ServerMessage::Graphics { bytes }) => {
-                    if out_tx.send(TerminalEvent::Bytes(bytes)).is_err() {
-                        break;
-                    }
-                }
-                Ok(ServerMessage::ServerShutdown { .. }) => break,
-                Ok(_) => {}
-                Err(_) => break,
-            }
         }
-    });
+    }
 
     loop {
         tokio::select! {
-            message = out_rx.recv() => {
-                match message {
-                    // Graceful degradation: surface the handshake failure as
-                    // a structured frame before closing, so the browser can
-                    // offer a built-in session instead of blocking on a dead
-                    // terminal. Delivered through the same channel as the raw
-                    // bytes and after them, so ordering is guaranteed: the
-                    // channel close can never race ahead of the error frame.
-                    Some(TerminalEvent::Error(error)) => {
+            event = out_rx.recv() => {
+                match event {
+                    // Attach error surfaced by the hub as a structured
+                    // frame (same wire behavior as the old per-WS relay):
+                    // herdr_error JSON first, then the explicit 4404
+                    // stall close, so the browser can offer a built-in
+                    // session and never hangs on silence.
+                    Some(terminal_hub::HubClientEvent::Error { kind, message, suggests_builtin }) => {
                         let payload = json!({
                             "type": "herdr_error",
                             "backend": backend.as_str(),
-                            "kind": error.error_kind(),
-                            "message": error.user_message().trim_end(),
-                            "suggest_builtin": error.suggests_builtin(),
+                            "kind": kind,
+                            "message": message,
+                            "suggest_builtin": suggests_builtin,
                         });
                         if let Ok(text) = serde_json::to_string(&payload) {
                             let _ = socket.send(Message::Text(text.into())).await;
                         }
-                        // Explicit stall close (4404): the backend stream
-                        // ended or the attach failed, so the browser gets a
-                        // distinct close code and can banner the stall
-                        // instead of waiting for a reconnect that will not
-                        // produce output.
                         let _ = socket
                             .send(Message::Close(Some(CloseFrame {
                                 code: 4404,
@@ -5114,13 +5079,15 @@ async fn terminal_socket(
                             .await;
                         break;
                     }
-                    Some(TerminalEvent::Bytes(bytes)) => {
+                    Some(terminal_hub::HubClientEvent::Bytes(bytes)) => {
                         if socket.send(Message::Binary(bytes.into())).await.is_err() { break; }
                     }
                     None => {
-                        // Backend output channel closed without an error
-                        // frame: the attach stream died. Same explicit stall
-                        // close so the browser never hangs on silence.
+                        // Hub channel closed: the shared backend stream
+                        // ended (detach, shutdown, or death) or this
+                        // client was dropped as stalled. Same explicit
+                        // stall close so the browser never hangs on
+                        // silence.
                         let _ = socket
                             .send(Message::Close(Some(CloseFrame {
                                 code: 4404,
@@ -5134,7 +5101,9 @@ async fn terminal_socket(
             message = socket.recv() => {
                 match message {
                     Some(Ok(Message::Binary(data))) => {
-                        if in_tx.send(ClientMessage::Input { data: data.to_vec() }).is_err() { break; }
+                        if let Some(attach) = hub.attach_sender(&path, &terminal_id) {
+                            if attach.send(ClientMessage::Input { data: data.to_vec() }).is_err() { break; }
+                        } else { break; }
                     }
                     Some(Ok(Message::Text(text))) => {
                         let text = text.as_str();
@@ -5145,7 +5114,7 @@ async fn terminal_socket(
                             continue;
                         }
                         for message in terminal_text_messages(text) {
-                            if in_tx.send(message).is_err() { break; }
+                            if hub.send_client_message(&path, &terminal_id, message).is_err() { break; }
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
@@ -5155,7 +5124,7 @@ async fn terminal_socket(
             }
         }
     }
-    let _ = in_tx.send(ClientMessage::Detach);
+    join_guard.detach();
     let close_tab_id = query
         .temporary_tab_id
         .as_deref()
@@ -5763,99 +5732,6 @@ fn terminal_release_toggle(text: &str, armed: &mut bool) -> bool {
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
     true
-}
-
-/// Events from the terminal reader thread to the WS select loop, through one
-/// ordered channel. Ordering is load-bearing: the STRUCTURED error must be
-/// delivered before the raw failure text, because the browser treats any
-/// binary frame as a live-backend signal (attach success) and only the
-/// `herdr_error` JSON re-arms its reconnect backoff; raw text first would
-/// reset the backoff on every failed attempt (see terminal.js ws.onmessage).
-enum TerminalEvent {
-    Bytes(Vec<u8>),
-    Error(TerminalAttachError),
-}
-
-#[derive(Clone)]
-enum TerminalAttachError {
-    Connect,
-    SendHandshake,
-    ReadHandshake,
-    Rejected(String),
-    Attach,
-}
-
-impl TerminalAttachError {
-    fn user_message(&self) -> String {
-        match self {
-            Self::Connect => "failed to connect to herdr client socket\r\n".to_string(),
-            Self::SendHandshake => "failed to send herdr handshake\r\n".to_string(),
-            Self::ReadHandshake => "failed to read herdr handshake\r\n".to_string(),
-            Self::Rejected(error) => format!("herdr rejected terminal connection: {error}\r\n"),
-            Self::Attach => "failed to attach herdr terminal\r\n".to_string(),
-        }
-    }
-
-    /// Machine-readable kind forwarded to the browser so it can offer a
-    /// built-in session when the external herdr backend cannot be attached.
-    fn error_kind(&self) -> &'static str {
-        match self {
-            Self::Connect => "connect_failed",
-            Self::SendHandshake => "handshake_failed",
-            Self::ReadHandshake => "handshake_failed",
-            Self::Rejected(_) => "handshake_rejected",
-            Self::Attach => "attach_failed",
-        }
-    }
-
-    /// True when the failure means the external herdr backend is unusable
-    /// for terminal attach (protocol/handshake problems) and the UI should
-    /// offer a built-in session instead of retrying silently.
-    fn suggests_builtin(&self) -> bool {
-        matches!(self, Self::ReadHandshake | Self::Rejected(_))
-    }
-}
-
-/// herdr 0.9.0 requires an exact client protocol version match at handshake
-/// time, so no multi-version fallback is possible: the client sends
-/// `TerminalHello{version: PROTOCOL_VERSION}` and the backend either accepts
-/// it or rejects the connection with a `Welcome{error}`.
-fn connect_terminal_attach(
-    path: &Path,
-    terminal_id: &str,
-    cols: u16,
-    rows: u16,
-) -> Result<LocalStream, TerminalAttachError> {
-    let mut stream = connect_local_stream(path).map_err(|_| TerminalAttachError::Connect)?;
-    let hello = ClientMessage::TerminalHello {
-        version: PROTOCOL_VERSION,
-        cols,
-        rows,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
-    };
-    write_message(&mut stream, &hello).map_err(|_| TerminalAttachError::SendHandshake)?;
-
-    match read_message::<_, ServerMessage>(&mut stream, MAX_FRAME_SIZE)
-        .map_err(|_| TerminalAttachError::ReadHandshake)?
-    {
-        ServerMessage::Welcome {
-            error: Some(error), ..
-        } => return Err(TerminalAttachError::Rejected(error)),
-        ServerMessage::Welcome { error: None, .. } => {}
-        _ => return Err(TerminalAttachError::ReadHandshake),
-    }
-
-    write_message(
-        &mut stream,
-        &ClientMessage::AttachTerminal {
-            terminal_id: terminal_id.to_owned(),
-            takeover: true,
-        },
-    )
-    .map_err(|_| TerminalAttachError::Attach)?;
-    Ok(stream)
 }
 
 #[cfg(test)]

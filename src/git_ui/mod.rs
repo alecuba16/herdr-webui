@@ -1216,6 +1216,7 @@ mod tests {
             settings_tx,
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
             lsp: Arc::new(crate::lsp::LspRegistry::new(Default::default())),
+            terminal_hub: Arc::new(crate::terminal_hub::TerminalHub::new()),
         }
     }
 
