@@ -1634,6 +1634,7 @@ const settingsConfirm = window.HerdrSettingsConfirm
 // after the row's own change handler already applied the control value.
 const SETTINGS_CONFIRM_IDS = [
   "optTheme",
+  "optDensity",
   "optOverflow",
   "optFit",
   "optShiftEnterNewline",
@@ -2033,8 +2034,8 @@ function groupSettingsSections() {
   const sectionDefs = [
     {
       title: "Appearance",
-      desc: "Theme mode and color palette.",
-      ids: ["optTheme"],
+      desc: "Theme mode, color palette, and density.",
+      ids: ["optTheme", "optDensity"],
       blocks: ["themeColorsApply"],
     },
     {
@@ -2308,6 +2309,8 @@ function applyOptions() {
   if (tempTerminalLabelMaxChars)
     tempTerminalLabelMaxChars.value = String(options.tempTerminalLabelMaxChars || 20);
   if (themeSelect) themeSelect.value = themeMode;
+  const densitySelect = el("optDensity");
+  if (densitySelect) densitySelect.value = normalizeDensity(options.density);
   if (closeShortcut) closeShortcut.value = options.closeShortcut || "off";
   if (closeShortcutCurrent)
     closeShortcutCurrent.textContent = closeShortcutLabel();
@@ -2613,6 +2616,22 @@ function applyTheme() {
   if (window.HerdrMarkdownPreview && window.HerdrMarkdownPreview.refreshTheme)
     window.HerdrMarkdownPreview.refreshTheme();
   fitTerminalShell();
+}
+function normalizeDensity(value) {
+  return value === "compact" ? "compact" : "default";
+}
+function applyDensity() {
+  // Compact scales down chrome UI only: the [data-density] attribute
+  // overrides the type scale and control heights in tokens.css. The
+  // terminal keeps its own font size setting and is refit against the
+  // changed shell geometry.
+  const density = normalizeDensity(options.density);
+  document.documentElement.dataset.density = density;
+  const select = el("optDensity");
+  if (select) select.value = density;
+  if (typeof HerdrScheduleTerminalResize === "function")
+    HerdrScheduleTerminalResize();
+  else if (typeof fitTerminalShell === "function") fitTerminalShell();
 }
 function themeModeTitle(current) {
   if (themeMode === "auto")

@@ -3202,6 +3202,33 @@ describe("app bundle load", () => {
     match(source, /title: "Server"/);
   });
 
+  it("applies the density setting to the document root and settings select", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // Stored option bootstraps the attribute; unknown values normalize
+    // to default.
+    vm.runInContext("options.density = 'compact'; applyDensity();", ctx);
+    equal(ctx.document.documentElement.dataset.density, "compact");
+    equal(vm.runInContext("normalizeDensity('weird')", ctx), "default");
+    equal(vm.runInContext("normalizeDensity('compact')", ctx), "compact");
+    vm.runInContext("options.density = 'default'; applyDensity();", ctx);
+    equal(ctx.document.documentElement.dataset.density, "default");
+    // The settings select is part of the Appearance section and the
+    // confirm/rollback pipeline; density persists via saveOptions.
+    match(source, /function applyDensity\(\)/);
+    match(source, /ids: \["optTheme", "optDensity"\]/);
+    match(source, /"optDensity",\s*"optOverflow"/);
+    const appHtml = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+    match(appHtml, /id="optDensity"/);
+    const bindingsSource = readFileSync(new URL("./desktop/app_js/bindings.js", import.meta.url), "utf8");
+    match(bindingsSource, /el\("optDensity"\)\.onchange = \(\) => \{/);
+    match(bindingsSource, /options\.density = normalizeDensity\(el\("optDensity"\)\.value\);/);
+    // applyOptions syncs the select so reopening Settings reflects the
+    // stored value (boot also calls applyDensity next to applyTheme).
+    match(source, /densitySelect\.value = normalizeDensity\(options\.density\);/);
+  });
+
   it("defines keyboard shortcuts and terminal font settings", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

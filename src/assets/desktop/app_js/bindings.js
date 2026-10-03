@@ -110,6 +110,13 @@ el("optTheme").onchange = () => {
   if (typeof flashSettingsApplied === "function")
     flashSettingsApplied(el("optTheme"));
 };
+el("optDensity").onchange = () => {
+  // applyDensity() applies the [data-density] attribute live (no reload);
+  // saveOptions persists it in the shared options store.
+  options.density = normalizeDensity(el("optDensity").value);
+  applyDensity();
+  saveOptions();
+};
 el("themeColorsApply").onclick = applyThemeColorsFromSettings;
 el("themeColorsReset").onclick = () => applyThemeColorProfile("default");
 el("themeColorsApplyProfile").onclick = () => {
@@ -687,6 +694,7 @@ document.addEventListener("pointerdown", unlockAudio, { once: true });
 document.addEventListener("keydown", unlockAudio, { once: true });
 setupSessionChrome();
 applyTheme();
+applyDensity();
 applyOptions();
 syncNoSleepControls();
 loadNoSleep();

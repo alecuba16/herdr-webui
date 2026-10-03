@@ -176,6 +176,28 @@ body.light {
   --term-bright-cyan: #0a5a86;
   --term-bright-white: #4c4f69;
 }
+/* Compact density: scale chrome UI down one step without changing
+ * information architecture (reference pattern #6). Only tokens derived
+ * from the type scale and control metrics shrink; color, motion, and
+ * layering are untouched, and the terminal keeps its own font size
+ * setting. Coarse-pointer touch targets stay at the audited 44px minimum. */
+:root[data-density="compact"] {
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --control-h: 28px;
+  --chip-h: 18px;
+}
+/* Coarse pointers must keep the audited touch-target floor even in compact
+ * density; the media query re-raises what the density block lowered. */
+@media (pointer: coarse) {
+  :root[data-density="compact"] {
+    --control-h: 34px;
+  }
+}
 /* Global reduced-motion contract: kill every decorative transition and
  * animation on both layouts. The wterm cursor blink lives inside the
  * terminal surface (inline styles), so it is excluded; the per-component
