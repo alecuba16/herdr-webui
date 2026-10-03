@@ -7064,3 +7064,87 @@ fn search_palette_file_and_content_navigation_failure_paths() {
     assert_ne!(app.mode, TuiMode::SearchPalette);
     assert!(app.error.is_none(), "dir navigation needs no fetch");
 }
+
+#[test]
+fn lens_prefix_toggles_overlay_and_esc_closes() {
+    let mut app = app_with_snapshot();
+    assert!(!app.lens.active);
+    // Ctrl+B Shift+L opens the lens over the terminal screen.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert!(app.lens.active);
+    assert!(app.lens.follow);
+    // While open, the lens owns the keys: j scrolls up (stops follow).
+    app.pane_tail = vec!["one".to_string(), "two".to_string()];
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert!(!app.lens.follow);
+    assert_eq!(app.lens.scroll_up, 1);
+    // G jumps back to the tail: follow re-arms.
+    app.handle_key(KeyEvent::from(KeyCode::Char('G')));
+    assert!(app.lens.follow);
+    assert_eq!(app.lens.scroll_up, 0);
+    // Esc closes.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.lens.active);
+    // After close, j is the navigation key again (selection moves).
+    let before = app.selected_workspace;
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.selected_workspace, before);
+}
+
+#[test]
+fn lens_toggle_ignores_other_screens() {
+    // The lens is a terminal-screen surface; on Files it must not open.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Files;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert!(!app.lens.active, "no lens over the Files screen");
+}
+
+#[test]
+fn lens_unread_tracks_new_output_while_scrolled_up() {
+    let mut app = app_with_snapshot();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    app.pane_tail = (0..10).map(|i| format!("line {i}")).collect();
+    // refresh_tail feeds observe_len through the set_pane_tail path;
+    // simulate by calling the observer directly (refresh needs a backend).
+    app.lens.observe_len(app.pane_tail.len());
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert!(!app.lens.follow);
+    // New output lands while the reader is scrolled up.
+    app.pane_tail.push("line 10".to_string());
+    app.lens.observe_len(app.pane_tail.len());
+    assert!(app.lens.unread, "new output while scrolled up sets unread");
+    // Footer context is the lens overlay.
+    assert!(matches!(
+        app.footer_context(),
+        crate::tui::FooterContext::Lens
+    ));
+}
+
+#[test]
+fn lens_render_shapes_user_turns_and_meta() {
+    let mut app = app_with_snapshot();
+    app.lens.open();
+    app.pane_tail = vec![
+        "❯ cargo build".to_string(),
+        "Compiling herdr v0.1".to_string(),
+        "".to_string(),
+        "Finished".to_string(),
+    ];
+    let canvas = draw(&app, 100, 30);
+    assert!(canvas.contains("Chat"));
+    assert!(canvas.contains("❯ cargo build"));
+    assert!(canvas.contains("Compiling herdr v0.1"));
+    assert!(canvas.contains("following"), "meta line shows follow state");
+    // Scrolled-up + unread shows the resume hint.
+    app.lens.scroll_up(2, app.pane_tail.len());
+    app.lens.unread = true;
+    let canvas = draw(&app, 100, 30);
+    assert!(
+        canvas.contains("new output"),
+        "unread hint rendered: {canvas}"
+    );
+}

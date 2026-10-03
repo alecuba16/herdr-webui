@@ -121,6 +121,10 @@ pub enum Shortcut {
     // old TUI-only prefix-GitPush moved aside (git screen keeps the
     // in-screen P push).
     TempTerminalPromote,
+    // Chat lens toggle (webui Chat/Terminal segmented switch on the
+    // terminal screen; ux overhaul 2/3). Prefix L; plain l stays git
+    // log from the git shortcut table.
+    Lens,
 }
 
 impl Shortcut {
@@ -172,6 +176,7 @@ impl Shortcut {
             Self::FocusPrev => "focus previous",
             Self::TempTerminalToggle => "temporary terminal",
             Self::TempTerminalPromote => "promote temporary terminal",
+            Self::Lens => "chat lens",
         }
     }
 }
@@ -243,6 +248,10 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // GitPush moved aside for parity (the git screen keeps the
         // in-screen P push).
         (KeyCode::Char('P'), true) => Some(Shortcut::TempTerminalPromote),
+        // Chat lens (ux overhaul): webui has no prefix binding (the
+        // Chat/Terminal switch is a segmented control over the shell),
+        // so Shift+L takes it while plain l stays git log.
+        (KeyCode::Char('L'), true) => Some(Shortcut::Lens),
         (KeyCode::Char('b'), false) => Some(Shortcut::GitBranch),
         (KeyCode::Char('c'), false) => Some(Shortcut::GitCommit),
         (KeyCode::Char('l') | KeyCode::Char('L'), false) => Some(Shortcut::GitLog),
@@ -319,6 +328,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B . ,", "focus next/prev region (sidebar/main)"),
         ("Ctrl+B Shift+M", "temporary terminal (open or refocus)"),
         ("Ctrl+B Shift+P", "promote temporary terminal to workspace"),
+        (
+            "Ctrl+B Shift+L",
+            "chat lens: transcript view (j/k scroll, Esc close)",
+        ),
         ("", ""),
         ("Ctrl+B 1", "git: changes"),
         ("Ctrl+B 2/c", "git: commit modal"),

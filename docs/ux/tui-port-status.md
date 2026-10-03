@@ -12,7 +12,7 @@ Webui features that are terminal-surface UX (all three shipped on
 
 | Feature | Webui module | Status | Plan |
 | --- | --- | --- | --- |
-| Chat lens (transcript view) | `lens.js` (73e6902) | todo | P1 |
+| Chat lens (transcript view) | `lens.js` (73e6902) | done | P1 |
 | Chat composer (server submit) | `composer.js` (9a7abc2, SOLID 3a29edd) | todo | P2 |
 | Prompt cards (blocked answers) | `prompt_cards.js` (3b2a4ab, 626c80f, 9c745a2) | todo | P3 |
 
@@ -46,18 +46,27 @@ the final docs pass, not ported.
 - Each feature lands as its own commit with `cargo test` green and
   the TUI parity e2e module extended.
 
-## P1 — Chat lens (todo)
+## P1 — Chat lens (done)
 
-- `src/tui/lens.rs`: `LensState { active, follow, unread, scroll }` +
-  `transcript_lines(&[String]) -> Vec<LensLine>` shaping port of the
-  webui heuristics: a line matching the prompt markers (`❯`, `›`, `➜`,
-  `$ `) is a user turn (accent-colored), consecutive blank lines fold
-  to one gap, everything else is plain output.
-- Rendering: centered overlay over the dimmed terminal screen, j/k or
-  arrows scroll up/down, follow re-arms when scrolled to the bottom,
-  `Ctrl+B L` again or `Esc` closes.
-- Refresh: re-reads `pane_tail` on every `refresh_tail()` completion
-  (the tail already refreshes on interval and navigation).
+- `src/tui/lens.rs`: `LensState { active, follow, unread, scroll_up }` +
+  `transcript_lines()` shaping (prompt-marker user turns, gap folding,
+  wrapped-input degradation) + `visible_window()` tail-anchored
+  viewport with over-scroll clamp to the first viewport (the clamp
+  lives in the helper so a stale scroll offset after a transcript
+  shrink can never blank the view; found by the unit test).
+- `Ctrl+B Shift+L` toggles over the Terminal screen only; Esc/q/i
+  close; j/k/arrows/PgUp/PgDn scroll; G/End jump back to the tail and
+  re-arm follow. Footer context `Lens` with hint rows; `refresh_tail`
+  and `set_pane_tail_from_styled_lines` feed `observe_len` so unread
+  tracks new output while scrolled up (the webui "New output" pill
+  is the lens meta line + footer hint here).
+- Rendering: centered `Chat · {agent}` overlay over the dimmed
+  terminal screen (same `overlay_panel`/shadow as the other floats),
+  user turns accent-bold with the ❯ marker, meta line shows
+  `lines · following/scrolled` or the unread resume hint.
+- Tests: 9 unit (marker/shaping/gap/wrap/state/scroll/window) + 4 TUI
+  integration (prefix toggle, other-screen ignore, unread flow,
+  render shaping + meta).
 
 ## P2 — Composer (todo)
 

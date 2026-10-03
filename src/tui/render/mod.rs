@@ -10,7 +10,7 @@ use crate::tui::search;
 use crate::tui::terminal::styled_terminal_line;
 use crate::tui::theme::Palette;
 use crate::tui::workspace::{BrowserRow, WorkspaceCreateStage};
-use crate::tui::{SidebarFocus, TuiApp, TuiMode, TuiScreen};
+use crate::tui::{lens, SidebarFocus, TuiApp, TuiMode, TuiScreen};
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MAX_DIFF_LINES: usize = 400;
@@ -48,10 +48,14 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
         || app.mode == TuiMode::Settings
         || app.mode == TuiMode::WorktreeList
         || app.mode == TuiMode::SearchPalette
+        || (app.lens.active && app.screen == TuiScreen::Terminal)
         || app.commit_input.is_some()
         || app.prompt_input.is_some();
     if overlay_active {
         dim_backdrop(frame, p);
+    }
+    if app.lens.active && app.screen == TuiScreen::Terminal {
+        render_lens(frame, area, app, p);
     }
     if app.mode == TuiMode::Help {
         render_help(frame, area, p, &app.help_filter, app.help_scroll);
@@ -215,6 +219,75 @@ fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
         ))
     };
     frame.render_widget(Paragraph::new(line).style(Style::default().bg(p.bg)), area);
+}
+
+/// Chat lens overlay (ux overhaul 2/3, TUI port): the pane transcript
+/// as a centered reading column over the dimmed terminal screen. User
+/// turns (prompt-marker lines) are accent-highlighted like the webui
+/// right-aligned user cards; output stays plain. The webui's "New
+/// output" pill is the footer's unread hint here (render_footer reads
+/// `lens.unread` through the Lens context).
+fn render_lens(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let width = area.width.min(88);
+    let height = area.height.saturating_sub(4);
+    let rect = overlay_rect(area, width, height);
+    render_shadow(frame, rect, p);
+    let pane_label = app
+        .selected_pane()
+        .map(|pane| {
+            pane.display_agent
+                .as_deref()
+                .or(pane.agent.as_deref())
+                .unwrap_or("shell")
+        })
+        .unwrap_or("pane");
+    let title = format!(" Chat · {pane_label} ");
+    let block = overlay_panel(&title, p);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let transcript = lens::transcript_lines(&app.pane_tail);
+    let viewport = inner.height.saturating_sub(1) as usize;
+    let window = lens::visible_window(&transcript, app.lens.scroll_up, viewport);
+    let mut lines: Vec<Line> = window
+        .iter()
+        .map(|entry| match entry {
+            lens::LensLine::User(text) => Line::from(Span::styled(
+                format!("❯ {}", text.trim_start_matches(['❯', '›', '➜']).trim()),
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+            )),
+            lens::LensLine::Output(text) => {
+                Line::from(Span::styled(text.clone(), Style::default().fg(p.text)))
+            }
+            lens::LensLine::Gap => Line::from(""),
+        })
+        .collect();
+    // Bottom meta line: position in the transcript, or the unread
+    // resume hint when new output landed while scrolled up.
+    let meta = if app.lens.unread {
+        Line::from(Span::styled(
+            " new output · G resumes following ",
+            Style::default().fg(p.yellow),
+        ))
+    } else {
+        Line::from(Span::styled(
+            format!(
+                " {} lines{}",
+                transcript.len(),
+                if app.lens.follow {
+                    " · following"
+                } else {
+                    " · scrolled"
+                }
+            ),
+            Style::default().fg(p.muted),
+        ))
+    };
+    lines.push(meta);
+    let paragraph = Paragraph::new(lines)
+        .style(Style::default().fg(p.text).bg(p.panel_bg))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
 }
 
 fn render_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {

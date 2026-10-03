@@ -1,4 +1,5 @@
 pub mod keys;
+pub mod lens;
 pub mod model;
 pub mod panels;
 pub mod render;
@@ -20,6 +21,7 @@ use serde_json::Value;
 use crate::backend_client::{BackendClient, BackendClientError, TerminalOutput};
 use crate::terminal_text::{self, StripCarriageReturn};
 pub use keys::{PrefixState, Shortcut};
+use lens::LensState;
 pub use model::{
     snapshot_summary, SidebarFocus, TuiAgent, TuiMode, TuiPane, TuiSnapshot, TuiTab, TuiWorkspace,
 };
@@ -96,6 +98,9 @@ pub(crate) enum FooterContext {
     /// Search palette overlay (prefix `/`): type to filter, Enter
     /// commits/navigates, Esc closes.
     SearchPalette,
+    /// Chat lens overlay (prefix `L`): transcript reading view over the
+    /// terminal pane; j/k scroll, follow re-arms at the bottom.
+    Lens,
     /// Commit message modal: typing, Enter commits, Esc cancels.
     CommitInput,
     /// Any typed prompt (rename, confirm, new file, ...).
@@ -129,6 +134,9 @@ impl FooterContext {
             Self::WorktreeList => " Enter opens/enters · o opens folder · h parent · j/k moves · type filters · Esc closes ",
             Self::SearchPalette => {
                 " Enter commits/navigates · j/k moves · Esc closes · Ctrl+B ? help "
+            }
+            Self::Lens => {
+                " j/k scroll · G bottom resumes follow · Esc closes · Ctrl+B ? help "
             }
             Self::CommitInput => {
                 " type the message · Enter commits · Esc cancels · Ctrl+U clears · Ctrl+B ? help "
@@ -203,6 +211,7 @@ impl FooterContext {
             Self::FilterBar => " type · Enter keep · Esc close · Ctrl+B ? help ",
             Self::ContentSearch => " j/k · Enter jump · Esc exit · Ctrl+B ? help ",
             Self::Terminal(TuiMode::Attach) => " Ctrl+B ? help · Ctrl-G detach ",
+            Self::Lens => " j/k scroll · G bottom · Esc close · Ctrl+B ? help ",
             Self::Terminal(_) => " j/k select · Enter attach · q quit · Ctrl+B ? help ",
             Self::Files(_) => " j/k · Enter · e edit · Ctrl+B ? help ",
             Self::Git(_, GitView::Changes) => " s stage · d discard · c commit · Ctrl+B ? help ",
@@ -304,6 +313,10 @@ pub struct TuiApp {
     /// Search palette overlay state (webui search palette, prefix `/`):
     /// query, cursor and committed result rows.
     pub search_palette: search::SearchPalette,
+    /// Chat lens state (webui Chat/Terminal segmented switch, prefix
+    /// `L`): transcript overlay over the terminal pane, follow/unread
+    /// scroller semantics.
+    pub lens: LensState,
     /// Mode the user was in when the quit overlay opened; restored on cancel.
     pub(crate) quit_prev_mode: TuiMode,
     /// Modes the user was in before each overlay (help/settings/worktree)
@@ -521,6 +534,7 @@ impl TuiApp {
             help_scroll: 0,
             help_filter: String::new(),
             search_palette: search::SearchPalette::default(),
+            lens: LensState::default(),
             quit_prev_mode: TuiMode::Navigate,
             overlay_stack: Vec::new(),
             dirty: true,
@@ -606,6 +620,11 @@ impl TuiApp {
             TuiMode::SearchPalette => return FooterContext::SearchPalette,
             _ => {}
         }
+        // The lens overlays the terminal screen (both Navigate and
+        // Attach); it owns the scrolling keys while open.
+        if self.lens.active && self.screen == TuiScreen::Terminal {
+            return FooterContext::Lens;
+        }
         // Screens and sub-views.
         match self.screen {
             TuiScreen::Terminal => FooterContext::Terminal(self.mode),
@@ -633,6 +652,15 @@ impl TuiApp {
         }
         if self.prompt_input.is_some() {
             self.handle_prompt_key(key);
+            self.mark_dirty();
+            return false;
+        }
+        // The lens overlays the terminal screen (Navigate or Attach):
+        // while open it owns the scrolling keys like the webui scroller
+        // owns focus. The Ctrl+B prefix already fired above, so help and
+        // every other shortcut stay reachable.
+        if self.lens.active && self.screen == TuiScreen::Terminal {
+            self.handle_lens_key(key);
             self.mark_dirty();
             return false;
         }
@@ -1557,6 +1585,18 @@ impl TuiApp {
             Shortcut::TempTerminalPromote => {
                 let result = self.temp_terminal_promote();
                 self.workspace_status(result);
+            }
+            Shortcut::Lens => {
+                // Chat lens toggle (webui Chat/Terminal switch): only
+                // meaningful over the terminal screen.
+                if self.screen == TuiScreen::Terminal {
+                    self.lens.toggle();
+                    self.status = if self.lens.active {
+                        "lens: j/k scroll · G tail · Esc close".to_string()
+                    } else {
+                        "lens closed".to_string()
+                    };
+                }
             }
             Shortcut::Quit => self.request_quit(),
             Shortcut::GitChanges => {
@@ -2861,6 +2901,26 @@ impl TuiApp {
         }
     }
 
+    /// Lens overlay keys (webui scroller focus): j/k or arrows
+    /// scroll, G jumps back to the tail, Esc closes. Anything else is
+    /// swallowed so no navigation or attach input fires under the
+    /// reading view.
+    fn handle_lens_key(&mut self, key: KeyEvent) {
+        let len = self.pane_tail.len();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => {
+                self.lens.close();
+                self.status = "lens closed".to_string();
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.lens.scroll_up(1, len),
+            KeyCode::Char('k') | KeyCode::Up => self.lens.scroll_down(1, len),
+            KeyCode::PageDown => self.lens.scroll_up(10, len),
+            KeyCode::PageUp => self.lens.scroll_down(10, len),
+            KeyCode::Char('G') | KeyCode::End => self.lens.scroll_down(usize::MAX, len),
+            _ => {}
+        }
+    }
+
     fn handle_attach_key(&mut self, key: KeyEvent) {
         // Note: menu keys (Ctrl+B) never reach this handler; the prefix
         // feed in `handle_key` consumes them first to arm the overlay.
@@ -3029,6 +3089,9 @@ impl TuiApp {
                     .unwrap_or("");
                 self.reset_terminal_output_buffer();
                 self.set_pane_tail_from_text(&strip_ansi_lossy(text));
+                // The lens reads the tail: feed it the new length so the
+                // unread hint tracks new output while scrolled up.
+                self.lens.observe_len(self.pane_tail.len());
                 self.mark_dirty();
             }
             Err(err) => {
@@ -3068,6 +3131,7 @@ impl TuiApp {
                     .collect::<String>()
             })
             .collect();
+        self.lens.observe_len(self.pane_tail.len());
     }
 
     pub fn should_quit(&self) -> bool {
