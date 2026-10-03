@@ -1113,6 +1113,9 @@ fn git_status_priority(status: &str) -> u8 {
         "deleted" => 3,
         "modified" | "conflict" => 2,
         "added" | "untracked" => 1,
+        // Committed-on-branch differences are the weakest signal: any real
+        // working-tree status must win over them.
+        "changed" => 0,
         _ => 0,
     }
 }
@@ -1121,6 +1124,7 @@ fn propagated_directory_status(status: &str) -> &'static str {
     match status {
         "deleted" => "deleted",
         "added" | "untracked" => "added",
+        "changed" => "changed",
         _ => "modified",
     }
 }
@@ -1180,6 +1184,42 @@ fn propagate_git_status(
     }
 }
 
+fn git_repo_root(root: &Path) -> Option<(PathBuf, String)> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let repo_root = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let prefix = root
+        .strip_prefix(&repo_root)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    Some((repo_root, prefix.trim_end_matches('/').to_string()))
+}
+
+/// Adjusts a repo-relative git path to be relative to the workspace root,
+/// dropping paths outside the workspace. This lets the same map color
+/// current rows, expanded children, and search results consistently.
+fn adjust_git_path(path: &str, prefix_trim: &str) -> Option<String> {
+    if prefix_trim.is_empty() {
+        return Some(path.to_string());
+    }
+    let full_prefix = format!("{prefix_trim}/");
+    if let Some(stripped) = path.strip_prefix(&full_prefix) {
+        Some(stripped.to_string())
+    } else if path == prefix_trim {
+        Some(String::new())
+    } else {
+        None
+    }
+}
+
 fn collect_git_status(
     root: &Path,
     _dir: &Path,
@@ -1194,22 +1234,8 @@ fn collect_git_status(
         return None;
     }
     // Find the git repo root to compute paths relative to the workspace root.
-    let repo_root_output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()?;
-    if !repo_root_output.status.success() {
-        return None;
-    }
-    let repo_root = PathBuf::from(String::from_utf8_lossy(&repo_root_output.stdout).trim());
-    let prefix = root
-        .strip_prefix(&repo_root)
-        .ok()
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_default();
-    let prefix_trim = prefix.trim_end_matches('/');
+    let (_repo_root, prefix) = git_repo_root(root)?;
+    let prefix_trim = prefix.as_str();
 
     let text = String::from_utf8_lossy(&output.stdout);
     let mut map = serde_json::Map::new();
@@ -1232,26 +1258,122 @@ fn collect_git_status(
             path
         };
         let status = parse_porcelain_status(xy);
-        // Adjust path to be relative to the workspace root. This lets the same map
-        // color current rows, expanded children, and search results consistently.
-        let adjusted = if prefix_trim.is_empty() {
-            path.to_string()
-        } else {
-            let full_prefix = format!("{}/", prefix_trim);
-            if let Some(stripped) = path.strip_prefix(&full_prefix) {
-                stripped.to_string()
-            } else if path == prefix_trim {
-                String::new()
-            } else {
-                continue;
-            }
+        let adjusted = match adjust_git_path(path, prefix_trim) {
+            Some(path) => path,
+            None => continue,
         };
         propagate_git_status(&mut map, &adjusted, status);
     }
+    merge_branch_changes(root, &mut map, prefix_trim);
     if map.is_empty() {
         return None;
     }
     Some(map)
+}
+
+/// Resolves the default branch to diff the current branch against.
+/// Prefers the locally tracked default (origin/HEAD), then a local
+/// main/master, so "changes on this branch" matches user intent even
+/// without a remote.
+fn branch_diff_base(root: &Path) -> Option<String> {
+    let symbolic_ref = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .output()
+        .ok()?;
+    if symbolic_ref.status.success() {
+        let name = String::from_utf8_lossy(&symbolic_ref.stdout).trim().to_string();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    for candidate in ["main", "master"] {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{candidate}"),
+            ])
+            .output()
+            .ok()?;
+        if output.status.success() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Current branch name, or None when HEAD is detached.
+fn current_branch_name(root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (name != "HEAD").then_some(name)
+}
+
+/// Merges files changed on the current branch vs the default branch into
+/// the status map as "changed" (blue in the tree). "changed" has the
+/// lowest priority, so any real working-tree status wins. No-op when HEAD
+/// is the base branch, detached, or the repo has no default branch.
+fn merge_branch_changes(
+    root: &Path,
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    prefix_trim: &str,
+) {
+    let Some(base) = branch_diff_base(root) else {
+        return;
+    };
+    let Some(branch) = current_branch_name(root) else {
+        return;
+    };
+    if branch == base.trim_start_matches("origin/") {
+        return;
+    }
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "diff",
+            "--name-status",
+            "--no-renames",
+            &format!("{base}...{branch}"),
+        ])
+        .output()
+        .ok();
+    let Some(output) = output else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        // --name-status lines are "STATUS\tpath" (M/A/D/C/T + path).
+        let Some((_kind, path)) = line.split_once('\t') else {
+            continue;
+        };
+        let path = path.split('\t').next().unwrap_or(path);
+        let path = if path.starts_with('"') && path.ends_with('"') {
+            &path[1..path.len() - 1]
+        } else {
+            path
+        };
+        let Some(adjusted) = adjust_git_path(path, prefix_trim) else {
+            continue;
+        };
+        propagate_git_status(map, &adjusted, "changed");
+    }
 }
 
 /// Blocking body of the tree endpoint. Runs on a spawn_blocking thread so
@@ -2773,6 +2895,103 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("untracked")
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collect_git_status_marks_branch_changes_blue_and_keeps_working_tree_priority() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-branch-changes-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/branch")).unwrap();
+        fs::create_dir_all(root.join("src/plain")).unwrap();
+        fs::write(root.join("src/branch/file.rs"), "branch").unwrap();
+        fs::write(root.join("src/plain/file.rs"), "plain").unwrap();
+
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .status()
+                .unwrap()
+        };
+        if !git(&["init", "-b", "main"]).success() {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        // Base commit on main with the plain file only.
+        assert!(git(&["add", "src/plain/file.rs"]).success());
+        assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
+        // Feature branch adds and commits the branch file.
+        assert!(git(&["switch", "-c", "feat"]).success());
+        assert!(git(&["add", "src/branch/file.rs"]).success());
+        assert!(git(&["commit", "-m", "feat", "--no-gpg-sign"]).success());
+        // Dirty working tree on the branch file: modified must win over changed.
+        fs::write(root.join("src/branch/file.rs"), "dirty").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let status = collect_git_status(&root, &root).unwrap();
+
+        // Branch-only committed files light up blue.
+        assert_eq!(
+            status.get("src/branch/file.rs").and_then(|value| value.as_str()),
+            Some("modified")
+        );
+        assert_eq!(
+            status.get("src").and_then(|value| value.as_str()),
+            Some("modified")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collect_git_status_reports_changed_when_working_tree_clean() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-branch-changes-clean-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/branch")).unwrap();
+        fs::write(root.join("src/branch/file.rs"), "branch").unwrap();
+
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .status()
+                .unwrap()
+        };
+        if !git(&["init", "-b", "main"]).success() {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        // Empty tree base: `git commit` needs at least one commit on main so
+        // merge-base works. Commit an unrelated README first.
+        fs::write(root.join("README.md"), "base").unwrap();
+        assert!(git(&["add", "README.md"]).success());
+        assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
+        assert!(git(&["switch", "-c", "feat"]).success());
+        assert!(git(&["add", "src/branch/file.rs"]).success());
+        assert!(git(&["commit", "-m", "feat", "--no-gpg-sign"]).success());
+
+        let root = root.canonicalize().unwrap();
+        let status = collect_git_status(&root, &root).unwrap();
+
+        // Clean working tree: the committed branch file reads "changed" (blue).
+        assert_eq!(
+            status.get("src/branch/file.rs").and_then(|value| value.as_str()),
+            Some("changed")
+        );
+        assert_eq!(
+            status.get("src/branch").and_then(|value| value.as_str()),
+            Some("changed")
+        );
+        // Files untouched by the branch are not in the map.
+        assert!(status.get("README.md").is_none());
         let _ = fs::remove_dir_all(root);
     }
 }
