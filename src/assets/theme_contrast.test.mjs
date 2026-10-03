@@ -43,6 +43,11 @@ function parseBodyVars(css) {
 
 const desktopCss = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
 const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+// Status hues live in shared tokens.css since the badge/status token
+// migration: agent-status rules reference var(--status-*), so contrast
+// checks resolve the token values from there.
+const tokensCss = readFileSync(new URL("./shared/tokens.css", import.meta.url), "utf8");
+const lightTokens = parseThemeVars(tokensCss);
 
 // Worst-case surfaces per theme: text may sit on bg, panel, or panel2/editor.
 const syntaxKeys = [
@@ -208,22 +213,28 @@ describe("theme contrast", () => {
   it("keeps the light agent status colors readable on panel and panel2", () => {
     const light = parseThemeVars(desktopCss);
     const statusColors = {
-      idle: /body\.light \.agent-status\.idle \{\s*color: (#[0-9a-fA-F]{6});/.exec(desktopCss),
-      working: /body\.light \.agent-status\.working \{\s*color: (#[0-9a-fA-F]{6});/.exec(desktopCss),
-      blocked: /body\.light \.agent-status\.blocked \{\s*color: (#[0-9a-fA-F]{6});/.exec(desktopCss),
-      done: /body\.light \.agent-status\.done \{\s*color: (#[0-9a-fA-F]{6});/.exec(desktopCss),
+      idle: /body\.light \.agent-status\.idle \{\s*color: var\(--status-idle, (#[0-9a-fA-F]{6})\);/.exec(desktopCss),
+      working: /body\.light \.agent-status\.working \{\s*color: var\(--status-working, (#[0-9a-fA-F]{6})\);/.exec(desktopCss),
+      blocked: /body\.light \.agent-status\.blocked \{\s*color: var\(--status-blocked, (#[0-9a-fA-F]{6})\);/.exec(desktopCss),
+      done: /body\.light \.agent-status\.done \{\s*color: var\(--status-done, (#[0-9a-fA-F]{6})\);/.exec(desktopCss),
     };
     for (const [status, match] of Object.entries(statusColors)) {
       ok(match, `missing body.light .agent-status.${status} rule`);
+      // The rule's fallback must match the light token (single source of
+      // truth), then the token value must pass contrast on both surfaces.
+      equal(lightTokens[`status-${status}`], match[1].toLowerCase(), `light --status-${status} token and rule fallback differ`);
       for (const surface of ["panel", "panel2"]) {
         const ratio = contrastRatio(match[1], light[surface]);
         ok(ratio >= 4.5, `light agent ${status} on ${surface} is ${ratio.toFixed(2)} < 4.5`);
       }
     }
-    // Mobile nav chips share the same light hues.
-    const mobileIdle = /body\.light \.mobile-nav-status\.idle \{\s*color: (#[0-9a-fA-F]{6});/.exec(mobileCss);
-    ok(mobileIdle, "missing body.light .mobile-nav-status.idle rule");
-    const ratio = contrastRatio(mobileIdle[1], light.bg);
+    // Mobile nav chips resolve var(--status-*); under body.light the
+    // shared tokens swap to darkened hues, so check the light token value
+    // against the light bg surface.
+    const mobileIdleRule = /\.mobile-nav-status\.idle \{\s*color: var\(--status-idle, (#[0-9a-fA-F]{6})\);/.exec(mobileCss);
+    ok(mobileIdleRule, "missing .mobile-nav-status.idle rule");
+    ok(lightTokens["status-idle"], "missing light --status-idle token");
+    const ratio = contrastRatio(lightTokens["status-idle"], light.bg);
     ok(ratio >= 4.5, `light mobile idle chip on bg is ${ratio.toFixed(2)} < 4.5`);
   });
 

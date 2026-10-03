@@ -388,13 +388,25 @@ async function connectTerminal(fitOverride = null) {
     if (!terminalAttachPending) setTerminalLoading(false);
     enqueueTerminalFrame(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
   };
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     if (termWs === ws) {
       const wasRecoveryAttempt = terminalReconnectTarget === target;
       flushTerminalFramesFor(target);
       termWs = null;
       connectedTerminalId = null;
       connectedSize = "";
+      // Explicit stall close (4404) from the server: the backend attach
+      // stream died. Banner it instead of hanging; the recovery flow
+      // below still covers the reconnect path.
+      if (event && event.code === 4404 && window.HerdrAlertCard) {
+        window.HerdrAlertCard.show({
+          key: `terminal-stall:${target}`,
+          status: "blocked",
+          title: "Terminal stream stalled",
+          subtitle: "The backend closed this panel stream. Reconnect to resume.",
+          onOpen: () => connectTerminal(),
+        });
+      }
       // Attach failed (backend unreachable or herdr_error teardown): start
       // the reconnect backoff so resize frames cannot reattach at frame
       // cadence. Deliberate teardowns null onclose before closing, so they

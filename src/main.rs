@@ -8,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
 #[cfg(test)]
 use axum::http::{header, HeaderValue};
@@ -5101,12 +5101,34 @@ async fn terminal_socket(
                         if let Ok(text) = serde_json::to_string(&payload) {
                             let _ = socket.send(Message::Text(text.into())).await;
                         }
+                        // Explicit stall close (4404): the backend stream
+                        // ended or the attach failed, so the browser gets a
+                        // distinct close code and can banner the stall
+                        // instead of waiting for a reconnect that will not
+                        // produce output.
+                        let _ = socket
+                            .send(Message::Close(Some(CloseFrame {
+                                code: 4404,
+                                reason: "herdr-stalled".into(),
+                            })))
+                            .await;
                         break;
                     }
                     Some(TerminalEvent::Bytes(bytes)) => {
                         if socket.send(Message::Binary(bytes.into())).await.is_err() { break; }
                     }
-                    None => break,
+                    None => {
+                        // Backend output channel closed without an error
+                        // frame: the attach stream died. Same explicit stall
+                        // close so the browser never hangs on silence.
+                        let _ = socket
+                            .send(Message::Close(Some(CloseFrame {
+                                code: 4404,
+                                reason: "herdr-stalled".into(),
+                            })))
+                            .await;
+                        break;
+                    }
                 }
             }
             message = socket.recv() => {

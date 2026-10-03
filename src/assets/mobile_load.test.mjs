@@ -1754,6 +1754,25 @@ describe("mobile bundle load", () => {
     equal(sent2[0], "\x1b[D");
   });
 
+  it("banners an explicit stall close (4404) instead of hanging", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    const alertCalls = [];
+    ctx.HerdrAlertCard = { show: (opts) => alertCalls.push(opts) };
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    ctx.lastSocket.onclose({ code: 4404 });
+    equal(alertCalls.length, 1);
+    equal(alertCalls[0].title, "Terminal stream stalled");
+    equal(alertCalls[0].status, "blocked");
+    // A normal close (e.g. deliberate teardown) never banners.
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    ctx.lastSocket.onclose({ code: 1000 });
+    equal(alertCalls.length, 1);
+  });
+
   it("re-pins the backend per session on Back and resets the target state", async () => {
     const ctx = context("/session/work");
     ctx.localStorage.setItem("herdr-session-backend:work", "external-herdr");
