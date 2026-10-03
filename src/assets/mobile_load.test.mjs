@@ -548,8 +548,13 @@ describe("mobile bundle load", () => {
     match(mobileSource, /workspaceIdFn:/);
     // Mobile must pass themeFn so the terminal matches the user's theme.
     match(mobileSource, /themeFn:/);
-    // Mobile must pass currentWorkspaceCwd() to open() so the terminal starts in the right folder.
-    match(mobileSource, /mobileTempTerminal\.open\(currentWorkspaceCwd\(\)\)/);
+    // Mobile must pass currentWorkspaceCwd() so the temp terminal opens in the
+    // right folder. The header button is gone; the More grid card triggers it
+    // through the shared runAction('temp-terminal') path.
+    match(mobileSource, /getMobileTempTerminal: \(\) => mobileTempTerminal/);
+    const mobileScreensSource = readFileSync(new URL("./mobile/screens.js", import.meta.url), "utf8");
+    match(mobileScreensSource, /runAction\('temp-terminal'\)/);
+    match(mobileScreensSource, /getMobileTempTerminal/);
     // Mobile must wire handlePaneExited for server-side pane exit events
     // (now in the events module, reached via the getTempTerminal dep).
     const mobileEventsSource = readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8");

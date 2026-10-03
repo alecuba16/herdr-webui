@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
-import { deepEqual, doesNotThrow, equal, match, notEqual, ok } from "node:assert/strict";
+import { deepEqual, doesNotMatch, doesNotThrow, equal, match, notEqual, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
@@ -5465,10 +5465,14 @@ describe("a11y audit contract", () => {
   });
 
   it("labels mobile header icon buttons and the connection state", () => {
-    for (const id of ["mobileBack", "mobileSearch", "mobileSettings"]) {
+    for (const id of ["mobileBack", "mobileSearch"]) {
       const re = new RegExp(`id="${id}"[^>]*aria-label=`);
       match(mobileSource, re, `${id} needs aria-label`);
     }
+    // Settings and the temporary terminal moved off the header into the
+    // More grid; the header must not render either button anymore.
+    doesNotMatch(mobileSource, /id="mobileSettings"/);
+    doesNotMatch(mobileSource, /id="mobileTempTerminal"/);
     match(mobileSource, /role="status"/);
     match(mobileSource, /id="mobileConnectionDot"[^>]*aria-hidden="true"/);
   });

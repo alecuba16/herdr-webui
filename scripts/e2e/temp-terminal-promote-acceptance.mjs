@@ -303,8 +303,8 @@ await sleep(3000);
 
   const mobileBoot = await evalApp(`(function(){
     return {
-      isMobileApp: !!document.querySelector('.mobile-app, #mobileApp, .mobile-nav, #mobileTempTerminal'),
-      toggleBtn: !!document.getElementById('mobileTempTerminal'),
+      isMobileApp: !!document.querySelector('.mobile-app, #mobileApp, .mobile-nav'),
+      toggleBtn: !!document.querySelector('.mobile-more-card'),
     };
   })()`);
   check('mobile layout app booted', !!mobileBoot.isMobileApp && !!mobileBoot.toggleBtn,
@@ -319,9 +319,13 @@ await sleep(3000);
   check('mobile sees workspaces', Number(wsCount) > 0, `count=${wsCount}`);
 
   await evalApp(`(function(){
-    const b = document.getElementById('mobileTempTerminal');
-    if (b) b.click();
-    return !!b;
+    // The header T button is gone; the temporary terminal opens from the
+    // More grid card (runAction('temp-terminal')).
+    HerdrMobile.showScreen('more');
+    const cards = Array.from(document.querySelectorAll('.mobile-more-card'));
+    const card = cards.find((c) => /Temporary terminal/.test(c.textContent || ''));
+    if (card) card.click();
+    return !!card;
   })()`);
   let mobileAttached = false;
   for (let i = 0; i < 24; i++) {
