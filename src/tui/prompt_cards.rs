@@ -381,7 +381,69 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_single_option_without_permission_words() {
+    fn parse_rejects_empty_tail() {
+        assert!(parse_prompt(&[]).is_none(), "no tail, no card");
+    }
+
+    #[test]
+    fn parse_rejects_free_text_shape_without_a_question_title() {
+        // Free-text hint alone (options text can appear mid-output):
+        // nothing reads like a question, no prompt-marked line, no
+        // non-noise line => no title => no card. A stray "enter your
+        // response" echo must not float a card.
+        let tail = lines(&["", "enter your response"]);
+        assert!(
+            parse_prompt(&tail).is_none(),
+            "free-text hint without a question is not a prompt"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_nav_hint_with_a_single_option() {
+        // ↑↓ hint but only one numbered line: a single-option dialog is
+        // not a real question (the webui requires 2+ options).
+        let tail = lines(&["↑↓ select", "1. Yes, allow once"]);
+        assert!(
+            parse_prompt(&tail).is_none(),
+            "nav hint with fewer than two options is not a dialog"
+        );
+    }
+
+    #[test]
+    fn nav_dialog_without_a_title_falls_back_to_select_an_option() {
+        // Nav-hint dialog whose lines are all noise (options + hint):
+        // question_title finds nothing, the fallback title applies.
+        let tail = lines(&["↑↓ select", "1. Yes", "2. No"]);
+        let card = parse_prompt(&tail).expect("nav dialog parses");
+        assert_eq!(card.kind, PromptCardKind::Options);
+        assert_eq!(card.title, "Select an option");
+        assert_eq!(card.options.len(), 2);
+    }
+
+    #[test]
+    fn title_uses_prompt_marker_when_no_line_reads_like_a_question() {
+        // No line ends with "?", but a prompt-marked line exists: the
+        // second questionTitle pass captures its text as the title.
+        let tail = lines(&["❯ choose the runtime", "enter your response"]);
+        let card = parse_prompt(&tail).expect("free-text parses");
+        assert_eq!(card.kind, PromptCardKind::Text);
+        assert_eq!(card.title, "choose the runtime");
+    }
+
+    #[test]
+    fn title_uses_bare_question_mark_line_as_last_resort() {
+        // "? Something" shapes (the second QUESTION_LINE alternative):
+        // a bare question-mark line captures through group 2 when no
+        // prompt-marker line exists.
+        let tail = lines(&["?? which package manager", "enter your response"]);
+        let card = parse_prompt(&tail).expect("free-text parses");
+        assert_eq!(card.title, "which package manager");
+    }
+
+    #[test]
+    fn parse_rejects_numbered_output_without_permission_words() {
+        // Two numbered lines could look like a dialog, but without a
+        // nav hint or permission words it is just numbered output.
         let tail = lines(&["1. something", "2. other"]);
         assert!(
             parse_prompt(&tail).is_none(),

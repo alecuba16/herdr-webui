@@ -241,6 +241,26 @@ mod tests {
     }
 
     #[test]
+    fn toggle_flips_both_directions_like_the_segmented_switch() {
+        // The webui Chat/Terminal segmented switch: one control, both
+        // directions. The prefix dispatch calls toggle(), so both arms
+        // must work without a separate close key.
+        let mut lens = LensState::default();
+        lens.toggle();
+        assert!(lens.active, "toggle opens the lens");
+        assert!(lens.follow);
+        lens.toggle();
+        assert!(!lens.active, "toggle closes the lens");
+        // Close must also reset the reading position so the next open
+        // starts at the tail, not at a stale scroll.
+        lens.open();
+        lens.scroll_up(3, 10);
+        lens.toggle();
+        assert!(!lens.active);
+        assert_eq!(lens.scroll_up, 0);
+    }
+
+    #[test]
     fn scrolling_up_stops_follow_and_marks_unread() {
         let mut lens = LensState::default();
         lens.open();

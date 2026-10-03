@@ -315,13 +315,16 @@ fn render_prompt_card(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palet
         crate::tui::prompt_cards::PromptCardKind::Options => card.options.len(),
         crate::tui::prompt_cards::PromptCardKind::Text => 1,
     };
-    let height = (rows as u16 + 4).min(area.height.saturating_sub(2));
+    let height = (rows as u16 + 4).min(area.height.saturating_sub(3));
     let width = (body_width as u16 + 2).min(area.width);
-    // Anchor bottom-right, respecting the footer row band the webui
-    // keeps clear (`bottom:12px`).
+    // Anchor bottom-right, lifting TWO rows off the bottom: one for
+    // the footer row the webui keeps clear (`bottom:12px`) and one
+    // for the shadow's bottom band (the shadow paints one row below
+    // its rect, and it renders AFTER the footer, so a single-row lift
+    // would blank the footer hint behind it).
     let rect = Rect::new(
         area.right().saturating_sub(width),
-        area.bottom().saturating_sub(height + 1),
+        area.bottom().saturating_sub(height + 2),
         width,
         height,
     );
