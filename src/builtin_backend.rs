@@ -5007,21 +5007,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scratch_detect_ci_tail() {
-        // Scratch: feed the exact tail captured from the failing Linux CI
-        // run through the real detection chain (screen parse + label +
-        // status) to see what the refusal gate would compute.
-        let raw = "^[[200~hello from the tui composer^[[201~^[[200~please print the dialog^[[201~^[[200~should refuse^[[201~\n\
-Do you want to run this command?\nYes, allow once\nNo, deny\n^[[200~should refuse^[[201~\n\
-Do you want to run this command?\nYes, allow once\nNo, deny\n^[[200~should refuse^[[201~";
-        let raw = raw.replace("^[", "\u{1b}");
-        let screen = terminal_screen_text_lossy(&raw);
-        let agent = detect_agent_label_from_text(&screen);
-        let status = agent.map(|a| detect_agent_status(Some(a), &screen, JcodeDetectionVariant::Vanilla));
-        panic!("SCRATCH agent={agent:?} status={status:?} screen={screen:?}");
-    }
-
-    #[test]
     fn openpty_retry_recovers_from_transient_failures() {
         // Two transient ENXIO-style failures, then success: the helper
         // retries with backoff and returns the pty.

@@ -22,7 +22,10 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Full suite like the release job (cross-target x86_64)
+      - name: Full suite like the release job, 3x
         run: |
           rustup target add x86_64-unknown-linux-gnu
-          cargo test --target-dir target --target x86_64-unknown-linux-gnu 2>&1 | tail -40
+          for i in 1 2 3; do
+            echo "=== SUITE RUN $i ==="
+            cargo test --target-dir target --target x86_64-unknown-linux-gnu 2>&1 | grep -E "test result|FAILED|panicked" || true
+          done
