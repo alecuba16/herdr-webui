@@ -1679,6 +1679,13 @@ struct TerminalRuntime {
     event_context: PaneEventContext,
     last_agent_state: Mutex<Option<(Option<String>, String)>>,
     last_status_check: Mutex<Option<Instant>>,
+    /// Set when output arrived while the status check was throttled. A
+    /// trailing-edge sweeper (spawned once per runtime) runs the pending
+    /// check when the throttle window expires, so a status flip carried by
+    /// the LAST bytes of an output burst is never missed (e.g. a question
+    /// dialog printed right after heavy output, then the pane goes silent
+    /// while `read` blocks — no further output would ever trigger a check).
+    pending_status_check: AtomicBool,
     /// Set once when a previously-live agent process disappears from the
     /// process tree while the pane shell keeps running. Suppresses the
     /// exited agent's label until a live agent is detected again.
@@ -1803,6 +1810,7 @@ impl TerminalRuntime {
             event_context,
             last_agent_state: Mutex::new(None),
             last_status_check: Mutex::new(None),
+            pending_status_check: AtomicBool::new(false),
             recent_agent_process_exit: Mutex::new(None),
             last_live_process_agent: Mutex::new(None),
             master: Mutex::new(pair.master),
@@ -1826,6 +1834,23 @@ impl TerminalRuntime {
             }
             runtime_for_reader.notify_exited();
         });
+        // Trailing-edge status sweeper: append_output only checks the status
+        // throttle on output arrival; if the last burst landed inside a
+        // throttle window, the pending flag stays set until this loop runs
+        // the check once the window expires. Exits when the pane is gone.
+        {
+            let sweeper_runtime = Arc::clone(&runtime);
+            thread::spawn(move || loop {
+                thread::sleep(Duration::from_millis(100));
+                if sweeper_runtime.exited.load(Ordering::Acquire) {
+                    return;
+                }
+                if !sweeper_runtime.pending_status_check.swap(false, Ordering::AcqRel) {
+                    continue;
+                }
+                sweeper_runtime.publish_agent_status_if_changed_force();
+            });
+        }
         Ok(runtime)
     }
 
@@ -2074,9 +2099,46 @@ impl TerminalRuntime {
             .unwrap_or(false);
 
         if !should_check {
+            // Mark pending so the trailing-edge sweeper re-runs the check
+            // once the throttle window expires; without it, a flip carried
+            // by the last bytes of a burst is lost when the pane goes
+            // silent right after (blocked on input with no more output).
+            self.pending_status_check.store(true, Ordering::Release);
             return;
         }
+        self.pending_status_check.store(false, Ordering::Release);
+        self.run_status_detection();
+    }
 
+    /// Un-throttled detection entry point used by the sweeper thread. The
+    /// pending flag is cleared by the caller; the throttle bookkeeping in
+    /// `run_status_detection` still applies so the sweeper cannot hammer
+    /// detection while output keeps flowing.
+    fn publish_agent_status_if_changed_force(&self) {
+        self.run_status_detection();
+    }
+
+    fn run_status_detection(&self) {
+        let now = Instant::now();
+        let should_check = self
+            .last_status_check
+            .lock()
+            .map(|mut last_check| {
+                let should_run = last_check
+                    .map(|last| now.duration_since(last) >= Duration::from_millis(500))
+                    .unwrap_or(true);
+                if should_run {
+                    *last_check = Some(now);
+                }
+                should_run
+            })
+            .unwrap_or(false);
+        if !should_check {
+            // Window not expired yet (the sweeper woke too early): re-mark
+            // pending so the next sweeper tick retries.
+            self.pending_status_check.store(true, Ordering::Release);
+            return;
+        }
         // After the terminal exits, the final "done" status was already
         // published in notify_exited. Skip further detection to avoid CPU waste
         // and stale screen-text false positives.
@@ -5561,6 +5623,59 @@ mod tests {
             .map(|tab| tab["number"].as_u64().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(second_workspace_tab_numbers, vec![1]);
+    }
+
+    #[test]
+    fn throttled_status_flip_is_recovered_by_sweeper() {
+        // Regression test for the throttle-swallowed flip: a status change
+        // carried by the LAST bytes of an output burst could be lost when a
+        // check ran <500ms earlier and the pane then goes silent (e.g. a
+        // permission dialog printed right after heavy output, then the
+        // process blocks on input — no further output ever triggers a
+        // check). The pending flag + sweeper thread must recover it.
+        //
+        // /bin/cat blocks on stdin and never writes, so the ONLY output in
+        // the scrollback is the synthetic bytes below (the shell prompt
+        // cannot race the throttle window like it would with zsh).
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let rx = state.subscribe_events();
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+
+        // First burst consumes the throttle window with a working status.
+        terminal.reset_status_throttle();
+        terminal.append_output("●·· batch ··● · 2/5 done".as_bytes());
+        let working = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("working status event");
+        assert_eq!(working["data"]["agent_status"], "working");
+
+        // Immediately (inside the throttle window) print the blocked dialog.
+        // append_output is throttled, so this only sets the pending flag; the
+        // pane then goes silent. Without the sweeper, no event would ever
+        // carry the blocked flip.
+        terminal.append_output(
+            "permission needed: allow the tool to run now?\n> 1. Allow once\n> 2. Always allow\n> 3. Deny".as_bytes(),
+        );
+
+        // The sweeper ticks every 100ms and runs the pending check once the
+        // 500ms window expires: the blocked event must arrive within a few
+        // seconds without any further terminal output.
+        let blocked = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("blocked status event recovered by sweeper");
+        assert_eq!(blocked["event"], "pane.agent_status_changed");
+        assert_eq!(blocked["data"]["agent"], "jcode");
+        assert_eq!(blocked["data"]["agent_status"], "blocked");
     }
 
     #[test]

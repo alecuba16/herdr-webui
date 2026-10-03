@@ -52,6 +52,9 @@ function connectEvents() {
         data = evt.data || {};
       if (kind === "pane.agent_status_changed") {
         const d = data;
+        // Prompt cards re-evaluate on every status change: a blocked pane
+        // may hold a question dialog the card can answer.
+        if (globalThis.HerdrPromptCards) globalThis.HerdrPromptCards.evaluate();
         if (statusClass(d.agent_status) !== "working") {
           for (const agent of state.agents) {
             if (
@@ -620,6 +623,9 @@ function flushTerminalFrames() {
     // would show the pre-write grid).
     if (globalThis.HerdrLens && globalThis.HerdrLens.isActive())
       globalThis.HerdrLens.onTerminalFrame();
+    // Prompt cards re-parse the tail after every write: the question
+    // dialog repaints on each frame.
+    if (globalThis.HerdrPromptCards) globalThis.HerdrPromptCards.evaluate();
     return;
   }
   // Clear attach flag if it was set but the coalesced frame ended up small
@@ -631,6 +637,7 @@ function flushTerminalFrames() {
   clearDismissedWorkingForTerminal(state.terminalId);
   if (globalThis.HerdrLens && globalThis.HerdrLens.isActive())
     globalThis.HerdrLens.onTerminalFrame();
+  if (globalThis.HerdrPromptCards) globalThis.HerdrPromptCards.evaluate();
 }
 function flushTerminalFramesFor(terminalId) {
   if (!terminalWriteQueue.length || !term || !terminalId) return;
