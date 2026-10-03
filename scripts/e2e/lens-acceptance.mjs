@@ -165,6 +165,26 @@ check('Chat view opens with live transcript and right user card',
   `hidden=${lensOn && lensOn.hidden} aria=${lensOn && lensOn.aria} cards=${lensOn && lensOn.userCards}`);
 check('user card is right-aligned (class contract)', true, 'checked via lens-turn-user selector above');
 
+// While the chat lens is open, the switch must remain the top hit target
+// at its own location (regression: the lens overlay used to paint over it
+// at a lower z-index, hiding the only way back to Terminal).
+const switchHit = await evalApp(`(() => {
+  const sw = document.getElementById('terminalLensSwitch');
+  if (!sw) return null;
+  const r = sw.getBoundingClientRect();
+  const x = r.left + r.width / 2;
+  const y = r.top + r.height / 2;
+  const hit = document.elementFromPoint(x, y);
+  return {
+    hitInSwitch: !!(hit && (hit === sw || sw.contains(hit))),
+    hitDesc: hit ? (hit.id || hit.className || hit.tagName) : 'none',
+    visible: !!(r.width > 0 && r.height > 0),
+  };
+})()`);
+check('Chat|Terminal switch hittable while lens is open',
+  !!switchHit && switchHit.visible && switchHit.hitInSwitch,
+  JSON.stringify(switchHit));
+
 // New output while the lens is open must land in it (frame hook). The
 // lens scroller takes focus (it is a reading surface), so the output is
 // produced by a command ALREADY RUNNING in the shell: a backgrounded
