@@ -1148,6 +1148,53 @@ fn insert_git_status(
     }
 }
 
+/// Strips git's surrounding quotes from a porcelain/diff path and decodes
+/// the backslash escapes inside (octal `\303\251` for non-ASCII, plus the
+/// small set of C escapes git emits). Unquoted paths are returned as-is.
+fn unquote_git_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    if bytes.len() < 2 || bytes[0] != b'"' || bytes[bytes.len() - 1] != b'"' {
+        return path.to_string();
+    }
+    let inner = &path[1..path.len() - 1];
+    let mut out = Vec::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch as u8);
+            continue;
+        }
+        match chars.next() {
+            // Octal escape: up to 3 digits, always >= 0x80 in git practice
+            // (ASCII bytes never get escaped, so this cannot split a char).
+            Some(digit @ '0'..='7') => {
+                let mut value = digit as u32 - '0' as u32;
+                for _ in 0..2 {
+                    match chars.clone().next() {
+                        Some(next @ '0'..='7') => {
+                            value = value * 8 + (next as u32 - '0' as u32);
+                            chars.next();
+                        }
+                        _ => break,
+                    }
+                }
+                out.push(value as u8);
+            }
+            Some('n') => out.push(b'\n'),
+            Some('t') => out.push(b'\t'),
+            Some('r') => out.push(b'\r'),
+            Some('"') => out.push(b'"'),
+            Some('\\') => out.push(b'\\'),
+            Some(other) => {
+                out.push(b'\\');
+                out.push(other as u8);
+            }
+            None => out.push(b'\\'),
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn parse_porcelain_status(xy: &str) -> &'static str {
     match xy {
         "??" => "untracked",
@@ -1250,15 +1297,9 @@ fn collect_git_status(
         }
         // Porcelain v1: XY is 2 chars, then space, then path.
         // For renames (R): path is "newpath\toldpath" — take newpath only.
-        let path = path.split('\t').next().unwrap_or(path);
-        // Strip surrounding quotes if present (git quotes paths with special chars)
-        let path = if path.starts_with('"') && path.ends_with('"') {
-            &path[1..path.len() - 1]
-        } else {
-            path
-        };
+        let path = unquote_git_path(path.split('\t').next().unwrap_or(path));
         let status = parse_porcelain_status(xy);
-        let adjusted = match adjust_git_path(path, prefix_trim) {
+        let adjusted = match adjust_git_path(&path, prefix_trim) {
             Some(path) => path,
             None => continue,
         };
@@ -1377,13 +1418,8 @@ fn merge_branch_changes(
         let Some((_kind, path)) = line.split_once('\t') else {
             continue;
         };
-        let path = path.split('\t').next().unwrap_or(path);
-        let path = if path.starts_with('"') && path.ends_with('"') {
-            &path[1..path.len() - 1]
-        } else {
-            path
-        };
-        let Some(adjusted) = adjust_git_path(path, prefix_trim) else {
+        let path = unquote_git_path(path.split('\t').next().unwrap_or(path));
+        let Some(adjusted) = adjust_git_path(&path, prefix_trim) else {
             continue;
         };
         propagate_git_status(map, &adjusted, "changed");
@@ -3237,5 +3273,35 @@ mod tests {
             Some("changed")
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn merge_branch_changes_unquotes_git_escaped_paths() {
+        // git quotes non-ASCII paths as "\303\251..." in diff --name-status
+        // and leaves paths with spaces unquoted; the merge must decode both
+        // so tree rows with the real on-disk names match the map keys.
+        let mut map = serde_json::Map::new();
+        for (raw, expected) in [
+            ("A\t\"r\\303\\251sum\\303\\251.rs\"", "résumé.rs"),
+            (
+                "M\t\"dir with space/caf\\303\\251.txt\"",
+                "dir with space/café.txt",
+            ),
+            (
+                "M\tdir with space/file name.txt",
+                "dir with space/file name.txt",
+            ),
+        ] {
+            let Some((_kind, path)) = raw.split_once('\t') else {
+                panic!("test fixture must be STATUS\tpath");
+            };
+            let path = unquote_git_path(path.split('\t').next().unwrap_or(path));
+            propagate_git_status(&mut map, &path, "changed");
+            assert_eq!(
+                map.get(expected).and_then(|value| value.as_str()),
+                Some("changed"),
+                "raw line {raw:?} must land under {expected:?}"
+            );
+        }
     }
 }
