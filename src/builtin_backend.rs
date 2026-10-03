@@ -2119,6 +2119,15 @@ impl TerminalRuntime {
     }
 
     fn run_status_detection(&self) {
+        // After the terminal exits, the final "done" status was already
+        // published in notify_exited. Skip further detection to avoid CPU
+        // waste, stale screen-text false positives, and consuming the
+        // throttle window on a dead terminal (the sweeper stops calling
+        // once it observes `exited`, but a force call racing the exit must
+        // still be a full no-op).
+        if self.exited.load(Ordering::Acquire) {
+            return;
+        }
         let now = Instant::now();
         let should_check = self
             .last_status_check
@@ -2137,12 +2146,6 @@ impl TerminalRuntime {
             // Window not expired yet (the sweeper woke too early): re-mark
             // pending so the next sweeper tick retries.
             self.pending_status_check.store(true, Ordering::Release);
-            return;
-        }
-        // After the terminal exits, the final "done" status was already
-        // published in notify_exited. Skip further detection to avoid CPU waste
-        // and stale screen-text false positives.
-        if self.exited.load(Ordering::Acquire) {
             return;
         }
 
@@ -5676,6 +5679,45 @@ mod tests {
         assert_eq!(blocked["event"], "pane.agent_status_changed");
         assert_eq!(blocked["data"]["agent"], "jcode");
         assert_eq!(blocked["data"]["agent_status"], "blocked");
+    }
+
+    #[test]
+    fn sweeper_force_check_skips_exited_terminal() {
+        // After the terminal exits, notify_exited already published the
+        // final "done" status. The sweeper's force path must not re-run
+        // detection on the dead terminal (stale screen text false
+        // positives).
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+        terminal.exited.store(true, Ordering::Release);
+        // Arm pending + a dirty throttle window: the force path must take
+        // the exited early-return, leaving the throttle bookkeeping and
+        // detection untouched.
+        terminal.pending_status_check.store(true, Ordering::Release);
+        terminal.publish_agent_status_if_changed_force();
+        assert!(
+            terminal.last_status_check.lock().unwrap().is_none(),
+            "exited terminal must not consume the throttle window"
+        );
+        assert_eq!(
+            state
+                .handle_request("seed", "workspace.list", json!({}))
+                ["result"]["workspaces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

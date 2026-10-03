@@ -705,6 +705,110 @@ mod tests {
     }
 
     #[test]
+    fn hub_client_event_debug_formats_both_variants() {
+        let bytes = HubClientEvent::Bytes(b"abc".to_vec());
+        assert_eq!(format!("{bytes:?}"), "Bytes(3 bytes)");
+        let error = HubClientEvent::Error {
+            kind: "connect_failed",
+            message: "boom".to_string(),
+            suggests_builtin: true,
+        };
+        let debug = format!("{error:?}");
+        assert!(debug.contains("connect_failed"));
+        assert!(debug.contains("boom"));
+        assert!(debug.contains("suggests_builtin: true"));
+    }
+
+    #[test]
+    fn replay_ring_empty_chunk_is_noop() {
+        let mut ring = ReplayRing::new(8);
+        ring.push_bytes(b"data");
+        ring.push_bytes(b"");
+        assert_eq!(ring.snapshot(), b"data".to_vec());
+        assert_eq!(ring.len(), 4);
+    }
+
+    #[test]
+    fn attach_error_messages_kinds_and_builtin_hints() {
+        assert_eq!(
+            AttachError::Connect.user_message(),
+            "failed to connect to herdr client socket\r\n"
+        );
+        assert_eq!(
+            AttachError::SendHandshake.user_message(),
+            "failed to send herdr handshake\r\n"
+        );
+        assert_eq!(
+            AttachError::ReadHandshake.user_message(),
+            "failed to read herdr handshake\r\n"
+        );
+        assert_eq!(
+            AttachError::Rejected("version mismatch".to_string()).user_message(),
+            "herdr rejected terminal connection: version mismatch\r\n"
+        );
+        assert_eq!(
+            AttachError::Attach.user_message(),
+            "failed to attach herdr terminal\r\n"
+        );
+
+        assert_eq!(AttachError::Connect.error_kind(), "connect_failed");
+        assert_eq!(AttachError::SendHandshake.error_kind(), "handshake_failed");
+        assert_eq!(AttachError::ReadHandshake.error_kind(), "handshake_failed");
+        assert_eq!(
+            AttachError::Rejected(String::new()).error_kind(),
+            "handshake_rejected"
+        );
+        assert_eq!(AttachError::Attach.error_kind(), "attach_failed");
+
+        assert!(!AttachError::Connect.suggests_builtin());
+        assert!(!AttachError::SendHandshake.suggests_builtin());
+        assert!(AttachError::ReadHandshake.suggests_builtin());
+        assert!(AttachError::Rejected(String::new()).suggests_builtin());
+        assert!(!AttachError::Attach.suggests_builtin());
+    }
+
+    #[test]
+    fn shared_attach_publish_with_poisoned_locks_never_panics() {
+        let attach = SharedAttach {
+            in_tx: std::sync::mpsc::channel().0,
+            clients: Mutex::new(Vec::new()),
+            closed: AtomicBool::new(false),
+            replay: Mutex::new(ReplayRing::new(64)),
+        };
+        attach.publish(HubClientEvent::Bytes(b"first".to_vec()));
+        // Poison both locks by panicking while holding them.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _clients = attach.clients.lock().unwrap();
+            let _replay = attach.replay.lock().unwrap();
+            panic!("poison source");
+        }));
+        // Locks are poisoned now: publish/fail must be silent no-ops
+        // instead of panicking (a panic in the reader thread would take
+        // the whole process down).
+        attach.publish(HubClientEvent::Bytes(b"second".to_vec()));
+        attach.fail(HubClientEvent::Error {
+            kind: "handshake_failed",
+            message: "poisoned".to_string(),
+            suggests_builtin: false,
+        });
+    }
+
+    #[test]
+    fn replay_cap_reads_env_override() {
+        // Only this var feeds replay_cap and no other test touches it, so a
+        // set/restore dance is safe even under parallel test threads.
+        std::env::set_var("HERDR_REPLAY_CAP_BYTES", "4096");
+        assert_eq!(replay_cap(), 4096);
+        // Invalid or non-positive values fall back to the default.
+        std::env::set_var("HERDR_REPLAY_CAP_BYTES", "not-a-number");
+        assert_eq!(replay_cap(), REPLAY_RING_BYTES);
+        std::env::set_var("HERDR_REPLAY_CAP_BYTES", "0");
+        assert_eq!(replay_cap(), REPLAY_RING_BYTES);
+        std::env::remove_var("HERDR_REPLAY_CAP_BYTES");
+        assert_eq!(replay_cap(), REPLAY_RING_BYTES);
+    }
+
+    #[test]
     fn hub_detach_without_attach_is_noop() {
         let hub = TerminalHub::new();
         hub.detach(&(PathBuf::from("/nonexistent.sock"), "t1".to_string()));
