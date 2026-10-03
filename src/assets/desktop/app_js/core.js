@@ -4038,6 +4038,7 @@ async function refresh() {
     await refreshOnline(seq);
     if (seq !== refreshSeq) return;
     state.backendOnline = true;
+    updateConnectionChip();
     // Only auto-hide the session manager when it was auto-opened by a
     // previous failed refresh; a user-opened manager must stay visible.
     if (sessionManagerAutoOpened) hideSessionManager();
@@ -4047,6 +4048,7 @@ async function refresh() {
     updateFooterSessionButton();
   } catch (e) {
     state.backendOnline = false;
+    updateConnectionChip();
     setTerminalLoading(false);
     state.workspaces = [];
     state.tabs = [];

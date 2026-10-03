@@ -656,12 +656,14 @@ window.onpopstate = handleSessionPopState;
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     clearTimeout(noSleepPollTimer);
+    updateConnectionChip();
     hiddenTimer = setTimeout(() => {
       if (eventWs) eventWs.close();
       if (termWs) termWs.close();
     }, 1000);
   } else {
     clearTimeout(hiddenTimer);
+    updateConnectionChip();
     loadVersions();
     refresh();
     connectEvents();

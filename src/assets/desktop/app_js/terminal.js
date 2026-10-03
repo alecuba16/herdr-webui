@@ -3,13 +3,18 @@ function connectEvents() {
   const eventSession = state.session;
   const ws = new WebSocket(wsUrl("/ws/events"));
   eventWs = ws;
+  setEventsConnectionState("connecting");
   // Tell the shared lsp.js module a page-level events socket exists;
   // while frames keep arriving it will not open its own private one.
   if (window.HerdrLsp && window.HerdrLsp.registerEventsBus) {
     try { window.HerdrLsp.registerEventsBus(); } catch (_) {}
   }
+  ws.onopen = () => {
+    if (eventWs === ws) setEventsConnectionState("live");
+  };
   ws.onmessage = (e) => {
     if (eventWs !== ws || eventSession !== state.session) return;
+    if (ws.readyState === WebSocket.OPEN) setEventsConnectionState("live");
     let msg;
     try {
       msg = JSON.parse(e.data);
@@ -74,10 +79,43 @@ function connectEvents() {
     }
   };
   ws.onclose = () => {
-    if (eventWs === ws) eventWs = null;
+    if (eventWs === ws) {
+      eventWs = null;
+      setEventsConnectionState("offline");
+    }
     if (!document.hidden && eventSession === state.session)
       setTimeout(connectEvents, 1500);
   };
+}
+// One place that answers "am I connected?" and paints the connection chip.
+// States: live (events socket open), connecting (socket down, retrying),
+// offline (hidden tab, dropped events socket with no backend refresh yet).
+// The chip itself is a written label plus a dot; reconnecting pulses so the
+// user knows the tab is trying, not dead.
+function eventsConnectionState() {
+  if (eventWs && eventWs.readyState === WebSocket.OPEN) return "live";
+  if (document.hidden) return "offline";
+  return state.backendOnline === false ? "offline" : "reconnecting";
+}
+function setEventsConnectionState(explicit) {
+  const chip = el("connectionChip");
+  if (!chip) return;
+  const next = explicit || eventsConnectionState();
+  if (chip.dataset.state === next) return;
+  chip.dataset.state = next;
+  chip.title =
+    next === "live"
+      ? "Live: events stream connected"
+      : next === "reconnecting"
+        ? "Reconnecting: events stream retrying"
+        : "Offline: no events stream";
+  const label = chip.querySelector(".connection-label");
+  if (label)
+    label.textContent =
+      next === "live" ? "Live" : next === "reconnecting" ? "Reconnecting" : "Offline";
+}
+function updateConnectionChip() {
+  setEventsConnectionState();
 }
 // Close any live events socket and reconnect immediately. The events
 // subscription is bound to the session + backend captured in the wsUrl()
