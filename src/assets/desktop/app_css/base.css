@@ -155,7 +155,10 @@ body.light {
   gap: 6px;
 }
 .sidebar-count {
-  border-radius: 999px;
+  /* the collapsed sidebar's count pills: .badge shape, but tighter than the
+   * primitive because the toggle strip is narrow; colors come from the
+   * status tokens shared with the rest of the app */
+  border: 0;
   color: var(--bg);
   display: none;
   font-size: 11px;
@@ -163,21 +166,22 @@ body.light {
   line-height: 16px;
   min-width: 16px;
   padding: 0 2px;
+  height: auto;
 }
 #app.sidebar-collapsed .sidebar-count {
   display: inline-block;
 }
 .sidebar-count.blocked {
-  background: #f38ba8;
+  background: var(--status-blocked, #f38ba8);
 }
 .sidebar-count.working {
-  background: #f9e2af;
+  background: var(--status-working, #f9e2af);
 }
 .sidebar-count.idle {
-  background: #a6e3a1;
+  background: var(--status-idle, #a6e3a1);
 }
 .sidebar-count.done {
-  background: #89b4fa;
+  background: var(--status-done, #89b4fa);
 }
 .head {
   padding: 14px;
@@ -187,6 +191,41 @@ body.light {
 }
 .head strong {
   flex: 1;
+}
+.connection-chip {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: var(--fs-2xs, 11px);
+  font-weight: var(--fw-semibold, 600);
+  gap: var(--space-1, 4px);
+  line-height: 1;
+  padding: 3px 0;
+  white-space: nowrap;
+}
+.connection-dot {
+  border-radius: var(--radius-pill, 999px);
+  display: inline-block;
+  height: 7px;
+  width: 7px;
+  background: var(--status-idle, #a6e3a1);
+}
+.connection-chip[data-state="reconnecting"] .connection-dot,
+.connection-chip[data-state="connecting"] .connection-dot {
+  background: var(--status-working, #f9e2af);
+  animation: herdr-pulse var(--dur-pulse, 1600ms) var(--ease-pulse, steps(2, jump-none)) infinite;
+}
+.connection-chip[data-state="offline"] .connection-dot {
+  background: var(--status-blocked, #f38ba8);
+}
+.connection-chip[data-state="offline"] {
+  color: var(--status-blocked, #f38ba8);
+}
+@media (prefers-reduced-motion: reduce) {
+  .connection-chip .connection-dot {
+    animation: none;
+  }
 }
 .btn {
   background: var(--accent);
@@ -560,28 +599,28 @@ body.light {
   background: transparent !important;
 }
 body:not(.light) .agent-status.idle {
-  color: #a6e3a1;
+  color: var(--status-idle, #a6e3a1);
 }
 body:not(.light) .agent-status.working {
-  color: #f9e2af;
+  color: var(--status-working, #f9e2af);
 }
 body:not(.light) .agent-status.blocked {
-  color: #f38ba8;
+  color: var(--status-blocked, #f38ba8);
 }
 body:not(.light) .agent-status.done {
-  color: #89b4fa;
+  color: var(--status-done, #89b4fa);
 }
 body.light .agent-status.idle {
-  color: #13661b;
+  color: var(--status-idle, #13661b);
 }
 body.light .agent-status.working {
-  color: #6f4a04;
+  color: var(--status-working, #6f4a04);
 }
 body.light .agent-status.blocked {
-  color: #a81c1c;
+  color: var(--status-blocked, #a81c1c);
 }
 body.light .agent-status.done {
-  color: #2150ae;
+  color: var(--status-done, #2150ae);
 }
 .agent-status.ignored,
 .agent-status.unknown {

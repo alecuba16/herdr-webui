@@ -392,6 +392,96 @@ await evalx(`(function () { const o = JSON.parse(localStorage.getItem('herdr-web
 await evalx(`(async () => { await HerdrMobile.showScreen('home'); })()`);
 await new Promise((r) => setTimeout(r, 400));
 
+// ---------- Bottom-sheet layout checks (UX overhaul phase 6) ----------
+// The action sheet is the mobile pattern for destructive/contextual file
+// actions. Assert the real rendered geometry: docked to the bottom edge,
+// not exceeding the viewport height, handle + title + actions present,
+// dialog semantics (role/aria-modal), backdrop covers the screen, and
+// Cancel (and the backdrop) close it without leaving anything behind.
+await evalx(`(async () => { await HerdrMobile.showScreen('files'); })()`);
+await new Promise((r) => setTimeout(r, 400));
+const sheetOpen = await evalx(`(async () => {
+  // The tree view lists repo files; open the sheet for a real row path
+  // exactly like its ⋯ button does (encoded path, 'file' kind).
+  const screen = document.getElementById('mobileScreen');
+  if (!screen) return { screen: false };
+  HerdrMobile.filesOpenActionSheet(${JSON.stringify(encodeURIComponent('edit-target.txt'))}, 'file');
+  await new Promise((r) => setTimeout(r, 300));
+  const sheet = document.querySelector('.mobile-sheet');
+  const backdrop = document.querySelector('.mobile-sheet-backdrop');
+  if (!sheet || !backdrop) return { present: false, backdrop: !!backdrop };
+  const s = sheet.getBoundingClientRect();
+  const b = backdrop.getBoundingClientRect();
+  const vh = window.innerHeight;
+  const cs = getComputedStyle(sheet);
+  // getComputedStyle resolves maxHeight (70vh) to px; compare against 70% vh.
+  const capPx = cs.maxHeight && cs.maxHeight !== 'none' ? parseFloat(cs.maxHeight) : vh;
+  return {
+    present: true,
+    role: sheet.getAttribute('role'),
+    ariaModal: sheet.getAttribute('aria-modal'),
+    label: sheet.getAttribute('aria-label') || '',
+    handle: !!sheet.querySelector('.mobile-sheet-handle'),
+    title: sheet.querySelector('.mobile-sheet-title')
+      ? sheet.querySelector('.mobile-sheet-title').textContent : '',
+    actions: [...sheet.querySelectorAll('.mobile-sheet-action')].map((a) => a.textContent.trim()),
+    bottom: s.bottom, top: s.top, height: s.height, vh,
+    left: s.left, right: s.right, width: s.width, vw: window.innerWidth,
+    maxHeightPx: capPx,
+    seventyVhPx: vh * 0.7,
+    backdropCovers: b.left === 0 && b.top === 0 && Math.abs(b.right - window.innerWidth) <= 1 && Math.abs(b.bottom - vh) <= 1,
+  };
+})()`);
+check(
+  'action sheet renders as a dialog with handle, title, and actions',
+  sheetOpen.present === true
+    && sheetOpen.role === 'dialog'
+    && sheetOpen.ariaModal === 'true'
+    && !!sheetOpen.label
+    && sheetOpen.handle
+    && /edit-target/.test(sheetOpen.title || '')
+    && sheetOpen.actions.some((a) => /Rename/.test(a))
+    && sheetOpen.actions.some((a) => /Delete/.test(a))
+    && sheetOpen.actions.some((a) => /Cancel/.test(a)),
+  JSON.stringify(sheetOpen).slice(0, 240),
+);
+check(
+  'action sheet docks to the bottom edge within the viewport',
+  Math.abs(sheetOpen.bottom - sheetOpen.vh) <= 1
+    && sheetOpen.top >= 0
+    && sheetOpen.height <= sheetOpen.vh
+    && Math.abs(sheetOpen.left) <= 1
+    && Math.abs(sheetOpen.right - sheetOpen.vw) <= 1,
+  `top=${Math.round(sheetOpen.top)} bottom=${Math.round(sheetOpen.bottom)} height=${Math.round(sheetOpen.height)} vh=${sheetOpen.vh} left=${sheetOpen.left} right=${sheetOpen.right} vw=${sheetOpen.vw}`,
+);
+check(
+  'action sheet height capped and backdrop covers the screen',
+  Math.abs(sheetOpen.maxHeightPx - sheetOpen.seventyVhPx) <= 2
+    && sheetOpen.backdropCovers,
+  `maxHeightPx=${sheetOpen.maxHeightPx} seventyVhPx=${sheetOpen.seventyVhPx} backdropCovers=${sheetOpen.backdropCovers}`,
+);
+const sheetClosed = await evalx(`(async () => {
+  // Cancel must tear the sheet down completely.
+  const cancel = [...document.querySelectorAll('.mobile-sheet-action')]
+    .find((a) => /Cancel/.test(a.textContent));
+  if (cancel) cancel.click();
+  await new Promise((r) => setTimeout(r, 300));
+  const afterCancel = !document.querySelector('.mobile-sheet');
+  // Reopen through the same API, then tap the backdrop: also a full close.
+  HerdrMobile.filesOpenActionSheet(${JSON.stringify(encodeURIComponent('edit-target.txt'))}, 'file');
+  await new Promise((r) => setTimeout(r, 300));
+  const backdrop = document.querySelector('.mobile-sheet-backdrop');
+  if (backdrop) backdrop.click();
+  await new Promise((r) => setTimeout(r, 300));
+  const afterBackdrop = !document.querySelector('.mobile-sheet') && !document.querySelector('.mobile-sheet-backdrop');
+  return { afterCancel, afterBackdrop };
+})()`);
+check(
+  'Cancel and backdrop both close the sheet fully',
+  sheetClosed.afterCancel && sheetClosed.afterBackdrop,
+  JSON.stringify(sheetClosed),
+);
+
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 if (failed.length) {

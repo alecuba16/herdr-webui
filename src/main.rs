@@ -8,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
 #[cfg(test)]
 use axum::http::{header, HeaderValue};
@@ -47,6 +47,7 @@ mod lsp;
 mod protocol;
 mod server_settings;
 mod service;
+mod terminal_hub;
 mod terminal_text;
 
 use assets::{
@@ -63,15 +64,16 @@ use assets::{
     mobile_events_js, mobile_file_browser_js, mobile_git_js, mobile_js, mobile_panels_js,
     mobile_screens_js, mobile_search_js, mobile_sessions_js, mobile_settings_js,
     mobile_terminal_js, mobile_theme_js, mobile_workmeta_js, mobile_worktrees_js,
-    shared_actions_js, shared_attention_js, shared_colors_css, shared_content_search_css,
-    shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
-    shared_file_icons_js, shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js,
-    shared_http_js, shared_line_context_js, shared_lsp_js, shared_markdown_preview_css,
-    shared_markdown_preview_js, shared_options_js, shared_settings_confirm_js,
+    shared_actions_js, shared_alert_card_css, shared_alert_card_js, shared_attention_js,
+    shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
+    shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
+    shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js, shared_http_js,
+    shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
+    shared_options_js, shared_primitives_css, shared_settings_confirm_js,
     shared_settings_feedback_js, shared_skeleton_css, shared_skeleton_js, shared_temp_terminal_js,
     shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
-    shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js, vendor_ghostty_wasm,
-    vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
+    shared_tokens_css, shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js,
+    vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
 };
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
@@ -609,6 +611,10 @@ pub(crate) struct WebState {
     settings_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
     lsp: Arc<lsp::LspRegistry>,
+    /// Shared terminal attach hub: one backend attach per
+    /// `(client socket, terminal_id)`, fanned out to every connected
+    /// viewer (Phase 5 transport work, see docs/ux/phase5-transport-design.md).
+    terminal_hub: Arc<terminal_hub::TerminalHub>,
 }
 
 impl WebState {
@@ -944,6 +950,7 @@ async fn main() -> io::Result<()> {
         settings_tx,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         lsp: lsp_registry,
+        terminal_hub: Arc::new(terminal_hub::TerminalHub::new()),
     };
 
     serve_rebindable(state, rebind_rx, config.tls).await
@@ -1366,6 +1373,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/tabs/{tab_id}/promote", post(promote_tab))
         .route("/api/panes", get(panes))
         .route("/api/panes/{pane_id}/close", post(close_pane))
+        .route("/api/panes/{pane_id}/submit", post(submit_pane))
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/session-snapshot", get(session_snapshot))
         .route("/api/agents", get(agents))
@@ -1387,12 +1395,16 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/shared/skeleton.js", get(shared_skeleton_js))
         .route("/assets/shared/skeleton.css", get(shared_skeleton_css))
         .route("/assets/shared/attention.js", get(shared_attention_js))
+        .route("/assets/shared/alert-card.js", get(shared_alert_card_js))
+        .route("/assets/shared/alert-card.css", get(shared_alert_card_css))
         .route("/assets/shared/options.js", get(shared_options_js))
         .route("/assets/shared/actions.js", get(shared_actions_js))
         .route("/assets/shared/file-icons.js", get(shared_file_icons_js))
         .route("/assets/shared/file-icons.css", get(shared_file_icons_css))
         .route("/assets/shared/file-tree.css", get(shared_file_tree_css))
         .route("/assets/shared/colors.css", get(shared_colors_css))
+        .route("/assets/shared/tokens.css", get(shared_tokens_css))
+        .route("/assets/shared/primitives.css", get(shared_primitives_css))
         .route(
             "/assets/shared/content-search.css",
             get(shared_content_search_css),
@@ -4577,6 +4589,155 @@ async fn close_pane(
     .await
 }
 
+/// Composer submit: types one message into the pane's agent through the
+/// backend's `agent.prompt` (built-in backend and external herdr implement
+/// the same method, including the `agent_blocked` refusal while the agent
+/// waits for an answer). Refusal errors keep their machine-readable code AND
+/// the human-facing note in the response body: the server owns the copy so
+/// every client (desktop, mobile, future integrations) says the same thing
+/// and the browser only displays.
+///
+/// Human-facing copy for a composer submit refusal. The route classifies the
+/// wire code anyway (for the status mapping), so the same match owns the
+/// note: one classification, two projections, no drift. Unknown codes get
+/// the generic "Not sent" prefix around the server's own error string so
+/// every refusal reads consistently in the UI.
+fn submit_pane_note(code: &str, err: &str) -> String {
+    match code {
+        "agent_blocked" => {
+            "Not sent: the agent is waiting for an answer in the terminal. Answer it first.".into()
+        }
+        "agent_not_found" | "agent_exited" => {
+            "Not sent: this panel is gone. Pick another panel.".into()
+        }
+        "message_too_long" => "Not sent: message is too long (20000 characters max).".into(),
+        "empty_agent_prompt" => "Not sent: the message is empty.".into(),
+        "unauthorized" => "Not sent: session expired. Reload.".into(),
+        _ => format!("Not sent: {err}"),
+    }
+}
+
+/// Extracts the machine wire code from a backend submit error.
+///
+/// The builtin backend reports `code: "builtin_error"` with the real code
+/// as the MESSAGE prefix (`"agent_blocked: ..."`); external herdr reports
+/// its own codes (`"agent_blocked"`, `"empty_agent_prompt"`) as the error
+/// code with a human message. Try the message prefix first (builtin),
+/// then the error code (herdr), so both backends classify identically.
+fn submit_pane_code(error: &serde_json::Value) -> String {
+    let message = error
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let prefix = message.split(':').next().unwrap_or("");
+    const KNOWN: [&str; 6] = [
+        "agent_blocked",
+        "agent_not_found",
+        "agent_exited",
+        "message_too_long",
+        "empty_agent_prompt",
+        "unauthorized",
+    ];
+    if KNOWN.contains(&prefix) {
+        return prefix.to_string();
+    }
+    let code = error
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if KNOWN.contains(&code) {
+        return code.to_string();
+    }
+    // Unknown: keep the message prefix (builtin) or the raw code (herdr)
+    // so the note still names what failed.
+    if !prefix.is_empty() {
+        prefix.to_string()
+    } else {
+        code.to_string()
+    }
+}
+
+/// Maps a backend submit error to (status, code, note). Kept beside the
+/// note map so the route reads as one classification step.
+fn submit_pane_error(message: &str, code: &str) -> (StatusCode, String, String) {
+    let status = match code {
+        "agent_blocked" => StatusCode::CONFLICT,
+        "agent_not_found" | "agent_exited" => StatusCode::NOT_FOUND,
+        "message_too_long" | "empty_agent_prompt" => StatusCode::BAD_REQUEST,
+        _ => StatusCode::BAD_GATEWAY,
+    };
+    let note = submit_pane_note(code, message);
+    (status, code.to_string(), note)
+}
+
+async fn submit_pane(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    AxumPath(pane_id): AxumPath<String>,
+    body: axum::extract::Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let Some(text) = body
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "missing text" })),
+        )
+            .into_response();
+    };
+    let api = api_for_headers_ensured(&state, &headers).await;
+    let result = tokio::task::spawn_blocking(move || {
+        api.request_value(json!({
+            "id": "web:pane:submit",
+            "method": "agent.prompt",
+            "params": { "pane_id": pane_id, "text": text },
+        }))
+    })
+    .await;
+    // Both backends deliver refusals as an Ok wire response carrying an
+    // `error` object ({code, message}); the Err arm is transport only.
+    // The route classifies once (status + code + note) so the browser
+    // never needs to know which backend answered or how it shaped its
+    // error fields.
+    match result {
+        Ok(Ok(value)) => {
+            if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
+                let code = submit_pane_code(error);
+                let message = error
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("submit failed");
+                let (status, code, note) = submit_pane_error(message, &code);
+                return (
+                    status,
+                    Json(json!({ "error": message, "code": code, "note": note })),
+                )
+                    .into_response();
+            }
+            Json(value).into_response()
+        }
+        Ok(Err(err)) => {
+            let (status, code, note) = submit_pane_error(&err, "error");
+            (
+                status,
+                Json(json!({ "error": err, "code": code, "note": note })),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 /// Folds a failed `spawn_blocking` join into the promote route's error
 /// channel. A panic in the backend call must still propagate (it may hold
 /// poisoned locks or invariant breakage worth crashing on), while a plain
@@ -4975,6 +5136,7 @@ async fn terminal_ws(
             query,
             socket,
             promoted_temporary_tabs,
+            state.terminal_hub.clone(),
         )
     })
 }
@@ -4986,6 +5148,7 @@ async fn terminal_socket(
     query: TerminalQuery,
     mut socket: WebSocket,
     promoted_temporary_tabs: PromotedTemporaryTabs,
+    hub: Arc<terminal_hub::TerminalHub>,
 ) {
     let terminal_id = query.terminal_id.clone();
     let cols = query.cols.unwrap_or(100).max(1);
@@ -5019,95 +5182,75 @@ async fn terminal_socket(
         }
         return;
     }
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<TerminalEvent>();
-    let (in_tx, in_rx) = std::sync::mpsc::channel::<ClientMessage>();
-
-    std::thread::spawn(move || {
-        let mut stream = match connect_terminal_attach(&path, &terminal_id, cols, rows) {
-            Ok(stream) => stream,
-            Err(error) => {
-                // Order matters: the STRUCTURED error first, then the raw
-                // text, through ONE channel. The browser treats any binary
-                // frame as a live-backend signal (attach success) and only
-                // herdr_error text re-arms its reconnect backoff, so the
-                // structured frame must arrive first or every failed
-                // reconnect resets the backoff and a resize drag rebuilds
-                // a per-frame WebSocket storm. (With a separate error
-                // channel, a closed out_rx could win the select race and
-                // the browser would never see the JSON frame offering a
-                // built-in session.)
-                let _ = out_tx.send(TerminalEvent::Error(error.clone()));
-                let _ = out_tx.send(TerminalEvent::Bytes(error.user_message().into_bytes()));
-                return;
-            }
-        };
-
-        let Ok(mut writer) = stream.try_clone() else {
-            let _ = out_tx.send(TerminalEvent::Bytes(
-                b"failed to clone herdr terminal socket\r\n".to_vec(),
-            ));
-            return;
-        };
-        std::thread::spawn(move || {
-            for message in in_rx {
-                if write_message(&mut writer, &message).is_err() {
-                    break;
-                }
-            }
-        });
-
-        loop {
-            match read_message::<_, ServerMessage>(&mut stream, MAX_GRAPHICS_FRAME_SIZE) {
-                Ok(ServerMessage::Terminal(frame)) => {
-                    if out_tx.send(TerminalEvent::Bytes(frame.bytes)).is_err() {
-                        break;
-                    }
-                }
-                Ok(ServerMessage::Graphics { bytes }) => {
-                    if out_tx.send(TerminalEvent::Bytes(bytes)).is_err() {
-                        break;
-                    }
-                }
-                Ok(ServerMessage::ServerShutdown { .. }) => break,
-                Ok(_) => {}
-                Err(_) => break,
-            }
-        }
-    });
+    // Shared attach hub: one backend attach per (client socket,
+    // terminal_id), fanned out to every connected viewer. Late joiners
+    // and quick reconnects reuse the live attach and receive the replay
+    // tail immediately; the last viewer's departure detaches the
+    // backend after a short grace window. Backpressure drops stalled
+    // browser clients (they see the 4404 stall close) instead of ever
+    // blocking the shared reader.
+    let (mut out_rx, replay, join_guard) = hub.join(&path, &terminal_id, cols, rows);
+    // Replay tail first, so a re-join of a still-attached terminal
+    // paints the recent output immediately. Fresh attaches get the
+    // backend's own full-history frame through the live queue; the
+    // snapshot is empty there and costs nothing.
+    if !replay.is_empty() && socket.send(Message::Binary(replay.into())).await.is_err() {
+        return;
+    }
 
     loop {
         tokio::select! {
-            message = out_rx.recv() => {
-                match message {
-                    // Graceful degradation: surface the handshake failure as
-                    // a structured frame before closing, so the browser can
-                    // offer a built-in session instead of blocking on a dead
-                    // terminal. Delivered through the same channel as the raw
-                    // bytes and after them, so ordering is guaranteed: the
-                    // channel close can never race ahead of the error frame.
-                    Some(TerminalEvent::Error(error)) => {
+            event = out_rx.recv() => {
+                match event {
+                    // Attach error surfaced by the hub as a structured
+                    // frame (same wire behavior as the old per-WS relay):
+                    // herdr_error JSON first, then the explicit 4404
+                    // stall close, so the browser can offer a built-in
+                    // session and never hangs on silence.
+                    Some(terminal_hub::HubClientEvent::Error { kind, message, suggests_builtin }) => {
                         let payload = json!({
                             "type": "herdr_error",
                             "backend": backend.as_str(),
-                            "kind": error.error_kind(),
-                            "message": error.user_message().trim_end(),
-                            "suggest_builtin": error.suggests_builtin(),
+                            "kind": kind,
+                            "message": message,
+                            "suggest_builtin": suggests_builtin,
                         });
                         if let Ok(text) = serde_json::to_string(&payload) {
                             let _ = socket.send(Message::Text(text.into())).await;
                         }
+                        let _ = socket
+                            .send(Message::Close(Some(CloseFrame {
+                                code: 4404,
+                                reason: "herdr-stalled".into(),
+                            })))
+                            .await;
                         break;
                     }
-                    Some(TerminalEvent::Bytes(bytes)) => {
+                    Some(terminal_hub::HubClientEvent::Bytes(bytes)) => {
                         if socket.send(Message::Binary(bytes.into())).await.is_err() { break; }
                     }
-                    None => break,
+                    None => {
+                        // Hub channel closed: the shared backend stream
+                        // ended (detach, shutdown, or death) or this
+                        // client was dropped as stalled. Same explicit
+                        // stall close so the browser never hangs on
+                        // silence.
+                        let _ = socket
+                            .send(Message::Close(Some(CloseFrame {
+                                code: 4404,
+                                reason: "herdr-stalled".into(),
+                            })))
+                            .await;
+                        break;
+                    }
                 }
             }
             message = socket.recv() => {
                 match message {
                     Some(Ok(Message::Binary(data))) => {
-                        if in_tx.send(ClientMessage::Input { data: data.to_vec() }).is_err() { break; }
+                        if let Some(attach) = hub.attach_sender(&path, &terminal_id) {
+                            if attach.send(ClientMessage::Input { data: data.to_vec() }).is_err() { break; }
+                        } else { break; }
                     }
                     Some(Ok(Message::Text(text))) => {
                         let text = text.as_str();
@@ -5118,7 +5261,7 @@ async fn terminal_socket(
                             continue;
                         }
                         for message in terminal_text_messages(text) {
-                            if in_tx.send(message).is_err() { break; }
+                            if hub.send_client_message(&path, &terminal_id, message).is_err() { break; }
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
@@ -5128,7 +5271,7 @@ async fn terminal_socket(
             }
         }
     }
-    let _ = in_tx.send(ClientMessage::Detach);
+    join_guard.detach();
     let close_tab_id = query
         .temporary_tab_id
         .as_deref()
@@ -5736,99 +5879,6 @@ fn terminal_release_toggle(text: &str, armed: &mut bool) -> bool {
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
     true
-}
-
-/// Events from the terminal reader thread to the WS select loop, through one
-/// ordered channel. Ordering is load-bearing: the STRUCTURED error must be
-/// delivered before the raw failure text, because the browser treats any
-/// binary frame as a live-backend signal (attach success) and only the
-/// `herdr_error` JSON re-arms its reconnect backoff; raw text first would
-/// reset the backoff on every failed attempt (see terminal.js ws.onmessage).
-enum TerminalEvent {
-    Bytes(Vec<u8>),
-    Error(TerminalAttachError),
-}
-
-#[derive(Clone)]
-enum TerminalAttachError {
-    Connect,
-    SendHandshake,
-    ReadHandshake,
-    Rejected(String),
-    Attach,
-}
-
-impl TerminalAttachError {
-    fn user_message(&self) -> String {
-        match self {
-            Self::Connect => "failed to connect to herdr client socket\r\n".to_string(),
-            Self::SendHandshake => "failed to send herdr handshake\r\n".to_string(),
-            Self::ReadHandshake => "failed to read herdr handshake\r\n".to_string(),
-            Self::Rejected(error) => format!("herdr rejected terminal connection: {error}\r\n"),
-            Self::Attach => "failed to attach herdr terminal\r\n".to_string(),
-        }
-    }
-
-    /// Machine-readable kind forwarded to the browser so it can offer a
-    /// built-in session when the external herdr backend cannot be attached.
-    fn error_kind(&self) -> &'static str {
-        match self {
-            Self::Connect => "connect_failed",
-            Self::SendHandshake => "handshake_failed",
-            Self::ReadHandshake => "handshake_failed",
-            Self::Rejected(_) => "handshake_rejected",
-            Self::Attach => "attach_failed",
-        }
-    }
-
-    /// True when the failure means the external herdr backend is unusable
-    /// for terminal attach (protocol/handshake problems) and the UI should
-    /// offer a built-in session instead of retrying silently.
-    fn suggests_builtin(&self) -> bool {
-        matches!(self, Self::ReadHandshake | Self::Rejected(_))
-    }
-}
-
-/// herdr 0.9.0 requires an exact client protocol version match at handshake
-/// time, so no multi-version fallback is possible: the client sends
-/// `TerminalHello{version: PROTOCOL_VERSION}` and the backend either accepts
-/// it or rejects the connection with a `Welcome{error}`.
-fn connect_terminal_attach(
-    path: &Path,
-    terminal_id: &str,
-    cols: u16,
-    rows: u16,
-) -> Result<LocalStream, TerminalAttachError> {
-    let mut stream = connect_local_stream(path).map_err(|_| TerminalAttachError::Connect)?;
-    let hello = ClientMessage::TerminalHello {
-        version: PROTOCOL_VERSION,
-        cols,
-        rows,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
-    };
-    write_message(&mut stream, &hello).map_err(|_| TerminalAttachError::SendHandshake)?;
-
-    match read_message::<_, ServerMessage>(&mut stream, MAX_FRAME_SIZE)
-        .map_err(|_| TerminalAttachError::ReadHandshake)?
-    {
-        ServerMessage::Welcome {
-            error: Some(error), ..
-        } => return Err(TerminalAttachError::Rejected(error)),
-        ServerMessage::Welcome { error: None, .. } => {}
-        _ => return Err(TerminalAttachError::ReadHandshake),
-    }
-
-    write_message(
-        &mut stream,
-        &ClientMessage::AttachTerminal {
-            terminal_id: terminal_id.to_owned(),
-            takeover: true,
-        },
-    )
-    .map_err(|_| TerminalAttachError::Attach)?;
-    Ok(stream)
 }
 
 #[cfg(test)]

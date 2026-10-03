@@ -164,6 +164,23 @@
       return screen === state.screen;
     }
 
+    function renderDrawerItems() {
+      // Secondary screens live in the drawer instead of the More grid. Keep
+      // the same meta lines so the drawer carries the live counts.
+      const attention = state.agents.filter((agent) => ["blocked", "done"].includes(mobileAttention.statusClass(agent.agent_status))).length;
+      const workspace = currentWorkspace();
+      const items = [
+        { screen: "agents", title: "Agents", meta: attention ? `${attention} need attention` : `${state.agents.length} active`, icon: "●" },
+        { screen: "panels", title: "Panels", meta: workspace ? `${state.tabs.length} terminal tabs` : "Select workspace first", icon: "▦" },
+        { screen: "worktrees", title: "Worktrees", meta: "Discover, open, or create Git worktrees", icon: "wt" },
+        { screen: "files", title: "Files", meta: workspace ? "Browse current workspace" : "Select workspace first", icon: "fi" },
+        { screen: "git", title: "Git", meta: workspace ? "Status, diff, branches, history" : "Select workspace first", icon: "git" },
+        { screen: "sessions", title: "Sessions", meta: `${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`, icon: "se" },
+        { screen: "settings", title: "Settings", meta: "Appearance, search, alerts, terminal", icon: "⚙" },
+      ];
+      return items.map((item) => `<button class="mobile-drawer-item" onclick="HerdrMobile.openDrawerTarget('${item.screen}')"><span class="mobile-drawer-icon" aria-hidden="true">${escapeHtml(item.icon)}</span><span class="mobile-drawer-text"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.meta)}</small></span></button>`).join("");
+    }
+
     function dismissWorkingAgent(workspaceId, tabId, paneId, terminalId) {
       const workingDismissals = getWorkingDismissals();
       if (!workingDismissals) return;
@@ -203,6 +220,7 @@
     return {
       renderHome,
       renderMore,
+      renderDrawerItems,
       renderAgents,
       renderWorkspaces,
       renderAgentsRows,

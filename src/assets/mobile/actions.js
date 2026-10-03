@@ -17,6 +17,7 @@
     getMobileSearch,
     getMobileWorktrees,
     getMobileTempTerminal,
+    getMobileTheme,
   }) {
     function selectWorkspace(id) {
       state.ws = id;
@@ -143,6 +144,16 @@
     function runMobileAction(action) {
       if (action === "search") {
         getMobileSearch().open();
+        return;
+      }
+      if (action === "toggle-theme") {
+        const modes = ["auto", "dark", "light"];
+        const current = localStorage.getItem("herdr-web-theme") || "auto";
+        const next = modes[(modes.indexOf(current) + 1) % modes.length];
+        if (next === "auto") localStorage.removeItem("herdr-web-theme");
+        else localStorage.setItem("herdr-web-theme", next);
+        const theme = getMobileTheme();
+        if (theme && theme.applyTheme) theme.applyTheme();
         return;
       }
       if (action === "open-workspace" || action === "discover-worktrees") {

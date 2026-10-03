@@ -10,7 +10,7 @@ use crate::tui::search;
 use crate::tui::terminal::styled_terminal_line;
 use crate::tui::theme::Palette;
 use crate::tui::workspace::{BrowserRow, WorkspaceCreateStage};
-use crate::tui::{SidebarFocus, TuiApp, TuiMode, TuiScreen};
+use crate::tui::{lens, SidebarFocus, TuiApp, TuiMode, TuiScreen};
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MAX_DIFF_LINES: usize = 400;
@@ -48,10 +48,22 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
         || app.mode == TuiMode::Settings
         || app.mode == TuiMode::WorktreeList
         || app.mode == TuiMode::SearchPalette
+        || (app.lens.active && app.screen == TuiScreen::Terminal)
         || app.commit_input.is_some()
         || app.prompt_input.is_some();
     if overlay_active {
         dim_backdrop(frame, p);
+    }
+    if app.lens.active && app.screen == TuiScreen::Terminal {
+        render_lens(frame, area, app, p);
+    }
+    // The prompt card floats over the pane (webui anchor: bottom-right,
+    // no backdrop dim). Rendered before the modal layers so any open
+    // modal (help, prompts) dims and covers it, like the webui card
+    // slides under modals.
+    if app.prompt_card.visible && app.screen == TuiScreen::Terminal && app.mode == TuiMode::Navigate
+    {
+        render_prompt_card(frame, area, app, p);
     }
     if app.mode == TuiMode::Help {
         render_help(frame, area, p, &app.help_filter, app.help_scroll);
@@ -215,6 +227,150 @@ fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
         ))
     };
     frame.render_widget(Paragraph::new(line).style(Style::default().bg(p.bg)), area);
+}
+
+/// Chat lens overlay (ux overhaul 2/3, TUI port): the pane transcript
+/// as a centered reading column over the dimmed terminal screen. User
+/// turns (prompt-marker lines) are accent-highlighted like the webui
+/// right-aligned user cards; output stays plain. The webui's "New
+/// output" pill is the footer's unread hint here (render_footer reads
+/// `lens.unread` through the Lens context).
+fn render_lens(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let width = area.width.min(88);
+    let height = area.height.saturating_sub(4);
+    let rect = overlay_rect(area, width, height);
+    render_shadow(frame, rect, p);
+    let pane_label = app
+        .selected_pane()
+        .map(|pane| {
+            pane.display_agent
+                .as_deref()
+                .or(pane.agent.as_deref())
+                .unwrap_or("shell")
+        })
+        .unwrap_or("pane");
+    let title = format!(" Chat · {pane_label} ");
+    let block = overlay_panel(&title, p);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let transcript = lens::transcript_lines(&app.pane_tail);
+    let viewport = inner.height.saturating_sub(1) as usize;
+    let window = lens::visible_window(&transcript, app.lens.scroll_up, viewport);
+    let mut lines: Vec<Line> = window
+        .iter()
+        .map(|entry| match entry {
+            lens::LensLine::User(text) => Line::from(Span::styled(
+                format!("❯ {}", text.trim_start_matches(['❯', '›', '➜']).trim()),
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+            )),
+            lens::LensLine::Output(text) => {
+                Line::from(Span::styled(text.clone(), Style::default().fg(p.text)))
+            }
+            lens::LensLine::Gap => Line::from(""),
+        })
+        .collect();
+    // Bottom meta line: position in the transcript, or the unread
+    // resume hint when new output landed while scrolled up.
+    let meta = if app.lens.unread {
+        Line::from(Span::styled(
+            " new output · G resumes following ",
+            Style::default().fg(p.yellow),
+        ))
+    } else {
+        Line::from(Span::styled(
+            format!(
+                " {} lines{}",
+                transcript.len(),
+                if app.lens.follow {
+                    " · following"
+                } else {
+                    " · scrolled"
+                }
+            ),
+            Style::default().fg(p.muted),
+        ))
+    };
+    lines.push(meta);
+    let paragraph = Paragraph::new(lines)
+        .style(Style::default().fg(p.text).bg(p.panel_bg))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
+}
+
+/// The prompt card (webui prompt cards): a floating card anchored at
+/// the bottom-right of the terminal pane, NOT a centered modal — the
+/// webui CSS pins it with `position:absolute; right:0; bottom:12px`,
+/// so it never dims the backdrop or blocks the pane. Head carries the
+/// question title, body lists the options (or the free-text hint),
+/// foot mirrors the webui's "Show in terminal" hint as key hints.
+fn render_prompt_card(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let Some(card) = app.prompt_card.current_card() else {
+        return;
+    };
+    let body_width = 44usize.min(area.width.saturating_sub(2) as usize);
+    // Head + body rows + foot hint, clamped so the card never eats the
+    // whole pane on small terminals.
+    let rows = match card.kind {
+        crate::tui::prompt_cards::PromptCardKind::Options => card.options.len(),
+        crate::tui::prompt_cards::PromptCardKind::Text => 1,
+    };
+    let height = (rows as u16 + 4).min(area.height.saturating_sub(3));
+    let width = (body_width as u16 + 2).min(area.width);
+    // Anchor bottom-right, lifting TWO rows off the bottom: one for
+    // the footer row the webui keeps clear (`bottom:12px`) and one
+    // for the shadow's bottom band (the shadow paints one row below
+    // its rect, and it renders AFTER the footer, so a single-row lift
+    // would blank the footer hint behind it).
+    let rect = Rect::new(
+        area.right().saturating_sub(width),
+        area.bottom().saturating_sub(height + 2),
+        width,
+        height,
+    );
+    render_shadow(frame, rect, p);
+    let title = format!(" {} ", truncate(&card.title, body_width));
+    let block = overlay_panel(&title, p);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let mut lines: Vec<Line> = Vec::new();
+    match card.kind {
+        crate::tui::prompt_cards::PromptCardKind::Options => {
+            for (index, option) in card.options.iter().enumerate() {
+                let selected = index == app.prompt_card_cursor;
+                let style = if selected {
+                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(p.text)
+                };
+                let row = format!(
+                    "{} {}",
+                    if selected { "❯" } else { " " },
+                    truncate(&option.label, body_width.saturating_sub(2))
+                );
+                lines.push(Line::from(Span::styled(row, style)));
+            }
+            lines.push(Line::from(Span::styled(
+                " Enter answer · 1-9 jump · Esc dismiss ",
+                Style::default().fg(p.muted),
+            )));
+        }
+        crate::tui::prompt_cards::PromptCardKind::Text => {
+            lines.push(Line::from(Span::styled(
+                truncate(card.title.as_str(), body_width),
+                Style::default().fg(p.text),
+            )));
+            lines.push(Line::from(Span::styled(
+                " Enter to type your answer · Esc dismiss ",
+                Style::default().fg(p.muted),
+            )));
+        }
+    }
+    let paragraph = Paragraph::new(lines)
+        .style(Style::default().fg(p.text).bg(p.panel_bg))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
 }
 
 fn render_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -1444,6 +1600,30 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
                 )
             }
         }
+        // Composer: show the target pane (agent · pane id), the TUI
+        // counterpart of the webui box's aria-label "Message to this
+        // panel".
+        crate::tui::PromptKind::ComposerMessage => app
+            .selected_pane()
+            .map(|pane| {
+                format!(
+                    "{} · {}",
+                    pane.display_agent
+                        .as_deref()
+                        .or(pane.agent.as_deref())
+                        .unwrap_or("shell"),
+                    pane.id
+                )
+            })
+            .unwrap_or_default(),
+        // Card answer: show the question being answered (the webui
+        // free-text input is part of the card itself; the TUI answer
+        // opens as a modal, so the question travels with it).
+        crate::tui::PromptKind::CardAnswer => app
+            .prompt_card
+            .current_card()
+            .map(|card| card.title.clone())
+            .unwrap_or_default(),
     };
     let title = format!(" {} ", prompt.kind.title());
     let lines = vec![

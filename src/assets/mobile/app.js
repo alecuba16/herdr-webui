@@ -93,6 +93,10 @@
     browserFaviconError = false,
     // Cached .mobile-nav button list; null means re-query on next render.
     navButtons = null,
+    // One-shot Ctrl state for the terminal key bar. Cleared whenever the
+    // terminal screen re-renders the bar (markup resets aria-pressed), and
+    // after every key send.
+    keyBarCtrlArmed = false,
     mobileAttention,
     mobileSettings,
     mobileTerminal,
@@ -301,10 +305,10 @@
     document.body.innerHTML = `
       <div id="mobileApp" class="mobile-app">
         <header class="mobile-header">
-          <button class="mobile-btn" id="mobileBack" title="Home">←</button>
-          <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span id="mobileMeta">Loading</span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button></div>
-          <button class="mobile-btn" id="mobileSearch" title="Search">⌕</button>
-          <button class="mobile-btn" id="mobileSettings" title="Settings">⚙</button>
+          <button class="mobile-btn" id="mobileBack" title="Home" aria-label="Back to home">←</button>
+          <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span class="mobile-context-meta" role="status" aria-live="polite"><span id="mobileMeta">Loading</span><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button></span></div>
+          <button class="mobile-btn" id="mobileSearch" title="Search" aria-label="Search">⌕</button>
+          <button class="mobile-btn" id="mobileSettings" title="Settings" aria-label="Settings">⚙</button>
           <button class="mobile-btn temp-terminal-toggle" id="mobileTempTerminal" title="Temporary terminal" aria-label="Temporary terminal"><span class="temp-terminal-icon" aria-hidden="true"><span class="temp-terminal-icon-glyph"></span><span class="temp-terminal-icon-label">T</span></span></button>
         </header>
         <main class="mobile-screen" id="mobileScreen"></main>
@@ -319,8 +323,10 @@
           <button data-screen="home">Home</button>
           <button data-screen="search">Search</button>
           <button data-screen="terminal">Terminal</button>
-          <button data-screen="more">More</button>
+          <button data-screen="more" aria-haspopup="dialog">More</button>
         </nav>
+        <div class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" hidden onclick="HerdrMobile.closeDrawer()"></div>
+        <aside class="mobile-drawer" id="mobileDrawer" hidden role="dialog" aria-modal="true" aria-label="Tools menu"><div class="mobile-drawer-items" id="mobileDrawerItems"></div></aside>
       </div>
       </div>`;
     el("mobileBack").onclick = () => showScreen("home");
@@ -328,8 +334,72 @@
     el("mobileSettings").onclick = () => showScreen("settings");
     el("mobileTempTerminal").onclick = () => mobileTempTerminal && mobileTempTerminal.open(currentWorkspaceCwd());
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
-      button.onclick = () => showScreen(button.dataset.screen);
+      button.onclick = () => {
+        if (button.dataset.screen === "more") {
+          openDrawer();
+          return;
+        }
+        showScreen(button.dataset.screen);
+      };
     });
+    el("mobileDrawerBackdrop").onclick = () => closeDrawer();
+    bindDrawerEdgeSwipe();
+  }
+
+  function drawerItemsEl() {
+    return el("mobileDrawerItems");
+  }
+
+  function openDrawer() {
+    const drawer = el("mobileDrawer");
+    const backdrop = el("mobileDrawerBackdrop");
+    if (!drawer || !backdrop) return;
+    drawerItemsEl().innerHTML = mobileScreens.renderDrawerItems();
+    drawer.hidden = false;
+    backdrop.hidden = false;
+    document.body.classList.add("mobile-drawer-open");
+  }
+
+  function closeDrawer() {
+    const drawer = el("mobileDrawer");
+    const backdrop = el("mobileDrawerBackdrop");
+    if (drawer) drawer.hidden = true;
+    if (backdrop) backdrop.hidden = true;
+    document.body.classList.remove("mobile-drawer-open");
+  }
+
+  function openDrawerTarget(screen) {
+    closeDrawer();
+    showScreen(screen);
+  }
+
+  function bindDrawerEdgeSwipe() {
+    // Edge swipe: 24px open travel from the left edge opens the drawer,
+    // 56px close travel from anywhere closes it. Passive tracking; the
+    // actual open/close only happens on touchend so drags on interactive
+    // content never trigger navigation mid-gesture.
+    if (typeof document.addEventListener !== "function") return;
+    let startX = null, startY = null, tracking = false;
+    document.addEventListener("touchstart", (event) => {
+      const touch = event.touches && event.touches[0];
+      if (!touch) return;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      tracking = true;
+    }, { passive: true });
+    document.addEventListener("touchend", (event) => {
+      if (!tracking) return;
+      tracking = false;
+      const touch = event.changedTouches && event.changedTouches[0];
+      if (!touch || startX === null || startY === null) return;
+      const dx = touch.clientX - startX;
+      const dy = Math.abs(touch.clientY - startY);
+      startX = startY = null;
+      if (dy > 48) return;
+      const drawerOpen = el("mobileDrawer") && !el("mobileDrawer").hidden;
+      if (!drawerOpen && startX <= 24 && dx >= 24) openDrawer();
+      else if (drawerOpen && dx <= -56) closeDrawer();
+    }, { passive: true });
   }
 
   function showScreen(screen) {
@@ -340,7 +410,10 @@
     const wasTerminal = state.screen === "terminal";
     const wasSettings = state.screen === "settings";
     state.screen = screen;
-    if (wasTerminal && screen !== "terminal") mobileTerminal.destroy(false);
+    if (wasTerminal && screen !== "terminal") {
+      mobileTerminal.destroy(false);
+      keyBarCtrlArmed = false;
+    }
     if (!wasSettings && screen === "settings" && mobileSettings.resetSettingBaselines)
       mobileSettings.resetSettingBaselines();
     if (screen === "settings" && mobileSettings.loadNoSleep) mobileSettings.loadNoSleep();
@@ -626,6 +699,21 @@
     localStorage,
     state,
     window,
+    onAttentionAlert: (agents) => {
+      const card = globalThis.HerdrAlertCard;
+      if (!card || !state) return;
+      const agent = agents[0];
+      if (!agent) return;
+      const status = mobileAttention.statusClass(agent.agent_status);
+      const name = agent.name || agent.display_agent || agent.agent || agent.terminal_id || "agent";
+      card.show({
+        key: agent.terminal_id || `${agent.workspace_id}:${agent.tab_id}:${agent.pane_id}`,
+        status,
+        title: status === "blocked" ? "Agent blocked" : "Agent done",
+        subtitle: `${name} in ${agent.workspace_id || "workspace"}`,
+        onOpen: () => selectAgent(agent.workspace_id, agent.tab_id, agent.pane_id),
+      });
+    },
   });
   mobileWorkmeta = globalThis.HerdrMobileWorkmetaModule.create({
     state,
@@ -661,6 +749,7 @@
     getMobileSearch: () => mobileSearch,
     getMobileWorktrees: () => mobileWorktrees,
     getMobileTempTerminal: () => mobileTempTerminal,
+    getMobileTheme: () => mobileTheme,
   });
   mobileBackend = globalThis.HerdrMobileBackendModule.create({
     state,
@@ -726,11 +815,17 @@
       const light = document.body.classList.contains("light");
       const colors = (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.terminalThemeColors) || {};
       const theme = light ? (colors.light || {}) : (colors.dark || {});
+      // Merge the shared --term-* token palette so ANSI colors follow the
+      // CSS palette on mobile too (same helper the desktop uses).
+      const tokenPalette = globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.readTerminalThemeTokens
+        ? globalThis.HerdrAppHelpers.readTerminalThemeTokens()
+        : null;
       return {
         background: theme.background || (light ? "#ffffff" : "#1e1e2e"),
         foreground: theme.foreground || (light ? "#4c4f69" : "#cdd6f4"),
         cursor: theme.cursor || (light ? "#4c4f69" : "#cdd6f4"),
         selectionBackground: theme.selectionBackground || (light ? "#dce0f8" : "#45475a"),
+        ...(tokenPalette || {}),
       };
     },
     defaultFolderFn: () => state.defaultFolder || "",
@@ -803,6 +898,14 @@
     refresh,
     handleServerSettingsChanged,
     getTempTerminal: () => mobileTempTerminal,
+  });
+  // Connection dot in the header context: reflects the events stream state.
+  mobileEvents.onEventState((connected) => {
+    const dot = el("mobileConnectionDot");
+    if (dot) {
+      dot.dataset.state = connected ? "connected" : "connecting";
+      dot.title = connected ? "Connected: events stream live" : "Connecting: events stream retrying";
+    }
   });
 
   mobileSessions = globalThis.HerdrMobileSessionsModule.create({
@@ -970,6 +1073,32 @@
     applyTerminalLinks: mobileTerminal.applyLinks,
     reloadTerminal() { mobileTerminal.destroy(false); scheduleTerminalResize(); },
     scrollTerminalToBottom: mobileTerminal.scrollToBottom,
+    openDrawer,
+    closeDrawer,
+    openDrawerTarget,
+    keyBarKey(_event, button) {
+      const key = button && button.dataset ? button.dataset.key : null;
+      if (!key || !mobileTerminal || !mobileTerminal.sendControlKey) return;
+      const PLAIN = { esc: "\x1b", tab: "\t", up: "\x1b[A", down: "\x1b[B", right: "\x1b[C", left: "\x1b[D" };
+      const CTRL = { up: "\x1b[1;5A", down: "\x1b[1;5B", right: "\x1b[1;5C", left: "\x1b[1;5D" };
+      // Mirror the armed state onto the button for CSS (aria-pressed); the
+      // source of truth is the module-level flag so DOM stubs can't desync.
+      const setArmed = (armed) => {
+        keyBarCtrlArmed = !!armed;
+        if (button && button.setAttribute) button.setAttribute("aria-pressed", armed ? "true" : "false");
+      };
+      if (key === "ctrl") {
+        setArmed(!keyBarCtrlArmed);
+        return;
+      }
+      if (key === "ctrl-c") {
+        mobileTerminal.sendControlKey("\x03");
+        setArmed(false);
+        return;
+      }
+      mobileTerminal.sendControlKey(keyBarCtrlArmed && CTRL[key] ? CTRL[key] : PLAIN[key]);
+      setArmed(false);
+    },
     currentScreen,
     currentSelection,
     refresh,

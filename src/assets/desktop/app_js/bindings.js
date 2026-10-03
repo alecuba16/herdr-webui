@@ -110,6 +110,13 @@ el("optTheme").onchange = () => {
   if (typeof flashSettingsApplied === "function")
     flashSettingsApplied(el("optTheme"));
 };
+el("optDensity").onchange = () => {
+  // applyDensity() applies the [data-density] attribute live (no reload);
+  // saveOptions persists it in the shared options store.
+  options.density = normalizeDensity(el("optDensity").value);
+  applyDensity();
+  saveOptions();
+};
 el("themeColorsApply").onclick = applyThemeColorsFromSettings;
 el("themeColorsReset").onclick = () => applyThemeColorProfile("default");
 el("themeColorsApplyProfile").onclick = () => {
@@ -173,6 +180,18 @@ function commitTerminalFontFamily() {
   fitTerminalShell();
 }
 registerSettingsCommit("optTerminalFontFamily", commitTerminalFontFamily, () => options.terminalFontFamily || "");
+el("optTerminalFontSize").oninput = () => {
+  options.terminalFontSize = Math.max(10, Math.min(22, Math.round(Number(el("optTerminalFontSize").value) || 14)));
+  saveOptions();
+  applyTerminalFont();
+  fitTerminalShell();
+};
+registerSettingsCommit("optTerminalFontSize", () => {
+  options.terminalFontSize = Math.max(10, Math.min(22, Math.round(Number(el("optTerminalFontSize").value) || 14)));
+  saveOptions();
+  applyTerminalFont();
+  fitTerminalShell();
+}, () => options.terminalFontSize);
 const optTerminalCore = el("optTerminalCore");
 if (optTerminalCore)
   optTerminalCore.onchange = () => {
@@ -656,12 +675,14 @@ window.onpopstate = handleSessionPopState;
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     clearTimeout(noSleepPollTimer);
+    updateConnectionChip();
     hiddenTimer = setTimeout(() => {
       if (eventWs) eventWs.close();
       if (termWs) termWs.close();
     }, 1000);
   } else {
     clearTimeout(hiddenTimer);
+    updateConnectionChip();
     loadVersions();
     refresh();
     connectEvents();
@@ -673,7 +694,10 @@ document.addEventListener("pointerdown", unlockAudio, { once: true });
 document.addEventListener("keydown", unlockAudio, { once: true });
 setupSessionChrome();
 applyTheme();
+applyDensity();
 applyOptions();
+if (globalThis.HerdrLens && globalThis.HerdrLens.insertLensSwitch)
+  HerdrLens.insertLensSwitch();
 syncNoSleepControls();
 loadNoSleep();
 // Deep-URL boots land straight on a routed session (/session/work/...).
@@ -729,6 +753,7 @@ if (globalThis.HerdrTempTerminal) {
     modalId: "tempTerminalModal",
     onHerdrError: typeof handleHerdrErrorFrame === "function" ? handleHerdrErrorFrame : null,
     fontFamilyFn: terminalFontFamily,
+    fontSizeFn: () => options.terminalFontSize || 14,
     themeFn: terminalTheme,
     defaultFolderFn: defaultFolderPath,
     workspaceIdFn: tempTerminalWorkspaceId,

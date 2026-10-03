@@ -49,21 +49,23 @@
   align-items: center;
   background: var(--accent-1, var(--accent));
   border: 1px solid var(--accent-1, var(--accent));
-  border-radius: 999px;
-  bottom: 18px;
-  box-shadow: 0 10px 28px #0008;
+  border-radius: var(--radius-pill, 999px);
+  bottom: var(--space-4, 16px);
+  /* elevated pill: floats above terminal output, motion tokens for hover */
+  box-shadow: var(--shadow-card, 0 4px 16px #0006), 0 0 0 1px color-mix(in srgb, var(--accent, #89b4fa), transparent 80%);
   color: var(--accent-fg, var(--bg));
   cursor: pointer;
   display: inline-grid;
-  font-size: 13px;
-  font-weight: 900;
+  font-size: var(--fs-sm, 13px);
+  font-weight: var(--fw-bold, 700);
   height: 38px;
   justify-content: center;
   line-height: 1;
   position: absolute;
-  right: 22px;
+  right: var(--space-5, 20px);
   min-width: 38px;
   padding: 0 13px;
+  transition: transform var(--dur-fast, 120ms) var(--ease-out, ease-out), box-shadow var(--dur-fast, 120ms) var(--ease-out, ease-out);
   z-index: 8;
 }
 .terminal-follow-button[hidden] {
@@ -72,21 +74,31 @@
 .terminal-paste-progress {
   background: color-mix(in srgb, var(--panel), transparent 8%);
   border: 1px solid var(--border2);
-  border-radius: 12px;
-  box-shadow: 0 10px 28px #0008;
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: var(--shadow-card, 0 4px 16px #0006);
   color: var(--fg);
   display: grid;
   gap: 7px;
-  left: 18px;
-  min-width: min(360px, calc(100% - 36px));
+  left: var(--space-4, 16px);
+  min-width: min(360px, calc(100% - 32px));
   padding: 10px 12px;
   position: absolute;
   right: auto;
-  top: 18px;
+  top: var(--space-4, 16px);
   z-index: 9;
 }
 .terminal-paste-progress[hidden] {
   display: none;
+}
+/* Subtle scrim over the terminal surface while a paste is streaming in,
+   so the progress card reads as a modal progress surface. */
+.terminal-shell.pasting::after {
+  background: color-mix(in srgb, var(--bg), transparent 45%);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 7;
 }
 .terminal-paste-progress-label {
   color: var(--muted);
@@ -101,7 +113,7 @@
   overflow: hidden;
 }
 .terminal-paste-progress-track i {
-  background: linear-gradient(90deg, var(--accent), #a6e3a1);
+  background: linear-gradient(90deg, var(--accent), var(--status-idle, #a6e3a1));
   border-radius: inherit;
   display: block;
   height: 100%;
@@ -111,10 +123,17 @@
   transition: transform 80ms linear;
   width: 100%;
 }
-.terminal-follow-button:hover,
+@media (hover: hover) {
+  .terminal-follow-button:hover {
+    background: var(--accent-hover, var(--accent));
+    transform: translateY(-1px);
+  }
+}
 .terminal-follow-button:focus {
   background: var(--accent-hover, var(--accent));
-  transform: translateY(-1px);
+}
+.terminal-follow-button:focus-visible {
+  box-shadow: var(--shadow-card, 0 4px 16px #0006), var(--focus-ring, 0 0 0 2px color-mix(in srgb, var(--accent, #89b4fa), transparent 68%));
 }
 .dot {
   display: inline-block;
@@ -209,12 +228,51 @@ input {
 .terminal-loading.show {
   display: grid;
 }
-.terminal-loading span {
+/* Spinner + skeleton layout: label at top, skeleton blocks filling the rest. */
+.terminal-loading.show:not(.failed) {
+  align-content: start;
+  justify-items: stretch;
+  padding: 14px 18px;
+}
+.terminal-loading-skeleton {
+  margin-top: 10px;
+  max-width: 640px;
+}
+.terminal-loading-skeleton .herdr-skeleton-block {
+  border-radius: 4px;
+}
+/* Failed attach: centered card with an explicit reconnect action. */
+.terminal-loading.failed {
+  place-items: center;
+  pointer-events: auto;
+}
+.terminal-loading-failed {
+  align-items: center;
+  background: color-mix(in srgb, var(--panel), transparent 6%);
+  border: 1px solid var(--danger, #f38ba8);
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: var(--shadow-card, 0 4px 16px #0006);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 22px;
+  text-align: center;
+}
+.terminal-loading-failed strong {
+  color: var(--danger, #f38ba8);
+}
+.terminal-loading-failed span {
+  color: var(--muted);
+  font-size: var(--fs-xs, 12px);
+  max-width: 40ch;
+}
+.terminal-loading.show:not(.failed) span {
   display: inline-flex;
   align-items: center;
   gap: 10px;
 }
-.terminal-loading span:before {
+.terminal-loading.show:not(.failed) span:before {
   content: "";
   width: 14px;
   height: 14px;
@@ -316,4 +374,236 @@ input {
 .session-line .tab,
 .session-line .mini {
   white-space: nowrap;
+}
+
+/* ---- chat lens over the terminal (ux overhaul backlog 2/3) ---- */
+/* The lens overlays the still-attached terminal surface: switching views
+ * never touches the terminal socket. The switch sits in the shell's
+ * top-right corner; the transcript column centers with a readable cap. */
+.terminal-lens-switch {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: var(--z-popover, 10);
+}
+.terminal-lens {
+  position: absolute;
+  inset: 0;
+  z-index: calc(var(--z-popover, 10) + 1);
+  background: var(--bg);
+  display: block;
+}
+.terminal-lens[hidden] {
+  display: none;
+}
+.terminal-lens-scroller {
+  height: 100%;
+  overflow-y: auto;
+  /* Bottom padding clears the docked composer when the lens is on. */
+  padding: 24px 16px 120px;
+  scroll-behavior: auto;
+}
+.terminal-lens-content {
+  max-width: 720px;
+  margin: 0 auto;
+  font-size: var(--fs-sm, 13px);
+  line-height: 1.55;
+}
+.lens-line {
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 1px 0;
+}
+.lens-turn-user {
+  display: flex;
+  justify-content: flex-end;
+  margin: 10px 0 2px;
+}
+.lens-turn-user > span {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 12px);
+  border-bottom-right-radius: 4px;
+  padding: 6px 12px;
+  max-width: 80%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.lens-gap {
+  height: 8px;
+}
+.terminal-lens-new {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: pointer;
+}
+/* Focus ring contract applies inside the lens like everywhere else. */
+.terminal-lens-scroller:focus-visible,
+.terminal-lens-new:focus-visible {
+  outline: var(--ring, 2px solid var(--accent, #89b4fa));
+  outline-offset: var(--ring-offset, 2px);
+}
+
+/* ---- chat composer over the terminal (server-side submit) ---- */
+/* The composer rides with the lens: same column, docked at the shell's
+ * bottom so the transcript scrolls above it. Enter sends, Shift+Enter
+ * adds a newline; refusals show in the note row (role=status). */
+.terminal-composer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: calc(var(--z-popover, 10) + 2);
+  padding: 8px 16px 14px;
+  background: linear-gradient(to top, var(--bg) 70%, transparent);
+  pointer-events: none;
+}
+.terminal-composer[hidden] {
+  display: none;
+}
+.terminal-composer-note {
+  max-width: 720px;
+  margin: 0 auto 6px;
+  font-size: var(--fs-2xs, 11px);
+  color: var(--fg-dim, #a6adc8);
+  pointer-events: auto;
+}
+.terminal-composer-row {
+  display: flex;
+  gap: 8px;
+  max-width: 720px;
+  margin: 0 auto;
+  align-items: flex-end;
+  pointer-events: auto;
+}
+.terminal-composer-row textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 44px;
+  max-height: 40vh;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: 8px 10px;
+  font: inherit;
+}
+.terminal-composer-row textarea:focus-visible,
+.terminal-composer-send:focus-visible {
+  outline: var(--ring, 2px solid var(--accent, #89b4fa));
+  outline-offset: var(--ring-offset, 2px);
+}
+
+/* ---- prompt cards for blocked agents (ux overhaul backlog 3/3) ---- */
+/* Anchored to the terminal shell's bottom: the card offers the blocked
+ * dialog's options without leaving the reading surface. */
+.terminal-prompt-card-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 12px;
+  z-index: calc(var(--z-popover, 10) + 2);
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.terminal-prompt-card-overlay[hidden] {
+  display: none;
+}
+.prompt-card {
+  pointer-events: auto;
+  width: min(520px, calc(100% - 32px));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  padding: 12px 14px;
+  font-size: var(--fs-sm, 13px);
+}
+.prompt-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.prompt-card-dismiss {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.prompt-card-dismiss:hover {
+  color: var(--fg);
+}
+.prompt-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.prompt-card-option {
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 7px 10px;
+  font-size: inherit;
+}
+.prompt-card-option:hover {
+  border-color: var(--accent, #89b4fa);
+}
+.prompt-card-input {
+  flex: 1 1 auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  padding: 7px 10px;
+  font-size: inherit;
+}
+#promptCardForm {
+  display: flex;
+  gap: 8px;
+}
+.prompt-card-send {
+  background: var(--accent, #89b4fa);
+  border: none;
+  border-radius: 8px;
+  color: var(--bg, #1e1e2e);
+  cursor: pointer;
+  font-weight: 600;
+  padding: 7px 14px;
+}
+.prompt-card-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.prompt-card-show {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--fs-xs, 12px);
+  padding: 2px 0;
+}
+.prompt-card-show:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+.prompt-card-option:focus-visible,
+.prompt-card-dismiss:focus-visible,
+.prompt-card-send:focus-visible,
+.prompt-card-show:focus-visible,
+.prompt-card-input:focus-visible {
+  outline: var(--ring, 2px solid var(--accent, #89b4fa));
+  outline-offset: var(--ring-offset, 2px);
 }

@@ -5,9 +5,19 @@ import { TextEncoder } from "node:util";
 import vm from "node:vm";
 
 function element(id = "") {
+  const classes = new Set();
   return {
     id,
-    classList: { toggle() {}, add() {}, remove() {} },
+    classList: {
+      toggle(cls, on) {
+        if (on === undefined ? !classes.has(cls) : on) classes.add(cls);
+        else classes.delete(cls);
+      },
+      add(...cls) { cls.forEach((c) => classes.add(c)); },
+      remove(...cls) { cls.forEach((c) => classes.delete(c)); },
+      contains(cls) { return classes.has(cls); },
+      addedClasses: classes,
+    },
     dataset: {},
     style: { setProperty() {} },
     disabled: false,
@@ -812,18 +822,31 @@ describe("mobile bundle load", () => {
     equal(ctx.pendingTimers.filter((timer) => !timer.cleared).length, 2);
   });
 
-  it("renders simplified mobile nav with More menu", () => {
+  it("renders simplified mobile nav with drawer menu", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
     match(source, /<button data-screen="home">Home<\/button>/);
     match(source, /<button data-screen="search">Search<\/button>/);
     match(source, /<button data-screen="terminal">Terminal<\/button>/);
-    match(source, /<button data-screen="more">More<\/button>/);
+    match(source, /<button data-screen="more" aria-haspopup="dialog">More<\/button>/);
     ok(!source.includes('data-screen="agents">Agents</button>'));
-    doesNotThrow(() => ctx.HerdrMobile.showScreen("more"));
+    // Drawer shell, items, and edge-swipe wiring.
+    match(source, /id="mobileDrawer" hidden role="dialog"/);
+    match(source, /function renderDrawerItems\(\) \{/);
+    match(source, /function bindDrawerEdgeSwipe\(\) \{/);
+    // More button opens the drawer instead of switching screens.
+    const moreButton = ctx.navButtons.find((button) => button.dataset.screen === "more");
+    moreButton.onclick();
+    equal(ctx.document.getElementById("mobileDrawer").hidden, false);
+    equal(ctx.document.body.classList.contains("mobile-drawer-open"), true);
+    ok(ctx.document.getElementById("mobileDrawerItems").innerHTML.includes("HerdrMobile.openDrawerTarget('worktrees')"));
+    // Backdrop click closes the drawer.
+    ctx.document.getElementById("mobileDrawerBackdrop").onclick();
+    equal(ctx.document.getElementById("mobileDrawer").hidden, true);
+    // Drawer targets route through showScreen and close the drawer first.
+    doesNotThrow(() => ctx.HerdrMobile.openDrawerTarget("more"));
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(html.includes("More tools"));
-    ok(html.includes("HerdrMobile.showScreen('worktrees')"));
     ctx.HerdrMobile.showScreen("search");
     equal(ctx.document.getElementById("mobileSearchSheet").hidden, false);
   });
@@ -1666,6 +1689,88 @@ describe("mobile bundle load", () => {
       equal(ctx.location.pathname, "/session/default", `${error} must retarget the default session`);
       equal(ctx.localStorage.getItem("herdr-session-state:builtin:revolut"), null);
     }
+  });
+
+  it("renders terminal key bar with control keys", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    // The screen render memo keeps the first terminal HTML in place, so
+    // assert on the markup builder in the bundle source.
+    match(source, /<div class="mobile-keybar" id="mobileKeyBar"/);
+    for (const key of ["esc", "tab", "ctrl", "up", "down", "left", "right", "ctrl-c"])
+      ok(source.includes(`data-key="${key}"`));
+    // No focus steal: every key bar button prevents default on mousedown.
+    const keybarSource = source.match(/function renderKeyBar\(\) \{[\s\S]*?\n    \}\n/)[0];
+    equal((keybarSource.match(/onmousedown="event\.preventDefault\(\)"/g) || []).length, 8);
+    // Keyboard-open hides the key bar along with header/nav.
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    match(mobileCss, /body\.mobile-keyboard-open \.mobile-keybar/);
+  });
+
+  it("sends key bar control bytes through the terminal input path", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    const sent = [];
+    ctx.lastSocket.send = (data) => sent.push(Buffer.from(data).toString("latin1"));
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "esc" }, setAttribute() {} });
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "tab" }, setAttribute() {} });
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "ctrl-c" }, setAttribute() {} });
+    equal(sent[0], "\x1b");
+    equal(sent[1], "\t");
+    equal(sent[2], "\x03");
+  });
+
+  it("applies one-shot Ctrl to the next arrow key", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    const sent = [];
+    ctx.lastSocket.send = (data) => sent.push(Buffer.from(data).toString("latin1"));
+    const ctrlButton = { dataset: { key: "ctrl" }, ariaPressed: null, setAttribute(_n, v) { this.ariaPressed = v; } };
+    ctx.HerdrMobile.keyBarKey(null, ctrlButton);
+    equal(ctrlButton.ariaPressed, "true");
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "up" }, setAttribute() {} });
+    // Ctrl+Up (modifier param), not plain Up.
+    equal(sent[0], "\x1b[1;5A");
+    // One-shot: the next plain Up is a plain arrow again.
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "up" }, setAttribute() {} });
+    equal(sent[1], "\x1b[A");
+    // Leaving the terminal screen disarms Ctrl.
+    ctx.HerdrMobile.keyBarKey(null, ctrlButton);
+    equal(ctrlButton.ariaPressed, "true");
+    ctx.HerdrMobile.showScreen("agents");
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    const sent2 = [];
+    ctx.lastSocket.send = (data) => sent2.push(Buffer.from(data).toString("latin1"));
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "left" }, setAttribute() {} });
+    equal(sent2[0], "\x1b[D");
+  });
+
+  it("banners an explicit stall close (4404) instead of hanging", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    const alertCalls = [];
+    ctx.HerdrAlertCard = { show: (opts) => alertCalls.push(opts) };
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    ctx.lastSocket.onclose({ code: 4404 });
+    equal(alertCalls.length, 1);
+    equal(alertCalls[0].title, "Terminal stream stalled");
+    equal(alertCalls[0].status, "blocked");
+    // A normal close (e.g. deliberate teardown) never banners.
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    ctx.lastSocket.onclose({ code: 1000 });
+    equal(alertCalls.length, 1);
   });
 
   it("re-pins the backend per session on Back and resets the target state", async () => {

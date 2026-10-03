@@ -346,6 +346,7 @@
       if (this._onWheelMouseReport) this._trackPointer();
       this.setTheme(options.theme || {});
       this.setFontFamily(options.fontFamily || "monospace");
+      this.setFontSize(options.fontSize || 14);
       this.setLinksEnabled(options.links !== false);
       this.setWheelScrolling(true);
       container.__herdrTerminalAdapter = this;
@@ -507,6 +508,13 @@
       this.invalidateCellMetrics();
       this.fontFamily = family || "monospace";
       applyFontVar(this.element, this.fontFamily);
+    }
+
+    setFontSize(px) {
+      const size = Math.max(8, Math.min(32, Number(px) || 14));
+      this.fontSize = size;
+      if (this.element) this.element.style.setProperty("--term-font-size", size + "px");
+      this.invalidateCellMetrics();
     }
 
     setLinksEnabled(enabled) {

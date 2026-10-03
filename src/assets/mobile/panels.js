@@ -27,10 +27,18 @@
       return `<section class="mobile-section"><h2>Panels</h2><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.createPanel()">New panel</button>${close}${rows}</section>`;
     }
 
+    function renderKeyBar() {
+      if (!state.terminalId) return "";
+      // One-shot Ctrl: the state lives on the button itself (aria-pressed),
+      // so the next control-key tap sends Ctrl+<key> and resets. onmousedown
+      // preventDefault keeps wterm's textarea focused: no focus steal.
+      return `<div class="mobile-keybar" id="mobileKeyBar" aria-label="Terminal keys" role="toolbar"><button class="mobile-keybar-key" type="button" data-key="esc" aria-label="Esc key" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">Esc</button><button class="mobile-keybar-key" type="button" data-key="tab" aria-label="Tab key" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">Tab</button><button class="mobile-keybar-key" type="button" data-key="ctrl" aria-pressed="false" aria-label="Ctrl modifier, one-shot" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">Ctrl</button><button class="mobile-keybar-key" type="button" data-key="up" aria-label="Up arrow" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">↑</button><button class="mobile-keybar-key" type="button" data-key="down" aria-label="Down arrow" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">↓</button><button class="mobile-keybar-key" type="button" data-key="left" aria-label="Left arrow" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">←</button><button class="mobile-keybar-key" type="button" data-key="right" aria-label="Right arrow" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">→</button><button class="mobile-keybar-key mobile-keybar-danger" type="button" data-key="ctrl-c" aria-label="Ctrl C, interrupt" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">^C</button></div>`;
+    }
+
     function renderTerminal() {
       if (!state.terminalId)
         return '<div class="mobile-loading">No terminal selected</div>';
-      return `<div class="mobile-terminal-screen"><div class="mobile-tabs" id="mobileTerminalTabs">${renderTerminalTabsWithAdd()}</div><div class="mobile-terminal-shell" id="terminalShell"><div class="mobile-terminal-loading" id="mobileTerminalLoading"${state.terminalConnecting ? "" : " hidden"}><span>Loading panel</span></div><button class="mobile-terminal-follow-button" id="mobileTerminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow" onclick="HerdrMobile.scrollTerminalToBottom(false)">↓ Tail</button><div class="mobile-terminal" id="terminal"></div></div></div>`;
+      return `<div class="mobile-terminal-screen">${renderKeyBar()}<div class="mobile-tabs" id="mobileTerminalTabs">${renderTerminalTabsWithAdd()}</div><div class="mobile-terminal-shell" id="terminalShell"><div class="mobile-terminal-loading" id="mobileTerminalLoading"${state.terminalConnecting ? "" : " hidden"}><span>Loading panel</span></div><button class="mobile-terminal-follow-button" id="mobileTerminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow" onclick="HerdrMobile.scrollTerminalToBottom(false)">↓ Tail</button><div class="mobile-terminal" id="terminal"></div></div></div>`;
     }
 
     function renderTerminalTabsWithAdd() {
@@ -73,6 +81,7 @@
     return {
       renderPanels,
       renderTerminal,
+      renderKeyBar,
       renderTerminalTabsWithAdd,
       renderTerminalTabs,
       renderTerminalScreen,

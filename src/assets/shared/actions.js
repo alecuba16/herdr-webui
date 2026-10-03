@@ -103,6 +103,32 @@
       surfaces: ["desktop", "mobile"],
       requiresWorkspace: true,
     },
+    {
+      id: "toggle-sidebar",
+      icon: "◧",
+      title: "Toggle sidebar",
+      subtitle: "Show or hide the workspace navigation sidebar",
+      text: "toggle hide show collapse expand sidebar navigation",
+      surfaces: ["desktop"],
+      kbd: "g s",
+    },
+    {
+      id: "toggle-theme",
+      icon: "☾",
+      title: "Toggle theme",
+      subtitle: "Cycle auto, dark, and light color modes",
+      text: "toggle theme dark light auto color mode appearance",
+      surfaces: ["desktop", "mobile"],
+    },
+    {
+      id: "settings",
+      icon: "⚙",
+      title: "Settings",
+      subtitle: "Adjust layout, files, alerts, terminal, and worktree defaults",
+      text: "settings options preferences",
+      surfaces: ["desktop", "mobile"],
+      kbd: "g o",
+    },
   ];
 
   let recentCache = { at: 0, rows: [] };
@@ -133,6 +159,11 @@
     };
   }
 
+  function kbdHint(action, options = {}) {
+    if (options.kbd === false || !action.kbd) return "";
+    return `<span class="kbd" aria-hidden="true">${escapeHtml(action.kbd)}</span>`;
+  }
+
   function candidates(query, options = {}) {
     const platform = options.platform || "desktop";
     const hasWorkspace = !!options.hasWorkspace;
@@ -146,6 +177,11 @@
       .filter((action) => !action.requiresWorkspace || hasWorkspace)
       .map(actionToRow);
     if (!needle) return rows;
+    if (needle.startsWith(">")) {
+      const actionNeedle = needle.slice(1).trim();
+      if (!actionNeedle) return rows;
+      return rows.filter((action) => action.searchText.includes(actionNeedle));
+    }
     return rows.filter((action) => action.searchText.includes(needle));
   }
 
@@ -163,6 +199,7 @@
     all: () => ACTIONS.map(actionToRow),
     action,
     candidates,
+    kbdHint,
     renderButtons,
     loadRecent,
     invalidateRecent,

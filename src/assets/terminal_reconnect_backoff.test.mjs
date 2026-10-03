@@ -310,4 +310,27 @@ describe("terminal reconnect backoff", () => {
     flushTimer();
     equal(sandbox.sockets.length, 3, "after settle, next window allows one attempt");
   });
+
+  it("explicit stall close (4404) banners through the alert card", async () => {
+    const { sandbox, run, runAsync, flushTimer } = loadTerminalModule();
+    const alertCalls = [];
+    sandbox.HerdrAlertCard = { show: (opts) => alertCalls.push(opts) };
+    run(`state.ws = "w1"; state.tab = "w1:t1"; state.pane = "w1:t1:p1"; state.terminalId = "term_1"; state.termCols = 100; state.termRows = 30;`);
+    await runAsync(`connectTerminal()`);
+    const ws = sandbox.sockets[0];
+    ws.__open();
+    // Server's explicit stall close: banner, not silence.
+    ws.readyState = 3;
+    ws.onclose({ code: 4404 });
+    equal(alertCalls.length, 1, "stall close banners once");
+    equal(alertCalls[0].title, "Terminal stream stalled");
+    // Backoff window elapses, a fresh attach opens, then a normal close
+    // (1000) never banners.
+    flushTimer();
+    const next = sandbox.sockets[1];
+    next.__open();
+    next.readyState = 3;
+    next.onclose({ code: 1000 });
+    equal(alertCalls.length, 1, "normal close does not banner");
+  });
 });

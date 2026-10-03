@@ -263,6 +263,15 @@ function searchActionCandidates(query) {
   });
 }
 
+function searchActionHints(actions) {
+  if (!actions.length || !window.HerdrActionRegistry || !window.HerdrActionRegistry.kbdHint) return "";
+  return `<div class="search-help">Type <span class="kbd">&gt;</span> to browse actions only. Shortcuts: ${actions.filter((action) => action.kbd).slice(0, 4).map((action) => window.HerdrActionRegistry.kbdHint(action)).join(" ")}</div>`;
+}
+
+function actionsOnlyQuery(query) {
+  return String(query || "").trimStart().startsWith(">");
+}
+
 function searchSettings() {
   return window.HerdrWorkspaceSearch && window.HerdrWorkspaceSearch.settings
     ? window.HerdrWorkspaceSearch.settings()
@@ -300,6 +309,17 @@ async function runWorkspaceSearch(append = false) {
   if (!helper) return;
   const seq = ++searchPaletteState.requestSeq;
   const query = String(searchPaletteState.query || "").trim();
+  // `>`-prefixed queries browse actions only; skip workspace file/content search.
+  if (actionsOnlyQuery(query)) {
+    searchPaletteState.pathEntries = [];
+    searchPaletteState.pathGitStatus = null;
+    searchPaletteState.pathDone = true;
+    searchPaletteState.pathLoading = false;
+    searchPaletteState.pathError = "";
+    helper.resetContentState(searchPaletteState.content, "");
+    renderSearchPalette();
+    return;
+  }
   const workspace = currentSearchWorkspace();
   const cwd = helper.workspaceCwd(workspace);
   const opts = helper.settings();
@@ -469,12 +489,13 @@ function expandSelectedSearchContent(direction) {
 
 function renderSearchPalette() {
   const query = searchPaletteState.query || "";
+  const actionsOnly = actionsOnlyQuery(query);
   const opts = searchSettings();
   normalizePalettePathKind(opts);
   const order = opts.searchSectionOrder || ["workspaces", "files", "content"];
   const actions = searchActionCandidates(query);
-  const targets = searchCandidates(query);
-  searchPaletteState.results = buildSearchSelectionRows(actions, targets, order, opts);
+  const targets = actionsOnly ? [] : searchCandidates(query);
+  searchPaletteState.results = buildSearchSelectionRows(actions, targets, actionsOnly ? [] : order, opts);
   if (searchPaletteState.selectedIndex >= searchPaletteState.results.length)
     searchPaletteState.selectedIndex = Math.max(0, searchPaletteState.results.length - 1);
   if (searchResultDisabled(searchPaletteState.results[searchPaletteState.selectedIndex])) {
@@ -484,13 +505,13 @@ function renderSearchPalette() {
   const container = el("searchPaletteResults");
   if (!container) return;
   const sections = {
-    actions: renderActionSection(actions),
-    workspaces: opts.searchWorkspacesEnabled === false || !query.trim() ? "" : renderTargetSection(targets),
-    files: pathSearchAvailable(opts) ? renderWorkspacePathSection(opts) : "",
-    content: opts.searchContentEnabled === false ? "" : renderWorkspaceContentSection(),
+    actions: renderActionSection(actions, { actionsOnly }),
+    workspaces: actionsOnly || opts.searchWorkspacesEnabled === false || !query.trim() ? "" : renderTargetSection(targets),
+    files: actionsOnly || !pathSearchAvailable(opts) ? "" : renderWorkspacePathSection(opts),
+    content: actionsOnly || opts.searchContentEnabled === false ? "" : renderWorkspaceContentSection(),
   };
-  const recent = recentWorkspaceCandidates(searchPaletteState.recent);
-  container.innerHTML = sections.actions + renderRecentSection(recent) + order.map((key) => sections[key] || "").join("");
+  const recent = actionsOnly ? [] : recentWorkspaceCandidates(searchPaletteState.recent);
+  container.innerHTML = sections.actions + (actionsOnly ? searchActionHints(actions) : "") + (actionsOnly ? "" : renderRecentSection(recent)) + (actionsOnly ? "" : order.map((key) => sections[key] || "").join(""));
 }
 
 function renderRecentSection(recent) {
@@ -506,9 +527,12 @@ function renderRecentSection(recent) {
   return `<section class="search-section"><div class="search-section-head"><button class="search-section-toggle search-section-head-toggle" onclick="HerdrSearchPalette.toggleSection('recent')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Recent workspaces</strong><span>${recent.length}</span></button>${clear}</div>${expanded ? rows : ""}</section>`;
 }
 
-function renderActionSection(actions) {
+function renderActionSection(actions, opts = {}) {
   const expanded = searchPaletteState.sectionsExpanded.actions !== false;
-  if (!actions.length && searchPaletteState.query.trim()) return "";
+  if (!actions.length && (searchPaletteState.query.trim() || opts.actionsOnly))
+    return opts.actionsOnly
+      ? '<section class="search-section"><div class="search-empty">No matching actions.</div></section>'
+      : "";
   const body = actions.length
     ? actions.map((result) => renderSearchRowResult(result)).join("")
     : '<div class="search-empty">No matching actions.</div>';
@@ -535,7 +559,7 @@ function searchResultKey(result) {
 function renderSearchRowResult(result) {
   const key = searchResultKey(result);
   const index = searchPaletteState.results.findIndex((row) => row === result || searchResultKey(row) === key);
-  return renderTargetResult(result, index);
+  return renderTargetResult(result, index, result.type === "action" && window.HerdrActionRegistry && window.HerdrActionRegistry.kbdHint ? window.HerdrActionRegistry.kbdHint(result) : "");
 }
 
 function renderRecentRowResult(result, index) {
@@ -670,6 +694,13 @@ function runSearchAction(action) {
   } else if (action === "sessions") showSessionManager();
   else if (action === "files") openWorkspaceFileBrowser(state.ws);
   else if (action === "git") openWorkspaceGitUi(state.ws);
+  else if (action === "settings") showSettingsModal();
+  else if (action === "toggle-sidebar") sidebarToggle && sidebarToggle.click();
+  else if (action === "toggle-theme") {
+    themeMode = themeMode === "auto" ? "dark" : themeMode === "dark" ? "light" : "auto";
+    applyTheme();
+    render();
+  }
 }
 
 function searchPaletteKeydown(e) {

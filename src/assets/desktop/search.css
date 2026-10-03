@@ -200,3 +200,7 @@
   content-visibility: auto;
   contain-intrinsic-size: auto 41px;
 }
+.search-result .kbd {
+  font-size: 10px;
+  justify-self: end;
+}

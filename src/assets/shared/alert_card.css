@@ -1,0 +1,138 @@
+/* In-app attention alert card ("droplet"), shared by desktop and mobile.
+   One card at a time drops from the top when an agent starts needing
+   attention (blocked or finished a turn): black surface, status tint on
+   the dot, tap/click opens the pane, swipe or flick up dismisses, and it
+   auto-leaves after ~3.6s. Reduced motion replaces the drop with a fade.
+   The markup and behavior live in shared/alert-card.js
+   (window.HerdrAlertCard). */
+.herdr-alert-card-host {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  translate: -50% 0;
+  z-index: var(--z-alert-card, 1400);
+  width: min(420px, calc(100vw - 2 * var(--space-3, 12px)));
+  padding-top: var(--space-3, 12px);
+  pointer-events: none;
+}
+.herdr-alert-card-host[top-offset="safe-area"] {
+  /* Above browser UI (iOS Safari) rather than under it. */
+  padding-top: max(var(--space-3, 12px), env(safe-area-inset-top));
+}
+.herdr-alert-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  background: var(--alert-card-bg, #0f0f14);
+  border: 1px solid var(--alert-card-border, var(--border2, rgba(255, 255, 255, 0.14)));
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: var(--shadow-lg, 0 10px 30px rgba(0, 0, 0, 0.45));
+  color: var(--alert-card-fg, var(--fg, #fff));
+  cursor: pointer;
+  padding: 10px 14px;
+  pointer-events: auto;
+  transform-origin: top center;
+  animation: herdr-alert-card-drop 0.32s cubic-bezier(0.2, 0.9, 0.25, 1.2) both;
+}
+body.light .herdr-alert-card {
+  --alert-card-bg: #17171e;
+}
+.herdr-alert-card.leaving {
+  animation: herdr-alert-card-leave 0.22s ease both;
+}
+.herdr-alert-card[hidden] {
+  display: none;
+}
+.herdr-alert-card-dot {
+  height: 10px;
+  width: 10px;
+  border-radius: 999px;
+  background: var(--status-ok, #a6e3a1);
+}
+.herdr-alert-card[data-status="blocked"] .herdr-alert-card-dot {
+  background: var(--status-danger, #f38ba8);
+}
+.herdr-alert-card[data-status="done"] .herdr-alert-card-dot {
+  background: var(--status-info, #89b4fa);
+}
+.herdr-alert-card-title {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.herdr-alert-card-subtitle {
+  color: var(--alert-card-muted, color-mix(in srgb, var(--fg, #fff), transparent 35%));
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.herdr-alert-card-close {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md, 8px);
+  color: var(--alert-card-muted, color-mix(in srgb, var(--fg, #fff), transparent 35%));
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 14px;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+@media (hover: hover) {
+  .herdr-alert-card-close:hover {
+    background: color-mix(in srgb, var(--fg, #fff), transparent 88%);
+  }
+}
+@keyframes herdr-alert-card-drop {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-100% - var(--space-3, 12px)));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes herdr-alert-card-leave {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(calc(-100% - var(--space-3, 12px)));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .herdr-alert-card,
+  .herdr-alert-card.leaving {
+    animation-duration: 0.16s;
+    animation-timing-function: ease;
+  }
+  .herdr-alert-card {
+    animation-name: herdr-alert-card-fade;
+  }
+  .herdr-alert-card.leaving {
+    animation-name: herdr-alert-card-fade-out;
+  }
+}
+@keyframes herdr-alert-card-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes herdr-alert-card-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}

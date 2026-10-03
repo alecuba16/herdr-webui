@@ -1,0 +1,142 @@
+// Chat composer over the terminal (ux overhaul: server-side submit).
+//
+// A textarea anchored under the lens column sends ONE message through the
+// server's agent.prompt route (POST /api/panes/{id}/submit). The server
+// pastes it bracketed and sends its Enter after a gap, so the submit
+// survives a locked phone and a dropped connection — the browser never
+// types into the pane itself. A blocked pane is refused server-side
+// (agent_blocked); the composer shows the refusal and keeps the text.
+//
+// Per-pane draft: the box keeps its content per pane (not per view), so
+// switching panes mid-thought loses nothing.
+//
+// Thin on purpose: validation, error classification, and the human copy
+// all live server-side (the submit route returns {error, code, note});
+// this module only owns UI state (visibility, drafts, key handling).
+(function () {
+  const drafts = new Map();
+  let sending = false;
+  // Matches the server's MAX_COMPOSER_CHARS; the server re-checks, this is
+  // just the early out so a fat draft never leaves the browser.
+  const MAX_COMPOSER_CHARS = 20000;
+
+  function shellElement() {
+    return document.getElementById("terminalShell");
+  }
+
+  function overlay() {
+    let node = document.getElementById("terminalComposer");
+    if (!node) {
+      const shell = shellElement();
+      if (!shell) return null;
+      node = document.createElement("div");
+      node.id = "terminalComposer";
+      node.className = "terminal-composer";
+      // Hidden until the lens opens (sync() owns visibility); the element
+      // exists from the first terminal render so drafts never re-create
+      // listeners mid-session.
+      node.hidden = true;
+      node.innerHTML =
+        '<div class="terminal-composer-note" id="terminalComposerNote" role="status" hidden></div>' +
+        '<div class="terminal-composer-row">' +
+        '<textarea id="terminalComposerInput" rows="2" placeholder="Send a message" ' +
+        'aria-label="Message to this panel"></textarea>' +
+        '<button type="button" class="btn btn-primary" id="terminalComposerSend">Send</button>' +
+        "</div>";
+      shell.appendChild(node);
+      const input = node.querySelector("#terminalComposerInput");
+      const send = node.querySelector("#terminalComposerSend");
+      if (input) {
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            submit();
+          }
+        });
+        input.addEventListener("input", () => {
+          if (typeof state !== "undefined" && state && state.pane) {
+            drafts.set(state.pane, input.value);
+          }
+        });
+      }
+      if (send) send.onclick = () => submit();
+    }
+    return node;
+  }
+
+  function el(sel, root) {
+    const node = root || overlay();
+    return node ? node.querySelector(sel) : null;
+  }
+
+  function note(text) {
+    const noteEl = el("#terminalComposerNote");
+    if (!noteEl) return;
+    noteEl.textContent = text || "";
+    noteEl.hidden = !text;
+  }
+
+  function inputEl() {
+    return el("#terminalComposerInput");
+  }
+
+  function activePaneId() {
+    // `state` lives in core.js scope.
+    if (typeof state === "undefined" || !state) return null;
+    return state.pane || null;
+  }
+
+  async function submit() {
+    const input = inputEl();
+    const paneId = activePaneId();
+    if (!input || !paneId || sending) return;
+    // Trailing newlines are the composer's Enter, not the text's; CRLF
+    // reads as one newline. The server shapes again, this only avoids
+    // sending the composer's own line-break residue.
+    const message = input.value.replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
+    if (!message.trim()) return; // nothing to send; the box keeps the draft
+    if (message.length > MAX_COMPOSER_CHARS)
+      return note("Not sent: message is too long (20000 characters max).");
+    sending = true;
+    note("");
+    try {
+      const response = await api(
+        `/api/panes/${encodeURIComponent(paneId)}/submit`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: message }),
+        },
+      );
+      input.value = "";
+      drafts.delete(paneId);
+      note("");
+    } catch (error) {
+      // api() throws on !ok with error.details carrying the refusal body
+      // {error, code, note}. The server wrote the note; display it and
+      // keep the draft. Older/unknown refusals fall back to the error
+      // string. 401 is handled by api() (redirects to the login).
+      const details = error && error.details;
+      const text = String((error && error.message) || error);
+      note((details && details.note) || text);
+    } finally {
+      sending = false;
+    }
+  }
+
+  function sync() {
+    const node = overlay();
+    if (!node) return;
+    const lensOn = globalThis.HerdrLens && globalThis.HerdrLens.isActive();
+    node.hidden = !lensOn;
+    if (!lensOn) return;
+    const paneId = activePaneId();
+    const input = inputEl();
+    if (!input || !paneId) return;
+    // Restore the draft of the pane now in view (per-pane, not per-view).
+    const draft = drafts.get(paneId);
+    if (input.value !== (draft || "")) input.value = draft || "";
+  }
+
+  globalThis.HerdrComposer = { sync, submit, note, overlay, drafts };
+})();

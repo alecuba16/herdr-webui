@@ -64,6 +64,7 @@ fn test_state() -> WebState {
         settings_tx,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         lsp: Arc::new(lsp::LspRegistry::new(Default::default())),
+        terminal_hub: Arc::new(terminal_hub::TerminalHub::new()),
     }
 }
 
@@ -87,14 +88,17 @@ async fn response_json(response: Response) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-fn env_lock() -> &'static StdMutex<()> {
+pub(crate) fn env_lock() -> &'static StdMutex<()> {
     static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| StdMutex::new(()))
 }
 
 /// Lock the env mutex, recovering from a poisoned state so a panicking
 /// test does not cascade failures into every other env-lock test.
-fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+/// Shared with the TUI parity e2e module (it redirects
+/// `XDG_CONFIG_HOME` for its builtin-backend tests and must not race
+/// these).
+pub(crate) fn lock_env() -> std::sync::MutexGuard<'static, ()> {
     env_lock()
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
@@ -1501,30 +1505,28 @@ fn terminal_handshake_requires_exact_protocol_version() {
 
 #[test]
 fn terminal_attach_errors_classify_for_graceful_degradation() {
+    use crate::terminal_hub::AttachError;
     // Handshake failures offer a built-in session; transport failures
     // (socket missing, attach send failing) do not, since the backend
     // may just be restarting.
-    assert!(TerminalAttachError::ReadHandshake.suggests_builtin());
-    assert!(TerminalAttachError::Rejected(
-        "client version 22 is newer than server version 21".into()
-    )
-    .suggests_builtin());
-    assert!(!TerminalAttachError::Connect.suggests_builtin());
-    assert!(!TerminalAttachError::SendHandshake.suggests_builtin());
-    assert!(!TerminalAttachError::Attach.suggests_builtin());
-
-    assert_eq!(
-        TerminalAttachError::ReadHandshake.error_kind(),
-        "handshake_failed"
+    assert!(AttachError::ReadHandshake.suggests_builtin());
+    assert!(
+        AttachError::Rejected("client version 22 is newer than server version 21".into())
+            .suggests_builtin()
     );
+    assert!(!AttachError::Connect.suggests_builtin());
+    assert!(!AttachError::SendHandshake.suggests_builtin());
+    assert!(!AttachError::Attach.suggests_builtin());
+
+    assert_eq!(AttachError::ReadHandshake.error_kind(), "handshake_failed");
     assert_eq!(
-        TerminalAttachError::Rejected("mismatch".into()).error_kind(),
+        AttachError::Rejected("mismatch".into()).error_kind(),
         "handshake_rejected"
     );
-    assert_eq!(TerminalAttachError::Connect.error_kind(), "connect_failed");
+    assert_eq!(AttachError::Connect.error_kind(), "connect_failed");
     // User-facing messages keep the legacy terminal text for direct
     // display when the UI cannot parse the structured frame.
-    assert!(TerminalAttachError::Rejected("boom".into())
+    assert!(AttachError::Rejected("boom".into())
         .user_message()
         .starts_with("herdr rejected terminal connection: boom"));
 }
@@ -4077,6 +4079,42 @@ async fn static_asset_routes_serve_embedded_content() {
         )
         .await
         .unwrap();
+    let shared_tokens_css = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/assets/shared/tokens.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let shared_primitives_css = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/assets/shared/primitives.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let shared_alert_card_js = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/assets/shared/alert-card.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let shared_alert_card_css = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/assets/shared/alert-card.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     let shared_content_search_css = app
         .clone()
         .oneshot(
@@ -4332,6 +4370,10 @@ async fn static_asset_routes_serve_embedded_content() {
     assert_eq!(file_icons_js.status(), StatusCode::OK);
     assert_eq!(file_icons_css.status(), StatusCode::OK);
     assert_eq!(shared_colors_css.status(), StatusCode::OK);
+    assert_eq!(shared_tokens_css.status(), StatusCode::OK);
+    assert_eq!(shared_primitives_css.status(), StatusCode::OK);
+    assert_eq!(shared_alert_card_js.status(), StatusCode::OK);
+    assert_eq!(shared_alert_card_css.status(), StatusCode::OK);
     assert_eq!(shared_content_search_css.status(), StatusCode::OK);
     assert_eq!(file_content_search_js.status(), StatusCode::OK);
     assert_eq!(desktop_search_js.status(), StatusCode::OK);
@@ -4392,6 +4434,22 @@ async fn static_asset_routes_serve_embedded_content() {
         .unwrap()
         .contains("text/css"));
     assert!(shared_colors_css.headers()[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .contains("text/css"));
+    assert!(shared_tokens_css.headers()[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .contains("text/css"));
+    assert!(shared_primitives_css.headers()[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .contains("text/css"));
+    assert!(shared_alert_card_js.headers()[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .contains("javascript"));
+    assert!(shared_alert_card_css.headers()[header::CONTENT_TYPE]
         .to_str()
         .unwrap()
         .contains("text/css"));
@@ -9899,4 +9957,83 @@ async fn cleanup_sessions_rejects_non_builtin_backend() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = response_json(response).await;
     assert_eq!(body["ok"], false);
+}
+
+/// The composer submit route owns the refusal classification AND copy: one
+/// step produces the status code, the wire code, and the human note. The
+/// browser displays `note` verbatim (falling back to the error string when
+/// absent), so these strings are the UI contract.
+#[test]
+fn submit_pane_error_classifies_code_status_and_note() {
+    let (status, code, note) = submit_pane_error(
+        "agent_blocked: the agent is waiting for an answer in the terminal",
+        "agent_blocked",
+    );
+    assert_eq!(code, "agent_blocked");
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(note.contains("waiting for an answer"), "note={note}");
+
+    let (status, code, note) =
+        submit_pane_error("agent_not_found: pane x not found", "agent_not_found");
+    assert_eq!(code, "agent_not_found");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(note.contains("gone"), "note={note}");
+
+    let (status, code, note) =
+        submit_pane_error("agent_exited: terminal has exited", "agent_exited");
+    assert_eq!(code, "agent_exited");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(note.contains("gone"), "note={note}");
+
+    let (status, code, note) = submit_pane_error(
+        "message_too_long: composer message exceeds 20000 characters",
+        "message_too_long",
+    );
+    assert_eq!(code, "message_too_long");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(note.contains("20000"), "note={note}");
+
+    let (status, code, note) = submit_pane_error(
+        "empty_agent_prompt: agent prompt must not be empty",
+        "empty_agent_prompt",
+    );
+    assert_eq!(code, "empty_agent_prompt");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(note.contains("empty"), "note={note}");
+
+    // Unknown codes degrade: 502, the raw wire prefix, and a wrapped note
+    // ("Not sent: " + the server's error string) so the UI reads the same.
+    let (status, code, note) = submit_pane_error("io_error: write failed", "io_error");
+    assert_eq!(code, "io_error");
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(note, "Not sent: io_error: write failed");
+}
+
+/// The two backends shape their errors differently: the builtin one puts
+/// the machine code in the message prefix ("agent_blocked: ...") with a
+/// generic wire code, external herdr puts herdr codes in `code` with a
+/// human message. submit_pane_code must classify both identically.
+#[test]
+fn submit_pane_code_reads_builtin_prefix_and_herdr_code() {
+    // Builtin shape: {code: "builtin_error", message: "<code>: <detail>"}.
+    let builtin = json!({
+        "code": "builtin_error",
+        "message": "agent_blocked: the agent is waiting for an answer in the terminal"
+    });
+    assert_eq!(submit_pane_code(&builtin), "agent_blocked");
+
+    // herdr shape: {code: "agent_blocked", message: "human text"}.
+    let herdr = json!({ "code": "agent_blocked", "message": "agent is blocked" });
+    assert_eq!(submit_pane_code(&herdr), "agent_blocked");
+
+    // herdr's empty_prompt carries no code prefix in the message.
+    let herdr_empty = json!({ "code": "empty_agent_prompt", "message": "prompt is empty" });
+    assert_eq!(submit_pane_code(&herdr_empty), "empty_agent_prompt");
+
+    // Builtin unknown error: the message prefix names the failure.
+    let builtin_unknown = json!({ "code": "builtin_error", "message": "io_error: write failed" });
+    assert_eq!(submit_pane_code(&builtin_unknown), "io_error");
+
+    // Nothing recognizable: empty string, not a panic.
+    assert_eq!(submit_pane_code(&json!({})), "");
 }

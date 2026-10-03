@@ -12,6 +12,7 @@ The README is the short project summary. This `docs/` directory holds detailed f
 | [Features](features.md) | User-facing desktop and mobile behavior, file explorer, Git UI, terminal, settings, worktrees. |
 | [Technical details](technical-details.md) | Architecture, backend/frontend responsibilities, static assets, file explorer internals, settings, performance, styling, safety. |
 | [TUI backend API and prototype](tui-backend-api.md) | Built-in backend client API, `herdr-webui-tui`, supported features, and remaining parity gaps. |
+| [TUI shortcuts](tui-shortcuts.md) | Full `herdr-webui-tui` key reference: navigation, prefix shortcuts, attach mode, chat lens, composer, prompt cards. |
 | [Development guide](development.md) | Repository layout, frontend module structure, desktop/mobile parity, maintainability rules. |
 | [Release notes](release-notes.md) | Release policy and release history. |
 | [Code quality audit](code-quality-audit.md) | Baseline quality audit, remediated issues, and deferred risks. |
@@ -31,6 +32,7 @@ The README is the short project summary. This `docs/` directory holds detailed f
 | Backend content search | [Features: File browser](features.md#webui-features) | [Technical details: Content search](technical-details.md#content-search). |
 | Git status colors | [Features: File browser](features.md#webui-features) | [Technical details: Git status propagation](technical-details.md#git-status-propagation). |
 | TUI backend and CLI | [TUI backend API and prototype](tui-backend-api.md) | Reusable Rust client over built-in sockets, `herdr-webui-tui`, live terminal attach, ANSI color rendering, and parity gaps. |
+| TUI keys and overlays | [TUI shortcuts](tui-shortcuts.md) | Prefix shortcuts, attach mode, lens/composer/prompt-card keys, per-screen highlights. |
 | Performance model | [Technical details: Performance decisions](technical-details.md#performance-decisions) | Backend-owned repo work, terminal batching, lazy loading. |
 | Styling and themes | [Technical details: Styling and theme architecture](technical-details.md#styling-and-theme-architecture) | Theme variables, shared color tokens, icon coloring rules. |
 | Code structure | [Development guide](development.md#project-layout) | Asset modules, shared frontend helpers, desktop/mobile parity. |

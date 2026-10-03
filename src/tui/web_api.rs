@@ -57,7 +57,18 @@ pub struct WebApiCredentials {
 pub enum WebApiError {
     Io(String),
     InvalidUrl(String),
-    Http { status: u16, message: String },
+    Http {
+        status: u16,
+        message: String,
+    },
+    /// HTTP error whose parsed body carried structured fields: the
+    /// raw `message` plus whatever the route attached (the composer
+    /// submit route adds `code` and the human-facing `note`).
+    HttpDetailed {
+        status: u16,
+        message: String,
+        body: Value,
+    },
     Json(String),
     Api(String),
 }
@@ -74,8 +85,33 @@ impl std::fmt::Display for WebApiError {
                     write!(f, "WebUI API error {status}: {message}")
                 }
             }
+            Self::HttpDetailed {
+                status, message, ..
+            } => {
+                if message.is_empty() {
+                    write!(f, "WebUI API error {status}")
+                } else {
+                    write!(f, "WebUI API error {status}: {message}")
+                }
+            }
             Self::Json(message) => write!(f, "invalid WebUI API response: {message}"),
             Self::Api(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl WebApiError {
+    /// The route-provided human note for a failed composer submit
+    /// (`{error, code, note}` bodies). Falls back to the raw message,
+    /// mirroring the browser composer's `details.note || error` rule.
+    pub fn note(&self) -> String {
+        match self {
+            Self::HttpDetailed { body, message, .. } => body
+                .get("note")
+                .and_then(Value::as_str)
+                .unwrap_or(message)
+                .to_string(),
+            other => other.to_string(),
         }
     }
 }
@@ -362,6 +398,19 @@ impl WebApiClient {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
+            // Routes that attach structured fields (composer submit:
+            // `{error, code, note}`) keep the parsed body so callers can
+            // read them; plain errors stay on the simple shape.
+            if value
+                .as_object()
+                .is_some_and(|fields| fields.len() > 1 && fields.contains_key("error"))
+            {
+                return Err(WebApiError::HttpDetailed {
+                    status,
+                    message,
+                    body: value,
+                });
+            }
             return Err(WebApiError::Http { status, message });
         }
         Ok(value)
@@ -415,6 +464,17 @@ impl WebApiClient {
     /// `POST /api/recent-workspaces/clear`: drop every entry.
     pub fn clear_recent_workspaces(&self) -> Result<Value, WebApiError> {
         self.post("/api/recent-workspaces/clear", &serde_json::json!({}))
+    }
+
+    /// `POST /api/panes/{pane_id}/submit`: send one composer message to
+    /// the pane's agent through the server's `agent.prompt` (ux
+    /// overhaul composer parity). The server owns validation, error
+    /// classification, and refusal copy; a refusal arrives as an HTTP
+    /// error whose body carries `{error, code, note}` and surfaces as
+    /// `WebApiError::HttpDetailed` so the caller can show `note()`.
+    pub fn submit_pane(&self, pane_id: &str, text: &str) -> Result<Value, WebApiError> {
+        let body = serde_json::json!({ "text": text });
+        self.post(&format!("/api/panes/{}/submit", urlencode(pane_id)), &body)
     }
 
     fn get(&self, path_and_query: &str) -> Result<Value, WebApiError> {

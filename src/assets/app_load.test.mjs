@@ -5,15 +5,24 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 function element(id = "") {
+  const classes = new Set();
   return {
     id,
     classList: {
-      add() {},
-      remove() {},
-      contains() {
-        return false;
+      add(name) {
+        classes.add(name);
       },
-      toggle() {},
+      remove(name) {
+        classes.delete(name);
+      },
+      contains(name) {
+        return classes.has(name);
+      },
+      toggle(name, force) {
+        const next = force === undefined ? !classes.has(name) : !!force;
+        if (next) classes.add(name);
+        else classes.delete(name);
+      },
     },
     style: { setProperty() {} },
     dataset: {},
@@ -25,7 +34,12 @@ function element(id = "") {
     innerHTML: "",
     title: "",
     setAttribute(name, value) {
+      this.attributes = this.attributes || {};
+      this.attributes[name] = value;
       this[name] = value;
+    },
+    getAttribute(name) {
+      return (this.attributes && this.attributes[name]) != null ? this.attributes[name] : null;
     },
     closest() {
       return this;
@@ -629,7 +643,7 @@ describe("app bundle load", () => {
     const actionNames = (query) => Array.from(ctx.searchActionCandidates(query), (action) => action.action);
     deepEqual(
       actionNames(""),
-      ["open-workspace", "temp-terminal", "sessions"],
+      ["open-workspace", "temp-terminal", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
     );
     deepEqual(
       actionNames("session"),
@@ -638,6 +652,14 @@ describe("app bundle load", () => {
     deepEqual(
       actionNames("nonsense"),
       [],
+    );
+    deepEqual(
+      actionNames(">"),
+      ["open-workspace", "temp-terminal", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
+    );
+    deepEqual(
+      actionNames(">theme"),
+      ["toggle-theme"],
     );
     ok(!actionNames("").includes("discover-worktrees"));
     match(source, /function renderSearchRowResult\(result\)/);
@@ -927,6 +949,19 @@ describe("app bundle load", () => {
       /const changed = state\.termCols !== fit\.cols \|\| state\.termRows !== fit\.rows;[\s\S]*?if \(changed\) connectTerminal\(fit\);\n\s+else fitTerminalSurface\(\);/,
     );
     ok(!desktopTerminalSource.includes("let shellResizeFrame = null"));
+  });
+
+  it("sidebar toggle refits through the exported resize scheduler", () => {
+    // Regression: the sidebar toggle called scheduleTerminalFit, which
+    // never existed (the scheduler is scheduleTerminalResize in
+    // terminal.js). Collapsing the sidebar threw a ReferenceError and
+    // skipped the refit. The toggle must resolve the hook through
+    // globalThis at click time (core.js loads before terminal.js) and
+    // terminal.js must export it.
+    const coreSource = readFileSync(new URL("./desktop/app_js/core.js", import.meta.url), "utf8");
+    ok(!coreSource.includes("scheduleTerminalFit()"), "core.js must not call the nonexistent scheduleTerminalFit");
+    match(coreSource, /typeof globalThis\.HerdrScheduleTerminalResize === "function"/);
+    match(desktopTerminalSource, /globalThis\.HerdrScheduleTerminalResize = scheduleTerminalResize;/);
   });
 
   it("keeps Git UI keyboard input away from the terminal", () => {
@@ -1227,7 +1262,9 @@ describe("app bundle load", () => {
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
     const controlsCss = readFileSync(new URL("./desktop/app_css/controls.css", import.meta.url), "utf8");
     match(controlsCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
-    match(controlsCss, /\.git-ui-btn\.primary \{[\s\S]*?background: var\(--accent-1, var\(--accent\)\);/);
+    const primitivesCss = readFileSync(new URL("./shared/primitives.css", import.meta.url), "utf8");
+    match(primitivesCss, /\.git-ui-btn\.primary \{[\s\S]*?background: var\(--accent\);[\s\S]*?color: var\(--accent-fg, var\(--bg\)\);/);
+    match(primitivesCss, /\.git-ui-btn\.danger \{[\s\S]*?border-color: var\(--danger\);/);
     ok(!/^\.git-ui-btn \{/m.test(gitLayoutCss));
     match(gitLayoutCss, /\.git-ui-view-toggle:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
     match(gitLayoutCss, /\.git-ui-modal label \{[\s\S]*?box-sizing: border-box;[\s\S]*?width: 100%;/);
@@ -3165,6 +3202,33 @@ describe("app bundle load", () => {
     match(source, /title: "Server"/);
   });
 
+  it("applies the density setting to the document root and settings select", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // Stored option bootstraps the attribute; unknown values normalize
+    // to default.
+    vm.runInContext("options.density = 'compact'; applyDensity();", ctx);
+    equal(ctx.document.documentElement.dataset.density, "compact");
+    equal(vm.runInContext("normalizeDensity('weird')", ctx), "default");
+    equal(vm.runInContext("normalizeDensity('compact')", ctx), "compact");
+    vm.runInContext("options.density = 'default'; applyDensity();", ctx);
+    equal(ctx.document.documentElement.dataset.density, "default");
+    // The settings select is part of the Appearance section and the
+    // confirm/rollback pipeline; density persists via saveOptions.
+    match(source, /function applyDensity\(\)/);
+    match(source, /ids: \["optTheme", "optDensity"\]/);
+    match(source, /"optDensity",\s*"optOverflow"/);
+    const appHtml = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+    match(appHtml, /id="optDensity"/);
+    const bindingsSource = readFileSync(new URL("./desktop/app_js/bindings.js", import.meta.url), "utf8");
+    match(bindingsSource, /el\("optDensity"\)\.onchange = \(\) => \{/);
+    match(bindingsSource, /options\.density = normalizeDensity\(el\("optDensity"\)\.value\);/);
+    // applyOptions syncs the select so reopening Settings reflects the
+    // stored value (boot also calls applyDensity next to applyTheme).
+    match(source, /densitySelect\.value = normalizeDensity\(options\.density\);/);
+  });
+
   it("defines keyboard shortcuts and terminal font settings", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
@@ -3174,6 +3238,10 @@ describe("app bundle load", () => {
     match(source, /id="optGlobalShortcutPrefixCapture"/);
     match(source, /DEFAULT_GLOBAL_SHORTCUT_PREFIX/);
     match(source, /id="optTerminalFontFamily"/);
+    match(source, /id="optTerminalFontSize"/);
+    match(source, /terminalFontSize: 14/);
+    match(source, /next\.terminalFontSize = Math\.max\(10, Math\.min\(22/);
+    match(source, /term\.setFontSize\(options\.terminalFontSize \|\| 14\)/);
     match(source, /id="optTerminalLinks"/);
     match(source, /id="optTerminalMouseReporting"/);
     match(source, /terminalMouseReporting: false/);
@@ -5215,5 +5283,199 @@ describe("app bundle load", () => {
     // explicitly chosen one.
     equal(ctx.localStorage.getItem("herdr-session-backend:work"), "builtin");
     equal(ctx.localStorage.getItem("herdr-session-backend:default"), "external-herdr");
+  });
+});
+
+describe("alert card module", () => {
+  const alertCardSource = () =>
+    readFileSync(new URL("./shared/alert_card.js", import.meta.url), "utf8");
+
+  it("exposes a global HerdrAlertCard with show and hide", () => {
+    const ctx = context();
+    vm.runInContext(alertCardSource(), ctx);
+    ok(ctx.HerdrAlertCard, "HerdrAlertCard global exists");
+    equal(typeof ctx.HerdrAlertCard.show, "function");
+    equal(typeof ctx.HerdrAlertCard.hide, "function");
+  });
+
+  it("renders one card with status, role, and auto-dismiss timer", () => {
+    const ctx = context();
+    vm.runInContext(alertCardSource(), ctx);
+    let timeoutFn = null;
+    ctx.setTimeout = (fn) => {
+      timeoutFn = fn;
+      return 2;
+    };
+    vm.runInContext(
+      `HerdrAlertCard.show({ key: "t1", status: "blocked", title: "Agent blocked", subtitle: "agent in ws" })`,
+      ctx,
+    );
+    const state = vm.runInContext("HerdrAlertCard._state", ctx);
+    ok(state.card, "card element rendered");
+    equal(state.card.getAttribute("role"), "alert");
+    equal(state.card.getAttribute("data-status"), "blocked");
+    ok(state.timer, "auto-dismiss timer armed");
+    ok(typeof timeoutFn === "function", "auto-dismiss callback registered");
+
+    // Dismissing the live card pumps the queue: the next alert replaces it.
+    vm.runInContext(
+      `HerdrAlertCard._state.queue.push({ key: "t2", status: "done", title: "Agent done", subtitle: "agent2" })`,
+      ctx,
+    );
+    vm.runInContext("HerdrAlertCard.hide()", ctx);
+    const after = vm.runInContext("HerdrAlertCard._state", ctx);
+    equal(after.card.getAttribute("data-status"), "done");
+    equal(after.queue.length, 0);
+  });
+
+  it("updates the live card in place when the same pane alerts again", () => {
+    const ctx = context();
+    vm.runInContext(alertCardSource(), ctx);
+    vm.runInContext(
+      `HerdrAlertCard.show({ key: "t1", status: "done", title: "Agent done", subtitle: "s" })`,
+      ctx,
+    );
+    vm.runInContext(
+      `HerdrAlertCard.show({ key: "t1", status: "blocked", title: "Agent blocked", subtitle: "s" })`,
+      ctx,
+    );
+    const state = vm.runInContext("HerdrAlertCard._state", ctx);
+    equal(state.card.getAttribute("data-status"), "blocked");
+    equal(state.queue.length, 0, "same-key alert replaces instead of queueing");
+  });
+
+  it("queues a different-pane alert behind the live card", () => {
+    const ctx = context();
+    vm.runInContext(alertCardSource(), ctx);
+    vm.runInContext(
+      `HerdrAlertCard.show({ key: "t1", status: "blocked", title: "Agent blocked", subtitle: "s" })`,
+      ctx,
+    );
+    vm.runInContext(
+      `HerdrAlertCard.show({ key: "t2", status: "done", title: "Agent done", subtitle: "s" })`,
+      ctx,
+    );
+    const state = vm.runInContext("HerdrAlertCard._state", ctx);
+    equal(state.queue.length, 1, "different-key alert queued");
+  });
+});
+
+describe("terminal loading and failed states", () => {
+  let source;
+  beforeEach(() => {
+    source =
+      readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
+      "\n" +
+      [
+        "./desktop/app_js/core.js",
+        "./desktop/app_js/workspace_shell.js",
+        "./desktop/app_js/panel_switcher.js",
+        "./desktop/app_js/render.js",
+        "./desktop/app_js/terminal.js",
+        "./desktop/app_js/worktrees.js",
+        "./desktop/app_js/shortcuts.js",
+        "./desktop/app_js/workspace_create.js",
+        "./desktop/app_js/bindings.js",
+      ]
+        .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
+        .join("");
+  });
+
+  it("renders a skeleton while connecting and a reconnect card on failure", () => {
+    const ctx = context();
+    vm.runInContext(readFileSync(new URL("./shared/skeleton.js", import.meta.url), "utf8"), ctx);
+    vm.runInContext(source, ctx);
+    vm.runInContext("setTerminalLoading(true)", ctx);
+    const loading = ctx.document.getElementById("terminalLoading");
+    ok(loading.classList.contains("show"), "loading overlay shown");
+    ok(!loading.classList.contains("failed"), "connecting is not the failed state");
+    ok(loading.innerHTML.includes("herdr-skeleton-terminal"), "skeleton rendered");
+    ok(loading.innerHTML.includes("Connecting panel"), "label text present");
+
+    // Failed recovery attempt: reconnect card with a working button.
+    vm.runInContext("setTerminalLoading(true, 'failed')", ctx);
+    ok(loading.classList.contains("failed"), "failed state flagged");
+    ok(loading.innerHTML.includes("Panel connection failed"), "failure heading shown");
+    ok(loading.innerHTML.includes("terminalReconnectButton"), "reconnect button present");
+    const button = ctx.document.getElementById("terminalReconnectButton");
+    ok(button && typeof button.onclick === "function", "reconnect handler wired");
+
+    // Hiding clears the failed flag.
+    vm.runInContext("setTerminalLoading(false)", ctx);
+    ok(!loading.classList.contains("show"), "overlay hidden");
+    ok(!loading.classList.contains("failed"), "failed flag cleared");
+  });
+
+  it("sources the ANSI palette from --term-* tokens with JS fallback", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    // No getComputedStyle in the test context: falls back to the JS table.
+    // Without matchMedia the effective theme resolves to light.
+    const theme = vm.runInContext("terminalTheme()", ctx);
+    equal(theme.background, "#eff1f5", "fallback background used");
+    equal(theme.red, "#be1239", "fallback ANSI red used");
+    match(source, /readTerminalThemeTokens/);
+    const tokensCss = readFileSync(new URL("./shared/tokens.css", import.meta.url), "utf8");
+    match(tokensCss, /--term-red: #f38ba8;/);
+    match(tokensCss, /--term-bright-white: #ffffff;/);
+  });
+});
+
+describe("a11y audit contract", () => {
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
+  const appHtml = read("./app.html");
+  const coreSource = read("./desktop/app_js/core.js");
+  const renderSource = read("./desktop/app_js/render.js");
+  const mobileSource = read("./mobile/app.js");
+  const tokensCss = read("./shared/tokens.css");
+
+  it("labels every icon-only control in the shared shell", () => {
+    // Icon-only buttons in app.html must carry aria-label.
+    for (const id of ["themeToggle", "shortcutsToggle", "settingsToggle", "searchPaletteClose"]) {
+      const re = new RegExp(`id="${id}"[^>]*aria-label=`);
+      match(appHtml, re, `${id} needs aria-label`);
+    }
+  });
+
+  it("labels icon-only close buttons in dynamic modals", () => {
+    for (const id of ["settingsCloseTop", "questionClose", "worktreeCreateClose", "worktreeOpenClose", "workspaceCreateClose", "shortcutsCloseTop"]) {
+      const re = new RegExp(`id="${id}"[^>]*aria-label=`);
+      match(coreSource, re, `${id} needs aria-label`);
+    }
+  });
+
+  it("marks dialogs and live regions", () => {
+    match(appHtml, /id="searchPalette" role="dialog" aria-modal="true"/);
+    match(appHtml, /id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle"/);
+    match(appHtml, /id="connectionChip"[^>]*role="status" aria-live="polite"/);
+    match(appHtml, /aria-live="polite"/);
+  });
+
+  it("exposes selected state on desktop tabs and closes via labeled controls", () => {
+    match(renderSource, /aria-current="page"/);
+    match(renderSource, /aria-label="Close panel"/);
+  });
+
+  it("labels mobile header icon buttons and the connection state", () => {
+    for (const id of ["mobileBack", "mobileSearch", "mobileSettings"]) {
+      const re = new RegExp(`id="${id}"[^>]*aria-label=`);
+      match(mobileSource, re, `${id} needs aria-label`);
+    }
+    match(mobileSource, /role="status"/);
+    match(mobileSource, /id="mobileConnectionDot"[^>]*aria-hidden="true"/);
+  });
+
+  it("ships a global reduced-motion block", () => {
+    match(tokensCss, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?animation-duration: 0\.01ms !important;/);
+    match(tokensCss, /transition-duration: 0\.01ms !important;/);
+    match(tokensCss, /scroll-behavior: auto !important;/);
   });
 });

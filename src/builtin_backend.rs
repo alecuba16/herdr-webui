@@ -31,6 +31,27 @@ const PROTOCOL_VERSION: u32 = 22;
 const MAX_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MAX_SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
 const DETECTION_TAIL_BYTES: usize = 64 * 1024;
+/// Gap between a composer message's bracketed paste and its Enter. Must
+/// exceed jcode's 150ms paste-trailing-Enter suppression window
+/// (`paste_guard.rs`, jcode issue #544) or the submit is swallowed.
+const AGENT_PROMPT_ENTER_GAP_MS: u64 = 300;
+/// Composer message cap, matching the upstream reference (one message must
+/// fit in a single submit; larger input goes through the terminal itself).
+const MAX_COMPOSER_CHARS: usize = 20_000;
+
+/// A composer message as sent: trailing newlines are the composer's, not the
+/// text's; CRLF reads as one newline. Mirrors upstream `composerMessage`.
+fn composer_message(text: &str) -> String {
+    let trimmed = text.trim_end_matches(['\r', '\n']);
+    trimmed.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// One bracketed paste: newlines become CR inside the paste block so a
+/// multi-line message stays one prompt instead of one submit per line.
+fn bracketed_paste_payload(message: &str) -> String {
+    let body = message.replace('\n', "\r");
+    format!("\u{1b}[200~{body}\u{1b}[201~")
+}
 /// Optional TTL for `RecentAgentProcessExit` records. `None` matches upstream
 /// herdr: the record never expires on its own in production and is only
 /// cleared when a live agent process is detected again (or the record is
@@ -824,6 +845,48 @@ impl BuiltinState {
                 Ok(
                     json!({ "type": "pane_read", "read": { "pane_id": pane_id, "text": text, "format": "text" } }),
                 )
+            }
+            "agent.prompt" => {
+                // herdr's own agent.prompt takes `target` (agent name or
+                // pane_id); our built-in accepts pane_id, with `target` as
+                // the external-herdr-compatible alias so the same request
+                // body works against both backends.
+                let pane_id = params
+                    .get("pane_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| params.get("target").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .ok_or_else(|| "missing param pane_id".to_string())?;
+                let text = params
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| "text is required".to_string())?;
+                // herdr refuses an empty prompt with `empty_agent_prompt`;
+                // trim check here because required_string-style filtering
+                // would report a generic "required" instead.
+                if text.trim().is_empty() {
+                    return Err("empty_agent_prompt: agent prompt must not be empty".to_string());
+                }
+                let terminal = {
+                    let data = self
+                        .data
+                        .lock()
+                        .map_err(|_| "state unavailable".to_string())?;
+                    let pane = data
+                        .panes
+                        .get(&pane_id)
+                        .ok_or_else(|| format!("agent_not_found: pane {pane_id} not found"))?;
+                    data.terminals.get(&pane.terminal_id).cloned()
+                }
+                .ok_or_else(|| "agent_not_found: terminal not found".to_string())?;
+                if text.chars().count() > MAX_COMPOSER_CHARS {
+                    return Err(
+                        "message_too_long: composer message exceeds 20000 characters".to_string(),
+                    );
+                }
+                terminal.agent_prompt(&text)?;
+                Ok(json!({ "type": "agent_prompt", "pane_id": pane_id, "ok": true }))
             }
             other => Err(format!("built-in backend does not implement {other}")),
         }
@@ -1679,6 +1742,13 @@ struct TerminalRuntime {
     event_context: PaneEventContext,
     last_agent_state: Mutex<Option<(Option<String>, String)>>,
     last_status_check: Mutex<Option<Instant>>,
+    /// Set when output arrived while the status check was throttled. A
+    /// trailing-edge sweeper (spawned once per runtime) runs the pending
+    /// check when the throttle window expires, so a status flip carried by
+    /// the LAST bytes of an output burst is never missed (e.g. a question
+    /// dialog printed right after heavy output, then the pane goes silent
+    /// while `read` blocks — no further output would ever trigger a check).
+    pending_status_check: AtomicBool,
     /// Set once when a previously-live agent process disappears from the
     /// process tree while the pane shell keeps running. Suppresses the
     /// exited agent's label until a live agent is detected again.
@@ -1803,6 +1873,7 @@ impl TerminalRuntime {
             event_context,
             last_agent_state: Mutex::new(None),
             last_status_check: Mutex::new(None),
+            pending_status_check: AtomicBool::new(false),
             recent_agent_process_exit: Mutex::new(None),
             last_live_process_agent: Mutex::new(None),
             master: Mutex::new(pair.master),
@@ -1826,6 +1897,26 @@ impl TerminalRuntime {
             }
             runtime_for_reader.notify_exited();
         });
+        // Trailing-edge status sweeper: append_output only checks the status
+        // throttle on output arrival; if the last burst landed inside a
+        // throttle window, the pending flag stays set until this loop runs
+        // the check once the window expires. Exits when the pane is gone.
+        {
+            let sweeper_runtime = Arc::clone(&runtime);
+            thread::spawn(move || loop {
+                thread::sleep(Duration::from_millis(100));
+                if sweeper_runtime.exited.load(Ordering::Acquire) {
+                    return;
+                }
+                if !sweeper_runtime
+                    .pending_status_check
+                    .swap(false, Ordering::AcqRel)
+                {
+                    continue;
+                }
+                sweeper_runtime.publish_agent_status_if_changed_force();
+            });
+        }
         Ok(runtime)
     }
 
@@ -2074,13 +2165,107 @@ impl TerminalRuntime {
             .unwrap_or(false);
 
         if !should_check {
+            // Mark pending so the trailing-edge sweeper re-runs the check
+            // once the throttle window expires; without it, a flip carried
+            // by the last bytes of a burst is lost when the pane goes
+            // silent right after (blocked on input with no more output).
+            self.pending_status_check.store(true, Ordering::Release);
             return;
         }
+        self.pending_status_check.store(false, Ordering::Release);
+        self.run_status_detection();
+    }
 
-        // After the terminal exits, the final "done" status was already
-        // published in notify_exited. Skip further detection to avoid CPU waste
-        // and stale screen-text false positives.
+    /// Un-throttled detection entry point used by the sweeper thread. The
+    /// pending flag is cleared by the caller; the throttle bookkeeping in
+    /// `run_status_detection` still applies so the sweeper cannot hammer
+    /// detection while output keeps flowing.
+    fn publish_agent_status_if_changed_force(&self) {
+        self.run_status_detection();
+    }
+
+    /// The pane's last published agent status ("working"/"blocked"/"done"/
+    /// "idle"), or None when no agent has been detected yet. The sweeper
+    /// guarantees this is fresh even when the flip rode the last bytes of an
+    /// output burst (see `pending_status_check`).
+    fn last_agent_status(&self) -> Option<String> {
+        self.last_agent_state
+            .lock()
+            .ok()
+            .and_then(|state| state.as_ref().map(|(_, status)| status.clone()))
+    }
+
+    /// Server-side composer submit ("agent.prompt" semantics): paste the
+    /// message into the pane's PTY as one bracketed paste, then its Enter
+    /// after a gap. Runs on the server so the paste→Enter sequence survives
+    /// a jittery connection and a locked phone, and so a blocked pane can
+    /// refuse before anything is typed (a message typed into an open
+    /// permission/question dialog would answer the dialog, never the
+    /// composer).
+    ///
+    /// The Enter gap (300ms) is deliberately outside jcode's 150ms
+    /// paste-guard window (`paste_guard.rs`, the #544 Windows Terminal fix):
+    /// a trailing Enter inside that window is swallowed as paste residue, so
+    /// the submit would silently not happen. Never shorten below ~200ms.
+    ///
+    /// Takes the runtime Arc because the delayed Enter runs on a detached
+    /// thread that must outlive the submitting HTTP request (the phone can
+    /// lock or the connection drop between paste and Enter).
+    fn agent_prompt(self: &Arc<Self>, text: &str) -> Result<(), String> {
         if self.exited.load(Ordering::Acquire) {
+            return Err("agent_exited: terminal has exited".to_string());
+        }
+        if self.last_agent_status().as_deref() == Some("blocked") {
+            return Err(
+                "agent_blocked: the agent is waiting for an answer in the terminal".to_string(),
+            );
+        }
+        let message = composer_message(text);
+        let payload = bracketed_paste_payload(&message);
+        self.write_input(payload.as_bytes())
+            .map_err(|err| format!("io_error: {err}"))?;
+        // The Enter must go even if the submitting client disconnects or
+        // locks, so the gap + CR run on a detached thread holding only the
+        // runtime Arc.
+        let runtime = Arc::clone(self);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(AGENT_PROMPT_ENTER_GAP_MS));
+            if runtime.exited.load(Ordering::Acquire) {
+                return;
+            }
+            let _ = runtime.write_input(b"\r");
+        });
+        Ok(())
+    }
+
+    fn run_status_detection(&self) {
+        // After the terminal exits, the final "done" status was already
+        // published in notify_exited. Skip further detection to avoid CPU
+        // waste, stale screen-text false positives, and consuming the
+        // throttle window on a dead terminal (the sweeper stops calling
+        // once it observes `exited`, but a force call racing the exit must
+        // still be a full no-op).
+        if self.exited.load(Ordering::Acquire) {
+            return;
+        }
+        let now = Instant::now();
+        let should_check = self
+            .last_status_check
+            .lock()
+            .map(|mut last_check| {
+                let should_run = last_check
+                    .map(|last| now.duration_since(last) >= Duration::from_millis(500))
+                    .unwrap_or(true);
+                if should_run {
+                    *last_check = Some(now);
+                }
+                should_run
+            })
+            .unwrap_or(false);
+        if !should_check {
+            // Window not expired yet (the sweeper woke too early): re-mark
+            // pending so the next sweeper tick retries.
+            self.pending_status_check.store(true, Ordering::Release);
             return;
         }
 
@@ -5564,6 +5749,342 @@ mod tests {
     }
 
     #[test]
+    fn sweeper_recovers_every_flip_across_bursty_output() {
+        // Stress variant of the throttle regression: a long bursty output
+        // sequence where every flip lands inside throttle windows. The
+        // sweeper must eventually publish EVERY status change; none may be
+        // permanently lost even though append_output mostly ran throttled.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let rx = state.subscribe_events();
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+
+        // Rapid-fire appends with no sleeps: nearly every append lands in
+        // someone's throttle window, so the pending/sweeper path carries
+        // most of the detection load.
+        terminal.reset_status_throttle();
+        terminal.append_output("●·· batch ··● · 1/5 done".as_bytes());
+        for _round in 0..6 {
+            // working -> blocked -> working -> blocked, all inside windows.
+            terminal.append_output(
+                "permission needed: allow the tool to run now?\n> 1. Allow once\n> 2. Always allow\n> 3. Deny".as_bytes(),
+            );
+            terminal.append_output("\n\n●·· batch ··● · done".as_bytes());
+            terminal.append_output(
+                "permission needed: allow the tool to run now?\n> 1. Allow once\n> 2. Always allow\n> 3. Deny".as_bytes(),
+            );
+            // Give the sweeper a moment to drain the pending flag between
+            // rounds so the sequence does not collapse into one window.
+            std::thread::sleep(Duration::from_millis(700));
+        }
+
+        // Drain the event stream: the final status must be blocked (the
+        // dialog text is the last thing on screen) and at least one
+        // blocked event must have arrived during the sequence.
+        let mut saw_blocked = false;
+        let mut last_status = String::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let timeout = deadline.saturating_duration_since(std::time::Instant::now());
+            if timeout.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(timeout) {
+                Ok(event) => {
+                    if event["event"] == "pane.agent_status_changed" {
+                        let status = event["data"]["agent_status"].as_str().unwrap_or("");
+                        if status == "blocked" {
+                            saw_blocked = true;
+                        }
+                        last_status = status.to_string();
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            saw_blocked,
+            "a blocked flip must be published during the bursty sequence"
+        );
+        assert_eq!(
+            last_status, "blocked",
+            "final status must settle on blocked"
+        );
+    }
+
+    #[test]
+    fn throttled_status_flip_is_recovered_by_sweeper() {
+        // Regression test for the throttle-swallowed flip: a status change
+        // carried by the LAST bytes of an output burst could be lost when a
+        // check ran <500ms earlier and the pane then goes silent (e.g. a
+        // permission dialog printed right after heavy output, then the
+        // process blocks on input — no further output ever triggers a
+        // check). The pending flag + sweeper thread must recover it.
+        //
+        // /bin/cat blocks on stdin and never writes, so the ONLY output in
+        // the scrollback is the synthetic bytes below (the shell prompt
+        // cannot race the throttle window like it would with zsh).
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let rx = state.subscribe_events();
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+
+        // First burst consumes the throttle window with a working status.
+        terminal.reset_status_throttle();
+        terminal.append_output("●·· batch ··● · 2/5 done".as_bytes());
+        let working = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("working status event");
+        assert_eq!(working["data"]["agent_status"], "working");
+
+        // Immediately (inside the throttle window) print the blocked dialog.
+        // append_output is throttled, so this only sets the pending flag; the
+        // pane then goes silent. Without the sweeper, no event would ever
+        // carry the blocked flip.
+        terminal.append_output(
+            "permission needed: allow the tool to run now?\n> 1. Allow once\n> 2. Always allow\n> 3. Deny".as_bytes(),
+        );
+
+        // The sweeper ticks every 100ms and runs the pending check once the
+        // 500ms window expires: the blocked event must arrive within a few
+        // seconds without any further terminal output.
+        let blocked = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("blocked status event recovered by sweeper");
+        assert_eq!(blocked["event"], "pane.agent_status_changed");
+        assert_eq!(blocked["data"]["agent"], "jcode");
+        assert_eq!(blocked["data"]["agent_status"], "blocked");
+    }
+
+    #[test]
+    fn sweeper_force_check_skips_exited_terminal() {
+        // After the terminal exits, notify_exited already published the
+        // final "done" status. The sweeper's force path must not re-run
+        // detection on the dead terminal (stale screen text false
+        // positives).
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+        terminal.exited.store(true, Ordering::Release);
+        // Arm pending + a dirty throttle window: the force path must take
+        // the exited early-return, leaving the throttle bookkeeping and
+        // detection untouched.
+        terminal.pending_status_check.store(true, Ordering::Release);
+        terminal.publish_agent_status_if_changed_force();
+        assert!(
+            terminal.last_status_check.lock().unwrap().is_none(),
+            "exited terminal must not consume the throttle window"
+        );
+        assert_eq!(
+            state.handle_request("seed", "workspace.list", json!({}))["result"]["workspaces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn composer_message_normalizes_line_ends() {
+        // Trailing newlines are the composer's, not the text's; CRLF and
+        // bare CR read as one newline. Mirrors upstream composerMessage.
+        assert_eq!(composer_message("hello\n\n"), "hello");
+        assert_eq!(composer_message("hello\r\n\r\n"), "hello");
+        assert_eq!(composer_message("a\r\nb"), "a\nb");
+        assert_eq!(composer_message("a\rb"), "a\nb");
+        assert_eq!(composer_message("\n\nhello"), "\n\nhello");
+    }
+
+    #[test]
+    fn bracketed_paste_payload_wraps_one_block() {
+        // Newlines become CR INSIDE the paste markers: a multi-line message
+        // stays one paste (one prompt) instead of one submit per line.
+        assert_eq!(
+            bracketed_paste_payload("hello"),
+            "\u{1b}[200~hello\u{1b}[201~"
+        );
+        assert_eq!(
+            bracketed_paste_payload("a\nb\nc"),
+            "\u{1b}[200~a\rb\rc\u{1b}[201~"
+        );
+    }
+
+    #[test]
+    fn agent_prompt_types_message_then_enter() {
+        // /bin/cat echoes its stdin back, so both the bracketed paste AND
+        // the delayed Enter must appear in the scrollback. This pins the
+        // whole server-side submit contract: refusal-free pane gets the
+        // full payload, and the Enter follows after the gap even though
+        // agent_prompt returns before it is sent.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let pane_id = {
+            let data = state.data.lock().unwrap();
+            data.panes.keys().next().unwrap().clone()
+        };
+
+        let response = state.handle_request(
+            "test",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": "hello from composer\nsecond line\n" }),
+        );
+        assert!(
+            response.get("error").is_none(),
+            "agent.prompt must succeed on a plain shell pane: {response}"
+        );
+
+        // cat echoes paste bytes immediately, the CR lands after the 300ms
+        // gap; allow generous headroom for CI scheduling.
+        std::thread::sleep(Duration::from_millis(AGENT_PROMPT_ENTER_GAP_MS + 700));
+        let text = state.handle_request("t2", "pane.read", json!({ "pane_id": pane_id }));
+        let text = text["result"]["read"]["text"].as_str().unwrap_or("");
+        // pane.read strips ANSI, so the paste markers are gone from the
+        // echo; the message body must have arrived in ONE piece (both
+        // lines) and the delayed Enter as a trailing CR-derived newline.
+        assert!(
+            text.contains("hello from composer\nsecond line"),
+            "paste payload missing from pane output: {text:?}"
+        );
+        assert!(
+            text.contains("second line\n"),
+            "delayed Enter missing from pane output: {text:?}"
+        );
+    }
+
+    #[test]
+    fn agent_prompt_refuses_when_blocked() {
+        // A blocked pane must refuse BEFORE anything is typed: a message
+        // typed into an open permission/question dialog would answer the
+        // dialog. Seed a blocked status directly into last_agent_state.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let (pane_id, terminal) = {
+            let data = state.data.lock().unwrap();
+            let (pane_id, pane) = data.panes.iter().next().unwrap();
+            let terminal = data.terminals.get(&pane.terminal_id).unwrap().clone();
+            (pane_id.clone(), terminal)
+        };
+        {
+            let mut previous = terminal.last_agent_state.lock().unwrap();
+            *previous = Some((Some("jcode".to_string()), "blocked".to_string()));
+        }
+
+        let response = state.handle_request(
+            "test",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": "should be refused" }),
+        );
+        assert_eq!(
+            response["error"]["message"],
+            "agent_blocked: the agent is waiting for an answer in the terminal"
+        );
+
+        // Nothing was typed: /bin/cat echoes stdin, so any leaked input
+        // would show in the scrollback within the Enter-gap window.
+        std::thread::sleep(Duration::from_millis(AGENT_PROMPT_ENTER_GAP_MS + 300));
+        let text = state.handle_request("t2", "pane.read", json!({ "pane_id": pane_id }));
+        let text = text["result"]["read"]["text"].as_str().unwrap_or("");
+        assert!(
+            !text.contains("should be refused"),
+            "refused message leaked into the pane: {text:?}"
+        );
+    }
+
+    #[test]
+    fn agent_prompt_validates_input() {
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let pane_id = {
+            let data = state.data.lock().unwrap();
+            data.panes.keys().next().unwrap().clone()
+        };
+
+        // Empty message refused, herdr-compatible code.
+        let response = state.handle_request(
+            "t1",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": "  \n" }),
+        );
+        assert_eq!(
+            response["error"]["message"],
+            "empty_agent_prompt: agent prompt must not be empty"
+        );
+
+        // Over-cap message refused.
+        let long = "x".repeat(MAX_COMPOSER_CHARS + 1);
+        let response = state.handle_request(
+            "t2",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": long }),
+        );
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("message_too_long"));
+
+        // Unknown pane refused with agent_not_found (herdr-compatible).
+        let response = state.handle_request(
+            "t3",
+            "agent.prompt",
+            json!({ "pane_id": "no-such-pane", "text": "hi" }),
+        );
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("agent_not_found"));
+
+        // `target` alias works like pane_id (external-herdr wire compat).
+        let response = state.handle_request(
+            "t4",
+            "agent.prompt",
+            json!({ "target": pane_id, "text": "via target" }),
+        );
+        assert_eq!(response["result"]["ok"], json!(true));
+    }
+
+    #[test]
     fn terminal_output_publishes_agent_status_changes() {
         // Use a silent program instead of a real shell: zsh can write its
         // prompt bytes at any moment (on a loaded CI runner the shell can
@@ -6092,8 +6613,13 @@ mod tests {
 
         // Seed last_agent_state with a live jcode detection via screen text.
         terminal.append_output(b"jcode session ready\nready for input\n\xe2\x9d\xaf\n");
+        // The plain publish is double-throttled (outer gate arms the
+        // window, inner gate re-checks it and defers to the sweeper), so
+        // use the force entry point to run detection synchronously here;
+        // under full-suite parallel load the sweeper can starve past the
+        // 1s recv window and flake the test.
         terminal.reset_status_throttle();
-        terminal.publish_agent_status_if_changed();
+        terminal.publish_agent_status_if_changed_force();
         let event = events.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(event["event"], "pane.agent_status_changed");
         assert_eq!(event["data"]["agent"], "jcode");
@@ -6104,7 +6630,7 @@ mod tests {
 
         // Next detection run must publish a null-agent transition event.
         terminal.reset_status_throttle();
-        terminal.publish_agent_status_if_changed();
+        terminal.publish_agent_status_if_changed_force();
         let event = events.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(event["event"], "pane.agent_status_changed");
         assert_eq!(
@@ -6115,7 +6641,7 @@ mod tests {
 
         // Further runs with no agent must not spam: same state, no publish.
         terminal.reset_status_throttle();
-        terminal.publish_agent_status_if_changed();
+        terminal.publish_agent_status_if_changed_force();
         assert!(
             events.try_recv().is_err(),
             "no further events expected for unchanged None state"

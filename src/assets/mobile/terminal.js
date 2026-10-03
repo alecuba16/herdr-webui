@@ -159,12 +159,23 @@
         enqueueTerminalFrame(typeof event.data === "string" ? event.data : new Uint8Array(event.data));
         if (onTerminalOutput && state.terminalId) onTerminalOutput(state.terminalId);
       };
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (termWs === ws) {
           termWs = null;
           connectedTerminalKey = "";
           connectedTerminalSize = "";
           setConnectionState(false);
+          // Explicit stall close (4404) from the server: banner it through
+          // the shared alert card instead of hanging on a dead stream.
+          if (event && event.code === 4404 && globalThis.HerdrAlertCard) {
+            globalThis.HerdrAlertCard.show({
+              key: `terminal-stall:${state.terminalId}`,
+              status: "blocked",
+              title: "Terminal stream stalled",
+              subtitle: "The backend closed this panel stream. Reconnect to resume.",
+              onOpen: () => connect(),
+            });
+          }
         }
       };
     }
@@ -320,7 +331,14 @@
       if (inputQueue.length && !inputFlushTimer) inputFlushTimer = setTimeout(() => { inputFlushTimer = null; flushInputQueue(); }, 4);
     }
 
-    return { connect, destroy, disconnect, applyFontFamily, applyLinks, scrollToBottom };
+    function sendControlKey(data) {
+      // Key-bar bytes bypass the wterm textarea: send directly through the
+      // input WS path. Strip helpers stay applied (they leave bare control
+      // bytes and arrow escapes untouched).
+      sendInputData(String(data || ""));
+    }
+
+    return { connect, destroy, disconnect, applyFontFamily, applyLinks, scrollToBottom, sendControlKey };
   }
 
   globalThis.HerdrMobileTerminal = { create: createMobileTerminal };

@@ -10,6 +10,20 @@
     let eventWs = null;
     let eventRefreshTimer = null;
     let eventReconnectTimer = null;
+    let eventStateListeners = [];
+
+    function notifyEventState(connected) {
+      for (const listener of eventStateListeners) {
+        try { listener(!!connected); } catch (_) {}
+      }
+    }
+
+    function onEventState(listener) {
+      if (typeof listener === "function") eventStateListeners.push(listener);
+      return () => {
+        eventStateListeners = eventStateListeners.filter((item) => item !== listener);
+      };
+    }
 
     // Same distinction the desktop makes: structure-changing events get a
     // fast refresh so close/open transitions feel immediate, everything
@@ -47,6 +61,7 @@
       if (eventWs || !globalThisWebSocket || document.hidden) return;
       const ws = new globalThisWebSocket(wsUrl("/ws/events"));
       eventWs = ws;
+      notifyEventState(true);
       // Tell the shared lsp.js module a page-level events socket exists;
       // while frames keep arriving it will not open its own private one.
       const LspRegister = globalThis.HerdrLsp;
@@ -80,6 +95,7 @@
       };
       ws.onclose = () => {
         if (eventWs === ws) eventWs = null;
+        notifyEventState(false);
         scheduleEventReconnect();
       };
     }
@@ -98,6 +114,7 @@
       scheduleEventReconnect,
       connectEvents,
       closeEventWs,
+      onEventState,
     };
   }
 

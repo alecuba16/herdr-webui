@@ -65,6 +65,7 @@
     var modalId = opts.modalId;
     var onHerdrError = opts.onHerdrError || null;
     var fontFamilyFn = opts.fontFamilyFn || function () { return "monospace"; };
+    var fontSizeFn = opts.fontSizeFn || function () { return 14; };
     var themeFn = opts.themeFn || function () { return {}; };
     var defaultFolderFn = opts.defaultFolderFn || function () { return ""; };
     var workspaceIdFn = opts.workspaceIdFn || function () {
@@ -700,6 +701,7 @@
           rows: 24,
           core: tempTerminalCore(),
           fontFamily: fontFamilyFn(),
+          fontSize: fontSizeFn(),
           theme: themeFn(),
           links: true,
           scrollback: 5000,

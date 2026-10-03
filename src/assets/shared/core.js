@@ -344,6 +344,48 @@
     return parts[parts.length - 1] || String(path || "");
   }
 
+  // Terminal theme tokens live in shared/tokens.css as --term-* custom
+  // properties (Catppuccin dark default, body.light overrides). Read them
+  // back so the wterm renderer palette follows the CSS palette instead of
+  // a duplicated JS table. getComputedStyle returns "rgb(r, g, b)" (or
+  // "#rrggbb" in older browsers); normalize to #rrggbb for wterm, which
+  // validates that exact format.
+  const TERMINAL_TOKEN_KEYS = [
+    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+    "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
+  ];
+
+  function normalizeTerminalTokenColor(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const hexMatch = raw.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (hexMatch) return "#" + hexMatch[1].toLowerCase();
+    const rgbMatch = raw.match(/^rgba?\(\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})/i);
+    if (!rgbMatch) return "";
+    const toHex = (n) => Math.max(0, Math.min(255, Number(rgbMatch[n]))).toString(16).padStart(2, "0");
+    return "#" + (toHex(1) + toHex(2) + toHex(3));
+  }
+
+  function readTerminalThemeTokens(element, keys) {
+    const root = typeof globalThis !== "undefined" ? globalThis : null;
+    if (!root || !root.getComputedStyle || !root.document) return null;
+    const target = element || root.document.body;
+    let style;
+    try {
+      style = root.getComputedStyle(target);
+    } catch (_) {
+      return null;
+    }
+    const camel = (name) => name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    const theme = {};
+    for (const key of keys || TERMINAL_TOKEN_KEYS) {
+      const cssVar = "--term-" + key.replace(/([A-Z])/g, "-$1").toLowerCase();
+      const color = normalizeTerminalTokenColor(style.getPropertyValue(cssVar));
+      if (color) theme[key] = color;
+    }
+    return theme;
+  }
+
   async function gitApi(url, options) {
     const res = await fetch(
       url,
@@ -389,6 +431,8 @@
     escapeHtml,
     pathBasename,
     hashId,
+    readTerminalThemeTokens,
+    TERMINAL_TOKEN_KEYS,
     gitApi,
   };
   root.HerdrAppHelpers = helpers;

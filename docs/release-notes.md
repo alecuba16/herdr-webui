@@ -1,5 +1,32 @@
 # Release notes
 
+## 0.4.57 Release Notes
+- The TUI gains the webui chat surfaces, all reading the existing pane
+  tail refresh chain (protocol 22 stayed frozen, no new wire frames):
+  - Chat lens (`Ctrl+B Shift+L`): transcript reading view over the
+    selected pane's tail, with prompt-marker user turns rendered as
+    accent-bold chat bubbles and gap folding. `j`/`k`/arrows/PgUp/PgDn
+    scroll, `G`/`End` jump back to the tail and re-arm follow, and
+    `Esc`/`q`/`i` close. Terminal-screen surface only.
+  - Chat composer (`Ctrl+B Shift+C`): per-pane draft kept across opens,
+    submitted through `POST /api/panes/{id}/submit` so the server owns
+    shaping, the 20000-character cap, and the blocked-pane refusal copy.
+  - Prompt cards for blocked panes: a card floats at the bottom-right of
+    the terminal pane when the tail parses as a question dialog.
+    `j`/`k` move the cursor, `Enter` answers, `1`-`9` jump and answer in
+    one key, `Esc` dismisses until the question or blocked episode
+    changes, plain `q` still quits. Numbered answers go through raw
+    terminal input; free-text answers pick the transport by the live
+    pane status (composer route when unblocked, raw input when blocked).
+- A card no longer blanks the footer: the prompt card's shadow painted
+  one row below its rect and erased the `Ctrl+B ? help` hint tail while
+  a card was visible; the card now lifts clear of the footer.
+- New `docs/tui-shortcuts.md` consolidates the full TUI key reference
+  (navigation, prefix shortcuts, attach mode, lens, composer, prompt
+  cards). `docs/features.md` and `docs/tui-backend-api.md` link to it,
+  and the in-app `Ctrl+B ?` help overlay carries the same list with a
+  type-to-filter search.
+
 ## 0.4.56 Release Notes
 - Boot-time skeleton placeholders (shared `skeleton.js`/`skeleton.css`) now
   fill the sections that wait on connectivity: the versions line, the

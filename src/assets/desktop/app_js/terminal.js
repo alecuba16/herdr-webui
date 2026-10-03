@@ -3,13 +3,18 @@ function connectEvents() {
   const eventSession = state.session;
   const ws = new WebSocket(wsUrl("/ws/events"));
   eventWs = ws;
+  setEventsConnectionState("connecting");
   // Tell the shared lsp.js module a page-level events socket exists;
   // while frames keep arriving it will not open its own private one.
   if (window.HerdrLsp && window.HerdrLsp.registerEventsBus) {
     try { window.HerdrLsp.registerEventsBus(); } catch (_) {}
   }
+  ws.onopen = () => {
+    if (eventWs === ws) setEventsConnectionState("live");
+  };
   ws.onmessage = (e) => {
     if (eventWs !== ws || eventSession !== state.session) return;
+    if (ws.readyState === WebSocket.OPEN) setEventsConnectionState("live");
     let msg;
     try {
       msg = JSON.parse(e.data);
@@ -47,6 +52,9 @@ function connectEvents() {
         data = evt.data || {};
       if (kind === "pane.agent_status_changed") {
         const d = data;
+        // Prompt cards re-evaluate on every status change: a blocked pane
+        // may hold a question dialog the card can answer.
+        if (globalThis.HerdrPromptCards) globalThis.HerdrPromptCards.evaluate();
         if (statusClass(d.agent_status) !== "working") {
           for (const agent of state.agents) {
             if (
@@ -74,10 +82,43 @@ function connectEvents() {
     }
   };
   ws.onclose = () => {
-    if (eventWs === ws) eventWs = null;
+    if (eventWs === ws) {
+      eventWs = null;
+      setEventsConnectionState("offline");
+    }
     if (!document.hidden && eventSession === state.session)
       setTimeout(connectEvents, 1500);
   };
+}
+// One place that answers "am I connected?" and paints the connection chip.
+// States: live (events socket open), connecting (socket down, retrying),
+// offline (hidden tab, dropped events socket with no backend refresh yet).
+// The chip itself is a written label plus a dot; reconnecting pulses so the
+// user knows the tab is trying, not dead.
+function eventsConnectionState() {
+  if (eventWs && eventWs.readyState === WebSocket.OPEN) return "live";
+  if (document.hidden) return "offline";
+  return state.backendOnline === false ? "offline" : "reconnecting";
+}
+function setEventsConnectionState(explicit) {
+  const chip = el("connectionChip");
+  if (!chip) return;
+  const next = explicit || eventsConnectionState();
+  if (chip.dataset.state === next) return;
+  chip.dataset.state = next;
+  chip.title =
+    next === "live"
+      ? "Live: events stream connected"
+      : next === "reconnecting"
+        ? "Reconnecting: events stream retrying"
+        : "Offline: no events stream";
+  const label = chip.querySelector(".connection-label");
+  if (label)
+    label.textContent =
+      next === "live" ? "Live" : next === "reconnecting" ? "Reconnecting" : "Offline";
+}
+function updateConnectionChip() {
+  setEventsConnectionState();
 }
 // Close any live events socket and reconnect immediately. The events
 // subscription is bound to the session + backend captured in the wsUrl()
@@ -115,6 +156,9 @@ async function connectTerminal(fitOverride = null) {
     rows = state.termRows || 30,
     size = `${cols}x${rows}`;
   const target = `${state.session}|${currentSessionBackend()}|${state.ws}|${state.tab}|${state.pane}|${state.terminalId}`;
+  // Pane switch converges here: the composer swaps its per-pane draft so
+  // the box shows what was typed for the pane now in view.
+  if (globalThis.HerdrComposer) globalThis.HerdrComposer.sync();
   if (
     termWs &&
     termWs.readyState === 1 &&
@@ -207,6 +251,7 @@ async function connectTerminal(fitOverride = null) {
         core: options.terminalCore,
         theme: terminalTheme(),
         fontFamily: terminalFontFamily(),
+        fontSize: options.terminalFontSize || 14,
         links: options.terminalLinks !== false,
         scrollback: 10000,
         onData: sendInputData,
@@ -349,17 +394,33 @@ async function connectTerminal(fitOverride = null) {
     if (!terminalAttachPending) setTerminalLoading(false);
     enqueueTerminalFrame(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
   };
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     if (termWs === ws) {
+      const wasRecoveryAttempt = terminalReconnectTarget === target;
       flushTerminalFramesFor(target);
       termWs = null;
       connectedTerminalId = null;
       connectedSize = "";
-      setTerminalLoading(false);
+      // Explicit stall close (4404) from the server: the backend attach
+      // stream died. Banner it instead of hanging; the recovery flow
+      // below still covers the reconnect path.
+      if (event && event.code === 4404 && window.HerdrAlertCard) {
+        window.HerdrAlertCard.show({
+          key: `terminal-stall:${target}`,
+          status: "blocked",
+          title: "Terminal stream stalled",
+          subtitle: "The backend closed this panel stream. Reconnect to resume.",
+          onOpen: () => connectTerminal(),
+        });
+      }
       // Attach failed (backend unreachable or herdr_error teardown): start
       // the reconnect backoff so resize frames cannot reattach at frame
       // cadence. Deliberate teardowns null onclose before closing, so they
-      // skip this path.
+      // skip this path. A failed recovery attempt surfaces the failed
+      // state with a manual reconnect button; the first close (live
+      // attach) stays silent because the backoff already reattaches fast.
+      if (wasRecoveryAttempt) setTerminalLoading(true, "failed");
+      else setTerminalLoading(false);
       noteTerminalAttachFailure(target);
       scheduleRefreshBurst();
     }
@@ -560,6 +621,14 @@ function flushTerminalFrames() {
         focusTerminal();
       });
     });
+    // Chat lens re-reads the live bridge AFTER the write so the transcript
+    // view reflects the bytes that just landed (reading before the write
+    // would show the pre-write grid).
+    if (globalThis.HerdrLens && globalThis.HerdrLens.isActive())
+      globalThis.HerdrLens.onTerminalFrame();
+    // Prompt cards re-parse the tail after every write: the question
+    // dialog repaints on each frame.
+    if (globalThis.HerdrPromptCards) globalThis.HerdrPromptCards.evaluate();
     return;
   }
   // Clear attach flag if it was set but the coalesced frame ended up small
@@ -569,6 +638,9 @@ function flushTerminalFrames() {
   }
   writeTerminalFrame(data);
   clearDismissedWorkingForTerminal(state.terminalId);
+  if (globalThis.HerdrLens && globalThis.HerdrLens.isActive())
+    globalThis.HerdrLens.onTerminalFrame();
+  if (globalThis.HerdrPromptCards) globalThis.HerdrPromptCards.evaluate();
 }
 function flushTerminalFramesFor(terminalId) {
   if (!terminalWriteQueue.length || !term || !terminalId) return;
@@ -963,6 +1035,8 @@ function showTerminalPasteProgress(total) {
   }
   const progress = el("terminalPasteProgress");
   if (progress) progress.hidden = false;
+  const shell = el("terminalShell");
+  if (shell) shell.classList.add("pasting");
   updateTerminalPasteProgress(0, total);
 }
 function updateTerminalPasteProgress(done, total) {
@@ -981,6 +1055,8 @@ function hideTerminalPasteProgress() {
   }
   const progress = el("terminalPasteProgress");
   if (progress) progress.hidden = true;
+  const shell = el("terminalShell");
+  if (shell) shell.classList.remove("pasting");
 }
 function showClipboardMenu(x, y) {
   const menu = el("clipboardMenu");
@@ -1190,6 +1266,10 @@ function scheduleTerminalResize() {
   if (delay > 0) terminalResizeTimer = setTimeout(queueFrame, delay);
   else queueFrame();
 }
+// Cross-module hook: core.js's sidebar toggle refits the terminal grid
+// after the shell geometry change. Guarded at the call site, so a missing
+// hook (older core.js) is a no-op rather than an error.
+globalThis.HerdrScheduleTerminalResize = scheduleTerminalResize;
 let terminalResizeWanted = false;
 
 // Window resize and shell resize can fire together during a drag. Both feed

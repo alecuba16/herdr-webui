@@ -1,0 +1,215 @@
+/*
+ * Shared design tokens: the machine-readable design system.
+ *
+ * Layer 1 (this file): semantic tokens that both layouts consume. Colors live
+ * here; every component rule should reference these, never raw hex values.
+ * The existing layout tokens (--bg, --fg, --panel, --panel2, --border,
+ * --border2, --muted, --accent, --accent-fg, ...) stay defined by each
+ * layout's base CSS (dark default + body.light override), because desktop and
+ * mobile ship slightly different base palettes today. This file derives the
+ * shared semantic layer on top of them with color-mix, so a layout change
+ * flows through automatically, and adds token groups that never existed
+ * (status tints, spacing, radii, type scale, motion, focus, layers, shadows).
+ *
+ * Rules:
+ * - This block must not contain selectors other than :root and light overrides.
+ * - docs/ux/design-system.md mirrors these tokens; both must not drift.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---- semantic status colors: one meaning per state, never chrome accent ----
+   * Catppuccin-based, aligned with the existing sidebar-count and
+   * mobile-nav-status colors so nothing shifts visually. */
+  --status-idle: #a6e3a1;
+  --status-working: #f9e2af;
+  --status-blocked: #f38ba8;
+  --status-done: #89b4fa;
+  --status-unknown: var(--muted, #a6adc8);
+
+  /* tinted surfaces for badges/chips: same hue, mostly transparent */
+  --status-idle-tint: color-mix(in srgb, var(--status-idle), transparent 86%);
+  --status-working-tint: color-mix(in srgb, var(--status-working), transparent 86%);
+  --status-blocked-tint: color-mix(in srgb, var(--status-blocked), transparent 86%);
+  --status-done-tint: color-mix(in srgb, var(--status-done), transparent 86%);
+
+  /* danger: destructive actions and failures, blocked-adjacent but distinct */
+  --danger: #f38ba8;
+  --danger-tint: color-mix(in srgb, var(--danger), transparent 86%);
+  --danger-hover: #ffccd5;
+  --danger-bg: #3b2028;
+  --danger-bg-hover: #5a2734;
+
+  /* warn: reversible-but-loud actions (discard, stash drop confirmations) */
+  --warn: #f9e2af;
+  --warn-hover: #56401b;
+
+  /* git colors already exist per layout; alias the shared names */
+  --git-modified: var(--git-modified-color, #e9d07a);
+  --git-added: var(--git-added-color, #a6e3a1);
+  --git-deleted: var(--git-deleted-color, #f38ba8);
+  --git-changed: var(--git-changed-color, #89b4fa);
+  --git-conflict: var(--git-conflict-color, #fab387);
+
+  /* ---- terminal palette: single source for wterm ANSI colors ----
+   * terminalTheme() reads these via getComputedStyle and hands them to the
+   * renderer, which mirrors them onto each terminal's --term-* vars. Catppuccin
+   * dark default; light overrides below shift to the light palette. Raw hex
+   * (not var()) because the renderer needs concrete color strings. */
+  --term-black: #6c7086;
+  --term-red: #f38ba8;
+  --term-green: #a6e3a1;
+  --term-yellow: #f9e2af;
+  --term-blue: #89b4fa;
+  --term-magenta: #cba6f7;
+  --term-cyan: #94e2d5;
+  --term-white: #cdd6f4;
+  --term-bright-black: #9399b2;
+  --term-bright-red: #f38ba8;
+  --term-bright-green: #a6e3a1;
+  --term-bright-yellow: #f9e2af;
+  --term-bright-blue: #89b4fa;
+  --term-bright-magenta: #cba6f7;
+  --term-bright-cyan: #94e2d5;
+  --term-bright-white: #ffffff;
+
+  /* ---- spacing: 4px base ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ---- radii ---- */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* ---- type scale ---- */
+  --fs-2xs: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 18px;
+  /* the one size iOS Safari does not zoom on focus */
+  --fs-input: 16px;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --tracking-caps: 0.06em;
+
+  /* ---- control sizing ---- */
+  --control-h: 34px;
+  /* coarse-pointer minimum; 44px keeps our existing mobile audit target */
+  --touch-target: 44px;
+  --chip-h: 20px;
+  --rail-w: 3px;
+
+  /* ---- focus: single ring language ---- */
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent, #89b4fa), transparent 68%);
+  --ring: 2px solid var(--accent, #89b4fa);
+  --ring-offset: 2px;
+
+  /* ---- motion ---- */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-pulse: 1600ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  /* endless dots jump between two looks: a smooth pulse draws every display
+   * refresh for as long as an agent works; steps draw about one frame a second */
+  --ease-pulse: steps(2, jump-none);
+
+  /* ---- layers ---- */
+  --z-popover: 10;
+  --z-scrim: 15;
+  --z-drawer: 20;
+  --z-modal: 30;
+  --z-banner: 40;
+  /* transient top-of-world surfaces (attention alert card): above sheets
+   * (mobile 91) and modals (desktop 1300) without relying on local values */
+  --z-alert-card: 1400;
+
+  /* ---- shadows: overlays only; resting surfaces separate by tone + hairline ---- */
+  --shadow-pop: 0 16px 48px #000a, 0 0 0 1px var(--border, #313244);
+  --shadow-drawer: 0 0 40px #000a;
+  --shadow-card: 0 4px 16px #0006;
+}
+
+/* Light theme: only the status/danger hues need darkening for contrast on
+ * light surfaces; spacing, type, motion, and layers are theme-invariant.
+ * Matches the existing mobile-nav-status light overrides. */
+body.light {
+  color-scheme: light;
+  --status-idle: #13661b;
+  --status-working: #6f4a04;
+  --status-blocked: #a81c1c;
+  --status-done: #2150ae;
+  --danger: #a61b1b;
+  --danger-hover: #7a1212;
+  --danger-bg: #f3d9dc;
+  --danger-bg-hover: #e5c0c5;
+  --warn: #8a4708;
+  --warn-hover: #f2e3c2;
+  /* terminal palette follows the light theme for contrast */
+  --term-black: #5c5f77;
+  --term-red: #be1239;
+  --term-green: #116329;
+  --term-yellow: #91600a;
+  --term-blue: #1957d2;
+  --term-magenta: #6d28d9;
+  --term-cyan: #0a5a86;
+  --term-white: #acb0be;
+  --term-bright-black: #6c6f85;
+  --term-bright-red: #be1239;
+  --term-bright-green: #116329;
+  --term-bright-yellow: #91600a;
+  --term-bright-blue: #1957d2;
+  --term-bright-magenta: #6d28d9;
+  --term-bright-cyan: #0a5a86;
+  --term-bright-white: #4c4f69;
+}
+/* Compact density: scale chrome UI down one step without changing
+ * information architecture (reference pattern #6). Only tokens derived
+ * from the type scale and control metrics shrink; color, motion, and
+ * layering are untouched, and the terminal keeps its own font size
+ * setting. Coarse-pointer touch targets stay at the audited 44px minimum. */
+:root[data-density="compact"] {
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --control-h: 28px;
+  --chip-h: 18px;
+}
+/* Coarse pointers must keep the audited touch-target floor even in compact
+ * density; the media query re-raises what the density block lowered. */
+@media (pointer: coarse) {
+  :root[data-density="compact"] {
+    --control-h: 34px;
+  }
+}
+/* Global reduced-motion contract: kill every decorative transition and
+ * animation on both layouts. The wterm cursor blink lives inside the
+ * terminal surface (inline styles), so it is excluded; the per-component
+ * blocks in base.css/primitives.css/alert_card.css stay as belt-and-braces
+ * but this makes the guarantee layout-wide. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
