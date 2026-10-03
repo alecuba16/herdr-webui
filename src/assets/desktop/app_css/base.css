@@ -155,7 +155,10 @@ body.light {
   gap: 6px;
 }
 .sidebar-count {
-  border-radius: 999px;
+  /* the collapsed sidebar's count pills: .badge shape, but tighter than the
+   * primitive because the toggle strip is narrow; colors come from the
+   * status tokens shared with the rest of the app */
+  border: 0;
   color: var(--bg);
   display: none;
   font-size: 11px;
@@ -163,21 +166,22 @@ body.light {
   line-height: 16px;
   min-width: 16px;
   padding: 0 2px;
+  height: auto;
 }
 #app.sidebar-collapsed .sidebar-count {
   display: inline-block;
 }
 .sidebar-count.blocked {
-  background: #f38ba8;
+  background: var(--status-blocked, #f38ba8);
 }
 .sidebar-count.working {
-  background: #f9e2af;
+  background: var(--status-working, #f9e2af);
 }
 .sidebar-count.idle {
-  background: #a6e3a1;
+  background: var(--status-idle, #a6e3a1);
 }
 .sidebar-count.done {
-  background: #89b4fa;
+  background: var(--status-done, #89b4fa);
 }
 .head {
   padding: 14px;

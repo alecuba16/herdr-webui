@@ -329,7 +329,7 @@ function sidebarToggleHtml() {
     .filter(([, count]) => count > 0)
     .map(
       ([status, count]) =>
-        `<span class="sidebar-count ${status}" title="${count} ${status} agent${count === 1 ? "" : "s"}">${count}</span>`,
+        `<span class="badge sidebar-count ${status}" title="${count} ${status} agent${count === 1 ? "" : "s"}">${count}</span>`,
     )
     .join("");
   return arrow + (badges ? `<span class="sidebar-counts">${badges}</span>` : "");
