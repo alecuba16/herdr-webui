@@ -421,6 +421,29 @@ Extend `panels/files/`:
 - Manual smoke: `make build` then `herdr-webui-tui` against a live session,
   walk every shortcut in the help overlay.
 
+### Phase 6 — ux-overhaul chat surfaces (done)
+
+The webui ux_improvements features that are terminal-surface UX, ported
+after the original parity phases (tracked on the temporary board
+`docs/ux/tui-port-status.md`, folded here and deleted):
+
+- Chat lens (`Ctrl+B Shift+L`, webui Chat/Terminal segmented switch):
+  transcript reading view over the selected pane's tail (prompt-marker
+  user turns, gap folding, tail-anchored viewport with follow/unread),
+  `src/tui/lens.rs`.
+- Chat composer (`Ctrl+B Shift+C`, webui composer box): per-pane drafts,
+  submits through the existing `POST /api/panes/{id}/submit` route
+  (server owns validation and refusal copy), `PromptKind::ComposerMessage`.
+- Prompt cards (webui prompt cards): `src/tui/prompt_cards.rs` parses
+  question dialogs from the tail when the pane is `blocked` and renders a
+  bottom-right card; hybrid answer transport (numbered options via raw
+  `send_input`, free text via composer submit when unblocked and raw
+  input when blocked, status read at answer time); `PromptKind::CardAnswer`.
+- All three read the existing `pane_tail` refresh chain; protocol 22
+  stayed frozen, no new wire frames. Webui-only concerns stayed
+  webui-only (density toggle, a11y attributes, mobile drawer/header,
+  stall banner, multi-viewer replay, lens scroller CSS).
+
 ## Order and dependency rationale
 
 - Phase 0 first: the user asked for modular structure; all later phases build
