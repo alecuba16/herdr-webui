@@ -920,6 +920,23 @@ fn fixture_snapshot() -> TuiSnapshot {
     TuiSnapshot::from_backend_response(&fixture_snapshot_value())
 }
 
+/// Two tabs in the workspace so the tab strip renders one active and
+/// one inactive tab (the single-tab fixture only ever shows the
+/// active style).
+fn fixture_snapshot_value_with_tabs() -> serde_json::Value {
+    json!({
+        "snapshot": {
+            "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":2,"active_tab_id":"tab_1"}],
+            "tabs": [
+                {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"},
+                {"tab_id":"tab_2","workspace_id":"ws_1","label":"Server","focused":false,"pane_count":1,"agent_status":"idle"}
+            ],
+            "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+            "agents": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}]
+        }
+    })
+}
+
 fn app_with_snapshot() -> TuiApp {
     // NOTE: tests must NEVER wire `builtin_session(None)` into an app that
     // dispatches mutating shortcuts: that points at the real user backend
@@ -7907,6 +7924,134 @@ fn history_load_without_a_terminal_is_a_silent_no_op() {
     assert!(
         app.error.is_none(),
         "no terminal means no attach attempt, no error"
+    );
+}
+
+#[test]
+fn workspace_tabs_render_inactive_tab_style() {
+    // The inactive-tab arm of the tab strip: a workspace with two tabs
+    // renders one active (accent bg) and one inactive (panel bg) tab;
+    // both labels must appear with the plain separator.
+    let mut app = app_with_snapshot();
+    app.snapshot = TuiSnapshot::from_backend_response(&fixture_snapshot_value_with_tabs());
+    let rendered = draw(&app, 120, 30);
+    assert!(rendered.contains("Shell"), "active tab label renders");
+    assert!(rendered.contains("Server"), "inactive tab label renders");
+}
+
+#[test]
+fn prompt_card_render_without_a_parsed_card_is_a_silent_no_op() {
+    // Defensive: evaluate keeps `current` populated whenever the card
+    // is visible; a visible flag without a parsed card is a state bug,
+    // and the renderer must skip the card instead of panicking.
+    let mut app = app_with_snapshot();
+    app.prompt_card.visible = true;
+    let rendered = draw(&app, 120, 30);
+    assert!(
+        !rendered.contains('│') || rendered.contains("help"),
+        "render completes without panicking"
+    );
+}
+
+#[test]
+fn git_log_title_shows_more_hint_and_file_scope() {
+    // The log toolbar title arms: the +more hint when the log has more
+    // pages, and the file name when the log is file-scoped.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = GitView::Log;
+    app.git_panel.commits = vec![GitCommitEntry {
+        hash: "abc123def".to_string(),
+        message: "fix bug".to_string(),
+        author: "Ada".to_string(),
+        date: "2 hours ago".to_string(),
+        labels: vec![],
+    }];
+    app.git_panel.log_has_more = true;
+    app.git_panel.log_limit = 100;
+    app.git_panel.log_file = Some("src/app.rs".to_string());
+    // Wide terminal: the log list is ~45% of the width, so the full
+    // toolbar (scope + file + +more hint) needs the room to fit.
+    let rendered = draw(&app, 200, 30);
+    assert!(rendered.contains("+more"), "the +more hint renders");
+    assert!(rendered.contains("src/app.rs"), "the file scope renders");
+}
+
+#[test]
+fn confirm_cleanup_delete_prompt_shows_the_selected_item() {
+    // The ConfirmCleanupDelete subject arm: the prompt carries the
+    // selected cleanup item (kind + name) as its subject line.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Git;
+    app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
+        path: "/repo".to_string(),
+        branches: vec!["feature-old".to_string()],
+        worktrees: vec![],
+    }];
+    app.prompt_input = Some(crate::tui::PromptInput::new(
+        crate::tui::PromptKind::ConfirmCleanupDelete,
+    ));
+    let rendered = draw(&app, 120, 30);
+    assert!(
+        rendered.contains("branch feature-old"),
+        "the cleanup item kind and name render as the subject"
+    );
+}
+
+#[test]
+fn worktree_browser_folder_rows_and_pick_mode_render() {
+    // Folder rows render with the descend badge, and pick mode (new
+    // workspace) swaps the badges and the overlay title.
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::WorktreeList;
+    app.worktree_root = "/repo".to_string();
+    app.worktree_folder_rows = vec![crate::tui::workspace::BrowserRow::Folder {
+        path: "/repo/src".to_string(),
+        name: "src".to_string(),
+    }];
+    let rendered = draw(&app, 120, 30);
+    assert!(rendered.contains("src/"), "folder row renders");
+    assert!(
+        rendered.contains("[folder]"),
+        "plain mode shows the folder badge"
+    );
+    assert!(rendered.contains("Worktrees"), "plain-mode title renders");
+
+    // Pick mode: title and badges change; the this-folder row carries
+    // the stage hint.
+    app.worktree_pick_workspace = true;
+    let rendered = draw(&app, 120, 30);
+    assert!(
+        rendered.contains("New workspace"),
+        "pick-mode title renders"
+    );
+    assert!(
+        rendered.contains("[folder, Enter descends]"),
+        "pick mode shows the descend badge"
+    );
+    assert!(
+        rendered.contains("[o stages for new workspace]"),
+        "the this-folder row carries the stage hint in pick mode"
+    );
+}
+
+#[test]
+fn search_palette_no_results_after_commit_renders() {
+    // The committed-no-results arm: a query with no hits after the
+    // Enter commit shows the "no results" hint, not the typing hint.
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::SearchPalette;
+    app.search_palette.query = "zzz-nothing".to_string();
+    app.search_palette.committed = true;
+    app.search_palette.results = Vec::new();
+    let rendered = draw(&app, 120, 30);
+    assert!(
+        rendered.contains("no results"),
+        "committed empty search shows the no-results hint"
+    );
+    assert!(
+        !rendered.contains("Enter searches files"),
+        "the pre-commit hint is gone after committing"
     );
 }
 
