@@ -2537,8 +2537,15 @@ function effectiveTheme() {
 function terminalTheme() {
   const mode = effectiveTheme();
   const colors = options.themeColors[mode] || themeColorDefaults[mode];
+  // ANSI palette comes from --term-* tokens in shared/tokens.css so the
+  // terminal follows the CSS palette; the JS table stays as fallback for
+  // environments where getComputedStyle is unavailable (tests, SSR).
+  const tokenPalette = window.HerdrAppHelpers && window.HerdrAppHelpers.readTerminalThemeTokens
+    ? window.HerdrAppHelpers.readTerminalThemeTokens()
+    : null;
   return {
     ...(themes[mode] || themes.light),
+    ...(tokenPalette || {}),
     background: colors.background,
     foreground: colors.foreground,
     cursor: colors.cursor,
@@ -3647,9 +3654,36 @@ function parseRoute() {
   state.tab = p[i + 2] === "tab" ? (p[i + 3] || null) : null;
   state.pane = p[i + 4] === "pane" ? (p[i + 5] || null) : null;
 }
-function setTerminalLoading(show) {
+function setTerminalLoading(show, status) {
   const loading = el("terminalLoading");
-  if (loading) loading.classList.toggle("show", !!show);
+  if (!loading) return;
+  loading.classList.toggle("show", !!show);
+  if (!show) {
+    loading.classList.remove("failed");
+    return;
+  }
+  // Failed attach: offer an explicit reconnect instead of silent backoff.
+  if (status === "failed") {
+    loading.classList.add("failed");
+    loading.innerHTML =
+      '<div class="terminal-loading-failed"><strong>Panel connection failed</strong>' +
+      '<span>The backend did not accept the terminal attach. Retries continue in the background.</span>' +
+      '<button class="btn" type="button" id="terminalReconnectButton">Reconnect now</button></div>';
+    const button = el("terminalReconnectButton");
+    if (button) {
+      button.onclick = () => {
+        setTerminalLoading(true);
+        connectTerminal();
+      };
+    }
+    return;
+  }
+  if (loading.classList.contains("failed")) return;
+  loading.classList.remove("failed");
+  // Spinner + skeleton replace the plain "Loading panel" text so the
+  // panel keeps a terminal-like shape while the websocket attach runs.
+  const skeleton = window.HerdrSkeleton && window.HerdrSkeleton.terminal ? window.HerdrSkeleton.terminal() : "";
+  loading.innerHTML = `<span>Connecting panel</span><div class="terminal-loading-skeleton">${skeleton}</div>`;
 }
 function resetTerminalConnection(clear = false, destroy = false) {
   if (inputFlushTimer) {

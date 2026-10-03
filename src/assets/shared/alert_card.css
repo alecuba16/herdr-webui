@@ -10,7 +10,7 @@
   top: 0;
   left: 50%;
   translate: -50% 0;
-  z-index: var(--layer-overlay, 9000);
+  z-index: var(--z-alert-card, 1400);
   width: min(420px, calc(100vw - 2 * var(--space-3, 12px)));
   padding-top: var(--space-3, 12px);
   pointer-events: none;

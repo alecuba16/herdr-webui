@@ -52,6 +52,28 @@
   --git-changed: var(--git-changed-color, #89b4fa);
   --git-conflict: var(--git-conflict-color, #fab387);
 
+  /* ---- terminal palette: single source for wterm ANSI colors ----
+   * terminalTheme() reads these via getComputedStyle and hands them to the
+   * renderer, which mirrors them onto each terminal's --term-* vars. Catppuccin
+   * dark default; light overrides below shift to the light palette. Raw hex
+   * (not var()) because the renderer needs concrete color strings. */
+  --term-black: #6c7086;
+  --term-red: #f38ba8;
+  --term-green: #a6e3a1;
+  --term-yellow: #f9e2af;
+  --term-blue: #89b4fa;
+  --term-magenta: #cba6f7;
+  --term-cyan: #94e2d5;
+  --term-white: #cdd6f4;
+  --term-bright-black: #9399b2;
+  --term-bright-red: #f38ba8;
+  --term-bright-green: #a6e3a1;
+  --term-bright-yellow: #f9e2af;
+  --term-bright-blue: #89b4fa;
+  --term-bright-magenta: #cba6f7;
+  --term-bright-cyan: #94e2d5;
+  --term-bright-white: #ffffff;
+
   /* ---- spacing: 4px base ---- */
   --space-1: 4px;
   --space-2: 8px;
@@ -111,6 +133,9 @@
   --z-drawer: 20;
   --z-modal: 30;
   --z-banner: 40;
+  /* transient top-of-world surfaces (attention alert card): above sheets
+   * (mobile 91) and modals (desktop 1300) without relying on local values */
+  --z-alert-card: 1400;
 
   /* ---- shadows: overlays only; resting surfaces separate by tone + hairline ---- */
   --shadow-pop: 0 16px 48px #000a, 0 0 0 1px var(--border, #313244);
@@ -133,4 +158,21 @@ body.light {
   --danger-bg-hover: #e5c0c5;
   --warn: #8a4708;
   --warn-hover: #f2e3c2;
+  /* terminal palette follows the light theme for contrast */
+  --term-black: #5c5f77;
+  --term-red: #be1239;
+  --term-green: #116329;
+  --term-yellow: #91600a;
+  --term-blue: #1957d2;
+  --term-magenta: #6d28d9;
+  --term-cyan: #0a5a86;
+  --term-white: #acb0be;
+  --term-bright-black: #6c6f85;
+  --term-bright-red: #be1239;
+  --term-bright-green: #116329;
+  --term-bright-yellow: #91600a;
+  --term-bright-blue: #1957d2;
+  --term-bright-magenta: #6d28d9;
+  --term-bright-cyan: #0a5a86;
+  --term-bright-white: #4c4f69;
 }

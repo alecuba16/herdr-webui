@@ -5,15 +5,24 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 function element(id = "") {
+  const classes = new Set();
   return {
     id,
     classList: {
-      add() {},
-      remove() {},
-      contains() {
-        return false;
+      add(name) {
+        classes.add(name);
       },
-      toggle() {},
+      remove(name) {
+        classes.delete(name);
+      },
+      contains(name) {
+        return classes.has(name);
+      },
+      toggle(name, force) {
+        const next = force === undefined ? !classes.has(name) : !!force;
+        if (next) classes.add(name);
+        else classes.delete(name);
+      },
     },
     style: { setProperty() {} },
     dataset: {},
@@ -5304,5 +5313,74 @@ describe("alert card module", () => {
     );
     const state = vm.runInContext("HerdrAlertCard._state", ctx);
     equal(state.queue.length, 1, "different-key alert queued");
+  });
+});
+
+describe("terminal loading and failed states", () => {
+  let source;
+  beforeEach(() => {
+    source =
+      readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
+      "\n" +
+      [
+        "./desktop/app_js/core.js",
+        "./desktop/app_js/workspace_shell.js",
+        "./desktop/app_js/panel_switcher.js",
+        "./desktop/app_js/render.js",
+        "./desktop/app_js/terminal.js",
+        "./desktop/app_js/worktrees.js",
+        "./desktop/app_js/shortcuts.js",
+        "./desktop/app_js/workspace_create.js",
+        "./desktop/app_js/bindings.js",
+      ]
+        .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
+        .join("");
+  });
+
+  it("renders a skeleton while connecting and a reconnect card on failure", () => {
+    const ctx = context();
+    vm.runInContext(readFileSync(new URL("./shared/skeleton.js", import.meta.url), "utf8"), ctx);
+    vm.runInContext(source, ctx);
+    vm.runInContext("setTerminalLoading(true)", ctx);
+    const loading = ctx.document.getElementById("terminalLoading");
+    ok(loading.classList.contains("show"), "loading overlay shown");
+    ok(!loading.classList.contains("failed"), "connecting is not the failed state");
+    ok(loading.innerHTML.includes("herdr-skeleton-terminal"), "skeleton rendered");
+    ok(loading.innerHTML.includes("Connecting panel"), "label text present");
+
+    // Failed recovery attempt: reconnect card with a working button.
+    vm.runInContext("setTerminalLoading(true, 'failed')", ctx);
+    ok(loading.classList.contains("failed"), "failed state flagged");
+    ok(loading.innerHTML.includes("Panel connection failed"), "failure heading shown");
+    ok(loading.innerHTML.includes("terminalReconnectButton"), "reconnect button present");
+    const button = ctx.document.getElementById("terminalReconnectButton");
+    ok(button && typeof button.onclick === "function", "reconnect handler wired");
+
+    // Hiding clears the failed flag.
+    vm.runInContext("setTerminalLoading(false)", ctx);
+    ok(!loading.classList.contains("show"), "overlay hidden");
+    ok(!loading.classList.contains("failed"), "failed flag cleared");
+  });
+
+  it("sources the ANSI palette from --term-* tokens with JS fallback", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    // No getComputedStyle in the test context: falls back to the JS table.
+    // Without matchMedia the effective theme resolves to light.
+    const theme = vm.runInContext("terminalTheme()", ctx);
+    equal(theme.background, "#eff1f5", "fallback background used");
+    equal(theme.red, "#be1239", "fallback ANSI red used");
+    match(source, /readTerminalThemeTokens/);
+    const tokensCss = readFileSync(new URL("./shared/tokens.css", import.meta.url), "utf8");
+    match(tokensCss, /--term-red: #f38ba8;/);
+    match(tokensCss, /--term-bright-white: #ffffff;/);
   });
 });

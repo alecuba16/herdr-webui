@@ -389,15 +389,19 @@ async function connectTerminal(fitOverride = null) {
   };
   ws.onclose = () => {
     if (termWs === ws) {
+      const wasRecoveryAttempt = terminalReconnectTarget === target;
       flushTerminalFramesFor(target);
       termWs = null;
       connectedTerminalId = null;
       connectedSize = "";
-      setTerminalLoading(false);
       // Attach failed (backend unreachable or herdr_error teardown): start
       // the reconnect backoff so resize frames cannot reattach at frame
       // cadence. Deliberate teardowns null onclose before closing, so they
-      // skip this path.
+      // skip this path. A failed recovery attempt surfaces the failed
+      // state with a manual reconnect button; the first close (live
+      // attach) stays silent because the backoff already reattaches fast.
+      if (wasRecoveryAttempt) setTerminalLoading(true, "failed");
+      else setTerminalLoading(false);
       noteTerminalAttachFailure(target);
       scheduleRefreshBurst();
     }
@@ -1001,6 +1005,8 @@ function showTerminalPasteProgress(total) {
   }
   const progress = el("terminalPasteProgress");
   if (progress) progress.hidden = false;
+  const shell = el("terminalShell");
+  if (shell) shell.classList.add("pasting");
   updateTerminalPasteProgress(0, total);
 }
 function updateTerminalPasteProgress(done, total) {
@@ -1019,6 +1025,8 @@ function hideTerminalPasteProgress() {
   }
   const progress = el("terminalPasteProgress");
   if (progress) progress.hidden = true;
+  const shell = el("terminalShell");
+  if (shell) shell.classList.remove("pasting");
 }
 function showClipboardMenu(x, y) {
   const menu = el("clipboardMenu");

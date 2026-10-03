@@ -742,11 +742,17 @@
       const light = document.body.classList.contains("light");
       const colors = (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.terminalThemeColors) || {};
       const theme = light ? (colors.light || {}) : (colors.dark || {});
+      // Merge the shared --term-* token palette so ANSI colors follow the
+      // CSS palette on mobile too (same helper the desktop uses).
+      const tokenPalette = globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.readTerminalThemeTokens
+        ? globalThis.HerdrAppHelpers.readTerminalThemeTokens()
+        : null;
       return {
         background: theme.background || (light ? "#ffffff" : "#1e1e2e"),
         foreground: theme.foreground || (light ? "#4c4f69" : "#cdd6f4"),
         cursor: theme.cursor || (light ? "#4c4f69" : "#cdd6f4"),
         selectionBackground: theme.selectionBackground || (light ? "#dce0f8" : "#45475a"),
+        ...(tokenPalette || {}),
       };
     },
     defaultFolderFn: () => state.defaultFolder || "",

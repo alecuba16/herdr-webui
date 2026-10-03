@@ -75,7 +75,20 @@ backgrounds.
 - `--focus-ring` keeps the legacy box-shadow ring shape for controls that
   cannot switch to outline yet.
 - Layers: `--z-popover 10`, `--z-scrim 15`, `--z-drawer 20`, `--z-modal 30`,
-  `--z-banner 40`.
+  `--z-banner 40`, `--z-alert-card 1400` (transient top-of-world surfaces
+  like the attention alert card; above desktop modals and mobile sheets).
+
+## Terminal palette
+
+The wterm ANSI palette lives in tokens as `--term-*` custom properties
+(`--term-black` ... `--term-bright-white`, Catppuccin dark default,
+`body.light` overrides). `HerdrAppHelpers.readTerminalThemeTokens()` reads
+them via `getComputedStyle` (normalizing `rgb()` to `#rrggbb`) and desktop
+`terminalTheme()` plus the mobile temp-terminal `themeFn` merge the result
+over the legacy JS tables, which remain as fallback where computed styles
+are unavailable (tests). Background/foreground/cursor/selection still come
+from the user-customizable `options.themeColors`, so per-user theme picking
+keeps working on top of the shared ANSI palette.
 
 ## Motion
 

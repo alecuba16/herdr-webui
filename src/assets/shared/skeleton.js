@@ -32,6 +32,12 @@
     sessions(count) {
       return `<div class="herdr-skeleton herdr-skeleton-sessions">${rows(count || 2)}</div>`;
     },
+    // Terminal surface: a prompt line, two output lines, and a shorter
+    // line, mimicking a mostly-empty shell so the panel shape stays stable
+    // while the websocket attach is pending.
+    terminal() {
+      return `<div class="herdr-skeleton herdr-skeleton-terminal" aria-hidden="true"><div class="herdr-skeleton-row">${block("herdr-skeleton-line")}</div><div class="herdr-skeleton-row">${block("herdr-skeleton-line")}</div><div class="herdr-skeleton-row">${block("herdr-skeleton-title")}</div></div>`;
+    },
     // Inline spinner+label for buttons/small wait states (same style as the
     // git-ui worktree-loading pattern).
     inline(label) {
