@@ -320,7 +320,14 @@
       if (inputQueue.length && !inputFlushTimer) inputFlushTimer = setTimeout(() => { inputFlushTimer = null; flushInputQueue(); }, 4);
     }
 
-    return { connect, destroy, disconnect, applyFontFamily, applyLinks, scrollToBottom };
+    function sendControlKey(data) {
+      // Key-bar bytes bypass the wterm textarea: send directly through the
+      // input WS path. Strip helpers stay applied (they leave bare control
+      // bytes and arrow escapes untouched).
+      sendInputData(String(data || ""));
+    }
+
+    return { connect, destroy, disconnect, applyFontFamily, applyLinks, scrollToBottom, sendControlKey };
   }
 
   globalThis.HerdrMobileTerminal = { create: createMobileTerminal };

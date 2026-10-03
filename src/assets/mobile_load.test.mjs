@@ -1668,6 +1668,69 @@ describe("mobile bundle load", () => {
     }
   });
 
+  it("renders terminal key bar with control keys", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    // The screen render memo keeps the first terminal HTML in place, so
+    // assert on the markup builder in the bundle source.
+    match(source, /<div class="mobile-keybar" id="mobileKeyBar"/);
+    for (const key of ["esc", "tab", "ctrl", "up", "down", "left", "right", "ctrl-c"])
+      ok(source.includes(`data-key="${key}"`));
+    // No focus steal: every key bar button prevents default on mousedown.
+    const keybarSource = source.match(/function renderKeyBar\(\) \{[\s\S]*?\n    \}\n/)[0];
+    equal((keybarSource.match(/onmousedown="event\.preventDefault\(\)"/g) || []).length, 8);
+    // Keyboard-open hides the key bar along with header/nav.
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    match(mobileCss, /body\.mobile-keyboard-open \.mobile-keybar/);
+  });
+
+  it("sends key bar control bytes through the terminal input path", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    const sent = [];
+    ctx.lastSocket.send = (data) => sent.push(Buffer.from(data).toString("latin1"));
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "esc" }, setAttribute() {} });
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "tab" }, setAttribute() {} });
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "ctrl-c" }, setAttribute() {} });
+    equal(sent[0], "\x1b");
+    equal(sent[1], "\t");
+    equal(sent[2], "\x03");
+  });
+
+  it("applies one-shot Ctrl to the next arrow key", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    const sent = [];
+    ctx.lastSocket.send = (data) => sent.push(Buffer.from(data).toString("latin1"));
+    const ctrlButton = { dataset: { key: "ctrl" }, ariaPressed: null, setAttribute(_n, v) { this.ariaPressed = v; } };
+    ctx.HerdrMobile.keyBarKey(null, ctrlButton);
+    equal(ctrlButton.ariaPressed, "true");
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "up" }, setAttribute() {} });
+    // Ctrl+Up (modifier param), not plain Up.
+    equal(sent[0], "\x1b[1;5A");
+    // One-shot: the next plain Up is a plain arrow again.
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "up" }, setAttribute() {} });
+    equal(sent[1], "\x1b[A");
+    // Leaving the terminal screen disarms Ctrl.
+    ctx.HerdrMobile.keyBarKey(null, ctrlButton);
+    equal(ctrlButton.ariaPressed, "true");
+    ctx.HerdrMobile.showScreen("agents");
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    const sent2 = [];
+    ctx.lastSocket.send = (data) => sent2.push(Buffer.from(data).toString("latin1"));
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "left" }, setAttribute() {} });
+    equal(sent2[0], "\x1b[D");
+  });
+
   it("re-pins the backend per session on Back and resets the target state", async () => {
     const ctx = context("/session/work");
     ctx.localStorage.setItem("herdr-session-backend:work", "external-herdr");

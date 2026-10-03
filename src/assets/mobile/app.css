@@ -338,13 +338,54 @@ body.light {
 }
 .mobile-terminal-screen {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   min-width: 0;
   padding: 0;
   /* Positioning context for the follow button overlay. */
   position: relative;
+}
+.mobile-keybar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  -webkit-overflow-scrolling: touch;
+}
+.mobile-keybar::-webkit-scrollbar {
+  display: none;
+}
+.mobile-keybar-key {
+  flex: 0 0 auto;
+  min-height: 44px;
+  min-width: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel2);
+  color: var(--fg);
+  font-family: var(--term-font-family, ui-monospace, monospace);
+  font-weight: 700;
+  font-size: 14px;
+}
+.mobile-keybar-key:active {
+  filter: brightness(1.2);
+}
+.mobile-keybar-key[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.mobile-keybar-danger {
+  color: var(--danger, #f38ba8);
+  border-color: currentColor;
+}
+.mobile-terminal-screen > .mobile-keybar:empty {
+  display: none;
 }
 .mobile-tabs {
   display: flex;
@@ -554,6 +595,7 @@ body.mobile-keyboard-open .mobile-app {
 }
 body.mobile-keyboard-open .mobile-header,
 body.mobile-keyboard-open .mobile-nav,
+body.mobile-keyboard-open .mobile-keybar,
 body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   display: none;
 }

@@ -93,6 +93,10 @@
     browserFaviconError = false,
     // Cached .mobile-nav button list; null means re-query on next render.
     navButtons = null,
+    // One-shot Ctrl state for the terminal key bar. Cleared whenever the
+    // terminal screen re-renders the bar (markup resets aria-pressed), and
+    // after every key send.
+    keyBarCtrlArmed = false,
     mobileAttention,
     mobileSettings,
     mobileTerminal,
@@ -340,7 +344,10 @@
     const wasTerminal = state.screen === "terminal";
     const wasSettings = state.screen === "settings";
     state.screen = screen;
-    if (wasTerminal && screen !== "terminal") mobileTerminal.destroy(false);
+    if (wasTerminal && screen !== "terminal") {
+      mobileTerminal.destroy(false);
+      keyBarCtrlArmed = false;
+    }
     if (!wasSettings && screen === "settings" && mobileSettings.resetSettingBaselines)
       mobileSettings.resetSettingBaselines();
     if (screen === "settings" && mobileSettings.loadNoSleep) mobileSettings.loadNoSleep();
@@ -992,6 +999,29 @@
     applyTerminalLinks: mobileTerminal.applyLinks,
     reloadTerminal() { mobileTerminal.destroy(false); scheduleTerminalResize(); },
     scrollTerminalToBottom: mobileTerminal.scrollToBottom,
+    keyBarKey(_event, button) {
+      const key = button && button.dataset ? button.dataset.key : null;
+      if (!key || !mobileTerminal || !mobileTerminal.sendControlKey) return;
+      const PLAIN = { esc: "\x1b", tab: "\t", up: "\x1b[A", down: "\x1b[B", right: "\x1b[C", left: "\x1b[D" };
+      const CTRL = { up: "\x1b[1;5A", down: "\x1b[1;5B", right: "\x1b[1;5C", left: "\x1b[1;5D" };
+      // Mirror the armed state onto the button for CSS (aria-pressed); the
+      // source of truth is the module-level flag so DOM stubs can't desync.
+      const setArmed = (armed) => {
+        keyBarCtrlArmed = !!armed;
+        if (button && button.setAttribute) button.setAttribute("aria-pressed", armed ? "true" : "false");
+      };
+      if (key === "ctrl") {
+        setArmed(!keyBarCtrlArmed);
+        return;
+      }
+      if (key === "ctrl-c") {
+        mobileTerminal.sendControlKey("\x03");
+        setArmed(false);
+        return;
+      }
+      mobileTerminal.sendControlKey(keyBarCtrlArmed && CTRL[key] ? CTRL[key] : PLAIN[key]);
+      setArmed(false);
+    },
     currentScreen,
     currentSelection,
     refresh,
