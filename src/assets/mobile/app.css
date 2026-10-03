@@ -203,8 +203,8 @@ body.light {
 }
 .mobile-btn.danger,
 .mobile-tab-close {
-  border-color: #f38ba8;
-  color: #f38ba8;
+  border-color: var(--danger, #f38ba8);
+  color: var(--danger, #f38ba8);
 }
 .mobile-screen {
   min-height: 0;
