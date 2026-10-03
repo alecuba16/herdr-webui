@@ -1,0 +1,32 @@
+name: Diag Linux composer test
+
+on:
+  push:
+    branches:
+      - diag-linux-composer
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    name: Run composer e2e on Linux with nocapture
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run the flaky test
+        run: cargo test --bin herdr-webui tui_composer_submit_round_trips_and_refuses_when_blocked -- --nocapture
+
+      - name: Run it 3 more times
+        run: |
+          for i in 1 2 3; do
+            cargo test --bin herdr-webui tui_composer_submit_round_trips_and_refuses_when_blocked -- --nocapture || true
+          done

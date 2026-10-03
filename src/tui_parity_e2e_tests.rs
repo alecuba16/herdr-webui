@@ -2297,7 +2297,10 @@ fn composer_submit_assertions(api: &WebApiClient, echo: &str) -> Result<(), Stri
     api.submit_pane(&pane_id, "please print the dialog")
         .map_err(|err| format!("dialog submit failed: {err}"))?;
     let mut refusal = None;
-    for _ in 0..40 {
+    // Diagnostic log of every poll result; printed on failure so a Linux
+    // CI repro shows what the refusal gate actually saw (tail + status).
+    let mut poll_log: Vec<String> = Vec::new();
+    for attempt in 0..40 {
         std::thread::sleep(std::time::Duration::from_millis(250));
         match api.submit_pane(&pane_id, "should refuse") {
             Err(err) if err.to_string().contains("agent_blocked") => {
@@ -2306,11 +2309,47 @@ fn composer_submit_assertions(api: &WebApiClient, echo: &str) -> Result<(), Stri
             }
             // Not refused yet: the cached status has not caught up with
             // the dialog in the tail. Keep going.
-            Ok(_) => continue,
+            Ok(_) => {
+                if attempt % 8 == 0 {
+                    let tail = backend
+                        .request("pane.read", json!({ "pane_id": pane_id }))
+                        .ok()
+                        .and_then(|read| read["read"]["text"].as_str().map(str::to_string))
+                        .unwrap_or_default();
+                    let status = backend
+                        .request("agent.list", json!({}))
+                        .ok()
+                        .and_then(|list| {
+                            list["agents"]
+                                .as_array()
+                                .and_then(|agents| agents.first().cloned())
+                                .and_then(|agent| agent.get("status").cloned())
+                        })
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "<no agent list>".to_string());
+                    poll_log.push(format!(
+                        "poll {attempt}: accepted; status={status}; tail_tail={:?}",
+                        tail.chars()
+                            .rev()
+                            .take(400)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect::<String>()
+                    ));
+                }
+                continue;
+            }
             Err(other) => return Err(format!("submit errored unexpectedly: {other}")),
         }
     }
-    let err = refusal.expect("blocked pane must refuse the submit");
+    let err = match refusal {
+        Some(err) => err,
+        None => {
+            let dump = poll_log.join("\n");
+            panic!("blocked pane must refuse the submit. polls:\n{dump}");
+        }
+    };
     assert_eq!(
         err.to_string(),
         "WebUI API error 409: agent_blocked: the agent is waiting for an answer in the terminal"
