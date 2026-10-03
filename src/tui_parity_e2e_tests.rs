@@ -2287,13 +2287,12 @@ fn composer_submit_assertions(api: &WebApiClient, echo: &str) -> Result<(), Stri
     );
 
     // Blocked refusal: the second submitted line makes the echo script
-    // print a Claurst-style permission dialog, the real detector +
-    // status sweeper flip the pane to blocked, and further submits must
-    // refuse with the server-owned note. The refusal gate reads the
-    // cached status (updated by the throttled sweeper), which can lag
-    // the live tail, so poll the submit itself until it refuses; every
-    // accepted attempt just pastes another line past the dialog, which
-    // keeps the tail matching the detector.
+    // print a Claurst-style permission dialog, and further submits must
+    // refuse with the server-owned note. The refusal gate runs the
+    // detection core fresh on every submit (not just the cached status),
+    // so a starved sweeper cannot extend the window; poll the submit
+    // itself until it refuses, since the dialog only becomes visible in
+    // the tail after the paste+Enter round trip completes.
     api.submit_pane(&pane_id, "please print the dialog")
         .map_err(|err| format!("dialog submit failed: {err}"))?;
     let mut refusal = None;

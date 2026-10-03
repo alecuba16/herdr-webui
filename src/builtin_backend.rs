@@ -2220,6 +2220,20 @@ impl TerminalRuntime {
                 "agent_blocked: the agent is waiting for an answer in the terminal".to_string(),
             );
         }
+        // The cached status comes from the output-driven detector + the
+        // 100ms trailing sweeper, which can lag a fresh permission dialog
+        // by up to ~600ms (throttle + sweeper tick) and far longer on a
+        // starved machine (observed >10s on a loaded CI runner). A paste
+        // that lands inside that window would answer the dialog, so run
+        // the detection core once more right here: a submit is a rare
+        // user action and the tail parse is milliseconds. This closes the
+        // submit-vs-sweeper race instead of merely narrowing it.
+        self.detect_and_publish_agent_status();
+        if self.last_agent_status().as_deref() == Some("blocked") {
+            return Err(
+                "agent_blocked: the agent is waiting for an answer in the terminal".to_string(),
+            );
+        }
         let message = composer_message(text);
         let payload = bracketed_paste_payload(&message);
         self.write_input(payload.as_bytes())
@@ -2268,7 +2282,14 @@ impl TerminalRuntime {
             self.pending_status_check.store(true, Ordering::Release);
             return;
         }
+        self.detect_and_publish_agent_status();
+    }
 
+    /// The detection core shared by the throttled/sweeper paths and the
+    /// composer refusal gate: parse the pane tail (+ OSC state) and
+    /// publish the resulting (agent, status) pair when it changed.
+    /// Throttle-free by design; the callers own rate limiting.
+    fn detect_and_publish_agent_status(&self) {
         let tail = self.history_tail_text(DETECTION_TAIL_BYTES);
         let (osc_progress, osc_title, osc_agent) = self
             .osc9_tracker
@@ -5980,6 +6001,76 @@ mod tests {
         assert!(
             text.contains("second line\n"),
             "delayed Enter missing from pane output: {text:?}"
+        );
+    }
+
+    #[test]
+    fn agent_prompt_refuses_on_fresh_dialog_despite_stale_cache() {
+        // Regression pin for the CI flake (v0.4.57 release, run
+        // 37157316762): the refusal gate used to read ONLY the cached
+        // last_agent_state, which is flipped by the throttled status
+        // detection (500ms window + 100ms sweeper). On a loaded runner the
+        // sweeper thread can be starved for the whole poll window, so a
+        // fresh permission dialog in the scrollback was never seen and
+        // the submit was accepted. The gate now re-runs the detection
+        // core synchronously at submit time, so a stale cache cannot
+        // smuggle a paste past an open dialog. Simulate the starved
+        // machine directly: dialog bytes are in the scrollback, the cache
+        // still says working.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let (pane_id, terminal) = {
+            let data = state.data.lock().unwrap();
+            let (pane_id, pane) = data.panes.iter().next().unwrap();
+            let terminal = data.terminals.get(&pane.terminal_id).unwrap().clone();
+            (pane_id.clone(), terminal)
+        };
+        // Stale cache: the sweeper has not run since the dialog landed.
+        // Consume the 500ms throttle window with a warmup append first,
+        // so the dialog append below is throttled (pending flag set, no
+        // detection) exactly like a starved runner where the sweeper
+        // never gets scheduled.
+        terminal.append_output(b"warmup\n");
+        {
+            let mut previous = terminal.last_agent_state.lock().unwrap();
+            *previous = Some((Some("claurst".to_string()), "working".to_string()));
+        }
+        // Fresh screen: a Claurst permission dialog lands in the tail but
+        // the detection is throttled out, so the cached status still says
+        // working. On a loaded CI runner the same state arises because the
+        // sweeper thread is starved for the whole poll window.
+        terminal.append_output(b"Do you want to run this command?\nYes, allow once\nNo, deny\n");
+        // Submit immediately, inside the throttle window, while the cache
+        // is still stale.
+        let response = state.handle_request(
+            "test",
+            "agent.prompt",
+            json!({ "pane_id": pane_id, "text": "should be refused" }),
+        );
+        assert_eq!(
+            response["error"]["message"],
+            "agent_blocked: the agent is waiting for an answer in the terminal"
+        );
+        // And the fresh detection result must have been published: the
+        // cache no longer says working.
+        assert_eq!(
+            terminal.last_agent_status().as_deref(),
+            Some("blocked"),
+            "submit-time detection must publish the blocked status"
+        );
+        // Nothing was typed: cat echoes stdin, so any leaked paste would
+        // show in the scrollback within the Enter-gap window.
+        std::thread::sleep(Duration::from_millis(AGENT_PROMPT_ENTER_GAP_MS + 300));
+        let text = state.handle_request("t2", "pane.read", json!({ "pane_id": pane_id }));
+        let text = text["result"]["read"]["text"].as_str().unwrap_or("");
+        assert!(
+            !text.contains("should be refused"),
+            "refused message leaked into the pane: {text:?}"
         );
     }
 
