@@ -2994,4 +2994,170 @@ mod tests {
         assert!(status.get("README.md").is_none());
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn collect_git_status_noop_on_default_branch() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-branch-on-base-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("README.md"), "base").unwrap();
+
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .status()
+                .unwrap()
+        };
+        if !git(&["init", "-b", "main"]).success() {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        assert!(git(&["add", "README.md"]).success());
+        assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
+        // Stay on main with a clean tree: no changed entries expected.
+
+        let root = root.canonicalize().unwrap();
+        let status = collect_git_status(&root, &root);
+        assert!(status.is_none(), "clean main must produce no git_status map");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collect_git_status_noop_on_detached_head() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-branch-detached-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("README.md"), "base").unwrap();
+
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .status()
+                .unwrap()
+        };
+        if !git(&["init", "-b", "main"]).success() {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        assert!(git(&["add", "README.md"]).success());
+        assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
+        assert!(git(&["switch", "-c", "feat"]).success());
+        fs::write(root.join("file.rs"), "feat").unwrap();
+        assert!(git(&["add", "file.rs"]).success());
+        assert!(git(&["commit", "-m", "feat", "--no-gpg-sign"]).success());
+        // Detach HEAD at the feat commit: branch diff must not run.
+        assert!(git(&["switch", "--detach"]).success());
+
+        let root = root.canonicalize().unwrap();
+        let status = collect_git_status(&root, &root);
+        assert!(status.is_none(), "detached HEAD must not report branch changes");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collect_git_status_reports_deleted_branch_files_as_changed() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-branch-deleted-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("README.md"), "base").unwrap();
+        fs::write(root.join("src/gone.rs"), "base").unwrap();
+
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .status()
+                .unwrap()
+        };
+        if !git(&["init", "-b", "main"]).success() {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        assert!(git(&["add", "."]).success());
+        assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
+        assert!(git(&["switch", "-c", "feat"]).success());
+        fs::remove_file(root.join("src/gone.rs")).unwrap();
+        assert!(git(&["add", "-A"]).success());
+        assert!(git(&["commit", "-m", "delete", "--no-gpg-sign"]).success());
+
+        let root = root.canonicalize().unwrap();
+        let status = collect_git_status(&root, &root).unwrap();
+
+        // A file deleted on the branch is still a branch change (blue), not a
+        // working-tree deletion (red): it exists on base, not on HEAD.
+        assert_eq!(
+            status.get("src/gone.rs").and_then(|value| value.as_str()),
+            Some("changed")
+        );
+        assert_eq!(
+            status.get("src").and_then(|value| value.as_str()),
+            Some("changed")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collect_git_status_trims_subdir_prefix_for_branch_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-branch-subdir-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("workspace/src")).unwrap();
+        fs::write(root.join("workspace/README.md"), "base").unwrap();
+
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .status()
+                .unwrap()
+        };
+        if !git(&["init", "-b", "main"]).success() {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        assert!(git(&["add", "."]).success());
+        assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
+        assert!(git(&["switch", "-c", "feat"]).success());
+        fs::write(root.join("workspace/src/branch_file.rs"), "feat").unwrap();
+        assert!(git(&["add", "."]).success());
+        assert!(git(&["commit", "-m", "feat", "--no-gpg-sign"]).success());
+
+        // Workspace root is a subdirectory of the repo: paths must be trimmed
+        // to workspace-relative so tree rows match.
+        let workspace = root.join("workspace").canonicalize().unwrap();
+        let status = collect_git_status(&workspace, &workspace).unwrap();
+
+        assert_eq!(
+            status
+                .get("src/branch_file.rs")
+                .and_then(|value| value.as_str()),
+            Some("changed")
+        );
+        assert_eq!(
+            status.get("src").and_then(|value| value.as_str()),
+            Some("changed")
+        );
+        assert!(
+            status.get("workspace/src/branch_file.rs").is_none(),
+            "repo-relative path must not leak into the workspace map"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 }
