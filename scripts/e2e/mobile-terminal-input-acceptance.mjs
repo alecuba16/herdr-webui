@@ -164,7 +164,10 @@ if (panelCreated) {
   await evalx(`HerdrMobile.selectTab(${JSON.stringify(secondPanel)})`);
   await new Promise((r) => setTimeout(r, 500));
   const selectedSecond = await evalx('HerdrMobile.currentSelection()');
-  check('mobile panel selection moves to second panel', selectedSecond.tab === secondPanel, JSON.stringify(selectedSecond));
+  // selectTab stores the tab_id form the last refresh loaded (scoped or
+  // bare), so compare scope-normalized like the refresh-stability check
+  // below, not raw strings.
+  check('mobile panel selection moves to second panel', scopedPanelId(selectedSecond.tab) === secondPanel, JSON.stringify(selectedSecond));
 
   await evalx(`HerdrMobile.selectTab(${JSON.stringify(firstPanel)})`);
   await new Promise((r) => setTimeout(r, 500));
