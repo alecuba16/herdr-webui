@@ -26,6 +26,11 @@
   cards). `docs/features.md` and `docs/tui-backend-api.md` link to it,
   and the in-app `Ctrl+B ?` help overlay carries the same list with a
   type-to-filter search.
+- The composer's blocked-pane refusal gate now re-runs agent status
+  detection at submit time instead of trusting the cached status alone.
+  On a heavily loaded machine the cached status (updated by the throttled
+  sweeper) could lag a freshly opened permission dialog long enough for
+  a submit to slip past the refusal and paste into the dialog.
 
 ## 0.4.56 Release Notes
 - Boot-time skeleton placeholders (shared `skeleton.js`/`skeleton.css`) now
