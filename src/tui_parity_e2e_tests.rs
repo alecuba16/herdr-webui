@@ -2311,31 +2311,34 @@ fn composer_submit_assertions(api: &WebApiClient, echo: &str) -> Result<(), Stri
             // the dialog in the tail. Keep going.
             Ok(_) => {
                 if attempt % 8 == 0 {
-                    let tail = backend
+                    let read = backend
                         .request("pane.read", json!({ "pane_id": pane_id }))
-                        .ok()
-                        .and_then(|read| read["read"]["text"].as_str().map(str::to_string))
-                        .unwrap_or_default();
-                    let status = backend
+                        .unwrap_or_else(|_| json!({}));
+                    let tail = read["read"]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    let screen_tail = read["read"]["screen_text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    let agents = backend
                         .request("agent.list", json!({}))
-                        .ok()
-                        .and_then(|list| {
-                            list["agents"]
-                                .as_array()
-                                .and_then(|agents| agents.first().cloned())
-                                .and_then(|agent| agent.get("status").cloned())
-                        })
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "<no agent list>".to_string());
-                    poll_log.push(format!(
-                        "poll {attempt}: accepted; status={status}; tail_tail={:?}",
-                        tail.chars()
+                        .map(|list| list["agents"].to_string())
+                        .unwrap_or_else(|_| "<req failed>".to_string());
+                    let last_chars = |s: &str, n: usize| {
+                        s.chars()
                             .rev()
-                            .take(400)
+                            .take(n)
                             .collect::<Vec<_>>()
                             .into_iter()
                             .rev()
                             .collect::<String>()
+                    };
+                    poll_log.push(format!(
+                        "poll {attempt}: accepted; agents={agents}; text_tail={:?}; screen_tail={:?}",
+                        last_chars(&tail, 250),
+                        last_chars(&screen_tail, 400),
                     ));
                 }
                 continue;
