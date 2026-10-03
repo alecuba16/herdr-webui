@@ -7347,3 +7347,284 @@ fn fake_composer_server(mode: Option<&str>) -> (u16, std::sync::mpsc::Sender<()>
     });
     (port, tx)
 }
+
+// ---------------------------------------------------------------------------
+// Prompt cards (P3, webui prompt_cards.js port): evaluate/visibility,
+// key routing, answer transport, and render gating.
+// ---------------------------------------------------------------------------
+
+/// Fixture tail of a blocked numbered dialog (the shapes the parser
+/// accepts: nav hint + numbered options + question line).
+fn blocked_dialog_tail() -> Vec<String> {
+    [
+        "❯ Should I proceed with the deploy?",
+        "Use ↑/↓ or 1-3 to choose:",
+        "1. Deploy now",
+        "2. Deploy with tag",
+        "3. Cancel",
+        "esc to dismiss",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+fn app_with_blocked_pane() -> TuiApp {
+    let mut app = app_with_snapshot();
+    // The fixture pane is "idle"; a blocked pane with a question dialog
+    // is the card's precondition.
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app
+}
+
+#[test]
+fn prompt_card_evaluates_visible_on_blocked_dialog_and_hides_when_unblocked() {
+    let mut app = app_with_blocked_pane();
+    app.set_pane_tail_from_text(&blocked_dialog_tail().join("\n"));
+    assert!(
+        app.prompt_card.visible,
+        "blocked pane with a numbered dialog opens the card"
+    );
+    let card = app.prompt_card.current_card().expect("card parsed");
+    assert_eq!(card.kind, crate::tui::prompt_cards::PromptCardKind::Options);
+    assert_eq!(card.title, "Should I proceed with the deploy");
+    assert_eq!(card.options.len(), 3);
+    // Footer context switches to the card.
+    assert!(matches!(
+        app.footer_context(),
+        crate::tui::FooterContext::PromptCard
+    ));
+    // Status flips back to idle: the card must collapse (webui hides
+    // the card when the agent stops waiting).
+    app.snapshot.panes[0].agent_status = "idle".to_string();
+    app.evaluate_prompt_card();
+    assert!(!app.prompt_card.visible, "unblocked pane hides the card");
+}
+
+#[test]
+fn prompt_card_key_routing_owns_answer_keys_only_while_visible() {
+    let mut app = app_with_blocked_pane();
+    app.set_pane_tail_from_text(&blocked_dialog_tail().join("\n"));
+    assert!(app.prompt_card.visible);
+    // j moves the card cursor (not the workspace selection).
+    let workspace_before = app.selected_workspace;
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.prompt_card_cursor, 1);
+    assert_eq!(app.selected_workspace, workspace_before);
+    // k moves back up.
+    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.prompt_card_cursor, 0);
+    // Digit 2 jumps straight to the second option AND answers it
+    // (a digit is a click: cursor + answer in one key, webui button
+    // parity). The send fails on the dead socket, but the answered
+    // label proves the cursor sat on option 2 at answer time; the
+    // post-answer refresh resets the cursor to 0 (it is only
+    // meaningful while the card is visible).
+    app.handle_key(KeyEvent::from(KeyCode::Char('2')));
+    assert_eq!(app.status, "answered: Deploy with tag");
+    assert!(!app.prompt_card.visible, "answered card collapses");
+    // Re-arm the card (fresh blocked episode, same question) and
+    // dismiss it with Esc: dismissal sticks within the episode.
+    app.snapshot.panes[0].agent_status = "idle".to_string();
+    app.evaluate_prompt_card();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.evaluate_prompt_card();
+    assert!(app.prompt_card.visible, "fresh episode re-opens the card");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.prompt_card.visible);
+    assert_eq!(app.status, "card dismissed");
+    // After dismissal j is navigation again (selection moves).
+    let before = app.selected_workspace;
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.selected_workspace, before);
+    // A fresh blocked episode re-arms the card even with the same
+    // question text (webui blocked-episode rule).
+    app.snapshot.panes[0].agent_status = "idle".to_string();
+    app.evaluate_prompt_card();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.evaluate_prompt_card();
+    assert!(
+        app.prompt_card.visible,
+        "fresh blocked episode re-opens the card"
+    );
+}
+
+#[test]
+fn prompt_card_keys_do_not_route_on_other_screens_or_attach_mode() {
+    let mut app = app_with_blocked_pane();
+    // The card is DERIVED state (status + tail), so it evaluates on
+    // every screen; only the key routing and the render are gated to
+    // the Terminal screen in Navigate mode. On Files, card keys must
+    // fall through to the tree: j moves the file cursor, never the
+    // option cursor, and Enter opens a preview, never an answer.
+    app.screen = TuiScreen::Files;
+    app.set_pane_tail_from_text(&blocked_dialog_tail().join("\n"));
+    assert!(app.prompt_card.visible, "derived state evaluates anywhere");
+    let cursor_before = app.prompt_card_cursor;
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(
+        app.prompt_card_cursor, cursor_before,
+        "Files screen: j is tree navigation, not the card cursor"
+    );
+    assert!(app.error.is_none(), "no answer attempt left the app");
+    // Footer context on Files is the Files hint, not the card hint.
+    assert!(!matches!(
+        app.footer_context(),
+        crate::tui::FooterContext::PromptCard
+    ));
+    // Attach mode on the Terminal screen: attach owns the keys, the
+    // card renders under it (webui card slides under modals) and
+    // Enter never answers.
+    app.screen = TuiScreen::Terminal;
+    app.mode = TuiMode::Attach;
+    let cursor_before = app.prompt_card_cursor;
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.prompt_card_cursor, cursor_before);
+}
+
+#[test]
+fn prompt_card_visible_q_still_quits() {
+    // Plain q is the TUI-wide quit key; the card must never steal it
+    // (the webui quit control lives outside the card). Esc is the
+    // card's dismiss (the × button), q falls through to quit.
+    let mut app = app_with_blocked_pane();
+    app.set_pane_tail_from_text(&blocked_dialog_tail().join("\n"));
+    assert!(app.prompt_card.visible);
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert!(app.prompt_card.visible, "q does not dismiss the card");
+    assert_eq!(app.mode, TuiMode::ConfirmQuit, "q still quits");
+}
+
+#[test]
+fn prompt_card_answer_option_stale_guard_and_error_path() {
+    let mut app = app_with_blocked_pane();
+    app.set_pane_tail_from_text(&blocked_dialog_tail().join("\n"));
+    assert!(app.prompt_card.visible);
+    // The dialog moved on: the tail no longer parses (or parses to a
+    // different question). The stale guard must refuse to send.
+    app.pane_tail = vec!["shell output".to_string()];
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.status, "question changed, not sent",
+        "stale guard refuses to answer a moved-on dialog"
+    );
+    assert!(app.prompt_card.visible, "card stays after a stale refusal");
+    // Fresh dialog again: Enter answers through the raw input path;
+    // the dead terminal socket surfaces an error but the card
+    // collapses (the answer was consumed by the dialog).
+    app.set_pane_tail_from_text(&blocked_dialog_tail().join("\n"));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.error.is_some(), "dead terminal socket surfaces");
+    assert!(!app.prompt_card.visible, "answered card collapses");
+}
+
+#[test]
+fn prompt_card_free_text_opens_answer_prompt_and_routes_hybrid_transport() {
+    let mut app = app_with_blocked_pane();
+    // Free-text question shape: question line + "enter your response".
+    app.set_pane_tail_from_text("❯ What database should I use?\nenter your response below:\n");
+    assert!(app.prompt_card.visible);
+    let card = app.prompt_card.current_card().expect("card parsed");
+    assert_eq!(card.kind, crate::tui::prompt_cards::PromptCardKind::Text);
+    // Enter opens the CardAnswer modal (NOT the composer: the composer
+    // submit route refuses blocked panes by design).
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    let prompt = app.prompt_input.as_ref().expect("answer prompt opens");
+    assert_eq!(prompt.kind, PromptKind::CardAnswer);
+    // Type an answer and submit: blocked pane routes the raw path
+    // (typed text + Enter into the dialog). The dead terminal socket
+    // surfaces the error.
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.prompt_input.is_none(), "answer prompt closes on submit");
+    assert!(
+        app.error.is_some(),
+        "blocked free-text answer goes through raw input (dead socket errors)"
+    );
+    assert!(!app.prompt_card.visible, "answered card collapses");
+    // The composer draft for the pane is untouched (the answer is not
+    // a composer message).
+    assert!(!app.composer_drafts.contains_key("pane_1"));
+}
+
+#[test]
+fn prompt_card_render_gates_on_visibility_screen_and_mode() {
+    let mut app = app_with_blocked_pane();
+    app.set_pane_tail_from_text(&blocked_dialog_tail().join("\n"));
+    // The card's own hint row is the sentinel: the dialog lines
+    // themselves stay in the pane tail (rendered by the terminal
+    // pane), so only the card frame's rows prove the card renders.
+    let rendered = draw(&app, 100, 24);
+    assert!(
+        rendered.contains("Enter answer"),
+        "card hint row renders while the card is visible"
+    );
+    // Dismissed: the card frame (and its hint row) disappear; the
+    // dialog text stays as plain tail output.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    let rendered = draw(&app, 100, 24);
+    assert!(!rendered.contains("Enter answer"), "dismissed card hides");
+    // Re-arm and switch to Files: the card state is visible but the
+    // render gate is Terminal-screen-only.
+    app.snapshot.panes[0].agent_status = "idle".to_string();
+    app.evaluate_prompt_card();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.evaluate_prompt_card();
+    assert!(app.prompt_card.visible);
+    app.screen = TuiScreen::Files;
+    let rendered = draw(&app, 100, 24);
+    assert!(!rendered.contains("Enter answer"), "no card over Files");
+    // Attach mode renders the terminal raw; the card is Navigate-only
+    // (attach owns the keys, the webui card would be hidden behind
+    // the focused terminal).
+    app.screen = TuiScreen::Terminal;
+    app.mode = TuiMode::Attach;
+    let rendered = draw(&app, 100, 24);
+    assert!(!rendered.contains("Enter answer"), "no card in attach mode");
+}
+
+#[test]
+fn prompt_card_text_answer_via_composer_when_unblocked() {
+    // Hybrid transport (user decision): a Text card whose pane flips
+    // to UNBLOCKED while the answer modal is open routes the answer
+    // through the composer submit (agent.prompt semantics). The
+    // composer server answers 200 ok.
+    let (port, _stop) = fake_composer_server(Some("ok"));
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", port),
+    );
+    app.snapshot = fixture_snapshot();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.set_pane_tail_from_text("❯ What database should I use?\nenter your response below:\n");
+    assert!(app.prompt_card.visible);
+    // Enter opens the CardAnswer modal.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.prompt_input.as_ref().map(|p| p.kind),
+        Some(PromptKind::CardAnswer)
+    );
+    // The pane unblocks while the modal is open (the agent resumed).
+    // The dialog text is still on the tail; the composer route takes
+    // the answer as a plain message now.
+    app.snapshot.panes[0].agent_status = "idle".to_string();
+    for ch in "postgres".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.prompt_input.is_none(), "answer prompt closes on submit");
+    assert_eq!(
+        app.status, "message sent",
+        "unblocked free-text answer rides the composer submit route"
+    );
+    assert!(!app.prompt_card.visible, "answered card collapses");
+    // The raw terminal path never ran: its status would be
+    // "answer sent" (and its attach error would replace the composer
+    // success). The refresh after submit hits the dead API socket,
+    // which is normal dead-backend noise, not an answer-path error.
+    assert_eq!(app.status, "message sent");
+}

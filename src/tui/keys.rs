@@ -345,6 +345,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "Ctrl+B Shift+C",
             "composer: send a message to the selected panel",
         ),
+        (
+            "prompt card",
+            "blocked dialog: j/k cursor, Enter answers, 1-9 jump, Esc hide",
+        ),
         ("", ""),
         ("Ctrl+B 1", "git: changes"),
         ("Ctrl+B 2/c", "git: commit modal"),

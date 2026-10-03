@@ -14,7 +14,7 @@ Webui features that are terminal-surface UX (all three shipped on
 | --- | --- | --- | --- |
 | Chat lens (transcript view) | `lens.js` (73e6902) | done | P1 |
 | Chat composer (server submit) | `composer.js` (9a7abc2, SOLID 3a29edd) | done | P2 |
-| Prompt cards (blocked answers) | `prompt_cards.js` (3b2a4ab, 626c80f, 9c745a2) | todo | P3 |
+| Prompt cards (blocked answers) | `prompt_cards.js` (3b2a4ab, 626c80f, 9c745a2) | done | P3 |
 
 Out of scope for the TUI (browser concerns, no TUI counterpart):
 density toggle, a11y attributes, mobile drawer/header, stall banner
@@ -87,23 +87,48 @@ features.md at P5.
 - 5 TUI integration tests with a fake composer server (ok / blocked /
   note-copy fidelity / draft prefill / empty-message early out).
 
-## P3 — Prompt cards (todo)
+## P3 — Prompt cards (done)
 
 - `src/tui/prompt_cards.rs`: `parse_prompt(&[String]) -> Option<PromptCard>`
-  port of the webui parser (numbered option blocks, ↑↓ nav hint, esc
-  cancel, free-text "enter your response" question shapes, question
-  title extraction), gated on the selected pane's `agent_status ==
-  "blocked"`.
-- Overlay: title, numbered option rows (j/k select, Enter answers), or
-  free-text input; `Esc` dismisses for this episode; the card re-arms
-  on a fresh blocked transition.
-- Answering synthesizes the answer through the composer submit path
-  (server-side `agent.prompt`), not raw terminal keystrokes: a blocked
-  agent's question is exactly what `agent_blocked` refusals protect.
-  Free-text answers type the text + Enter through the submit route;
-  numbered options submit the option number.
-- Stale-send guard: re-parse the tail before sending (webui invariant);
-  if the dialog changed, do nothing.
+  port of the webui parser (last-contiguous numbered option block,
+  ↑↓ nav hint, esc cancel, free-text "enter your response" shapes,
+  3-pass `question_title`), verified against the JS run under node
+  (`parity_with_webui_oracle`); `PromptCardState` (dismissal identity,
+  blocked-episode re-arm, tail signature, `stale_guard`, `mark_answered`).
+- `evaluate_prompt_card()` runs from both tail setters AND the
+  `refresh_tail` error/no-pane arms, so a status flip collapses the
+  card on the very next tick even when the tail read fails.
+- Overlay: bottom-right floating card over the terminal pane (webui
+  CSS anchor `right:0; bottom:12px`), NOT a centered modal and no
+  backdrop dim; head = question title, body = option rows with a
+  j/k cursor (❯ marker, webui button hover counterpart) or the
+  free-text hint, foot = key hints. Render gated to Terminal screen +
+  Navigate mode; open modals dim/cover it like the webui card slides
+  under modals.
+- Keys (card visible, Terminal, Navigate): j/k/arrows move the cursor
+  (options kind only), Enter answers the highlighted option, 1-9
+  jump AND answer like a webui button click, Esc dismisses for this
+  question episode, plain q falls through to quit (never stolen);
+  non-card keys fall through to navigation.
+- Free-text cards: Enter opens `PromptKind::CardAnswer` (title
+  "Answer the question", subject = the question) — a separate kind,
+  NOT the composer draft, so drafts stay untouched.
+- Hybrid answer transport (user decision): numbered options always
+  go through raw `send_input` (`N\r`, webui sendInputData parity);
+  free text picks by the pane's status at ANSWER time — composer
+  submit (`submit_pane`) when unblocked, raw `text\r` when blocked.
+  The composer route is never used for blocked dialog answers (the
+  server refuses `agent_blocked` by design). `stale_guard` is pure
+  dialog freshness (re-parse + title match, webui parity) and only
+  gates the raw path.
+- Footer context `PromptCard` with full/compact hints; help row
+  `prompt card` in `help_rows()`.
+- Tests: 14 unit (parser shapes, title passes, state lifecycle,
+  stale guard, hybrid routing helper, webui oracle parity) + 8 TUI
+  integration (evaluate/hide, key routing + q-quit regression,
+  other-screen/attach gating, stale guard + dead-socket error path,
+  free-text CardAnswer flow, unblocked composer route with the fake
+  server, render gating).
 
 ## P4 — e2e (done)
 

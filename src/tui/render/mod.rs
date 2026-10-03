@@ -57,6 +57,14 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     if app.lens.active && app.screen == TuiScreen::Terminal {
         render_lens(frame, area, app, p);
     }
+    // The prompt card floats over the pane (webui anchor: bottom-right,
+    // no backdrop dim). Rendered before the modal layers so any open
+    // modal (help, prompts) dims and covers it, like the webui card
+    // slides under modals.
+    if app.prompt_card.visible && app.screen == TuiScreen::Terminal && app.mode == TuiMode::Navigate
+    {
+        render_prompt_card(frame, area, app, p);
+    }
     if app.mode == TuiMode::Help {
         render_help(frame, area, p, &app.help_filter, app.help_scroll);
     }
@@ -284,6 +292,78 @@ fn render_lens(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         ))
     };
     lines.push(meta);
+    let paragraph = Paragraph::new(lines)
+        .style(Style::default().fg(p.text).bg(p.panel_bg))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
+}
+
+/// The prompt card (webui prompt cards): a floating card anchored at
+/// the bottom-right of the terminal pane, NOT a centered modal — the
+/// webui CSS pins it with `position:absolute; right:0; bottom:12px`,
+/// so it never dims the backdrop or blocks the pane. Head carries the
+/// question title, body lists the options (or the free-text hint),
+/// foot mirrors the webui's "Show in terminal" hint as key hints.
+fn render_prompt_card(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let Some(card) = app.prompt_card.current_card() else {
+        return;
+    };
+    let body_width = 44usize.min(area.width.saturating_sub(2) as usize);
+    // Head + body rows + foot hint, clamped so the card never eats the
+    // whole pane on small terminals.
+    let rows = match card.kind {
+        crate::tui::prompt_cards::PromptCardKind::Options => card.options.len(),
+        crate::tui::prompt_cards::PromptCardKind::Text => 1,
+    };
+    let height = (rows as u16 + 4).min(area.height.saturating_sub(2));
+    let width = (body_width as u16 + 2).min(area.width);
+    // Anchor bottom-right, respecting the footer row band the webui
+    // keeps clear (`bottom:12px`).
+    let rect = Rect::new(
+        area.right().saturating_sub(width),
+        area.bottom().saturating_sub(height + 1),
+        width,
+        height,
+    );
+    render_shadow(frame, rect, p);
+    let title = format!(" {} ", truncate(&card.title, body_width));
+    let block = overlay_panel(&title, p);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let mut lines: Vec<Line> = Vec::new();
+    match card.kind {
+        crate::tui::prompt_cards::PromptCardKind::Options => {
+            for (index, option) in card.options.iter().enumerate() {
+                let selected = index == app.prompt_card_cursor;
+                let style = if selected {
+                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(p.text)
+                };
+                let row = format!(
+                    "{} {}",
+                    if selected { "❯" } else { " " },
+                    truncate(&option.label, body_width.saturating_sub(2))
+                );
+                lines.push(Line::from(Span::styled(row, style)));
+            }
+            lines.push(Line::from(Span::styled(
+                " Enter answer · 1-9 jump · Esc dismiss ",
+                Style::default().fg(p.muted),
+            )));
+        }
+        crate::tui::prompt_cards::PromptCardKind::Text => {
+            lines.push(Line::from(Span::styled(
+                truncate(card.title.as_str(), body_width),
+                Style::default().fg(p.text),
+            )));
+            lines.push(Line::from(Span::styled(
+                " Enter to type your answer · Esc dismiss ",
+                Style::default().fg(p.muted),
+            )));
+        }
+    }
     let paragraph = Paragraph::new(lines)
         .style(Style::default().fg(p.text).bg(p.panel_bg))
         .wrap(Wrap { trim: false });
@@ -1532,6 +1612,14 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
                     pane.id
                 )
             })
+            .unwrap_or_default(),
+        // Card answer: show the question being answered (the webui
+        // free-text input is part of the card itself; the TUI answer
+        // opens as a modal, so the question travels with it).
+        crate::tui::PromptKind::CardAnswer => app
+            .prompt_card
+            .current_card()
+            .map(|card| card.title.clone())
             .unwrap_or_default(),
     };
     let title = format!(" {} ", prompt.kind.title());
