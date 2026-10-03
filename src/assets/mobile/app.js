@@ -661,6 +661,7 @@
     getMobileSearch: () => mobileSearch,
     getMobileWorktrees: () => mobileWorktrees,
     getMobileTempTerminal: () => mobileTempTerminal,
+    getMobileTheme: () => mobileTheme,
   });
   mobileBackend = globalThis.HerdrMobileBackendModule.create({
     state,

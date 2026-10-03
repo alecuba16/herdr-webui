@@ -629,7 +629,7 @@ describe("app bundle load", () => {
     const actionNames = (query) => Array.from(ctx.searchActionCandidates(query), (action) => action.action);
     deepEqual(
       actionNames(""),
-      ["open-workspace", "temp-terminal", "sessions"],
+      ["open-workspace", "temp-terminal", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
     );
     deepEqual(
       actionNames("session"),
@@ -638,6 +638,14 @@ describe("app bundle load", () => {
     deepEqual(
       actionNames("nonsense"),
       [],
+    );
+    deepEqual(
+      actionNames(">"),
+      ["open-workspace", "temp-terminal", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
+    );
+    deepEqual(
+      actionNames(">theme"),
+      ["toggle-theme"],
     );
     ok(!actionNames("").includes("discover-worktrees"));
     match(source, /function renderSearchRowResult\(result\)/);
