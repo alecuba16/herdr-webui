@@ -137,6 +137,35 @@ Chrome, emulates `prefers-color-scheme` flips, and drives the real UI:
 
 Run it locally; it is also kept as a pre-merge manual gate (not in CI).
 
+## Branch-changes highlight acceptance
+
+`scripts/e2e/run-branch-changes-e2e.sh` covers the file-explorer
+branch-changes highlight end to end in a real browser. It is fully
+self-contained: builds the binary, creates a throwaway fixture repo
+(`main` with `src/demo.py` + `README.md`, then a `feat` branch committing
+`src/branch_only.py`), boots the isolated server and headless Chrome, and
+drives the real UI over CDP:
+
+- workspace opens via the dashboard modal
+- files mode renders the tree; `src/` expands and `branch_only.py` shows up
+- the branch-only committed file carries `git-changed` and is blue in the
+  effective theme (`rgb(33, 80, 174)` light, `rgb(137, 180, 250)` dark),
+  while untouched rows keep the default fg
+- priority: after making `demo.py` dirty through the real save API
+  (`POST /api/file-browser/file` with a hash-protected payload), it takes
+  the yellow `git-modified` color over blue, and the branch-only file stays
+  blue
+- the theme toggle switches the palette live and the colors follow
+  (dark blue in dark theme, darker blue in light theme)
+
+| Variable      | Default | Meaning                              |
+| ------------- | ------- | ------------------------------------ |
+| `E2E_PORT`    | `8899`  | HTTPS port of the isolated server    |
+| `CDP_PORT`    | `9222`  | Chrome remote debugging port         |
+| `CHROME_BIN`  | auto    | Chrome/Chromium path (corporate-policy systems: point at chrome-headless-shell) |
+
+Run it locally; it is also kept as a pre-merge manual gate (not in CI).
+
 ## Settings confirm/rollback acceptance
 
 `scripts/e2e/settings-confirm-acceptance.mjs` (desktop) and
