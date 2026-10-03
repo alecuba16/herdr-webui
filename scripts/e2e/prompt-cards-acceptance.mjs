@@ -325,6 +325,51 @@ if (card3) {
     `stale=${JSON.stringify(staleResult)} strayInput=${strayInput}`);
 }
 
+// Free-text prompt flow: a question with the "enter your response"
+// hint (matches the backend's jcode_question_blocked detector) must
+// render the text-input card, and submitting must type the response
+// into the pane.
+const freeTextDialog = [
+  'permission needed: describe the rollback plan?',
+  'enter your response to continue',
+].join('\\n');
+for (let attempt = 0; attempt < 3; attempt++) {
+  await focusTerm();
+  await typeText(`printf '%b\\n' '${freeTextDialog}' && read answer && echo "GOT:$answer"`);
+  await pressEnter();
+  await sleep(400);
+  if (await evalApp('((document.querySelector("#terminal") || {textContent:""}).textContent || "").includes("rollback plan")')) break;
+}
+let textCard = null;
+for (let i = 0; i < 40 && !textCard; i++) {
+  await evalApp('HerdrPromptCards.evaluate()');
+  textCard = await evalApp(`(() => {
+    const node = document.getElementById('terminalPromptCard');
+    if (!node || node.hidden) return null;
+    const input = node.querySelector('#promptCardInput');
+    return input ? { hasInput: true, blocked: HerdrPromptCards.paneBlocked() } : null;
+  })()`);
+  if (!textCard) await sleep(500);
+}
+check('free-text question renders the input card', !!textCard && textCard.hasInput,
+  JSON.stringify(textCard));
+let freeTextRoundTrip = false;
+if (textCard) {
+  await evalApp('(() => { const input = document.querySelector("#promptCardInput"); if (input) { input.value = "rollback via git revert"; } return !!input; })()');
+  await evalApp('(() => { const form = document.querySelector("#promptCardForm"); if (form) form.dispatchEvent(new Event("submit")); return !!form; })()');
+  for (let i = 0; i < 20 && !freeTextRoundTrip; i++) {
+    const t = await evalApp(`(document.querySelector('#terminal') || {textContent:''}).textContent`);
+    freeTextRoundTrip = /GOT:rollback via git revert/.test(t);
+    if (!freeTextRoundTrip) await sleep(500);
+  }
+  check('free-text submit types the response into the pane', freeTextRoundTrip);
+  const hiddenAfterText = await evalApp(`(() => document.getElementById('terminalPromptCard').hidden)()`);
+  check('free-text card hides after submit', hiddenAfterText === true);
+} else {
+  check('free-text submit types the response into the pane', false, 'no card');
+  check('free-text card hides after submit', false, 'no card');
+}
+
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
 process.exit(failed.length ? 1 : 0);
