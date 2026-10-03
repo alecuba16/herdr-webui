@@ -227,20 +227,23 @@ wterm.
 5. **Explicit stall close code** (S): DONE (earlier slice) — 4404 + banner
    on both layouts.
 
-## Phase 6: Accessibility and final polish
+## Phase 6: Accessibility and final polish — DONE
 
-- Audit pass against the contract: `aria-label` on all icon-only buttons,
+- Audit pass against the contract: DONE — `aria-label` on all icon-only buttons,
   `aria-pressed` on toggles, `aria-current` on selected pane, `role="status"` for live
   states, `role="alert"` for failures, `aria-modal` + Escape/scrim on dialogs, first
   control focused on open.
-- Contrast measurement of both themes on every actual backing surface (WCAG AA target);
-  fix token values that fail.
-- `prefers-reduced-motion` global block: kill pulse, drawer/control transitions,
+- Contrast measurement of both themes on every actual backing surface (WCAG AA target):
+  DONE — locked in `theme_contrast.test.mjs` against status tokens.
+- `prefers-reduced-motion` global block: DONE — kills pulse, drawer/control transitions,
   hover lift.
-- E2E: extend `scripts/e2e/` acceptance suites — theme, settings-confirm (mobile),
-  session-ux already exist; add badge/status-chip assertions and modal bottom-sheet
-  layout checks.
-- Update `docs/ux/design-system.md` and `docs/features.md` screenshots after polish.
+- E2E: extend `scripts/e2e/` acceptance suites — theme, settings-confirm (mobile) already
+  existed; badge/status-chip assertions added to session-ux; modal bottom-sheet layout
+  checks added to `mobile-edit-acceptance.mjs` (dialog semantics, bottom-dock geometry,
+  70vh cap, backdrop coverage, Cancel/backdrop teardown).
+- Update `docs/ux/design-system.md` (done, `8b878c9`) and `docs/features.md` screenshots
+  after polish: N/A — the repo ships no screenshot assets; `docs/features.md` is
+  prose-only and needed no re-shoots.
 
 ---
 
