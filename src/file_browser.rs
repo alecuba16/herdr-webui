@@ -1276,6 +1276,16 @@ fn collect_git_status(
 /// main/master, so "changes on this branch" matches user intent even
 /// without a remote.
 fn branch_diff_base(root: &Path) -> Option<String> {
+    let resolves = |name: &str| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["rev-parse", "--verify", "--quiet", name])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .is_some()
+    };
     let symbolic_ref = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -1286,7 +1296,9 @@ fn branch_diff_base(root: &Path) -> Option<String> {
         let name = String::from_utf8_lossy(&symbolic_ref.stdout)
             .trim()
             .to_string();
-        if !name.is_empty() {
+        // origin/HEAD can be stale and point at a remote ref that no longer
+        // exists: only trust it when the ref actually resolves.
+        if !name.is_empty() && resolves(&name) {
             return Some(name);
         }
     }
@@ -3169,6 +3181,60 @@ mod tests {
         assert!(
             status.get("workspace/src/branch_file.rs").is_none(),
             "repo-relative path must not leak into the workspace map"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collect_git_status_falls_back_to_main_on_stale_origin_head() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-file-browser-branch-stale-head-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("README.md"), "base").unwrap();
+
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .status()
+                .unwrap()
+        };
+        if !git(&["init", "-b", "main"]).success() {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        assert!(git(&["add", "README.md"]).success());
+        assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
+        assert!(git(&["switch", "-c", "feat"]).success());
+        fs::write(root.join("feat.rs"), "feat").unwrap();
+        assert!(git(&["add", "feat.rs"]).success());
+        assert!(git(&["commit", "-m", "feat", "--no-gpg-sign"]).success());
+        // Stale origin/HEAD: symbolic-ref resolves textually but the target
+        // remote ref does not exist (common after remote branch deletions).
+        let symbolic_ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args([
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/removed-branch",
+            ])
+            .status()
+            .unwrap()
+            .success();
+        assert!(symbolic_ok, "setting a stale symbolic ref must be possible");
+
+        let root = root.canonicalize().unwrap();
+        let status = collect_git_status(&root, &root).unwrap();
+
+        // Must fall back to local main, not silently drop the branch diff.
+        assert_eq!(
+            status.get("feat.rs").and_then(|value| value.as_str()),
+            Some("changed")
         );
         let _ = fs::remove_dir_all(root);
     }
