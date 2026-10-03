@@ -305,10 +305,10 @@
     document.body.innerHTML = `
       <div id="mobileApp" class="mobile-app">
         <header class="mobile-header">
-          <button class="mobile-btn" id="mobileBack" title="Home">←</button>
-          <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span class="mobile-context-meta"><span id="mobileMeta">Loading</span><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button></span></div>
-          <button class="mobile-btn" id="mobileSearch" title="Search">⌕</button>
-          <button class="mobile-btn" id="mobileSettings" title="Settings">⚙</button>
+          <button class="mobile-btn" id="mobileBack" title="Home" aria-label="Back to home">←</button>
+          <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span class="mobile-context-meta" role="status" aria-live="polite"><span id="mobileMeta">Loading</span><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button></span></div>
+          <button class="mobile-btn" id="mobileSearch" title="Search" aria-label="Search">⌕</button>
+          <button class="mobile-btn" id="mobileSettings" title="Settings" aria-label="Settings">⚙</button>
           <button class="mobile-btn temp-terminal-toggle" id="mobileTempTerminal" title="Temporary terminal" aria-label="Temporary terminal"><span class="temp-terminal-icon" aria-hidden="true"><span class="temp-terminal-icon-glyph"></span><span class="temp-terminal-icon-label">T</span></span></button>
         </header>
         <main class="mobile-screen" id="mobileScreen"></main>

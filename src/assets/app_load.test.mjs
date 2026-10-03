@@ -5388,3 +5388,54 @@ describe("terminal loading and failed states", () => {
     match(tokensCss, /--term-bright-white: #ffffff;/);
   });
 });
+
+describe("a11y audit contract", () => {
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
+  const appHtml = read("./app.html");
+  const coreSource = read("./desktop/app_js/core.js");
+  const renderSource = read("./desktop/app_js/render.js");
+  const mobileSource = read("./mobile/app.js");
+  const tokensCss = read("./shared/tokens.css");
+
+  it("labels every icon-only control in the shared shell", () => {
+    // Icon-only buttons in app.html must carry aria-label.
+    for (const id of ["themeToggle", "shortcutsToggle", "settingsToggle", "searchPaletteClose"]) {
+      const re = new RegExp(`id="${id}"[^>]*aria-label=`);
+      match(appHtml, re, `${id} needs aria-label`);
+    }
+  });
+
+  it("labels icon-only close buttons in dynamic modals", () => {
+    for (const id of ["settingsCloseTop", "questionClose", "worktreeCreateClose", "worktreeOpenClose", "workspaceCreateClose", "shortcutsCloseTop"]) {
+      const re = new RegExp(`id="${id}"[^>]*aria-label=`);
+      match(coreSource, re, `${id} needs aria-label`);
+    }
+  });
+
+  it("marks dialogs and live regions", () => {
+    match(appHtml, /id="searchPalette" role="dialog" aria-modal="true"/);
+    match(appHtml, /id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle"/);
+    match(appHtml, /id="connectionChip"[^>]*role="status" aria-live="polite"/);
+    match(appHtml, /aria-live="polite"/);
+  });
+
+  it("exposes selected state on desktop tabs and closes via labeled controls", () => {
+    match(renderSource, /aria-current="page"/);
+    match(renderSource, /aria-label="Close panel"/);
+  });
+
+  it("labels mobile header icon buttons and the connection state", () => {
+    for (const id of ["mobileBack", "mobileSearch", "mobileSettings"]) {
+      const re = new RegExp(`id="${id}"[^>]*aria-label=`);
+      match(mobileSource, re, `${id} needs aria-label`);
+    }
+    match(mobileSource, /role="status"/);
+    match(mobileSource, /id="mobileConnectionDot"[^>]*aria-hidden="true"/);
+  });
+
+  it("ships a global reduced-motion block", () => {
+    match(tokensCss, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?animation-duration: 0\.01ms !important;/);
+    match(tokensCss, /transition-duration: 0\.01ms !important;/);
+    match(tokensCss, /scroll-behavior: auto !important;/);
+  });
+});

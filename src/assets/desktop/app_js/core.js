@@ -477,7 +477,7 @@ if (settingsModal && !settingsModal.dataset.ux) {
     const head = document.createElement("div");
     head.className = "settings-head";
     head.innerHTML =
-      '<div><h2>Settings</h2><p>Browser-local preferences for terminal, theme, and agent behavior.</p></div><label class="settings-search"><span>Search settings</span><input id="settingsSearch" type="search" placeholder="Search theme, terminal, Git..." autocomplete="off"></label><button class="mini settings-close" id="settingsCloseTop" title="Close">✕</button>';
+      '<div><h2>Settings</h2><p>Browser-local preferences for terminal, theme, and agent behavior.</p></div><label class="settings-search"><span>Search settings</span><input id="settingsSearch" type="search" placeholder="Search theme, terminal, Git..." autocomplete="off"></label><button class="mini settings-close" id="settingsCloseTop" title="Close" aria-label="Close settings"><span aria-hidden="true">✕</span></button>';
     heading.replaceWith(head);
     const body = document.createElement("div");
     body.className = "settings-body";
@@ -503,7 +503,7 @@ function questionModalHtml() {
             <h2 id="questionTitle">Confirm action</h2>
             <p id="questionMessage"></p>
           </div>
-          <button class="mini settings-close" id="questionClose" title="Cancel">✕</button>
+          <button class="mini settings-close" id="questionClose" title="Cancel" aria-label="Cancel dialog"><span aria-hidden="true">✕</span></button>
         </div>
         <div class="modal-actions">
           <button type="button" class="tab add" id="questionCancel">Cancel</button>
@@ -521,7 +521,7 @@ function worktreeCreateModalHtml() {
             <h2>Create worktree</h2>
             <p>Creates a linked Git worktree from the selected parent workspace and opens it.</p>
           </div>
-          <button class="mini settings-close" id="worktreeCreateClose" title="Close">✕</button>
+          <button class="mini settings-close" id="worktreeCreateClose" title="Close" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
         </div>
         <div class="worktree-open-controls">
           <label>
@@ -564,7 +564,7 @@ function worktreeOpenModalHtml() {
             <h2>Open workspace or worktree</h2>
             <p>Pick a folder. Git repos show branches and worktrees; normal folders can be opened as workspaces.</p>
           </div>
-          <button class="mini settings-close" id="worktreeOpenClose" title="Close">✕</button>
+          <button class="mini settings-close" id="worktreeOpenClose" title="Close" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
         </div>
         <div class="worktree-open-controls">
           <label>
@@ -619,7 +619,7 @@ function workspaceCreateModalHtml() {
             <h2>New workspace</h2>
             <p>Pick an existing folder first, then confirm the workspace name.</p>
           </div>
-          <button class="mini settings-close" id="workspaceCreateClose" title="Close">✕</button>
+          <button class="mini settings-close" id="workspaceCreateClose" title="Close" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
         </div>
         <form class="worktree-form" id="workspaceCreateForm">
           <label>
@@ -648,7 +648,7 @@ function shortcutsModalHtml() {
             <h2>Help &amp; Shortcuts</h2>
             <p>Quick functionality map and browser/WebUI shortcuts. Terminal apps may handle their own keybindings inside the pane.</p>
           </div>
-          <button class="mini settings-close" id="shortcutsCloseTop" title="Close">✕</button>
+          <button class="mini settings-close" id="shortcutsCloseTop" title="Close" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
         </div>
         <section class="help-section">
           <h3>Functionality map</h3>

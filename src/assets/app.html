@@ -11,10 +11,10 @@
       <aside class="side">
         <div class="head">
           <strong>herdr web</strong
-          ><span class="connection-chip" id="connectionChip" data-state="connecting" title="Connecting: events stream retrying"><span class="connection-dot" aria-hidden="true"></span><span class="connection-label">Connecting</span></span
+          ><span class="connection-chip" id="connectionChip" data-state="connecting" title="Connecting: events stream retrying" role="status" aria-live="polite"><span class="connection-dot" aria-hidden="true"></span><span class="connection-label">Connecting</span></span
           ><button class="mini" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">☾</button
-          ><button class="mini" id="shortcutsToggle" title="Shortcuts">?</button
-          ><button class="mini" id="settingsToggle" title="Settings">⚙</button
+          ><button class="mini" id="shortcutsToggle" title="Shortcuts" aria-label="Help and shortcuts">?</button
+          ><button class="mini" id="settingsToggle" title="Settings" aria-label="Settings">⚙</button
           ><button class="btn shell-action header-actions-button" id="headerActionsButton" title="Search and actions" aria-label="Search and actions"><span aria-hidden="true">⌕</span><span>Actions</span></button>
         </div>
         <div class="section">
@@ -51,12 +51,12 @@
         <kbd id="shortcutPrefixKey">Ctrl+B</kbd>
       </div>
     </div>
-    <div class="modal-backdrop search-palette" id="searchPalette">
+    <div class="modal-backdrop search-palette" id="searchPalette" role="dialog" aria-modal="true" aria-label="Search and actions">
       <div class="modal search-modal">
         <div class="search-head">
           <span class="search-icon">⌕</span>
           <input id="searchPaletteInput" placeholder="Search workspaces, files, folders, or file contents..." autocomplete="off" />
-          <button class="mini settings-close" id="searchPaletteClose" title="Close">✕</button>
+          <button class="mini settings-close" id="searchPaletteClose" title="Close" aria-label="Close search"><span aria-hidden="true">✕</span></button>
         </div>
         <div class="search-results" id="searchPaletteResults"></div>
         <div class="search-help">Enter opens selection · ↑/↓ moves · Alt+F files · Alt+D folders · Esc closes</div>
@@ -68,9 +68,9 @@
         <span class="blocking-overlay-label" id="blockingOverlayLabel">Working...</span>
       </div>
     </div>
-    <div class="modal-backdrop" id="settingsModal">
+    <div class="modal-backdrop" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
       <div class="modal">
-        <h2>Settings</h2>
+        <h2 id="settingsTitle">Settings</h2>
         <label class="option"
           ><span
             >Default theme<small
