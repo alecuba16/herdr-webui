@@ -5629,6 +5629,73 @@ mod tests {
     }
 
     #[test]
+    fn sweeper_recovers_every_flip_across_bursty_output() {
+        // Stress variant of the throttle regression: a long bursty output
+        // sequence where every flip lands inside throttle windows. The
+        // sweeper must eventually publish EVERY status change; none may be
+        // permanently lost even though append_output mostly ran throttled.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let rx = state.subscribe_events();
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+
+        // Rapid-fire appends with no sleeps: nearly every append lands in
+        // someone's throttle window, so the pending/sweeper path carries
+        // most of the detection load.
+        terminal.reset_status_throttle();
+        terminal.append_output("●·· batch ··● · 1/5 done".as_bytes());
+        for _round in 0..6 {
+            // working -> blocked -> working -> blocked, all inside windows.
+            terminal.append_output(
+                "permission needed: allow the tool to run now?\n> 1. Allow once\n> 2. Always allow\n> 3. Deny".as_bytes(),
+            );
+            terminal.append_output("\n\n●·· batch ··● · done".as_bytes());
+            terminal.append_output(
+                "permission needed: allow the tool to run now?\n> 1. Allow once\n> 2. Always allow\n> 3. Deny".as_bytes(),
+            );
+            // Give the sweeper a moment to drain the pending flag between
+            // rounds so the sequence does not collapse into one window.
+            std::thread::sleep(Duration::from_millis(700));
+        }
+
+        // Drain the event stream: the final status must be blocked (the
+        // dialog text is the last thing on screen) and at least one
+        // blocked event must have arrived during the sequence.
+        let mut saw_blocked = false;
+        let mut last_status = String::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let timeout = deadline.saturating_duration_since(std::time::Instant::now());
+            if timeout.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(timeout) {
+                Ok(event) => {
+                    if event["event"] == "pane.agent_status_changed" {
+                        let status = event["data"]["agent_status"].as_str().unwrap_or("");
+                        if status == "blocked" {
+                            saw_blocked = true;
+                        }
+                        last_status = status.to_string();
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(saw_blocked, "a blocked flip must be published during the bursty sequence");
+        assert_eq!(last_status, "blocked", "final status must settle on blocked");
+    }
+
+    #[test]
     fn throttled_status_flip_is_recovered_by_sweeper() {
         // Regression test for the throttle-swallowed flip: a status change
         // carried by the LAST bytes of an output burst could be lost when a
