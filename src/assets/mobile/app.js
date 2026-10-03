@@ -323,8 +323,10 @@
           <button data-screen="home">Home</button>
           <button data-screen="search">Search</button>
           <button data-screen="terminal">Terminal</button>
-          <button data-screen="more">More</button>
+          <button data-screen="more" aria-haspopup="dialog">More</button>
         </nav>
+        <div class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" hidden onclick="HerdrMobile.closeDrawer()"></div>
+        <aside class="mobile-drawer" id="mobileDrawer" hidden role="dialog" aria-modal="true" aria-label="Tools menu"><div class="mobile-drawer-items" id="mobileDrawerItems"></div></aside>
       </div>
       </div>`;
     el("mobileBack").onclick = () => showScreen("home");
@@ -332,8 +334,72 @@
     el("mobileSettings").onclick = () => showScreen("settings");
     el("mobileTempTerminal").onclick = () => mobileTempTerminal && mobileTempTerminal.open(currentWorkspaceCwd());
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
-      button.onclick = () => showScreen(button.dataset.screen);
+      button.onclick = () => {
+        if (button.dataset.screen === "more") {
+          openDrawer();
+          return;
+        }
+        showScreen(button.dataset.screen);
+      };
     });
+    el("mobileDrawerBackdrop").onclick = () => closeDrawer();
+    bindDrawerEdgeSwipe();
+  }
+
+  function drawerItemsEl() {
+    return el("mobileDrawerItems");
+  }
+
+  function openDrawer() {
+    const drawer = el("mobileDrawer");
+    const backdrop = el("mobileDrawerBackdrop");
+    if (!drawer || !backdrop) return;
+    drawerItemsEl().innerHTML = mobileScreens.renderDrawerItems();
+    drawer.hidden = false;
+    backdrop.hidden = false;
+    document.body.classList.add("mobile-drawer-open");
+  }
+
+  function closeDrawer() {
+    const drawer = el("mobileDrawer");
+    const backdrop = el("mobileDrawerBackdrop");
+    if (drawer) drawer.hidden = true;
+    if (backdrop) backdrop.hidden = true;
+    document.body.classList.remove("mobile-drawer-open");
+  }
+
+  function openDrawerTarget(screen) {
+    closeDrawer();
+    showScreen(screen);
+  }
+
+  function bindDrawerEdgeSwipe() {
+    // Edge swipe: 24px open travel from the left edge opens the drawer,
+    // 56px close travel from anywhere closes it. Passive tracking; the
+    // actual open/close only happens on touchend so drags on interactive
+    // content never trigger navigation mid-gesture.
+    if (typeof document.addEventListener !== "function") return;
+    let startX = null, startY = null, tracking = false;
+    document.addEventListener("touchstart", (event) => {
+      const touch = event.touches && event.touches[0];
+      if (!touch) return;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      tracking = true;
+    }, { passive: true });
+    document.addEventListener("touchend", (event) => {
+      if (!tracking) return;
+      tracking = false;
+      const touch = event.changedTouches && event.changedTouches[0];
+      if (!touch || startX === null || startY === null) return;
+      const dx = touch.clientX - startX;
+      const dy = Math.abs(touch.clientY - startY);
+      startX = startY = null;
+      if (dy > 48) return;
+      const drawerOpen = el("mobileDrawer") && !el("mobileDrawer").hidden;
+      if (!drawerOpen && startX <= 24 && dx >= 24) openDrawer();
+      else if (drawerOpen && dx <= -56) closeDrawer();
+    }, { passive: true });
   }
 
   function showScreen(screen) {
@@ -999,6 +1065,9 @@
     applyTerminalLinks: mobileTerminal.applyLinks,
     reloadTerminal() { mobileTerminal.destroy(false); scheduleTerminalResize(); },
     scrollTerminalToBottom: mobileTerminal.scrollToBottom,
+    openDrawer,
+    closeDrawer,
+    openDrawerTarget,
     keyBarKey(_event, button) {
       const key = button && button.dataset ? button.dataset.key : null;
       if (!key || !mobileTerminal || !mobileTerminal.sendControlKey) return;

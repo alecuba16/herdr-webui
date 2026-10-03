@@ -5,9 +5,19 @@ import { TextEncoder } from "node:util";
 import vm from "node:vm";
 
 function element(id = "") {
+  const classes = new Set();
   return {
     id,
-    classList: { toggle() {}, add() {}, remove() {} },
+    classList: {
+      toggle(cls, on) {
+        if (on === undefined ? !classes.has(cls) : on) classes.add(cls);
+        else classes.delete(cls);
+      },
+      add(...cls) { cls.forEach((c) => classes.add(c)); },
+      remove(...cls) { cls.forEach((c) => classes.delete(c)); },
+      contains(cls) { return classes.has(cls); },
+      addedClasses: classes,
+    },
     dataset: {},
     style: { setProperty() {} },
     disabled: false,
@@ -812,18 +822,31 @@ describe("mobile bundle load", () => {
     equal(ctx.pendingTimers.filter((timer) => !timer.cleared).length, 2);
   });
 
-  it("renders simplified mobile nav with More menu", () => {
+  it("renders simplified mobile nav with drawer menu", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
     match(source, /<button data-screen="home">Home<\/button>/);
     match(source, /<button data-screen="search">Search<\/button>/);
     match(source, /<button data-screen="terminal">Terminal<\/button>/);
-    match(source, /<button data-screen="more">More<\/button>/);
+    match(source, /<button data-screen="more" aria-haspopup="dialog">More<\/button>/);
     ok(!source.includes('data-screen="agents">Agents</button>'));
-    doesNotThrow(() => ctx.HerdrMobile.showScreen("more"));
+    // Drawer shell, items, and edge-swipe wiring.
+    match(source, /id="mobileDrawer" hidden role="dialog"/);
+    match(source, /function renderDrawerItems\(\) \{/);
+    match(source, /function bindDrawerEdgeSwipe\(\) \{/);
+    // More button opens the drawer instead of switching screens.
+    const moreButton = ctx.navButtons.find((button) => button.dataset.screen === "more");
+    moreButton.onclick();
+    equal(ctx.document.getElementById("mobileDrawer").hidden, false);
+    equal(ctx.document.body.classList.contains("mobile-drawer-open"), true);
+    ok(ctx.document.getElementById("mobileDrawerItems").innerHTML.includes("HerdrMobile.openDrawerTarget('worktrees')"));
+    // Backdrop click closes the drawer.
+    ctx.document.getElementById("mobileDrawerBackdrop").onclick();
+    equal(ctx.document.getElementById("mobileDrawer").hidden, true);
+    // Drawer targets route through showScreen and close the drawer first.
+    doesNotThrow(() => ctx.HerdrMobile.openDrawerTarget("more"));
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(html.includes("More tools"));
-    ok(html.includes("HerdrMobile.showScreen('worktrees')"));
     ctx.HerdrMobile.showScreen("search");
     equal(ctx.document.getElementById("mobileSearchSheet").hidden, false);
   });
