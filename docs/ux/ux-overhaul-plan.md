@@ -9,6 +9,15 @@ Design decisions marked **[DECISION]** need user sign-off before implementation.
 S = hours, M = 1-3 days, L = 1-2 weeks. Phases are sequential but items inside a phase
 are parallelizable.
 
+## Scope interpretation
+
+The request was "take ideas/styling" from the reference, not "swap stacks". So the plan
+ports design language and UX patterns onto our stack; it does NOT adopt React, xterm.js
+or a Node PTY sidecar (see `research-annotations.md` section 2 for what we chose not to
+copy and why). Three assumptions that were guessed and need confirmation: (1) keep the
+Catppuccin palette, restyled under the one-chrome-color rule; (2) wterm stays; (3)
+implementation is out of scope for this turn, only research + annotations + plan.
+
 ## Guiding principles (adopted from the reference)
 
 1. **One chrome color.** The accent is reserved for selection, focus, cursor, and the
