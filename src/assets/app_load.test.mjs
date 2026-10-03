@@ -951,6 +951,19 @@ describe("app bundle load", () => {
     ok(!desktopTerminalSource.includes("let shellResizeFrame = null"));
   });
 
+  it("sidebar toggle refits through the exported resize scheduler", () => {
+    // Regression: the sidebar toggle called scheduleTerminalFit, which
+    // never existed (the scheduler is scheduleTerminalResize in
+    // terminal.js). Collapsing the sidebar threw a ReferenceError and
+    // skipped the refit. The toggle must resolve the hook through
+    // globalThis at click time (core.js loads before terminal.js) and
+    // terminal.js must export it.
+    const coreSource = readFileSync(new URL("./desktop/app_js/core.js", import.meta.url), "utf8");
+    ok(!coreSource.includes("scheduleTerminalFit()"), "core.js must not call the nonexistent scheduleTerminalFit");
+    match(coreSource, /typeof globalThis\.HerdrScheduleTerminalResize === "function"/);
+    match(desktopTerminalSource, /globalThis\.HerdrScheduleTerminalResize = scheduleTerminalResize;/);
+  });
+
   it("keeps Git UI keyboard input away from the terminal", () => {
     match(gitShortcutsSource, /Git drawer owns keyboard while visible/);
     match(gitShortcutsSource, /event\.stopImmediatePropagation/);

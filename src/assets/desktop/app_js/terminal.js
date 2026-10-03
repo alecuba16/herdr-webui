@@ -1249,6 +1249,10 @@ function scheduleTerminalResize() {
   if (delay > 0) terminalResizeTimer = setTimeout(queueFrame, delay);
   else queueFrame();
 }
+// Cross-module hook: core.js's sidebar toggle refits the terminal grid
+// after the shell geometry change. Guarded at the call site, so a missing
+// hook (older core.js) is a no-op rather than an error.
+globalThis.HerdrScheduleTerminalResize = scheduleTerminalResize;
 let terminalResizeWanted = false;
 
 // Window resize and shell resize can fire together during a drag. Both feed

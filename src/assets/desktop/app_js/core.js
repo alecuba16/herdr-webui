@@ -284,7 +284,13 @@ if (sidebarToggle)
     storeFlag(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed);
     applySidebarCollapsed();
     syncShortcutTooltips();
-    scheduleTerminalFit();
+    // Refit the terminal grid to the new shell geometry. The shell
+    // ResizeObserver also fires, but the explicit schedule covers
+    // layouts where the observer missed the change and keeps the
+    // original sidebar-toggle intent. Defined in terminal.js, which
+    // loads after core.js, so resolve through globalThis at click time.
+    if (typeof globalThis.HerdrScheduleTerminalResize === "function")
+      globalThis.HerdrScheduleTerminalResize();
   };
 function storedFlag(key) {
   try {
