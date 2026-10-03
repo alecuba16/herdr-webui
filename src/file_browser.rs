@@ -1283,7 +1283,9 @@ fn branch_diff_base(root: &Path) -> Option<String> {
         .output()
         .ok()?;
     if symbolic_ref.status.success() {
-        let name = String::from_utf8_lossy(&symbolic_ref.stdout).trim().to_string();
+        let name = String::from_utf8_lossy(&symbolic_ref.stdout)
+            .trim()
+            .to_string();
         if !name.is_empty() {
             return Some(name);
         }
@@ -2937,7 +2939,9 @@ mod tests {
 
         // Branch-only committed files light up blue.
         assert_eq!(
-            status.get("src/branch/file.rs").and_then(|value| value.as_str()),
+            status
+                .get("src/branch/file.rs")
+                .and_then(|value| value.as_str()),
             Some("modified")
         );
         assert_eq!(
@@ -2983,7 +2987,9 @@ mod tests {
 
         // Clean working tree: the committed branch file reads "changed" (blue).
         assert_eq!(
-            status.get("src/branch/file.rs").and_then(|value| value.as_str()),
+            status
+                .get("src/branch/file.rs")
+                .and_then(|value| value.as_str()),
             Some("changed")
         );
         assert_eq!(
@@ -3023,7 +3029,10 @@ mod tests {
 
         let root = root.canonicalize().unwrap();
         let status = collect_git_status(&root, &root);
-        assert!(status.is_none(), "clean main must produce no git_status map");
+        assert!(
+            status.is_none(),
+            "clean main must produce no git_status map"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3060,7 +3069,10 @@ mod tests {
 
         let root = root.canonicalize().unwrap();
         let status = collect_git_status(&root, &root);
-        assert!(status.is_none(), "detached HEAD must not report branch changes");
+        assert!(
+            status.is_none(),
+            "detached HEAD must not report branch changes"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
