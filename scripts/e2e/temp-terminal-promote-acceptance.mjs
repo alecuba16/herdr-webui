@@ -304,10 +304,14 @@ await sleep(3000);
   const mobileBoot = await evalApp(`(function(){
     return {
       isMobileApp: !!document.querySelector('.mobile-app, #mobileApp, .mobile-nav'),
-      toggleBtn: !!document.querySelector('.mobile-more-card'),
+      // The header T button and cogwheel are gone; Search is the only
+      // remaining icon button, and Settings lives only in the More grid.
+      headerClean: !!document.getElementById('mobileSearch') &&
+        !document.getElementById('mobileTempTerminal') &&
+        !document.getElementById('mobileSettings'),
     };
   })()`);
-  check('mobile layout app booted', !!mobileBoot.isMobileApp && !!mobileBoot.toggleBtn,
+  check('mobile layout app booted with trimmed header', !!mobileBoot.isMobileApp && !!mobileBoot.headerClean,
     JSON.stringify(mobileBoot));
 
   // The mobile app needs a workspace too (fresh page state after reload
