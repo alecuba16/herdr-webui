@@ -49,6 +49,24 @@ to 6 lines starting at the 13:14 turn. So:
 The parser module therefore takes (snapshot messages, journal entries), not
 journal lines alone. Torn-tail/skip handling stays journal-only.
 
+**Rotation ordering nuance (round 8):** `checkpoint_snapshot` writes the
+new snapshot FIRST, then removes the journal (`persistence.rs:198-201`),
+so a reader landing in the rename→unlink window sees new-snapshot +
+old-journal and would replay the delta twice (duplicated messages for one
+poll). Measured by simulation of the exact sequence: 0 duplicates in
+25,710 reads across 200 gapped rotations and 0 in 3,600 reads across 500
+zero-gap rotations — the window is microseconds and self-heals on the
+next poll (journal gone). Cheap hardening, mandatory in the parser:
+**id-dedup on replay** (skip journal messages whose id already exists in
+the snapshot base; ids are globally unique — 100,059 ids, 0 duplicates,
+round 7). The reverse window (old snapshot + missing journal) is simply
+one stale poll, also self-healing.
+
+**Compaction position (round 8):** compaction is metadata-only — the
+full message list stays in the journal/snapshot, and `metadata_requires_snapshot`
+forces a full snapshot save when compaction changes, so a compaction can
+never straddle the snapshot/journal boundary. No special handling.
+
 ## 2. Pane → session resolution (builtin backend)
 
 Resolution order, all read-only, no newest-file fallback (reference rule:
@@ -137,7 +155,9 @@ journal_entries) -> Vec<Turn>`.
   checkpoint — validated live: 0 id overlap between the post-rotation
   journal and the 159-message snapshot; round-7 re-verified store-wide:
   0 id overlap across ALL 8 journals vs their snapshots, 46 journal
-  messages).
+  messages), with **id-dedup on replay**: skip any journal message whose
+  id already exists in the snapshot base (rotation race hardening, see
+  section 1 round-8 note; ids are opaque strings).
   Validated shapes (round 2: 8 journals, 127 messages; round 7 extended
   to ALL 2,557 snapshots, 100,059 messages, 0 torn reads): user and
   assistant messages carry `content` as a block array only — 0
@@ -427,7 +447,10 @@ Third-round adversarial checks (all against live store + jcode source):
   journal, incl. tool fold, compaction, compact-only, torn tail,
   empty-message), resolution tests (unique PID, ambiguous cwd, dead
   pid, status filtering incl. object-shaped `Crashed`), route tests
-  (error codes). Paging is v1-deferred: when added, tests cover
+  (error codes). Rotation-race parser tests: snapshot-already-contains-
+  journal-delta replay dedups; torn journal tail; corrupt snapshot;
+  non-message entries; compact-only; empty messages. Paging is
+  v1-deferred: when added, tests cover
   message-id cursors and 409 on generation change.
 - Frontend vm suite: lens structured mode, toggle gating on
   `agent_session` shape (null hides, resolvable false shows hint),
