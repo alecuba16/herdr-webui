@@ -1,5 +1,61 @@
 # Release notes
 
+## 0.4.59 Release Notes
+- The panel selector menu is reachable again on short viewports: the
+  pane-grow mechanism could overflow the fixed-height sidebar section
+  and clip the menu or push it below the viewport. The pane min-height
+  is now capped to the visible section, the menu scrolls internally
+  within a matching max-height, and the workspaces pane keeps a 90px
+  floor so the selector row stays clear of the split handle.
+- Another panel menu clip fixed: `content-visibility:auto` on sidebar
+  rows forced paint containment, so the absolutely-positioned menu inside
+  the selected workspace row painted as an unclickable sliver. The
+  selected row opts out with `content-visibility:visible`; every other
+  row keeps the skip-paint win.
+- The agents panel hides the redundant panel token when the workspace
+  has a single panel (the backend labels every new panel "Shell", so
+  the token was noise in the common case). Multi-panel workspaces keep
+  the custom name or panel number. Same logic on mobile via workmeta.
+- The chat lens now updates live during streaming: small frames
+  (<=8KB, and all server WS chunks are <=1KB) took the immediate-write
+  fast path that never notified the lens, so it sat on a stale
+  transcript until the next RAF flush. Notify is RAF-coalesced from
+  both write paths, the lens reading state resets on pane switch, and
+  alt-screen apps no longer break the lens view. wterm paints pause
+  while the opaque lens covers the grid (p90 event-loop lag under
+  streaming dropped ~100ms to ~65ms with the lens open).
+- Sessions keep getting stickier after the 0.4.58 logout work:
+  - The session token was regenerated on every boot, so even with
+    never-expiring sessions a WebUI restart logged out every open
+    window. The token now persists to a sidecar file
+    (`session-token` next to the settings, owner-only 0600) and is
+    restored on boot. Timed sessions keep the fresh-boot semantics and
+    switching back to a timed value drops the sidecar.
+  - The localhost-bypass login path now also persists the rotated
+    token, so a restart cannot restore the pre-bypass token and log
+    out non-localhost browsers.
+  - Sidecar token writes re-check the live token at write time, so
+    concurrent logins can no longer leave a superseded (dead) token
+    in the sidecar after a restart. Verified with 10 and 20 concurrent
+    logins.
+  - The token read for the sidecar happens under a single auth-lock
+    hold, closing a rotation race between the two reads.
+- Mobile: the header cogwheel and T button are gone. Settings was
+  already reachable from the More grid and drawer, and the temporary
+  terminal moves to a More grid card that restores a minimized
+  session instead of stacking a new one (the old paths always spawned
+  a fresh temp terminal, piling minimized sessions in the restore bar).
+- Worktrees group by repo path, not folder name: two repos sharing a
+  folder name in different parents no longer collide in the sidebar
+  group logic. Repo identity comes from repo_key/repo_root only, with
+  a synthetic per-workspace key when no path metadata exists. Same fix
+  on the mobile workmeta copy.
+- The file explorer highlights files committed on the current branch
+  but not on the default branch (origin/HEAD, else local main/master)
+  in blue, visible at a glance what this branch touches. Merged into
+  the tree payload's git_status map as "changed", the lowest priority,
+  so real git states still win.
+
 ## 0.4.58 Release Notes
 - Sessions no longer expire on a timer by default: the server-side session
   token now lives until an explicit logout or a server-settings save.
