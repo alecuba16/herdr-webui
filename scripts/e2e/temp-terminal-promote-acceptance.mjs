@@ -290,7 +290,7 @@ await sleep(3000);
 
 // ---------------------------------------------------------------- section 7
 // Mobile layout: same origin, localStorage forces the mobile app. Open the
-// temp terminal via the T button, cd into ROOT (the second promote left
+// temp terminal via the More grid card, cd into ROOT (the second promote left
 // the current workspace at ROOT2, so this is a fresh move), tap ⤴, and
 // verify selectAgent navigation (URL pushState + terminal screen).
 {
@@ -324,7 +324,8 @@ await sleep(3000);
 
   await evalApp(`(function(){
     // The header T button is gone; the temporary terminal opens from the
-    // More grid card (runAction('temp-terminal')).
+    // More grid card (runAction('temp-terminal')) and restores a minimized
+    // session instead of stacking a new one.
     HerdrMobile.showScreen('more');
     const cards = Array.from(document.querySelectorAll('.mobile-more-card'));
     const card = cards.find((c) => /Temporary terminal/.test(c.textContent || ''));
@@ -340,7 +341,7 @@ await sleep(3000);
     if (mobileAttached) break;
     await sleep(500);
   }
-  check('mobile temp terminal attached via T button', mobileAttached);
+  check('mobile temp terminal attached via More grid card', mobileAttached);
 
   // cd into ROOT3: guaranteed no workspace sits there yet, so the promote
   // always moves the tab (the mobile page reloaded onto the workspace at
