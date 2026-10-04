@@ -290,7 +290,7 @@ await sleep(3000);
 
 // ---------------------------------------------------------------- section 7
 // Mobile layout: same origin, localStorage forces the mobile app. Open the
-// temp terminal via the T button, cd into ROOT (the second promote left
+// temp terminal via the More grid card, cd into ROOT (the second promote left
 // the current workspace at ROOT2, so this is a fresh move), tap ⤴, and
 // verify selectAgent navigation (URL pushState + terminal screen).
 {
@@ -303,11 +303,15 @@ await sleep(3000);
 
   const mobileBoot = await evalApp(`(function(){
     return {
-      isMobileApp: !!document.querySelector('.mobile-app, #mobileApp, .mobile-nav, #mobileTempTerminal'),
-      toggleBtn: !!document.getElementById('mobileTempTerminal'),
+      isMobileApp: !!document.querySelector('.mobile-app, #mobileApp, .mobile-nav'),
+      // The header T button and cogwheel are gone; Search is the only
+      // remaining icon button, and Settings lives only in the More grid.
+      headerClean: !!document.getElementById('mobileSearch') &&
+        !document.getElementById('mobileTempTerminal') &&
+        !document.getElementById('mobileSettings'),
     };
   })()`);
-  check('mobile layout app booted', !!mobileBoot.isMobileApp && !!mobileBoot.toggleBtn,
+  check('mobile layout app booted with trimmed header', !!mobileBoot.isMobileApp && !!mobileBoot.headerClean,
     JSON.stringify(mobileBoot));
 
   // The mobile app needs a workspace too (fresh page state after reload
@@ -319,9 +323,14 @@ await sleep(3000);
   check('mobile sees workspaces', Number(wsCount) > 0, `count=${wsCount}`);
 
   await evalApp(`(function(){
-    const b = document.getElementById('mobileTempTerminal');
-    if (b) b.click();
-    return !!b;
+    // The header T button is gone; the temporary terminal opens from the
+    // More grid card (runAction('temp-terminal')) and restores a minimized
+    // session instead of stacking a new one.
+    HerdrMobile.showScreen('more');
+    const cards = Array.from(document.querySelectorAll('.mobile-more-card'));
+    const card = cards.find((c) => /Temporary terminal/.test(c.textContent || ''));
+    if (card) card.click();
+    return !!card;
   })()`);
   let mobileAttached = false;
   for (let i = 0; i < 24; i++) {
@@ -332,7 +341,7 @@ await sleep(3000);
     if (mobileAttached) break;
     await sleep(500);
   }
-  check('mobile temp terminal attached via T button', mobileAttached);
+  check('mobile temp terminal attached via More grid card', mobileAttached);
 
   // cd into ROOT3: guaranteed no workspace sits there yet, so the promote
   // always moves the tab (the mobile page reloaded onto the workspace at

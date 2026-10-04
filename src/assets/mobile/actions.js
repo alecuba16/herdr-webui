@@ -168,7 +168,16 @@
         return;
       }
       if (action === "temp-terminal") {
-        if (getMobileTempTerminal()) getMobileTempTerminal().open(currentWorkspaceCwd());
+        const tempTerminal = getMobileTempTerminal();
+        if (!tempTerminal) return;
+        // Restore-first: a minimized session comes back on the card click
+        // (the More grid meta text promises exactly that). Only open a new
+        // one when nothing is live yet. The manager restore() picks the
+        // most recently minimized session and hides the restore bar.
+        if (tempTerminal.isVisible && tempTerminal.isVisible()) return;
+        if (tempTerminal.restore) tempTerminal.restore();
+        if (tempTerminal.isVisible && tempTerminal.isVisible()) return;
+        tempTerminal.open(currentWorkspaceCwd());
         return;
       }
       if (action === "sessions") {

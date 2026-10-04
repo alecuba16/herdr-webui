@@ -1221,6 +1221,7 @@
       restore: restore,
       promote: promote,
       isVisible: isVisible,
+      hasAnyOpen: hasAnyOpen,
       handleResize: handleResize,
       handlePaneExited: handlePaneExited,
       toggle: toggle,

@@ -548,12 +548,78 @@ describe("mobile bundle load", () => {
     match(mobileSource, /workspaceIdFn:/);
     // Mobile must pass themeFn so the terminal matches the user's theme.
     match(mobileSource, /themeFn:/);
-    // Mobile must pass currentWorkspaceCwd() to open() so the terminal starts in the right folder.
-    match(mobileSource, /mobileTempTerminal\.open\(currentWorkspaceCwd\(\)\)/);
+    // Mobile must pass currentWorkspaceCwd() so the temp terminal opens in the
+    // right folder. The header button is gone; the More grid card triggers it
+    // through the shared runAction('temp-terminal') path.
+    match(mobileSource, /getMobileTempTerminal: \(\) => mobileTempTerminal/);
+    const mobileScreensSource = readFileSync(new URL("./mobile/screens.js", import.meta.url), "utf8");
+    match(mobileScreensSource, /runAction\('temp-terminal'\)/);
+    match(mobileScreensSource, /getMobileTempTerminal/);
     // Mobile must wire handlePaneExited for server-side pane exit events
     // (now in the events module, reached via the getTempTerminal dep).
     const mobileEventsSource = readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8");
     match(mobileEventsSource, /handlePaneExited/);
+  });
+
+  it("restores a minimized temp terminal before opening a new one on mobile", () => {
+    // Behavior test for the More grid card: restore-first. Load the actions
+    // module standalone with a stub temp terminal and assert call order.
+    const actionsSource = readFileSync(new URL("./mobile/actions.js", import.meta.url), "utf8");
+    const noop = () => {};
+    const state = { worktreeCreateExpanded: false };
+    const calls = [];
+    let visible = false;
+    let minimized = false;
+    const tempTerminal = {
+      isVisible: () => visible,
+      restore: () => { if (minimized) { minimized = false; visible = true; calls.push("restore"); } },
+      open: (folder) => { calls.push("open:" + folder); },
+    };
+    const ctx = vm.createContext({
+      console,
+      globalThis: {},
+      window: { addEventListener: noop },
+    });
+    ctx.globalThis = ctx;
+    vm.runInContext(actionsSource, ctx);
+    const actions = ctx.HerdrMobileActionsModule.create({
+      state,
+      api: {},
+      confirmFn: noop,
+      refresh: noop,
+      render: noop,
+      showScreen: noop,
+      selectionPath: () => "",
+      currentSessionBackend: () => "builtin",
+      saveSessionSelection: noop,
+      sameScopedId: () => false,
+      currentWorkspaceCwd: () => "/home/dev",
+      tabTitle: () => "",
+      getMobileFileBrowser: () => ({}),
+      getMobileTerminal: () => ({}),
+      getMobileSearch: () => ({}),
+      getMobileWorktrees: () => ({}),
+      getMobileTempTerminal: () => tempTerminal,
+      getMobileTheme: () => ({}),
+    });
+    // Nothing live yet: the card opens a new session in the workspace cwd.
+    actions.runMobileAction("temp-terminal");
+    equal(calls.join(","), "open:/home/dev");
+    // Session minimized (minimized sessions are not visible): the same
+    // card must restore it, not spawn another.
+    visible = false;
+    minimized = true;
+    actions.runMobileAction("temp-terminal");
+    equal(calls.join(","), "open:/home/dev,restore");
+    // Fully closed (no minimized session either): back to opening new.
+    visible = false;
+    minimized = false;
+    actions.runMobileAction("temp-terminal");
+    equal(calls.join(","), "open:/home/dev,restore,open:/home/dev");
+    // A live visible overlay: the card click is a no-op (do not stack).
+    visible = true;
+    actions.runMobileAction("temp-terminal");
+    equal(calls.join(","), "open:/home/dev,restore,open:/home/dev");
   });
 
   it("loads mobile shell without browser automation", () => {
