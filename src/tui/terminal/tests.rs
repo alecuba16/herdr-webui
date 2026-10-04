@@ -135,9 +135,27 @@ fn styled_terminal_line_truncates_empty_and_wide_chars_without_overflow() {
     let two_cols = styled_terminal_line(&spans, 2, Color::White);
     assert_eq!(two_cols.spans[0].content.as_ref(), "…");
 
-    // Three columns: the wide char fits with the ellipsis behind it.
+    // Three columns: "界a" is exactly 3 columns (2+1) and fits the
+    // budget, so it renders in full; the ellipsis only appears on
+    // actual overflow now, not when the value merely meets the budget.
     let three_cols = styled_terminal_line(&spans, 3, Color::White);
-    assert_eq!(three_cols.spans[0].content.as_ref(), "界…");
+    assert_eq!(three_cols.spans[0].content.as_ref(), "界a");
+
+    // Exact fit: a value whose display width equals the budget
+    // renders in full, no phantom ellipsis column. The old truncate
+    // always reserved an ellipsis column, so a full-width pane row
+    // (e.g. 64 X's in a 64-column pane) lost its last column to "…".
+    let exact = styled_terminal_line(
+        &[TuiTextSpan {
+            text: "X".repeat(64),
+            style: TuiTextStyle::default(),
+        }],
+        64,
+        Color::White,
+    );
+    assert_eq!(exact.spans[0].content.len(), 64);
+    assert!(exact.spans[0].content.ends_with('X'));
+    assert!(!exact.spans[0].content.contains('…'));
 }
 
 #[test]
