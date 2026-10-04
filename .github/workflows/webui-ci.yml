@@ -28,6 +28,9 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+      - name: Clippy
+        run: cargo clippy --target-dir target --all-targets -- -D warnings
+
       - name: Check
         run: cargo check --target-dir target
 
