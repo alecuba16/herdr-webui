@@ -14,6 +14,12 @@
   The desktop server settings modal and the mobile Settings screen expose
   it as a Logout button with a confirmation, so signing out is finally an
   explicit action instead of something that happens to you.
+- Never-expiring sessions now survive WebUI restarts too: the session
+  token is persisted to `~/.config/herdr-webui/session-token`
+  (owner-only permissions) and restored on boot, so a server restart no
+  longer logs out every open window. Timed sessions and explicit logouts
+  keep their old semantics, and the sidecar is dropped whenever sessions
+  become timed again.
 - Login cookies pin at one year for never-expiring sessions so browser
   restarts keep the session instead of silently dropping it.
 

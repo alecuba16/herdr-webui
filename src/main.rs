@@ -885,7 +885,17 @@ async fn main() -> io::Result<()> {
     if let Some(backend_mode) = config.backend_mode {
         server_settings.backend_mode = backend_mode;
     }
-    let auth = Arc::new(Mutex::new(AuthConfig::from_settings(&server_settings)?));
+    let mut auth_config = AuthConfig::from_settings(&server_settings)?;
+    // Never-expiring sessions survive the restart: restore the persisted
+    // token so open windows keep their cookie instead of bouncing to the
+    // login page on every WebUI restart. Timed sessions keep the fresh
+    // boot token (restoring them would break their expiry).
+    if auth_config.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER {
+        if let Some(token) = crate::server_settings::load_persisted_session_token() {
+            auth_config.token = token;
+        }
+    }
+    let auth = Arc::new(Mutex::new(auth_config));
     let backend_mode = resolve_backend_mode(
         server_settings.backend_mode,
         config.session.as_deref(),
@@ -2382,6 +2392,9 @@ async fn update_server_settings(
     if let Ok(mut auth_lock) = state.auth.lock() {
         *auth_lock = auth;
     }
+    // The settings save rotated the token; keep the sidecar in sync so a
+    // restart restores the new token (or drops it for timed sessions).
+    persist_session_token(&state);
     if let Ok(mut settings_lock) = state.server_settings.lock() {
         *settings_lock = next.clone();
     }
@@ -3113,7 +3126,9 @@ async fn login(
         &state.log_level(),
         &format!("login: success for user '{}' from {remote}", body.username),
     );
-    crate::auth::login_response(&state.auth, secure)
+    let response = crate::auth::login_response(&state.auth, secure);
+    persist_session_token(&state);
+    response
 }
 
 async fn logout(
@@ -3133,7 +3148,33 @@ async fn logout(
         .map(|settings| settings.tls_mode.cookie_secure())
         .unwrap_or(false);
     log_event(&state.log_level(), "logout: session invalidated");
-    crate::auth::logout_response(&state.auth, secure)
+    let response = crate::auth::logout_response(&state.auth, secure);
+    persist_session_token(&state);
+    response
+}
+
+/// Write the rotated session token to the sidecar so never-expiring
+/// sessions survive the next restart, and drop the sidecar when sessions
+/// are timed. Disk I/O off the async runtime; failures only cost
+/// persistence and never the live session.
+fn persist_session_token(state: &WebState) {
+    let never = state
+        .auth
+        .lock()
+        .map(|auth| auth.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER)
+        .unwrap_or(false);
+    let token = state
+        .auth
+        .lock()
+        .map(|auth| auth.token.clone())
+        .unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        if never && !token.is_empty() {
+            let _ = crate::server_settings::save_persisted_session_token(&token);
+        } else if !never {
+            crate::server_settings::remove_persisted_session_token();
+        }
+    });
 }
 
 async fn proxy_request_async(api: ApiClient, request: serde_json::Value) -> Response {

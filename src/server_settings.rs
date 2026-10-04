@@ -246,6 +246,55 @@ pub fn server_settings_path() -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("herdr-webui/webui-settings.json"))
 }
 
+/// Sidecar file holding the persisted session token, next to the settings
+/// file (same directory and permissions) so never-expiring sessions survive
+/// a WebUI restart. Only ever-expire sessions are persisted: a timed session
+/// would outlive its `token_expires_at` if restored, so those keep the old
+/// rotate-on-boot behavior.
+pub fn session_token_path() -> PathBuf {
+    server_settings_path().with_file_name("session-token")
+}
+
+/// Restore the persisted session token for never-expiring sessions. None
+/// when the file is missing, unreadable, or when sessions are timed (the
+/// caller falls back to a fresh boot token). Best effort: a corrupted or
+/// deleted sidecar must never block startup.
+pub fn load_persisted_session_token() -> Option<String> {
+    let token = fs::read_to_string(session_token_path()).ok()?;
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+/// Persist the current session token (never-expire installs only) so the
+/// next boot restores it instead of logging every open window out. Called
+/// after every rotation (login, logout, settings save). Failures are the
+/// caller's to log; a failed write only costs persistence, never the
+/// in-memory session.
+pub fn save_persisted_session_token(token: &str) -> io::Result<()> {
+    let path = session_token_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, token)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+/// Drop the persisted token when sessions become timed again: a sidecar
+/// left over from a never-expire era must not be resurrected later, since
+/// the token in it was invalidated when the settings were saved. Best
+/// effort, like the save.
+pub fn remove_persisted_session_token() {
+    let _ = fs::remove_file(session_token_path());
+}
+
 /// Apply CLI flags that must win over persisted settings.
 /// An explicit `--bind` beats the persisted bind from webui-settings.json;
 /// otherwise a preview instance could silently squat the saved port instead of
@@ -448,6 +497,7 @@ pub fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Val
 mod tests {
     use super::*;
     use crate::auth::SESSION_EXPIRATION_NEVER;
+    use crate::tests::lock_env;
 
     fn valid_settings() -> RuntimeServerSettings {
         default_runtime_server_settings("127.0.0.1:8787".parse().unwrap())
@@ -508,6 +558,42 @@ mod tests {
         assert!(validate_runtime_server_settings(&settings).is_ok());
         settings.session_expiration_minutes = MAX_SESSION_EXPIRATION_MINUTES;
         assert!(validate_runtime_server_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn persisted_session_token_roundtrip_and_cleanup() {
+        let _guard = lock_env();
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-token-test-{}",
+            std::process::id()
+        ));
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+
+        // Missing file: no token, no panic.
+        assert_eq!(load_persisted_session_token(), None);
+
+        // Roundtrip: save then load returns the same trimmed token.
+        save_persisted_session_token("  abc123  \n").unwrap();
+        assert_eq!(load_persisted_session_token().as_deref(), Some("abc123"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(session_token_path())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "sidecar must be owner-only");
+        }
+
+        // Removal drops it.
+        remove_persisted_session_token();
+        assert_eq!(load_persisted_session_token(), None);
+
+        // Corrupt/empty content reads as no token (best effort).
+        fs::write(session_token_path(), "   ").unwrap();
+        assert_eq!(load_persisted_session_token(), None);
+        remove_persisted_session_token();
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[test]
