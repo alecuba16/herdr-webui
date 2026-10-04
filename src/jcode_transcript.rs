@@ -151,6 +151,7 @@ impl JcodeStoreIndex {
         pane_cwd: &Path,
         live_pids: &dyn Fn(u32) -> bool,
         descendants: &dyn Fn(u32) -> bool,
+        pane_tail: &str,
     ) -> JcodeSessionResolution {
         let index = self.refresh();
         let cwd = pane_cwd.to_string_lossy();
@@ -183,6 +184,16 @@ impl JcodeStoreIndex {
         // real ambiguity the status filter cannot break (two
         // concurrent jcode clients on one daemon in one repo).
         if live_hits.len() > 1 {
+            // Step 3: recency tiebreak (design step 3, evidenced live:
+            // pane_7's screen carried APPLE, piglet's transcript only
+            // BANANA). Match the pane's visible tail text against each
+            // candidate's most recent assistant text; exactly one
+            // substantial unique match wins. Never newest-mtime alone.
+            if let Some(only) = self.tiebreak_by_pane_text(&live_hits, pane_tail) {
+                return JcodeSessionResolution::Resolved {
+                    session_id: only.session_id.clone(),
+                };
+            }
             return JcodeSessionResolution::Refused {
                 reason: RefusalReason::Ambiguous,
             };
@@ -191,6 +202,45 @@ impl JcodeStoreIndex {
         JcodeSessionResolution::Refused {
             reason: RefusalReason::NoSessionPath,
         }
+    }
+
+    /// Design step 3 tiebreak: of the ambiguous Active candidates,
+    /// the one whose most recent assistant text appears verbatim in
+    /// the pane's visible tail wins — but only if exactly one
+    /// candidate matches with a substantial chunk (>= 24 chars, the
+    /// reference's bounded pane-text match idea). Live-verified:
+    /// pane_7 showed APPLE / piglet BANANA, one clean winner.
+    fn tiebreak_by_pane_text<'a>(
+        &self,
+        candidates: &[&'a SessionEvidence],
+        pane_tail: &str,
+    ) -> Option<&'a SessionEvidence> {
+        /// Smallest chunk of text that counts as a real match
+        /// (short strings like "ok" would match every pane).
+        const MIN_MATCH_CHARS: usize = 24;
+        // TUI reflow: the pane wraps lines and collapses spacing, so a
+        // verbatim contains() misses (found live: "ok\n\nI'll …" vs
+        // "ok  I'll …"). Compare word sequences instead: collapse
+        // whitespace runs to single spaces on both sides.
+        let flat_tail = normalize_ws(pane_tail);
+        if flat_tail.is_empty() {
+            return None;
+        }
+        let mut winner: Option<&SessionEvidence> = None;
+        for candidate in candidates {
+            let Some(chunk) =
+                last_substantial_text_chunk(&self.store_dir, &candidate.session_id, MIN_MATCH_CHARS)
+            else {
+                continue;
+            };
+            if flat_tail.contains(&normalize_ws(&chunk)) {
+                if winner.is_some() {
+                    return None; // two panes showing the same tail: still ambiguous
+                }
+                winner = Some(candidate);
+            }
+        }
+        winner
     }
 
     /// Re-stats the store and re-reads only changed files. Returns the
@@ -619,8 +669,69 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
     turns
 }
 
-/// Loads a session's full message list: snapshot base + journal delta
-/// replay with id-dedup (rotation-race hardening, design section 1).
+/// Collapses every whitespace run (spaces, \n, \r, tabs) to a single
+/// space — the pane reflows text, so matching must be word-sequence,
+/// not byte-exact.
+fn normalize_ws(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_ws = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !in_ws {
+                out.push(' ');
+                in_ws = true;
+            }
+        } else {
+            out.push(ch);
+            in_ws = false;
+        }
+    }
+    out.trim().to_string()
+}
+
+/// The most recent substantial text chunk for a session, scanning
+/// messages backward (any role — live evidence: pane_3's last reply
+/// was a bare "Ok", but its pane screen still showed the CHERRY
+/// prompt echo, which discriminates just as well). Bookkeeping
+/// messages skip; tool-only messages skip; texts under `min_chars`
+/// skip (a bare "ok" matches every pane). Bounded tail.
+fn last_substantial_text_chunk(
+    store_dir: &Path,
+    session_id: &str,
+    min_chars: usize,
+) -> Option<String> {
+    const TAIL_CHARS: usize = 400;
+    for message in load_session_messages(store_dir, session_id).iter().rev() {
+        if is_bookkeeping_message(message) {
+            continue;
+        }
+        let Some(blocks) = message.get("content").and_then(|c| c.as_array()) else {
+            continue;
+        };
+        let text: String = blocks
+            .iter()
+            .filter_map(|b| {
+                let b = b.as_object()?;
+                if b.get("type").and_then(|t| t.as_str()) != Some("text") {
+                    return None;
+                }
+                b.get("text").and_then(|t| t.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let trimmed = text.trim();
+        if trimmed.chars().count() < min_chars {
+            continue; // trivially short text ("ok"): keep looking back
+        }
+        let tail: String = trimmed.chars().rev().take(TAIL_CHARS).collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        return Some(tail);
+    }
+    None
+}
+
 pub fn load_session_messages(store_dir: &Path, session_id: &str) -> Vec<serde_json::Value> {
     let mut messages: Vec<serde_json::Value> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1043,7 +1154,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid != 500, &|pid| pid == 500);
+        let res = index.resolve(Path::new("/w"), &|pid| pid != 500, &|pid| pid == 500, "");
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved { session_id: "session_a".into() }
@@ -1070,7 +1181,7 @@ mod tests {
             .unwrap();
         }
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 900, &|_| false);
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 900, &|_| false, "");
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved { session_id: "session_b".into() }
@@ -1091,7 +1202,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 700, &|_| false);
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 700, &|_| false, "");
         assert_eq!(
             res,
             JcodeSessionResolution::Refused { reason: RefusalReason::Ambiguous }
@@ -1107,7 +1218,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|_| true, &|_| false);
+        let res = index.resolve(Path::new("/w"), &|_| true, &|_| false, "");
         assert_eq!(
             res,
             JcodeSessionResolution::Refused { reason: RefusalReason::NoSessionPath }
@@ -1129,7 +1240,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 300, &|_| false);
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 300, &|_| false, "");
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved { session_id: "session_j".into() }
@@ -1145,7 +1256,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
-        let res1 = index.resolve(Path::new("/w"), &|pid| pid == 100, &|_| false);
+        let res1 = index.resolve(Path::new("/w"), &|pid| pid == 100, &|_| false, "");
         assert!(matches!(res1, JcodeSessionResolution::Resolved { .. }));
         // Rewrite with a different pid; the stat generation must
         // invalidate the cached evidence.
@@ -1155,13 +1266,13 @@ mod tests {
         )
         .unwrap();
         index.force_sweep_for_tests();
-        let res2 = index.resolve(Path::new("/w"), &|pid| pid == 200, &|_| false);
+        let res2 = index.resolve(Path::new("/w"), &|pid| pid == 200, &|_| false, "");
         assert_eq!(
             res2,
             JcodeSessionResolution::Resolved { session_id: "session_a".into() }
         );
         index.force_sweep_for_tests();
-        let res3 = index.resolve(Path::new("/w"), &|pid| pid == 100, &|_| false);
+        let res3 = index.resolve(Path::new("/w"), &|pid| pid == 100, &|_| false, "");
         assert!(matches!(res3, JcodeSessionResolution::Refused { .. }));
     }
 
@@ -1177,7 +1288,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false);
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "");
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved { session_id: "session_b".into() }
@@ -1205,7 +1316,7 @@ mod refresh_tests {
         })];
         write_store(&dir, "session_a", Some(snapshot), &journal);
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false);
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "");
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved { session_id: "session_a".into() }
@@ -1228,7 +1339,7 @@ mod refresh_tests {
         })];
         write_store(&dir, "session_a", None, &journal);
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false);
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "");
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved { session_id: "session_a".into() }
@@ -1393,5 +1504,266 @@ mod intent_brief_tests {
         let value = json!({"input": {"command": "ls", "intent": "   "}});
         let block = value.as_object().unwrap();
         assert_eq!(tool_brief(block), "ls");
+    }
+}
+
+#[cfg(test)]
+mod step3_tiebreak_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn store_with_twin_sessions(
+        dir: &std::path::Path,
+        tail_apple: &str,
+        tail_banana: &str,
+    ) {
+        let store = dir;
+        // session_a: last assistant says APPLE
+        let a = json!({
+            "id": "session_a", "working_dir": "/w", "status": "Active", "last_pid": 900,
+            "messages": [
+                {"id": "m1", "role": "user", "content": [{"type": "text", "text": "hi"}]},
+                {"id": "m2", "role": "assistant", "content": [
+                    {"type": "text", "text": tail_apple}]},
+            ],
+        });
+        std::fs::write(
+            store.join("session_a.json"),
+            serde_json::to_string(&a).unwrap(),
+        )
+        .unwrap();
+        // session_b: last assistant says BANANA
+        let b = json!({
+            "id": "session_b", "working_dir": "/w", "status": "Active", "last_pid": 900,
+            "messages": [
+                {"id": "m1", "role": "user", "content": [{"type": "text", "text": "hi"}]},
+                {"id": "m2", "role": "assistant", "content": [
+                    {"type": "text", "text": tail_banana}]},
+            ],
+        });
+        std::fs::write(
+            store.join("session_b.json"),
+            serde_json::to_string(&b).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn store(name: &str) -> PathBuf {
+        // Unique per test: Rust runs tests in parallel threads, and a
+        // shared dir raced twin-session writes (found in the batch run).
+        let dir = std::env::temp_dir().join(format!(
+            "jcode-step3-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn pane_tail_text_breaks_twin_session_ambiguity() {
+        let dir = store("apple");
+        store_with_twin_sessions(
+            &dir,
+            "The word to remember is APPLE, confirmed.",
+            "The word to remember is BANANA, confirmed.",
+        );
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        // Both Active on the same live pid + cwd: ambiguous without the tail.
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 900, &|_| false, "");
+        assert_eq!(res, JcodeSessionResolution::Refused { reason: RefusalReason::Ambiguous });
+        // The pane visibly shows session_a's answer: unique substantial match wins.
+        let res = index.resolve(
+            Path::new("/w"),
+            &|pid| pid == 900,
+            &|_| false,
+            "some chrome\nThe word to remember is APPLE, confirmed.\nprompt line",
+        );
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved { session_id: "session_a".into() }
+        );
+    }
+
+    #[test]
+    fn both_panes_same_tail_stays_ambiguous() {
+        let dir = store("both");
+        store_with_twin_sessions(
+            &dir,
+            "The word to remember is APPLE, confirmed.",
+            "The word to remember is BANANA, confirmed.",
+        );
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        // A pane showing BOTH answers (scrollback bleed) must not resolve.
+        let res = index.resolve(
+            Path::new("/w"),
+            &|pid| pid == 900,
+            &|_| false,
+            "The word to remember is APPLE, confirmed. earlier The word to remember is BANANA, confirmed.",
+        );
+        assert_eq!(res, JcodeSessionResolution::Refused { reason: RefusalReason::Ambiguous });
+    }
+
+    #[test]
+    fn short_tail_match_does_not_win() {
+        let dir = store("short");
+        store_with_twin_sessions(&dir, "ok", "ok");
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        // "ok" is under MIN_MATCH_CHARS: no winner even though both match.
+        let res = index.resolve(
+            Path::new("/w"),
+            &|pid| pid == 900,
+            &|_| false,
+            "ok",
+        );
+        assert_eq!(res, JcodeSessionResolution::Refused { reason: RefusalReason::Ambiguous });
+    }
+}
+
+#[cfg(test)]
+mod step3_short_reply_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Live scenario from the twin-pane wire test: last replies were a
+    /// bare "Ok" / "Durian noted." — under the match minimum — but the
+    /// pane screens still showed the CHERRY / DURIAN prompt echoes.
+    /// The tiebreak must fall back to the prompt text, not give up.
+    #[test]
+    fn short_reply_falls_back_to_prompt_echo() {
+        let dir = std::env::temp_dir().join(format!("jcode-step3-echo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = json!({
+            "id": "session_a", "working_dir": "/w", "status": "Active", "last_pid": 900,
+            "messages": [
+                {"id": "m1", "role": "user", "content": [{"type": "text", "text": "Remember the word CHERRY. Reply ok then stop."}]},
+                {"id": "m2", "role": "assistant", "content": [{"type": "text", "text": "Ok"}]},
+            ],
+        });
+        std::fs::write(dir.join("session_a.json"), serde_json::to_string(&a).unwrap()).unwrap();
+        let b = json!({
+            "id": "session_b", "working_dir": "/w", "status": "Active", "last_pid": 900,
+            "messages": [
+                {"id": "m1", "role": "user", "content": [{"type": "text", "text": "Remember the word DURIAN. Just say Durian noted."}]},
+                {"id": "m2", "role": "assistant", "content": [{"type": "text", "text": "Durian noted."}]},
+            ],
+        });
+        std::fs::write(dir.join("session_b.json"), serde_json::to_string(&b).unwrap()).unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        // pane shows the CHERRY prompt echo and the short "Ok" reply
+        let res = index.resolve(
+            Path::new("/w"),
+            &|pid| pid == 900,
+            &|_| false,
+            "chrome\nRemember the word CHERRY. Reply ok then stop.\nOk",
+        );
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved { session_id: "session_a".into() }
+        );
+    }
+}
+
+#[cfg(test)]
+mod step3_journal_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Wire-test regression: the twin-pane live run resolved while both
+    /// sessions' newest substantial texts lived only in the JOURNAL
+    /// (snapshot held just 2 messages), then flipped ambiguous on a
+    /// later poll. The chunk extraction must always work from the
+    /// merged (snapshot + journal) view, which load_session_messages
+    /// provides — this test pins that path end to end.
+    #[test]
+    fn tiebreak_chunk_comes_from_journal_delta_too() {
+        let dir = std::env::temp_dir().join(format!("jcode-step3-journal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // snapshot: older exchange only
+        let snap = json!({
+            "id": "session_a", "working_dir": "/w", "status": "Active", "last_pid": 900,
+            "messages": [
+                {"id": "m1", "role": "user", "content": [{"type": "text", "text": "Remember the word ELDERBERRY. Reply ok."}]},
+            ],
+        });
+        std::fs::write(dir.join("session_a.json"), serde_json::to_string(&snap).unwrap()).unwrap();
+        // journal: the NEW prompt, only there
+        let jline = json!({"append_messages": [
+            {"id": "m2", "role": "user", "content": [{"type": "text",
+              "text": "Run this exact command with bash and wait for it: sleep 30 && echo finished-slowly. Then reply slow done."}]},
+        ]});
+        std::fs::write(
+            dir.join("session_a.journal.jsonl"),
+            serde_json::to_string(&jline).unwrap() + "\n",
+        )
+        .unwrap();
+        let snap_b = json!({
+            "id": "session_b", "working_dir": "/w", "status": "Active", "last_pid": 900,
+            "messages": [
+                {"id": "m1", "role": "user", "content": [{"type": "text", "text": "Remember the word FIG. Reply ok."}]},
+            ],
+        });
+        std::fs::write(dir.join("session_b.json"), serde_json::to_string(&snap_b).unwrap()).unwrap();
+
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        let res = index.resolve(
+            Path::new("/w"),
+            &|pid| pid == 900,
+            &|_| false,
+            "Run this exact command with bash and wait for it: sleep 30 && echo finished-slowly. Then reply slow done.",
+        );
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved { session_id: "session_a".into() }
+        );
+    }
+}
+
+#[cfg(test)]
+mod step3_reflow_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Live wire failure: the TUI reflowed the reply on screen
+    /// ("ok  I'll remember …" with double spaces and no newlines)
+    /// while the store chunk kept "ok\n\nI'll remember …". Verbatim
+    /// matching missed; word-sequence matching must hit.
+    #[test]
+    fn reflowed_pane_text_still_matches() {
+        let dir = std::env::temp_dir().join(format!("jcode-step3-reflow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = json!({
+            "id": "session_a", "working_dir": "/w", "status": "Active", "last_pid": 900,
+            "messages": [
+                {"id": "m1", "role": "user", "content": [{"type": "text", "text": "Remember the word GRAPEFRUIT. Reply ok."}]},
+                {"id": "m2", "role": "assistant", "content": [{"type": "text", "text": "Ok."}]},
+            ],
+        });
+        std::fs::write(dir.join("session_a.json"), serde_json::to_string(&a).unwrap()).unwrap();
+        let b = json!({
+            "id": "session_b", "working_dir": "/w", "status": "Active", "last_pid": 900,
+            "messages": [
+                {"id": "m1", "role": "user", "content": [{"type": "text", "text": "Remember the word HONEYDEW. Reply ok."}]},
+                {"id": "m2", "role": "assistant", "content": [
+                    {"type": "text", "text": "ok"},
+                    {"type": "text", "text": "I’ll remember the word HONEYDEW."}]},
+            ],
+        });
+        std::fs::write(dir.join("session_b.json"), serde_json::to_string(&b).unwrap()).unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        // pane_7's actual screen shape: spaces collapsed, no newlines
+        let res = index.resolve(
+            Path::new("/w"),
+            &|pid| pid == 900,
+            &|_| false,
+            "ok  I’ll remember the word HONEYDEW.  710ms · ↑17k ↓19",
+        );
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved { session_id: "session_b".into() }
+        );
     }
 }

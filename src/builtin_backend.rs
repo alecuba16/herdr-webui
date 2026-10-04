@@ -2666,11 +2666,17 @@ fn pane_agent_session(
         .terminals
         .get(&pane.terminal_id)
         .and_then(|terminal| terminal.child_pid());
+    let pane_tail = data
+        .terminals
+        .get(&pane.terminal_id)
+        .map(|terminal| terminal.history_tail_text(DETECTION_TAIL_BYTES))
+        .unwrap_or_default();
     let index = jcode_store_index();
     match index.resolve(
         &live_cwd,
         &|pid| by_pid.contains_key(&pid),
         &|pid| process_in_tree(pid, terminal_pid, &processes),
+        &pane_tail,
     ) {
         JcodeSessionResolution::Resolved { session_id } => json!({
             "kind": agent,
@@ -2707,11 +2713,26 @@ fn build_jcode_conversation(state: &BuiltinState, pane: &PaneRecord) -> Result<V
     let terminal_pid = state
         .terminal(&pane.terminal_id)
         .and_then(|terminal| terminal.child_pid());
+    let pane_tail = state
+        .terminal(&pane.terminal_id)
+        .map(|terminal| {
+            // Simple ANSI strip, NOT the VT screen emulation of
+            // history_tail_text: the tiebreak needs verbatim prompt
+            // echo, and VT emulation lets spinner redraws/CR overwrite
+            // it (found live: twin panes flipped ambiguous while a
+            // tool ran). Same strip mode as pane.read on the wire.
+            terminal_text::strip_ansi_lossy(
+                &String::from_utf8_lossy(&terminal.history_bytes()),
+                terminal_text::StripCarriageReturn::Drop,
+            )
+        })
+        .unwrap_or_default();
     let index = jcode_store_index();
     let resolution = index.resolve(
         &live_cwd,
         &|pid| by_pid.contains_key(&pid),
         &|pid| process_in_tree(pid, terminal_pid, &processes),
+        &pane_tail,
     );
     let JcodeSessionResolution::Resolved { session_id } = resolution else {
         return Err(match resolution {
