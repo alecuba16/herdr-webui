@@ -1,5 +1,35 @@
 # Release notes
 
+## 0.4.60 Release Notes
+- The chat lens gets a structured conversation mode for jcode panes:
+  instead of only the terminal scrollback, a jcode pane can flip to a
+  rendered conversation (user cards, thinking rows, tool calls with
+  expandable output, compaction summaries) read directly from the
+  jcode session store (snapshot + journal replay, id-deduped). The
+  Chat|Terminal switch only appears on panes whose agent session is
+  resolvable; unresolvable panes show the refusal copy instead of an
+  empty view. Panes resolve deterministically: process-tree evidence
+  first, then live-pid + Active status, with a pane-tail text
+  tiebreak for twin sessions on one daemon.
+- Thinking blocks render in the transcript: reasoning traces and
+  Anthropic signed thinking (`anthropic_thinking`, prose in its own
+  `thinking` field) both display as thinking rows. The parser covers
+  all 11 writer ContentBlock variants; hidden provider state
+  (compaction internals, provider-native blocks, images) never leaks
+  into chat.
+- Tool calls carry a brief (intent-derived), the raw input JSON, and a
+  trimmed output with an `output_ref`: clicking fetches the whole
+  pre-trim output from the same message stream (bounded at 2 MB).
+- The connection chip in the header is now dot-only: the visible
+  label is gone, state is the dot color/pulse plus a hover tooltip,
+  and an sr-only label keeps the state change announced to screen
+  readers.
+- The chat lens feature is extracted into its own module
+  (`src/chat_lens.rs`) with the store reader in
+  `src/jcode_transcript.rs`: resolution, payload shaping and parsing
+  are fully unit-tested over synthetic stores (chat_lens 99.7% line
+  coverage, 100% regions/functions; jcode_transcript 98.2%).
+
 ## 0.4.59 Release Notes
 - The panel selector menu is reachable again on short viewports: the
   pane-grow mechanism could overflow the fixed-height sidebar section
