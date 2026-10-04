@@ -384,7 +384,9 @@ input {
   position: absolute;
   top: 10px;
   right: 12px;
-  z-index: var(--z-popover, 10);
+  /* Above the lens overlay and composer so the switch stays visible and
+   * clickable in BOTH views (the lens covers the shell with inset: 0). */
+  z-index: calc(var(--z-popover, 10) + 3);
 }
 .terminal-lens {
   position: absolute;
