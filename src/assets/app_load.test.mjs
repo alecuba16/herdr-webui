@@ -3549,6 +3549,37 @@ describe("app bundle load", () => {
     equal(html.includes("feature/demo"), false);
   });
 
+  it("agent row panel token hides with one panel, shows name or number with several", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const cases = vm.runInContext(
+      `const workspace = {
+        workspace_id: "ws1",
+        label: "ws",
+        worktree: { repo_key: "repo", repo_name: "repo", checkout_path: "/tmp/repo" },
+      };
+      const wsById = { ws1: workspace };
+      const agent = { workspace_id: "ws1", tab_id: "tab1", pane_id: "pane1", agent_status: "idle", name: "agent" };
+      const row = (tab, count) => renderAgentRow(
+        agent,
+        wsById,
+        { tab1: tab },
+        new Map([["ws1", count]]),
+      );
+      ({
+        singleShell: row({ workspace_id: "ws1", tab_id: "tab1", number: 1, label: "Shell" }, 1),
+        multiShell: row({ workspace_id: "ws1", tab_id: "tab1", number: 2, label: "Shell" }, 2),
+        multiNamed: row({ workspace_id: "ws1", tab_id: "tab1", number: 2, label: "build" }, 2),
+      });`,
+      ctx,
+    );
+
+    equal(cases.singleShell.includes("agent-panel"), false, "single default panel token is hidden");
+    match(cases.multiShell, /agent-panel[^>]*title="#2"[^>]*>#2</, "default label shows panel number");
+    match(cases.multiNamed, /agent-panel[^>]*title="build"[^>]*>build</, "custom label shows name");
+  });
+
   it("memoizes unchanged workspace sidebar render work", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

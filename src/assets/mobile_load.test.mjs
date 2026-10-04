@@ -376,7 +376,7 @@ function context(pathname = "/", options = {}) {
                   ]),
                 }
               : {
-                  agents: [
+                  agents: optionValue("agents", [
                     {
                       workspace_id: "w1",
                       tab_id: "w1:t1",
@@ -401,7 +401,7 @@ function context(pathname = "/", options = {}) {
                       agent_status: "working",
                       name: "working-agent",
                     },
-                  ],
+                  ]),
                 };
       return { ok: true, status: 200, json: async () => ({ result }) };
     },
@@ -681,6 +681,36 @@ describe("mobile bundle load", () => {
     const agentsHtml = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(agentsHtml.includes("blocked-agent"));
     ok(agentsHtml.includes("working-agent"));
+  });
+
+  it("mobile agent row panel token hides with one panel, shows name or number with several", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: [
+        { workspace_id: "w1", tab_id: "w1:t1", number: 1, label: "Shell" },
+        { workspace_id: "w1", tab_id: "w1:t2", number: 2, label: "Shell" },
+        { workspace_id: "w1", tab_id: "w1:t3", number: 3, label: "build" },
+        { workspace_id: "w2", tab_id: "w2:t1", number: 1, label: "Shell" },
+      ],
+      workspaces: [
+        { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+        { workspace_id: "w2", label: "beta", pane_count: 1, cwd: "/tmp/beta" },
+      ],
+      agents: () => [
+        { workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1", agent_status: "idle", name: "a1" },
+        { workspace_id: "w1", tab_id: "w1:t3", pane_id: "w1:p3", terminal_id: "term3", agent_status: "idle", name: "a2" },
+        { workspace_id: "w2", tab_id: "w2:t1", pane_id: "w2:p1", terminal_id: "term4", agent_status: "idle", name: "a3" },
+      ],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    ctx.HerdrMobile.showScreen("agents");
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    // w1 has 3 panels: default labels become #1/#2/#3, custom label stays "build".
+    ok(html.includes("#1"), "default panel label shows number");
+    ok(html.includes("› build"), "custom panel label shows name");
+    // w2 has a single panel: no panel token at all in its row title.
+    ok(!/>beta ›/.test(html), "single-panel row hides panel token");
   });
 
   it("routes mobile backend headers and sockets from selected backend branches", async () => {

@@ -173,7 +173,7 @@ function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
       : w.label
     : state.ws || state.session || "herdr";
   const panel = t
-    ? agentTabLabel(state.ws, t, tabCountsByWorkspace)
+    ? agentTabLabel(state.ws, t, tabCountsByWorkspace) || tabTitle(t)
     : pane
       ? pane.pane_id
       : "panel";
@@ -836,7 +836,12 @@ function agentWorktreeDisplayName(w) {
 function agentTabLabel(wsId, t, tabCountsByWorkspace) {
   if (!t) return "";
   const count = tabCountsByWorkspace.get(wsId) || 0;
-  return count > 1 || t.label ? tabTitle(t) : "";
+  // Single-panel workspaces need no disambiguation. With several panels show
+  // the custom name, or the panel number when the label is a default like
+  // "Shell" (isDefaultPanelTitle treats "Shell"/"Terminal"/"tab N" as defaults).
+  if (count <= 1) return "";
+  const label = String(t.label || "").trim();
+  return isDefaultPanelTitle(label) ? `#${panelNumberLabel(t)}` : label;
 }
 function pathBasename(path) {
   const parts = String(path || "")
