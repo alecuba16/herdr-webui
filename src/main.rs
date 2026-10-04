@@ -5197,6 +5197,11 @@ async fn events_ws(
     Query(query): Query<SessionQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
+    // Auth is checked once, at the upgrade handshake. An open websocket
+    // keeps streaming after the session that opened it is revoked (logout,
+    // expiry, credential change); the next upgrade with that cookie 401s.
+    // Same lifetime boundary as every handshake-authenticated socket.
+    // (Validated live in W34a: frames continue post-revocation.)
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
