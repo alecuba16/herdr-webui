@@ -939,7 +939,7 @@ describe("temporary terminal", () => {
     ok(true, "key handling completed without error");
   });
 
-  it("hasAnyOpen returns false when no sessions exist", async () => {
+  it("hasAnyOpen returns false when no sessions exist and true once one opens, including minimized", async () => {
     const ctx = context();
     vm.runInContext(readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8"), ctx);
     const tempTerminal = ctx.HerdrTempTerminal.create({
@@ -952,6 +952,13 @@ describe("temporary terminal", () => {
     });
     // No sessions opened yet
     ok(!tempTerminal.isVisible(), "should not be visible with no sessions");
+    ok(tempTerminal.hasAnyOpen() === false, "hasAnyOpen false with no sessions");
+    // Open one, minimize it: hasAnyOpen must stay true so callers (the
+    // mobile More card) can hint a live minimized session exists.
+    await tempTerminal.open("");
+    ok(tempTerminal.hasAnyOpen() === true, "hasAnyOpen true with an open session");
+    tempTerminal.minimize();
+    ok(tempTerminal.hasAnyOpen() === true, "hasAnyOpen stays true with a minimized session");
   });
 
   it("promote sends the release toggle, keeps the tab open, and hands off via onPromoted", async () => {
