@@ -108,10 +108,7 @@ fn resolve_with(index: &JcodeStoreIndex, context: &PaneContext) -> JcodeSessionR
 /// The pane's `agent_session` value (design section 6). `null` for
 /// unsupported agents (Chat lens hidden); `{kind, resolvable,
 /// session_id}` for jcode panes when resolution succeeds.
-pub fn agent_session(
-    agent: &str,
-    context: &PaneContext,
-) -> Value {
+pub fn agent_session(agent: &str, context: &PaneContext) -> Value {
     if !agent_supported(Some(agent)) {
         return Value::Null;
     }
@@ -156,12 +153,13 @@ pub fn conversation_payload_with(
     // Zero messages alone is a LEGITIMATE state (compact-only sessions,
     // empty fresh sessions) — render, never error (design section 3).
     if messages.is_empty() && compaction.is_none() {
-        let snapshot_readable = std::fs::read_to_string(store_dir.join(format!("{session_id}.json")))
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .is_some();
-        let journal_readable = std::fs::read(store_dir.join(format!("{session_id}.journal.jsonl")))
-            .is_ok();
+        let snapshot_readable =
+            std::fs::read_to_string(store_dir.join(format!("{session_id}.json")))
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .is_some();
+        let journal_readable =
+            std::fs::read(store_dir.join(format!("{session_id}.journal.jsonl"))).is_ok();
         if !snapshot_readable && !journal_readable {
             return Err("transcript_missing: session files are unreadable".to_string());
         }
@@ -229,7 +227,15 @@ fn turn_json(turn: &Turn) -> Value {
         .map(|part| match part {
             TurnPart::Text { text } => json!({ "kind": "text", "text": text }),
             TurnPart::Thinking { text } => json!({ "kind": "thinking", "text": text }),
-            TurnPart::Tool { name, brief, input, output, is_error, output_ref, output_size } => {
+            TurnPart::Tool {
+                name,
+                brief,
+                input,
+                output,
+                is_error,
+                output_ref,
+                output_size,
+            } => {
                 let mut part = json!({
                     "kind": "tool", "name": name, "brief": brief,
                     "input": input, "output": output, "is_error": is_error,
@@ -303,7 +309,9 @@ mod tests {
             ts: Some("2026-01-01T00:00:00Z".into()),
             end_ts: Some("2026-01-01T00:00:01Z".into()),
             parts: vec![
-                TurnPart::Text { text: "answer".into() },
+                TurnPart::Text {
+                    text: "answer".into(),
+                },
                 TurnPart::Thinking { text: "hmm".into() },
                 TurnPart::Tool {
                     name: "bash".into(),
@@ -314,8 +322,12 @@ mod tests {
                     output_ref: Some("call_1".into()),
                     output_size: Some(5),
                 },
-                TurnPart::ToolPending { name: "read".into() },
-                TurnPart::Compact { summary: "folded".into() },
+                TurnPart::ToolPending {
+                    name: "read".into(),
+                },
+                TurnPart::Compact {
+                    summary: "folded".into(),
+                },
             ],
         };
         let wire = turn_json(&turn);
@@ -327,7 +339,10 @@ mod tests {
             .iter()
             .map(|p| p["kind"].as_str().unwrap())
             .collect();
-        assert_eq!(kinds, vec!["text", "thinking", "tool", "tool_pending", "compact"]);
+        assert_eq!(
+            kinds,
+            vec!["text", "thinking", "tool", "tool_pending", "compact"]
+        );
         let tool = &wire["parts"][2];
         assert_eq!(tool["output_ref"], "call_1");
         assert_eq!(tool["output_size"], 5);
@@ -443,7 +458,10 @@ mod tests {
             live_cwd: PathBuf::from("/w"),
             terminal_pid: Some(1),
             // 4242 in the pane's tree (child of 1).
-            processes: vec![ProcessRow { pid: 1, ppid: 0 }, ProcessRow { pid: 4242, ppid: 1 }],
+            processes: vec![
+                ProcessRow { pid: 1, ppid: 0 },
+                ProcessRow { pid: 4242, ppid: 1 },
+            ],
             pane_tail: String::new(),
         }
     }
@@ -505,10 +523,8 @@ mod tests {
     fn conversation_payload_with_empty_session_returns_empty_turns() {
         // Resolves (evidence exists) but the store has zero parseable
         // messages and no compaction: empty turns array, not an error.
-        let dir = std::env::temp_dir().join(format!(
-            "herdr-chat-lens-test-empty-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("herdr-chat-lens-test-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -545,20 +561,15 @@ mod tests {
             Ok(None)
         );
         // Empty ref: invalid too.
-        assert_eq!(
-            tool_output_with(&index, &fixture_context(), ""),
-            Ok(None)
-        );
+        assert_eq!(tool_output_with(&index, &fixture_context(), ""), Ok(None));
     }
 
     #[test]
     fn resolve_session_with_two_active_sessions_is_ambiguous() {
         // Two Active sessions, same pid, same cwd, empty pane tail:
         // tree step finds both, tiebreak cannot run -> ambiguous.
-        let dir = std::env::temp_dir().join(format!(
-            "herdr-chat-lens-test-amb-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("herdr-chat-lens-test-amb-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for id in ["session_p", "session_q"] {
@@ -581,10 +592,8 @@ mod tests {
     fn conversation_payload_with_compaction_leads_with_summary_turn() {
         // Compaction summary in the journal meta: the payload inserts a
         // leading compact turn and drops nothing (design section 3).
-        let dir = std::env::temp_dir().join(format!(
-            "herdr-chat-lens-test-cpt-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("herdr-chat-lens-test-cpt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -605,7 +614,8 @@ mod tests {
                 "meta": {"compaction": {"summary_text": "earlier context folded"}},
                 "append_messages": []
             }))
-            .unwrap() + "\n",
+            .unwrap()
+                + "\n",
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);

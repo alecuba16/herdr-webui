@@ -228,9 +228,11 @@ impl JcodeStoreIndex {
         }
         let mut winner: Option<&SessionEvidence> = None;
         for candidate in candidates {
-            let Some(chunk) =
-                last_substantial_text_chunk(&self.store_dir, &candidate.session_id, MIN_MATCH_CHARS)
-            else {
+            let Some(chunk) = last_substantial_text_chunk(
+                &self.store_dir,
+                &candidate.session_id,
+                MIN_MATCH_CHARS,
+            ) else {
                 continue;
             };
             if flat_tail.contains(&normalize_ws(&chunk)) {
@@ -369,7 +371,11 @@ fn stat_generation(meta: &std::fs::Metadata) -> (u128, u64) {
 
 /// Reads one file's resolution evidence (pid/cwd/status). Snapshot
 /// preferred; journal meta lines are the pre-checkpoint fallback.
-fn read_evidence(path: &Path, session_id: &str, generation: (u128, u64)) -> Option<SessionEvidence> {
+fn read_evidence(
+    path: &Path,
+    session_id: &str,
+    generation: (u128, u64),
+) -> Option<SessionEvidence> {
     let evidence_from = |value: &serde_json::Value| -> Option<SessionEvidence> {
         let working_dir = value.get("working_dir")?.as_str()?.to_string();
         let last_pid = value.get("last_pid")?.as_u64()? as u32;
@@ -443,8 +449,12 @@ pub enum TurnRole {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TurnPart {
-    Text { text: String },
-    Thinking { text: String },
+    Text {
+        text: String,
+    },
+    Thinking {
+        text: String,
+    },
     Tool {
         name: String,
         brief: String,
@@ -461,10 +471,14 @@ pub enum TurnPart {
         output_size: Option<usize>,
     },
     /// In-flight call: no result yet (renders as `running <name>…`).
-    ToolPending { name: String },
+    ToolPending {
+        name: String,
+    },
     /// Compaction summary (server emits it as its own user turn; the
     /// client folds nothing — design section 3).
-    Compact { summary: String },
+    Compact {
+        summary: String,
+    },
 }
 
 pub const MAX_TURNS: usize = 200;
@@ -507,7 +521,11 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
         match role {
             "user" => {
                 let mut texts: Vec<&str> = Vec::new();
-                let mut tool_results: Vec<(String, serde_json::Map<String, serde_json::Value>, bool)> = Vec::new();
+                let mut tool_results: Vec<(
+                    String,
+                    serde_json::Map<String, serde_json::Value>,
+                    bool,
+                )> = Vec::new();
                 for block in blocks {
                     let Some(block) = block.as_object() else {
                         continue;
@@ -522,7 +540,8 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
                         }
                         Some("tool_result") => {
                             let id = block.get("tool_use_id").and_then(|t| t.as_str());
-                            let is_error = block.get("is_error") == Some(&serde_json::Value::Bool(true));
+                            let is_error =
+                                block.get("is_error") == Some(&serde_json::Value::Bool(true));
                             if let Some(id) = id {
                                 tool_results.push((id.to_string(), block.clone(), is_error));
                             }
@@ -539,7 +558,9 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
                             output_ref,
                             output_size,
                             ..
-                        }) = turns.get_mut(turn_idx).and_then(|t| t.parts.get_mut(part_idx))
+                        }) = turns
+                            .get_mut(turn_idx)
+                            .and_then(|t| t.parts.get_mut(part_idx))
                         {
                             // trimOutput parity: cap the page payload, keep
                             // a ref + size so a client can fetch the rest.
@@ -598,7 +619,9 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
                                 });
                             }
                         }
-                        Some("reasoning") | Some("reasoning_trace") | Some("open_a_i_reasoning") => {
+                        Some("reasoning")
+                        | Some("reasoning_trace")
+                        | Some("open_a_i_reasoning") => {
                             // Thinking-class content when trivially
                             // available (same text field), else skip.
                             if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
@@ -643,8 +666,10 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
                                 output_size: None,
                             });
                             if let Some(id) = block.get("id").and_then(|i| i.as_str()) {
-                                pending_tools
-                                    .insert(id.to_string(), (turn_idx, turns[turn_idx].parts.len() - 1));
+                                pending_tools.insert(
+                                    id.to_string(),
+                                    (turn_idx, turns[turn_idx].parts.len() - 1),
+                                );
                             }
                         }
                         // image / provider_native / tool_reference /
@@ -671,8 +696,9 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
             turns.get(turn_idx).and_then(|t| t.parts.get(part_idx))
         {
             let name = name.clone();
-            if let Some(part) =
-                turns.get_mut(turn_idx).and_then(|t| t.parts.get_mut(part_idx))
+            if let Some(part) = turns
+                .get_mut(turn_idx)
+                .and_then(|t| t.parts.get_mut(part_idx))
             {
                 *part = TurnPart::ToolPending { name };
             }
@@ -742,7 +768,11 @@ fn last_substantial_text_chunk(
         if trimmed.chars().count() < min_chars {
             continue; // trivially short text ("ok"): keep looking back
         }
-        let tail: String = trimmed.chars().rev().take(TAIL_CHARS).collect::<Vec<_>>()
+        let tail: String = trimmed
+            .chars()
+            .rev()
+            .take(TAIL_CHARS)
+            .collect::<Vec<_>>()
             .into_iter()
             .rev()
             .collect();
@@ -844,11 +874,7 @@ pub fn load_compaction(store_dir: &Path, session_id: &str) -> Option<String> {
 /// `reference` is a JSON-encoded needle inside line scanning, so
 /// charset-validate it the way the reference's TOOL_REF does: callers
 /// must have passed `valid_tool_ref` first.
-pub fn tool_output_by_ref(
-    store_dir: &Path,
-    session_id: &str,
-    reference: &str,
-) -> Option<String> {
+pub fn tool_output_by_ref(store_dir: &Path, session_id: &str, reference: &str) -> Option<String> {
     if !valid_tool_ref(reference) {
         return None;
     }
@@ -861,7 +887,9 @@ pub fn tool_output_by_ref(
             continue;
         };
         for block in blocks {
-            let Some(block) = block.as_object() else { continue };
+            let Some(block) = block.as_object() else {
+                continue;
+            };
             if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
                 continue;
             }
@@ -944,9 +972,10 @@ fn tool_brief(block: &serde_json::Map<String, serde_json::Value>) -> String {
                 if count >= 3 {
                     break;
                 }
-                let value = v.as_str().map(str::to_string).unwrap_or_else(|| {
-                    v.to_string().chars().take(30).collect::<String>()
-                });
+                let value = v
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string().chars().take(30).collect::<String>());
                 if !brief.is_empty() {
                     brief.push(' ');
                 }
@@ -1150,7 +1179,10 @@ mod tests {
         .unwrap();
         let out = tool_output_by_ref(&dir, "sess", "call_1").unwrap();
         assert!(out.ends_with("… trimmed"));
-        assert_eq!(out.chars().count(), TOOL_OUTPUT_MAX + "\n… trimmed".chars().count());
+        assert_eq!(
+            out.chars().count(),
+            TOOL_OUTPUT_MAX + "\n… trimmed".chars().count()
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1180,7 +1212,9 @@ mod tests {
         assert_eq!(turns[1].role, TurnRole::Assistant);
         assert_eq!(
             turns[1].parts,
-            vec![TurnPart::Text { text: "hi there".into() }]
+            vec![TurnPart::Text {
+                text: "hi there".into()
+            }]
         );
     }
 
@@ -1206,7 +1240,10 @@ mod tests {
             user_result("m5", "call_2", "ok", false),
         ];
         let turns = parse_jcode_transcript(&msgs);
-        let assistant = turns.iter().find(|t| t.role == TurnRole::Assistant).unwrap();
+        let assistant = turns
+            .iter()
+            .find(|t| t.role == TurnRole::Assistant)
+            .unwrap();
         let tools: Vec<&TurnPart> = assistant
             .parts
             .iter()
@@ -1214,7 +1251,13 @@ mod tests {
             .collect();
         assert_eq!(tools.len(), 2);
         match tools[0] {
-            TurnPart::Tool { is_error, output, name, brief, .. } => {
+            TurnPart::Tool {
+                is_error,
+                output,
+                name,
+                brief,
+                ..
+            } => {
                 assert!(is_error);
                 assert_eq!(output, "boom");
                 assert_eq!(name, "bash");
@@ -1301,8 +1344,10 @@ mod tests {
         assert!(parse_jcode_transcript(&[]).is_empty());
         // content as bare string never happens (validated round 7) but
         // must not panic if it ever does.
-        assert!(parse_jcode_transcript(&[json!({"id": "m1", "role": "user", "content": "hi"})])
-            .is_empty());
+        assert!(
+            parse_jcode_transcript(&[json!({"id": "m1", "role": "user", "content": "hi"})])
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1324,7 +1369,12 @@ mod tests {
 
     // --- loader tests over a synthetic store ---
 
-    pub(super) fn write_store(dir: &Path, session_id: &str, snapshot: Option<serde_json::Value>, journal_lines: &[serde_json::Value]) {
+    pub(super) fn write_store(
+        dir: &Path,
+        session_id: &str,
+        snapshot: Option<serde_json::Value>,
+        journal_lines: &[serde_json::Value],
+    ) {
         if let Some(snap) = snapshot {
             std::fs::write(
                 dir.join(format!("{session_id}.json")),
@@ -1341,7 +1391,10 @@ mod tests {
     }
 
     pub(super) fn temp_store(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("jcode-transcript-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "jcode-transcript-test-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1359,7 +1412,10 @@ mod tests {
         ];
         write_store(&dir, "session_a", Some(snapshot), &journal);
         let msgs = load_session_messages(&dir, "session_a");
-        let ids: Vec<&str> = msgs.iter().filter_map(|m| m.get("id").and_then(|i| i.as_str())).collect();
+        let ids: Vec<&str> = msgs
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
+            .collect();
         assert_eq!(ids, vec!["m1", "m2", "m3"]);
     }
 
@@ -1386,7 +1442,12 @@ mod tests {
         write_store(&dir, "session_c", None, &journal);
         assert_eq!(load_session_messages(&dir, "session_c").len(), 1);
         // Snapshot only (post-rotation moment).
-        write_store(&dir, "session_d", Some(json!({"messages": [user_text("m1", "y")]})), &[]);
+        write_store(
+            &dir,
+            "session_d",
+            Some(json!({"messages": [user_text("m1", "y")]})),
+            &[],
+        );
         assert_eq!(load_session_messages(&dir, "session_d").len(), 1);
         // Neither: zero messages, not an error.
         assert!(load_session_messages(&dir, "session_e").is_empty());
@@ -1400,14 +1461,23 @@ mod tests {
             "append_messages": []
         })];
         write_store(&dir, "session_f", None, &journal);
-        assert_eq!(load_compaction(&dir, "session_f").as_deref(), Some("summarized"));
+        assert_eq!(
+            load_compaction(&dir, "session_f").as_deref(),
+            Some("summarized")
+        );
         // Snapshot path (compaction forces a snapshot save).
         std::fs::write(
             dir.join("session_g.json"),
-            serde_json::to_string(&json!({"messages": [], "compaction": {"summary_text": "snap sum"}})).unwrap(),
+            serde_json::to_string(
+                &json!({"messages": [], "compaction": {"summary_text": "snap sum"}}),
+            )
+            .unwrap(),
         )
         .unwrap();
-        assert_eq!(load_compaction(&dir, "session_g").as_deref(), Some("snap sum"));
+        assert_eq!(
+            load_compaction(&dir, "session_g").as_deref(),
+            Some("snap sum")
+        );
         assert_eq!(load_compaction(&dir, "session_h"), None);
     }
 
@@ -1439,7 +1509,9 @@ mod tests {
         let res = index.resolve(Path::new("/w"), &|pid| pid != 500, &|pid| pid == 500, "");
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_a".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
         );
     }
 
@@ -1466,7 +1538,9 @@ mod tests {
         let res = index.resolve(Path::new("/w"), &|pid| pid == 900, &|_| false, "");
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_b".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_b".into()
+            }
         );
     }
 
@@ -1487,7 +1561,9 @@ mod tests {
         let res = index.resolve(Path::new("/w"), &|pid| pid == 700, &|_| false, "");
         assert_eq!(
             res,
-            JcodeSessionResolution::Refused { reason: RefusalReason::Ambiguous }
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::Ambiguous
+            }
         );
     }
 
@@ -1503,7 +1579,9 @@ mod tests {
         let res = index.resolve(Path::new("/w"), &|_| true, &|_| false, "");
         assert_eq!(
             res,
-            JcodeSessionResolution::Refused { reason: RefusalReason::NoSessionPath }
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::NoSessionPath
+            }
         );
     }
 
@@ -1518,14 +1596,16 @@ mod tests {
                 "append_messages": [user_text("m1", "hi")]
             }))
             .unwrap()
-            + "\n",
+                + "\n",
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
         let res = index.resolve(Path::new("/w"), &|pid| pid == 300, &|_| false, "");
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_j".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_j".into()
+            }
         );
     }
 
@@ -1551,7 +1631,9 @@ mod tests {
         let res2 = index.resolve(Path::new("/w"), &|pid| pid == 200, &|_| false, "");
         assert_eq!(
             res2,
-            JcodeSessionResolution::Resolved { session_id: "session_a".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
         );
         index.force_sweep_for_tests();
         let res3 = index.resolve(Path::new("/w"), &|pid| pid == 100, &|_| false, "");
@@ -1573,7 +1655,9 @@ mod tests {
         let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "");
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_b".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_b".into()
+            }
         );
     }
 }
@@ -1591,7 +1675,8 @@ mod refresh_tests {
         // per-file sweep counted it twice and made every live session
         // resolve as false `ambiguous`.
         let dir = temp_store("r8");
-        let snapshot = json!({"messages": [], "working_dir": "/w", "last_pid": 42, "status": "Active"});
+        let snapshot =
+            json!({"messages": [], "working_dir": "/w", "last_pid": 42, "status": "Active"});
         let journal = vec![json!({
             "meta": {"working_dir": "/w", "last_pid": 42, "status": "Active"},
             "append_messages": []
@@ -1601,7 +1686,9 @@ mod refresh_tests {
         let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "");
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_a".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
         );
     }
 
@@ -1624,7 +1711,9 @@ mod refresh_tests {
         let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "");
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_a".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
         );
     }
 }
@@ -1712,8 +1801,10 @@ mod review_pass_tests {
         assert_eq!(turns.len(), 2);
         let assistant = &turns[1];
         assert_eq!(assistant.parts.len(), 2);
-        assert!(matches!(&assistant.parts[0], TurnPart::Tool { output, is_error, .. }
-            if output == "ok" && !is_error));
+        assert!(
+            matches!(&assistant.parts[0], TurnPart::Tool { output, is_error, .. }
+            if output == "ok" && !is_error)
+        );
         assert!(matches!(&assistant.parts[1], TurnPart::Text { text } if text == "done"));
     }
 }
@@ -1736,7 +1827,12 @@ mod review_pass2_tests {
         ];
         let turns = parse_jcode_transcript(&msgs);
         match &turns[1].parts[0] {
-            TurnPart::Tool { input, output_ref, output_size, .. } => {
+            TurnPart::Tool {
+                input,
+                output_ref,
+                output_size,
+                ..
+            } => {
                 assert!(input.contains("\"command\":\"ls\""));
                 assert!(output_ref.is_none());
                 assert!(output_size.is_none());
@@ -1758,7 +1854,12 @@ mod review_pass2_tests {
         ];
         let turns = parse_jcode_transcript(&msgs);
         match &turns[0].parts[0] {
-            TurnPart::Tool { output, output_ref, output_size, .. } => {
+            TurnPart::Tool {
+                output,
+                output_ref,
+                output_size,
+                ..
+            } => {
                 assert!(output.ends_with("… trimmed"));
                 assert_eq!(output_ref.as_deref(), Some("c7"));
                 assert_eq!(*output_size, Some(9000));
@@ -1794,11 +1895,7 @@ mod step3_tiebreak_tests {
     use super::*;
     use serde_json::json;
 
-    fn store_with_twin_sessions(
-        dir: &std::path::Path,
-        tail_apple: &str,
-        tail_banana: &str,
-    ) {
+    fn store_with_twin_sessions(dir: &std::path::Path, tail_apple: &str, tail_banana: &str) {
         let store = dir;
         // session_a: last assistant says APPLE
         let a = json!({
@@ -1833,10 +1930,7 @@ mod step3_tiebreak_tests {
     fn store(name: &str) -> PathBuf {
         // Unique per test: Rust runs tests in parallel threads, and a
         // shared dir raced twin-session writes (found in the batch run).
-        let dir = std::env::temp_dir().join(format!(
-            "jcode-step3-{name}-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("jcode-step3-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1853,7 +1947,12 @@ mod step3_tiebreak_tests {
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         // Both Active on the same live pid + cwd: ambiguous without the tail.
         let res = index.resolve(Path::new("/w"), &|pid| pid == 900, &|_| false, "");
-        assert_eq!(res, JcodeSessionResolution::Refused { reason: RefusalReason::Ambiguous });
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::Ambiguous
+            }
+        );
         // The pane visibly shows session_a's answer: unique substantial match wins.
         let res = index.resolve(
             Path::new("/w"),
@@ -1863,7 +1962,9 @@ mod step3_tiebreak_tests {
         );
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_a".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
         );
     }
 
@@ -1883,7 +1984,12 @@ mod step3_tiebreak_tests {
             &|_| false,
             "The word to remember is APPLE, confirmed. earlier The word to remember is BANANA, confirmed.",
         );
-        assert_eq!(res, JcodeSessionResolution::Refused { reason: RefusalReason::Ambiguous });
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::Ambiguous
+            }
+        );
     }
 
     #[test]
@@ -1892,13 +1998,13 @@ mod step3_tiebreak_tests {
         store_with_twin_sessions(&dir, "ok", "ok");
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         // "ok" is under MIN_MATCH_CHARS: no winner even though both match.
-        let res = index.resolve(
-            Path::new("/w"),
-            &|pid| pid == 900,
-            &|_| false,
-            "ok",
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 900, &|_| false, "ok");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::Ambiguous
+            }
         );
-        assert_eq!(res, JcodeSessionResolution::Refused { reason: RefusalReason::Ambiguous });
     }
 }
 
@@ -1923,7 +2029,11 @@ mod step3_short_reply_tests {
                 {"id": "m2", "role": "assistant", "content": [{"type": "text", "text": "Ok"}]},
             ],
         });
-        std::fs::write(dir.join("session_a.json"), serde_json::to_string(&a).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("session_a.json"),
+            serde_json::to_string(&a).unwrap(),
+        )
+        .unwrap();
         let b = json!({
             "id": "session_b", "working_dir": "/w", "status": "Active", "last_pid": 900,
             "messages": [
@@ -1931,7 +2041,11 @@ mod step3_short_reply_tests {
                 {"id": "m2", "role": "assistant", "content": [{"type": "text", "text": "Durian noted."}]},
             ],
         });
-        std::fs::write(dir.join("session_b.json"), serde_json::to_string(&b).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("session_b.json"),
+            serde_json::to_string(&b).unwrap(),
+        )
+        .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         // pane shows the CHERRY prompt echo and the short "Ok" reply
         let res = index.resolve(
@@ -1942,7 +2056,9 @@ mod step3_short_reply_tests {
         );
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_a".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
         );
     }
 }
@@ -1970,7 +2086,11 @@ mod step3_journal_tests {
                 {"id": "m1", "role": "user", "content": [{"type": "text", "text": "Remember the word ELDERBERRY. Reply ok."}]},
             ],
         });
-        std::fs::write(dir.join("session_a.json"), serde_json::to_string(&snap).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("session_a.json"),
+            serde_json::to_string(&snap).unwrap(),
+        )
+        .unwrap();
         // journal: the NEW prompt, only there
         let jline = json!({"append_messages": [
             {"id": "m2", "role": "user", "content": [{"type": "text",
@@ -1987,7 +2107,11 @@ mod step3_journal_tests {
                 {"id": "m1", "role": "user", "content": [{"type": "text", "text": "Remember the word FIG. Reply ok."}]},
             ],
         });
-        std::fs::write(dir.join("session_b.json"), serde_json::to_string(&snap_b).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("session_b.json"),
+            serde_json::to_string(&snap_b).unwrap(),
+        )
+        .unwrap();
 
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         let res = index.resolve(
@@ -1998,7 +2122,9 @@ mod step3_journal_tests {
         );
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_a".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
         );
     }
 }
@@ -2024,7 +2150,11 @@ mod step3_reflow_tests {
                 {"id": "m2", "role": "assistant", "content": [{"type": "text", "text": "Ok."}]},
             ],
         });
-        std::fs::write(dir.join("session_a.json"), serde_json::to_string(&a).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("session_a.json"),
+            serde_json::to_string(&a).unwrap(),
+        )
+        .unwrap();
         let b = json!({
             "id": "session_b", "working_dir": "/w", "status": "Active", "last_pid": 900,
             "messages": [
@@ -2034,7 +2164,11 @@ mod step3_reflow_tests {
                     {"type": "text", "text": "I’ll remember the word HONEYDEW."}]},
             ],
         });
-        std::fs::write(dir.join("session_b.json"), serde_json::to_string(&b).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("session_b.json"),
+            serde_json::to_string(&b).unwrap(),
+        )
+        .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         // pane_7's actual screen shape: spaces collapsed, no newlines
         let res = index.resolve(
@@ -2045,7 +2179,9 @@ mod step3_reflow_tests {
         );
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_b".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_b".into()
+            }
         );
     }
 }
@@ -2083,7 +2219,11 @@ mod coverage_gaps {
         let index = JcodeStoreIndex::with_store_dir(dir);
         assert_eq!(
             index.session_model_status("session_m"),
-            (Some("fable-5".into()), Some("Active".into()), Some("high".into()))
+            (
+                Some("fable-5".into()),
+                Some("Active".into()),
+                Some("high".into())
+            )
         );
     }
 
@@ -2127,7 +2267,11 @@ mod coverage_gaps {
         // mtime -> different generation.
         std::thread::sleep(std::time::Duration::from_millis(5));
         let tmp = dir.join("session_g.tmp");
-        std::fs::write(&tmp, serde_json::to_string(&json!({"messages": []})).unwrap()).unwrap();
+        std::fs::write(
+            &tmp,
+            serde_json::to_string(&json!({"messages": []})).unwrap(),
+        )
+        .unwrap();
         std::fs::rename(&tmp, dir.join("session_g.json")).unwrap();
         let g2 = index.session_generation("session_generation_bump");
         // And a missing session yields an empty-ish but stable value.
@@ -2145,12 +2289,7 @@ mod coverage_gaps {
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         // First sweep caches session_a.
         index.force_sweep_for_tests();
-        let res = index.resolve(
-            Path::new("/w"),
-            &|_| false,
-            &|_| false,
-            "",
-        );
+        let res = index.resolve(Path::new("/w"), &|_| false, &|_| false, "");
         assert!(matches!(res, JcodeSessionResolution::Refused { .. }));
         // Vanish both files; force a fresh sweep: the stale cached row
         // must be dropped, not resurrected from cache. Resolve again:
@@ -2158,12 +2297,7 @@ mod coverage_gaps {
         std::fs::remove_file(dir.join("session_a.json")).unwrap();
         std::fs::remove_file(dir.join("session_a.journal.jsonl")).unwrap();
         index.force_sweep_for_tests();
-        let res = index.resolve(
-            Path::new("/w"),
-            &|_| false,
-            &|_| false,
-            "",
-        );
+        let res = index.resolve(Path::new("/w"), &|_| false, &|_| false, "");
         assert!(
             matches!(res, JcodeSessionResolution::Refused { .. }),
             "stale cache row must not resurrect the session"
@@ -2174,19 +2308,11 @@ mod coverage_gaps {
     fn refresh_serves_cache_when_dir_unreadable() {
         // A store dir that does not exist: sweep returns empty
         // without panicking.
-        let dir = std::env::temp_dir().join(format!(
-            "jcode-cov-nodir-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("jcode-cov-nodir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let index = JcodeStoreIndex::with_store_dir(dir);
         index.force_sweep_for_tests();
-        let res = index.resolve(
-            Path::new("/w"),
-            &|_| false,
-            &|_| false,
-            "",
-        );
+        let res = index.resolve(Path::new("/w"), &|_| false, &|_| false, "");
         assert!(matches!(res, JcodeSessionResolution::Refused { .. }));
     }
 
@@ -2230,7 +2356,9 @@ mod coverage_gaps {
         // torn tail line skipped.
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_t".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_t".into()
+            }
         );
     }
 
@@ -2259,10 +2387,12 @@ mod coverage_gaps {
         let turns = parse_jcode_transcript(&msgs);
         let texts: Vec<String> = turns
             .iter()
-            .flat_map(|t| t.parts.iter().filter_map(|p| match p {
-                TurnPart::Text { text } => Some(text.clone()),
-                _ => None,
-            }))
+            .flat_map(|t| {
+                t.parts.iter().filter_map(|p| match p {
+                    TurnPart::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+            })
             .collect();
         assert_eq!(texts, vec!["shown", "ok", "fine"]);
     }
@@ -2487,26 +2617,18 @@ mod coverage_gaps {
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         // First sweep: resolves by tree (pid 500 in tree).
         index.force_sweep_for_tests();
-        let res = index.resolve(
-            Path::new("/w"),
-            &|_| false,
-            &|pid| pid == 500,
-            "",
-        );
+        let res = index.resolve(Path::new("/w"), &|_| false, &|pid| pid == 500, "");
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_a".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
         );
         // Files vanish; forced fresh sweep must DROP the cached row
         // (not resurrect it from the 250 ms throttle window).
         std::fs::remove_file(dir.join("session_a.json")).unwrap();
         index.force_sweep_for_tests();
-        let res = index.resolve(
-            Path::new("/w"),
-            &|_| false,
-            &|pid| pid == 500,
-            "",
-        );
+        let res = index.resolve(Path::new("/w"), &|_| false, &|pid| pid == 500, "");
         assert!(
             matches!(res, JcodeSessionResolution::Refused { .. }),
             "stale cached evidence must not resurrect a vanished session"
@@ -2542,10 +2664,12 @@ mod coverage_gaps {
         let turns = parse_jcode_transcript(&msgs);
         let texts: Vec<&str> = turns
             .iter()
-            .flat_map(|t| t.parts.iter().filter_map(|p| match p {
-                TurnPart::Text { text } => Some(text.as_str()),
-                _ => None,
-            }))
+            .flat_map(|t| {
+                t.parts.iter().filter_map(|p| match p {
+                    TurnPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
             .collect();
         assert_eq!(texts, vec!["real", "kept"]);
     }
@@ -2580,8 +2704,7 @@ mod coverage_gaps {
                 {"type": "tool_result", "tool_use_id": "c1", "content": "done"}]},
         ]});
         write_store(&dir, "session_k", Some(snapshot), &[]);
-        let chunk =
-            last_substantial_text_chunk(&dir, "session_k", 24);
+        let chunk = last_substantial_text_chunk(&dir, "session_k", 24);
         assert_eq!(
             chunk.as_deref(),
             Some("this reply is definitely substantial enough for matching")
@@ -2633,7 +2756,9 @@ mod coverage_gaps {
         let res = index.resolve(Path::new("/w"), &|pid| pid == 12, &|_| false, "");
         assert_eq!(
             res,
-            JcodeSessionResolution::Resolved { session_id: "session_real".into() }
+            JcodeSessionResolution::Resolved {
+                session_id: "session_real".into()
+            }
         );
     }
 }

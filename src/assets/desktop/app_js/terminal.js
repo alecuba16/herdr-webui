@@ -93,8 +93,10 @@ function connectEvents() {
 // One place that answers "am I connected?" and paints the connection chip.
 // States: live (events socket open), connecting (socket down, retrying),
 // offline (hidden tab, dropped events socket with no backend refresh yet).
-// The chip itself is a written label plus a dot; reconnecting pulses so the
-// user knows the tab is trying, not dead.
+// The chip is a dot plus a hover title; the written label is sr-only
+// so the role=status live region keeps announcing state changes to
+// screen readers. Reconnecting pulses so the user knows the tab is
+// trying, not dead.
 function eventsConnectionState() {
   if (eventWs && eventWs.readyState === WebSocket.OPEN) return "live";
   if (document.hidden) return "offline";

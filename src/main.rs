@@ -40,10 +40,10 @@ mod auth;
 mod builtin_backend;
 mod builtin_detection;
 mod builtin_events;
+mod chat_lens;
 mod compat;
 mod file_browser;
 mod git_ui;
-mod chat_lens;
 mod jcode_transcript;
 mod lsp;
 mod protocol;
@@ -1387,14 +1387,8 @@ fn app_router(state: WebState) -> Router {
         .route("/api/panes", get(panes))
         .route("/api/panes/{pane_id}/close", post(close_pane))
         .route("/api/panes/{pane_id}/submit", post(submit_pane))
-        .route(
-            "/api/panes/{pane_id}/conversation",
-            get(pane_conversation),
-        )
-        .route(
-            "/api/panes/{pane_id}/tool-output",
-            get(pane_tool_output),
-        )
+        .route("/api/panes/{pane_id}/conversation", get(pane_conversation))
+        .route("/api/panes/{pane_id}/tool-output", get(pane_tool_output))
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/session-snapshot", get(session_snapshot))
         .route("/api/agents", get(agents))
@@ -4808,11 +4802,7 @@ async fn pane_conversation(
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("conversation failed");
                 let (status, code) = conversation_error(message);
-                return (
-                    status,
-                    Json(json!({ "error": message, "code": code })),
-                )
-                    .into_response();
+                return (status, Json(json!({ "error": message, "code": code }))).into_response();
             }
             // Unwrap the wire envelope ({id, result: {type,
             // conversation}}): the browser gets the design's flat
@@ -4887,20 +4877,17 @@ async fn pane_tool_output(
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("tool output failed");
                 let (status, code) = conversation_error(message);
-                return (
-                    status,
-                    Json(json!({ "error": message, "code": code })),
-                )
-                    .into_response();
+                return (status, Json(json!({ "error": message, "code": code }))).into_response();
             }
             // Backend arm returns {type, output: string|null}. A null
             // output is the not-found case (distinguished from backend
             // failures, which arrive as error envelopes).
-            let output = value.pointer("/result/output").cloned().unwrap_or(serde_json::Value::Null);
+            let output = value
+                .pointer("/result/output")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             match output {
-                serde_json::Value::String(text) => {
-                    Json(json!({ "output": text })).into_response()
-                }
+                serde_json::Value::String(text) => Json(json!({ "output": text })).into_response(),
                 _ => (
                     StatusCode::NOT_FOUND,
                     Json(json!({

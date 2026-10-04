@@ -5713,6 +5713,9 @@ describe("a11y audit contract", () => {
     match(appHtml, /id="searchPalette" role="dialog" aria-modal="true"/);
     match(appHtml, /id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle"/);
     match(appHtml, /id="connectionChip"[^>]*role="status" aria-live="polite"/);
+    // Visible state is the dot + hover title only; the written label
+    // stays sr-only so the live region still announces.
+    match(appHtml, /class="sr-only connection-label"/);
     match(appHtml, /aria-live="polite"/);
   });
 
