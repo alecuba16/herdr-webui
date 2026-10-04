@@ -2972,6 +2972,10 @@ mod tests {
             let _ = fs::remove_dir_all(&root);
             return;
         }
+        // Fresh CI images have no global git identity, so commits need a
+        // local one or `git commit` fails (seen on Linux runners).
+        assert!(git(&["config", "user.email", "t@t"]).success());
+        assert!(git(&["config", "user.name", "T"]).success());
         // Base commit on main with the plain file only.
         assert!(git(&["add", "src/plain/file.rs"]).success());
         assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
@@ -3021,6 +3025,10 @@ mod tests {
             let _ = fs::remove_dir_all(&root);
             return;
         }
+        // Fresh CI images have no global git identity, so commits need a
+        // local one or `git commit` fails (seen on Linux runners).
+        assert!(git(&["config", "user.email", "t@t"]).success());
+        assert!(git(&["config", "user.name", "T"]).success());
         // Empty tree base: `git commit` needs at least one commit on main so
         // merge-base works. Commit an unrelated README first.
         fs::write(root.join("README.md"), "base").unwrap();
@@ -3071,6 +3079,10 @@ mod tests {
             let _ = fs::remove_dir_all(&root);
             return;
         }
+        // Fresh CI images have no global git identity, so commits need a
+        // local one or `git commit` fails (seen on Linux runners).
+        assert!(git(&["config", "user.email", "t@t"]).success());
+        assert!(git(&["config", "user.name", "T"]).success());
         assert!(git(&["add", "README.md"]).success());
         assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
         // Stay on main with a clean tree: no changed entries expected.
@@ -3106,6 +3118,10 @@ mod tests {
             let _ = fs::remove_dir_all(&root);
             return;
         }
+        // Fresh CI images have no global git identity, so commits need a
+        // local one or `git commit` fails (seen on Linux runners).
+        assert!(git(&["config", "user.email", "t@t"]).success());
+        assert!(git(&["config", "user.name", "T"]).success());
         assert!(git(&["add", "README.md"]).success());
         assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
         assert!(git(&["switch", "-c", "feat"]).success());
@@ -3147,6 +3163,10 @@ mod tests {
             let _ = fs::remove_dir_all(&root);
             return;
         }
+        // Fresh CI images have no global git identity, so commits need a
+        // local one or `git commit` fails (seen on Linux runners).
+        assert!(git(&["config", "user.email", "t@t"]).success());
+        assert!(git(&["config", "user.name", "T"]).success());
         assert!(git(&["add", "."]).success());
         assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
         assert!(git(&["switch", "-c", "feat"]).success());
@@ -3192,6 +3212,10 @@ mod tests {
             let _ = fs::remove_dir_all(&root);
             return;
         }
+        // Fresh CI images have no global git identity, so commits need a
+        // local one or `git commit` fails (seen on Linux runners).
+        assert!(git(&["config", "user.email", "t@t"]).success());
+        assert!(git(&["config", "user.name", "T"]).success());
         assert!(git(&["add", "."]).success());
         assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
         assert!(git(&["switch", "-c", "feat"]).success());
@@ -3243,6 +3267,10 @@ mod tests {
             let _ = fs::remove_dir_all(&root);
             return;
         }
+        // Fresh CI images have no global git identity, so commits need a
+        // local one or `git commit` fails (seen on Linux runners).
+        assert!(git(&["config", "user.email", "t@t"]).success());
+        assert!(git(&["config", "user.name", "T"]).success());
         assert!(git(&["add", "README.md"]).success());
         assert!(git(&["commit", "-m", "base", "--no-gpg-sign"]).success());
         assert!(git(&["switch", "-c", "feat"]).success());
