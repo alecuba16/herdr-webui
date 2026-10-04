@@ -885,7 +885,17 @@ async fn main() -> io::Result<()> {
     if let Some(backend_mode) = config.backend_mode {
         server_settings.backend_mode = backend_mode;
     }
-    let auth = Arc::new(Mutex::new(AuthConfig::from_settings(&server_settings)?));
+    let mut auth_config = AuthConfig::from_settings(&server_settings)?;
+    // Never-expiring sessions survive the restart: restore the persisted
+    // token so open windows keep their cookie instead of bouncing to the
+    // login page on every WebUI restart. Timed sessions keep the fresh
+    // boot token (restoring them would break their expiry).
+    if auth_config.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER {
+        if let Some(token) = crate::server_settings::load_persisted_session_token() {
+            auth_config.token = token;
+        }
+    }
+    let auth = Arc::new(Mutex::new(auth_config));
     let backend_mode = resolve_backend_mode(
         server_settings.backend_mode,
         config.session.as_deref(),
@@ -1327,6 +1337,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/session/close", post(close_session))
         .route("/api/session/cleanup", post(cleanup_sessions))
         .route("/api/login", post(login))
+        .route("/api/logout", post(logout))
         .route("/api/workspaces", get(workspaces).post(create_workspace))
         .route(
             "/api/workspace-order",
@@ -2381,6 +2392,9 @@ async fn update_server_settings(
     if let Ok(mut auth_lock) = state.auth.lock() {
         *auth_lock = auth;
     }
+    // The settings save rotated the token; keep the sidecar in sync so a
+    // restart restores the new token (or drops it for timed sessions).
+    persist_session_token(&state);
     if let Ok(mut settings_lock) = state.server_settings.lock() {
         *settings_lock = next.clone();
     }
@@ -3091,7 +3105,12 @@ async fn login(
             &state.log_level(),
             &format!("login: localhost bypass for {remote}"),
         );
-        return crate::auth::login_response(&state.auth, secure);
+        let response = crate::auth::login_response(&state.auth, secure);
+        // The bypass still rotated the token; keep the sidecar in sync or a
+        // restart would resurrect the pre-bypass token and log out every
+        // non-localhost browser holding the rotated cookie.
+        persist_session_token(&state);
+        return response;
     }
     let ok = auth.verify_credentials(&body.username, &body.password);
     drop(auth);
@@ -3112,7 +3131,70 @@ async fn login(
         &state.log_level(),
         &format!("login: success for user '{}' from {remote}", body.username),
     );
-    crate::auth::login_response(&state.auth, secure)
+    let response = crate::auth::login_response(&state.auth, secure);
+    persist_session_token(&state);
+    response
+}
+
+async fn logout(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+) -> Response {
+    // Only authenticated callers can log out; the token rotation inside
+    // logout_response is the actual invalidation, so an unauthenticated POST
+    // must not trigger it (it would kill every active session).
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let secure = state
+        .server_settings
+        .lock()
+        .map(|settings| settings.tls_mode.cookie_secure())
+        .unwrap_or(false);
+    log_event(&state.log_level(), "logout: session invalidated");
+    let response = crate::auth::logout_response(&state.auth, secure);
+    persist_session_token(&state);
+    response
+}
+
+/// Write the rotated session token to the sidecar so never-expiring
+/// sessions survive the next restart, and drop the sidecar when sessions
+/// are timed. One lock hold covers both reads: taking the lock twice would
+/// let another thread rotate the token in between, persisting a mismatched
+/// token. Out-of-order completion of these async writes from concurrent
+/// logins is handled by re-checking the live token at write time and
+/// skipping superseded writes. Failures only cost persistence and never
+/// the live session.
+fn persist_session_token(state: &WebState) {
+    let (never, token) = state
+        .auth
+        .lock()
+        .map(|auth| {
+            (
+                auth.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER,
+                auth.token.clone(),
+            )
+        })
+        .unwrap_or((false, String::new()));
+    let auth = state.auth.clone();
+    tokio::task::spawn_blocking(move || {
+        // Out-of-order task completion from concurrent logins could write an
+        // older token after the newest one. Re-check the live token at write
+        // time: if it moved on, this token is superseded and its sidecar
+        // write is skipped, so the file always ends up holding the newest
+        // token (or none, when the newest state is timed).
+        let current = auth.lock().map(|live| live.token.clone());
+        let superseded = matches!(current, Ok(ref live) if *live != token);
+        if superseded {
+            return;
+        }
+        if never && !token.is_empty() {
+            let _ = crate::server_settings::save_persisted_session_token(&token);
+        } else if !never {
+            crate::server_settings::remove_persisted_session_token();
+        }
+    });
 }
 
 async fn proxy_request_async(api: ApiClient, request: serde_json::Value) -> Response {

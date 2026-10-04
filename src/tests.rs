@@ -36,8 +36,7 @@ fn test_state() -> WebState {
             password: Some("pass".to_string()),
             localhost_no_auth: false,
             token: "token-123".to_string(),
-            token_expires_at: SystemTime::now()
-                + Duration::from_secs(DEFAULT_SESSION_EXPIRATION_MINUTES * 60),
+            token_expires_at: crate::auth::never_expires_at(),
             session_expiration_minutes: DEFAULT_SESSION_EXPIRATION_MINUTES,
         })),
         login_limiter: Arc::new(LoginRateLimiter::new()),
@@ -2857,6 +2856,63 @@ async fn login_route_rejects_invalid_credentials() {
 }
 
 #[tokio::test]
+async fn logout_route_invalidates_session_and_requires_auth() {
+    let state = test_state();
+    let app = test_app_with_state(state.clone());
+    let token = state.auth.lock().unwrap().token.clone();
+
+    // Unauthenticated logout must not rotate the token (it would kill every
+    // active session) and answers 401.
+    let response = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/logout")
+                .header(header::COOKIE, format!("herdr_web_session=wrong"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(state.auth.lock().unwrap().token, token);
+
+    // Authenticated logout rotates the token and clears the cookie.
+    let response = app
+        .oneshot(
+            request(Method::POST, "/api/logout")
+                .header(header::COOKIE, format!("herdr_web_session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains("Max-Age=0")),
+        "logout must clear the browser cookie"
+    );
+    assert_eq!(response_json(response).await["ok"], true);
+    assert_ne!(state.auth.lock().unwrap().token, token);
+
+    // The old cookie no longer authorizes API calls.
+    let response = test_app_with_state(state.clone())
+        .oneshot(
+            request(Method::GET, "/api/me")
+                .header(header::COOKIE, format!("herdr_web_session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_json(response).await["authenticated"], false);
+}
+
+#[tokio::test]
 async fn login_route_throttles_repeated_failures() {
     let app = test_app();
     for _ in 0..5 {
@@ -3648,6 +3704,7 @@ async fn runtime_settings_persist_recent_workspaces_round_trip() {
         password: settings.password.clone(),
         localhost_no_auth: Some(settings.localhost_no_auth),
         session_expiration_minutes: Some(settings.session_expiration_minutes),
+        session_expiration_migrated: None,
         no_sleep_auto_cooldown_seconds: Some(settings.no_sleep_auto_cooldown_seconds),
         backend_mode: Some(settings.backend_mode),
         builtin_shell: settings.builtin_shell.clone(),

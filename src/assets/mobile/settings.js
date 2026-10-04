@@ -188,7 +188,7 @@
         { title: "Agents", keywords: "agents sorting stuck working dismiss blocked done idle", html: agentsSection(agentSortMode, stuckWorking, dismissMinutes) },
         { title: "Energy", keywords: "no sleep energy coffee awake power", html: energySection(noSleep.mode, noSleep.error, noSleep.supported === false) },
         { title: "Terminal", keywords: "terminal renderer core ghostty font links mouse reporting", html: terminalSection(font, core, links, mouseReporting) },
-        { title: "Data", keywords: "refresh reload data", html: dataSection() },
+        { title: "Data", keywords: "refresh reload data logout sign out", html: dataSection() },
       ];
       const anyVisible = groups.some(settingsGroupVisible);
       return `<section class="mobile-section mobile-form"><h2>Settings</h2><label class="mobile-settings-filter"><span>Filter settings</span><input value="${escapeHtml(settingsFilter)}" oninput="HerdrMobile.setSettingsFilter(this.value)" placeholder="Search settings"></label>${groups.map((group) => renderSettingsDisclosure(group)).join("")}<div id="mobileSettingsEmpty" class="mobile-loading"${anyVisible ? " hidden" : ""}>No settings match.</div>${state.error ? `<div class="mobile-error">${escapeHtml(state.error)}</div>` : ""}</section>`;
@@ -264,7 +264,23 @@
     }
 
     function dataSection() {
-      return `<div class="mobile-settings-group"><h3>Data</h3><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.refresh()">Refresh data</button><button class="mobile-btn mobile-wide" onclick="location.reload()">Reload selected layout</button></div>`;
+      return `<div class="mobile-settings-group"><h3>Data</h3><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.refresh()">Refresh data</button><button class="mobile-btn mobile-wide" onclick="location.reload()">Reload selected layout</button><button class="mobile-btn mobile-wide" onclick="HerdrMobile.logout()">Logout</button><small>Logout ends the server session. Every logged-in browser needs to log in again.</small></div>`;
+    }
+
+    // Explicit sign-out from the server (POST /api/logout rotates the token
+    // and clears the cookie). A reload then lands on the login page. On
+    // servers with localhost bypass there is nothing to log out of, but the
+    // call stays harmless: the endpoint still answers ok.
+    async function logout() {
+      if (typeof globalThis.confirm === "function" && !globalThis.confirm("Log out from this server?"))
+        return;
+      try {
+        await api("/api/logout", { method: "POST" });
+      } catch (_) {
+        // 401 already redirected; network failures still land on the login
+        // page below, which is the correct end state for a logout.
+      }
+      location.href = "/";
     }
 
     function readOptions() {
@@ -737,6 +753,7 @@
       render,
       rollbackSetting,
       resetSettingBaselines,
+      logout,
       setBrowserNotifications,
       setExplorationDefaultDirectory,
       loadNoSleep,

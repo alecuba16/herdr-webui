@@ -1029,6 +1029,7 @@
     setWorktreeCreateExpanded: mobileWorktrees.setCreateExpanded,
     updateWorktreeField: mobileWorktrees.updateField,
     setThemeMode: mobileSettings.setThemeMode,
+    logout: mobileSettings.logout,
     rollbackSetting: mobileSettings.rollbackSetting,
     resetSettingBaselines: mobileSettings.resetSettingBaselines,
     setBrowserNotifications: mobileSettings.setBrowserNotifications,

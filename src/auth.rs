@@ -18,9 +18,20 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 pub(crate) const COOKIE_NAME: &str = "herdr_web_session";
-pub(crate) const DEFAULT_SESSION_EXPIRATION_MINUTES: u64 = 24 * 60;
-pub(crate) const MIN_SESSION_EXPIRATION_MINUTES: u64 = 1;
+pub(crate) const SESSION_EXPIRATION_NEVER: u64 = 0;
+pub(crate) const DEFAULT_SESSION_EXPIRATION_MINUTES: u64 = SESSION_EXPIRATION_NEVER;
+pub(crate) const MIN_SESSION_EXPIRATION_MINUTES: u64 = SESSION_EXPIRATION_NEVER;
 pub(crate) const MAX_SESSION_EXPIRATION_MINUTES: u64 = 365 * 24 * 60;
+/// Old default (24h) kept only for the one-time settings migration in
+/// server_settings.rs: persisted 1440 flips to 0 (never expire) so existing
+/// installs stop auto-logging users out after a day.
+pub(crate) const LEGACY_DEFAULT_SESSION_EXPIRATION_MINUTES: u64 = 24 * 60;
+/// Sentinel expiry for never-expiring sessions: 9999-12-31 in Unix seconds.
+/// Far enough that no auth check can reach it, small enough that no
+/// `SystemTime` arithmetic can overflow on any supported platform.
+pub(crate) fn never_expires_at() -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(253_402_300_799)
+}
 
 /// Auth credentials and the per-run session token derived from them.
 pub(crate) struct AuthConfig {
@@ -88,8 +99,14 @@ impl AuthConfig {
             password,
             localhost_no_auth,
             token,
-            token_expires_at: issued_at
-                + Duration::from_secs(session_expiration_minutes.saturating_mul(60)),
+            token_expires_at: if session_expiration_minutes == SESSION_EXPIRATION_NEVER {
+                // Never expire: only an explicit logout (or a settings save
+                // rotating the token) invalidates the session. This is the
+                // default so an open window never bounces to the login page.
+                never_expires_at()
+            } else {
+                issued_at + Duration::from_secs(session_expiration_minutes.saturating_mul(60))
+            },
             session_expiration_minutes,
         }
     }
@@ -250,7 +267,10 @@ pub(crate) struct LoginRequest {
 
 /// Successful-login response that sets the session cookie. `secure`
 /// marks the cookie `Secure` when the listener actually speaks TLS,
-/// so no proxy downgrade can strip it in the common deployment.
+/// so no proxy downgrade can strip it in the common deployment. A
+/// never-expiring session still pins the browser cookie at one year: a
+/// session cookie (`Max-Age` omitted) would die with the browser process
+/// and reintroduce the logged-out-after-a-while complaint on restarts.
 pub(crate) fn login_response(auth: &Mutex<AuthConfig>, secure: bool) -> Response {
     let (token, max_age) = auth
         .lock()
@@ -259,9 +279,9 @@ pub(crate) fn login_response(auth: &Mutex<AuthConfig>, secure: bool) -> Response
             let max_age = auth
                 .token_expires_at
                 .duration_since(SystemTime::now())
-                .unwrap_or_default()
-                .as_secs()
-                .max(1);
+                .map(|remaining| remaining.as_secs())
+                .unwrap_or(0)
+                .clamp(1, 365 * 24 * 60 * 60);
             (auth.token.clone(), max_age)
         })
         .unwrap_or_default();
@@ -271,6 +291,25 @@ pub(crate) fn login_response(auth: &Mutex<AuthConfig>, secure: bool) -> Response
         header::SET_COOKIE,
         HeaderValue::from_str(&format!(
             "{COOKIE_NAME}={token}; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure_flag}; Path=/"
+        ))
+        .expect("valid cookie"),
+    );
+    response
+}
+
+/// Explicit-logout response. Rotates the server token (so every other
+/// authenticated browser immediately fails the cookie comparison and
+/// reloads into the login flow) and clears the caller's cookie. The
+/// `Clear-Site-Data` header stays out: it also wipes cached assets and
+/// would make the next login slower for no security gain.
+pub(crate) fn logout_response(auth: &Mutex<AuthConfig>, secure: bool) -> Response {
+    auth.lock().map(|mut auth| auth.rotate_token()).ok();
+    let mut response = Json(json!({ "ok": true })).into_response();
+    let secure_flag = if secure { "; Secure" } else { "" };
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&format!(
+            "{COOKIE_NAME}=; Max-Age=0; HttpOnly; SameSite=Lax{secure_flag}; Path=/"
         ))
         .expect("valid cookie"),
     );
@@ -372,12 +411,50 @@ mod tests {
             Some("user".to_string()),
             Some("pass".to_string()),
             false,
-            DEFAULT_SESSION_EXPIRATION_MINUTES,
-            now - Duration::from_secs(DEFAULT_SESSION_EXPIRATION_MINUTES * 60 + 1),
+            60,
+            now - Duration::from_secs(60 * 60 + 1),
         ));
         let token = auth.lock().unwrap().token.clone();
         let remote: SocketAddr = "192.0.2.1:1234".parse().unwrap();
         assert!(!authorized(&auth, &headers_with_cookie(&token), remote));
+    }
+
+    #[test]
+    fn never_expiring_session_stays_valid_in_the_far_future() {
+        let now = SystemTime::now();
+        let auth = Mutex::new(AuthConfig::from_parts_at(
+            Some("user".to_string()),
+            Some("pass".to_string()),
+            false,
+            SESSION_EXPIRATION_NEVER,
+            now - Duration::from_secs(365 * 24 * 60 * 60),
+        ));
+        let token = auth.lock().unwrap().token.clone();
+        let remote: SocketAddr = "192.0.2.1:1234".parse().unwrap();
+        assert!(
+            authorized(&auth, &headers_with_cookie(&token), remote),
+            "a 0-minute (never expire) session issued a year ago must stay authorized"
+        );
+    }
+
+    #[test]
+    fn never_expiring_session_rotates_on_logout() {
+        let (auth, _) = make_auth(false);
+        let before = auth.lock().unwrap().token.clone();
+        let response = logout_response(&auth, false);
+        let after = auth.lock().unwrap().token.clone();
+        assert_ne!(
+            before, after,
+            "logout must rotate the token so every session dies"
+        );
+        let cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert!(cookie.contains("Max-Age=0"), "logout must clear the cookie");
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Lax"));
     }
 
     #[test]
@@ -396,7 +473,7 @@ mod tests {
             .find_map(|part| part.trim().strip_prefix("Max-Age="))
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap();
-        assert!((1..=86400).contains(&max_age));
+        assert!((1..=365 * 24 * 60 * 60).contains(&max_age));
         assert!(cookie.contains("HttpOnly"));
         assert!(cookie.contains("SameSite=Lax"));
         assert!(!cookie.contains("Secure"), "plain http must not pin Secure");

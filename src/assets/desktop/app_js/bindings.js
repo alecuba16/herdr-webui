@@ -124,6 +124,7 @@ el("themeColorsApplyProfile").onclick = () => {
 };
 el("serverSettingsLoad").onclick = loadServerSettings;
 el("serverSettingsApply").onclick = applyServerSettings;
+el("serverSettingsLogout").onclick = logoutFromServer;
 el("optOverflow").onchange = () => {
   options.overflow = el("optOverflow").checked;
   options.terminalOverflowOptIn = true;

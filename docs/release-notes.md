@@ -1,5 +1,28 @@
 # Release notes
 
+## 0.4.58 Release Notes
+- Sessions no longer expire on a timer by default: the server-side session
+  token now lives until an explicit logout or a server-settings save.
+  Previously the default 24-hour expiration bounced long-lived tabs to
+  the login page mid-work.
+- `session_expiration_minutes` now accepts `0` (the new default) meaning
+  never expire. Positive values keep the old timed behavior. Installs that
+  persisted the old 24-hour default migrate to `0` once on load (a marker
+  in the settings file prevents repeat migrations), so deliberately setting
+  24 hours back afterwards sticks.
+- New `POST /api/logout` rotates the session token and clears the cookie.
+  The desktop server settings modal and the mobile Settings screen expose
+  it as a Logout button with a confirmation, so signing out is finally an
+  explicit action instead of something that happens to you.
+- Never-expiring sessions now survive WebUI restarts too: the session
+  token is persisted to `~/.config/herdr-webui/session-token`
+  (owner-only permissions) and restored on boot, so a server restart no
+  longer logs out every open window. Timed sessions and explicit logouts
+  keep their old semantics, and the sidecar is dropped whenever sessions
+  become timed again.
+- Login cookies pin at one year for never-expiring sessions so browser
+  restarts keep the session instead of silently dropping it.
+
 ## 0.4.57 Release Notes
 - The TUI gains the webui chat surfaces, all reading the existing pane
   tail refresh chain (protocol 22 stayed frozen, no new wire frames):

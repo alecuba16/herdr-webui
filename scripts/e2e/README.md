@@ -70,6 +70,36 @@ The harness needs HTTPS with a self-signed cert; the CDP session sets
 
 Note: run this locally; it is not wired into CI (macos-latest runners have
 Chrome, but the suite is intentionally kept as a pre-merge manual gate).
+
+## Logout acceptance (any running server)
+
+`logout-acceptance.mjs` and `mobile-logout-acceptance.mjs` drive the
+never-expire + explicit-logout flow in a real headless Chrome. Unlike the
+suite above they need no fixture repo: point them at any running server
+with credentials and `localhost_no_auth` off:
+
+```sh
+CDP_PORT=9223 E2E_BASE_URL=http://127.0.0.1:18787/ \
+  node scripts/e2e/logout-acceptance.mjs
+CDP_PORT=9223 E2E_BASE_URL=http://127.0.0.1:18787/ \
+  node scripts/e2e/mobile-logout-acceptance.mjs
+```
+
+- `logout-acceptance.mjs`: login → settings modal → server settings shows
+  session expiration `0` and a visible Logout button → Logout opens the
+  askQuestion confirm dialog → confirming lands on the login page and a
+  reload stays there (session dead server-side).
+- `mobile-logout-acceptance.mjs`: forces the mobile layout via
+  `herdr-web-layout`, login → Settings → Data → Logout (native confirm,
+  auto-accepted by the driver) → login page.
+- `logout-cancel-401-acceptance.mjs`: Logout confirm dialog canceled must
+  keep the session (still in the app, API still authorized), and a session
+  killed under an open window (logout from a second context) must bounce
+  that window to the login page on its next API call.
+
+Credentials come from `E2E_USER`/`E2E_PASS` (default `admin`/`secret`, the
+same throwaway pair used across these scripts). Not wired into CI either.
+
 ## Git explorer acceptance (no browser needed)
 
 `scripts/e2e/run-git-e2e.sh` covers the Git explorer rework (folder rows,
