@@ -66,7 +66,7 @@ pub(crate) struct AuthConfig {
     pub(crate) localhost_no_auth: bool,
     /// Live sessions. Order doubles as the LRU clock: index 0 is the
     /// least recently used. A successful auth moves that session last.
-    /// Eviction is FIFO: the oldest session (by position) drops first.
+    /// Eviction drops index 0: the least recently used session goes first.
     pub(crate) sessions: Vec<SessionRecord>,
     /// Bumped on every membership change (issue, revoke, reset, re-anchor).
     /// The sidecar persist path snapshots it so an out-of-order write from
@@ -152,7 +152,7 @@ impl AuthConfig {
     }
 
     /// Mint a new session, append it as most-recently-used, evicting the
-    /// FIFO-oldest when the cap is hit. Returns the record for the
+    /// least recently used session when the cap is hit. Returns the record for the
     /// response cookie.
     pub(crate) fn issue_session(&mut self) -> SessionRecord {
         // Expired-but-unremoved records must not eat cap slots: purge
@@ -671,10 +671,52 @@ mod tests {
         assert_eq!(auth_guard.sessions.len(), MAX_SESSIONS);
         assert!(
             !auth_guard.sessions.iter().any(|s| s.token == tokens[0]),
-            "the FIFO-oldest session must be evicted at the cap"
+            "the least recently used session must be evicted at the cap"
         );
         drop(auth_guard);
         assert!(!authorized(&auth, &headers_with_cookie(&tokens[0]), remote));
+        assert!(authorized(
+            &auth,
+            &headers_with_cookie(&tokens[MAX_SESSIONS]),
+            remote
+        ));
+    }
+
+    #[test]
+    fn eviction_is_lru_not_fifo() {
+        // Fill the pool, then use the oldest session so it becomes the most
+        // recently used. The next login past the cap must evict a different,
+        // untouched session, not the freshly used one. Pins the LRU contract
+        // (touch moves a session to the tail; index 0 is the victim).
+        let (auth, remote) = make_auth(false);
+        let mut tokens = Vec::new();
+        for _ in 0..MAX_SESSIONS {
+            tokens.push(auth.lock().unwrap().issue_session().token);
+        }
+        // Use token 0: authorized() must find it valid (and move it to the
+        // LRU tail).
+        assert!(authorized(&auth, &headers_with_cookie(&tokens[0]), remote));
+        // One more login past the cap.
+        tokens.push(auth.lock().unwrap().issue_session().token);
+        {
+            let auth_guard = auth.lock().unwrap();
+            assert_eq!(auth_guard.sessions.len(), MAX_SESSIONS);
+            // The freshly used token 0 survived; untouched token 1 did not.
+            assert!(
+                auth_guard.sessions.iter().any(|s| s.token == tokens[0]),
+                "a freshly used session must survive eviction (LRU)"
+            );
+            assert!(
+                !auth_guard.sessions.iter().any(|s| s.token == tokens[1]),
+                "an untouched session must be the eviction victim (LRU)"
+            );
+            // The next LRU head is the untouched token 2 (token 1 was evicted).
+            assert_eq!(auth_guard.sessions[0].token, tokens[2]);
+        }
+        // The used session stays authorized; the victim is rejected.
+        assert!(authorized(&auth, &headers_with_cookie(&tokens[0]), remote));
+        assert!(!authorized(&auth, &headers_with_cookie(&tokens[1]), remote));
+        // The freshly issued one is valid too.
         assert!(authorized(
             &auth,
             &headers_with_cookie(&tokens[MAX_SESSIONS]),
