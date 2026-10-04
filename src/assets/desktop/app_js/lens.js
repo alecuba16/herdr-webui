@@ -97,9 +97,15 @@
     return !!(a && a.agent_session);
   }
 
-  function refusalReasonCopy() {
+  // Refusal copy, newest evidence first: the poll's error code is
+  // fresher than the agents row (state.agents only refreshes on events,
+  // so a session that resolved at flip time and stopped matching later
+  // keeps a stale resolved row while the poll already carries the
+  // refusal). Fall back to the agents row for the resolvable:false gate
+  // path, then the generic line (design section 6 hint precedence).
+  function refusalReasonCopy(errorCode) {
     const a = activeAgentRow();
-    const reason = a && a.agent_session && a.agent_session.reason;
+    const reason = errorCode || (a && a.agent_session && a.agent_session.reason);
     switch (reason) {
       case "no_session_path":
         return "No jcode conversation found for this panel yet";
@@ -342,8 +348,8 @@
     return '<div class="lens-loading">loading chat…</div>';
   }
 
-  function refusalHtml() {
-    return `<div class="lens-refusal">${escapeHtml(refusalReasonCopy())}</div>`;
+  function refusalHtml(errorCode) {
+    return `<div class="lens-refusal">${escapeHtml(refusalReasonCopy(errorCode))}</div>`;
   }
 
   function errorHtml() {
@@ -367,7 +373,7 @@
       // reason parity); anything else shows the generic line.
       const code = convError.code;
       if (code === "no_session_path" || code === "ambiguous") {
-        content.innerHTML = refusalHtml();
+        content.innerHTML = refusalHtml(code);
       } else {
         content.innerHTML = errorHtml();
       }

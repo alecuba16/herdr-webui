@@ -548,6 +548,28 @@ describe("lens structured chat mode", () => {
     equal(ctx.HerdrLens.isActive(), true);
   });
 
+  it("prefers the poll's fresh refusal code over a stale resolved agents row", async () => {
+    // state.agents only refreshes on events; a session that resolved at
+    // flip time and stopped matching later keeps a stale resolved row
+    // while the poll's 404 carries the real reason. The copy must come
+    // from the poll error, not the stale row (else it falls to the
+    // generic "unavailable" line).
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => {
+        const error = Error("refused");
+        error.details = { error: "x", code: "no_session_path" };
+        throw error;
+      },
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const content = registry.get("terminalLens").querySelector(".terminal-lens-content");
+    match(content.innerHTML, /No jcode conversation found/,
+      "fresh poll refusal wins over the stale resolved row");
+  });
+
   it("appends new turns without rewriting old ones", async () => {
     const first = conversationFixture();
     const second = {
