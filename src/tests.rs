@@ -2817,8 +2817,21 @@ async fn index_serves_login_without_auth_and_app_with_auth() {
     assert!(app_js_body.contains("optSoundScope"));
 }
 
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn login_route_sets_cookie_for_valid_credentials() {
+    // The login handler persists the session sidecar; without an XDG
+    // redirect that write lands on the real ~/.config and destroys the
+    // operator's live sessions with fixture tokens.
+    let _guard = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-login-route-test-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let state = test_state();
     let app = test_app_with_state(state.clone());
     let body = Body::from(r#"{"username":"user","password":"pass"}"#);
@@ -2854,6 +2867,8 @@ async fn login_route_sets_cookie_for_valid_credentials() {
         "login adds a new session alongside the pre-login one"
     );
     assert_eq!(response_json(response).await["ok"], true);
+    let _ = std::fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
 #[tokio::test]
@@ -2875,8 +2890,19 @@ async fn login_route_rejects_invalid_credentials() {
     assert_eq!(response_json(response).await["error"], "unauthorized");
 }
 
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn logout_route_invalidates_session_and_requires_auth() {
+    // Same isolation as the login route test: logout persists the sidecar.
+    let _guard = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-logout-route-test-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let state = test_state();
     let app = test_app_with_state(state.clone());
 
@@ -2937,10 +2963,25 @@ async fn logout_route_invalidates_session_and_requires_auth() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response_json(response).await["authenticated"], false);
+    let _ = std::fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn login_route_throttles_repeated_failures() {
+    // Failures never mint sessions, but keep the isolation contract for
+    // every auth route test so a future edit persisting on failure
+    // cannot silently write the real sidecar.
+    let _guard = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-throttle-route-test-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let app = test_app();
     for _ in 0..5 {
         let body = Body::from(r#"{"username":"user","password":"wrong"}"#);
@@ -2970,6 +3011,8 @@ async fn login_route_throttles_repeated_failures() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(response_json(response).await["error"], "too many attempts");
+    let _ = std::fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
 #[tokio::test]

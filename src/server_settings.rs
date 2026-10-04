@@ -372,6 +372,10 @@ pub fn load_persisted_session_token() -> Option<PersistedSessionToken> {
 /// (login, logout, settings save). Failures are the caller's to log; a
 /// failed write only costs persistence, never the in-memory sessions.
 pub fn save_persisted_session_token(record: &PersistedSessionToken) -> io::Result<()> {
+    // Same isolation contract as the settings file: an unisolated test
+    // writing the real sidecar silently destroys the operator's live
+    // sessions (fixture tokens replace the minted ones on the next boot).
+    assert_test_settings_isolation();
     let path = session_token_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
