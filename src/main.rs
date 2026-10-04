@@ -3197,9 +3197,9 @@ async fn login(
             &format!("login: localhost bypass for {remote}"),
         );
         let response = crate::auth::login_response(&state.auth, secure);
-        // The bypass still rotated the token; keep the sidecar in sync or a
-        // restart would resurrect the pre-bypass token and log out every
-        // non-localhost browser holding the rotated cookie.
+        // The bypass login still issues a session (the browser may need
+        // the cookie for non-localhost access later); keep the sidecar in
+        // sync so a restart preserves every browser's session.
         persist_session_token(&state);
         return response;
     }
