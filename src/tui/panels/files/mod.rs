@@ -54,9 +54,9 @@ pub struct FileEntry {
     pub level: usize,
     pub expanded: bool,
     /// Git status from the tree payload's `git_status` map
-    /// ("modified"/"deleted"/"untracked"/"added"/"conflict"),
+    /// ("modified"/"deleted"/"untracked"/"added"/"conflict"/"changed"),
     /// already priority-propagated to parent dirs by the server
-    /// (red > yellow > green in the webui tree).
+    /// (red > yellow > green > blue in the webui tree).
     pub git_status: Option<String>,
 }
 

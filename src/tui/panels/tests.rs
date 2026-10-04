@@ -359,6 +359,27 @@ fn file_entries_parse_git_status_map() {
 }
 
 #[test]
+fn file_entries_parse_branch_changed_status() {
+    // Backend branch-vs-base merge: "changed" must survive the payload
+    // round trip so the TUI renders the blue (accent) branch highlight.
+    let data = json!({
+        "entries": [
+            {"name": "branch.rs", "path": "src/branch.rs", "kind": "file", "level": 0},
+            {"name": "untouched.rs", "path": "untouched.rs", "kind": "file", "level": 0},
+            {"name": "src", "path": "src", "kind": "dir", "level": 0},
+        ],
+        "git_status": {
+            "src": "changed",
+            "src/branch.rs": "changed"
+        }
+    });
+    let entries = parse_entries(&data);
+    assert_eq!(entries[0].git_status.as_deref(), Some("changed"));
+    assert!(entries[1].git_status.is_none());
+    assert_eq!(entries[2].git_status.as_deref(), Some("changed"));
+}
+
+#[test]
 fn search_kind_cycles_files_folders_content() {
     use super::files::SearchKind;
     let mut explorer = FileExplorer::new("/repo");

@@ -543,11 +543,13 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
         let name_style = if let Some(status) = entry.git_status.as_deref() {
             // Webui `git-{status}` classes: modified yellow, deleted red,
             // added/untracked green, conflict orange (yellow reads clearer
-            // on both TUI themes).
+            // on both TUI themes), changed (committed on this branch vs the
+            // default branch) blue.
             match status {
                 "deleted" | "conflict" => Style::default().fg(p.red),
                 "modified" => Style::default().fg(p.yellow),
                 "added" | "untracked" => Style::default().fg(p.green),
+                "changed" => Style::default().fg(p.accent),
                 _ => Style::default().fg(p.text),
             }
         } else if entry.is_dir {

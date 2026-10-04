@@ -532,6 +532,33 @@ describe("HerdrFileTree search helpers", () => {
     assert.equal(rows[1].status, "modified");
   });
 
+  it("renders branch-changed files with the blue git-changed row class", () => {
+    const tree = loadTree();
+    // Backend "changed" merge: branch-only committed file, parent dir, and
+    // a working-tree modified file that must keep its stronger status.
+    const rows = tree.applyGitStatus([
+      { kind: "dir", name: "src", path: "src", expanded: false },
+      { kind: "file", name: "branch.rs", path: "src/branch.rs" },
+      { kind: "file", name: "dirty.rs", path: "src/dirty.rs" },
+      { kind: "file", name: "plain.rs", path: "plain.rs" },
+    ], {
+      src: "changed",
+      "src/branch.rs": "changed",
+      "src/dirty.rs": "modified",
+    });
+    const html = tree.renderEntries(rows, { callback: "Tree" });
+
+    const branchRow = html.match(/class="herdr-tree-row[^"]*"[^>]*title="src\/branch\.rs"/);
+    assert.ok(branchRow, "branch.rs row must render");
+    assert.match(branchRow[0], /git-changed/, "branch-only committed file must get the blue class");
+    const dirtyRow = html.match(/class="herdr-tree-row[^"]*"[^>]*title="src\/dirty\.rs"/);
+    assert.ok(dirtyRow, "dirty.rs row must render");
+    assert.doesNotMatch(dirtyRow[0], /git-changed/, "working-tree modified must not be downgraded to blue");
+    const plainRow = html.match(/class="herdr-tree-row[^"]*"[^>]*title="plain\.rs"/);
+    assert.ok(plainRow, "plain.rs row must render");
+    assert.doesNotMatch(plainRow[0], /git-/, "untouched file must stay uncolored");
+  });
+
   it("renders folder and file type icons from names and extensions", () => {
     const tree = loadTree();
     const html = tree.renderEntries([
