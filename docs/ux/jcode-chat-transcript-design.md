@@ -221,8 +221,10 @@ existing session-token middleware like every other /api route.
   render turns. **Scrollback mode** (today's behavior) stays the fallback for
   unsupported agents and resolution failures, including the alt-screen hint.
 - Render per the existing lens aesthetic: user turns as accent-bold bubbles
-  (reference chat bubble pattern already in the CSS), assistant text plain,
-  thinking collapsed, tool calls as one-line summaries expandable to output.
+  (the bubble pattern already exists — `.lens-turn-user > span` in
+  `terminal.css:425`, right-aligned rounded panel; accent-bold color is
+  the one rendering addition), assistant text plain, thinking collapsed,
+  tool calls as one-line summaries expandable to output.
 - The composer stays: submit keeps using `POST /api/panes/{id}/submit`; after
   a successful submit, force one conversation refresh so the user turn
   appears immediately. Optimistic pending bubble lifecycle (bounded, no
@@ -261,16 +263,24 @@ always-on. Change:
   pane_json stream), and the TUI parses snapshots per-field via
   `value_str`/`value_bool` helpers with no `deny_unknown_fields`, so
   additive fields are safe end to end.
-- Frontend: `HerdrLens.syncSwitchVisibility()` called from `onPaneChanged`
-  (validated: invoked from `connectTerminal` on every pane switch,
-  `src/assets/desktop/app_js/terminal.js:165`) and after each snapshot:
-  hide the switch unless `SUPPORTED_CHAT_AGENTS.has(agent)` AND
-  `agent_session` is non-null, where the set starts as `{"jcode"}`
+- Frontend (verified against current code): `insertLensSwitch`
+  (`src/assets/desktop/app_js/lens.js:289`) is currently always-on —
+  it creates the control unconditionally and is called once from
+  `bindings.js:700`. Add a NEW `HerdrLens.syncSwitchVisibility()`
+  (function does not exist yet; note `lens_behavior.test.mjs:172` pins
+  the HerdrLens export list, so the new export must be added there
+  too), called from the existing `onPaneChanged` hook (verified: invoked
+  from `connectTerminal` on every pane switch,
+  `src/assets/desktop/app_js/terminal.js:165-166`) and after each
+  snapshot: hide the switch unless `SUPPORTED_CHAT_AGENTS.has(agent)`
+  AND `agent_session` is non-null, where the set starts as `{"jcode"}`
   (agent value from the pane row `name/display_agent/agent`, same
-  resolution render.js already uses). For a supported agent with
-  `resolvable: false`, keep the switch visible (the user should see
-  the hint) but the lens shows the refusal reason instead of turns.
-  Unsupported pane → switch hidden, lens forced off.
+  resolution render.js already uses — verified at
+  `render.js:838` `a.name || a.display_agent || a.agent ||
+  a.terminal_id`). For a supported agent with `resolvable: false`, keep
+  the switch visible (the user should see the hint) but the lens shows
+  the refusal reason instead of turns. Unsupported pane → switch
+  hidden, lens forced off.
 - TUI parity: `Shortcut::Lens` (`src/tui/keys.rs`) gains the same guard;
   `TuiPane` (`src/tui/model.rs`) needs one new optional field parsed
   defensively (`value.get("agent_session")`), defaulted off when absent
@@ -383,6 +393,8 @@ Third-round adversarial checks (all against live store + jcode source):
 - Frontend vm suite: lens structured mode, toggle gating on
   `agent_session` shape (null hides, resolvable false shows hint),
   fallback to scrollback on `no_session_path`, pending-bubble lifecycle
-  (removed on matching poll text / pane change / lens close).
+  (removed on matching poll text / pane change / lens close). Update
+  `lens_behavior.test.mjs` export-list pin when adding
+  `syncSwitchVisibility` to the HerdrLens surface.
 - e2e: drive a real jcode pane in a builtin session, assert the chat shows
   turns within one poll and the switch is hidden on a shell pane.
