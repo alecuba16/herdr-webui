@@ -284,21 +284,58 @@ other /api route (verified live: cookie-gated).
   poll `/conversation` every ~2s while the lens is open (and on pane change),
   render turns. **Scrollback mode** (today's behavior) stays the fallback for
   unsupported agents and resolution failures, including the alt-screen hint.
+  **Polling lifecycle (round 11):** poll starts on lens open in structured
+  mode; stops on lens close AND on pane switch (the old pane's poll must
+  never leak onto the new pane); single-flight — a slow in-flight poll
+  blocks the next tick, never overlaps; submit success forces one
+  immediate re-poll outside the cadence. The existing follow/unread pill
+  (`New output`), dirty-flag render skipping, covered-rendering pause, and
+  focus hand-back are reused unchanged; structured mode only swaps the
+  content source.
+- **Loading state (round 11):** the first poll takes at least one round
+  trip (12 MiB worst case parses server-side); the lens shows an immediate
+  muted "loading chat…" skeleton on open until the first response lands.
+  Never a blank column.
+- **Rendering without jitter (round 11):** turns are append-only, so the
+  poll tick renders APPEND-ONLY while the response `version` is unchanged
+  (new turns appended below, in-flight tool lines updated in place);
+  a changed `version` (rotation, compaction) triggers one full re-render.
+  Full innerHTML rewrites per tick are forbidden — they would nuke text
+  selection and reset collapsed-thinking/expanded-tool state every 2s.
+- **In-flight tool (round 11):** an unmatched `tool_use` renders as a
+  muted one-line `running <name>…` entry that resolves into the normal
+  tool line on the next poll; it never blocks other turns.
+- **Empty state (round 11):** a zero-turn conversation (validated as
+  legitimate, round 3) renders "No messages yet — send one below" with
+  the composer visible, not a blank column or an error.
+- **Hint precedence (round 11):** a jcode pane is always alt-screen, so
+  the scrollback alt hint and a structured-mode refusal can collide. Rule:
+  in structured mode the refusal reason (`agent_session.reason` copy)
+  replaces the alt-screen hint entirely; the alt hint only renders in
+  scrollback mode.
 - Render per the existing lens aesthetic: user turns as accent-bold bubbles
   (the bubble pattern already exists — `.lens-turn-user > span` in
   `terminal.css:425`, right-aligned rounded panel; accent-bold color is
   the one rendering addition), assistant text plain, thinking collapsed,
   tool calls as one-line summaries expandable to output.
+  DOM budget note: the scrollback lens caps at 400 lines; 200 turns with
+  collapsed tool/thinking parts keep structured mode in the same order
+  of magnitude (expansion is user-triggered, not default).
 - The composer stays: submit keeps using `POST /api/panes/{id}/submit`; after
   a successful submit, force one conversation refresh so the user turn
   appears immediately. Optimistic pending bubble lifecycle (bounded, no
-  leaks): on submit success, append a pending bubble keyed by the pane
+  leaks): on submit success (2xx), append a pending bubble keyed by the pane
   and the submitted text; remove it when (a) a poll response contains a
   user turn with the same text (match on the message text, not id — the
   id is not known at submit time), (b) the submit failed (show an error
   state instead), or (c) the pane changes or the lens closes (drop
   silently). Cap at ONE pending bubble per pane; a new submit replaces
   the old bubble. Queued messages show once jcode records them.
+  `agent_blocked` parity (round 11): the submit route refuses with 409
+  `agent_blocked` when the agent waits for a terminal answer — that text
+  never reached the conversation, so NO pending bubble on 409; the
+  composer shows the server note and keeps the draft (existing
+  behavior, unchanged).
 
 ## 6. Chat toggle gating
 
@@ -348,7 +385,12 @@ always-on. Change:
   a.terminal_id`). For a supported agent with `resolvable: false`, keep
   the switch visible (the user should see the hint) but the lens shows
   the refusal reason instead of turns. Unsupported pane → switch
-  hidden, lens forced off.
+  hidden, lens forced off. **Force-off timing (round 11):** the
+  force-off runs inside `onPaneChanged` BEFORE the first render tick on
+  the new pane — otherwise a jcode pane's frozen transcript flashes over
+  the incoming shell pane for one frame. The switch node is created
+  once per shell (`insertLensSwitch`), so gating hides it per-pane
+  rather than recreating it.
 - TUI parity: `Shortcut::Lens` (`src/tui/keys.rs`) gains the same guard;
   `TuiPane` (`src/tui/model.rs`) needs one new optional field parsed
   defensively (`value.get("agent_session")`), defaulted off when absent
@@ -464,7 +506,11 @@ Third-round adversarial checks (all against live store + jcode source):
 - Frontend vm suite: lens structured mode, toggle gating on
   `agent_session` shape (null hides, resolvable false shows hint),
   fallback to scrollback on `no_session_path`, pending-bubble lifecycle
-  (removed on matching poll text / pane change / lens close). Update
+  (removed on matching poll text / pane change / lens close / 409
+  agent_blocked never creates one), loading skeleton on open, empty
+  state on zero turns, in-flight tool line resolving on next poll,
+  append-only rendering (no full rewrite while version unchanged),
+  pane-switch force-off before first render. Update
   `lens_behavior.test.mjs` export-list pin when adding
   `syncSwitchVisibility` to the HerdrLens surface.
 - e2e: drive a real jcode pane in a builtin session, assert the chat shows
