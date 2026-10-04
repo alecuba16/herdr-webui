@@ -888,14 +888,32 @@ async fn main() -> io::Result<()> {
         server_settings.backend_mode = backend_mode;
     }
     let mut auth_config = AuthConfig::from_settings(&server_settings)?;
-    // Never-expiring sessions survive the restart: restore the persisted
-    // token so open windows keep their cookie instead of bouncing to the
-    // login page on every WebUI restart. Timed sessions keep the fresh
-    // boot token (restoring them would break their expiry).
-    if auth_config.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER {
-        if let Some(token) = crate::server_settings::load_persisted_session_token() {
-            auth_config.token = token;
-        }
+    // Sessions survive the restart: restore the persisted token (when it is
+    // still valid) so open windows keep their cookie instead of bouncing to
+    // the login page on every WebUI restart. The loader rejects records that
+    // already lapsed, so a timed token is never resurrected past its expiry;
+    // a legacy raw-token sidecar only restores under never-expire settings
+    // (the raw format could never carry an expiry for a timed session).
+    match crate::server_settings::load_persisted_session_token() {
+        Some(record) => match record.expires_at {
+            Some(expires_at) => {
+                // The loader already rejected records in the past; the
+                // checked_add is only a no-overflow formality for u64 secs.
+                if let Some(expiry) =
+                    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(expires_at))
+                {
+                    auth_config.token = record.token;
+                    auth_config.token_expires_at = expiry;
+                }
+            }
+            None => {
+                if auth_config.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER {
+                    auth_config.token = record.token;
+                    auth_config.token_expires_at = crate::auth::never_expires_at();
+                }
+            }
+        },
+        None => {}
     }
     let auth = Arc::new(Mutex::new(auth_config));
     let backend_mode = resolve_backend_mode(
@@ -3162,25 +3180,38 @@ async fn logout(
     response
 }
 
-/// Write the rotated session token to the sidecar so never-expiring
-/// sessions survive the next restart, and drop the sidecar when sessions
-/// are timed. One lock hold covers both reads: taking the lock twice would
-/// let another thread rotate the token in between, persisting a mismatched
-/// token. Out-of-order completion of these async writes from concurrent
-/// logins is handled by re-checking the live token at write time and
-/// skipping superseded writes. Failures only cost persistence and never
-/// the live session.
+/// Write the current session token (and its expiry for timed sessions) to
+/// the sidecar so sessions survive the next restart. One lock hold covers
+/// both reads: taking the lock twice would let another thread rotate the
+/// token in between, persisting a mismatched token. Out-of-order completion
+/// of these async writes from concurrent logins is handled by re-checking
+/// the live token at write time and skipping superseded writes. Failures
+/// only cost persistence and never the live session.
+///
+/// Logout deserves a note: `logout_response` rotates the token and the
+/// follow-up persist saves the NEW token. That is correct: the new token
+/// is not known to any browser, so restoring it after a restart keeps every
+/// browser logged out (they hold the dead pre-logout token), which is the
+/// intended semantics of an explicit logout.
 fn persist_session_token(state: &WebState) {
-    let (never, token) = state
-        .auth
-        .lock()
-        .map(|auth| {
-            (
-                auth.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER,
-                auth.token.clone(),
-            )
-        })
-        .unwrap_or((false, String::new()));
+    let Ok(auth) = state.auth.lock() else {
+        // Poisoned lock: skip the sidecar write. It only costs persistence,
+        // never the live session.
+        return;
+    };
+    let expires_at = if auth.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER {
+        None
+    } else {
+        auth.token_expires_at
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|remaining| remaining.as_secs())
+            .ok()
+    };
+    let record = crate::server_settings::PersistedSessionToken {
+        token: auth.token.clone(),
+        expires_at,
+    };
+    drop(auth);
     let auth = state.auth.clone();
     tokio::task::spawn_blocking(move || {
         // Out-of-order task completion from concurrent logins could write an
@@ -3189,15 +3220,11 @@ fn persist_session_token(state: &WebState) {
         // write is skipped, so the file always ends up holding the newest
         // token (or none, when the newest state is timed).
         let current = auth.lock().map(|live| live.token.clone());
-        let superseded = matches!(current, Ok(ref live) if *live != token);
+        let superseded = matches!(current, Ok(ref live) if *live != record.token);
         if superseded {
             return;
         }
-        if never && !token.is_empty() {
-            let _ = crate::server_settings::save_persisted_session_token(&token);
-        } else if !never {
-            crate::server_settings::remove_persisted_session_token();
-        }
+        let _ = crate::server_settings::save_persisted_session_token(&record);
     });
 }
 

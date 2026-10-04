@@ -8,6 +8,7 @@ use std::fs;
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -247,38 +248,66 @@ pub fn server_settings_path() -> PathBuf {
 }
 
 /// Sidecar file holding the persisted session token, next to the settings
-/// file (same directory and permissions) so never-expiring sessions survive
-/// a WebUI restart. Only ever-expire sessions are persisted: a timed session
-/// would outlive its `token_expires_at` if restored, so those keep the old
-/// rotate-on-boot behavior.
+/// file (same directory and permissions) so sessions survive a WebUI restart.
+/// `expires_at` carries the token's absolute expiry (Unix seconds; `None`
+/// only for never-expiring sessions) so a timed token is never resurrected
+/// after it lapsed: the restore path rejects records already in the past,
+/// and a never-expire record keeps working with the raw-token format the
+/// first version of the sidecar wrote.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PersistedSessionToken {
+    pub token: String,
+    pub expires_at: Option<u64>,
+}
+
 pub fn session_token_path() -> PathBuf {
     server_settings_path().with_file_name("session-token")
 }
 
-/// Restore the persisted session token for never-expiring sessions. None
-/// when the file is missing, unreadable, or when sessions are timed (the
-/// caller falls back to a fresh boot token). Best effort: a corrupted or
-/// deleted sidecar must never block startup.
-pub fn load_persisted_session_token() -> Option<String> {
-    let token = fs::read_to_string(session_token_path()).ok()?;
+/// Restore the persisted session token for sessions that are still valid.
+/// None when the file is missing, unreadable, malformed, empty, or already
+/// expired (the caller falls back to a fresh boot token). Best effort: a
+/// corrupted or deleted sidecar must never block startup.
+pub fn load_persisted_session_token() -> Option<PersistedSessionToken> {
+    let raw = fs::read_to_string(session_token_path()).ok()?;
+    let (token, expires_at) =
+        if let Ok(record) = serde_json::from_str::<PersistedSessionToken>(&raw) {
+            (record.token, record.expires_at)
+        } else {
+            // Legacy sidecar: a bare token was only ever written for
+            // never-expiring sessions, so it restores as never-expire.
+            (raw.trim().to_string(), None)
+        };
     let token = token.trim();
     if token.is_empty() {
         return None;
     }
-    Some(token.to_string())
+    if let Some(expires_at) = expires_at {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_secs())
+            .unwrap_or(0);
+        if expires_at <= now {
+            return None;
+        }
+    }
+    Some(PersistedSessionToken {
+        token: token.to_string(),
+        expires_at,
+    })
 }
 
-/// Persist the current session token (never-expire installs only) so the
-/// next boot restores it instead of logging every open window out. Called
-/// after every rotation (login, logout, settings save). Failures are the
-/// caller's to log; a failed write only costs persistence, never the
-/// in-memory session.
-pub fn save_persisted_session_token(token: &str) -> io::Result<()> {
+/// Persist the current session token and its expiry so the next boot
+/// restores it instead of logging every open window out. Called after every
+/// rotation (login, logout, settings save). Failures are the caller's to
+/// log; a failed write only costs persistence, never the in-memory session.
+pub fn save_persisted_session_token(record: &PersistedSessionToken) -> io::Result<()> {
     let path = session_token_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&path, token)?;
+    let payload = serde_json::to_string(record)?;
+    fs::write(&path, payload)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -287,10 +316,13 @@ pub fn save_persisted_session_token(token: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Drop the persisted token when sessions become timed again: a sidecar
-/// left over from a never-expire era must not be resurrected later, since
-/// the token in it was invalidated when the settings were saved. Best
-/// effort, like the save.
+/// Drop the persisted token when it must not be resurrected later (for
+/// example when credentials were cleared or the record on disk is stale).
+/// Best effort, like the save. Currently only exercised by tests: every
+/// production path re-persists the newest token instead of removing the
+/// sidecar, but the primitive stays because the cleanup is part of the
+/// sidecar contract (and future credential-drop flows will need it).
+#[allow(dead_code)]
 pub fn remove_persisted_session_token() {
     let _ = fs::remove_file(session_token_path());
 }
@@ -569,9 +601,15 @@ mod tests {
         // Missing file: no token, no panic.
         assert_eq!(load_persisted_session_token(), None);
 
-        // Roundtrip: save then load returns the same trimmed token.
-        save_persisted_session_token("  abc123  \n").unwrap();
-        assert_eq!(load_persisted_session_token().as_deref(), Some("abc123"));
+        // Roundtrip (never-expire record): save then load returns it.
+        let never = PersistedSessionToken {
+            token: "abc123".to_string(),
+            expires_at: None,
+        };
+        save_persisted_session_token(&never).unwrap();
+        let loaded = load_persisted_session_token().unwrap();
+        assert_eq!(loaded.token, "abc123");
+        assert_eq!(loaded.expires_at, None);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -581,6 +619,40 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "sidecar must be owner-only");
         }
+
+        // Roundtrip (timed record): expiry survives and a lapsed record is
+        // rejected instead of resurrected.
+        let future = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        let timed = PersistedSessionToken {
+            token: "timed456".to_string(),
+            expires_at: Some(future),
+        };
+        save_persisted_session_token(&timed).unwrap();
+        let loaded = load_persisted_session_token().unwrap();
+        assert_eq!(loaded.token, "timed456");
+        assert_eq!(loaded.expires_at, Some(future));
+        let lapsed = PersistedSessionToken {
+            token: "gone789".to_string(),
+            expires_at: Some(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    - 1,
+            ),
+        };
+        save_persisted_session_token(&lapsed).unwrap();
+        assert_eq!(load_persisted_session_token(), None);
+
+        // Legacy raw-token sidecar loads as a never-expire record.
+        fs::write(session_token_path(), "  legacy123  \n").unwrap();
+        let loaded = load_persisted_session_token().unwrap();
+        assert_eq!(loaded.token, "legacy123");
+        assert_eq!(loaded.expires_at, None);
 
         // Removal drops it.
         remove_persisted_session_token();
