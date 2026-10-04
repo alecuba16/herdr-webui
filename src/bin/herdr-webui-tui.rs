@@ -49,7 +49,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cli.once {
         let mut app = TuiApp::new_with_theme(client, options.refresh_interval, options.theme);
         app.refresh()?;
-        app.load_selected_terminal_history(120, 32);
+        // No real screen in --once mode: attach_viewport() returns the
+        // documented 120x32 fallback, one source of truth for the
+        // legacy geometry instead of a second hard-coded copy.
+        let (cols, rows) = app.attach_viewport();
+        app.load_selected_terminal_history(cols, rows);
         println!("{}", app.text_snapshot());
         return Ok(());
     }
@@ -74,6 +78,12 @@ fn run_interactive(
     let mut terminal_guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut app = TuiApp::new_with_options(client, refresh_interval, theme, web_api);
+    // Screen size drives attach sizing: the pty must match the pane
+    // viewport the tail renders into, so keep the recorded size fresh
+    // before the first refresh can attach anything.
+    if let Ok(size) = terminal.size() {
+        app.set_terminal_size(size.width, size.height);
+    }
     app.refresh()?;
     let mut live_terminal: Option<LiveTerminal> = None;
     let mut last_draw = Instant::now();
@@ -92,10 +102,17 @@ fn run_interactive(
                         break;
                     }
                 }
-                Event::Resize(_, _) => {
-                    if let Some(live) = &live_terminal {
-                        let size = terminal.size()?;
-                        live.resize(size.width, size.height);
+                Event::Resize(width, height) => {
+                    app.set_terminal_size(width, height);
+                    if let Some(live) = live_terminal.as_mut() {
+                        let (cols, rows) = herdr_webui::tui::render::pane_viewport_size(
+                            width,
+                            height,
+                            app.sidebar_collapsed,
+                        );
+                        if live.needs_resize(cols, rows) {
+                            live.resize(cols, rows);
+                        }
                     }
                     app.mark_dirty();
                 }
@@ -117,6 +134,8 @@ fn run_interactive(
 
 struct LiveTerminal {
     terminal_id: String,
+    cols: u16,
+    rows: u16,
     command_tx: mpsc::Sender<LiveTerminalCommand>,
     output_rx: mpsc::Receiver<Result<TerminalOutput, String>>,
 }
@@ -187,19 +206,31 @@ impl LiveTerminal {
         });
         Self {
             terminal_id,
+            cols: cols.max(1),
+            rows: rows.max(1),
             command_tx,
             output_rx,
         }
+    }
+
+    /// True when the stored geometry differs from the wanted one;
+    /// used to decide whether a resize command must be sent (the
+    /// pty must track the pane viewport, which changes with window
+    /// resizes and sidebar toggles).
+    fn needs_resize(&self, cols: u16, rows: u16) -> bool {
+        self.cols != cols || self.rows != rows
     }
 
     fn send_input(&self, bytes: Vec<u8>) {
         let _ = self.command_tx.send(LiveTerminalCommand::Input(bytes));
     }
 
-    fn resize(&self, cols: u16, rows: u16) {
+    fn resize(&mut self, cols: u16, rows: u16) {
+        self.cols = cols.max(1);
+        self.rows = rows.max(1);
         let _ = self
             .command_tx
-            .send(LiveTerminalCommand::Resize(cols, rows));
+            .send(LiveTerminalCommand::Resize(self.cols, self.rows));
     }
 
     fn detach(&self) {
@@ -260,17 +291,28 @@ fn ensure_live_terminal(
     let Some(terminal_id) = app.selected_terminal_id().map(str::to_string) else {
         return Ok(());
     };
-    if live_terminal
-        .as_ref()
-        .is_some_and(|live| live.terminal_id == terminal_id)
-    {
-        return Ok(());
+    // The pty must be sized to the pane viewport, never the full
+    // TUI window: the tail renders inside the pane (minus footer, tab
+    // bar, borders, header lines), and a wider pty wraps lines the
+    // pane cannot show (duplicated continuation rows, prompt pushed
+    // out of view).
+    let (viewport_cols, viewport_rows) =
+        herdr_webui::tui::render::pane_viewport_size(cols, rows, app.sidebar_collapsed);
+    if let Some(live) = live_terminal.as_mut() {
+        if live.terminal_id == terminal_id {
+            // Same pane: keep the recorded geometry in sync with the
+            // current viewport (window resize, sidebar toggle).
+            if live.needs_resize(viewport_cols, viewport_rows) {
+                live.resize(viewport_cols, viewport_rows);
+            }
+            return Ok(());
+        }
     }
     *live_terminal = Some(LiveTerminal::start(
         app.client.clone(),
         terminal_id,
-        cols.max(1),
-        rows.max(1),
+        viewport_cols.max(1),
+        viewport_rows.max(1),
     ));
     Ok(())
 }
@@ -578,6 +620,51 @@ mod tests {
         dispatch_key(&mut app, &mut live, key_event(KeyCode::F(1), false), 80, 24).unwrap();
         assert!(live.is_none(), "unmapped key attaches no live terminal");
         assert_ne!(app.status, "sent input", "no input was sent");
+    }
+
+    #[test]
+    fn live_terminal_is_sized_to_the_pane_viewport_not_the_window() {
+        // Regression: the pty must match the pane viewport (window
+        // minus sidebar, footer, tab bar, pane borders, header
+        // lines). A full-window or hard-coded pty wraps lines wider
+        // than the pane can show, doubling content and pushing the
+        // prompt row out of view.
+        let mut app = app_with_terminal_screen();
+        app.sidebar_collapsed = false;
+        let mut live = None;
+        dispatch_key(
+            &mut app,
+            &mut live,
+            key_event(KeyCode::Char('x'), false),
+            100,
+            30,
+        )
+        .unwrap();
+        let live = live.expect("live terminal attached");
+        assert_eq!(
+            (live.cols, live.rows),
+            (64, 23),
+            "pty sized to the pane viewport, not the 100x30 window"
+        );
+
+        // Sidebar toggle widens the viewport: the next key resyncs
+        // the live terminal instead of keeping the stale geometry.
+        app.sidebar_collapsed = true;
+        let mut live = Some(live);
+        dispatch_key(
+            &mut app,
+            &mut live,
+            key_event(KeyCode::Char('y'), false),
+            100,
+            30,
+        )
+        .unwrap();
+        let live = live.expect("live terminal still attached");
+        assert_eq!(
+            (live.cols, live.rows),
+            (98, 23),
+            "sidebar toggle resizes the pty to the new viewport"
+        );
     }
 
     #[test]

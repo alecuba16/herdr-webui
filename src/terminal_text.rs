@@ -168,16 +168,28 @@ pub(crate) struct VtCore<C: VtCell> {
     pub(crate) col: usize,
     pub(crate) style: C::Style,
     max_lines: usize,
+    /// Column budget for autowrap, 0 = unlimited. A real terminal
+    /// wraps output at the pty width; without this the styled screen
+    /// stores an over-wide line that the renderer re-wraps, so the
+    /// rendered row count drifts from the pty row count and the last
+    /// (prompt) row falls out of the viewport.
+    max_cols: usize,
 }
 
 impl<C: VtCell> VtCore<C> {
     pub(crate) fn new(max_lines: usize) -> Self {
+        Self::new_with_cols(max_lines, 0)
+    }
+
+    /// Screen with an autowrap column budget (0 disables wrapping).
+    pub(crate) fn new_with_cols(max_lines: usize, max_cols: usize) -> Self {
         Self {
             lines: vec![Vec::new()],
             row: 0,
             col: 0,
             style: C::Style::default(),
             max_lines: max_lines.max(1),
+            max_cols,
         }
     }
 
@@ -196,6 +208,13 @@ impl<C: VtCell> VtCore<C> {
     }
 
     pub(crate) fn put(&mut self, ch: char) {
+        let ch_width = ch.width().unwrap_or(1).max(1);
+        // Autowrap like a real terminal: a character that does not fit
+        // in the remaining columns starts a new row. max_cols == 0
+        // (text tails, no known width) never wraps.
+        if self.max_cols > 0 && self.col + ch_width > self.max_cols {
+            self.new_line();
+        }
         self.ensure_row();
         let line = &mut self.lines[self.row];
         while line.len() < self.col {
@@ -207,7 +226,7 @@ impl<C: VtCell> VtCore<C> {
         } else {
             line.push(cell);
         }
-        self.col += ch.width().unwrap_or(1).max(1);
+        self.col += ch_width;
     }
 
     pub(crate) fn carriage_return(&mut self) {

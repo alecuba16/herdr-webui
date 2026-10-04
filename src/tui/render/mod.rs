@@ -3,6 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::tui::panels::files::{content_rows, ContentRow, SearchKind};
 use crate::tui::panels::GitView;
@@ -185,6 +186,32 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
     render_tab_bar(frame, tab_bar, app, p);
     render_pane(frame, pane_area, app, p);
+}
+
+/// Pane viewport (cols, rows) the attached pty must be sized to:
+/// the same geometry `render` paints the terminal tail into. Sizing
+/// the pty to anything else (full TUI window, hard-coded 120x32)
+/// makes the shell wrap at a width the pane cannot show, so
+/// continuation rows duplicate content and push the prompt row out
+/// of the viewport. Mirrors `render`: footer 1 + tab bar 1 + pane
+/// borders 2 + cwd/status/blank 3 rows; sidebar column + borders for
+/// width. Pure so the binary loop and `TuiApp` share one definition.
+pub fn pane_viewport_size(width: u16, height: u16, sidebar_collapsed: bool) -> (u16, u16) {
+    let sidebar_width = if sidebar_collapsed {
+        0
+    } else if width >= 100 {
+        34
+    } else {
+        28.min(width / 2)
+    };
+    let cols = width.saturating_sub(sidebar_width).saturating_sub(2).max(1);
+    let rows = height
+        .saturating_sub(1) // footer
+        .saturating_sub(1) // tab bar
+        .saturating_sub(2) // pane borders
+        .saturating_sub(3) // cwd / status / blank header lines
+        .max(1);
+    (cols, rows)
 }
 
 fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
@@ -2304,10 +2331,20 @@ fn truncate(value: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
     }
+    // Display-width budget, not char count: a 2-wide char must pay
+    // 2 columns or ratatui's Wrap re-prints the overflow column on
+    // the next row (the "doubled character" artifact).
+    let truncate_width = max_width.saturating_sub(1);
+    if value.width() <= truncate_width {
+        return value.to_string();
+    }
     let mut out = String::new();
     for ch in value.chars() {
-        if out.chars().count() + 1 >= max_width {
-            out.push('…');
+        let ch_width = ch.width().unwrap_or(0);
+        if out.width() + ch_width > truncate_width {
+            if out.width() < max_width {
+                out.push('…');
+            }
             return out;
         }
         out.push(ch);
