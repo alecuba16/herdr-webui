@@ -2333,7 +2333,9 @@ describe("app bundle load", () => {
     match(source, /builtin_backend_enabled: builtinBackendEnabled,/);
     match(source, /external_herdr_backend_enabled: externalHerdrBackendEnabled,/);
     match(source, /session_expiration_minutes: sessionExpirationMinutes,/);
-    match(source, /settings\.session_expiration_minutes \?\? 1440/);
+    match(source, /settings\.session_expiration_minutes \?\? 0/);
+    match(html, /id="serverSettingsLogout"/);
+    match(source, /logoutFromServer/);
     match(source, /builtin_shell: builtinShell \|\| null,/);
     match(source, /default_folder: defaultFolder \|\| null,/);
     match(source, /state\.defaultFolder = settings\.default_folder/);
@@ -4190,7 +4192,7 @@ describe("app bundle load", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
     ctx.document.getElementById("optServerBind").value = "127.0.0.1:8787";
-    ctx.document.getElementById("optServerSessionExpiration").value = "0";
+    ctx.document.getElementById("optServerSessionExpiration").value = "-1";
     let posted = false;
     ctx.fetch = async () => {
       posted = true;
@@ -4202,8 +4204,25 @@ describe("app bundle load", () => {
     ok(!posted, "invalid expiration never reaches the server");
     match(
       ctx.document.getElementById("serverSettingsError").textContent,
-      /between 1 and 525600 minutes/,
+      /must be 0 \(never expire\) or a whole number up to 525600/,
     );
+  });
+
+  it("accepts 0 session expiration as never expire and posts it", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.document.getElementById("optServerBind").value = "127.0.0.1:8787";
+    ctx.document.getElementById("optServerSessionExpiration").value = "0";
+    let postedBody = null;
+    ctx.fetch = async (_url, opt) => {
+      postedBody = JSON.parse(opt.body);
+      return { ok: true, json: async () => ({}) };
+    };
+
+    await ctx.applyServerSettings();
+
+    ok(postedBody, "0 (never expire) reaches the server");
+    equal(postedBody.session_expiration_minutes, 0);
   });
 
   it("flashes a settings applied badge on saveOptions", async () => {

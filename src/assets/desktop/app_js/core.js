@@ -953,7 +953,7 @@ function themeCustomizerHtml() {
   return `<div class="theme-customizer"><div><strong>Theme colors</strong><small>Saved in this browser. Uses current defaults as reset reference.</small></div><div class="theme-customizer-actions"><label><span>Profile</span><select class="settings-select" id="themeColorProfile"><option value="default">Default</option><option value="catppuccin">Catppuccin</option><option value="tokyo">Tokyo Night</option><option value="nord">Nord</option><option value="dracula">Dracula</option><option value="monokai">Monokai</option><option value="apple">Apple</option></select></label><button type="button" class="tab add" id="themeColorsApplyProfile">Apply profile</button><button type="button" class="tab add" id="themeColorsApply">Apply / reload UI</button><button type="button" class="tab add" id="themeColorsReset">Reset theme colors</button></div><div class="theme-customizer-grid"><section><h3>Dark</h3>${rows("dark")}</section><section><h3>Light</h3>${rows("light")}</section></div></div>`;
 }
 function serverSettingsHtml() {
-  return `<div class="server-settings"><section class="settings-section"><div class="settings-section-head"><h3>Network access</h3><p>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</p></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Protocol<small>HTTP for LAN relays and local use; HTTPS uses a self-signed cert unless certificate files are configured. Changing the protocol restarts the listener and reloads this page.</small></span><select class="settings-select" id="optTlsMode"><option value="off">HTTP only</option><option value="both">HTTP + HTTPS (HTTPS on port+1)</option><option value="auto">HTTPS only (auto)</option><option value="self-signed">HTTPS only (self-signed)</option><option value="files">HTTPS only (certificate files)</option></select></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label><label class="option"><span>Session expiration<small>Authenticated sessions expire after this many minutes. Existing sessions are invalidated when settings are saved.</small></span><input id="optServerSessionExpiration" type="number" min="1" max="525600" step="1"></label></section><section class="settings-section"><div class="settings-section-head"><h3>Backend</h3><p>Switch between external Herdr and the built-in terminal backend. Restart WebUI after changing backend mode.</p></div><label class="option"><span>Backend mode<small>Built-in is the default and starts local PTYs from this WebUI process. External Herdr uses Herdr sockets. Auto uses Herdr when available, otherwise built-in.</small></span><select class="settings-select" id="optBackendMode"><option value="builtin">Built-in terminal backend</option><option value="external-herdr">External Herdr</option><option value="auto">Auto</option></select></label><label class="option"><input type="checkbox" id="optBuiltinBackendEnabled"><span>Enable built-in backend<small>Allows local PTY sessions managed by this WebUI process.</small></span></label><label class="option"><input type="checkbox" id="optExternalHerdrBackendEnabled"><span>Enable external Herdr<small>Allows detecting and explicitly launching external Herdr sessions. Discovery stays passive until you create one.</small></span></label><label class="option"><span>Built-in shell<small>Optional shell or command path for new built-in panes. Leave empty for SHELL or /bin/zsh.</small></span><input id="optBuiltinShell" placeholder="/bin/zsh"></label><label class="option"><span>Default folder<small>Used by Files, Git, and temporary terminals when no workspace is selected. The backend verifies access and falls back to home.</small></span><input id="optDefaultFolder" placeholder="~"></label></section><section class="settings-section"><div class="settings-section-head"><h3>Power behavior</h3><p>Server-side sleep prevention defaults.</p></div><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"></label></section><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button></div></div>`;
+  return `<div class="server-settings"><section class="settings-section"><div class="settings-section-head"><h3>Network access</h3><p>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</p></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"></label><label class="option"><span>Protocol<small>HTTP for LAN relays and local use; HTTPS uses a self-signed cert unless certificate files are configured. Changing the protocol restarts the listener and reloads this page.</small></span><select class="settings-select" id="optTlsMode"><option value="off">HTTP only</option><option value="both">HTTP + HTTPS (HTTPS on port+1)</option><option value="auto">HTTPS only (auto)</option><option value="self-signed">HTTPS only (self-signed)</option><option value="files">HTTPS only (certificate files)</option></select></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label><label class="option"><span>Session expiration<small>Minutes until authenticated sessions expire. 0 means sessions never expire; only Settings &gt; Logout or saving server settings invalidates them. Existing sessions are invalidated when settings are saved.</small></span><input id="optServerSessionExpiration" type="number" min="0" max="525600" step="1"></label></section><section class="settings-section"><div class="settings-section-head"><h3>Backend</h3><p>Switch between external Herdr and the built-in terminal backend. Restart WebUI after changing backend mode.</p></div><label class="option"><span>Backend mode<small>Built-in is the default and starts local PTYs from this WebUI process. External Herdr uses Herdr sockets. Auto uses Herdr when available, otherwise built-in.</small></span><select class="settings-select" id="optBackendMode"><option value="builtin">Built-in terminal backend</option><option value="external-herdr">External Herdr</option><option value="auto">Auto</option></select></label><label class="option"><input type="checkbox" id="optBuiltinBackendEnabled"><span>Enable built-in backend<small>Allows local PTY sessions managed by this WebUI process.</small></span></label><label class="option"><input type="checkbox" id="optExternalHerdrBackendEnabled"><span>Enable external Herdr<small>Allows detecting and explicitly launching external Herdr sessions. Discovery stays passive until you create one.</small></span></label><label class="option"><span>Built-in shell<small>Optional shell or command path for new built-in panes. Leave empty for SHELL or /bin/zsh.</small></span><input id="optBuiltinShell" placeholder="/bin/zsh"></label><label class="option"><span>Default folder<small>Used by Files, Git, and temporary terminals when no workspace is selected. The backend verifies access and falls back to home.</small></span><input id="optDefaultFolder" placeholder="~"></label></section><section class="settings-section"><div class="settings-section-head"><h3>Power behavior</h3><p>Server-side sleep prevention defaults.</p></div><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"></label></section><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button><button type="button" class="btn question-confirm" id="serverSettingsLogout" title="Log out from this server">Logout</button></div></div>`;
 }
 function themeColorInputId(mode, key) {
   return `optThemeColor-${mode}-${key}`;
@@ -3440,7 +3440,7 @@ async function loadServerSettings() {
       ? "true"
       : "false";
     el("optServerLocalBypass").checked = !!settings.localhost_no_auth;
-    el("optServerSessionExpiration").value = String(settings.session_expiration_minutes ?? 1440);
+    el("optServerSessionExpiration").value = String(settings.session_expiration_minutes ?? 0);
     el("optBackendMode").value = settings.backend_mode || "builtin";
     el("optBuiltinBackendEnabled").checked = settings.builtin_backend_enabled !== false;
     el("optExternalHerdrBackendEnabled").checked = settings.external_herdr_backend_enabled !== false;
@@ -3475,7 +3475,7 @@ async function applyServerSettings() {
     password = el("optServerPassword").value,
     hasSavedPassword = el("optServerPassword").dataset.hasPassword === "true",
     localhostNoAuth = el("optServerLocalBypass").checked,
-    sessionExpirationMinutes = Number(el("optServerSessionExpiration").value || 1440),
+    sessionExpirationMinutes = Number(el("optServerSessionExpiration").value || 0),
     backendMode = el("optBackendMode").value,
     builtinBackendEnabled = el("optBuiltinBackendEnabled").checked,
     externalHerdrBackendEnabled = el("optExternalHerdrBackendEnabled").checked,
@@ -3500,12 +3500,12 @@ async function applyServerSettings() {
   }
   if (
     !Number.isInteger(sessionExpirationMinutes) ||
-    sessionExpirationMinutes < 1 ||
+    sessionExpirationMinutes < 0 ||
     sessionExpirationMinutes > 525600
   ) {
     if (err)
       err.textContent =
-        "Session expiration must be a whole number between 1 and 525600 minutes.";
+        "Session expiration must be 0 (never expire) or a whole number up to 525600 minutes.";
     return;
   }
   submit.disabled = true;
@@ -3585,6 +3585,39 @@ async function applyServerSettings() {
     submit.disabled = false;
     hideBlocking();
   }
+}
+async function logoutFromServer() {
+  // Explicit sign-out. The server rotates the token (killing every session)
+  // and clears the cookie; the reload lands on the login page. Confirm first
+  // because this logs out every browser holding a session, not just this one.
+  const okToLogout = await askQuestion({
+    title: "Log out",
+    message:
+      "Log out from this server? Every logged-in browser (this machine included) will need to log in again.",
+    confirmText: "Log out",
+    danger: true,
+  });
+  if (!okToLogout) return;
+  try {
+    // Raw fetch, not api(): api() would also be fine, but the 401-redirect
+    // logic must not race the intentional navigation below.
+    const r = await fetch("/api/logout", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: globalThis.HerdrHttp ? globalThis.HerdrHttp.options({}).headers : {},
+    });
+    if (!r.ok && r.status !== 401) {
+      const body = await r.json().catch(() => null);
+      const err = el("serverSettingsError");
+      if (err) err.textContent = (body && body.error) || `logout failed (${r.status})`;
+      return;
+    }
+  } catch (ex) {
+    const err = el("serverSettingsError");
+    if (err) err.textContent = ex.message || String(ex);
+    return;
+  }
+  location.href = "/";
 }
 async function loadVersions() {
   const versionsEl = el("versions");

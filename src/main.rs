@@ -1327,6 +1327,7 @@ fn app_router(state: WebState) -> Router {
         .route("/api/session/close", post(close_session))
         .route("/api/session/cleanup", post(cleanup_sessions))
         .route("/api/login", post(login))
+        .route("/api/logout", post(logout))
         .route("/api/workspaces", get(workspaces).post(create_workspace))
         .route(
             "/api/workspace-order",
@@ -3113,6 +3114,26 @@ async fn login(
         &format!("login: success for user '{}' from {remote}", body.username),
     );
     crate::auth::login_response(&state.auth, secure)
+}
+
+async fn logout(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+) -> Response {
+    // Only authenticated callers can log out; the token rotation inside
+    // logout_response is the actual invalidation, so an unauthenticated POST
+    // must not trigger it (it would kill every active session).
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let secure = state
+        .server_settings
+        .lock()
+        .map(|settings| settings.tls_mode.cookie_secure())
+        .unwrap_or(false);
+    log_event(&state.log_level(), "logout: session invalidated");
+    crate::auth::logout_response(&state.auth, secure)
 }
 
 async fn proxy_request_async(api: ApiClient, request: serde_json::Value) -> Response {

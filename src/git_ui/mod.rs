@@ -1186,10 +1186,7 @@ mod tests {
                 password: None,
                 localhost_no_auth: true,
                 token: "token".to_string(),
-                token_expires_at: std::time::SystemTime::now()
-                    + std::time::Duration::from_secs(
-                        crate::auth::DEFAULT_SESSION_EXPIRATION_MINUTES * 60,
-                    ),
+                token_expires_at: crate::auth::never_expires_at(),
                 session_expiration_minutes: crate::auth::DEFAULT_SESSION_EXPIRATION_MINUTES,
             })),
             login_limiter: Arc::new(crate::auth::LoginRateLimiter::new()),

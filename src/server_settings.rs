@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::builtin_detection::JcodeDetectionVariant;
 use crate::{
     auth::{
-        AuthConfig, DEFAULT_SESSION_EXPIRATION_MINUTES, MAX_SESSION_EXPIRATION_MINUTES,
-        MIN_SESSION_EXPIRATION_MINUTES,
+        AuthConfig, DEFAULT_SESSION_EXPIRATION_MINUTES, LEGACY_DEFAULT_SESSION_EXPIRATION_MINUTES,
+        MAX_SESSION_EXPIRATION_MINUTES, MIN_SESSION_EXPIRATION_MINUTES, SESSION_EXPIRATION_NEVER,
     },
     lsp, TlsMode, WebConfig,
 };
@@ -28,6 +28,10 @@ pub struct PersistedServerSettings {
     pub password: Option<String>,
     pub localhost_no_auth: Option<bool>,
     pub session_expiration_minutes: Option<u64>,
+    /// Written by every save of this (newer) version. Absent on files last
+    /// written before the never-expire default existed; the loader uses it
+    /// to run the 1440 -> 0 migration exactly once per install.
+    pub session_expiration_migrated: Option<bool>,
     pub no_sleep_auto_cooldown_seconds: Option<u64>,
     pub backend_mode: Option<BackendMode>,
     pub builtin_shell: Option<String>,
@@ -158,7 +162,7 @@ pub fn validate_runtime_server_settings(settings: &RuntimeServerSettings) -> io:
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "session expiration must be between {MIN_SESSION_EXPIRATION_MINUTES} and {MAX_SESSION_EXPIRATION_MINUTES} minutes"
+                "session expiration must be 0 (never expire) or between 1 and {MAX_SESSION_EXPIRATION_MINUTES} minutes"
             ),
         ));
     }
@@ -211,6 +215,25 @@ pub fn default_runtime_server_settings(bind: SocketAddr) -> RuntimeServerSetting
         log_level: LogLevel::default(),
         lsp: lsp::LspSettings::default(),
         recent_workspaces: Vec::new(),
+    }
+}
+
+/// One-time migration for the never-expire default: files last written by an
+/// old version carry the old 24h default and would keep auto-logging users
+/// out. The `session_expiration_migrated` marker (written by every
+/// new-version save) guarantees an operator who deliberately sets 1440 back
+/// later is not reset on every start. Returns the value to persist in the
+/// in-memory settings and sets `migrated` when the file needs a rewrite.
+fn migrate_legacy_session_expiration(
+    persisted: u64,
+    marker: Option<bool>,
+    migrated: &mut bool,
+) -> u64 {
+    if persisted == LEGACY_DEFAULT_SESSION_EXPIRATION_MINUTES && marker != Some(true) {
+        *migrated = true;
+        SESSION_EXPIRATION_NEVER
+    } else {
+        persisted
     }
 }
 
@@ -293,8 +316,13 @@ pub fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<Runt
     if let Some(localhost_no_auth) = persisted.localhost_no_auth {
         settings.localhost_no_auth = localhost_no_auth;
     }
+    let mut expiration_migrated = false;
     if let Some(session_expiration_minutes) = persisted.session_expiration_minutes {
-        settings.session_expiration_minutes = session_expiration_minutes;
+        settings.session_expiration_minutes = migrate_legacy_session_expiration(
+            session_expiration_minutes,
+            persisted.session_expiration_migrated,
+            &mut expiration_migrated,
+        );
     }
     if let Some(cooldown) = persisted.no_sleep_auto_cooldown_seconds {
         settings.no_sleep_auto_cooldown_seconds = cooldown;
@@ -328,7 +356,7 @@ pub fn load_runtime_server_settings(default_bind: SocketAddr) -> io::Result<Runt
         settings.recent_workspaces = recent;
     }
     validate_runtime_server_settings(&settings)?;
-    if missing_keys {
+    if missing_keys || expiration_migrated {
         save_runtime_server_settings(&settings)?;
     }
     Ok(settings)
@@ -370,6 +398,7 @@ pub fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Res
         password: settings.password.clone(),
         localhost_no_auth: Some(settings.localhost_no_auth),
         session_expiration_minutes: Some(settings.session_expiration_minutes),
+        session_expiration_migrated: Some(true),
         no_sleep_auto_cooldown_seconds: Some(settings.no_sleep_auto_cooldown_seconds),
         backend_mode: Some(settings.backend_mode),
         builtin_shell: settings.builtin_shell.clone(),
@@ -418,6 +447,7 @@ pub fn settings_public_json(settings: &RuntimeServerSettings) -> serde_json::Val
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::SESSION_EXPIRATION_NEVER;
 
     fn valid_settings() -> RuntimeServerSettings {
         default_runtime_server_settings("127.0.0.1:8787".parse().unwrap())
@@ -461,14 +491,6 @@ mod tests {
     #[test]
     fn validates_session_expiration_range() {
         let mut settings = valid_settings();
-        settings.session_expiration_minutes = MIN_SESSION_EXPIRATION_MINUTES - 1;
-        assert_eq!(
-            validate_runtime_server_settings(&settings)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidInput
-        );
-
         settings.session_expiration_minutes = MAX_SESSION_EXPIRATION_MINUTES + 1;
         assert_eq!(
             validate_runtime_server_settings(&settings)
@@ -477,9 +499,46 @@ mod tests {
             io::ErrorKind::InvalidInput
         );
 
-        settings.session_expiration_minutes = MIN_SESSION_EXPIRATION_MINUTES;
+        settings.session_expiration_minutes = SESSION_EXPIRATION_NEVER;
+        assert!(
+            validate_runtime_server_settings(&settings).is_ok(),
+            "0 must mean never-expiring sessions"
+        );
+        settings.session_expiration_minutes = 1;
         assert!(validate_runtime_server_settings(&settings).is_ok());
         settings.session_expiration_minutes = MAX_SESSION_EXPIRATION_MINUTES;
+        assert!(validate_runtime_server_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn legacy_1440_default_migrates_to_never_expire_once() {
+        let mut migrated = false;
+        assert_eq!(
+            migrate_legacy_session_expiration(1440, None, &mut migrated),
+            SESSION_EXPIRATION_NEVER
+        );
+        assert!(migrated, "a legacy file must be rewritten with the marker");
+
+        // After the save, the marker is present: a deliberate 1440 sticks.
+        let mut migrated = false;
+        assert_eq!(
+            migrate_legacy_session_expiration(1440, Some(true), &mut migrated),
+            1440
+        );
+        assert!(!migrated);
+
+        // Non-default values never migrate.
+        let mut migrated = false;
+        assert_eq!(
+            migrate_legacy_session_expiration(60, None, &mut migrated),
+            60
+        );
+        assert!(!migrated);
+
+        // 1440 stays valid: hand-maintained configs keep working.
+        let mut settings = valid_settings();
+        settings.session_expiration_minutes = LEGACY_DEFAULT_SESSION_EXPIRATION_MINUTES;
+        assert_eq!(settings.session_expiration_minutes, 1440);
         assert!(validate_runtime_server_settings(&settings).is_ok());
     }
 
