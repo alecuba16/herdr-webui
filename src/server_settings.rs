@@ -254,7 +254,7 @@ pub fn server_settings_path() -> PathBuf {
 /// after it lapsed: the restore path rejects records already in the past,
 /// and a never-expire record keeps working with the raw-token format the
 /// first version of the sidecar wrote.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PersistedSessionToken {
     pub token: String,
     pub expires_at: Option<u64>,

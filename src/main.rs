@@ -894,8 +894,8 @@ async fn main() -> io::Result<()> {
     // already lapsed, so a timed token is never resurrected past its expiry;
     // a legacy raw-token sidecar only restores under never-expire settings
     // (the raw format could never carry an expiry for a timed session).
-    match crate::server_settings::load_persisted_session_token() {
-        Some(record) => match record.expires_at {
+    if let Some(record) = crate::server_settings::load_persisted_session_token() {
+        match record.expires_at {
             Some(expires_at) => {
                 // The loader already rejected records in the past; the
                 // checked_add is only a no-overflow formality for u64 secs.
@@ -912,8 +912,7 @@ async fn main() -> io::Result<()> {
                     auth_config.token_expires_at = crate::auth::never_expires_at();
                 }
             }
-        },
-        None => {}
+        }
     }
     let auth = Arc::new(Mutex::new(auth_config));
     let backend_mode = resolve_backend_mode(
@@ -2411,11 +2410,65 @@ async fn update_server_settings(
                 .into_response();
         }
     };
-    if let Ok(mut auth_lock) = state.auth.lock() {
-        *auth_lock = auth;
-    }
-    // The settings save rotated the token; keep the sidecar in sync so a
-    // restart restores the new token (or drops it for timed sessions).
+    // Identity-relevant fields decide whether the token must rotate. A save
+    // that only touches bind, TLS, backends, or the default folder must not
+    // invalidate every open browser: the old cookie stays valid. Credentials
+    // (or the localhost bypass, or the expiration policy) changing DOES
+    // rotate: the token is derived per-AuthConfig, and keeping it across a
+    // credential change would let a browser authorized under the old
+    // credentials keep access under the new ones.
+    let secure = next.tls_mode.cookie_secure();
+    let identity_changed = {
+        let Ok(current_auth) = state.auth.lock() else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "auth unavailable" })),
+            )
+                .into_response();
+        };
+        current_auth.user != auth.user
+            || current_auth.password != auth.password
+            || current_auth.localhost_no_auth != auth.localhost_no_auth
+            || current_auth.session_expiration_minutes != auth.session_expiration_minutes
+    };
+    let rotated_cookie = {
+        let Ok(mut auth_lock) = state.auth.lock() else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "auth unavailable" })),
+            )
+                .into_response();
+        };
+        if identity_changed {
+            *auth_lock = auth;
+            // Re-issue the cookie for THIS browser on the same response:
+            // otherwise the save instantly 401s the caller into the login
+            // page. Other browsers hold the dead token and must log in
+            // again, which is correct for a credential change.
+            let max_age = auth_lock
+                .token_expires_at
+                .duration_since(SystemTime::now())
+                .map(|remaining| remaining.as_secs())
+                .unwrap_or(0)
+                .clamp(1, 365 * 24 * 60 * 60);
+            Some((auth_lock.token.clone(), max_age))
+        } else {
+            // Benign save: keep the current token AND its expiry so running
+            // sessions are untouched (the fresh `auth` carried a new token
+            // and a re-anchored expiry that would silently change policy).
+            let token = auth_lock.token.clone();
+            let expires_at = auth_lock.token_expires_at;
+            let session_expiration_minutes = auth_lock.session_expiration_minutes;
+            let mut preserved = auth;
+            preserved.token = token;
+            preserved.token_expires_at = expires_at;
+            preserved.session_expiration_minutes = session_expiration_minutes;
+            *auth_lock = preserved;
+            None
+        }
+    };
+    // Keep the sidecar in sync with whatever token now lives in the auth
+    // cell (rotated on an identity change, preserved on a benign save).
     persist_session_token(&state);
     if let Ok(mut settings_lock) = state.server_settings.lock() {
         *settings_lock = next.clone();
@@ -2439,7 +2492,11 @@ async fn update_server_settings(
         },
         "default_backend": default_backend_target(&state).as_str(),
     }));
-    Json(settings_public_json(&next)).into_response()
+    let mut response = Json(settings_public_json(&next)).into_response();
+    if let Some((token, max_age)) = rotated_cookie {
+        crate::auth::attach_session_cookie(&mut response, &token, max_age, secure);
+    }
+    response
 }
 
 async fn sessions(

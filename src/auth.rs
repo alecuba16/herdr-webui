@@ -285,7 +285,22 @@ pub(crate) fn login_response(auth: &Mutex<AuthConfig>, secure: bool) -> Response
             (auth.token.clone(), max_age)
         })
         .unwrap_or_default();
-    let mut response = Json(json!({ "ok": true })).into_response();
+    session_cookie_response(token, max_age, secure)
+}
+
+/// Response carrying a session cookie for an already-issued token. Used by
+/// the settings save: it can rotate the token (credentials changed) and
+/// must re-issue the cookie on the same response, otherwise every browser
+/// instantly 401s into the login page after a benign settings save.
+/// The response JSON body is the caller's concern; this only attaches the
+/// Set-Cookie header, so compose by mutating the caller's response instead
+/// when the body is not `{"ok":true}`.
+pub(crate) fn attach_session_cookie(
+    response: &mut Response,
+    token: &str,
+    max_age: u64,
+    secure: bool,
+) {
     let secure_flag = if secure { "; Secure" } else { "" };
     response.headers_mut().insert(
         header::SET_COOKIE,
@@ -294,6 +309,11 @@ pub(crate) fn login_response(auth: &Mutex<AuthConfig>, secure: bool) -> Response
         ))
         .expect("valid cookie"),
     );
+}
+
+fn session_cookie_response(token: String, max_age: u64, secure: bool) -> Response {
+    let mut response = Json(json!({ "ok": true })).into_response();
+    attach_session_cookie(&mut response, &token, max_age, secure);
     response
 }
 
