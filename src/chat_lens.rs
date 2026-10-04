@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(payload["source"], "jcode-transcript");
         assert_eq!(payload["session_id"], "session_lens_payload");
         assert!(payload["version"].is_string());
-        assert!(payload["version"].as_str().unwrap().len() > 0);
+        assert!(!payload["version"].as_str().unwrap().is_empty());
         let turns = payload["turns"].as_array().unwrap();
         assert_eq!(turns.len(), 3, "snapshot base + journal delta");
         assert_eq!(turns[0]["role"], "user");

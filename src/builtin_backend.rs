@@ -1205,7 +1205,7 @@ impl BuiltinState {
         let Some(agent) = presentation.agent else {
             return Err("unsupported_agent: no agent running in this pane".to_string());
         };
-        if !chat_lens::agent_supported(Some(&agent)) {
+        if !chat_lens::agent_supported(Some(agent)) {
             return Err(format!(
                 "unsupported_agent: {agent} has no transcript support"
             ));
@@ -1226,7 +1226,7 @@ impl BuiltinState {
         let Some(agent) = presentation.agent else {
             return Err("unsupported_agent: no agent running in this pane".to_string());
         };
-        if !chat_lens::agent_supported(Some(&agent)) {
+        if !chat_lens::agent_supported(Some(agent)) {
             return Err(format!(
                 "unsupported_agent: {agent} has no transcript support"
             ));

@@ -346,13 +346,9 @@ fn single<'a>(v: &[&'a SessionEvidence]) -> Option<&'a SessionEvidence> {
 /// `.journal.jsonl` likewise; everything else (`.bak`, tmp, corrupt) ->
 /// None.
 fn session_id_of(name: &str) -> Option<String> {
-    let base = if let Some(b) = name.strip_suffix(".journal.jsonl") {
-        b
-    } else if let Some(b) = name.strip_suffix(".json") {
-        b
-    } else {
-        return None;
-    };
+    let base = name
+        .strip_suffix(".journal.jsonl")
+        .or_else(|| name.strip_suffix(".json"))?;
     if !base.starts_with("session_") {
         return None;
     }
@@ -490,10 +486,10 @@ pub const MAX_TURNS: usize = 200;
 /// "background_task"`). This is the jcode equivalent of the reference's
 /// `isCommandEntry` filter. Only a person's prompt renders.
 fn is_bookkeeping_message(message: &serde_json::Value) -> bool {
-    match message.get("display_role").and_then(|r| r.as_str()) {
-        Some("system") | Some("background_task") => true,
-        _ => false,
-    }
+    matches!(
+        message.get("display_role").and_then(|r| r.as_str()),
+        Some("system") | Some("background_task")
+    )
 }
 
 fn message_ts(message: &serde_json::Value) -> Option<String> {
@@ -967,11 +963,7 @@ fn tool_brief(block: &serde_json::Map<String, serde_json::Value>) -> String {
             }
         }
         if brief.is_empty() {
-            let mut count = 0;
-            for (k, v) in obj {
-                if count >= 3 {
-                    break;
-                }
+            for (k, v) in obj.iter().take(3) {
                 let value = v
                     .as_str()
                     .map(str::to_string)
@@ -980,7 +972,6 @@ fn tool_brief(block: &serde_json::Map<String, serde_json::Value>) -> String {
                     brief.push(' ');
                 }
                 brief.push_str(&format!("{k}={}", truncate_chars(&value, 30)));
-                count += 1;
             }
         }
     }
@@ -2275,7 +2266,7 @@ mod coverage_gaps {
         std::fs::rename(&tmp, dir.join("session_g.json")).unwrap();
         let g2 = index.session_generation("session_generation_bump");
         // And a missing session yields an empty-ish but stable value.
-        assert!(index.session_generation("session_absent").len() > 0);
+        assert!(!index.session_generation("session_absent").is_empty());
         assert_ne!(g1, ""); // sanity: real value shape
         let _ = g2; // only that it does not panic
     }

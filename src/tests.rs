@@ -2867,7 +2867,7 @@ async fn logout_route_invalidates_session_and_requires_auth() {
         .clone()
         .oneshot(
             request(Method::POST, "/api/logout")
-                .header(header::COOKIE, format!("herdr_web_session=wrong"))
+                .header(header::COOKIE, "herdr_web_session=wrong")
                 .body(Body::empty())
                 .unwrap(),
         )
