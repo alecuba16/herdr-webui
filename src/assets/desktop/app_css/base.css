@@ -753,3 +753,10 @@ body.light .agent-status.done {
   content-visibility: auto;
   contain-intrinsic-size: auto 46px;
 }
+/* content-visibility:auto forces paint containment, which clips descendants
+   to the row box. The panel dropdown (.panel-menu) lives inside the selected
+   workspace row and would be cut to a sliver, so the selected row opts out.
+   One visible row keeps the skip-paint win for everything else. */
+.section .item.active {
+  content-visibility: visible;
+}

@@ -4253,6 +4253,16 @@ describe("app bundle load", () => {
     match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \.sidebar-scroll \{[\s\S]*?overflow: visible;/);
   });
 
+  it("keeps the panel menu out of sidebar row paint containment", () => {
+    const baseCss = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
+
+    // .section .item { content-visibility:auto } clips the dropdown to the
+    // row box (paint containment). The selected row hosts the panel menu,
+    // so it must opt out.
+    match(baseCss, /\.section \.item \{[\s\S]*?content-visibility: auto;/);
+    match(baseCss, /\.section \.item\.active \{[\s\S]*?content-visibility: visible;/);
+  });
+
   it("captures terminal paste before native terminal paste", () => {
     match(source, /addEventListener\(\s*"paste"/);
     match(source, /stopImmediatePropagation\(\)/);
