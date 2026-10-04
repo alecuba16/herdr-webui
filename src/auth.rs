@@ -71,7 +71,10 @@ pub(crate) struct AuthConfig {
     /// Bumped on every membership change (issue, revoke, reset, re-anchor).
     /// The sidecar persist path snapshots it so an out-of-order write from
     /// a concurrent login can detect it is stale and skip the file write.
-    /// LRU reordering does not bump it: membership did not change.
+    /// LRU reordering does not bump it: membership did not change, and
+    /// per-request touches never rewrite the sidecar (the hot path stays
+    /// allocation-free and write-free; a restart trades exact recency for
+    /// the last snapshot's order).
     pub(crate) sessions_rev: u64,
     pub(crate) session_expiration_minutes: u64,
 }
@@ -744,6 +747,62 @@ mod tests {
             None,
             "second purge is a no-op"
         );
+    }
+
+    #[test]
+    fn restart_eviction_follows_sidecar_snapshot_order() {
+        // The sidecar records membership only; per-request touches are
+        // memory-only by design (the hot path stays write-free). A restart
+        // therefore resumes eviction from the snapshot order, not from
+        // pre-restart usage: the file's first entry is the next victim
+        // even if that session was the most recently used one before the
+        // restart (validated live in W32d). Pins two contracts: restore
+        // never reorders the file's entries, and eviction follows the
+        // restored order exactly.
+        let (auth, remote) = make_auth(false);
+        let mut records = Vec::new();
+        for i in 0..MAX_SESSIONS {
+            records.push(SessionRecord {
+                token: format!("snapshot-{i}"),
+                expires_at: never_expires_at(),
+            });
+        }
+        // "Boot 2": restore exactly what the loader hands over, file order.
+        auth.lock().unwrap().restore_sessions(records);
+        // One login past the cap evicts the snapshot's first entry.
+        let fresh = auth.lock().unwrap().issue_session().token;
+        let guard = auth.lock().unwrap();
+        assert_eq!(guard.sessions.len(), MAX_SESSIONS);
+        assert!(
+            !guard.sessions.iter().any(|s| s.token == "snapshot-0"),
+            "the snapshot's first entry is the victim, regardless of pre-restart usage"
+        );
+        for i in 1..MAX_SESSIONS {
+            assert!(
+                guard
+                    .sessions
+                    .iter()
+                    .any(|s| s.token == format!("snapshot-{i}")),
+                "snapshot entry {i} survives in file order"
+            );
+        }
+        assert_eq!(
+            guard.sessions.last().map(|s| s.token.as_str()),
+            Some(fresh.as_str()),
+            "the fresh session lands at the LRU tail"
+        );
+        drop(guard);
+        // The victim is rejected afterwards; the survivors stay authorized.
+        assert!(!authorized(
+            &auth,
+            &headers_with_cookie("snapshot-0"),
+            remote
+        ));
+        assert!(authorized(
+            &auth,
+            &headers_with_cookie("snapshot-1"),
+            remote
+        ));
     }
 
     #[test]

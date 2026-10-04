@@ -261,8 +261,10 @@ pub fn server_settings_path() -> PathBuf {
 /// sessions. A sidecar written by any older version restores on boot.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PersistedSessionToken {
-    /// Live sessions, in LRU order: least recently used first, matching
-    /// the in-memory eviction order. Absent in older sidecar formats.
+    /// Live sessions, in LRU order as of the last membership change:
+    /// least recently used first. Per-request touches after that write are
+    /// memory-only, so a restart resumes LRU from this snapshot, not from
+    /// live usage. Absent in older sidecar formats.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<PersistedSessionRecord>,
     /// Single-token fallback: `Some` only when the file held the older
