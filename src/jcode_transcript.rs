@@ -812,6 +812,88 @@ pub fn load_compaction(store_dir: &Path, session_id: &str) -> Option<String> {
     None
 }
 
+/// One whole tool output by call id (reference toolOutput parity).
+///
+/// The conversation payload carried a trimmed head + `output_ref`;
+/// this walks the SAME message stream the conversation was built from
+/// (snapshot + journal, same id dedup) and returns the pre-trim output
+/// for the tool_result whose tool_use_id matches `reference`. Bounded
+/// at TOOL_OUTPUT_MAX chars with the same "… trimmed" marker so a
+/// runaway output stays a page, not a log download. Returns None when
+/// no matching tool_result exists (rotated out, cleared, unknown id).
+///
+/// `reference` is a JSON-encoded needle inside line scanning, so
+/// charset-validate it the way the reference's TOOL_REF does: callers
+/// must have passed `valid_tool_ref` first.
+pub fn tool_output_by_ref(
+    store_dir: &Path,
+    session_id: &str,
+    reference: &str,
+) -> Option<String> {
+    if !valid_tool_ref(reference) {
+        return None;
+    }
+    let messages = load_session_messages(store_dir, session_id);
+    for message in &messages {
+        // `?` would abort the whole scan on the first message without a
+        // content array (user turn with a bare string): continue past
+        // those — the tool_result may be in any LATER message.
+        let Some(blocks) = message.get("content").and_then(|c| c.as_array()) else {
+            continue;
+        };
+        for block in blocks {
+            let Some(block) = block.as_object() else { continue };
+            if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+                continue;
+            }
+            if block.get("tool_use_id").and_then(|t| t.as_str()) != Some(reference) {
+                continue;
+            }
+            return Some(cap_tool_output(tool_result_text_uncapped(block)));
+        }
+    }
+    None
+}
+
+/// TOOL_REF parity: ids are `[A-Za-z0-9_:.-]{1,128}`. Anything else is
+/// rejected before it is ever used as a scan needle.
+pub fn valid_tool_ref(reference: &str) -> bool {
+    let len = reference.chars().count();
+    if !(1..=128).contains(&len) {
+        return false;
+    }
+    reference
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.' | '-'))
+}
+
+/// TOOL_OUTPUT_MAX parity: a whole output is still bounded — a page of
+/// it, not a log file. Same "… trimmed" marker as the head cap.
+const TOOL_OUTPUT_MAX: usize = 2_000_000;
+
+fn cap_tool_output(text: String) -> String {
+    if text.chars().count() > TOOL_OUTPUT_MAX {
+        let cut: String = text.chars().take(TOOL_OUTPUT_MAX).collect();
+        format!("{cut}\n… trimmed")
+    } else {
+        text
+    }
+}
+
+/// `tool_result_text` without the head cap: the whole output, joined
+/// the same way (string content or text blocks array).
+fn tool_result_text_uncapped(block: &serde_json::Map<String, serde_json::Value>) -> String {
+    match block.get("content") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|i| i.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
 /// One-line input summary for a tool call (bounded, escaped-content free).
 fn tool_brief(block: &serde_json::Map<String, serde_json::Value>) -> String {
     // The agent states its own one-line intent on 3910 of 3919 live
@@ -921,6 +1003,146 @@ mod tests {
             {"type": "tool_use", "id": call_id, "name": name,
              "input": {"command": "ls -la"}},
         ]})
+    }
+
+    fn tool_result(id: &str, call_id: &str, content: serde_json::Value) -> serde_json::Value {
+        json!({"id": id, "role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": call_id, "content": content}
+        ]})
+    }
+
+    // ---- tool_output_by_ref ----
+
+    #[test]
+    fn tool_output_by_ref_returns_whole_output() {
+        let dir = std::env::temp_dir().join(format!("tool-ref-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = "x".repeat(5000);
+        let snapshot = json!({
+            "messages": [
+                asst_tool("a1", "call_1", "Bash"),
+                tool_result("u1", "call_1", serde_json::json!(big.clone())),
+            ]
+        });
+        std::fs::write(
+            dir.join("sess.json"),
+            serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let out = tool_output_by_ref(&dir, "sess", "call_1").unwrap();
+        assert_eq!(out.len(), 5000);
+        assert!(!out.contains("trimmed"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tool_output_by_ref_dedups_snapshot_journal() {
+        let dir = std::env::temp_dir().join(format!("tool-ref-dj-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let snapshot = json!({
+            "messages": [
+                asst_tool("a1", "call_1", "Bash"),
+                tool_result("u1", "call_1", serde_json::json!("from-snapshot")),
+            ]
+        });
+        std::fs::write(
+            dir.join("sess.json"),
+            serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+        // Same message id (u1) in the journal with different content: dedup
+        // must keep the snapshot copy, so the scan finds it once, not twice.
+        let journal = json!({"append_messages": [
+            tool_result("u1", "call_1", serde_json::json!("from-journal"))
+        ]});
+        std::fs::write(
+            dir.join("sess.journal.jsonl"),
+            serde_json::to_string(&journal).unwrap() + "\n",
+        )
+        .unwrap();
+        let out = tool_output_by_ref(&dir, "sess", "call_1").unwrap();
+        assert_eq!(out, "from-snapshot");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tool_output_by_ref_missing_and_invalid() {
+        let dir = std::env::temp_dir().join(format!("tool-ref-mi-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let snapshot = json!({
+            "messages": [
+                asst_tool("a1", "call_1", "Bash"),
+                tool_result("u1", "call_1", serde_json::json!("ok")),
+            ]
+        });
+        std::fs::write(
+            dir.join("sess.json"),
+            serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+        // Unknown ref: None, no error.
+        assert!(tool_output_by_ref(&dir, "sess", "call_nope").is_none());
+        // Invalid refs (charset / length) rejected before scanning.
+        assert!(tool_output_by_ref(&dir, "sess", "../escape").is_none());
+        assert!(tool_output_by_ref(&dir, "sess", "").is_none());
+        assert!(tool_output_by_ref(&dir, "sess", &"k".repeat(129)).is_none());
+        assert!(tool_output_by_ref(&dir, "no-such-session", "call_1").is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tool_output_by_ref_skips_messages_without_content_array() {
+        let dir = std::env::temp_dir().join(format!("tool-ref-ca-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A bare-string user message BEFORE the tool_result: the scan
+        // must continue past it, not abort (the `?` bug).
+        let snapshot = json!({
+            "messages": [
+                {"id": "u0", "role": "user", "content": "just a string"},
+                asst_tool("a1", "call_1", "Bash"),
+                tool_result("u1", "call_1", serde_json::json!("found")),
+            ]
+        });
+        std::fs::write(
+            dir.join("sess.json"),
+            serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let out = tool_output_by_ref(&dir, "sess", "call_1").unwrap();
+        assert_eq!(out, "found");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tool_output_by_ref_caps_at_two_million() {
+        let dir = std::env::temp_dir().join(format!("tool-ref-cap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let huge = "y".repeat(TOOL_OUTPUT_MAX + 10);
+        let snapshot = json!({
+            "messages": [
+                asst_tool("a1", "call_1", "Bash"),
+                tool_result("u1", "call_1", serde_json::json!(huge)),
+            ]
+        });
+        std::fs::write(
+            dir.join("sess.json"),
+            serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let out = tool_output_by_ref(&dir, "sess", "call_1").unwrap();
+        assert!(out.ends_with("… trimmed"));
+        assert_eq!(out.chars().count(), TOOL_OUTPUT_MAX + "\n… trimmed".chars().count());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn valid_tool_ref_charset() {
+        assert!(valid_tool_ref("toolu_01A-b.c:d"));
+        assert!(!valid_tool_ref("has space"));
+        assert!(!valid_tool_ref("../etc/passwd"));
+        assert!(!valid_tool_ref(""));
+        assert!(!valid_tool_ref(&"z".repeat(129)));
+        assert!(valid_tool_ref(&"z".repeat(128)));
     }
 
     fn user_result(id: &str, call_id: &str, text: &str, is_error: bool) -> serde_json::Value {

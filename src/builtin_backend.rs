@@ -782,6 +782,16 @@ impl BuiltinState {
                 let result = self.pane_conversation(&pane_id)?;
                 Ok(json!({ "type": "pane_conversation", "conversation": result }))
             }
+            "pane.tool_output" => {
+                // One whole tool output by call id (reference toolOutput
+                // parity): the page carried a trimmed head + output_ref,
+                // this returns the rest. Same resolution pipeline and
+                // error codes as pane.conversation.
+                let pane_id = required_string(&params, "pane_id")?;
+                let reference = required_string(&params, "ref")?;
+                let output = self.pane_tool_output(&pane_id, &reference)?;
+                Ok(json!({ "type": "pane_tool_output", "output": output }))
+            }
             "agent.start" => {
                 let name = required_string(&params, "name")?;
                 let argv = params
@@ -1215,6 +1225,91 @@ impl BuiltinState {
             ));
         }
         build_jcode_conversation(self, &pane)
+    }
+
+    /// One whole tool output by call id: reference toolOutput parity.
+    /// Same resolution pipeline and error codes as pane_conversation,
+    /// so a page that could show a trimmed head can always fetch the
+    /// rest of THAT session's output. None -> tool_output_not_found
+    /// (rotated out, cleared, or a ref that never existed).
+    fn pane_tool_output(&self, pane_id: &str, reference: &str) -> Result<Option<String>, String> {
+        if !crate::jcode_transcript::valid_tool_ref(reference) {
+            return Ok(None);
+        }
+        let (pane, presentation) = {
+            let data = self
+                .data
+                .lock()
+                .map_err(|_| "state unavailable".to_string())?;
+            let pane = data
+                .panes
+                .get(pane_id)
+                .ok_or_else(|| "agent_not_found: no such pane".to_string())?
+                .clone();
+            let presentation = pane_agent_presentation(&pane, &data);
+            (pane, presentation)
+        };
+        let Some(agent) = presentation.agent else {
+            return Err("unsupported_agent: no agent running in this pane".to_string());
+        };
+        if !TRANSCRIPT_SUPPORTED_AGENTS.contains(&agent) {
+            return Err(format!(
+                "unsupported_agent: {agent} has no transcript support"
+            ));
+        }
+        let session_id = self.resolve_pane_session(&pane)?;
+        let index = jcode_store_index();
+        Ok(crate::jcode_transcript::tool_output_by_ref(
+            index.store_dir(),
+            &session_id,
+            reference,
+        ))
+    }
+
+    /// The session id this pane resolved to (the shared tail of
+    /// pane_conversation and pane_tool_output).
+    fn resolve_pane_session(&self, pane: &PaneRecord) -> Result<String, String> {
+        let live_cwd = self
+            .terminal(&pane.terminal_id)
+            .and_then(|terminal| live_process_cwd(terminal.child_pid()))
+            .unwrap_or_else(|| pane.cwd.clone());
+        let processes = process_table().unwrap_or_default();
+        let by_pid: HashMap<u32, bool> = processes.iter().map(|p| (p.pid, true)).collect();
+        let terminal_pid = self
+            .terminal(&pane.terminal_id)
+            .and_then(|terminal| terminal.child_pid());
+        let pane_tail = self
+            .terminal(&pane.terminal_id)
+            .map(|terminal| {
+                // Simple ANSI strip, NOT the VT screen emulation of
+                // history_tail_text: the tiebreak needs verbatim prompt
+                // echo, and VT emulation lets spinner redraws/CR overwrite
+                // it (found live: twin panes flipped ambiguous while a
+                // tool ran). Same strip mode as pane.read on the wire.
+                terminal_text::strip_ansi_lossy(
+                    &String::from_utf8_lossy(&terminal.history_bytes()),
+                    terminal_text::StripCarriageReturn::Drop,
+                )
+            })
+            .unwrap_or_default();
+        let index = jcode_store_index();
+        let resolution = index.resolve(
+            &live_cwd,
+            &|pid| by_pid.contains_key(&pid),
+            &|pid| process_in_tree(pid, terminal_pid, &processes),
+            &pane_tail,
+        );
+        match resolution {
+            JcodeSessionResolution::Resolved { session_id } => Ok(session_id),
+            JcodeSessionResolution::Refused { reason } => Err(match reason {
+                RefusalReason::NoSessionPath => {
+                    "no_session_path: could not find a matching jcode session".to_string()
+                }
+                RefusalReason::Ambiguous => {
+                    "ambiguous: multiple jcode sessions match this pane".to_string()
+                }
+            }),
+        }
     }
 
     fn layout(&self, pane_id: Option<String>) -> Result<Value, String> {
@@ -2704,45 +2799,11 @@ fn jcode_store_index() -> &'static JcodeStoreIndex {
 /// and any rotation/compaction changes it — so the client can render
 /// append-only while it is unchanged (round 11).
 fn build_jcode_conversation(state: &BuiltinState, pane: &PaneRecord) -> Result<Value, String> {
-    let live_cwd = state
-        .terminal(&pane.terminal_id)
-        .and_then(|terminal| live_process_cwd(terminal.child_pid()))
-        .unwrap_or_else(|| pane.cwd.clone());
-    let processes = process_table().unwrap_or_default();
-    let by_pid: HashMap<u32, bool> = processes.iter().map(|p| (p.pid, true)).collect();
-    let terminal_pid = state
-        .terminal(&pane.terminal_id)
-        .and_then(|terminal| terminal.child_pid());
-    let pane_tail = state
-        .terminal(&pane.terminal_id)
-        .map(|terminal| {
-            // Simple ANSI strip, NOT the VT screen emulation of
-            // history_tail_text: the tiebreak needs verbatim prompt
-            // echo, and VT emulation lets spinner redraws/CR overwrite
-            // it (found live: twin panes flipped ambiguous while a
-            // tool ran). Same strip mode as pane.read on the wire.
-            terminal_text::strip_ansi_lossy(
-                &String::from_utf8_lossy(&terminal.history_bytes()),
-                terminal_text::StripCarriageReturn::Drop,
-            )
-        })
-        .unwrap_or_default();
+    // Resolution (pid evidence, live-pid+Active, recency tiebreak) is
+    // shared with pane.tool_output: the conversation and every fetched
+    // output must come from the SAME session.
+    let session_id = state.resolve_pane_session(pane)?;
     let index = jcode_store_index();
-    let resolution = index.resolve(
-        &live_cwd,
-        &|pid| by_pid.contains_key(&pid),
-        &|pid| process_in_tree(pid, terminal_pid, &processes),
-        &pane_tail,
-    );
-    let JcodeSessionResolution::Resolved { session_id } = resolution else {
-        return Err(match resolution {
-            JcodeSessionResolution::Refused { reason } => match reason {
-                RefusalReason::NoSessionPath => "no_session_path: could not find a matching jcode session".to_string(),
-                RefusalReason::Ambiguous => "ambiguous: multiple jcode sessions match this pane".to_string(),
-            },
-            JcodeSessionResolution::Resolved { .. } => unreachable!(),
-        });
-    };
 
     let store_dir = index.store_dir();
     let messages = crate::jcode_transcript::load_session_messages(store_dir, &session_id);

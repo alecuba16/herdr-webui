@@ -1390,6 +1390,10 @@ fn app_router(state: WebState) -> Router {
             "/api/panes/{pane_id}/conversation",
             get(pane_conversation),
         )
+        .route(
+            "/api/panes/{pane_id}/tool-output",
+            get(pane_tool_output),
+        )
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/session-snapshot", get(session_snapshot))
         .route("/api/agents", get(agents))
@@ -4820,6 +4824,88 @@ async fn pane_conversation(
                 None => (
                     StatusCode::BAD_GATEWAY,
                     Json(json!({ "error": "malformed backend response", "code": "error" })),
+                )
+                    .into_response(),
+            }
+        }
+        Ok(Err(err)) => {
+            let (status, code) = conversation_error(&err);
+            (status, Json(json!({ "error": err, "code": code }))).into_response()
+        }
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PaneToolOutputQuery {
+    #[serde(default)]
+    r#ref: Option<String>,
+}
+
+/// Whole tool output by call id. GET /api/panes/{pane_id}/tool-output?ref=…
+/// Reference toolOutput parity: the page carried a trimmed head and this
+/// fetches the rest from the same session. `conversation_error`
+/// classifies resolution failures; a ref with no matching tool_result is
+/// a 404 `tool_output_not_found` (rotation, /clear, or a bad ref) rather
+/// than an error — the page drops back to the head it already has.
+async fn pane_tool_output(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    AxumPath(pane_id): AxumPath<String>,
+    Query(query): Query<PaneToolOutputQuery>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let Some(reference) = query.r#ref.filter(|r| !r.is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "missing ref query parameter", "code": "bad_request" })),
+        )
+            .into_response();
+    };
+    let api = api_for_headers_ensured(&state, &headers).await;
+    let result = tokio::task::spawn_blocking(move || {
+        api.request_value(json!({
+            "id": "web:pane:tool_output",
+            "method": "pane.tool_output",
+            "params": { "pane_id": pane_id, "ref": reference },
+        }))
+    })
+    .await;
+    match result {
+        Ok(Ok(value)) => {
+            if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
+                let message = error
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("tool output failed");
+                let (status, code) = conversation_error(message);
+                return (
+                    status,
+                    Json(json!({ "error": message, "code": code })),
+                )
+                    .into_response();
+            }
+            // Backend arm returns {type, output: string|null}. A null
+            // output is the not-found case (distinguished from backend
+            // failures, which arrive as error envelopes).
+            let output = value.pointer("/result/output").cloned().unwrap_or(serde_json::Value::Null);
+            match output {
+                serde_json::Value::String(text) => {
+                    Json(json!({ "output": text })).into_response()
+                }
+                _ => (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "error": "no tool output for this reference",
+                        "code": "tool_output_not_found",
+                    })),
                 )
                     .into_response(),
             }
