@@ -3162,8 +3162,10 @@ async fn logout(
 /// sessions survive the next restart, and drop the sidecar when sessions
 /// are timed. One lock hold covers both reads: taking the lock twice would
 /// let another thread rotate the token in between, persisting a mismatched
-/// token. Disk I/O off the async runtime; failures only cost persistence
-/// and never the live session.
+/// token. Out-of-order completion of these async writes from concurrent
+/// logins is handled by re-checking the live token at write time and
+/// skipping superseded writes. Failures only cost persistence and never
+/// the live session.
 fn persist_session_token(state: &WebState) {
     let (never, token) = state
         .auth
@@ -3175,7 +3177,18 @@ fn persist_session_token(state: &WebState) {
             )
         })
         .unwrap_or((false, String::new()));
+    let auth = state.auth.clone();
     tokio::task::spawn_blocking(move || {
+        // Out-of-order task completion from concurrent logins could write an
+        // older token after the newest one. Re-check the live token at write
+        // time: if it moved on, this token is superseded and its sidecar
+        // write is skipped, so the file always ends up holding the newest
+        // token (or none, when the newest state is timed).
+        let current = auth.lock().map(|live| live.token.clone());
+        let superseded = matches!(current, Ok(ref live) if *live != token);
+        if superseded {
+            return;
+        }
         if never && !token.is_empty() {
             let _ = crate::server_settings::save_persisted_session_token(&token);
         } else if !never {
