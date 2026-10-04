@@ -33,9 +33,25 @@
       return (tab && (tab.label || `tab ${tab.number}`)) || "panel";
     }
 
+    function isDefaultTabTitle(label) {
+      const value = String(label || "").trim().toLowerCase();
+      return !value || value === "shell" || value === "terminal" || /^tab\s+\d+$/.test(value);
+    }
+
+    function tabNumberLabel(tab) {
+      const number = Number(tab && tab.number);
+      if (Number.isFinite(number) && number > 0) return String(number);
+      return "1";
+    }
+
     function agentTabLabel(wsId, tab, counts) {
       if (!tab) return "";
-      return (counts.get(wsId) || 0) > 1 || tab.label ? tabTitle(tab) : "";
+      // Mirrors the desktop agents panel: hide the token for single-panel
+      // workspaces, show the custom name when several panels exist, else the
+      // panel number (default labels are "Shell"/"Terminal"/"tab N").
+      if ((counts.get(wsId) || 0) <= 1) return "";
+      const label = String(tab.label || "").trim();
+      return isDefaultTabTitle(label) ? `#${tabNumberLabel(tab)}` : label;
     }
 
     function worktreeForWorkspace(workspace) {
