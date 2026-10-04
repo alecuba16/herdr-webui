@@ -69,17 +69,26 @@ a non-evidenced guess is worse than no chat):
    `working_dir` and `last_pid` alive in the process table, filtered on
    `status == Active`. Status handling in Rust: parse as
    `serde_json::Value` and accept ONLY the string `"Active"` exactly;
-   any object-shaped status (jcode's `Crashed { message }` struct) or
-   other string (`Closed`) counts as non-Active. Matching on the raw
-   Value avoids coupling to jcode's internal status type (no enum
-   needed). Rationale (validated live): unfiltered, this step returns
+   everything else counts as non-Active. Verified against jcode's
+   `SessionStatus` enum (`crates/jcode-session-types/src/lib.rs:154`):
+   `Active`, `Closed`, `Crashed { message }` plus `Reloaded`,
+   `Compacted`, `RateLimited`, `Error { message }` — the extra
+   variants are also object-or-non-Active and correctly rejected by
+   the exact-string match, but they exist and a naive enum mirror
+   would miss them. Matching on the raw Value avoids coupling to
+   jcode's internal status type (no enum needed). Rationale (validated
+   live, re-verified in round 6): unfiltered, this step returns
    AMBIGUOUS results because the shared daemon's PID is written into
-   every session it hosts — 3 sessions shared pid 21155 AND this repo's
-   cwd at the same time; both non-Active states are terminal. If
-   exactly one Active session remains, it wins; zero or many →
-   continue. In the live test the filter left exactly the one true
-   session (`vole`, Active) and dropped a `Crashed` and a `Closed`
-   session sharing the daemon PID.
+   every session it hosts — of 21 same-cwd sessions, 3 carried the live
+   daemon pid 21155 (two non-Active, one Active); both non-Active
+   states are terminal. If exactly one Active session remains, it
+   wins; zero or many → continue. Round-6 note: the round-2 prototype
+   initially lacked this filter and FAILED live resolution
+   (3 hits → ambiguous → `no_session_path`); adding the exact design
+   step-2 filter made it pass again, proving the filter is
+   load-bearing, not theoretical. In the live test the filter left
+   exactly the one true session (`vole`, Active) and dropped a
+   `Crashed` and a `Closed` session sharing the daemon PID.
 3. **Recency tiebreak (last resort, evidenced).** If several Active sessions
    share the pid+cwd (two concurrent jcode clients on one daemon in the same
    repo), match the pane's visible tail text against each candidate's most
@@ -176,15 +185,19 @@ Validated live-update cadence (executable prototype run against this very
   therefore sufficient to catch new records; no frame-level streaming is
   possible or needed.
 
-Paging: v1 ships newest-page-only — last 200 turns (reference
-  MAX_TURNS), no `before` cursor. Justification: the largest snapshot in
-  the store (12 MiB) parses in 34 ms (round 4), well inside the 2s poll
-  budget; add paging only if a real session renders slowly. The
-  response keeps a `cursor: null` field so the wire shape is
-  forward-compatible. When paging is added later, cursor = message id,
-  NOT a byte offset: jcode message ids are globally unique
-  (`message_<ts>_<nonce>`, validated), and byte offsets into the journal
-  cannot survive rotation (journal deleted + recreated at each
+Paging: v1 ships newest-page-only — last 200 turns (the reference
+  caps at `MAX_TURNS = 100` in `transcript-records.ts:78`; we pick 200
+  for jcode since snapshots parse cheaply at 34 ms), no `before`
+  cursor. Justification: the largest snapshot in the store (12 MiB)
+  parses in 34 ms (round 4), well inside the 2s poll budget; the
+  reference uses a 16 MB tail window (`TRANSCRIPT_WINDOW_BYTES`,
+  `conversation.ts:58`) precisely to bound reparsing cost, which our
+  full-snapshot read avoids; add paging only if a real session renders
+  slowly. The response keeps a `cursor: null` field so the wire shape
+  is forward-compatible. When paging is added later, cursor = message
+  id, NOT a byte offset: jcode message ids are globally unique
+  (`message_<ts>_<nonce>`, validated), and byte offsets into the
+  journal cannot survive rotation (journal deleted + recreated at each
   checkpoint). Generation invalidation must cover BOTH file identities
   — cursor = (snapshot generation, journal generation, message id),
   refused with 409 semantics when either generation changed.
