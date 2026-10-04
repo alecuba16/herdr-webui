@@ -92,6 +92,10 @@ CDP_PORT=9223 E2E_BASE_URL=http://127.0.0.1:18787/ \
 - `mobile-logout-acceptance.mjs`: forces the mobile layout via
   `herdr-web-layout`, login → Settings → Data → Logout (native confirm,
   auto-accepted by the driver) → login page.
+- `logout-cancel-401-acceptance.mjs`: Logout confirm dialog canceled must
+  keep the session (still in the app, API still authorized), and a session
+  killed under an open window (logout from a second context) must bounce
+  that window to the login page on its next API call.
 
 Credentials come from `E2E_USER`/`E2E_PASS` (default `admin`/`secret`, the
 same throwaway pair used across these scripts). Not wired into CI either.
