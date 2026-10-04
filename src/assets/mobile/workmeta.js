@@ -73,27 +73,22 @@
 
     function parentWorkspaceName(workspace, byId) {
       if (!workspace || !workspace.worktree) return "workspace";
+      // Match the main checkout of the same repo by absolute path only.
+      // The bare repo folder name (repo_name) is display-only: same-named
+      // repos in different parent folders must never adopt each other as
+      // parent, so the old workspace-label fallback is gone.
       const key =
-        workspace.worktree.repo_key ||
-        workspace.worktree.repo_root ||
-        workspace.worktree.repo_name;
-      const match =
-        Object.values(byId).find(
-          (item) =>
-            item.workspace_id !== workspace.workspace_id &&
-            item.worktree &&
-            (item.worktree.repo_key ||
-              item.worktree.repo_root ||
-              item.worktree.repo_name) === key &&
-            !item.worktree.is_linked_worktree,
-        ) ||
-        Object.values(byId).find(
-          (item) =>
-            item.workspace_id !== workspace.workspace_id &&
-            !item.worktree &&
-            item.label === workspace.worktree.repo_name,
-        );
-      return match ? match.label : workspace.worktree.repo_name;
+        workspace.worktree.repo_key || workspace.worktree.repo_root;
+      if (!key)
+        return workspace.worktree.repo_name || workspace.label || "workspace";
+      const match = Object.values(byId).find(
+        (item) =>
+          item.workspace_id !== workspace.workspace_id &&
+          item.worktree &&
+          !item.worktree.is_linked_worktree &&
+          (item.worktree.repo_key || item.worktree.repo_root) === key,
+      );
+      return match ? match.label : workspace.worktree.repo_name || "workspace";
     }
 
     function workspaceMeta(workspace) {
