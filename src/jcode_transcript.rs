@@ -97,13 +97,19 @@ impl JcodeStoreIndex {
     /// tmp + rename) or rotation bumps it, so the client renders
     /// append-only while unchanged (round 11).
     pub fn session_generation(&self, session_id: &str) -> String {
-        let mut combined = String::new();
+        // Compact etag (design: "etag-ish hash"): FNV-1a over both files'
+        // stat signatures. Stable within a server process, short on the
+        // wire — never a raw Debug leak.
+        let mut hash: u64 = 0xcbf29ce484222325;
         for suffix in [".json", ".journal.jsonl"] {
             let meta = std::fs::metadata(self.store_dir.join(format!("{session_id}{suffix}")));
             let generation = meta.ok().map(|m| stat_generation(&m));
-            combined.push_str(&format!("{generation:?};"));
+            for byte in format!("{generation:?}").as_bytes() {
+                hash ^= *byte as u64;
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
         }
-        combined
+        format!("g{hash:016x}")
     }
 
     /// (model, status) as recorded in the snapshot, if readable.
@@ -395,6 +401,19 @@ pub enum TurnPart {
 
 pub const MAX_TURNS: usize = 200;
 
+/// Bookkeeping user messages jcode records but never shows as chat:
+/// the session-context reminder injected at session create (seen
+/// live as `display_role: "system"` wrapping a `<system-reminder>`
+/// block) and background-task notices (`display_role:
+/// "background_task"`). This is the jcode equivalent of the reference's
+/// `isCommandEntry` filter. Only a person's prompt renders.
+fn is_bookkeeping_message(message: &serde_json::Value) -> bool {
+    match message.get("display_role").and_then(|r| r.as_str()) {
+        Some("system") | Some("background_task") => true,
+        _ => false,
+    }
+}
+
 fn message_ts(message: &serde_json::Value) -> Option<String> {
     message
         .get("timestamp")
@@ -414,6 +433,9 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
         let Some(blocks) = message.get("content").and_then(|c| c.as_array()) else {
             continue; // unknown shape: skip (design: tolerate format changes)
         };
+        if is_bookkeeping_message(message) {
+            continue;
+        }
         match role {
             "user" => {
                 let mut texts: Vec<&str> = Vec::new();
@@ -554,6 +576,9 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
     if turns.len() > MAX_TURNS {
         turns.drain(0..turns.len() - MAX_TURNS);
     }
+    // Reference parity: a turn with no renderable parts drops (e.g. an
+    // assistant merge target whose every block was skipped).
+    turns.retain(|t| !t.parts.is_empty());
     turns
 }
 
@@ -674,17 +699,23 @@ fn tool_brief(block: &serde_json::Map<String, serde_json::Value>) -> String {
 }
 
 fn tool_result_text(block: &serde_json::Map<String, serde_json::Value>) -> String {
-    match block.get("content") {
-        Some(serde_json::Value::String(s)) => s.chars().take(2000).collect(),
+    /// Cap matches the reference's TOOL_OUTPUT_CHARS: the page carries
+    /// the head of an output, the rest stays out of the payload.
+    const MAX_OUTPUT_CHARS: usize = 4000;
+    let text = match block.get("content") {
+        Some(serde_json::Value::String(s)) => s.clone(),
         Some(serde_json::Value::Array(items)) => items
             .iter()
             .filter_map(|i| i.get("text").and_then(|t| t.as_str()))
             .collect::<Vec<_>>()
-            .join("\n")
-            .chars()
-            .take(2000)
-            .collect(),
+            .join("\n"),
         _ => String::new(),
+    };
+    if text.chars().count() <= MAX_OUTPUT_CHARS {
+        text
+    } else {
+        let cut: String = text.chars().take(MAX_OUTPUT_CHARS).collect();
+        format!("{cut}\n… trimmed")
     }
 }
 
@@ -1139,5 +1170,94 @@ mod refresh_tests {
             res,
             JcodeSessionResolution::Resolved { session_id: "session_a".into() }
         );
+    }
+}
+
+#[cfg(test)]
+mod review_pass_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn bookkeeping_display_roles_do_not_render() {
+        // Live-wire evidence: session-create reminders carry
+        // display_role "system", background-task notices
+        // "background_task". Neither is a person's prompt.
+        let msgs = vec![
+            json!({"id": "m1", "role": "user", "display_role": "system",
+                   "content": [{"type": "text", "text": "<system-reminder>ctx</system-reminder>"}]}),
+            json!({"id": "m2", "role": "user", "display_role": "background_task",
+                   "content": [{"type": "text", "text": "**Background task stalled**"}]}),
+            json!({"id": "m3", "role": "user",
+                   "content": [{"type": "text", "text": "real prompt"}]}),
+        ];
+        let turns = parse_jcode_transcript(&msgs);
+        assert_eq!(turns.len(), 1);
+        assert!(matches!(&turns[0].parts[0],
+            TurnPart::Text { text } if text == "real prompt"));
+    }
+
+    #[test]
+    fn tool_output_is_capped_with_trimmed_marker() {
+        let long = "x".repeat(5000);
+        let msgs = vec![
+            json!({"id": "m1", "role": "assistant", "content": [
+                {"type": "tool_use", "id": "c1", "name": "bash", "input": {"command": "cat"}},
+            ]}),
+            json!({"id": "m2", "role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "c1",
+                 "content": [{"type": "text", "text": long}]},
+            ]}),
+        ];
+        let turns = parse_jcode_transcript(&msgs);
+        match &turns[0].parts[0] {
+            TurnPart::Tool { output, .. } => {
+                assert!(output.ends_with("… trimmed"));
+                assert!(output.chars().count() < 5000);
+                assert!(output.chars().count() >= 4000);
+            }
+            other => panic!("expected tool part, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_turns_drop() {
+        // An assistant message whose every block was skipped must not
+        // leave an empty turn behind (reference parity filter).
+        let msgs = vec![
+            json!({"id": "m1", "role": "user", "content": [{"type": "text", "text": "hi"}]}),
+            json!({"id": "m2", "role": "assistant", "content": [
+                {"type": "image", "data": "b64"},
+            ]}),
+        ];
+        let turns = parse_jcode_transcript(&msgs);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].role, TurnRole::User);
+    }
+
+    #[test]
+    fn tool_result_only_user_message_does_not_split_assistant_turn() {
+        // Reference assistantTurn semantics: assistant activity across a
+        // tool-result-only user message is ONE turn (the result folds
+        // into the tool part; the follow-up text appends to the turn).
+        let msgs = vec![
+            json!({"id": "m1", "role": "user", "content": [{"type": "text", "text": "run"}]}),
+            json!({"id": "m2", "role": "assistant", "content": [
+                {"type": "tool_use", "id": "c1", "name": "bash", "input": {"command": "ls"}},
+            ]}),
+            json!({"id": "m3", "role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "c1", "content": "ok"},
+            ]}),
+            json!({"id": "m4", "role": "assistant", "content": [
+                {"type": "text", "text": "done"},
+            ]}),
+        ];
+        let turns = parse_jcode_transcript(&msgs);
+        assert_eq!(turns.len(), 2);
+        let assistant = &turns[1];
+        assert_eq!(assistant.parts.len(), 2);
+        assert!(matches!(&assistant.parts[0], TurnPart::Tool { output, is_error, .. }
+            if output == "ok" && !is_error));
+        assert!(matches!(&assistant.parts[1], TurnPart::Text { text } if text == "done"));
     }
 }
