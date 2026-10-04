@@ -130,8 +130,11 @@ fn localhost_no_auth_state(default_folder: PathBuf) -> WebState {
             user: None,
             password: None,
             localhost_no_auth: true,
-            token: "e2e-token".to_string(),
-            token_expires_at: crate::auth::never_expires_at(),
+            sessions: vec![crate::auth::SessionRecord {
+                token: "e2e-token".to_string(),
+                expires_at: crate::auth::never_expires_at(),
+            }],
+            sessions_rev: 1,
             session_expiration_minutes: crate::auth::DEFAULT_SESSION_EXPIRATION_MINUTES,
         })),
         login_limiter: Arc::new(LoginRateLimiter::new()),

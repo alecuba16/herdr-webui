@@ -35,8 +35,11 @@ fn test_state() -> WebState {
             user: Some("user".to_string()),
             password: Some("pass".to_string()),
             localhost_no_auth: false,
-            token: "token-123".to_string(),
-            token_expires_at: crate::auth::never_expires_at(),
+            sessions: vec![crate::auth::SessionRecord {
+                token: "token-123".to_string(),
+                expires_at: crate::auth::never_expires_at(),
+            }],
+            sessions_rev: 1,
             session_expiration_minutes: DEFAULT_SESSION_EXPIRATION_MINUTES,
         })),
         login_limiter: Arc::new(LoginRateLimiter::new()),
@@ -1060,7 +1063,11 @@ fn loads_auth_from_runtime_settings() {
     assert_eq!(auth.user.as_deref(), Some("test-user"));
     assert_eq!(auth.password.as_deref(), Some("test-password"));
     assert!(!auth.localhost_no_auth);
-    assert!(!auth.token.is_empty());
+    assert!(
+        auth.sessions.is_empty(),
+        "fresh config carries no sessions until login or restore"
+    );
+    assert_eq!(auth.sessions_rev, 0);
 }
 
 #[test]
@@ -2832,7 +2839,20 @@ async fn login_route_sets_cookie_for_valid_credentials() {
         .get(header::SET_COOKIE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.contains("herdr_web_session=") && value.contains("Max-Age=")));
-    assert_ne!(state.auth.lock().unwrap().token, "token-123");
+    assert!(
+        state
+            .auth
+            .lock()
+            .unwrap()
+            .sessions
+            .iter()
+            .any(|session| session.token == "token-123"),
+        "login appends a session: the pre-login session must survive"
+    );
+    assert!(
+        state.auth.lock().unwrap().sessions.len() >= 2,
+        "login adds a new session alongside the pre-login one"
+    );
     assert_eq!(response_json(response).await["ok"], true);
 }
 
@@ -2859,10 +2879,8 @@ async fn login_route_rejects_invalid_credentials() {
 async fn logout_route_invalidates_session_and_requires_auth() {
     let state = test_state();
     let app = test_app_with_state(state.clone());
-    let token = state.auth.lock().unwrap().token.clone();
 
-    // Unauthenticated logout must not rotate the token (it would kill every
-    // active session) and answers 401.
+    // Unauthenticated logout must not revoke anything and answers 401.
     let response = app
         .clone()
         .oneshot(
@@ -2874,13 +2892,13 @@ async fn logout_route_invalidates_session_and_requires_auth() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(state.auth.lock().unwrap().token, token);
+    assert_eq!(state.auth.lock().unwrap().sessions.len(), 1);
 
-    // Authenticated logout rotates the token and clears the cookie.
+    // Authenticated logout revokes exactly the caller's session.
     let response = app
         .oneshot(
             request(Method::POST, "/api/logout")
-                .header(header::COOKIE, format!("herdr_web_session={token}"))
+                .header(header::COOKIE, "herdr_web_session=token-123")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2896,13 +2914,22 @@ async fn logout_route_invalidates_session_and_requires_auth() {
         "logout must clear the browser cookie"
     );
     assert_eq!(response_json(response).await["ok"], true);
-    assert_ne!(state.auth.lock().unwrap().token, token);
+    assert!(
+        state
+            .auth
+            .lock()
+            .unwrap()
+            .sessions
+            .iter()
+            .all(|session| session.token != "token-123"),
+        "the caller's session must be revoked"
+    );
 
     // The old cookie no longer authorizes API calls.
     let response = test_app_with_state(state.clone())
         .oneshot(
             request(Method::GET, "/api/me")
-                .header(header::COOKIE, format!("herdr_web_session={token}"))
+                .header(header::COOKIE, "herdr_web_session=token-123")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -3359,7 +3386,12 @@ async fn web_api_client_recovers_after_real_server_token_rotation() {
     // a WebUI restart does to a long-running TUI.
     let state = test_state();
     let auth = Arc::clone(&state.auth);
-    let old_token = auth.lock().unwrap().token.clone();
+    let old_token = auth
+        .lock()
+        .unwrap()
+        .current_session()
+        .map(|session| session.token.clone())
+        .unwrap();
     let app = test_app_with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3388,7 +3420,8 @@ async fn web_api_client_recovers_after_real_server_token_rotation() {
     .await;
     let (client, ()) = outcome.expect("initial authed flow");
 
-    // Rotate the live token: same credentials, fresh per-start token.
+    // Simulate the multi-session world the same way a restart does: keep
+    // credentials, drop the old session, restore a fresh live session set.
     // The client's cached cookie is now stale.
     {
         let mut auth = auth.lock().unwrap();
@@ -3398,7 +3431,13 @@ async fn web_api_client_recovers_after_real_server_token_rotation() {
             auth.localhost_no_auth,
             DEFAULT_SESSION_EXPIRATION_MINUTES,
         );
-        assert_ne!(rotated.token, old_token, "rotation must change the token");
+        assert!(
+            rotated
+                .current_session()
+                .map(|session| session.token.as_str())
+                != Some(old_token.as_str()),
+            "rotation must not keep the old token live"
+        );
         *auth = rotated;
     }
 
