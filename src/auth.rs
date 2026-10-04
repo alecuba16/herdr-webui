@@ -443,7 +443,10 @@ mod tests {
         let before = auth.lock().unwrap().token.clone();
         let response = logout_response(&auth, false);
         let after = auth.lock().unwrap().token.clone();
-        assert_ne!(before, after, "logout must rotate the token so every session dies");
+        assert_ne!(
+            before, after,
+            "logout must rotate the token so every session dies"
+        );
         let cookie = response
             .headers()
             .get(header::SET_COOKIE)

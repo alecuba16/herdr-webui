@@ -563,10 +563,7 @@ mod tests {
     #[test]
     fn persisted_session_token_roundtrip_and_cleanup() {
         let _guard = lock_env();
-        let dir = std::env::temp_dir().join(format!(
-            "herdr-token-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("herdr-token-test-{}", std::process::id()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
         // Missing file: no token, no panic.

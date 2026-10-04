@@ -2887,12 +2887,14 @@ async fn logout_route_invalidates_session_and_requires_auth() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.contains("Max-Age=0")),
-        "logout must clear the browser cookie");
+    assert!(
+        response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains("Max-Age=0")),
+        "logout must clear the browser cookie"
+    );
     assert_eq!(response_json(response).await["ok"], true);
     assert_ne!(state.auth.lock().unwrap().token, token);
 
