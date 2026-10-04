@@ -296,10 +296,10 @@ fn styled_lines_wrap_at_the_reported_pty_width() {
     assert_eq!(plain_lines(&lines), vec!["a".repeat(20), "a".repeat(5)]);
 
     // Wide characters wrap before they would straddle the edge. The
-    // screen stores one cell per column with the wide char's shadow
-    // column as a blank ("世 " is one 2-col char + its shadow).
+    // span text drops the wide char's shadow column (the glyph itself
+    // pays both columns), so "世世" serializes glyph-to-glyph.
     let lines = terminal_output_styled_lines_for_width("世世世世", 5);
-    assert_eq!(plain_lines(&lines), vec!["世 世", "世 世"]);
+    assert_eq!(plain_lines(&lines), vec!["世世", "世世"]);
 
     // Width 0 (unknown) keeps the legacy unwrapped behavior.
     let lines = terminal_output_styled_lines_for_width(&"a".repeat(25), 0);
@@ -309,10 +309,10 @@ fn styled_lines_wrap_at_the_reported_pty_width() {
 #[test]
 fn styled_lines_wrap_keeps_wide_char_from_straddling_the_edge() {
     // After "aa" only 1 of 3 columns remains: the 2-wide char wraps
-    // whole to the next row (its shadow column shows as a blank) and
-    // "b" follows it there.
+    // whole to the next row and "b" follows it there (no serialized
+    // shadow space).
     let lines = terminal_output_styled_lines_for_width("aa世b", 3);
-    assert_eq!(plain_lines(&lines), vec!["aa", "世 b"]);
+    assert_eq!(plain_lines(&lines), vec!["aa", "世b"]);
 }
 
 #[test]
