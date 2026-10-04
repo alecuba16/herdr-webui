@@ -43,6 +43,7 @@ mod builtin_events;
 mod compat;
 mod file_browser;
 mod git_ui;
+mod jcode_transcript;
 mod lsp;
 mod protocol;
 mod server_settings;
@@ -1385,6 +1386,10 @@ fn app_router(state: WebState) -> Router {
         .route("/api/panes", get(panes))
         .route("/api/panes/{pane_id}/close", post(close_pane))
         .route("/api/panes/{pane_id}/submit", post(submit_pane))
+        .route(
+            "/api/panes/{pane_id}/conversation",
+            get(pane_conversation),
+        )
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/session-snapshot", get(session_snapshot))
         .route("/api/agents", get(agents))
@@ -4750,6 +4755,85 @@ fn submit_pane_error(message: &str, code: &str) -> (StatusCode, String, String) 
     };
     let note = submit_pane_note(code, message);
     (status, code.to_string(), note)
+}
+
+/// Error classification for the conversation route: design codes with
+/// HTTP statuses. `agent_not_found` mirrors submit's shape (404 + note
+/// style) exactly — round-10 live verification, same code name, no
+/// invented `pane_not_found`.
+fn conversation_error(message: &str) -> (StatusCode, String) {
+    let code = message.split(':').next().unwrap_or("");
+    let status = match code {
+        "agent_not_found" => StatusCode::NOT_FOUND,
+        "unsupported_agent" => StatusCode::NOT_FOUND,
+        "no_session_path" | "ambiguous" => StatusCode::NOT_FOUND,
+        "transcript_missing" => StatusCode::NOT_FOUND,
+        _ => StatusCode::BAD_GATEWAY,
+    };
+    (status, code.to_string())
+}
+
+/// Chat-lens transcript for one pane. GET /api/panes/{pane_id}/conversation.
+/// Thin proxy to the backend `pane.conversation` method; the backend
+/// owns resolution, parsing, and the design's error codes. Rides the
+/// existing session-cookie auth like every other /api route.
+async fn pane_conversation(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    AxumPath(pane_id): AxumPath<String>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let api = api_for_headers_ensured(&state, &headers).await;
+    let result = tokio::task::spawn_blocking(move || {
+        api.request_value(json!({
+            "id": "web:pane:conversation",
+            "method": "pane.conversation",
+            "params": { "pane_id": pane_id },
+        }))
+    })
+    .await;
+    match result {
+        Ok(Ok(value)) => {
+            if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
+                let message = error
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("conversation failed");
+                let (status, code) = conversation_error(message);
+                return (
+                    status,
+                    Json(json!({ "error": message, "code": code })),
+                )
+                    .into_response();
+            }
+            // Unwrap the wire envelope ({id, result: {type,
+            // conversation}}): the browser gets the design's flat
+            // conversation payload.
+            match value
+                .pointer("/result/conversation")
+                .filter(|c| c.is_object())
+            {
+                Some(conversation) => Json(conversation.clone()).into_response(),
+                None => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": "malformed backend response", "code": "error" })),
+                )
+                    .into_response(),
+            }
+        }
+        Ok(Err(err)) => {
+            let (status, code) = conversation_error(&err);
+            (status, Json(json!({ "error": err, "code": code }))).into_response()
+        }
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 async fn submit_pane(
