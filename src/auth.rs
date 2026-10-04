@@ -18,6 +18,9 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 pub(crate) const COOKIE_NAME: &str = "herdr_web_session";
+/// `"herdr_web_session="` precomputed so the per-request cookie scan
+/// allocates nothing: the hot auth path only compares byte slices.
+const COOKIE_PREFIX: &str = "herdr_web_session=";
 pub(crate) const SESSION_EXPIRATION_NEVER: u64 = 0;
 pub(crate) const DEFAULT_SESSION_EXPIRATION_MINUTES: u64 = SESSION_EXPIRATION_NEVER;
 pub(crate) const MIN_SESSION_EXPIRATION_MINUTES: u64 = SESSION_EXPIRATION_NEVER;
@@ -296,7 +299,7 @@ pub(crate) fn cookie_value(headers: &HeaderMap) -> Option<String> {
         .get(header::COOKIE)
         .and_then(|value| value.to_str().ok())?
         .split(';')
-        .filter_map(|part| part.trim().strip_prefix(&format!("{COOKIE_NAME}=")))
+        .filter_map(|part| part.trim().strip_prefix(COOKIE_PREFIX))
         .map(str::to_string)
         .next()
 }
@@ -385,7 +388,7 @@ pub(crate) fn authorized(
     };
     let mut matched = false;
     for part in cookie.split(';') {
-        let Some(value) = part.trim().strip_prefix(&format!("{COOKIE_NAME}=")) else {
+        let Some(value) = part.trim().strip_prefix(COOKIE_PREFIX) else {
             continue;
         };
         if auth.find_valid_session(value.as_bytes()).is_some() {
