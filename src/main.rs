@@ -3160,19 +3160,21 @@ async fn logout(
 
 /// Write the rotated session token to the sidecar so never-expiring
 /// sessions survive the next restart, and drop the sidecar when sessions
-/// are timed. Disk I/O off the async runtime; failures only cost
-/// persistence and never the live session.
+/// are timed. One lock hold covers both reads: taking the lock twice would
+/// let another thread rotate the token in between, persisting a mismatched
+/// token. Disk I/O off the async runtime; failures only cost persistence
+/// and never the live session.
 fn persist_session_token(state: &WebState) {
-    let never = state
+    let (never, token) = state
         .auth
         .lock()
-        .map(|auth| auth.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER)
-        .unwrap_or(false);
-    let token = state
-        .auth
-        .lock()
-        .map(|auth| auth.token.clone())
-        .unwrap_or_default();
+        .map(|auth| {
+            (
+                auth.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER,
+                auth.token.clone(),
+            )
+        })
+        .unwrap_or((false, String::new()));
     tokio::task::spawn_blocking(move || {
         if never && !token.is_empty() {
             let _ = crate::server_settings::save_persisted_session_token(&token);
