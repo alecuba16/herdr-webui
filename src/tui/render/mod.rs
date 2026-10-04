@@ -2334,10 +2334,11 @@ fn truncate(value: &str, max_width: usize) -> String {
     // Display-width budget, not char count: a 2-wide char must pay
     // 2 columns or ratatui's Wrap re-prints the overflow column on
     // the next row (the "doubled character" artifact).
-    let truncate_width = max_width.saturating_sub(1);
-    if value.width() <= truncate_width {
+    if value.width() <= max_width {
         return value.to_string();
     }
+    // Overflow: reserve 1 width for the ellipsis.
+    let truncate_width = max_width.saturating_sub(1);
     let mut out = String::new();
     for ch in value.chars() {
         let ch_width = ch.width().unwrap_or(0);

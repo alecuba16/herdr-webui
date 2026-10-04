@@ -271,11 +271,11 @@ fn truncate(value: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
     }
-    // Reserve 1 width for ellipsis if we need to truncate
-    let truncate_width = max_width.saturating_sub(1);
-    if value.width() <= truncate_width {
+    if value.width() <= max_width {
         return value.to_string();
     }
+    // Reserve 1 width for the ellipsis if we need to truncate
+    let truncate_width = max_width.saturating_sub(1);
     let mut out = String::new();
     for ch in value.chars() {
         let ch_width = ch.width().unwrap_or(0);
