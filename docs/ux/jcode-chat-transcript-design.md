@@ -269,9 +269,14 @@ Response (thin server, thick shaping — same SOLID call as the composer):
 }
 ```
 
-Errors: `{error, code}` with codes `no_session_path`, `pane_not_found`,
-`unsupported_agent`, `transcript_missing`. Note: no auth change — ride the
-existing session-token middleware like every other /api route.
+Errors: `{error, code}` with codes `no_session_path`, `agent_not_found`,
+`unsupported_agent`, `transcript_missing`. Consistency note (round 10,
+verified live): the existing submit route answers a missing pane with
+HTTP 404 and `{error, code: "agent_not_found", note: "Not sent: this
+panel is gone. Pick another panel."}` — the new route reuses the same
+code name and note style, not an invented `pane_not_found`. Note: no
+auth change — ride the existing session-cookie middleware like every
+other /api route (verified live: cookie-gated).
 
 ## 5. Frontend
 
@@ -301,7 +306,11 @@ The Chat|Terminal segmented control (`insertLensSwitch`) is currently
 always-on. Change:
 
 - Server: `pane_json`/`agent_json` gain a real `agent_session` value
-  (today hardcoded null). **Wire shape, pinned once:**
+  (today hardcoded null — round 10 verified it ON THE LIVE WIRE: a
+  fresh builtin server's `/api/panes` and `worktrees/open` responses
+  already carry `"agent_session": null` in every pane object, so the
+  gate field is additive from day zero and webui + TUI see the same
+  key today). **Wire shape, pinned once:**
 
   ```json
   agent_session: null
