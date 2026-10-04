@@ -2453,10 +2453,12 @@ async fn update_server_settings(
             Some((record.token, AuthConfig::cookie_max_age(record.expires_at)))
         } else if policy_changed {
             // Policy-only change: keep every session, adopt the new lifetime.
+            // The incoming `auth` already carries the new policy from the
+            // saved settings; only the session set (and its rev) carries
+            // over, then re-anchor stamps the new lifetime on every session.
             let mut preserved = auth;
             preserved.sessions = auth_lock.sessions.clone();
             preserved.sessions_rev = auth_lock.sessions_rev;
-            preserved.session_expiration_minutes = auth_lock.session_expiration_minutes;
             *auth_lock = preserved;
             let new_expiry = auth_lock.reanchor_expiries();
             new_expiry.map(|expiry| {

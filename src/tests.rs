@@ -7517,6 +7517,172 @@ async fn update_server_settings_saves_and_returns_updated_settings() {
     std::env::remove_var("XDG_CONFIG_HOME");
 }
 
+/// Policy-only saves must adopt the NEW lifetime for every preserved
+/// session. The W18b live run caught the bug: the save path stomped the
+/// incoming policy with the old one before re-anchoring, so a 1-minute
+/// policy flipped to never-expire still killed every browser 60s later.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn update_server_settings_policy_flip_adopts_new_lifetime() {
+    let _guard = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-policy-flip-test-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let state = test_state();
+    let auth = Arc::clone(&state.auth);
+    // Two live browsers, timed policy 30 minutes, sessions near expiry.
+    {
+        let mut auth = auth.lock().unwrap();
+        auth.session_expiration_minutes = 30;
+        let soon = SystemTime::now() + std::time::Duration::from_secs(30);
+        auth.sessions = vec![
+            crate::auth::SessionRecord {
+                token: "token-123".to_string(),
+                expires_at: soon,
+            },
+            crate::auth::SessionRecord {
+                token: "token-456".to_string(),
+                expires_at: soon,
+            },
+        ];
+    }
+    let mut settings = state.server_settings.lock().unwrap();
+    settings.session_expiration_minutes = 30;
+    drop(settings);
+    let app = test_app_with_state(state);
+
+    // Policy-only save: same identity, never-expire from now on.
+    let response = app
+        .oneshot(
+            authed_request(Method::POST, "/api/server-settings")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "bind": DEFAULT_BIND,
+                        "username": "user",
+                        "password": "pass",
+                        "localhost_no_auth": false,
+                        "session_expiration_minutes": 0,
+                        "backend_mode": "builtin",
+                        "builtin_backend_enabled": true,
+                        "external_herdr_backend_enabled": true,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    {
+        let auth = auth.lock().unwrap();
+        assert_eq!(
+            auth.session_expiration_minutes, 0,
+            "the new policy must be adopted, not stomped by the old value"
+        );
+        assert_eq!(auth.sessions.len(), 2, "both sessions preserved");
+        for session in &auth.sessions {
+            assert_eq!(
+                session.expires_at,
+                crate::auth::never_expires_at(),
+                "re-anchor must stamp the never-expire sentinel on every session"
+            );
+        }
+    }
+
+    let _ = fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+/// The reverse flip (never-expire -> timed) must equally re-anchor: a
+/// session that used to live forever now carries the timed deadline.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn update_server_settings_policy_flip_never_to_timed_anchors_deadline() {
+    let _guard = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-policy-flip-rev-test-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let state = test_state();
+    let auth = Arc::clone(&state.auth);
+    // Never-expire policy, one never session, one already-lapsed session.
+    {
+        let mut auth = auth.lock().unwrap();
+        auth.session_expiration_minutes = 0;
+        auth.sessions = vec![
+            crate::auth::SessionRecord {
+                token: "token-123".to_string(),
+                expires_at: crate::auth::never_expires_at(),
+            },
+            crate::auth::SessionRecord {
+                token: "token-lapsed".to_string(),
+                expires_at: SystemTime::now() - std::time::Duration::from_secs(1),
+            },
+        ];
+    }
+    let mut settings = state.server_settings.lock().unwrap();
+    settings.session_expiration_minutes = 0;
+    drop(settings);
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::POST, "/api/server-settings")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "bind": DEFAULT_BIND,
+                        "username": "user",
+                        "password": "pass",
+                        "localhost_no_auth": false,
+                        "session_expiration_minutes": 45,
+                        "backend_mode": "builtin",
+                        "builtin_backend_enabled": true,
+                        "external_herdr_backend_enabled": true,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    {
+        let auth = auth.lock().unwrap();
+        assert_eq!(
+            auth.session_expiration_minutes, 45,
+            "the new timed policy must be adopted"
+        );
+        let valid: Vec<_> = auth
+            .sessions
+            .iter()
+            .filter(|session| session.token == "token-123")
+            .collect();
+        assert_eq!(valid.len(), 1, "live session preserved across the flip");
+        let deadline = SystemTime::now() + std::time::Duration::from_secs(45 * 60);
+        assert!(
+            valid[0].expires_at > SystemTime::now() + std::time::Duration::from_secs(40 * 60),
+            "re-anchor must stamp the timed deadline, not keep never-expire"
+        );
+        assert!(valid[0].expires_at <= deadline);
+    }
+
+    let _ = fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
 // ── proxy_server_stop with actual server.stop response (success) ──
 
 #[cfg(unix)]
