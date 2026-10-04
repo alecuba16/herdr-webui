@@ -189,6 +189,10 @@ check('Chat|Terminal switch hittable while lens is open',
 // lens scroller takes focus (it is a reading surface), so the output is
 // produced by a command ALREADY RUNNING in the shell: a backgrounded
 // sleep+echo scheduled before the flip fires after the lens opens.
+// The marker is emitted by string concatenation in the shell so the TYPED
+// COMMAND does not contain the marker itself: the old `echo MARKER` form
+// made this check pass on the command line echoed into the lens at flip
+// time, even when the streamed output never arrived (false positive).
 await evalApp(`(() => {
   const t = document.querySelector('#terminal textarea, #terminal');
   if (t) t.focus();
@@ -199,7 +203,9 @@ await evalApp(`(() => {
 await evalApp(`document.getElementById('lensToggleTerminal').click()`);
 await sleep(300);
 const marker2 = `LENS_E2E_M2_${Date.now()}`;
-await typeText(`(sleep 1.2 && echo ${marker2}) &`);
+const marker2PartA = marker2.slice(0, Math.ceil(marker2.length / 2));
+const marker2PartB = marker2.slice(Math.ceil(marker2.length / 2));
+await typeText(`(sleep 1.2 && echo '${marker2PartA}'${marker2PartB}) &`);
 await pressEnter();
 await sleep(300);
 await evalApp(`document.getElementById('lensToggleChat').click()`);

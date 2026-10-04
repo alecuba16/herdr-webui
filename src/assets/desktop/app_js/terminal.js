@@ -159,6 +159,11 @@ async function connectTerminal(fitOverride = null) {
   // Pane switch converges here: the composer swaps its per-pane draft so
   // the box shows what was typed for the pane now in view.
   if (globalThis.HerdrComposer) globalThis.HerdrComposer.sync();
+  // The lens resets its scroll/reading state for the pane now in view, and
+  // re-renders from the (still old) bridge so a mid-switch flip never shows
+  // the previous pane's transcript as if it were current.
+  if (globalThis.HerdrLens && globalThis.HerdrLens.onPaneChanged)
+    globalThis.HerdrLens.onPaneChanged();
   if (
     termWs &&
     termWs.readyState === 1 &&
@@ -467,6 +472,9 @@ const PASTE_FLUSH_DELAY_MS = 4;
 const LARGE_FRAME_THRESHOLD = 32768;
 // Set true on WS open, cleared after the first large frame is fully written.
 let terminalAttachPending = false;
+// Overlay hooks (lens/prompt cards) RAF-coalesce through this flag: one
+// notify per paint no matter how many terminal frames landed.
+let overlayNotifyPending = false;
 
 // Grid that arrived while the attach socket was still CONNECTING; sent
 // once on open instead of tearing the socket down per resize frame.
@@ -591,12 +599,28 @@ function enqueueTerminalFrame(data) {
   ) {
     writeTerminalFrame(data);
     clearDismissedWorkingForTerminal(state.terminalId);
+    scheduleOverlayNotify();
     return;
   }
   terminalWriteQueue.push({ terminalId: connectedTerminalId, data });
   if (terminalWriteFlushPending) return;
   terminalWriteFlushPending = true;
   requestAnimationFrame(flushTerminalFrames);
+}
+// Overlay hooks (chat lens, prompt cards) re-read the live bridge, so they
+// must run AFTER the write landed. RAF-coalescing bounds the work to one
+// re-read per frame regardless of how many terminal frames arrived in the
+// same tick (the backend chunks streaming into <=1KB WS messages, so bursts
+// can mean dozens of fast-path writes per paint).
+function scheduleOverlayNotify() {
+  if (overlayNotifyPending) return;
+  overlayNotifyPending = true;
+  requestAnimationFrame(() => {
+    overlayNotifyPending = false;
+    if (globalThis.HerdrLens && globalThis.HerdrLens.isActive())
+      globalThis.HerdrLens.onTerminalFrame();
+    if (globalThis.HerdrPromptCards) globalThis.HerdrPromptCards.evaluate();
+  });
 }
 function frameSize(data) {
   return typeof data === "string" ? data.length : data.length;
@@ -624,11 +648,7 @@ function flushTerminalFrames() {
     // Chat lens re-reads the live bridge AFTER the write so the transcript
     // view reflects the bytes that just landed (reading before the write
     // would show the pre-write grid).
-    if (globalThis.HerdrLens && globalThis.HerdrLens.isActive())
-      globalThis.HerdrLens.onTerminalFrame();
-    // Prompt cards re-parse the tail after every write: the question
-    // dialog repaints on each frame.
-    if (globalThis.HerdrPromptCards) globalThis.HerdrPromptCards.evaluate();
+    scheduleOverlayNotify();
     return;
   }
   // Clear attach flag if it was set but the coalesced frame ended up small
@@ -638,9 +658,7 @@ function flushTerminalFrames() {
   }
   writeTerminalFrame(data);
   clearDismissedWorkingForTerminal(state.terminalId);
-  if (globalThis.HerdrLens && globalThis.HerdrLens.isActive())
-    globalThis.HerdrLens.onTerminalFrame();
-  if (globalThis.HerdrPromptCards) globalThis.HerdrPromptCards.evaluate();
+  scheduleOverlayNotify();
 }
 function flushTerminalFramesFor(terminalId) {
   if (!terminalWriteQueue.length || !term || !terminalId) return;

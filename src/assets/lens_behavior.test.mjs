@@ -16,23 +16,58 @@ const SHARED_CORE_SOURCE = readFileSync(
   "utf8",
 );
 
-function element(id) {
-  return {
+function element(id, registry) {
+  const node = {
     id,
     children: [],
     dataset: {},
     style: {},
     hidden: false,
-    innerHTML: "",
     textContent: "",
+    _innerHTML: "",
+    // Parse the lens overlay's innerHTML when assigned (like the real
+    // DOM): the interactive children (scroller/content/alt hint/pill) must
+    // keep identity across querySelector calls.
+    _parsed: new Map(),
+    get innerHTML() {
+      return this._innerHTML;
+    },
+    set innerHTML(html) {
+      this._innerHTML = html;
+      this._parsed = new Map();
+      if (/id="terminalLensScroller"/.test(html)) {
+        const scroller = element("terminalLensScroller");
+        scroller.scrollTop = 0;
+        scroller.scrollHeight = 100;
+        scroller.clientHeight = 100;
+        this._parsed.set(".terminal-lens-scroller", scroller);
+        this._parsed.set("#terminalLensScroller", scroller);
+        const content = element("terminalLensContent");
+        this._parsed.set(".terminal-lens-content", content);
+        scroller.children.push(content);
+      }
+      if (/id="terminalLensAlt"/.test(html)) {
+        const alt = element("terminalLensAlt");
+        alt.hidden = true; // it ships hidden in the markup
+        this._parsed.set("#terminalLensAlt", alt);
+      }
+      if (/id="terminalLensNew"/.test(html)) {
+        const pill = element("terminalLensNew");
+        pill.hidden = true;
+        this._parsed.set("#terminalLensNew", pill);
+      }
+    },
     appendChild(child) {
       this.children.push(child);
       return child;
     },
-    querySelector() {
-      return null;
+    querySelector(sel) {
+      return this._parsed.get(sel) || null;
     },
-    addEventListener() {},
+    listeners: {},
+    addEventListener(type, fn) {
+      (this.listeners[type] ||= []).push(fn);
+    },
     classList: {
       _set: new Set(),
       toggle(name, value) {
@@ -50,6 +85,19 @@ function element(id) {
     },
     focus() {},
   };
+  // The lens assigns node.id AFTER createElement (overlay(), switch): a
+  // setter keeps the context's id -> node registry in sync so later
+  // getElementById calls find the real element, not a fresh blank one.
+  let currentId = id;
+  Object.defineProperty(node, "id", {
+    get: () => currentId,
+    set(value) {
+      currentId = value;
+      if (registry && value) registry(value, node);
+    },
+    configurable: true,
+  });
+  return node;
 }
 
 function makeBridge(overrides = {}) {
@@ -67,10 +115,11 @@ function makeBridge(overrides = {}) {
 
 function context(overrides = {}) {
   const elements = new Map();
-  const getElement = (id) => {
-    if (!elements.has(id)) elements.set(id, element(id));
-    return elements.get(id);
-  };
+  // The lens mounts inside the terminal shell: pre-register it so
+  // overlay() can build the real node tree.
+  elements.set("terminalShell", element("terminalShell"));
+  const getElement = (id) => elements.get(id) || null;
+  const register = (id, node) => elements.set(id, node);
   const ctx = {
     console,
     setTimeout(fn) {
@@ -84,7 +133,7 @@ function context(overrides = {}) {
     },
     document: {
       getElementById: getElement,
-      createElement: () => element(),
+      createElement: () => element("", register),
       addEventListener() {},
     },
     // The lens reads `term` from the bundle scope; tests inject it through
@@ -253,5 +302,116 @@ describe("chat lens module", () => {
     equal(JSON.stringify(ctx.HerdrLens.lensState()), JSON.stringify({ active: true, follow: true, unread: false }));
     ctx.HerdrLens.toggle();
     equal(ctx.HerdrLens.isActive(), false);
+  });
+
+  it("onPaneChanged resets reading state and re-renders", () => {
+    const lines = ["one", "two"];
+    const bridge = makeBridge({
+      getCols: () => 5,
+      getRows: () => 2,
+      getScrollbackCount: () => 0,
+      getCell: (row, col) => ({
+        chars: (lines[row] && lines[row][col]) || " ",
+        width: 1,
+        spacerHead: false,
+      }),
+    });
+    const { ctx } = context();
+    loadLens(ctx, bridge);
+    ctx.HerdrLens.setLens(true);
+    const overlayNode = ctx.document.getElementById("terminalLens");
+    const content = overlayNode.querySelector(".terminal-lens-content");
+    // Simulate the reader scrolled up: follow=false.
+    const scroller = overlayNode.querySelector("#terminalLensScroller");
+    scroller.scrollTop = 0;
+    scroller.scrollHeight = 200;
+    scroller.clientHeight = 100;
+    for (const fn of scroller.listeners.scroll || []) fn();
+    equal(ctx.HerdrLens.lensState().follow, false, "scrolled up stops follow");
+    // New frame with the SAME line count: dirty forces the re-read and
+    // lines.length > lastRenderedLineCount is false, so no unread yet.
+    ctx.HerdrLens.onTerminalFrame();
+    equal(ctx.HerdrLens.lensState().unread, false,
+      "same-length rewrite does not fake unread");
+    // Now the pane switches: follow/unread and the baseline must reset.
+    // follow=true + the re-render snaps the scroller back to the tail.
+    scroller.scrollTop = 0;
+    ctx.HerdrLens.onPaneChanged();
+    const after = ctx.HerdrLens.lensState();
+    equal(after.follow, true, "pane switch resumes following");
+    equal(after.unread, false, "pane switch clears unread");
+    equal(content.dataset.dirty, "0",
+      "the forced re-render already consumed the dirty flag");
+    equal(scroller.scrollTop, scroller.scrollHeight, "re-render scrolls to the tail");
+  });
+
+  it("onPaneChanged is a no-op while the lens is closed", () => {
+    const { ctx } = context();
+    loadLens(ctx, makeBridge());
+    // Lens closed: onPaneChanged must not build the overlay.
+    ctx.HerdrLens.onPaneChanged();
+    equal(!!ctx.document.getElementById("terminalLens"), false,
+      "closed lens stays unrendered on pane change");
+  });
+
+  it("render skips the DOM write and the scroll when nothing changed", () => {
+    const lines = ["hello"];
+    const bridge = makeBridge({
+      getCols: () => 5,
+      getRows: () => 1,
+      getScrollbackCount: () => 0,
+      getCell: (row, col) => ({
+        chars: (lines[row] && lines[row][col]) || " ",
+        width: 1,
+        spacerHead: false,
+      }),
+    });
+    const { ctx } = context();
+    loadLens(ctx, bridge);
+    ctx.HerdrLens.setLens(true);
+    const overlayNode = ctx.document.getElementById("terminalLens");
+    const content = overlayNode.querySelector(".terminal-lens-content");
+    const scroller = overlayNode.querySelector("#terminalLensScroller");
+    const html = content.innerHTML;
+    scroller.scrollTop = 42; // reader parked mid-transcript
+    ctx.HerdrLens.render();
+    equal(content.innerHTML, html, "unchanged transcript does not rewrite the DOM");
+    equal(scroller.scrollTop, 42, "unchanged transcript does not force a scroll");
+    // New bytes landed (onTerminalFrame): the write happens, and with
+    // follow on, the scroller snaps to the tail.
+    ctx.HerdrLens.onTerminalFrame();
+    ok(content.innerHTML !== html || scroller.scrollTop === scroller.scrollHeight,
+      "frame notify refreshes the lens");
+  });
+
+  it("shows the alt-screen hint only while an alt-screen app runs", () => {
+    let alt = false;
+    const bridge = makeBridge({ usingAltScreen: () => alt });
+    const { ctx } = context();
+    loadLens(ctx, bridge);
+    ctx.HerdrLens.setLens(true);
+    const overlayNode = ctx.document.getElementById("terminalLens");
+    const hint = overlayNode.querySelector("#terminalLensAlt");
+    ok(hint, "alt hint element must exist in the overlay");
+    equal(hint.hidden, true, "hint hidden on the normal screen");
+    alt = true;
+    ctx.HerdrLens.render();
+    equal(hint.hidden, false, "hint shown when the bridge reports alt screen");
+    alt = false;
+    ctx.HerdrLens.render();
+    equal(hint.hidden, true, "hint hidden again once the app exits");
+  });
+
+  it("opening the lens pauses covered wterm paints, closing restores them", () => {
+    const paused = [];
+    const renderer = { setRenderingPaused: (v) => paused.push(v) };
+    const { ctx, contextObject } = context();
+    ctx.__term = { wterm: renderer };
+    vm.runInContext("var term = globalThis.__term;", contextObject);
+    vm.runInContext(LENS_SOURCE, contextObject);
+    ctx.HerdrLens.setLens(true);
+    equal(paused[paused.length - 1], true, "lens open pauses the covered renderer");
+    ctx.HerdrLens.setLens(false);
+    equal(paused[paused.length - 1], false, "lens close resumes paints");
   });
 });
