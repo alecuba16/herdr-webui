@@ -22,7 +22,7 @@ use serde_json::Value;
 use crate::backend_client::{BackendClient, BackendClientError, TerminalOutput};
 use crate::terminal_text::{self, StripCarriageReturn};
 pub use keys::{PrefixState, Shortcut};
-use lens::LensState;
+use lens::{refusal_reason_copy, LensGate, LensState};
 pub use model::{
     snapshot_summary, SidebarFocus, TuiAgent, TuiMode, TuiPane, TuiSnapshot, TuiTab, TuiWorkspace,
 };
@@ -1745,14 +1745,42 @@ impl TuiApp {
             }
             Shortcut::Lens => {
                 // Chat lens toggle (webui Chat/Terminal switch): only
-                // meaningful over the terminal screen.
+                // meaningful over the terminal screen, and only for
+                // panes with a transcript provider (design section 6).
+                // Unsupported panes show positive evidence instead of
+                // silently ignoring the key.
                 if self.screen == TuiScreen::Terminal {
-                    self.lens.toggle();
-                    self.status = if self.lens.active {
-                        "lens: j/k scroll · G tail · Esc close".to_string()
-                    } else {
-                        "lens closed".to_string()
-                    };
+                    // Read the session snapshot up front: the borrow ends
+                    // before the mutable lens toggle.
+                    let session = self
+                        .selected_pane()
+                        .and_then(|pane| pane.agent_session.as_ref());
+                    match session.map(|s| s.chat_supported()) {
+                        Some(true) => {
+                            // Refusal shape (resolvable: false): the lens
+                            // opens but the hint carries the refusal
+                            // reason (design section 6: "reason drives
+                            // the lens hint text"). Only the open shows
+                            // the copy; closing says "lens closed".
+                            let refusal = session
+                                .filter(|s| !s.resolvable)
+                                .and_then(|s| s.reason.as_deref())
+                                .map(refusal_reason_copy);
+                            self.lens.toggle();
+                            self.status = match (&refusal, self.lens.active) {
+                                (Some(copy), true) => format!("lens: {copy}"),
+                                (Some(_), false) => "lens closed".to_string(),
+                                (None, true) => "lens: j/k scroll · G tail · Esc close".to_string(),
+                                (None, false) => "lens closed".to_string(),
+                            };
+                        }
+                        Some(false) => {
+                            self.status = "lens: unsupported agent".to_string();
+                        }
+                        None => {
+                            self.status = "lens: no agent session on this pane".to_string();
+                        }
+                    }
                 }
             }
             Shortcut::Composer => {
@@ -3384,6 +3412,23 @@ impl TuiApp {
         self.snapshot.agents.get(self.selected_agent)
     }
 
+    /// Chat lens support for the selected pane (design section 6,
+    /// webui parity): the pane needs an `agent_session` object with a
+    /// supported provider kind. `resolvable: false` still counts as
+    /// supported — the lens then shows the refusal instead of turns.
+    /// Used by the pane-switch force-off path; the shortcut handler
+    /// reads the session directly (it needs the reason too).
+    fn lens_chat_supported(&self) -> LensGate {
+        match self
+            .selected_pane()
+            .and_then(|pane| pane.agent_session.as_ref())
+        {
+            Some(session) if session.chat_supported() => LensGate::Supported,
+            Some(_) => LensGate::UnsupportedKind,
+            None => LensGate::NoSession,
+        }
+    }
+
     pub fn selected_pane(&self) -> Option<&TuiPane> {
         if self.sidebar_focus == SidebarFocus::Agents {
             if let Some(agent) = self.selected_agent() {
@@ -3418,6 +3463,15 @@ impl TuiApp {
     }
 
     pub fn refresh_tail(&mut self) {
+        // Lens gate (design section 6): the overlay must not survive a
+        // pane switch onto a pane without a transcript provider — same
+        // force-off the webui applies when the switch disappears.
+        // Runs before the early returns so every navigation path is
+        // covered, not just the successful read.
+        if self.lens.active && self.lens_chat_supported() != LensGate::Supported {
+            self.lens.close();
+            self.status = "lens closed (pane has no transcript provider)".to_string();
+        }
         let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
             self.pane_tail.clear();
             self.pane_tail_styles.clear();

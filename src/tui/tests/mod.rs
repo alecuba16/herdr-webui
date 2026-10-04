@@ -910,7 +910,7 @@ fn fixture_snapshot_value() -> serde_json::Value {
         "snapshot": {
             "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"}],
             "tabs": [{"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"}],
-            "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}],
+            "panes": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true,"agent_session":{"kind":"jcode","resolvable":true,"session_id":"sess_1"}}],
             "agents": [{"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}]
         }
     })
@@ -7107,6 +7107,105 @@ fn lens_prefix_toggles_overlay_and_esc_closes() {
     let before = app.selected_workspace;
     app.handle_key(KeyEvent::from(KeyCode::Char('j')));
     assert_eq!(app.selected_workspace, before);
+}
+
+/// Design section 6 (TUI parity): the lens shortcut is gated on the
+/// pane having a supported `agent_session`. Fixture pane is jcode with
+/// `resolvable: true`, so the gate reads Supported. The refusal shape
+/// (`resolvable: false` + reason) also counts as supported — the lens
+/// then shows the refusal instead of turns.
+#[test]
+fn lens_gate_parses_agent_session_from_snapshot() {
+    let snapshot = TuiSnapshot::from_backend_response(&fixture_snapshot_value());
+    let pane = &snapshot.panes[0];
+    let session = pane
+        .agent_session
+        .as_ref()
+        .expect("fixture pane carries agent_session");
+    assert_eq!(session.kind, "jcode");
+    assert!(session.resolvable);
+    assert_eq!(session.session_id.as_deref(), Some("sess_1"));
+    assert!(session.chat_supported());
+}
+
+#[test]
+fn lens_gate_allows_supported_kind_even_when_unresolvable() {
+    let mut app = app_with_snapshot();
+    app.snapshot.panes[0].agent_session = Some(crate::tui::model::TuiAgentSession {
+        kind: "jcode".to_string(),
+        resolvable: false,
+        session_id: None,
+        reason: Some("no_session_path".to_string()),
+    });
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert!(
+        app.lens.active,
+        "supported kind with refusal still opens the lens"
+    );
+    assert_eq!(
+        app.status, "lens: No jcode conversation found for this panel yet",
+        "refused pane must surface the refusal reason copy (design section 6)"
+    );
+    // Closing (second Ctrl+B L) says "lens closed", not the refusal
+    // copy again: the copy is the open-time hint only. The prefix must
+    // be armed again — while the lens is open it owns the bare keys.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert!(
+        !app.lens.active,
+        "second L over a refused pane closes the lens"
+    );
+    assert_eq!(app.status, "lens closed");
+}
+
+#[test]
+fn lens_gate_blocks_pane_without_agent_session() {
+    let mut app = app_with_snapshot();
+    app.snapshot.panes[0].agent_session = None;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert!(
+        !app.lens.active,
+        "shell pane (no agent_session) must not open the lens"
+    );
+    assert_eq!(app.status, "lens: no agent session on this pane");
+}
+
+#[test]
+fn lens_gate_blocks_unsupported_agent_kind() {
+    let mut app = app_with_snapshot();
+    app.snapshot.panes[0].agent_session = Some(crate::tui::model::TuiAgentSession {
+        kind: "other-agent".to_string(),
+        resolvable: true,
+        session_id: Some("sess_x".to_string()),
+        reason: None,
+    });
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert!(!app.lens.active, "unsupported kind must not open the lens");
+    assert_eq!(app.status, "lens: unsupported agent");
+}
+
+/// The lens must not survive a pane switch onto a pane without a
+/// provider: refresh_tail force-closes it (webui parity: the switch
+/// disappears, so does the overlay).
+#[test]
+fn lens_gate_force_closes_on_unsupported_pane_refresh() {
+    let mut app = app_with_snapshot();
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    assert!(app.lens.active);
+    // Switch to a snapshot whose pane has no agent_session, then let
+    // the refresh path run (the socket is dead, so the read errors —
+    // the gate must still fire before that).
+    app.snapshot.panes[0].agent_session = None;
+    app.refresh_tail();
+    assert!(
+        !app.lens.active,
+        "lens must force-close over an unsupported pane"
+    );
+    assert_eq!(app.status, "lens closed (pane has no transcript provider)");
 }
 
 #[test]
