@@ -178,6 +178,16 @@ journal_entries) -> Vec<Turn>`.
   trivially available (same `text` field), else skip. Journal-only
   sweep found ONLY the four known types (46 messages), so deltas stay
   simple; the extra types matter for snapshot bases.
+  **Writer ground truth (jcode `ContentBlock`, 11 variants):** the
+  writer's enum also emits `anthropic_thinking` (signed Anthropic
+  thinking: prose in a `thinking` field, replay signature beside it)
+  and `open_ai_compaction` (hidden OpenAI compaction state). Both are
+  absent from the current store census but legal writer output.
+  `anthropic_thinking` renders as thinking-class from its `thinking`
+  field (signature never shown, `text` fallback for defensive shapes);
+  `open_ai_compaction` skips silently with
+  `image`/`provider_native`/`tool_reference` — hidden provider state
+  never belongs in chat.
   **Id caveat:** two non-`message_*` ids exist in the whole store
   (`msg-live-busy`, `msg_pending_normal_close`, both in jcode's own
   test sessions, both plain user text messages). The message-id
