@@ -64,7 +64,37 @@ pub struct TuiPane {
     pub agent_status: String,
     pub cwd: String,
     pub focused: bool,
+    /// Chat-transcript provider state (design section 6, TUI parity):
+    /// same wire shape the webui gate reads. None = no provider at all
+    /// (shell panes, unsupported agents, old backends without the field)
+    /// so the lens gate defaults off and old backends keep working.
+    pub agent_session: Option<TuiAgentSession>,
 }
+
+/// `agent_session` wire shape, pinned once (design section 6):
+/// null | { kind, resolvable, session_id? } | { kind, resolvable: false,
+/// reason }. Parsed per-field defensively — no deny_unknown_fields, no
+/// typed enum coupling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TuiAgentSession {
+    pub kind: String,
+    pub resolvable: bool,
+    pub session_id: Option<String>,
+    pub reason: Option<String>,
+}
+
+impl TuiAgentSession {
+    /// The webui `chatSupported()` equivalent: a supported provider kind
+    /// with a non-null agent_session. `resolvable: false` still counts as
+    /// supported (the user sees the refusal instead of turns).
+    pub fn chat_supported(&self) -> bool {
+        SUPPORTED_CHAT_AGENTS.contains(&self.kind.as_str())
+    }
+}
+
+/// Agent kinds with a transcript provider. Mirrors the webui
+/// `SUPPORTED_CHAT_AGENTS` set (lens.js).
+pub const SUPPORTED_CHAT_AGENTS: &[&str] = &["jcode"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TuiAgent {
@@ -200,6 +230,21 @@ fn parse_pane(value: &Value) -> TuiPane {
             .unwrap_or("")
             .to_string(),
         focused: value_bool(value, &["focused"]).unwrap_or(false),
+        // Defensive per-field parse (design section 6): absent field ->
+        // None (old backends), null -> None, unknown reason strings
+        // still parse (reason is only copy text).
+        agent_session: value
+            .get("agent_session")
+            .filter(|session| session.is_object())
+            .map(|session| TuiAgentSession {
+                kind: value_str(session, &["kind"]).unwrap_or("").to_string(),
+                resolvable: session
+                    .get("resolvable")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                session_id: value_str(session, &["session_id"]).map(str::to_string),
+                reason: value_str(session, &["reason"]).map(str::to_string),
+            }),
     }
 }
 

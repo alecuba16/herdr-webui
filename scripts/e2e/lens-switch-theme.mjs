@@ -1,7 +1,11 @@
 // Theme spot check for the Chat|Terminal switch: cycle the app theme and
 // verify the switch keeps readable computed colors and stays the top hit
 // target in Chat view on each effective theme.
+// Design 6: the switch only shows on jcode panes with a resolvable
+// agent_session, so the pane is flipped into a seeded jcode pane first
+// (lens-switch-helpers); the theme cycle then runs against that pane.
 import { connectToPage } from './cdp-driver.mjs';
+import { readShellPid, readShellPwd, seedSession, flipToJcodePane } from './lens-switch-helpers.mjs';
 
 const URL = process.env.E2E_BASE_URL || 'http://127.0.0.1:8798/';
 const results = [];
@@ -39,6 +43,21 @@ for (let i = 0; i < 20 && !attached; i++) {
 }
 check('terminal attached', attached);
 if (!attached) process.exit(1);
+
+// Design-6 setup: shell pid -> seeded session -> jcode label flip. The
+// theme cycle needs the switch visible, which only happens on the jcode
+// pane.
+const pid = await readShellPid(cdp);
+check('read shell pid off the screen', !!pid, `pid=${pid}`);
+if (!pid) process.exit(1);
+const shellCwd = await readShellPwd(cdp);
+check('read shell cwd off the screen', !!shellCwd, `cwd=${shellCwd}`);
+if (!shellCwd) process.exit(1);
+const { sessionId } = seedSession({ pid, cwd: shellCwd });
+const sessionRow = await flipToJcodePane(cdp, { expectSessionId: sessionId });
+check('seeded session resolves after jcode label flip',
+  !!sessionRow && sessionRow.sid === `session_${sessionId}`, JSON.stringify(sessionRow));
+if (!sessionRow) process.exit(1);
 
 // Force each theme via the app's real toggle cycle (auto->dark->light).
 // Await inside the page so applyTheme's synchronous class flips are

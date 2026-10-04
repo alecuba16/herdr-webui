@@ -127,7 +127,9 @@ for (let i = 0; i < 20 && !echoed; i++) {
 check('marker command ran in the live shell', echoed);
 if (!echoed) process.exit(1);
 
-// The segmented switch must exist inside the shell.
+// The segmented switch must exist inside the shell. On a plain shell
+// pane it must ALSO be hidden (design section 6: the switch shows only
+// on supported-agent panes with a non-null agent_session).
 const switchPresent = await evalApp(`(() => {
   const n = document.getElementById('terminalLensSwitch');
   if (!n) return null;
@@ -135,17 +137,20 @@ const switchPresent = await evalApp(`(() => {
   const term = document.getElementById('lensToggleTerminal');
   return {
     inShell: !!(n.closest && n.closest('#terminalShell')),
+    hidden: n.hidden,
     chat: chat ? chat.getAttribute('aria-pressed') : null,
     term: term ? term.getAttribute('aria-pressed') : null,
   };
 })()`);
-check('Chat|Terminal switch present in shell with Terminal active',
-  !!switchPresent && switchPresent.inShell
+check('Chat|Terminal switch hidden in shell pane (design 6 gate)',
+  !!switchPresent && switchPresent.inShell && switchPresent.hidden === true
     && switchPresent.chat === 'false' && switchPresent.term === 'true',
   JSON.stringify(switchPresent));
 
-// Flip to Chat via the real button.
-await evalApp(`document.getElementById('lensToggleChat').click()`);
+// The lens is toggled over the shell pane with the switch hidden: the
+// flip must come from the lens.open API path, not the hidden switch
+// button (a hidden control is not the flip affordance anymore).
+await evalApp(`HerdrLens.toggle()`);
 await sleep(400);
 const lensOn = await evalApp(`(() => {
   const lens = document.getElementById('terminalLens');
@@ -165,24 +170,16 @@ check('Chat view opens with live transcript and right user card',
   `hidden=${lensOn && lensOn.hidden} aria=${lensOn && lensOn.aria} cards=${lensOn && lensOn.userCards}`);
 check('user card is right-aligned (class contract)', true, 'checked via lens-turn-user selector above');
 
-// While the chat lens is open, the switch must remain the top hit target
-// at its own location (regression: the lens overlay used to paint over it
-// at a lower z-index, hiding the only way back to Terminal).
+// While the chat lens is open over the shell pane, the hidden switch
+// must stay hidden (design 6: unsupported pane keeps the switch hidden
+// even while the scrollback lens is open).
 const switchHit = await evalApp(`(() => {
   const sw = document.getElementById('terminalLensSwitch');
   if (!sw) return null;
-  const r = sw.getBoundingClientRect();
-  const x = r.left + r.width / 2;
-  const y = r.top + r.height / 2;
-  const hit = document.elementFromPoint(x, y);
-  return {
-    hitInSwitch: !!(hit && (hit === sw || sw.contains(hit))),
-    hitDesc: hit ? (hit.id || hit.className || hit.tagName) : 'none',
-    visible: !!(r.width > 0 && r.height > 0),
-  };
+  return { hidden: sw.hidden, style: sw.style.display || '' };
 })()`);
-check('Chat|Terminal switch hittable while lens is open',
-  !!switchHit && switchHit.visible && switchHit.hitInSwitch,
+check('Chat|Terminal switch stays hidden while lens open on shell pane',
+  !!switchHit && switchHit.hidden === true,
   JSON.stringify(switchHit));
 
 // New output while the lens is open must land in it (frame hook). The
@@ -200,7 +197,7 @@ await evalApp(`(() => {
 })()`);
 // Close the lens to type the background command in the terminal view,
 // then flip back: the echo fires ~1.2s later while the lens is open.
-await evalApp(`document.getElementById('lensToggleTerminal').click()`);
+await evalApp(`HerdrLens.setLens(false)`);
 await sleep(300);
 const marker2 = `LENS_E2E_M2_${Date.now()}`;
 const marker2PartA = marker2.slice(0, Math.ceil(marker2.length / 2));
@@ -208,7 +205,7 @@ const marker2PartB = marker2.slice(Math.ceil(marker2.length / 2));
 await typeText(`(sleep 1.2 && echo '${marker2PartA}'${marker2PartB}) &`);
 await pressEnter();
 await sleep(300);
-await evalApp(`document.getElementById('lensToggleChat').click()`);
+await evalApp(`HerdrLens.toggle()`);
 await sleep(300);
 let lensUpdated = false;
 for (let i = 0; i < 20 && !lensUpdated; i++) {
@@ -224,7 +221,7 @@ check('lens toggles opened zero terminal sockets', opensAfterLens === baselineOp
   `baseline=${baselineOpens} now=${opensAfterLens}`);
 
 // Back to Terminal: lens hides, shell class clears, terminal still live.
-await evalApp(`document.getElementById('lensToggleTerminal').click()`);
+await evalApp(`HerdrLens.setLens(false)`);
 await sleep(400);
 const back = await evalApp(`(() => {
   const lens = document.getElementById('terminalLens');

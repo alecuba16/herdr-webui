@@ -170,7 +170,9 @@ describe("chat lens module", () => {
     ok(ctx.HerdrLens, "globalThis.HerdrLens must exist");
     for (const name of [
       "insertLensSwitch", "toggle", "setLens", "render", "readTranscript",
-      "isActive", "lensState", "onTerminalFrame", "transcriptHtml",
+      "isActive", "lensState", "onTerminalFrame", "onPaneChanged",
+      "syncSwitchVisibility", "refreshConversation", "setPendingBubble",
+      "transcriptHtml",
     ]) {
       equal(typeof ctx.HerdrLens[name], "function", `${name} must be a function`);
     }

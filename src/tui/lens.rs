@@ -20,6 +20,34 @@
 //! and the footer shows the resume hint instead (the webui's "New
 //! output" pill).
 
+/// Lens gate outcome for the selected pane (design section 6): the
+/// webui Chat/Terminal switch is hidden for panes without a provider,
+/// so the TUI shortcut must not open the overlay there either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LensGate {
+    /// `agent_session` present with a supported kind: the lens may open.
+    Supported,
+    /// No `agent_session` at all (shell pane, or old backend without
+    /// the field): the lens stays closed.
+    NoSession,
+    /// `agent_session` with a kind that has no transcript provider.
+    UnsupportedKind,
+}
+
+/// Refusal copy for the lens hint (design section 6: "reason drives
+/// the lens hint text"). Same strings as the webui
+/// `refusalReasonCopy` (lens.js) so both surfaces show the same words.
+pub fn refusal_reason_copy(reason: &str) -> String {
+    match reason {
+        "no_session_path" => "No jcode conversation found for this panel yet".to_string(),
+        "ambiguous" => {
+            "Multiple jcode conversations match this panel; open one in the terminal to disambiguate"
+                .to_string()
+        }
+        _ => "Conversation unavailable right now".to_string(),
+    }
+}
+
 /// A shaped transcript line for rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LensLine {

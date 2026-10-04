@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 
 use crate::builtin_detection::{jcode::detect_jcode_status_with_variant, JcodeDetectionVariant};
 use crate::builtin_events::{BuiltinEventHub, PaneEventContext};
+use crate::chat_lens;
 use crate::protocol::{
     read_message, write_message, ClientMessage, RenderEncoding, ServerMessage, TerminalFrame,
 };
@@ -590,6 +591,7 @@ struct TabRecord {
     pane_ids: Vec<String>,
 }
 
+#[derive(Clone)]
 struct PaneRecord {
     pane_id: String,
     terminal_id: String,
@@ -773,6 +775,21 @@ impl BuiltinState {
                 Ok(json!({ "type": "ok" }))
             }
             "agent.list" => Ok(json!({ "type": "agent_list", "agents": self.agent_list()? })),
+            "pane.conversation" => {
+                let pane_id = required_string(&params, "pane_id")?;
+                let result = self.pane_conversation(&pane_id)?;
+                Ok(json!({ "type": "pane_conversation", "conversation": result }))
+            }
+            "pane.tool_output" => {
+                // One whole tool output by call id (reference toolOutput
+                // parity): the page carried a trimmed head + output_ref,
+                // this returns the rest. Same resolution pipeline and
+                // error codes as pane.conversation.
+                let pane_id = required_string(&params, "pane_id")?;
+                let reference = required_string(&params, "ref")?;
+                let output = self.pane_tool_output(&pane_id, &reference)?;
+                Ok(json!({ "type": "pane_tool_output", "output": output }))
+            }
             "agent.start" => {
                 let name = required_string(&params, "name")?;
                 let argv = params
@@ -1175,6 +1192,104 @@ impl BuiltinState {
             .lock()
             .map_err(|_| "state unavailable".to_string())?;
         Ok(agent_list_json(&data))
+    }
+
+    /// Chat-lens transcript for one pane (design section 4). Thin: the
+    /// wire carries turns, cursor, model, status, version. Errors use
+    /// the route's design codes: `agent_not_found` (pane gone),
+    /// `unsupported_agent` (no transcript support), `no_session_path` /
+    /// `ambiguous` (resolution refused), `transcript_missing` (files
+    /// unreadable or unparseable).
+    fn pane_conversation(&self, pane_id: &str) -> Result<Value, String> {
+        let (pane, presentation) = self.pane_and_presentation(pane_id)?;
+        let Some(agent) = presentation.agent else {
+            return Err("unsupported_agent: no agent running in this pane".to_string());
+        };
+        if !chat_lens::agent_supported(Some(&agent)) {
+            return Err(format!(
+                "unsupported_agent: {agent} has no transcript support"
+            ));
+        }
+        chat_lens::conversation_payload(&self.pane_context(&pane))
+    }
+
+    /// One whole tool output by call id: reference toolOutput parity.
+    /// Same resolution pipeline and error codes as pane_conversation,
+    /// so a page that could show a trimmed head can always fetch the
+    /// rest of THAT session's output. None -> tool_output_not_found
+    /// (rotated out, cleared, or a ref that never existed).
+    fn pane_tool_output(&self, pane_id: &str, reference: &str) -> Result<Option<String>, String> {
+        if !crate::jcode_transcript::valid_tool_ref(reference) {
+            return Ok(None);
+        }
+        let (pane, presentation) = self.pane_and_presentation(pane_id)?;
+        let Some(agent) = presentation.agent else {
+            return Err("unsupported_agent: no agent running in this pane".to_string());
+        };
+        if !chat_lens::agent_supported(Some(&agent)) {
+            return Err(format!(
+                "unsupported_agent: {agent} has no transcript support"
+            ));
+        }
+        chat_lens::tool_output(&self.pane_context(&pane), reference)
+    }
+
+    /// Thin adapter: the pane and its agent presentation, behind the
+    /// data lock. Shared head of pane_conversation and
+    /// pane_tool_output (agent_not_found classification).
+    fn pane_and_presentation(
+        &self,
+        pane_id: &str,
+    ) -> Result<(PaneRecord, PaneAgentPresentation), String> {
+        let data = self
+            .data
+            .lock()
+            .map_err(|_| "state unavailable".to_string())?;
+        let pane = data
+            .panes
+            .get(pane_id)
+            .ok_or_else(|| "agent_not_found: no such pane".to_string())?
+            .clone();
+        let presentation = pane_agent_presentation(&pane, &data);
+        Ok((pane, presentation))
+    }
+
+    /// Thin adapter: gathers the plain-data context the chat module
+    /// needs (live cwd, process map, pane tail) from terminal state.
+    /// Chat logic never touches BuiltinState directly.
+    fn pane_context(&self, pane: &PaneRecord) -> chat_lens::PaneContext {
+        let live_cwd = self
+            .terminal(&pane.terminal_id)
+            .and_then(|terminal| live_process_cwd(terminal.child_pid()))
+            .unwrap_or_else(|| pane.cwd.clone());
+        let processes: Vec<chat_lens::ProcessRow> = process_table()
+            .unwrap_or_default()
+            .iter()
+            .map(|p| chat_lens::ProcessRow::new(p.pid, p.ppid))
+            .collect();
+        let terminal_pid = self
+            .terminal(&pane.terminal_id)
+            .and_then(|terminal| terminal.child_pid());
+        let pane_tail = self
+            .terminal(&pane.terminal_id)
+            .map(|terminal| {
+                // Simple ANSI strip, NOT the VT screen emulation of
+                // history_tail_text: the tiebreak needs verbatim prompt
+                // echo, and VT emulation lets spinner redraws/CR overwrite
+                // it (found live: twin panes flipped ambiguous while a
+                // tool ran). Same strip mode as pane.read on the wire.
+                terminal_text::strip_ansi_lossy(
+                    &String::from_utf8_lossy(&terminal.history_bytes()),
+                    terminal_text::StripCarriageReturn::Drop,
+                )
+            })
+            .unwrap_or_default();
+        chat_lens::PaneContext {
+            live_cwd,
+            terminal_pid,
+            processes,
+            pane_tail,
+        }
     }
 
     fn layout(&self, pane_id: Option<String>) -> Result<Value, String> {
@@ -2532,7 +2647,7 @@ fn pane_json(pane: &PaneRecord, data: &BuiltinData) -> Value {
         "agent_status": presentation.status,
         "custom_status": null,
         "state_labels": {},
-        "agent_session": null,
+        "agent_session": pane_agent_session(pane, data, &presentation),
         "scroll": null,
         "revision": 0,
     })
@@ -2550,7 +2665,7 @@ fn agent_json(pane: &PaneRecord, data: &BuiltinData) -> Value {
         "screen_detection_skipped": false,
         "custom_status": null,
         "state_labels": {},
-        "agent_session": null,
+        "agent_session": pane_agent_session(pane, data, &presentation),
         "workspace_id": pane.workspace_id,
         "tab_id": pane.tab_id,
         "pane_id": pane.pane_id,
@@ -2590,6 +2705,59 @@ fn layout_json(tab: &TabRecord, data: &BuiltinData) -> Value {
 struct PaneAgentPresentation {
     agent: Option<&'static str>,
     status: &'static str,
+}
+
+/// Resolves a pane's `agent_session` (design section 6) by delegating
+/// to the chat module: `null` for unsupported agents (Chat lens
+/// hidden); `{kind, resolvable, session_id}` for jcode panes when
+/// resolution succeeds. The pane tail uses the same verbatim strip as
+/// pane_context, so agent_session, conversation and tool output all
+/// resolve to the SAME session (the VT-emulation tail let spinner
+/// redraws flip twin panes ambiguous — found live).
+fn pane_agent_session(
+    pane: &PaneRecord,
+    data: &BuiltinData,
+    presentation: &PaneAgentPresentation,
+) -> Value {
+    let Some(agent) = presentation.agent else {
+        return Value::Null;
+    };
+    if !chat_lens::agent_supported(Some(agent)) {
+        return Value::Null;
+    }
+    let live_cwd = data
+        .terminals
+        .get(&pane.terminal_id)
+        .and_then(|terminal| live_process_cwd(terminal.child_pid()))
+        .unwrap_or_else(|| pane.cwd.clone());
+    let processes: Vec<chat_lens::ProcessRow> = process_table()
+        .unwrap_or_default()
+        .iter()
+        .map(|p| chat_lens::ProcessRow::new(p.pid, p.ppid))
+        .collect();
+    let terminal_pid = data
+        .terminals
+        .get(&pane.terminal_id)
+        .and_then(|terminal| terminal.child_pid());
+    let pane_tail = data
+        .terminals
+        .get(&pane.terminal_id)
+        .map(|terminal| {
+            terminal_text::strip_ansi_lossy(
+                &String::from_utf8_lossy(&terminal.history_bytes()),
+                terminal_text::StripCarriageReturn::Drop,
+            )
+        })
+        .unwrap_or_default();
+    chat_lens::agent_session(
+        agent,
+        &chat_lens::PaneContext {
+            live_cwd,
+            terminal_pid,
+            processes,
+            pane_tail,
+        },
+    )
 }
 
 fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPresentation {

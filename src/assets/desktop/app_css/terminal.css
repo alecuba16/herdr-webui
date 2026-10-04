@@ -388,6 +388,11 @@ input {
    * clickable in BOTH views (the lens covers the shell with inset: 0). */
   z-index: calc(var(--z-popover, 10) + 3);
 }
+/* Chat|Terminal gate: hidden on panes without chat support (the
+ * switch node is created once per shell and toggled per pane). */
+.terminal-lens-switch[hidden] {
+  display: none;
+}
 .terminal-lens {
   position: absolute;
   inset: 0;
@@ -434,6 +439,166 @@ input {
 }
 .lens-gap {
   height: 8px;
+}
+/* ---- structured chat mode (jcode conversation) ---- */
+/* Turns reuse the scrollback bubble pattern; assistant content is
+ * plain like .lens-line. Everything muted/monospace where it mirrors
+ * the terminal aesthetic. User bubbles carry the accent color (design
+ * section 5: accent-bold is the one rendering addition). */
+.lens-turn-user > span {
+  color: var(--accent, #89b4fa);
+  font-weight: 600;
+}
+.lens-turn-assistant {
+  margin: 6px 0 2px;
+}
+.lens-text {
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 1px 0;
+}
+.lens-loading,
+.lens-empty,
+.lens-refusal {
+  color: var(--fg-dim, #a6adc8);
+  padding: 18px 0;
+  text-align: center;
+}
+.lens-loading::after {
+  content: "";
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-left: 6px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent, #89b4fa);
+  animation: lens-spin 0.9s linear infinite;
+  vertical-align: -0.05em;
+}
+@keyframes lens-spin {
+  to { transform: rotate(360deg); }
+}
+.lens-turn-pending > span {
+  opacity: 0.6;
+}
+.lens-thinking {
+  margin: 2px 0;
+}
+.lens-thinking-toggle {
+  color: var(--fg-dim, #a6adc8);
+  cursor: pointer;
+  font-size: var(--fs-2xs, 11px);
+  user-select: none;
+}
+.lens-thinking-toggle:hover {
+  color: var(--fg);
+}
+.lens-thinking-body {
+  color: var(--fg-dim, #a6adc8);
+  border-left: 2px solid var(--border);
+  margin: 4px 0 4px 2px;
+  padding: 2px 0 2px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-2xs, 11px);
+}
+.lens-tool {
+  margin: 4px 0;
+}
+.lens-tool-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--fg-dim, #a6adc8);
+  font-size: var(--fs-2xs, 11px);
+  overflow: hidden;
+  user-select: none;
+}
+.lens-tool-head:hover {
+  color: var(--fg);
+}
+.lens-tool-head.lens-tool-error {
+  color: var(--danger, #f38ba8);
+}
+.lens-tool-name {
+  flex: none;
+  font-weight: 600;
+}
+.lens-tool-brief {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lens-tool-caret {
+  flex: none;
+}
+.lens-tool-running {
+  color: var(--fg-dim, #a6adc8);
+  font-size: var(--fs-2xs, 11px);
+  padding: 1px 0;
+}
+.lens-tool-output {
+  margin: 6px 0 2px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  color: var(--fg);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-2xs, 11px);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.lens-tool-meta {
+  color: var(--fg-dim, #a6adc8);
+  font-size: var(--fs-2xs, 11px);
+  margin: 2px 0;
+}
+.lens-tool-more {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  color: var(--fg-dim, #a6adc8);
+  cursor: pointer;
+  font-size: var(--fs-2xs, 11px);
+  padding: 3px 8px;
+  margin-top: 4px;
+}
+.lens-tool-more:hover {
+  color: var(--fg);
+  border-color: var(--fg-dim, #a6adc8);
+}
+/* Expanded tool row: the caret glyph flips in JS; this only keeps the
+   emitted class from being an unstyled orphan (same bg tint as the
+   output pre so the open row reads as one block). */
+.lens-tool.lens-tool-open {
+  border-left: 2px solid var(--border);
+  padding-left: 6px;
+  margin-left: 2px;
+}
+.lens-compact {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md, 8px);
+  margin: 10px 0;
+  padding: 8px 12px;
+}
+.lens-compact-label {
+  color: var(--fg-dim, #a6adc8);
+  font-size: var(--fs-2xs, 11px);
+}
+.lens-compact-summary {
+  color: var(--fg);
+  margin-top: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-2xs, 11px);
 }
 .terminal-lens-new {
   position: absolute;

@@ -4130,6 +4130,10 @@ async function refreshOnline(seq) {
         selectionPath(state.ws, state.tab, state.pane),
       );
   }
+  // Snapshot landed: re-evaluate the Chat|Terminal gate for the pane now
+  // in view (agent_session arrives with the agents rows).
+  if (globalThis.HerdrLens && globalThis.HerdrLens.syncSwitchVisibility)
+    globalThis.HerdrLens.syncSwitchVisibility();
   render();
   // Restore the shell mode (terminal/git/files) for the selected workspace
   // after render() has updated the sidebar and before connectTerminal(). This

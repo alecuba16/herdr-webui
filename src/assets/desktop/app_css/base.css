@@ -197,12 +197,20 @@ body.light {
   color: var(--muted);
   display: inline-flex;
   flex: 0 0 auto;
-  font-size: var(--fs-2xs, 11px);
-  font-weight: var(--fw-semibold, 600);
-  gap: var(--space-1, 4px);
   line-height: 1;
   padding: 3px 0;
   white-space: nowrap;
+}
+/* Visible state lives in the dot + hover title; the label text is
+   sr-only so the role=status live region keeps announcing. */
+.sr-only {
+  border: 0;
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
 }
 .connection-dot {
   border-radius: var(--radius-pill, 999px);

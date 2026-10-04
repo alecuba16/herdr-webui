@@ -112,14 +112,26 @@
       input.value = "";
       drafts.delete(paneId);
       note("");
+      // Optimistic pending bubble (design section 5): the lens renders
+      // it until a poll carries the real user turn with the same text.
+      // Cap at one per pane: a new submit replaces the previous text.
+      if (globalThis.HerdrLens && globalThis.HerdrLens.setPendingBubble)
+        globalThis.HerdrLens.setPendingBubble(message);
+      // Forced re-poll outside the cadence so the turn appears now.
+      if (globalThis.HerdrLens && globalThis.HerdrLens.refreshConversation)
+        globalThis.HerdrLens.refreshConversation();
     } catch (error) {
       // api() throws on !ok with error.details carrying the refusal body
       // {error, code, note}. The server wrote the note; display it and
       // keep the draft. Older/unknown refusals fall back to the error
       // string. 401 is handled by api() (redirects to the login).
+      // agent_blocked (409): the text never reached the conversation,
+      // so NO pending bubble (round 11 parity).
       const details = error && error.details;
       const text = String((error && error.message) || error);
       note((details && details.note) || text);
+      if (globalThis.HerdrLens && globalThis.HerdrLens.setPendingBubble)
+        globalThis.HerdrLens.setPendingBubble(null);
     } finally {
       sending = false;
     }
