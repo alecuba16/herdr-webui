@@ -4280,8 +4280,28 @@ describe("app bundle load", () => {
     match(renderSource, /function syncWorkspacePanelMenuSize\(\)/);
     match(renderSource, /querySelector\("\.panel-menu"\)/);
     match(renderSource, /--workspace-panel-menu-min-height/);
-    match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \{[\s\S]*?min-height: max\(20%, var\(--workspace-panel-menu-min-height, 0px\)\);/);
+    match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \{[\s\S]*?min-height: max\(20%, 90px, var\(--workspace-panel-menu-min-height, 0px\)\);/);
     match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \.sidebar-scroll \{[\s\S]*?overflow: visible;/);
+  });
+
+  it("caps the open panel menu to the visible sidebar on short viewports", () => {
+    const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
+    const chromeCss = readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8");
+    const baseCss = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
+
+    // The pane min-height must never exceed what the sidebar section shows
+    // (agents pane keeps its 110px), otherwise the grown pane overflows the
+    // overflow:hidden section and the menu clips.
+    match(renderSource, /paneAvailable/);
+    match(renderSource, /menuAvailable/);
+    match(renderSource, /--workspace-panel-menu-max-height/);
+    match(renderSource, /Math\.min\(Math\.ceil\(menuRect\.bottom - paneRect\.top \+ 10\), paneAvailable\)/);
+    // The workspace pane keeps a floor so the selector row clears the split
+    // handle even on tiny viewports.
+    match(chromeCss, /\.sidebar-pane\.workspaces-pane \{[\s\S]*?min-height: max\(20%, 90px\);/);
+    match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \{[\s\S]*?min-height: max\(20%, 90px, var\(--workspace-panel-menu-min-height, 0px\)\);/);
+    // The menu itself scrolls internally instead of overflowing.
+    match(baseCss, /\.panel-menu \{[\s\S]*?max-height: var\(--workspace-panel-menu-max-height, none\);[\s\S]*?overflow-y: auto;/);
   });
 
   it("keeps the panel menu out of sidebar row paint containment", () => {

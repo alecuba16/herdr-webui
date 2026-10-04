@@ -155,10 +155,12 @@
 }
 .sidebar-pane.workspaces-pane {
   flex: 0 0 var(--sidebar-workspace-percent, 68%);
-  min-height: 20%;
+  /* Keep at least the header plus one full row clear of the split handle;
+     20% alone is shorter than that below ~450px viewports. */
+  min-height: max(20%, 90px);
 }
 .sidebar-pane.workspaces-pane.panel-menu-open {
-  min-height: max(20%, var(--workspace-panel-menu-min-height, 0px));
+  min-height: max(20%, 90px, var(--workspace-panel-menu-min-height, 0px));
   z-index: 2;
 }
 .sidebar-pane.workspaces-pane.panel-menu-open .sidebar-scroll {
