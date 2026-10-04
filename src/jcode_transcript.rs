@@ -112,14 +112,19 @@ impl JcodeStoreIndex {
         format!("g{hash:016x}")
     }
 
-    /// (model, status) as recorded in the snapshot, if readable.
-    pub fn session_model_status(&self, session_id: &str) -> (Option<String>, Option<String>) {
+    /// (model, status, reasoning_effort) as recorded in the snapshot,
+    /// if readable. Effort is a top-level string ("high"/"max" seen
+    /// live); older snapshots may lack it.
+    pub fn session_model_status(
+        &self,
+        session_id: &str,
+    ) -> (Option<String>, Option<String>, Option<String>) {
         let snapshot = self.store_dir.join(format!("{session_id}.json"));
         let Ok(text) = std::fs::read_to_string(&snapshot) else {
-            return (None, None);
+            return (None, None, None);
         };
         let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
-            return (None, None);
+            return (None, None, None);
         };
         let model = parsed
             .get("model")
@@ -129,7 +134,11 @@ impl JcodeStoreIndex {
             .get("status")
             .and_then(|s| s.as_str())
             .map(str::to_string);
-        (model, status)
+        let effort = parsed
+            .get("reasoning_effort")
+            .and_then(|e| e.as_str())
+            .map(str::to_string);
+        (model, status, effort)
     }
 
     /// Resolves a pane to its jcode session using the design's ordered
@@ -389,8 +398,17 @@ pub enum TurnPart {
     Tool {
         name: String,
         brief: String,
+        /// Full input as pretty JSON (reference parity: the collapsed
+        /// chip shows the summary; the expanded row shows this).
+        input: String,
         output: String,
         is_error: bool,
+        /// Some(id) when `output` was trimmed at TOOL_OUTPUT_CHARS;
+        /// lets a client fetch the rest later. Omitted on the wire when
+        /// None (additive field, client-safe).
+        output_ref: Option<String>,
+        /// Full pre-trim output length, sent only alongside output_ref.
+        output_size: Option<usize>,
     },
     /// In-flight call: no result yet (renders as `running <name>…`).
     ToolPending { name: String },
@@ -465,11 +483,23 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
                 }
                 for (id, block, is_error) in tool_results {
                     if let Some(&(turn_idx, part_idx)) = pending_tools.get(&id) {
-                        if let Some(TurnPart::Tool { output, is_error: err, .. }) =
-                            turns.get_mut(turn_idx).and_then(|t| t.parts.get_mut(part_idx))
+                        if let Some(TurnPart::Tool {
+                            output,
+                            is_error: err,
+                            output_ref,
+                            output_size,
+                            ..
+                        }) = turns.get_mut(turn_idx).and_then(|t| t.parts.get_mut(part_idx))
                         {
-                            *output = tool_result_text(&block);
+                            // trimOutput parity: cap the page payload, keep
+                            // a ref + size so a client can fetch the rest.
+                            let (trimmed, was_cut) = tool_result_text(&block);
+                            *output = trimmed;
                             *err = is_error;
+                            if was_cut {
+                                *output_ref = Some(id.clone());
+                                *output_size = Some(block_content_chars(&block));
+                            }
                         }
                         pending_tools.remove(&id);
                     }
@@ -532,11 +562,18 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
                         Some("tool_use") => {
                             let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
                             let brief = tool_brief(block);
+                            let input = block
+                                .get("input")
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "{}".to_string());
                             turns[turn_idx].parts.push(TurnPart::Tool {
                                 name: name.to_string(),
                                 brief,
+                                input,
                                 output: String::new(),
                                 is_error: false,
+                                output_ref: None,
+                                output_size: None,
                             });
                             if let Some(id) = block.get("id").and_then(|i| i.as_str()) {
                                 pending_tools
@@ -666,6 +703,17 @@ pub fn load_compaction(store_dir: &Path, session_id: &str) -> Option<String> {
 
 /// One-line input summary for a tool call (bounded, escaped-content free).
 fn tool_brief(block: &serde_json::Map<String, serde_json::Value>) -> String {
+    // The agent states its own one-line intent on 3910 of 3919 live
+    // tool calls (`input.intent`); the reference prefers it too
+    // (`summary = b.intent || toolSummary(...)`), else key fields.
+    if let Some(intent) = block
+        .get("input")
+        .and_then(|i| i.get("intent"))
+        .and_then(|i| i.as_str())
+        .filter(|i| !i.trim().is_empty())
+    {
+        return truncate_chars(intent, 120);
+    }
     let input = block.get("input");
     let mut brief = String::new();
     if let Some(obj) = input.and_then(|i| i.as_object()) {
@@ -698,7 +746,7 @@ fn tool_brief(block: &serde_json::Map<String, serde_json::Value>) -> String {
     brief
 }
 
-fn tool_result_text(block: &serde_json::Map<String, serde_json::Value>) -> String {
+fn tool_result_text(block: &serde_json::Map<String, serde_json::Value>) -> (String, bool) {
     /// Cap matches the reference's TOOL_OUTPUT_CHARS: the page carries
     /// the head of an output, the rest stays out of the payload.
     const MAX_OUTPUT_CHARS: usize = 4000;
@@ -712,10 +760,25 @@ fn tool_result_text(block: &serde_json::Map<String, serde_json::Value>) -> Strin
         _ => String::new(),
     };
     if text.chars().count() <= MAX_OUTPUT_CHARS {
-        text
+        (text, false)
     } else {
         let cut: String = text.chars().take(MAX_OUTPUT_CHARS).collect();
-        format!("{cut}\n… trimmed")
+        (format!("{cut}\n… trimmed"), true)
+    }
+}
+
+/// Full (pre-trim) output length in chars, for `output_size`.
+fn block_content_chars(block: &serde_json::Map<String, serde_json::Value>) -> usize {
+    match block.get("content") {
+        Some(serde_json::Value::String(s)) => s.chars().count(),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|i| i.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .count(),
+        _ => 0,
     }
 }
 
@@ -1259,5 +1322,76 @@ mod review_pass_tests {
         assert!(matches!(&assistant.parts[0], TurnPart::Tool { output, is_error, .. }
             if output == "ok" && !is_error));
         assert!(matches!(&assistant.parts[1], TurnPart::Text { text } if text == "done"));
+    }
+}
+
+#[cfg(test)]
+mod review_pass2_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_part_carries_input_json() {
+        let msgs = vec![
+            json!({"id": "m1", "role": "user", "content": [{"type": "text", "text": "go"}]}),
+            json!({"id": "m2", "role": "assistant", "content": [
+                {"type": "tool_use", "id": "c9", "name": "bash", "input": {"command": "ls", "cwd": "/tmp"}},
+            ]}),
+            json!({"id": "m3", "role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "c9", "content": "ok"},
+            ]}),
+        ];
+        let turns = parse_jcode_transcript(&msgs);
+        match &turns[1].parts[0] {
+            TurnPart::Tool { input, output_ref, output_size, .. } => {
+                assert!(input.contains("\"command\":\"ls\""));
+                assert!(output_ref.is_none());
+                assert!(output_size.is_none());
+            }
+            other => panic!("expected tool part, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trimmed_output_sets_ref_and_size() {
+        let long = "y".repeat(9000);
+        let msgs = vec![
+            json!({"id": "m1", "role": "assistant", "content": [
+                {"type": "tool_use", "id": "c7", "name": "read", "input": {}},
+            ]}),
+            json!({"id": "m2", "role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "c7", "content": long},
+            ]}),
+        ];
+        let turns = parse_jcode_transcript(&msgs);
+        match &turns[0].parts[0] {
+            TurnPart::Tool { output, output_ref, output_size, .. } => {
+                assert!(output.ends_with("… trimmed"));
+                assert_eq!(output_ref.as_deref(), Some("c7"));
+                assert_eq!(*output_size, Some(9000));
+            }
+            other => panic!("expected tool part, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod intent_brief_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_brief_prefers_agent_intent_over_fields() {
+        // 99.8% of live calls carry input.intent; reference prefers it.
+        let value = json!({"input": {"command": "rm -rf /", "intent": "clean build dir"}});
+        let block = value.as_object().unwrap();
+        assert_eq!(tool_brief(block), "clean build dir");
+    }
+
+    #[test]
+    fn tool_brief_falls_back_when_intent_empty() {
+        let value = json!({"input": {"command": "ls", "intent": "   "}});
+        let block = value.as_object().unwrap();
+        assert_eq!(tool_brief(block), "ls");
     }
 }

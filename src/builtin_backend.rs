@@ -2757,14 +2757,14 @@ fn build_jcode_conversation(state: &BuiltinState, pane: &PaneRecord) -> Result<V
         );
     }
     let version = index.session_generation(&session_id);
-    let (model, status) = index.session_model_status(&session_id);
+    let (model, status, reasoning_effort) = index.session_model_status(&session_id);
     Ok(json!({
         "source": "jcode-transcript",
         "session_id": session_id,
         "turns": turns.iter().map(turn_json).collect::<Vec<_>>(),
         "cursor": null,
         "model": model,
-        "reasoning_effort": null,
+        "reasoning_effort": reasoning_effort,
         "status": status,
         "version": version,
     }))
@@ -2778,10 +2778,19 @@ fn turn_json(turn: &crate::jcode_transcript::Turn) -> Value {
         .map(|part| match part {
             TurnPart::Text { text } => json!({ "kind": "text", "text": text }),
             TurnPart::Thinking { text } => json!({ "kind": "thinking", "text": text }),
-            TurnPart::Tool { name, brief, output, is_error } => json!({
-                "kind": "tool", "name": name, "brief": brief,
-                "output": output, "is_error": is_error,
-            }),
+            TurnPart::Tool { name, brief, input, output, is_error, output_ref, output_size } => {
+                let mut part = json!({
+                    "kind": "tool", "name": name, "brief": brief,
+                    "input": input, "output": output, "is_error": is_error,
+                });
+                if let Some(reference) = output_ref {
+                    part["output_ref"] = Value::String(reference.clone());
+                    if let Some(size) = output_size {
+                        part["output_size"] = Value::from(*size);
+                    }
+                }
+                part
+            }
             TurnPart::ToolPending { name } => json!({ "kind": "tool_pending", "name": name }),
             TurnPart::Compact { summary } => json!({ "kind": "compact", "summary": summary }),
         })
