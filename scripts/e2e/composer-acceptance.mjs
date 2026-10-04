@@ -270,10 +270,10 @@ check('blocked submit refused server-side with the server-owned note',
   JSON.stringify(refusal));
 check('draft kept after the refusal', refusal && refusal.value === 'must be refused',
   JSON.stringify(refusal && refusal.value));
-// Nothing of the refused message may have reached the pane.
-const paneText = await evalApp(`((document.querySelector('#terminal') || {textContent:''}).textContent || '')`);
-check('refused message never reached the pane',
-  !/must be refused/.test(paneText), '');
+// Nothing of the refused message may have reached the pane. The lens is
+// still open here and covered rendering keeps the grid frozen, so the
+// check reads it AFTER the lens closes below, when the grid shows the
+// full pane content again.
 
 // Feed the pending read so the pane un-blocks cleanly.
 await focusTerm();
@@ -291,6 +291,14 @@ const hiddenAfterLensOff = await evalApp(`(() => {
 })()`);
 check('lens close hides the composer', hiddenAfterLensOff === true,
   `hidden=${hiddenAfterLensOff}`);
+
+// With the lens closed the grid shows the pane again: verify the refused
+// text never reached it. A leak would render here after the unpause
+// repaint, so this is the first point where the check can actually fail.
+const paneText = await evalApp(`((document.querySelector('#terminal') || {textContent:''}).textContent || '')`);
+check('refused message never reached the pane',
+  !/must be refused/.test(paneText),
+  JSON.stringify(paneText.slice(-200)));
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
