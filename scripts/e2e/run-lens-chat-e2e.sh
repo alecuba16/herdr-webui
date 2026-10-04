@@ -1,27 +1,35 @@
 #!/usr/bin/env bash
-# End-to-end acceptance run for the chat lens (ux backlog 2/3).
+# End-to-end acceptance run for the structured chat lens (jcode
+# transcript mode, phase 2).
 #
-# Boots an isolated herdr-webui (own XDG_CONFIG_HOME, https off), launches
-# headless Chrome via CDP, then drives the real desktop UI end to end:
-# create workspace -> attach -> type marker commands through the real
-# keyboard path -> flip Chat|Terminal -> assert transcript liveness,
-# user card shape, zero socket churn, and terminal interactivity after
-# the round-trip.
+# Boots an isolated herdr-webui with its OWN HOME (empty jcode store),
+# creates a workspace, flips the pane to a jcode-labeled shell, reads
+# the pane's real shell pid off the screen, then seeds a synthetic
+# jcode session whose last_pid IS that shell pid — so resolution is
+# deterministic (step 1: process-tree unique hit).
+#
+# Then drives the phase-2 contract in a real browser:
+#   - switch visible on the jcode pane (design 6 gate)
+#   - structured turns render from the seeded conversation
+#   - thinking row + tool row shapes match the wire format
+#   - in-place poll sync keeps expansion state across renders
+#   - refusal shape (resolvable:false) keeps the switch visible and
+#     shows the refusal copy
+#   - zero socket churn across all of it
 #
 # Usage:
-#   scripts/e2e/run-lens-e2e.sh [--keep]
+#   scripts/e2e/run-lens-chat-e2e.sh [--keep]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-PORT="${E2E_PORT:-8795}"
-CDP="${CDP_PORT:-9225}"
-# Scratch root pinned to /tmp by default: the workspace cwd (ACCEPT_ROOT)
-# ends up in the pane's shell prompt, and the builtin agent detection
-# classifies a pane whose visible text merely CONTAINS "jcode" as a
-# jcode agent pane. A TMPDIR under ~/.jcode (agent shells export one)
-# would silently flip this e2e from scrollback mode to structured
-# mode and the acceptance checks would fail on the refusal copy.
-WORK="$(mktemp -d "${HERDR_E2E_TMPDIR:-/tmp}/herdr-lens-e2e.XXXXXX")"
+PORT="${E2E_PORT:-8797}"
+CDP="${CDP_PORT:-9227}"
+# Scratch pinned to /tmp (see run-lens-e2e.sh for the detection trap),
+# then resolved to its PHYSICAL path: on macOS /tmp is a symlink to
+# /private/tmp, and the pane->session resolution string-compares the
+# lsof-resolved live cwd (always physical) against the seeded
+# working_dir. A logical /tmp seed path silently fails to match.
+WORK="$(cd "$(mktemp -d "${HERDR_E2E_TMPDIR:-/tmp}/herdr-lens-chat-e2e.XXXXXX")" && pwd -P)"
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
 
@@ -51,10 +59,6 @@ echo "==> workdir: $WORK"
 echo "==> building herdr-webui (debug)"
 (cd "$ROOT" && cargo build --quiet)
 
-ACCEPT_ROOT="$WORK/lens-scratch"
-mkdir -p "$ACCEPT_ROOT"
-echo "# lens e2e scratch" > "$ACCEPT_ROOT/README.md"
-
 wait_for() {
   local desc="$1" url="$2"
   for i in $(seq 1 50); do
@@ -65,8 +69,11 @@ wait_for() {
   return 1
 }
 
-echo "==> starting isolated server on http://127.0.0.1:$PORT"
-XDG_CONFIG_HOME="$WORK/xdg" "$ROOT/target/debug/herdr-webui" \
+# Isolated HOME: the seeded jcode store lives under $WORK/home/.jcode.
+mkdir -p "$WORK/home/.jcode/sessions" "$WORK/scratch-repo"
+
+echo "==> starting isolated server on http://127.0.0.1:$PORT (own HOME)"
+HOME="$WORK/home" XDG_CONFIG_HOME="$WORK/xdg" "$ROOT/target/debug/herdr-webui" \
   --bind "127.0.0.1:$PORT" --backend-mode builtin --https off &
 SERVER_PID=$!
 wait_for "server" "http://127.0.0.1:$PORT/" || exit 1
@@ -91,9 +98,11 @@ echo "==> launching headless Chrome (CDP port $CDP)"
 CHROME_PID=$!
 wait_for "headless Chrome CDP" "http://127.0.0.1:$CDP/json/version" || exit 1
 
-echo "==> running lens acceptance checks"
-ACCEPT_ROOT="$ACCEPT_ROOT" E2E_BASE_URL="http://127.0.0.1:$PORT/" CDP_PORT="$CDP" \
-  node "$ROOT/scripts/e2e/lens-acceptance.mjs"
+echo "==> running structured chat lens acceptance checks"
+E2E_BASE_URL="http://127.0.0.1:$PORT/" CDP_PORT="$CDP" \
+  LENS_CHAT_STORE="$WORK/home/.jcode/sessions" \
+  LENS_CHAT_REPO="$WORK/scratch-repo" \
+  node "$ROOT/scripts/e2e/lens-chat-acceptance.mjs"
 RC=$?
 
 echo "==> acceptance exit: $RC"
