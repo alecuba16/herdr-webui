@@ -31,7 +31,7 @@ use panels::files::{content_rows, content_search, run_content_search, ContentRow
 use panels::git::{ConflictAction, ConflictResolveMode};
 use panels::{FileExplorer, GitPanel, GitView};
 pub use render::render;
-use terminal::{terminal_output_styled_lines_lossy, TuiTextSpan};
+use terminal::{terminal_output_styled_lines_for_width, TuiTextSpan};
 use theme::Palette;
 pub use theme::TuiTheme;
 use web_api::WebApiClient;
@@ -286,6 +286,13 @@ pub struct TuiApp {
     pub(crate) pane_tail_styles: Vec<Vec<TuiTextSpan>>,
     terminal_raw_output: String,
     terminal_raw_terminal_id: Option<String>,
+    /// Full TUI screen size (cols, rows), set by the binary loop at
+    /// startup and on every Resize event. Attach sizes derive from it
+    /// via `attach_viewport` so the pty matches the pane viewport
+    /// instead of some stale or hard-coded geometry. (0, 0) means
+    /// unknown: embedders that never drive a real screen keep the
+    /// legacy 120x32 fallback.
+    terminal_size: (u16, u16),
     pub status: String,
     pub error: Option<String>,
     pub last_refresh: Option<Instant>,
@@ -554,6 +561,7 @@ impl TuiApp {
             pane_tail_styles: Vec::new(),
             terminal_raw_output: String::new(),
             terminal_raw_terminal_id: None,
+            terminal_size: (0, 0),
             status: "connecting".to_string(),
             error: None,
             last_refresh: None,
@@ -580,6 +588,25 @@ impl TuiApp {
             quit_prev_mode: TuiMode::Navigate,
             overlay_stack: Vec::new(),
             dirty: true,
+        }
+    }
+
+    /// Record the full TUI screen size (the binary loop calls this at
+    /// startup and on every Resize event). Everything that attaches a
+    /// pty afterwards sizes it to the pane viewport, not this value.
+    pub fn set_terminal_size(&mut self, cols: u16, rows: u16) {
+        self.terminal_size = (cols, rows);
+    }
+
+    /// (cols, rows) every attach must use: the pane viewport the tail
+    /// renders into when the screen size is known, else the legacy
+    /// 120x32 fallback (no real screen: --once, embedders, tests).
+    pub fn attach_viewport(&self) -> (u16, u16) {
+        let (width, height) = self.terminal_size;
+        if width > 0 && height > 0 {
+            render::pane_viewport_size(width, height, self.sidebar_collapsed)
+        } else {
+            (120, 32)
         }
     }
 
@@ -3070,7 +3097,15 @@ impl TuiApp {
         self.terminal_raw_output
             .push_str(&String::from_utf8_lossy(&output.bytes));
         trim_terminal_raw_output(&mut self.terminal_raw_output);
-        let lines = terminal_output_styled_lines_lossy(&self.terminal_raw_output);
+        // Parse with the pty width the backend reports for this frame:
+        // over-wide rows wrap onto continuation rows exactly where
+        // the pty-side terminal wrapped them, keeping the styled tail
+        // in sync with the pty screen (prompt row last). Width 0
+        // (unknown/absent) keeps the unwrapped legacy behavior.
+        let lines = terminal_output_styled_lines_for_width(
+            &self.terminal_raw_output,
+            output.width as usize,
+        );
         self.set_pane_tail_from_styled_lines(lines);
         self.mark_dirty();
     }
@@ -3202,7 +3237,11 @@ impl TuiApp {
             self.error = Some("selected pane has no terminal".to_string());
             return;
         };
-        match self.client.attach_terminal(&terminal_id, 120, 32) {
+        let (attach_cols, attach_rows) = self.attach_viewport();
+        match self
+            .client
+            .attach_terminal(&terminal_id, attach_cols, attach_rows)
+        {
             Ok(mut terminal) => {
                 // Production-reachable error arm (the backend dies
                 // between the input and detach writes) but not
@@ -3308,7 +3347,11 @@ impl TuiApp {
             return;
         };
         if let Some(bytes) = key_to_terminal_bytes(key) {
-            match self.client.attach_terminal(&terminal_id, 120, 32) {
+            let (attach_cols, attach_rows) = self.attach_viewport();
+            match self
+                .client
+                .attach_terminal(&terminal_id, attach_cols, attach_rows)
+            {
                 Ok(mut terminal) => {
                     let send = terminal.send_input(&bytes).and_then(|_| terminal.detach());
                     if let Err(err) = send {
@@ -3328,7 +3371,8 @@ impl TuiApp {
             self.mode = TuiMode::Attach;
             self.status = "attach mode: Ctrl-G detach".to_string();
             self.refresh_tail();
-            self.load_selected_terminal_history(120, 32);
+            let (cols, rows) = self.attach_viewport();
+            self.load_selected_terminal_history(cols, rows);
         } else {
             self.error = Some("no terminal selected".to_string());
         }

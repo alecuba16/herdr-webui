@@ -1,4 +1,5 @@
 use super::*;
+use crate::tui::terminal::terminal_output_styled_lines_lossy;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
@@ -956,6 +957,76 @@ fn draw(app: &TuiApp, width: u16, height: u16) -> String {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|frame| render(frame, app)).unwrap();
     format!("{:?}", terminal.backend().buffer())
+}
+
+#[test]
+fn pane_viewport_size_mirrors_the_rendered_pane_geometry() {
+    // 100x30, sidebar shown (>=100 cols -> 34): the tail area is
+    // 100 - 34 sidebar - 2 borders = 64 cols and
+    // 30 - 1 footer - 1 tab bar - 2 borders - 3 header = 23 rows.
+    use crate::tui::render::pane_viewport_size;
+    assert_eq!(pane_viewport_size(100, 30, false), (64, 23));
+    // Narrow window: sidebar halves, borders still subtracted.
+    assert_eq!(pane_viewport_size(80, 30, false), (80 - 28 - 2, 23));
+    // Sidebar collapsed: full width minus pane borders.
+    assert_eq!(pane_viewport_size(100, 30, true), (98, 23));
+    // Tiny screens clamp instead of underflowing: 10 cols -> sidebar
+    // min(28,10/2)=5, pane borders 2, so 3 cols survive; 8 rows clamp
+    // to 1 viewport row.
+    assert_eq!(pane_viewport_size(10, 8, false), (3, 1));
+    assert_eq!(pane_viewport_size(0, 0, false), (1, 1));
+}
+
+#[test]
+fn attach_viewport_follows_screen_size_and_sidebar_state() {
+    let mut app = app_with_snapshot();
+    // Unknown screen size (embedders, --once): legacy fallback.
+    assert_eq!(app.attach_viewport(), (120, 32));
+
+    app.set_terminal_size(100, 30);
+    assert_eq!(app.attach_viewport(), (64, 23));
+
+    // Sidebar toggle changes only the width the pane can show.
+    app.sidebar_collapsed = true;
+    assert_eq!(app.attach_viewport(), (98, 23));
+}
+
+#[test]
+fn attach_sizing_keeps_the_last_tail_line_inside_the_pane() {
+    // Regression for both reported bugs: at 100x30 the pane shows a
+    // 64-col viewport, so a pty-tail line of exactly 64 cols renders
+    // on ONE row (no Wrap continuation doubling the last character)
+    // and the LAST tail line (the input/prompt row) stays visible at
+    // the bottom of the pane instead of being pushed out.
+    let mut app = app_with_snapshot();
+    app.set_terminal_size(100, 30);
+    let (cols, rows) = app.attach_viewport();
+    assert_eq!((cols, rows), (64, 23));
+
+    // Fill exactly one pty screen: `rows` lines, each `cols` wide,
+    // the last one being the prompt row the user must see.
+    let mut tail = Vec::new();
+    for i in 0..rows {
+        let line = if i == rows - 1 {
+            "❯ INPUT_LINE_MARKER".to_string()
+        } else {
+            format!("row-{i:02} ").repeat((cols / 7) as usize)
+        };
+        tail.push(line);
+    }
+    app.set_pane_tail_from_text(&tail.join("\n"));
+
+    let rendered = draw(&app, 100, 30);
+    assert!(
+        rendered.contains("INPUT_LINE_MARKER"),
+        "the last tail line (input row) must be visible inside the pane"
+    );
+    // The pane is 64 cols wide: 23 rendered rows for 23 tail lines
+    // means no line wrapped. A wrapped line would push the marker
+    // out (the pre-fix symptom). Sanity-check the marker lands once
+    // (no Wrap spill duplicating content).
+    let marker_hits = rendered.matches("INPUT_LINE_MARKER").count();
+    assert_eq!(marker_hits, 1);
 }
 
 /// Renders and keeps the buffer so tests can assert on cell colors

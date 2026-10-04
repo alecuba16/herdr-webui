@@ -28,18 +28,31 @@ pub(crate) fn styled_terminal_line(
     if max_width == 0 {
         return Line::from(Span::raw(""));
     }
+    // Width-exact budget across spans: each span is truncated to the
+    // columns it may still occupy, and the consumed columns are
+    // subtracted by DISPLAY width. The old version passed
+    // `remaining + 1` and counted chars, so a full-width span made the
+    // rendered line one column wider than the pane and ratatui's Wrap
+    // re-printed that last column on the next row (the "doubled last
+    // character" artifact).
     let mut remaining = max_width;
     let mut out = Vec::new();
     for span in spans {
         if remaining == 0 {
             break;
         }
-        let truncated = truncate(&span.text, remaining + 1);
-        let used = truncated.chars().count();
+        let truncated = truncate(&span.text, remaining);
+        let used = truncate_width_units(&truncated);
         remaining = remaining.saturating_sub(used);
         out.push(Span::styled(truncated, span.style.to_ratatui(fallback_fg)));
     }
     Line::from(out)
+}
+
+/// Display columns of a string, treating combining marks as zero-width
+/// (their base character already paid for the cell in `truncate`).
+fn truncate_width_units(value: &str) -> usize {
+    value.chars().map(|ch| ch.width().unwrap_or(0)).sum()
 }
 
 impl TuiTextStyle {
@@ -89,16 +102,14 @@ struct StyledScreen {
     core: VtCore<StyledCell>,
 }
 
-impl Default for StyledScreen {
-    fn default() -> Self {
-        Self {
-            core: VtCore::new(Self::MAX_LINES),
-        }
-    }
-}
-
 impl StyledScreen {
     const MAX_LINES: usize = 400;
+
+    fn new(cols: usize) -> Self {
+        Self {
+            core: VtCore::new_with_cols(Self::MAX_LINES, cols),
+        }
+    }
 
     fn lines(&self) -> Vec<Vec<TuiTextSpan>> {
         trim_empty_styled_edges(
@@ -174,8 +185,24 @@ fn styled_cells_to_spans(cells: &[StyledCell]) -> Vec<TuiTextSpan> {
     spans
 }
 
+/// Styled lines with NO autowrap: legacy entry point for callers
+/// without a known width (text tails, direct tests). Lines here can
+/// be wider than the viewport; the renderer truncates them.
+/// Test-only now: production always knows the pty width.
+#[cfg(test)]
 pub(crate) fn terminal_output_styled_lines_lossy(value: &str) -> Vec<Vec<TuiTextSpan>> {
-    let mut screen = StyledScreen::default();
+    terminal_output_styled_lines_for_width(value, 0)
+}
+
+/// Styled lines for a terminal of `cols` columns: over-wide output
+/// wraps onto continuation rows exactly like the pty-side terminal
+/// the bytes came from, so the line count matches the pty screen and
+/// the renderer's last visible row is the prompt row.
+pub(crate) fn terminal_output_styled_lines_for_width(
+    value: &str,
+    cols: usize,
+) -> Vec<Vec<TuiTextSpan>> {
+    let mut screen = StyledScreen::new(cols);
     vt_drive(&mut screen, value);
     screen.lines()
 }

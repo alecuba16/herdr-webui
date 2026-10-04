@@ -1,6 +1,7 @@
 use super::*;
 use crate::tui::{is_menu_key, key_to_terminal_bytes};
 use ratatui::style::{Color, Modifier};
+use unicode_width::UnicodeWidthStr;
 
 #[test]
 fn terminal_output_styled_lines_parse_sgr_colors_and_styles() {
@@ -127,8 +128,73 @@ fn styled_terminal_line_truncates_empty_and_wide_chars_without_overflow() {
     let one_col = styled_terminal_line(&spans, 1, Color::White);
     assert_eq!(one_col.spans[0].content.as_ref(), "…");
 
+    // Two columns: the wide char fills the whole budget, so the
+    // shared truncate reserves 1 column for the ellipsis, cannot
+    // fit the 2-wide char in what is left, and degrades to a bare
+    // ellipsis. Still width-exact: 1 column, no Wrap spill.
     let two_cols = styled_terminal_line(&spans, 2, Color::White);
-    assert_eq!(two_cols.spans[0].content.as_ref(), "界…");
+    assert_eq!(two_cols.spans[0].content.as_ref(), "…");
+
+    // Three columns: the wide char fits with the ellipsis behind it.
+    let three_cols = styled_terminal_line(&spans, 3, Color::White);
+    assert_eq!(three_cols.spans[0].content.as_ref(), "界…");
+}
+
+#[test]
+fn styled_terminal_line_never_exceeds_max_width_across_spans() {
+    // Regression for the "doubled last character" artifact: the old
+    // budget subtracted CHARS and truncated to remaining + 1, so a
+    // full-width span rendered one column wider than the pane and
+    // ratatui's Wrap re-printed the overflow column on the next
+    // row. The rendered width must be exactly max_width at most.
+    //
+    // Deterministic pseudo-random sweep (xorshift): mixed ASCII,
+    // CJK, emoji, zero-width and combining spans against many
+    // budgets, so the invariant is exercised far beyond a few
+    // hand-picked shapes without a fuzzing dependency.
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let alphabet: [&str; 8] = [
+        "a",
+        "ab",
+        "W",
+        "世",
+        "\u{1F600}",
+        "\u{0301}",
+        "\u{200B}",
+        "…",
+    ];
+    for _case in 0..2000 {
+        let span_count = (next() % 5 + 1) as usize;
+        let spans: Vec<TuiTextSpan> = (0..span_count)
+            .map(|_| {
+                let len = (next() % 24 + 1) as usize;
+                let text: String = (0..len)
+                    .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+                    .collect();
+                TuiTextSpan {
+                    text,
+                    style: TuiTextStyle::default(),
+                }
+            })
+            .collect();
+        let max_width = (next() % 40 + 1) as usize;
+        let line = styled_terminal_line(&spans, max_width, Color::White);
+        let rendered: usize = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref().width())
+            .sum();
+        assert!(
+            rendered <= max_width,
+            "case {_case}: width {rendered} exceeds budget {max_width} for {spans:?}"
+        );
+    }
 }
 
 #[test]
@@ -188,7 +254,10 @@ fn styled_terminal_line_truncates_and_applies_ratatui_styles() {
         .style
         .add_modifier
         .contains(Modifier::UNDERLINED));
-    assert_eq!(line.spans[1].content.as_ref(), "de…");
+    // "abc" uses 3 of 5 columns, leaving 2: "d" + "…" fits exactly.
+    // The old expectation "de…" was 3 columns for a 2-column budget
+    // (the one-column Wrap spill this suite now guards against).
+    assert_eq!(line.spans[1].content.as_ref(), "d…");
     assert_eq!(line.spans[1].style.fg, Some(Color::White));
 }
 
@@ -197,6 +266,35 @@ fn plain_lines(lines: &[Vec<TuiTextSpan>]) -> Vec<String> {
         .iter()
         .map(|line| line.iter().map(|span| span.text.as_str()).collect())
         .collect()
+}
+
+#[test]
+fn styled_lines_wrap_at_the_reported_pty_width() {
+    // A pty of 20 columns wraps a 25-char line: the styled parser
+    // must reproduce that wrap (20 + 5) so the tail keeps the pty's
+    // row count. Without it the renderer re-wraps at the pane edge
+    // and the rendered row count drifts (prompt row falls off).
+    let lines = terminal_output_styled_lines_for_width("a".repeat(25).as_str(), 20);
+    assert_eq!(plain_lines(&lines), vec!["a".repeat(20), "a".repeat(5)]);
+
+    // Wide characters wrap before they would straddle the edge. The
+    // screen stores one cell per column with the wide char's shadow
+    // column as a blank ("世 " is one 2-col char + its shadow).
+    let lines = terminal_output_styled_lines_for_width("世世世世", 5);
+    assert_eq!(plain_lines(&lines), vec!["世 世", "世 世"]);
+
+    // Width 0 (unknown) keeps the legacy unwrapped behavior.
+    let lines = terminal_output_styled_lines_for_width(&"a".repeat(25), 0);
+    assert_eq!(plain_lines(&lines), vec!["a".repeat(25)]);
+}
+
+#[test]
+fn styled_lines_wrap_keeps_wide_char_from_straddling_the_edge() {
+    // After "aa" only 1 of 3 columns remains: the 2-wide char wraps
+    // whole to the next row (its shadow column shows as a blank) and
+    // "b" follows it there.
+    let lines = terminal_output_styled_lines_for_width("aa世b", 3);
+    assert_eq!(plain_lines(&lines), vec!["aa", "世 b"]);
 }
 
 #[test]
@@ -285,9 +383,11 @@ fn styled_terminal_line_handles_emoji_width_correctly() {
     let line = styled_terminal_line(&spans, 10, Color::White);
     assert_eq!(line.spans[0].content.as_ref(), "✅done🐝");
 
-    // Truncate at 5 columns: ✅(2) + "don"(3) = 5, then ellipsis if space
+    // Truncate at 5 columns: ✅(2) + "do"(2) + "…"(1) = 5 exactly.
+    // The width-exact budget reserves the ellipsis its own column;
+    // the old expectation "✅don…" was 6 columns wide, one over
+    // budget (the Wrap-spill root cause).
     let line = styled_terminal_line(&spans, 5, Color::White);
     let content = line.spans[0].content.as_ref();
-    // ✅ takes 2 columns, then "don" takes 3, total 5, ellipsis fits in reserved space
-    assert_eq!(content, "✅don…");
+    assert_eq!(content, "✅do…");
 }
