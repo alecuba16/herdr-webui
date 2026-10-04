@@ -2304,6 +2304,183 @@ describe("app bundle load", () => {
     );
   });
 
+  it("groups linked worktrees by absolute repo path, never by bare folder name", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // Two different projects whose repo folders share a name. The linked
+    // worktree of the first repo must group under the first repo only,
+    // and the same-named second repo must stay a standalone row.
+    vm.runInContext(`state.workspaces = [
+      {
+        workspace_id: "ws-first",
+        label: "workspace-bug",
+        cwd: "/home/alice/first/workspace-bug",
+        worktree: {
+          repo_key: "/home/alice/first/workspace-bug",
+          repo_root: "/home/alice/first/workspace-bug",
+          repo_name: "workspace-bug",
+          checkout_path: "/home/alice/first/workspace-bug",
+          is_linked_worktree: false,
+        },
+      },
+      {
+        workspace_id: "ws-second",
+        label: "workspace-bug",
+        cwd: "/home/bob/second/workspace-bug",
+        worktree: {
+          repo_key: "/home/bob/second/workspace-bug",
+          repo_root: "/home/bob/second/workspace-bug",
+          repo_name: "workspace-bug",
+          checkout_path: "/home/bob/second/workspace-bug",
+          is_linked_worktree: false,
+        },
+      },
+      {
+        workspace_id: "ws-linked",
+        label: "feature-x",
+        cwd: "/home/alice/first/.worktrees/workspace-bug-feature-x",
+        worktree: {
+          repo_key: "/home/alice/first/workspace-bug",
+          repo_root: "/home/alice/first/workspace-bug",
+          repo_name: "workspace-bug",
+          checkout_path: "/home/alice/first/.worktrees/workspace-bug-feature-x",
+          is_linked_worktree: true,
+        },
+      },
+    ];`, ctx);
+
+    const linkedKey = vm.runInContext("worktreeGroupKey(state.workspaces[2])", ctx);
+    equal(linkedKey, "/home/alice/first/workspace-bug");
+    const firstKey = vm.runInContext("worktreeGroupKey(state.workspaces[0])", ctx);
+    const secondKey = vm.runInContext("worktreeGroupKey(state.workspaces[1])", ctx);
+    ok(firstKey !== secondKey, "same-named repos in different parents must not share a group key");
+    equal(firstKey, linkedKey, "linked worktree groups with its own repo root");
+
+    // The parent lookup adopts only the same-repo main checkout.
+    const parent = vm.runInContext(
+      `findWorktreeParent({
+        type: "group",
+        key: ${JSON.stringify(linkedKey)},
+        label: "workspace-bug",
+        children: [state.workspaces[2]],
+        parent: null,
+      })`,
+      ctx,
+    );
+    equal(parent && parent.workspace_id, "ws-first", "parent is the same-repo main checkout");
+
+    // Agents show the parent repo name from the same repo only.
+    const wsById = vm.runInContext(
+      `Object.fromEntries(state.workspaces.map((w) => [w.workspace_id, w]))`,
+      ctx,
+    );
+    equal(
+      ctx.parentWorkspaceName(wsById["ws-linked"], wsById),
+      "workspace-bug",
+    );
+  });
+
+  it("never adopts a same-named folder from another project as worktree parent", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // A linked worktree whose repo main checkout is NOT open, plus an
+    // unrelated plain-folder workspace that happens to carry the same
+    // label as the repo folder name. The label fallback used to adopt
+    // that unrelated workspace as the parent; it must not anymore.
+    vm.runInContext(`state.workspaces = [
+      {
+        workspace_id: "ws-plain",
+        label: "workspace-bug",
+        cwd: "/home/carol/unrelated/workspace-bug",
+      },
+      {
+        workspace_id: "ws-linked",
+        label: "feature-x",
+        cwd: "/home/alice/first/.worktrees/workspace-bug-feature-x",
+        worktree: {
+          repo_key: "/home/alice/first/workspace-bug",
+          repo_root: "/home/alice/first/workspace-bug",
+          repo_name: "workspace-bug",
+          checkout_path: "/home/alice/first/.worktrees/workspace-bug-feature-x",
+          is_linked_worktree: true,
+        },
+      },
+    ];`, ctx);
+
+    const parent = vm.runInContext(
+      `findWorktreeParent({
+        type: "group",
+        key: "/home/alice/first/workspace-bug",
+        label: "workspace-bug",
+        children: [state.workspaces[1]],
+        parent: null,
+      })`,
+      ctx,
+    );
+    equal(parent, null, "no same-repo parent open means no parent, not a label lookalike");
+
+    const wsById = vm.runInContext(
+      `Object.fromEntries(state.workspaces.map((w) => [w.workspace_id, w]))`,
+      ctx,
+    );
+    equal(
+      ctx.parentWorkspaceName(wsById["ws-linked"], wsById),
+      "workspace-bug",
+      "parent name falls back to the repo name, not the lookalike label",
+    );
+  });
+
+  it("keeps workspaces without repo paths as separate groups", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // Backends that only send the repo folder name (no repo_key/repo_root)
+    // must not merge two same-named repos into one sidebar group.
+    vm.runInContext(`state.workspaces = [
+      {
+        workspace_id: "ws-a",
+        label: "api",
+        cwd: "/one/api",
+        worktree: { repo_name: "api", is_linked_worktree: false },
+      },
+      {
+        workspace_id: "ws-b",
+        label: "api",
+        cwd: "/two/api",
+        worktree: { repo_name: "api", is_linked_worktree: false },
+      },
+      {
+        workspace_id: "ws-c",
+        label: "feat",
+        cwd: "/one/api/.wt/feat",
+        worktree: { repo_name: "api", checkout_path: "/one/api/.wt/feat", is_linked_worktree: true },
+      },
+    ];`, ctx);
+
+    const keyA = vm.runInContext("worktreeGroupKey(state.workspaces[0])", ctx);
+    const keyB = vm.runInContext("worktreeGroupKey(state.workspaces[1])", ctx);
+    const keyC = vm.runInContext("worktreeGroupKey(state.workspaces[2])", ctx);
+    ok(keyA !== keyB, "name-only metadata must not collide across repos");
+    equal(keyA, "workspace:ws-a");
+    equal(keyB, "workspace:ws-b");
+    equal(keyC, "workspace:ws-c");
+    // Name-only linked worktrees cannot find a parent without guessing;
+    // the orphan header renders instead of adopting a lookalike.
+    const orphanParent = vm.runInContext(
+      `findWorktreeParent({
+        type: "group",
+        key: ${JSON.stringify(keyC)},
+        label: "api",
+        children: [state.workspaces[2]],
+        parent: null,
+      })`,
+      ctx,
+    );
+    equal(orphanParent, null, "name-only metadata never adopts a parent");
+  });
+
   it("renders server access settings fields", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

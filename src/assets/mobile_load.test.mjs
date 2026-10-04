@@ -1855,4 +1855,148 @@ describe("mobile bundle load", () => {
     equal(ctx.HerdrMobile.currentSessionBackend(), "builtin");
     equal(ctx.HerdrMobile.currentSelection().ws, null);
   });
+
+  it("never adopts a same-named folder from another project as mobile worktree parent", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // The mobile workmeta module is a factory over state; drive it directly
+    // with the same fixture shape as the desktop regression test in
+    // app_load.test.mjs: a linked worktree, its true main checkout, and a
+    // same-named plain folder from another project.
+    const mod = vm.runInContext("HerdrMobileWorkmetaModule", ctx);
+    const workspacesPayload = [
+      {
+        workspace_id: "ws-plain",
+        label: "workspace-bug",
+        cwd: "/home/carol/unrelated/workspace-bug",
+      },
+      {
+        workspace_id: "ws-main",
+        label: "workspace-bug",
+        cwd: "/home/alice/first/workspace-bug",
+        worktree: {
+          repo_key: "/home/alice/first/workspace-bug",
+          repo_root: "/home/alice/first/workspace-bug",
+          repo_name: "workspace-bug",
+          checkout_path: "/home/alice/first/workspace-bug",
+          is_linked_worktree: false,
+        },
+      },
+      {
+        workspace_id: "ws-linked",
+        label: "feature-x",
+        cwd: "/home/alice/first/.worktrees/workspace-bug-feature-x",
+        worktree: {
+          repo_key: "/home/alice/first/workspace-bug",
+          repo_root: "/home/alice/first/workspace-bug",
+          repo_name: "workspace-bug",
+          checkout_path: "/home/alice/first/.worktrees/workspace-bug-feature-x",
+          is_linked_worktree: true,
+        },
+      },
+    ];
+    const makeState = (workspaces) => ({
+      workspaces,
+      worktreeRows: [],
+      ws: "ws-linked",
+      tab: null,
+      pane: null,
+      tabs: [],
+      panes: [],
+      allTabs: [],
+      session: "default",
+    });
+    const deps = {
+      samePath: (a, b) => a === b,
+      pathBasename: (p) =>
+        String(p || "")
+          .split("/")
+          .filter(Boolean)
+          .pop() || "",
+    };
+    const api = mod.create({ state: makeState(workspacesPayload), ...deps });
+    const workspaces = api.workspacesById();
+    ok(workspaces["ws-linked"], "module exposes workspacesById");
+
+    // Path identity: the linked worktree resolves to the true main checkout
+    // of the same repo, never the same-named plain folder from another
+    // project (the label fallback that used to adopt it is gone).
+    equal(
+      api.parentWorkspaceName(workspaces["ws-linked"], workspaces),
+      "workspace-bug",
+    );
+    ok(
+      api.contextMeta(workspaces["ws-linked"]).startsWith("workspace-bug"),
+      "contextMeta names the repo parent, not the lookalike folder",
+    );
+
+    // Name-only metadata (older/limited backends): no repo path means no
+    // parent resolution by name guessing; falls back to the display name.
+    const apiNameOnly = mod.create({
+      state: makeState([
+        {
+          workspace_id: "ws-a",
+          label: "api",
+          cwd: "/one/api",
+          worktree: { repo_name: "api", is_linked_worktree: false },
+        },
+        {
+          workspace_id: "ws-b",
+          label: "api",
+          cwd: "/two/api",
+          worktree: { repo_name: "api", is_linked_worktree: false },
+        },
+        {
+          workspace_id: "ws-c",
+          label: "feat",
+          cwd: "/one/api/.wt/feat",
+          worktree: {
+            repo_name: "api",
+            checkout_path: "/one/api/.wt/feat",
+            is_linked_worktree: true,
+          },
+        },
+      ]),
+      ...deps,
+    });
+    const byIdNameOnly = apiNameOnly.workspacesById();
+    equal(
+      apiNameOnly.parentWorkspaceName(byIdNameOnly["ws-c"], byIdNameOnly),
+      "api",
+      "name-only linked worktree falls back to the repo name, never another workspace's label",
+    );
+    ok(
+      apiNameOnly.contextMeta(byIdNameOnly["ws-c"]).startsWith("api"),
+      "contextMeta shows the repo display name without adopting a lookalike",
+    );
+
+    // Degenerate metadata edge: a linked worktree with no repo_name and no
+    // repo path used to make the meta line render "undefined" before the
+    // path-identity fix; it must fall back to the workspace's own label.
+    const apiDegenerate = mod.create({
+      state: makeState([
+        {
+          workspace_id: "ws-x",
+          label: "wt-x",
+          cwd: "/one/api/.wt/x",
+          worktree: {
+            checkout_path: "/one/api/.wt/x",
+            is_linked_worktree: true,
+          },
+        },
+      ]),
+      ...deps,
+    });
+    const byIdDegenerate = apiDegenerate.workspacesById();
+    equal(
+      apiDegenerate.parentWorkspaceName(byIdDegenerate["ws-x"], byIdDegenerate),
+      "wt-x",
+      "no repo_name and no path falls back to the workspace label, not undefined",
+    );
+    ok(
+      apiDegenerate.contextMeta(byIdDegenerate["ws-x"]).startsWith("wt-x"),
+      "contextMeta never renders undefined for degenerate worktree metadata",
+    );
+  });
 });

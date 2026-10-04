@@ -690,36 +690,47 @@ function worktreeSourceWorkspaceIds() {
   const idsByKey = new Map();
   for (const w of state.workspaces) {
     if (!w || !w.workspace_id) continue;
-    const key = worktreeGroupKey(w) || `workspace:${w.workspace_id}`;
+    const key = worktreeGroupKey(w);
     if (!idsByKey.has(key) || (w.worktree && !w.worktree.is_linked_worktree))
       idsByKey.set(key, w.workspace_id);
   }
   return [...idsByKey.values()];
 }
 function worktreeGroupKey(w) {
+  // Identity must come from an absolute repo path. The bare repo folder
+  // name (repo_name) is display-only: two repos in different parent
+  // folders can share it, so using it here merges unrelated projects
+  // into one sidebar group. When no path is available the workspace
+  // gets a unique per-workspace key instead of a colliding one.
   return (
     (w &&
       w.worktree &&
-      (w.worktree.repo_key || w.worktree.repo_root || w.worktree.repo_name)) ||
-    ""
+      (w.worktree.repo_key || w.worktree.repo_root)) ||
+    (w && w.workspace_id ? `workspace:${w.workspace_id}` : "")
   );
 }
 function worktreeRowGroupKey(w) {
-  return (
-    (w && (w.source_repo_key || w.source_repo_root || w.source_repo_name)) || ""
-  );
+  // Rows are discovered per repo, so identity is the absolute source repo
+  // path. The bare source_repo_name is display-only and collides across
+  // same-named repos in different parent folders.
+  return (w && (w.source_repo_key || w.source_repo_root)) || "";
 }
 function findWorktreeParent(group) {
+  // The parent is the open main checkout of the SAME repo, matched by
+  // the absolute repo path only. Falling back to a bare workspace-label
+  // comparison adopted same-named folders from other projects as the
+  // parent, so that fallback is gone.
+  const childKey = group.children[0]
+    ? worktreeGroupKey(group.children[0])
+    : "";
+  if (!childKey || childKey.startsWith("workspace:")) return null;
   return (
     state.workspaces.find(
       (w) =>
         w.worktree &&
         !w.worktree.is_linked_worktree &&
-        worktreeGroupKey(w) ===
-          (group.children[0] ? worktreeGroupKey(group.children[0]) : ""),
-    ) ||
-    state.workspaces.find((w) => !w.worktree && w.label === group.label) ||
-    null
+        worktreeGroupKey(w) === childKey,
+    ) || null
   );
 }
 function worktreeForWorkspace(w) {
@@ -846,23 +857,18 @@ function worktreeDisplayName(w) {
 }
 function parentWorkspaceName(w, wsById) {
   if (!w || !w.worktree) return "workspace";
-  const key =
-    w.worktree.repo_key || w.worktree.repo_root || w.worktree.repo_name;
-  const match =
-    Object.values(wsById).find(
-      (x) =>
-        x.workspace_id !== w.workspace_id &&
-        x.worktree &&
-        (x.worktree.repo_key ||
-          x.worktree.repo_root ||
-          x.worktree.repo_name) === key &&
-        !x.worktree.is_linked_worktree,
-    ) ||
-    Object.values(wsById).find(
-      (x) =>
-        x.workspace_id !== w.workspace_id &&
-        !x.worktree &&
-        x.label === w.worktree.repo_name,
-    );
-  return match ? match.label : w.worktree.repo_name;
+  // Match the main checkout of the same repo by absolute path only.
+  // repo_name (bare folder name) is display-only: same-named repos in
+  // different parent folders must never adopt each other as parent, so
+  // the old workspace-label fallback is gone.
+  const key = w.worktree.repo_key || w.worktree.repo_root;
+  if (!key) return w.worktree.repo_name || w.label || "workspace";
+  const match = Object.values(wsById).find(
+    (x) =>
+      x.workspace_id !== w.workspace_id &&
+      x.worktree &&
+      !x.worktree.is_linked_worktree &&
+      (x.worktree.repo_key || x.worktree.repo_root) === key,
+  );
+  return match ? match.label : w.worktree.repo_name || "workspace";
 }
