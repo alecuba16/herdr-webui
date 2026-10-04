@@ -164,13 +164,29 @@ fn trim_empty_styled_edges(mut lines: Vec<Vec<TuiTextSpan>>) -> Vec<Vec<TuiTextS
 }
 
 fn styled_cells_to_spans(cells: &[StyledCell]) -> Vec<TuiTextSpan> {
+    // Shadow columns of wide chars must not become literal spaces in
+    // the span text: a 2-wide glyph already pays both columns via
+    // unicode_width, so serializing its shadow as ' ' inflated every
+    // wide-char line by one column per glyph (32 CJK glyphs in a
+    // 64-col row measured ~96 columns and the width-exact truncate
+    // ate the tail glyphs). A blank cell right after a wide glyph is
+    // by construction the shadow (put never writes into it: the
+    // cursor jumps past), so it is skipped here.
+    let skip_shadow = |index: usize, cell: &StyledCell| -> bool {
+        cell.ch == ' ' && index > 0 && cells[index - 1].ch.width().is_some_and(|width| width >= 2)
+    };
     let trimmed_len = cells
         .iter()
-        .rposition(|cell| cell.ch != ' ')
-        .map(|index| index + 1)
+        .enumerate()
+        .rev()
+        .find(|(index, cell)| cell.ch != ' ' && !skip_shadow(*index, cell))
+        .map(|(index, _)| index + 1)
         .unwrap_or(0);
     let mut spans: Vec<TuiTextSpan> = Vec::new();
-    for cell in cells.iter().take(trimmed_len) {
+    for (index, cell) in cells.iter().enumerate().take(trimmed_len) {
+        if skip_shadow(index, cell) {
+            continue;
+        }
         if let Some(last) = spans.last_mut() {
             if last.style == cell.style {
                 last.text.push(cell.ch);
