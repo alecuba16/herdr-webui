@@ -135,13 +135,37 @@ journal_entries) -> Vec<Turn>`.
 - Replay each line's `append_messages` ON TOP OF the snapshot `messages`
   array (same StoredMessage shape; disjoint by construction after each
   checkpoint — validated live: 0 id overlap between the post-rotation
-  journal and the 159-message snapshot).
-  Validated shapes across the whole local store (8 journals, 127 messages,
-  0 torn lines): user messages carry `content` as a block array only
-  (`text` or `tool_result`, never mixed, never a bare string); `tool_use`
-  pairs by `tool_use_id` with 38/39 matched in a live session (the
-  unmatched one is the in-flight call — render pending); `is_error` exists
-  on `tool_result`; `reasoning` blocks carry a `text` field.
+  journal and the 159-message snapshot; round-7 re-verified store-wide:
+  0 id overlap across ALL 8 journals vs their snapshots, 46 journal
+  messages).
+  Validated shapes (round 2: 8 journals, 127 messages; round 7 extended
+  to ALL 2,557 snapshots, 100,059 messages, 0 torn reads): user and
+  assistant messages carry `content` as a block array only — 0
+  non-list contents across the whole store; `tool_use` pairs by
+  `tool_result.tool_use_id` (the call carries `id`, the result carries
+  `tool_use_id` — verified store-wide: 43,990 calls, 43,972 results,
+  43,972 matched, 0 results without a call, unmatched calls only at
+  session tails = in-flight); `is_error` exists on `tool_result`;
+  `reasoning` blocks carry a `text` field.
+  **Round-7 block-type census (full store):** beyond the four known
+  types, five more exist — `image` (154 blocks, `{data, media_type}`;
+  already declared out of scope in section 7), `reasoning_trace`
+  (898), `open_a_i_reasoning` (1,183), `provider_native` (14),
+  `tool_reference` (108). The parser MUST skip unknown block types
+  silently (reference behavior, section 7) — render only
+  `text`/`reasoning`/`tool_use`/`tool_result`, and treat
+  `reasoning_trace`/`open_a_i_reasoning` as thinking-class content if
+  trivially available (same `text` field), else skip. Journal-only
+  sweep found ONLY the four known types (46 messages), so deltas stay
+  simple; the extra types matter for snapshot bases.
+  **Id caveat:** two non-`message_*` ids exist in the whole store
+  (`msg-live-busy`, `msg_pending_normal_close`, both in jcode's own
+  test sessions, both plain user text messages). The message-id
+  cursor and any id-based dedup must treat ids as opaque strings, not
+  validate the `message_<ts>_<nonce>` format. Global uniqueness of
+  ids re-verified at full scale: 100,059 ids across all sessions, 0
+  duplicates. Nonce hex length varies (15-20 chars), so the id regex
+  `message_\d+_[0-9a-f]{16}` is NOT stable — do not parse ids.
 - User turn: text parts joined; skip meta/system-ish entries (isMeta
   equivalents: none seen in jcode, but guard anyway).
 - Assistant turn: adjacent assistant messages merge into one turn
@@ -196,8 +220,10 @@ Paging: v1 ships newest-page-only — last 200 turns (the reference
   slowly. The response keeps a `cursor: null` field so the wire shape
   is forward-compatible. When paging is added later, cursor = message
   id, NOT a byte offset: jcode message ids are globally unique
-  (`message_<ts>_<nonce>`, validated), and byte offsets into the
-  journal cannot survive rotation (journal deleted + recreated at each
+  (verified at full store scale: 100,059 ids, 0 duplicates; treat ids
+  as opaque strings, see the id caveat in the parsing section), and
+  byte offsets into the journal cannot survive rotation (journal
+  deleted + recreated at each
   checkpoint). Generation invalidation must cover BOTH file identities
   — cursor = (snapshot generation, journal generation, message id),
   refused with 409 semantics when either generation changed.
