@@ -131,6 +131,12 @@ await evalApp(`(() => {
   return true;
 })()`);
 // The server types the paste + Enter (gap 300ms) and cat echoes it.
+// The lens covers the grid while open, and covered rendering pauses wterm
+// paints (0161c0f): the echo bytes land in the bridge but the DOM stays
+// frozen until the lens closes. Reading the grid with the lens open can
+// never see the echo, so close it first — which also verifies the unpause
+// repaint contract: the grid must catch up from the bridge after close.
+await evalApp(`HerdrLens.setLens(false)`);
 let echoSeen = false;
 let echoDebug = '';
 for (let i = 0; i < 40 && !echoSeen; i++) {
@@ -141,6 +147,9 @@ for (let i = 0; i < 40 && !echoSeen; i++) {
 }
 check('submit pasted the message into the pane (cat echoes it)', echoSeen,
   echoDebug.slice(0, 200));
+// The composer lives inside the lens: reopen it for the remaining checks.
+await evalApp(`HerdrLens.setLens(true)`);
+await sleep(400);
 
 // The box clears after a successful send.
 await sleep(300);
