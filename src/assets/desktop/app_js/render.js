@@ -133,7 +133,21 @@ function syncWorkspacePanelMenuSize() {
   const paneRect = workspacePane.getBoundingClientRect ? workspacePane.getBoundingClientRect() : null,
     menuRect = menu.getBoundingClientRect ? menu.getBoundingClientRect() : null;
   if (!paneRect || !menuRect) return;
-  const minHeight = Math.max(0, Math.ceil(menuRect.bottom - paneRect.top + 10));
+  // The pane grows so the menu fits, but the sidebar section has a fixed
+  // height (agents pane keeps its 110px minimum), so on short viewports the
+  // grown pane overflows the section and the menu gets clipped by its
+  // overflow:hidden. Cap both sizes to what the section actually shows:
+  // the pane never grows past the section box, and the menu scrolls
+  // internally instead of overflowing the visible sidebar.
+  const sectionEl = workspacePane.parentElement;
+  const sectionRect = sectionEl && sectionEl.getBoundingClientRect ? sectionEl.getBoundingClientRect() : null;
+  const sectionBottom = sectionRect
+    ? Math.min(sectionRect.bottom, window.innerHeight || paneRect.bottom)
+    : paneRect.bottom;
+  const paneAvailable = Math.max(0, Math.floor(sectionBottom - paneRect.top));
+  const menuAvailable = Math.max(0, Math.floor(sectionBottom - menuRect.top));
+  setCustomProperty(menu, "--workspace-panel-menu-max-height", `${menuAvailable}px`);
+  const minHeight = Math.max(0, Math.min(Math.ceil(menuRect.bottom - paneRect.top + 10), paneAvailable));
   // Setting the property to the same value still dirties style; only write
   // when the measured min-height actually moved. The typeof guard keeps
   // DOM-stub test environments (style objects without getPropertyValue) happy.
@@ -142,6 +156,14 @@ function syncWorkspacePanelMenuSize() {
     `${minHeight}px` !== workspacePane.style.getPropertyValue("--workspace-panel-menu-min-height")
   )
     workspacePane.style.setProperty("--workspace-panel-menu-min-height", `${minHeight}px`);
+}
+
+function setCustomProperty(element, name, value) {
+  if (
+    typeof element.style.getPropertyValue !== "function" ||
+    element.style.getPropertyValue(name) !== value
+  )
+    element.style.setProperty(name, value);
 }
 window.HerdrDesktopRender = render;
 function syncProjectDashboard() {

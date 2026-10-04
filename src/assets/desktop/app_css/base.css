@@ -432,7 +432,9 @@ body.light {
   display: grid;
   gap: 2px;
   left: 0;
+  max-height: var(--workspace-panel-menu-max-height, none);
   min-width: min(220px, 70vw);
+  overflow-y: auto;
   padding: 5px;
   position: absolute;
   top: calc(100% + 4px);
