@@ -3814,6 +3814,13 @@ function go(ws, tab, pane) {
   });
   history.pushState(null, "", selectionPath(ws, tab, pane));
   parseRoute();
+  // The composer rides on top of the lens, which stays mounted during the
+  // switch: sync immediately so it disables ("Switching panel\u2026") while
+  // state.pane is still null instead of accepting input that would be
+  // silently dropped (drafts/submit key on pane id). The lens reset happens
+  // later from connectTerminal once the new pane attaches.
+  if (globalThis.HerdrComposer && globalThis.HerdrComposer.sync)
+    globalThis.HerdrComposer.sync();
   resetTerminalConnection(true);
   setTerminalLoading(true);
   refresh();
@@ -4154,6 +4161,10 @@ function forgetClosedSelection(kind, data) {
     const closedPane = data && data.pane_id
       ? (state.panes || []).find((pane) => pane.pane_id === data.pane_id)
       : null;
+    // Release the composer draft of the dead pane: drafts are keyed by
+    // pane id and would otherwise linger for the whole session.
+    if (globalThis.HerdrComposer && globalThis.HerdrComposer.forgetPanes && data && data.pane_id)
+      globalThis.HerdrComposer.forgetPanes(data.pane_id);
     if (data && data.pane_id) removeClosedPaneFromState(data.pane_id);
     const closedLastPaneInTab =
       closedPane &&
@@ -4169,6 +4180,11 @@ function forgetClosedSelection(kind, data) {
       if (window.HerdrTerminalRenderer) connectTerminal();
     }
   } else if (kind === "tab.closed") {
+    // A closed tab releases all its panes' composer drafts with it.
+    if (globalThis.HerdrComposer && globalThis.HerdrComposer.forgetPanes && data && data.tab_id) {
+      const tabPanes = (state.panes || []).filter((pane) => pane.tab_id === data.tab_id);
+      globalThis.HerdrComposer.forgetPanes(tabPanes.map((pane) => pane.pane_id));
+    }
     if (data && data.tab_id) removeClosedTabFromState(data.tab_id);
     if (data && data.tab_id && data.tab_id === state.tab) {
       resetTerminalConnection(true);

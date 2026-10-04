@@ -16,6 +16,7 @@
 (function () {
   const drafts = new Map();
   let sending = false;
+  let lastSyncedPane = null;
   // Matches the server's MAX_COMPOSER_CHARS; the server re-checks, this is
   // just the early out so a fat draft never leaves the browser.
   const MAX_COMPOSER_CHARS = 20000;
@@ -124,6 +125,15 @@
     }
   }
 
+  function forgetPanes(paneIds) {
+    // Called when panes/tabs close: drafts are keyed by pane id, so dead
+    // panes must release theirs or the map grows for the whole session.
+    const ids = Array.isArray(paneIds) ? paneIds : [paneIds];
+    for (const id of ids) {
+      if (id) drafts.delete(id);
+    }
+  }
+
   function sync() {
     const node = overlay();
     if (!node) return;
@@ -132,11 +142,24 @@
     if (!lensOn) return;
     const paneId = activePaneId();
     const input = inputEl();
-    if (!input || !paneId) return;
+    if (!input) return;
+    // A pane switch must not show the previous pane's refusal note, and the
+    // box must not accept text while state.pane is still resolving (the
+    // switch window): drafts and submit are keyed by pane id, so typing
+    // then would silently drop. Same-pane reconnects keep their note.
+    if (paneId !== lastSyncedPane) {
+      note("");
+      lastSyncedPane = paneId;
+    }
+    input.disabled = !paneId;
+    input.placeholder = paneId
+      ? "Send a message"
+      : "Switching panel\u2026";
+    if (!paneId) return;
     // Restore the draft of the pane now in view (per-pane, not per-view).
     const draft = drafts.get(paneId);
     if (input.value !== (draft || "")) input.value = draft || "";
   }
 
-  globalThis.HerdrComposer = { sync, submit, note, overlay, drafts };
+  globalThis.HerdrComposer = { sync, submit, note, overlay, drafts, forgetPanes };
 })();

@@ -336,4 +336,63 @@ describe("composer module", () => {
     await result.ctx.HerdrComposer.submit();
     equal(calls, 0);
   });
+
+  it("sync clears the note when the pane changes, keeps it on same-pane sync", async () => {
+    const result = loadComposer({ api: async () => { throw refusalError("refused", "nope", "server said no"); } });
+    result.ctx.HerdrLens = { isActive: () => true };
+    result.ctx.state.pane = "pane_a";
+    result.ctx.HerdrComposer.sync();
+    typeDraft(result, "will fail");
+    await result.ctx.HerdrComposer.submit();
+    match(noteOf(result).textContent, /server said no/);
+    // Same pane syncing again (lens toggle, reconnect): the note stays.
+    result.ctx.HerdrComposer.sync();
+    match(noteOf(result).textContent, /server said no/,
+      "same-pane sync must not clear the note");
+    // Switching panes clears it: the refusal belonged to the old pane.
+    result.ctx.state.pane = "pane_b";
+    result.ctx.HerdrComposer.sync();
+    equal(noteOf(result).hidden, true, "pane switch clears the note");
+  });
+
+  it("sync disables the input while state.pane is null", async () => {
+    const result = loadComposer({ api: async () => ({}) });
+    result.ctx.HerdrLens = { isActive: () => true };
+    result.ctx.HerdrComposer.sync();
+    const input = inputOf(result);
+    equal(input.disabled, false, "input enabled with a live pane");
+    result.ctx.state.pane = null;
+    result.ctx.HerdrComposer.sync();
+    equal(input.disabled, true, "input disabled during the pane-switch window");
+    match(input.placeholder, /switching panel/i,
+      "placeholder explains why the input is disabled");
+    // The pane resolves: the box works again and the draft is restored.
+    result.ctx.state.pane = "pane_a";
+    typeDraft(result, "typed after the switch");
+    result.ctx.HerdrComposer.sync();
+    equal(input.disabled, false, "input re-enabled once the pane resolves");
+    equal(input.value, "typed after the switch",
+      "per-pane draft survives the null-pane window");
+  });
+
+  it("forgetPanes releases drafts of dead panes only", () => {
+    const result = loadComposer();
+    result.ctx.HerdrLens = { isActive: () => true };
+    result.ctx.state.pane = "pane_a";
+    result.ctx.HerdrComposer.sync();
+    typeDraft(result, "draft A");
+    result.ctx.state.pane = "pane_b";
+    result.ctx.HerdrComposer.sync();
+    typeDraft(result, "draft B");
+    equal(result.ctx.HerdrComposer.drafts.get("pane_a"), "draft A");
+    // A single id and an array of ids must both work (pane.closed passes
+    // one id, tab.closed passes the tab's pane ids).
+    result.ctx.HerdrComposer.forgetPanes("pane_a");
+    equal(result.ctx.HerdrComposer.drafts.has("pane_a"), false,
+      "pane.closed releases its draft");
+    result.ctx.HerdrComposer.forgetPanes(["pane_b", "pane_c"]);
+    equal(result.ctx.HerdrComposer.drafts.has("pane_b"), false,
+      "tab.closed releases the tab's drafts");
+    equal(result.ctx.HerdrComposer.drafts.size, 0, "no drafts leak");
+  });
 });

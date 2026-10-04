@@ -109,6 +109,8 @@
       node.innerHTML =
         '<div class="terminal-lens-scroller" id="terminalLensScroller" tabindex="0">' +
         '<div class="terminal-lens-content"></div></div>' +
+        '<div class="terminal-lens-alt" id="terminalLensAlt" hidden ' +
+        'role="status">An interactive app is using this panel \u2014 switch to Terminal to use it</div>' +
         '<button type="button" class="terminal-lens-new pill" id="terminalLensNew" hidden ' +
         'aria-label="Resume following latest output">New output</button>';
       shell.appendChild(node);
@@ -158,13 +160,32 @@
       content.innerHTML = transcriptHtml(lines);
       content.dataset.dirty = "0";
       lastRenderedLineCount = lines.length;
-    }
-    const scroller = node.querySelector("#terminalLensScroller");
-    if (follow && scroller) {
-      scroller.scrollTop = scroller.scrollHeight;
+      // Scroll only when the transcript actually moved: setting scrollTop
+      // on every tick forced a layout read even with no new output.
+      const scroller = node.querySelector("#terminalLensScroller");
+      if (follow && scroller) scroller.scrollTop = scroller.scrollHeight;
     }
     const pill = node.querySelector("#terminalLensNew");
     if (pill) pill.hidden = !(unread && !follow);
+    // Alt-screen app running (vim, less, htop): the transcript is not the
+    // live surface anymore. Say so instead of showing a frozen pane.
+    // Skip while the attach overlay is up: a dead/unattached pane reports
+    // alt-screen true and would flash a wrong hint over the skeleton.
+    const altHint = node.querySelector("#terminalLensAlt");
+    if (altHint) {
+      const loading = document.getElementById("terminalLoading");
+      const loadingUp = !!(loading && loading.classList.contains("show"));
+      altHint.hidden = loadingUp || !usingAltScreen();
+    }
+  }
+
+  function usingAltScreen() {
+    const core = bridge();
+    try {
+      return !!(core && core.usingAltScreen && core.usingAltScreen());
+    } catch (_) {
+      return false;
+    }
   }
 
   function setLens(active) {
@@ -180,19 +201,52 @@
       lastRenderedLineCount = -1;
       contentDirty();
       render();
+      // The lens fully covers the terminal while open: pause wterm's
+      // paints so the covered grid does not double-render under the
+      // overlay. Re-enabled on close; wterm re-checks visibility on its
+      // own for background tabs.
+      setCoveredRendering(true);
       const scroller = node.querySelector("#terminalLensScroller");
       if (scroller) scroller.focus({ preventScroll: true });
       // The terminal keeps its socket; refit is unnecessary because the
       // terminal element stays at its geometry (the lens overlays it).
-    } else if (typeof focusTerminal === "function") {
+    } else {
+      setCoveredRendering(false);
       // Returning to the terminal view must restore typing: the lens
       // scroller held focus while open, so hand it back explicitly.
-      try { focusTerminal(true); } catch (_) {}
+      if (typeof focusTerminal === "function") {
+        try { focusTerminal(true); } catch (_) {}
+      }
     }
     // The composer rides with the lens: same surface, same visibility,
     // and it swaps its per-pane draft when the pane changes.
     if (globalThis.HerdrComposer) globalThis.HerdrComposer.sync();
     syncLensToggleUi();
+  }
+
+  // wterm exposes setRenderingPaused(bool): while the opaque lens covers the
+  // terminal its paints are wasted main-thread work under heavy streaming.
+  // Best effort: older bundles without the API keep rendering as before.
+  function setCoveredRendering(paused) {
+    try {
+      const adapter = typeof term !== "undefined" && term ? term : null;
+      const renderer = adapter && adapter.wterm ? adapter.wterm : null;
+      if (renderer && typeof renderer.setRenderingPaused === "function")
+        renderer.setRenderingPaused(paused);
+    } catch (_) {}
+  }
+
+  function onPaneChanged() {
+    // Called from connectTerminal on every pane/terminal switch: reading
+    // state is per-pane. Without the reset, follow/unread and the change
+    // detection baseline leaked from the previous pane.
+    follow = true;
+    unread = false;
+    lastRenderedLineCount = -1;
+    if (lensActive) {
+      contentDirty();
+      render();
+    }
   }
 
   function contentDirty() {
@@ -259,6 +313,7 @@
     isActive,
     lensState,
     onTerminalFrame,
+    onPaneChanged,
     // Test/diagnostic surface: the turn-shaping heuristics.
     transcriptHtml,
     PROMPT_LINE,
