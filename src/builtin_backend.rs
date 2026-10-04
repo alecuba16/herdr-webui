@@ -15,9 +15,7 @@ use serde_json::{json, Value};
 
 use crate::builtin_detection::{jcode::detect_jcode_status_with_variant, JcodeDetectionVariant};
 use crate::builtin_events::{BuiltinEventHub, PaneEventContext};
-use crate::jcode_transcript::{
-    JcodeSessionResolution, JcodeStoreIndex, RefusalReason,
-};
+use crate::chat_lens;
 use crate::protocol::{
     read_message, write_message, ClientMessage, RenderEncoding, ServerMessage, TerminalFrame,
 };
@@ -1203,28 +1201,16 @@ impl BuiltinState {
     /// `ambiguous` (resolution refused), `transcript_missing` (files
     /// unreadable or unparseable).
     fn pane_conversation(&self, pane_id: &str) -> Result<Value, String> {
-        let (pane, presentation) = {
-            let data = self
-                .data
-                .lock()
-                .map_err(|_| "state unavailable".to_string())?;
-            let pane = data
-                .panes
-                .get(pane_id)
-                .ok_or_else(|| "agent_not_found: no such pane".to_string())?
-                .clone();
-            let presentation = pane_agent_presentation(&pane, &data);
-            (pane, presentation)
-        };
+        let (pane, presentation) = self.pane_and_presentation(pane_id)?;
         let Some(agent) = presentation.agent else {
             return Err("unsupported_agent: no agent running in this pane".to_string());
         };
-        if !TRANSCRIPT_SUPPORTED_AGENTS.contains(&agent) {
+        if !chat_lens::agent_supported(Some(&agent)) {
             return Err(format!(
                 "unsupported_agent: {agent} has no transcript support"
             ));
         }
-        build_jcode_conversation(self, &pane)
+        chat_lens::conversation_payload(&self.pane_context(&pane))
     }
 
     /// One whole tool output by call id: reference toolOutput parity.
@@ -1236,45 +1222,51 @@ impl BuiltinState {
         if !crate::jcode_transcript::valid_tool_ref(reference) {
             return Ok(None);
         }
-        let (pane, presentation) = {
-            let data = self
-                .data
-                .lock()
-                .map_err(|_| "state unavailable".to_string())?;
-            let pane = data
-                .panes
-                .get(pane_id)
-                .ok_or_else(|| "agent_not_found: no such pane".to_string())?
-                .clone();
-            let presentation = pane_agent_presentation(&pane, &data);
-            (pane, presentation)
-        };
+        let (pane, presentation) = self.pane_and_presentation(pane_id)?;
         let Some(agent) = presentation.agent else {
             return Err("unsupported_agent: no agent running in this pane".to_string());
         };
-        if !TRANSCRIPT_SUPPORTED_AGENTS.contains(&agent) {
+        if !chat_lens::agent_supported(Some(&agent)) {
             return Err(format!(
                 "unsupported_agent: {agent} has no transcript support"
             ));
         }
-        let session_id = self.resolve_pane_session(&pane)?;
-        let index = jcode_store_index();
-        Ok(crate::jcode_transcript::tool_output_by_ref(
-            index.store_dir(),
-            &session_id,
-            reference,
-        ))
+        chat_lens::tool_output(&self.pane_context(&pane), reference)
     }
 
-    /// The session id this pane resolved to (the shared tail of
-    /// pane_conversation and pane_tool_output).
-    fn resolve_pane_session(&self, pane: &PaneRecord) -> Result<String, String> {
+    /// Thin adapter: the pane and its agent presentation, behind the
+    /// data lock. Shared head of pane_conversation and
+    /// pane_tool_output (agent_not_found classification).
+    fn pane_and_presentation(
+        &self,
+        pane_id: &str,
+    ) -> Result<(PaneRecord, PaneAgentPresentation), String> {
+        let data = self
+            .data
+            .lock()
+            .map_err(|_| "state unavailable".to_string())?;
+        let pane = data
+            .panes
+            .get(pane_id)
+            .ok_or_else(|| "agent_not_found: no such pane".to_string())?
+            .clone();
+        let presentation = pane_agent_presentation(&pane, &data);
+        Ok((pane, presentation))
+    }
+
+    /// Thin adapter: gathers the plain-data context the chat module
+    /// needs (live cwd, process map, pane tail) from terminal state.
+    /// Chat logic never touches BuiltinState directly.
+    fn pane_context(&self, pane: &PaneRecord) -> chat_lens::PaneContext {
         let live_cwd = self
             .terminal(&pane.terminal_id)
             .and_then(|terminal| live_process_cwd(terminal.child_pid()))
             .unwrap_or_else(|| pane.cwd.clone());
-        let processes = process_table().unwrap_or_default();
-        let by_pid: HashMap<u32, bool> = processes.iter().map(|p| (p.pid, true)).collect();
+        let processes: Vec<chat_lens::ProcessRow> = process_table()
+            .unwrap_or_default()
+            .iter()
+            .map(|p| chat_lens::ProcessRow::new(p.pid, p.ppid))
+            .collect();
         let terminal_pid = self
             .terminal(&pane.terminal_id)
             .and_then(|terminal| terminal.child_pid());
@@ -1292,23 +1284,11 @@ impl BuiltinState {
                 )
             })
             .unwrap_or_default();
-        let index = jcode_store_index();
-        let resolution = index.resolve(
-            &live_cwd,
-            &|pid| by_pid.contains_key(&pid),
-            &|pid| process_in_tree(pid, terminal_pid, &processes),
-            &pane_tail,
-        );
-        match resolution {
-            JcodeSessionResolution::Resolved { session_id } => Ok(session_id),
-            JcodeSessionResolution::Refused { reason } => Err(match reason {
-                RefusalReason::NoSessionPath => {
-                    "no_session_path: could not find a matching jcode session".to_string()
-                }
-                RefusalReason::Ambiguous => {
-                    "ambiguous: multiple jcode sessions match this pane".to_string()
-                }
-            }),
+        chat_lens::PaneContext {
+            live_cwd,
+            terminal_pid,
+            processes,
+            pane_tail,
         }
     }
 
@@ -2727,16 +2707,13 @@ struct PaneAgentPresentation {
     status: &'static str,
 }
 
-/// Agents the Chat lens supports for transcript rendering. Start set
-/// per the design: jcode only. Everything else keeps `agent_session:
-/// null` and the Chat|Terminal toggle hidden.
-const TRANSCRIPT_SUPPORTED_AGENTS: &[&str] = &["jcode"];
-
-/// Resolves a pane's `agent_session` (design section 6). `null` for
-/// unsupported agents (Chat lens hidden); `{kind, resolvable}` for
-/// jcode panes with the evidenced session id when resolution succeeds.
-/// Read-only over the jcode store; the evidence index is cached with a
-/// throttled stat-only sweep.
+/// Resolves a pane's `agent_session` (design section 6) by delegating
+/// to the chat module: `null` for unsupported agents (Chat lens
+/// hidden); `{kind, resolvable, session_id}` for jcode panes when
+/// resolution succeeds. The pane tail uses the same verbatim strip as
+/// pane_context, so agent_session, conversation and tool output all
+/// resolve to the SAME session (the VT-emulation tail let spinner
+/// redraws flip twin panes ambiguous — found live).
 fn pane_agent_session(
     pane: &PaneRecord,
     data: &BuiltinData,
@@ -2745,18 +2722,19 @@ fn pane_agent_session(
     let Some(agent) = presentation.agent else {
         return Value::Null;
     };
-    if !TRANSCRIPT_SUPPORTED_AGENTS.contains(&agent) {
+    if !chat_lens::agent_supported(Some(agent)) {
         return Value::Null;
     }
-    // Live cwd preferred (the shell may have cd-ed since spawn),
-    // registered cwd as fallback — same semantics as tab.promote.
     let live_cwd = data
         .terminals
         .get(&pane.terminal_id)
         .and_then(|terminal| live_process_cwd(terminal.child_pid()))
         .unwrap_or_else(|| pane.cwd.clone());
-    let processes = process_table().unwrap_or_default();
-    let by_pid: HashMap<u32, bool> = processes.iter().map(|p| (p.pid, true)).collect();
+    let processes: Vec<chat_lens::ProcessRow> = process_table()
+        .unwrap_or_default()
+        .iter()
+        .map(|p| chat_lens::ProcessRow::new(p.pid, p.ppid))
+        .collect();
     let terminal_pid = data
         .terminals
         .get(&pane.terminal_id)
@@ -2764,155 +2742,22 @@ fn pane_agent_session(
     let pane_tail = data
         .terminals
         .get(&pane.terminal_id)
-        .map(|terminal| terminal.history_tail_text(DETECTION_TAIL_BYTES))
-        .unwrap_or_default();
-    let index = jcode_store_index();
-    match index.resolve(
-        &live_cwd,
-        &|pid| by_pid.contains_key(&pid),
-        &|pid| process_in_tree(pid, terminal_pid, &processes),
-        &pane_tail,
-    ) {
-        JcodeSessionResolution::Resolved { session_id } => json!({
-            "kind": agent,
-            "resolvable": true,
-            "session_id": session_id,
-        }),
-        JcodeSessionResolution::Refused { reason } => json!({
-            "kind": agent,
-            "resolvable": false,
-            "reason": reason.as_str(),
-        }),
-    }
-}
-
-/// Global cached evidence index over `~/.jcode/sessions`. Same
-/// process-lifetime pattern as the process-table cache.
-fn jcode_store_index() -> &'static JcodeStoreIndex {
-    static INDEX: OnceLock<JcodeStoreIndex> = OnceLock::new();
-    INDEX.get_or_init(JcodeStoreIndex::new)
-}
-
-/// Full conversation payload for a jcode pane (design section 4). The
-/// stat signature of BOTH files (snapshot + journal) forms the response
-/// `version`: an in-place rewrite (jcode writes tmp + rename) bumps it,
-/// and any rotation/compaction changes it — so the client can render
-/// append-only while it is unchanged (round 11).
-fn build_jcode_conversation(state: &BuiltinState, pane: &PaneRecord) -> Result<Value, String> {
-    // Resolution (pid evidence, live-pid+Active, recency tiebreak) is
-    // shared with pane.tool_output: the conversation and every fetched
-    // output must come from the SAME session.
-    let session_id = state.resolve_pane_session(pane)?;
-    let index = jcode_store_index();
-
-    let store_dir = index.store_dir();
-    let messages = crate::jcode_transcript::load_session_messages(store_dir, &session_id);
-    let compaction = crate::jcode_transcript::load_compaction(store_dir, &session_id);
-    // Both files unreadable/unparseable NOW (they existed at sweep time —
-    // rotation or a deleted session raced us): transcript_missing.
-    // Zero messages alone is a LEGITIMATE state (compact-only sessions,
-    // empty fresh sessions) — render, never error (design section 3).
-    if messages.is_empty() && compaction.is_none() {
-        let snapshot_readable = std::fs::read_to_string(store_dir.join(format!("{session_id}.json")))
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .is_some();
-        let journal_readable = std::fs::read(store_dir.join(format!("{session_id}.journal.jsonl")))
-            .is_ok();
-        if !snapshot_readable && !journal_readable {
-            return Err("transcript_missing: session files are unreadable".to_string());
-        }
-    }
-    let mut turns = crate::jcode_transcript::parse_jcode_transcript(&messages);
-    if let Some(summary) = compaction {
-        // The server emits compaction as its own leading user turn and
-        // drops nothing; the client renders it as a collapsed summary
-        // widget (design section 3, reference isCompactSummary).
-        turns.insert(
-            0,
-            crate::jcode_transcript::Turn {
-                role: crate::jcode_transcript::TurnRole::User,
-                ts: None,
-                end_ts: None,
-                parts: vec![crate::jcode_transcript::TurnPart::Compact { summary }],
-            },
-        );
-    }
-    let version = index.session_generation(&session_id);
-    let (model, status, reasoning_effort) = index.session_model_status(&session_id);
-    Ok(json!({
-        "source": "jcode-transcript",
-        "session_id": session_id,
-        "turns": turns.iter().map(turn_json).collect::<Vec<_>>(),
-        "cursor": null,
-        "model": model,
-        "reasoning_effort": reasoning_effort,
-        "status": status,
-        "version": version,
-    }))
-}
-
-fn turn_json(turn: &crate::jcode_transcript::Turn) -> Value {
-    use crate::jcode_transcript::TurnPart;
-    let parts = turn
-        .parts
-        .iter()
-        .map(|part| match part {
-            TurnPart::Text { text } => json!({ "kind": "text", "text": text }),
-            TurnPart::Thinking { text } => json!({ "kind": "thinking", "text": text }),
-            TurnPart::Tool { name, brief, input, output, is_error, output_ref, output_size } => {
-                let mut part = json!({
-                    "kind": "tool", "name": name, "brief": brief,
-                    "input": input, "output": output, "is_error": is_error,
-                });
-                if let Some(reference) = output_ref {
-                    part["output_ref"] = Value::String(reference.clone());
-                    if let Some(size) = output_size {
-                        part["output_size"] = Value::from(*size);
-                    }
-                }
-                part
-            }
-            TurnPart::ToolPending { name } => json!({ "kind": "tool_pending", "name": name }),
-            TurnPart::Compact { summary } => json!({ "kind": "compact", "summary": summary }),
+        .map(|terminal| {
+            terminal_text::strip_ansi_lossy(
+                &String::from_utf8_lossy(&terminal.history_bytes()),
+                terminal_text::StripCarriageReturn::Drop,
+            )
         })
-        .collect::<Vec<_>>();
-    json!({
-        "role": match turn.role {
-            crate::jcode_transcript::TurnRole::User => "user",
-            crate::jcode_transcript::TurnRole::Assistant => "assistant",
+        .unwrap_or_default();
+    chat_lens::agent_session(
+        agent,
+        &chat_lens::PaneContext {
+            live_cwd,
+            terminal_pid,
+            processes,
+            pane_tail,
         },
-        "ts": turn.ts,
-        "end_ts": turn.end_ts,
-        "parts": parts,
-    })
-}
-
-/// True when `pid` is inside the pane's process tree (the pane's PTY
-/// child or any of its descendants). Evidence pid must be inside the
-/// tree for step-1 resolution; jcode launched from this shell is.
-fn process_in_tree(pid: u32, root_pid: Option<u32>, processes: &[ProcessInfo]) -> bool {
-    let Some(root_pid) = root_pid else {
-        return false;
-    };
-    let mut children = HashMap::<u32, Vec<u32>>::new();
-    for process in processes {
-        children.entry(process.ppid).or_default().push(process.pid);
-    }
-    let mut stack = vec![root_pid];
-    let mut seen = HashSet::new();
-    while let Some(current) = stack.pop() {
-        if current == pid {
-            return true;
-        }
-        if !seen.insert(current) {
-            continue;
-        }
-        if let Some(child_pids) = children.get(&current) {
-            stack.extend(child_pids.iter().copied());
-        }
-    }
-    false
+    )
 }
 
 fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPresentation {

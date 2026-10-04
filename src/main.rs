@@ -43,6 +43,7 @@ mod builtin_events;
 mod compat;
 mod file_browser;
 mod git_ui;
+mod chat_lens;
 mod jcode_transcript;
 mod lsp;
 mod protocol;
