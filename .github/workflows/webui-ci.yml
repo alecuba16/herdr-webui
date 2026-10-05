@@ -42,24 +42,45 @@ jobs:
 
       - name: Composer e2e
         run: |
-          scripts/e2e/run-composer-e2e.sh || {
-            echo "composer e2e failed once, retrying (runner timing flake)"
-            scripts/e2e/run-composer-e2e.sh
-          }
+          if scripts/e2e/run-composer-e2e.sh; then
+            exit 0
+          fi
+          echo "::warning::composer e2e failed on first attempt, retrying (possible runner timing flake)"
+          echo "composer-e2e: first attempt failed, retrying" >> "$GITHUB_STEP_SUMMARY"
+          if scripts/e2e/run-composer-e2e.sh; then
+            echo "composer-e2e: retry passed (first-attempt failure was masked; see annotations)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "composer-e2e: retry also failed" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Lens e2e
         run: |
-          scripts/e2e/run-lens-e2e.sh || {
-            echo "lens e2e failed once, retrying (runner timing flake)"
-            scripts/e2e/run-lens-e2e.sh
-          }
+          if scripts/e2e/run-lens-e2e.sh; then
+            exit 0
+          fi
+          echo "::warning::lens e2e failed on first attempt, retrying (possible runner timing flake)"
+          echo "lens-e2e: first attempt failed, retrying" >> "$GITHUB_STEP_SUMMARY"
+          if scripts/e2e/run-lens-e2e.sh; then
+            echo "lens-e2e: retry passed (first-attempt failure was masked; see annotations)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "lens-e2e: retry also failed" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Lens chat e2e
         run: |
-          scripts/e2e/run-lens-chat-e2e.sh || {
-            echo "lens chat e2e failed once, retrying (runner timing flake)"
-            scripts/e2e/run-lens-chat-e2e.sh
-          }
+          if scripts/e2e/run-lens-chat-e2e.sh; then
+            exit 0
+          fi
+          echo "::warning::lens chat e2e failed on first attempt, retrying (possible runner timing flake)"
+          echo "lens-chat-e2e: first attempt failed, retrying" >> "$GITHUB_STEP_SUMMARY"
+          if scripts/e2e/run-lens-chat-e2e.sh; then
+            echo "lens-chat-e2e: retry passed (first-attempt failure was masked; see annotations)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "lens-chat-e2e: retry also failed" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Build release
         run: cargo build --release --target-dir target
