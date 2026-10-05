@@ -619,6 +619,39 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
     }
 
+    /// Pins finding #4's last line of defense: the isolation guard must
+    /// PANIC when XDG is unset, so an unisolated persisting test fails
+    /// loudly instead of silently overwriting the operator's real
+    /// settings/sidecar files. Proves the guard fires (a guard that
+    /// silently passes is worse than no guard).
+    #[test]
+    #[should_panic(expected = "test would write the real settings path")]
+    fn isolation_guard_panics_when_xdg_unset() {
+        let _guard = lock_env();
+        std::env::remove_var("XDG_CONFIG_HOME");
+        assert_test_settings_isolation();
+    }
+
+    /// The guard must NOT fire when isolation is in place, and the save
+    /// path it protects must then target the isolated location.
+    #[test]
+    fn isolation_guard_passes_and_save_targets_isolated_path() {
+        let _guard = lock_env();
+        let xdg = std::env::temp_dir().join(format!("herdr-guard-pass-{}", std::process::id()));
+        std::env::set_var("XDG_CONFIG_HOME", &xdg);
+        assert_test_settings_isolation();
+        let settings = valid_settings();
+        save_runtime_server_settings(&settings).unwrap();
+        let written = server_settings_path();
+        assert!(
+            written.starts_with(&xdg),
+            "save landed at {}",
+            written.display()
+        );
+        let _ = std::fs::remove_dir_all(&xdg);
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
     #[test]
     fn rejects_local_bind_without_credentials_or_bypass() {
         let mut settings = valid_settings();
