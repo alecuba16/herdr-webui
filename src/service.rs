@@ -768,7 +768,6 @@ unsafe fn libc_geteuid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     fn test_config(tls: crate::TlsConfig) -> WebConfig {
         WebConfig {
@@ -889,7 +888,7 @@ mod tests {
 
     #[test]
     fn service_files_include_env_and_all_tls_modes() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         std::env::set_var("HERDR_WEB_HERDR_BIN", "herdr & helper");
 
         let tls = crate::TlsConfig {
@@ -923,7 +922,7 @@ mod tests {
 
     #[test]
     fn linux_service_exists_checks_config_home_path() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let base =
             std::env::temp_dir().join(format!("herdr-webui-service-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
@@ -947,14 +946,19 @@ mod tests {
     /// Reuses the crate-wide env lock from `tests.rs` instead of a private
     /// mutex: a module-private lock lets a HOME/XDG window here race any
     /// other module's env-mutating window (server_settings, parity e2e)
-    /// in the same test binary.
-    fn env_lock() -> &'static Mutex<()> {
+    /// in the same test binary. Recovers from poison like the other
+    /// module wrappers (theme, web_api, tests::lock_env): a panicking
+    /// env-lock test must fail alone, not cascade PoisonError into every
+    /// other service test (observed on CI run 37284885503: 12 failures).
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         crate::tests::env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 
     #[test]
     fn copy_executable_copies_content_and_sets_mode() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let base =
             std::env::temp_dir().join(format!("herdr-webui-copy-exe-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
@@ -982,7 +986,7 @@ mod tests {
 
     #[test]
     fn copy_executable_refreshes_existing_file_in_place_preserving_inode() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let base = std::env::temp_dir().join(format!(
             "herdr-webui-copy-in-place-test-{}",
             std::process::id()
@@ -1027,7 +1031,7 @@ mod tests {
 
     #[test]
     fn copy_executable_reports_same_file_without_copying() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let base = std::env::temp_dir().join(format!(
             "herdr-webui-copy-same-file-test-{}",
             std::process::id()
@@ -1071,7 +1075,7 @@ mod tests {
 
     #[test]
     fn copy_executable_writes_through_symlinked_target() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let base = std::env::temp_dir().join(format!(
             "herdr-webui-copy-symlink-test-{}",
             std::process::id()
@@ -1107,7 +1111,7 @@ mod tests {
 
     #[test]
     fn copy_executable_recreates_dangling_symlink_target() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let base = std::env::temp_dir().join(format!(
             "herdr-webui-copy-dangling-link-test-{}",
             std::process::id()
@@ -1141,7 +1145,7 @@ mod tests {
 
     #[test]
     fn copy_executable_follows_symlink_chain_to_real_target() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let base = std::env::temp_dir().join(format!(
             "herdr-webui-copy-link-chain-test-{}",
             std::process::id()
@@ -1183,7 +1187,7 @@ mod tests {
 
     #[test]
     fn copy_executable_reports_same_file_for_sibling_tui_noop() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let base = std::env::temp_dir().join(format!(
             "herdr-webui-copy-tui-noop-test-{}",
             std::process::id()
@@ -1201,7 +1205,7 @@ mod tests {
 
     #[test]
     fn copy_executable_overwrites_stale_temp_file() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let base = std::env::temp_dir().join(format!(
             "herdr-webui-copy-stale-temp-test-{}",
             std::process::id()
@@ -1231,7 +1235,7 @@ mod tests {
 
     #[test]
     fn copy_sibling_tui_installs_present_binary_and_skips_missing() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let original_home = std::env::var_os("HOME");
         let home = std::env::temp_dir().join(format!(
             "herdr-webui-sibling-tui-test-{}",
@@ -1277,7 +1281,7 @@ mod tests {
 
     #[test]
     fn tui_install_path_targets_local_bin() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let original_home = std::env::var_os("HOME");
         let home =
             std::env::temp_dir().join(format!("herdr-webui-tui-path-test-{}", std::process::id()));

@@ -632,12 +632,36 @@ mod tests {
     /// loudly instead of silently overwriting the operator's real
     /// settings/sidecar files. Proves the guard fires (a guard that
     /// silently passes is worse than no guard).
+    ///
+    /// Runs under catch_unwind instead of #[should_panic]: a should_panic
+    /// test unwinds through the shared env lock with the panic still
+    /// "uncaught", so std poisons the mutex and every later env-lock test
+    /// in the binary cascades with PoisonError (observed on CI: 12 service
+    /// tests). catch_unwind catches the panic before the lock guard drops,
+    /// so the mutex stays healthy, and XDG_CONFIG_HOME is restored so the
+    /// unset window cannot leak into later tests.
     #[test]
-    #[should_panic(expected = "test would write the real settings path")]
     fn isolation_guard_panics_when_xdg_unset() {
         let _guard = lock_env();
+        let saved = std::env::var("XDG_CONFIG_HOME");
         std::env::remove_var("XDG_CONFIG_HOME");
-        assert_test_settings_isolation();
+        let caught = std::panic::catch_unwind(assert_test_settings_isolation);
+        let payload = caught.expect_err("isolation guard must panic when XDG_CONFIG_HOME is unset");
+        let panic_msg: String = if let Some(s) = payload.downcast_ref::<&'static str>() {
+            (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            String::from("<non-string panic payload>")
+        };
+        assert!(
+            panic_msg.contains("test would write the real settings path"),
+            "isolation guard panicked with an unexpected message: {panic_msg}"
+        );
+        match saved {
+            Ok(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            Err(_) => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
     }
 
     /// The guard must NOT fire when isolation is in place, and the save
