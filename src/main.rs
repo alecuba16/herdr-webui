@@ -11,8 +11,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
 #[cfg(test)]
-use axum::http::{header, HeaderValue};
+use axum::http::header;
+use axum::http::HeaderValue;
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -1562,7 +1564,40 @@ fn app_router(state: WebState) -> Router {
         .route("/ws/events", get(events_ws))
         .route("/ws/terminal", get(terminal_ws))
         .route("/ws/terminal-graphics", get(terminal_graphics_ws))
+        .layer(middleware::from_fn(security_headers))
         .with_state(state)
+}
+
+/// Baseline security headers on every HTTP response. The app never frames
+/// itself (DOMPurify even forbids iframes in markdown previews), so DENY is
+/// safe. `no-store` is limited to `/api/` responses: those may carry session
+/// or settings data that must not survive in intermediary caches, while
+/// static assets cache normally. WebSocket upgrades (101) skip the cache
+/// header entirely: the response body is a protocol switch, not content.
+async fn security_headers(request: axum::extract::Request, next: Next) -> Response {
+    let is_api = request.uri().path().starts_with("/api/");
+    let mut response = next.run(request).await;
+    let is_upgrade = response.status().as_u16() == 101;
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        axum::http::header::X_FRAME_OPTIONS,
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        axum::http::header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    if is_api && !is_upgrade {
+        headers.insert(
+            axum::http::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        );
+    }
+    response
 }
 
 fn config_dir() -> PathBuf {

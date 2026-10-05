@@ -1221,6 +1221,59 @@ async fn server_settings_api_reports_and_updates_runtime_settings() {
 
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
+async fn every_response_carries_security_headers_and_api_responses_are_no_store() {
+    let _guard = lock_env();
+    let app = test_app();
+
+    // Unauthenticated API responses must still carry the hardening headers
+    // and must never be cacheable: the 401 body itself is fine to cache, but
+    // an authed response captured by an intermediary would leak data.
+    let api = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/api/sessions")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(api.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        api.headers().get(header::X_CONTENT_TYPE_OPTIONS),
+        Some(&HeaderValue::from_static("nosniff"))
+    );
+    assert_eq!(
+        api.headers().get(header::X_FRAME_OPTIONS),
+        Some(&HeaderValue::from_static("DENY"))
+    );
+    assert_eq!(
+        api.headers().get(header::REFERRER_POLICY),
+        Some(&HeaderValue::from_static("no-referrer"))
+    );
+    assert_eq!(
+        api.headers().get(header::CACHE_CONTROL),
+        Some(&HeaderValue::from_static("no-store"))
+    );
+
+    // Static assets carry the hardening headers but keep normal caching.
+    let asset = app
+        .oneshot(
+            request(Method::GET, "/assets/login.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(asset.status(), StatusCode::OK);
+    assert_eq!(
+        asset.headers().get(header::X_CONTENT_TYPE_OPTIONS),
+        Some(&HeaderValue::from_static("nosniff"))
+    );
+    assert_eq!(asset.headers().get(header::CACHE_CONTROL), None);
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
 async fn versions_api_reports_enabled_backends_from_settings() {
     let _guard = lock_env();
     let config_home = std::env::temp_dir().join(format!(
