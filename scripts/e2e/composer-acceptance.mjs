@@ -131,6 +131,12 @@ await evalApp(`(() => {
   return true;
 })()`);
 // The server types the paste + Enter (gap 300ms) and cat echoes it.
+// The lens covers the grid while open, and covered rendering pauses wterm
+// paints (0161c0f): the echo bytes land in the bridge but the DOM stays
+// frozen until the lens closes. Reading the grid with the lens open can
+// never see the echo, so close it first — which also verifies the unpause
+// repaint contract: the grid must catch up from the bridge after close.
+await evalApp(`HerdrLens.setLens(false)`);
 let echoSeen = false;
 let echoDebug = '';
 for (let i = 0; i < 40 && !echoSeen; i++) {
@@ -141,6 +147,9 @@ for (let i = 0; i < 40 && !echoSeen; i++) {
 }
 check('submit pasted the message into the pane (cat echoes it)', echoSeen,
   echoDebug.slice(0, 200));
+// The composer lives inside the lens: reopen it for the remaining checks.
+await evalApp(`HerdrLens.setLens(true)`);
+await sleep(400);
 
 // The box clears after a successful send.
 await sleep(300);
@@ -261,10 +270,10 @@ check('blocked submit refused server-side with the server-owned note',
   JSON.stringify(refusal));
 check('draft kept after the refusal', refusal && refusal.value === 'must be refused',
   JSON.stringify(refusal && refusal.value));
-// Nothing of the refused message may have reached the pane.
-const paneText = await evalApp(`((document.querySelector('#terminal') || {textContent:''}).textContent || '')`);
-check('refused message never reached the pane',
-  !/must be refused/.test(paneText), '');
+// Nothing of the refused message may have reached the pane. The lens is
+// still open here and covered rendering keeps the grid frozen, so the
+// check reads it AFTER the lens closes below, when the grid shows the
+// full pane content again.
 
 // Feed the pending read so the pane un-blocks cleanly.
 await focusTerm();
@@ -282,6 +291,14 @@ const hiddenAfterLensOff = await evalApp(`(() => {
 })()`);
 check('lens close hides the composer', hiddenAfterLensOff === true,
   `hidden=${hiddenAfterLensOff}`);
+
+// With the lens closed the grid shows the pane again: verify the refused
+// text never reached it. A leak would render here after the unpause
+// repaint, so this is the first point where the check can actually fail.
+const paneText = await evalApp(`((document.querySelector('#terminal') || {textContent:''}).textContent || '')`);
+check('refused message never reached the pane',
+  !/must be refused/.test(paneText),
+  JSON.stringify(paneText.slice(-200)));
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
