@@ -34,6 +34,18 @@
 //! Stale entries: an `ALLOWLIST` entry that no longer matches a real
 //! env-writing fn fails the guard, so the evidence cannot silently rot.
 //!
+//! R1 coverage is order- and scope-sensitive: the lock must be acquired
+//! before the first env write, in the same closure scope. A lock guard
+//! taken in a fn body does not cover env writes inside closures or async
+//! blocks in it (spawned threads and deferred closures can outlive the
+//! guard), and a write before the lock call races the window between fn
+//! start and acquisition. Closures that write env must take the lock in
+//! their own body; a closure defined before the lock and called after it
+//! is covered only via the allowlist (flow-insensitive residual FP).
+//! Locks inside conditionally-executed blocks (`if`/`match` arms) still
+//! cover later writes syntactically: the approximation is order-sensitive,
+//! not flow-sensitive (same residual as before, unchanged in class).
+//!
 //! Known blind spots, accepted as residual risk:
 //! - A `use crate::tests::*;` glob import brings `env_lock` in unqualified,
 //!   and glob-import recording is out of scope for the resolver, so the
@@ -130,6 +142,17 @@ struct FnScan {
     /// Last path segments of fns called with a LOCK_NAMES name, plus the
     /// qualifier path (`crate::tests::env_lock` stores `crate::tests`).
     lock_calls: Vec<(String, String)>,
+    /// Ordered scan events (source order): env writes and lock
+    /// acquisitions with the closure depth at which they occur, plus
+    /// closure-enter markers. R1 coverage is order-sensitive: a write is
+    /// only covered by a lock acquired earlier in the SAME closure scope,
+    /// because a lock guard held by the parent fn does not cover writes
+    /// made by a spawned thread or a deferred closure body.
+    events: Vec<ScanEvent>,
+    /// Current closure nesting depth: closures and async blocks get their
+    /// own scope. A lock in the parent body does not cover a write inside
+    /// a closure body that may run after the guard is dropped.
+    closure_depth: usize,
     unit_mutex_statics: Vec<String>,
     /// Local names bound to env-write paths inside this fn, so calls through
     /// the binding still count (`let write = std::env::set_var;`). Aliases of
@@ -168,6 +191,13 @@ fn path_contains_env_write(path: &syn::Path) -> bool {
 }
 
 impl FnScan {
+    /// Record a lock-name call: into the flat list (resolution) and the
+    /// ordered event stream (R1 coverage check).
+    fn record_lock(&mut self, qual: String, name: String) {
+        self.lock_calls.push((qual.clone(), name.clone()));
+        self.events.push(ScanEvent::Lock(qual, name));
+    }
+
     /// True when the call target references an env write either directly
     /// (`std::env::set_var`, bare `set_var` via a `use std::env::set_var`
     /// import) or through a local binding of this fn
@@ -206,19 +236,20 @@ impl<'ast> Visit<'ast> for FnScan {
                 .unwrap_or_default();
             if self.expr_referencing_env_write(path) {
                 self.env_writes.push(last.clone());
+                self.events.push(ScanEvent::Write);
             }
             if LOCK_NAMES.contains(&last.as_str()) {
                 if let Some((qual, name)) = self.lock_bindings.get(&last).cloned() {
                     // A local binding of a lock path whose name collides with
                     // a LOCK_NAMES name (`let env_lock = lock_env;`): resolve
                     // as the bound path.
-                    self.lock_calls.push((qual, name));
+                    self.record_lock(qual, name);
                 } else if self.locals.contains(&last) {
                     // A local shadowing a lock-name path but bound to
                     // something else (`let env_lock = not_a_lock;
                     // env_lock();`): the call cannot borrow the genuine fn's
                     // reputation. Unprovable marker.
-                    self.lock_calls.push(("<method>".to_string(), last));
+                    self.record_lock("<method>".to_string(), last);
                 } else {
                     let qualifier = path
                         .path
@@ -242,17 +273,17 @@ impl<'ast> Visit<'ast> for FnScan {
                     } else {
                         qualifier
                     };
-                    self.lock_calls.push((qualifier, last));
+                    self.record_lock(qualifier, last);
                 }
             } else if let Some((qual, name)) = self.lock_bindings.get(&last).cloned() {
                 // Call through a local lock binding: `let lock = lock_env;`
                 // `lock()`. Resolve as the bound path.
-                self.lock_calls.push((qual, name));
+                self.record_lock(qual, name);
             } else if self.locals.contains(&last) {
                 // A local shadowing a lock-name path but bound to something
                 // else (`let env_lock = not_a_lock; env_lock();`): the call
                 // cannot borrow the genuine fn's reputation.
-                self.lock_calls.push(("<method>".to_string(), last));
+                self.record_lock("<method>".to_string(), last);
             }
         }
         syn::visit::visit_expr_call(self, call);
@@ -283,9 +314,32 @@ impl<'ast> Visit<'ast> for FnScan {
                     .unwrap_or_else(|| "<method>".to_string()),
                 None => "<method>".to_string(),
             };
-            self.lock_calls.push((qualifier, call.method.to_string()));
+            self.record_lock(qualifier, call.method.to_string());
         }
         syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
+        // A closure body may run after the parent's lock guard is dropped
+        // (spawned threads, deferred calls), so writes inside need a lock
+        // acquired inside the closure body itself. Track the nesting depth
+        // in the event stream; the R1 check requires lock-before-write at
+        // the same depth.
+        self.closure_depth += 1;
+        self.events.push(ScanEvent::EnterClosure);
+        syn::visit::visit_expr_closure(self, closure);
+        self.events.push(ScanEvent::ExitClosure);
+        self.closure_depth -= 1;
+    }
+
+    fn visit_expr_async(&mut self, async_block: &'ast syn::ExprAsync) {
+        // Async blocks have the same deferred-execution semantics as
+        // closures.
+        self.closure_depth += 1;
+        self.events.push(ScanEvent::EnterClosure);
+        syn::visit::visit_expr_async(self, async_block);
+        self.events.push(ScanEvent::ExitClosure);
+        self.closure_depth -= 1;
     }
 
     fn visit_local(&mut self, local: &'ast syn::Local) {
@@ -387,6 +441,19 @@ impl<'ast> Visit<'ast> for FnScan {
         }
         syn::visit::visit_item_static(self, stat);
     }
+}
+
+/// One ordered scan event inside a fn body.
+enum ScanEvent {
+    /// An env write at the current closure depth.
+    Write,
+    /// A lock-name call at the current closure depth (qualifier, name).
+    Lock(String, String),
+    /// Entering a closure or async block: writes inside need their own
+    /// lock acquisition.
+    EnterClosure,
+    /// Leaving a closure or async block.
+    ExitClosure,
 }
 
 /// Fold a use tree inside a fn body (`use std::env::set_var as sv;`) into
@@ -540,6 +607,8 @@ struct ScannedFn {
     is_trait_impl: bool,
     env_writes: Vec<String>,
     lock_calls: Vec<(String, String)>,
+    /// Ordered event stream for the R1 coverage check (see ScanEvent).
+    events: Vec<ScanEvent>,
     unit_mutex_statics: Vec<String>,
 }
 
@@ -569,6 +638,7 @@ fn scan_fn(
         is_trait_impl: false,
         env_writes: scan.env_writes,
         lock_calls: scan.lock_calls,
+        events: scan.events,
         unit_mutex_statics: scan.unit_mutex_statics,
     }
 }
@@ -617,6 +687,7 @@ fn walk_module_items(
                             is_trait_impl,
                             env_writes: scan.env_writes,
                             lock_calls: scan.lock_calls,
+                            events: scan.events,
                             unit_mutex_statics: scan.unit_mutex_statics,
                         });
                     }
@@ -640,6 +711,7 @@ fn walk_module_items(
                                 is_trait_impl: false,
                                 env_writes: scan.env_writes,
                                 lock_calls: scan.lock_calls,
+                                events: scan.events,
                                 unit_mutex_statics: scan.unit_mutex_statics,
                             });
                         }
@@ -1093,19 +1165,48 @@ fn test_env_convention_is_enforced() {
             allowlist_used[slot] = true;
             continue;
         }
-        let mut visiting = Vec::new();
-        let locked = func.lock_calls.iter().any(|(qual, lock)| {
-            lock_call_is_genuine(
-                &fns,
-                &imports,
-                &func.file,
-                &func.module,
-                qual,
-                lock,
-                &mut visiting,
-            )
-        });
-        if locked {
+        // Order-sensitive coverage: walk the event stream. A write is only
+        // covered by a lock acquired earlier in the same closure scope: a
+        // lock guard held by the parent body does not cover writes made by
+        // a spawned thread or a deferred closure (the guard may be dropped
+        // by then), and a write before the lock call races with everything
+        // between the fn start and the acquisition. Each closure depth
+        // carries its own locked flag; a lock at one depth never covers a
+        // write at another.
+        let mut uncovered_write = false;
+        let mut locked_by_depth: Vec<bool> = vec![false];
+        for event in &func.events {
+            match event {
+                ScanEvent::EnterClosure => locked_by_depth.push(false),
+                ScanEvent::ExitClosure => {
+                    locked_by_depth.pop();
+                }
+                ScanEvent::Write => {
+                    if !locked_by_depth.last().copied().unwrap_or(false) {
+                        uncovered_write = true;
+                        break;
+                    }
+                }
+                ScanEvent::Lock(qual, lock) => {
+                    let mut visiting = Vec::new();
+                    let genuine = lock_call_is_genuine(
+                        &fns,
+                        &imports,
+                        &func.file,
+                        &func.module,
+                        qual,
+                        lock,
+                        &mut visiting,
+                    );
+                    if genuine {
+                        if let Some(flag) = locked_by_depth.last_mut() {
+                            *flag = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !uncovered_write {
             continue;
         }
         violations.push(format!(
