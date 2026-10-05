@@ -35,8 +35,11 @@ fn test_state() -> WebState {
             user: Some("user".to_string()),
             password: Some("pass".to_string()),
             localhost_no_auth: false,
-            token: "token-123".to_string(),
-            token_expires_at: crate::auth::never_expires_at(),
+            sessions: vec![crate::auth::SessionRecord {
+                token: "token-123".to_string(),
+                expires_at: crate::auth::never_expires_at(),
+            }],
+            sessions_rev: 1,
             session_expiration_minutes: DEFAULT_SESSION_EXPIRATION_MINUTES,
         })),
         login_limiter: Arc::new(LoginRateLimiter::new()),
@@ -1060,7 +1063,11 @@ fn loads_auth_from_runtime_settings() {
     assert_eq!(auth.user.as_deref(), Some("test-user"));
     assert_eq!(auth.password.as_deref(), Some("test-password"));
     assert!(!auth.localhost_no_auth);
-    assert!(!auth.token.is_empty());
+    assert!(
+        auth.sessions.is_empty(),
+        "fresh config carries no sessions until login or restore"
+    );
+    assert_eq!(auth.sessions_rev, 0);
 }
 
 #[test]
@@ -1210,6 +1217,59 @@ async fn server_settings_api_reports_and_updates_runtime_settings() {
 
     let _ = fs::remove_dir_all(config_home);
     std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn every_response_carries_security_headers_and_api_responses_are_no_store() {
+    let _guard = lock_env();
+    let app = test_app();
+
+    // Unauthenticated API responses must still carry the hardening headers
+    // and must never be cacheable: the 401 body itself is fine to cache, but
+    // an authed response captured by an intermediary would leak data.
+    let api = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/api/sessions")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(api.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        api.headers().get(header::X_CONTENT_TYPE_OPTIONS),
+        Some(&HeaderValue::from_static("nosniff"))
+    );
+    assert_eq!(
+        api.headers().get(header::X_FRAME_OPTIONS),
+        Some(&HeaderValue::from_static("DENY"))
+    );
+    assert_eq!(
+        api.headers().get(header::REFERRER_POLICY),
+        Some(&HeaderValue::from_static("no-referrer"))
+    );
+    assert_eq!(
+        api.headers().get(header::CACHE_CONTROL),
+        Some(&HeaderValue::from_static("no-store"))
+    );
+
+    // Static assets carry the hardening headers but keep normal caching.
+    let asset = app
+        .oneshot(
+            request(Method::GET, "/assets/login.css")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(asset.status(), StatusCode::OK);
+    assert_eq!(
+        asset.headers().get(header::X_CONTENT_TYPE_OPTIONS),
+        Some(&HeaderValue::from_static("nosniff"))
+    );
+    assert_eq!(asset.headers().get(header::CACHE_CONTROL), None);
 }
 
 #[allow(clippy::await_holding_lock)]
@@ -2810,8 +2870,21 @@ async fn index_serves_login_without_auth_and_app_with_auth() {
     assert!(app_js_body.contains("optSoundScope"));
 }
 
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn login_route_sets_cookie_for_valid_credentials() {
+    // The login handler persists the session sidecar; without an XDG
+    // redirect that write lands on the real ~/.config and destroys the
+    // operator's live sessions with fixture tokens.
+    let _guard = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-login-route-test-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let state = test_state();
     let app = test_app_with_state(state.clone());
     let body = Body::from(r#"{"username":"user","password":"pass"}"#);
@@ -2832,8 +2905,23 @@ async fn login_route_sets_cookie_for_valid_credentials() {
         .get(header::SET_COOKIE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.contains("herdr_web_session=") && value.contains("Max-Age=")));
-    assert_ne!(state.auth.lock().unwrap().token, "token-123");
+    assert!(
+        state
+            .auth
+            .lock()
+            .unwrap()
+            .sessions
+            .iter()
+            .any(|session| session.token == "token-123"),
+        "login appends a session: the pre-login session must survive"
+    );
+    assert!(
+        state.auth.lock().unwrap().sessions.len() >= 2,
+        "login adds a new session alongside the pre-login one"
+    );
     assert_eq!(response_json(response).await["ok"], true);
+    let _ = std::fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
 #[tokio::test]
@@ -2855,14 +2943,23 @@ async fn login_route_rejects_invalid_credentials() {
     assert_eq!(response_json(response).await["error"], "unauthorized");
 }
 
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn logout_route_invalidates_session_and_requires_auth() {
+    // Same isolation as the login route test: logout persists the sidecar.
+    let _guard = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-logout-route-test-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let state = test_state();
     let app = test_app_with_state(state.clone());
-    let token = state.auth.lock().unwrap().token.clone();
 
-    // Unauthenticated logout must not rotate the token (it would kill every
-    // active session) and answers 401.
+    // Unauthenticated logout must not revoke anything and answers 401.
     let response = app
         .clone()
         .oneshot(
@@ -2874,13 +2971,13 @@ async fn logout_route_invalidates_session_and_requires_auth() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(state.auth.lock().unwrap().token, token);
+    assert_eq!(state.auth.lock().unwrap().sessions.len(), 1);
 
-    // Authenticated logout rotates the token and clears the cookie.
+    // Authenticated logout revokes exactly the caller's session.
     let response = app
         .oneshot(
             request(Method::POST, "/api/logout")
-                .header(header::COOKIE, format!("herdr_web_session={token}"))
+                .header(header::COOKIE, "herdr_web_session=token-123")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2896,13 +2993,22 @@ async fn logout_route_invalidates_session_and_requires_auth() {
         "logout must clear the browser cookie"
     );
     assert_eq!(response_json(response).await["ok"], true);
-    assert_ne!(state.auth.lock().unwrap().token, token);
+    assert!(
+        state
+            .auth
+            .lock()
+            .unwrap()
+            .sessions
+            .iter()
+            .all(|session| session.token != "token-123"),
+        "the caller's session must be revoked"
+    );
 
     // The old cookie no longer authorizes API calls.
     let response = test_app_with_state(state.clone())
         .oneshot(
             request(Method::GET, "/api/me")
-                .header(header::COOKIE, format!("herdr_web_session={token}"))
+                .header(header::COOKIE, "herdr_web_session=token-123")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2910,10 +3016,25 @@ async fn logout_route_invalidates_session_and_requires_auth() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response_json(response).await["authenticated"], false);
+    let _ = std::fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn login_route_throttles_repeated_failures() {
+    // Failures never mint sessions, but keep the isolation contract for
+    // every auth route test so a future edit persisting on failure
+    // cannot silently write the real sidecar.
+    let _guard = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-throttle-route-test-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let app = test_app();
     for _ in 0..5 {
         let body = Body::from(r#"{"username":"user","password":"wrong"}"#);
@@ -2943,6 +3064,8 @@ async fn login_route_throttles_repeated_failures() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(response_json(response).await["error"], "too many attempts");
+    let _ = std::fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
 }
 
 #[tokio::test]
@@ -3359,7 +3482,12 @@ async fn web_api_client_recovers_after_real_server_token_rotation() {
     // a WebUI restart does to a long-running TUI.
     let state = test_state();
     let auth = Arc::clone(&state.auth);
-    let old_token = auth.lock().unwrap().token.clone();
+    let old_token = auth
+        .lock()
+        .unwrap()
+        .current_session()
+        .map(|session| session.token.clone())
+        .unwrap();
     let app = test_app_with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3388,7 +3516,8 @@ async fn web_api_client_recovers_after_real_server_token_rotation() {
     .await;
     let (client, ()) = outcome.expect("initial authed flow");
 
-    // Rotate the live token: same credentials, fresh per-start token.
+    // Simulate the multi-session world the same way a restart does: keep
+    // credentials, drop the old session, restore a fresh live session set.
     // The client's cached cookie is now stale.
     {
         let mut auth = auth.lock().unwrap();
@@ -3398,7 +3527,13 @@ async fn web_api_client_recovers_after_real_server_token_rotation() {
             auth.localhost_no_auth,
             DEFAULT_SESSION_EXPIRATION_MINUTES,
         );
-        assert_ne!(rotated.token, old_token, "rotation must change the token");
+        assert!(
+            rotated
+                .current_session()
+                .map(|session| session.token.as_str())
+                != Some(old_token.as_str()),
+            "rotation must not keep the old token live"
+        );
         *auth = rotated;
     }
 
@@ -7473,6 +7608,172 @@ async fn update_server_settings_saves_and_returns_updated_settings() {
     assert_eq!(body["session_expiration_minutes"], 30);
     assert_eq!(body["backend_mode"], "builtin");
     assert!(server_settings_path().exists());
+
+    let _ = fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+/// Policy-only saves must adopt the NEW lifetime for every preserved
+/// session. The W18b live run caught the bug: the save path stomped the
+/// incoming policy with the old one before re-anchoring, so a 1-minute
+/// policy flipped to never-expire still killed every browser 60s later.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn update_server_settings_policy_flip_adopts_new_lifetime() {
+    let _guard = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-policy-flip-test-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let state = test_state();
+    let auth = Arc::clone(&state.auth);
+    // Two live browsers, timed policy 30 minutes, sessions near expiry.
+    {
+        let mut auth = auth.lock().unwrap();
+        auth.session_expiration_minutes = 30;
+        let soon = SystemTime::now() + std::time::Duration::from_secs(30);
+        auth.sessions = vec![
+            crate::auth::SessionRecord {
+                token: "token-123".to_string(),
+                expires_at: soon,
+            },
+            crate::auth::SessionRecord {
+                token: "token-456".to_string(),
+                expires_at: soon,
+            },
+        ];
+    }
+    let mut settings = state.server_settings.lock().unwrap();
+    settings.session_expiration_minutes = 30;
+    drop(settings);
+    let app = test_app_with_state(state);
+
+    // Policy-only save: same identity, never-expire from now on.
+    let response = app
+        .oneshot(
+            authed_request(Method::POST, "/api/server-settings")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "bind": DEFAULT_BIND,
+                        "username": "user",
+                        "password": "pass",
+                        "localhost_no_auth": false,
+                        "session_expiration_minutes": 0,
+                        "backend_mode": "builtin",
+                        "builtin_backend_enabled": true,
+                        "external_herdr_backend_enabled": true,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    {
+        let auth = auth.lock().unwrap();
+        assert_eq!(
+            auth.session_expiration_minutes, 0,
+            "the new policy must be adopted, not stomped by the old value"
+        );
+        assert_eq!(auth.sessions.len(), 2, "both sessions preserved");
+        for session in &auth.sessions {
+            assert_eq!(
+                session.expires_at,
+                crate::auth::never_expires_at(),
+                "re-anchor must stamp the never-expire sentinel on every session"
+            );
+        }
+    }
+
+    let _ = fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+/// The reverse flip (never-expire -> timed) must equally re-anchor: a
+/// session that used to live forever now carries the timed deadline.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn update_server_settings_policy_flip_never_to_timed_anchors_deadline() {
+    let _guard = lock_env();
+    let config_home = std::env::temp_dir().join(format!(
+        "herdr-webui-policy-flip-rev-test-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let state = test_state();
+    let auth = Arc::clone(&state.auth);
+    // Never-expire policy, one never session, one already-lapsed session.
+    {
+        let mut auth = auth.lock().unwrap();
+        auth.session_expiration_minutes = 0;
+        auth.sessions = vec![
+            crate::auth::SessionRecord {
+                token: "token-123".to_string(),
+                expires_at: crate::auth::never_expires_at(),
+            },
+            crate::auth::SessionRecord {
+                token: "token-lapsed".to_string(),
+                expires_at: SystemTime::now() - std::time::Duration::from_secs(1),
+            },
+        ];
+    }
+    let mut settings = state.server_settings.lock().unwrap();
+    settings.session_expiration_minutes = 0;
+    drop(settings);
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::POST, "/api/server-settings")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "bind": DEFAULT_BIND,
+                        "username": "user",
+                        "password": "pass",
+                        "localhost_no_auth": false,
+                        "session_expiration_minutes": 45,
+                        "backend_mode": "builtin",
+                        "builtin_backend_enabled": true,
+                        "external_herdr_backend_enabled": true,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    {
+        let auth = auth.lock().unwrap();
+        assert_eq!(
+            auth.session_expiration_minutes, 45,
+            "the new timed policy must be adopted"
+        );
+        let valid: Vec<_> = auth
+            .sessions
+            .iter()
+            .filter(|session| session.token == "token-123")
+            .collect();
+        assert_eq!(valid.len(), 1, "live session preserved across the flip");
+        let deadline = SystemTime::now() + std::time::Duration::from_secs(45 * 60);
+        assert!(
+            valid[0].expires_at > SystemTime::now() + std::time::Duration::from_secs(40 * 60),
+            "re-anchor must stamp the timed deadline, not keep never-expire"
+        );
+        assert!(valid[0].expires_at <= deadline);
+    }
 
     let _ = fs::remove_dir_all(config_home);
     std::env::remove_var("XDG_CONFIG_HOME");

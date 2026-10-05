@@ -10,7 +10,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use herdr_webui::backend_client::{BackendClient, TerminalEvent, TerminalOutput};
-use herdr_webui::tui::web_api::WebApiClient;
+use herdr_webui::tui::web_api::{default_web_api_port, WebApiClient};
 use herdr_webui::tui::{
     build_client, is_menu_key, key_to_terminal_bytes, render, snapshot_summary, TuiApp, TuiMode,
     TuiOptions, TuiScreen,
@@ -423,9 +423,8 @@ impl Cli {
         }
         let web_api = match web_api {
             Some(client) => client,
-            None => {
-                WebApiClient::discover().unwrap_or_else(|_| WebApiClient::new("127.0.0.1", 8787))
-            }
+            None => WebApiClient::discover()
+                .unwrap_or_else(|_| WebApiClient::new("127.0.0.1", default_web_api_port())),
         };
         options.web_api = web_api;
         Ok(Self {

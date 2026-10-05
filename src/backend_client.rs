@@ -532,9 +532,24 @@ fn runtime_settings_path() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
         return PathBuf::from(dir).join("herdr-webui/webui-settings.json");
     }
-    std::env::var("HOME")
-        .map(|home| PathBuf::from(home).join(".config/herdr-webui/webui-settings.json"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("herdr-webui/webui-settings.json"))
+    #[cfg(test)]
+    {
+        // Tests must never resolve the operator's real settings path: a
+        // test that constructs a builtin-session client would land on the
+        // LIVE backend socket (~/.config/herdr-webui/builtin/*/herdr.sock)
+        // and issue real API calls against the running server - minting
+        // real sessions and mutating real workspace state. Tests that
+        // deliberately target a real-shaped path set XDG_CONFIG_HOME
+        // themselves (see runtime_settings_path_uses_xdg_home...), so an
+        // unset XDG in a test means "give me a nonexistent socket".
+        std::env::temp_dir().join("herdr-webui-test-no-backend")
+    }
+    #[cfg(not(test))]
+    {
+        std::env::var("HOME")
+            .map(|home| PathBuf::from(home).join(".config/herdr-webui/webui-settings.json"))
+            .unwrap_or_else(|_| std::env::temp_dir().join("herdr-webui/webui-settings.json"))
+    }
 }
 
 fn safe_socket_component(value: &str) -> String {
@@ -873,34 +888,29 @@ mod tests {
     }
 
     #[test]
-    fn runtime_settings_path_uses_xdg_home_and_temp_fallbacks() {
+    fn runtime_settings_path_prefers_xdg_and_isolates_default_in_tests() {
         let _guard = env_lock().lock().unwrap();
         let original_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let original_home = std::env::var_os("HOME");
         let xdg = PathBuf::from("/tmp").join(unique_name("xdg-config"));
-        let home = PathBuf::from("/tmp").join(unique_name("home-config"));
 
         std::env::set_var("XDG_CONFIG_HOME", &xdg);
-        std::env::set_var("HOME", &home);
         assert_eq!(
             runtime_settings_path(),
             xdg.join("herdr-webui/webui-settings.json")
         );
 
+        // In test builds the default must NEVER fall back to the operator's
+        // real HOME config: that is the exact path that reaches the LIVE
+        // backend socket. Unset XDG = nonexistent isolated path. The prod
+        // HOME fallback lives under cfg(not(test)) and is therefore not
+        // exercisable from this suite by construction.
         std::env::remove_var("XDG_CONFIG_HOME");
         assert_eq!(
             runtime_settings_path(),
-            home.join(".config/herdr-webui/webui-settings.json")
-        );
-
-        std::env::remove_var("HOME");
-        assert_eq!(
-            runtime_settings_path(),
-            std::env::temp_dir().join("herdr-webui/webui-settings.json")
+            std::env::temp_dir().join("herdr-webui-test-no-backend")
         );
 
         restore_env_var("XDG_CONFIG_HOME", original_xdg);
-        restore_env_var("HOME", original_home);
     }
 
     #[test]

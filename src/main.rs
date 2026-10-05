@@ -11,8 +11,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
 #[cfg(test)]
-use axum::http::{header, HeaderValue};
+use axum::http::header;
+use axum::http::HeaderValue;
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -888,14 +890,23 @@ async fn main() -> io::Result<()> {
         server_settings.backend_mode = backend_mode;
     }
     let mut auth_config = AuthConfig::from_settings(&server_settings)?;
-    // Never-expiring sessions survive the restart: restore the persisted
-    // token so open windows keep their cookie instead of bouncing to the
-    // login page on every WebUI restart. Timed sessions keep the fresh
-    // boot token (restoring them would break their expiry).
-    if auth_config.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER {
-        if let Some(token) = crate::server_settings::load_persisted_session_token() {
-            auth_config.token = token;
-        }
+    // Sessions survive the restart: restore the persisted session set
+    // (records still valid) so open windows keep their cookies instead of
+    // bouncing to the login page on every WebUI restart. The loader drops
+    // lapsed records, so a timed token is never resurrected past its
+    // expiry, and it understands every sidecar format ever written
+    // (multi-session array, older single-record JSON, legacy raw token).
+    if let Some(record) = crate::server_settings::load_persisted_session_token() {
+        auth_config.restore_sessions(
+            record
+                .sessions
+                .into_iter()
+                .map(|session| crate::auth::SessionRecord {
+                    expires_at: session.to_system_time(),
+                    token: session.token,
+                })
+                .collect(),
+        );
     }
     let auth = Arc::new(Mutex::new(auth_config));
     let backend_mode = resolve_backend_mode(
@@ -1553,7 +1564,40 @@ fn app_router(state: WebState) -> Router {
         .route("/ws/events", get(events_ws))
         .route("/ws/terminal", get(terminal_ws))
         .route("/ws/terminal-graphics", get(terminal_graphics_ws))
+        .layer(middleware::from_fn(security_headers))
         .with_state(state)
+}
+
+/// Baseline security headers on every HTTP response. The app never frames
+/// itself (DOMPurify even forbids iframes in markdown previews), so DENY is
+/// safe. `no-store` is limited to `/api/` responses: those may carry session
+/// or settings data that must not survive in intermediary caches, while
+/// static assets cache normally. WebSocket upgrades (101) skip the cache
+/// header entirely: the response body is a protocol switch, not content.
+async fn security_headers(request: axum::extract::Request, next: Next) -> Response {
+    let is_api = request.uri().path().starts_with("/api/");
+    let mut response = next.run(request).await;
+    let is_upgrade = response.status().as_u16() == 101;
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        axum::http::header::X_FRAME_OPTIONS,
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        axum::http::header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    if is_api && !is_upgrade {
+        headers.insert(
+            axum::http::header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        );
+    }
+    response
 }
 
 fn config_dir() -> PathBuf {
@@ -2393,11 +2437,87 @@ async fn update_server_settings(
                 .into_response();
         }
     };
-    if let Ok(mut auth_lock) = state.auth.lock() {
-        *auth_lock = auth;
-    }
-    // The settings save rotated the token; keep the sidecar in sync so a
-    // restart restores the new token (or drops it for timed sessions).
+    // Identity-relevant fields decide whether sessions must reset. A save
+    // that only touches bind, TLS, backends, or the default folder must not
+    // invalidate any open browser: every existing cookie stays valid.
+    // Credential (or localhost-bypass) changes reset every session and mint
+    // one fresh for the caller: keeping tokens across a credential change
+    // would let a browser authorized under the old credentials keep access
+    // under the new ones. An expiration-policy change without a credential
+    // change keeps every session but re-anchors their expiries to the new
+    // policy, so other browsers stay logged in with the new lifetime.
+    let secure = next.tls_mode.cookie_secure();
+    let identity_changed = {
+        let Ok(current_auth) = state.auth.lock() else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "auth unavailable" })),
+            )
+                .into_response();
+        };
+        current_auth.user != auth.user
+            || current_auth.password != auth.password
+            || current_auth.localhost_no_auth != auth.localhost_no_auth
+    };
+    let policy_changed = {
+        let Ok(current_auth) = state.auth.lock() else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "auth unavailable" })),
+            )
+                .into_response();
+        };
+        !identity_changed
+            && current_auth.session_expiration_minutes != auth.session_expiration_minutes
+    };
+    let rotated_cookie = {
+        let Ok(mut auth_lock) = state.auth.lock() else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "auth unavailable" })),
+            )
+                .into_response();
+        };
+        if identity_changed {
+            // Reset every session (old tokens die: a browser authorized under
+            // old credentials must not keep access) and mint one for THIS
+            // browser on the same response, so the save does not instantly
+            // 401 the caller into the login page.
+            *auth_lock = auth;
+            let record = auth_lock.reset_sessions();
+            Some((record.token, AuthConfig::cookie_max_age(record.expires_at)))
+        } else if policy_changed {
+            // Policy-only change: keep every session, adopt the new lifetime.
+            // The incoming `auth` already carries the new policy from the
+            // saved settings; only the session set (and its rev) carries
+            // over, then re-anchor stamps the new lifetime on every session.
+            let mut preserved = auth;
+            preserved.sessions = auth_lock.sessions.clone();
+            preserved.sessions_rev = auth_lock.sessions_rev;
+            *auth_lock = preserved;
+            let new_expiry = auth_lock.reanchor_expiries();
+            new_expiry.map(|expiry| {
+                let token = auth_lock
+                    .current_session()
+                    .map(|session| session.token.clone())
+                    .unwrap_or_default();
+                (token, AuthConfig::cookie_max_age(expiry))
+            })
+        } else {
+            // Benign save: keep the current sessions AND their expiries so
+            // running logins are untouched (the fresh `auth` carried a new
+            // token set and a re-anchored expiry that would silently change
+            // policy).
+            let mut preserved = auth;
+            preserved.sessions = auth_lock.sessions.clone();
+            preserved.sessions_rev = auth_lock.sessions_rev;
+            preserved.session_expiration_minutes = auth_lock.session_expiration_minutes;
+            *auth_lock = preserved;
+            None
+        }
+    };
+    // Keep the sidecar in sync with whatever token now lives in the auth
+    // cell (rotated on an identity change, preserved on a benign save).
     persist_session_token(&state);
     if let Ok(mut settings_lock) = state.server_settings.lock() {
         *settings_lock = next.clone();
@@ -2421,7 +2541,11 @@ async fn update_server_settings(
         },
         "default_backend": default_backend_target(&state).as_str(),
     }));
-    Json(settings_public_json(&next)).into_response()
+    let mut response = Json(settings_public_json(&next)).into_response();
+    if let Some((token, max_age)) = rotated_cookie {
+        crate::auth::attach_session_cookie(&mut response, &token, max_age, secure);
+    }
+    response
 }
 
 async fn sessions(
@@ -3110,9 +3234,9 @@ async fn login(
             &format!("login: localhost bypass for {remote}"),
         );
         let response = crate::auth::login_response(&state.auth, secure);
-        // The bypass still rotated the token; keep the sidecar in sync or a
-        // restart would resurrect the pre-bypass token and log out every
-        // non-localhost browser holding the rotated cookie.
+        // The bypass login still issues a session (the browser may need
+        // the cookie for non-localhost access later); keep the sidecar in
+        // sync so a restart preserves every browser's session.
         persist_session_token(&state);
         return response;
     }
@@ -3145,9 +3269,9 @@ async fn logout(
     headers: HeaderMap,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
 ) -> Response {
-    // Only authenticated callers can log out; the token rotation inside
+    // Only authenticated callers can log out; the revocation inside
     // logout_response is the actual invalidation, so an unauthenticated POST
-    // must not trigger it (it would kill every active session).
+    // must not trigger it.
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
@@ -3156,48 +3280,65 @@ async fn logout(
         .lock()
         .map(|settings| settings.tls_mode.cookie_secure())
         .unwrap_or(false);
-    log_event(&state.log_level(), "logout: session invalidated");
-    let response = crate::auth::logout_response(&state.auth, secure);
+    // Scoped logout: revoke exactly the session this browser holds. Other
+    // browsers keep their own sessions.
+    let cookie_token = crate::auth::cookie_value(&headers).unwrap_or_default();
+    log_event(&state.log_level(), "logout: session revoked");
+    let response = crate::auth::logout_response(&state.auth, &cookie_token, secure);
     persist_session_token(&state);
     response
 }
 
-/// Write the rotated session token to the sidecar so never-expiring
-/// sessions survive the next restart, and drop the sidecar when sessions
-/// are timed. One lock hold covers both reads: taking the lock twice would
-/// let another thread rotate the token in between, persisting a mismatched
-/// token. Out-of-order completion of these async writes from concurrent
-/// logins is handled by re-checking the live token at write time and
-/// skipping superseded writes. Failures only cost persistence and never
-/// the live session.
+/// Write the live session set (and each expiry for timed sessions) to the
+/// sidecar so sessions survive the next restart. One lock hold snapshots
+/// everything; the `sessions_rev` snapshot lets a late writer from a
+/// concurrent login detect it is stale and skip the file write, so the file
+/// always converges to the newest membership. Failures only cost
+/// persistence and never the live sessions.
 fn persist_session_token(state: &WebState) {
-    let (never, token) = state
-        .auth
-        .lock()
-        .map(|auth| {
-            (
-                auth.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER,
-                auth.token.clone(),
-            )
+    let Ok(auth) = state.auth.lock() else {
+        // Poisoned lock: skip the sidecar write. It only costs persistence,
+        // never the live sessions.
+        return;
+    };
+    let records: Vec<crate::server_settings::PersistedSessionRecord> = auth
+        .sessions
+        .iter()
+        .map(|session| {
+            let expires_at =
+                if auth.session_expiration_minutes == crate::auth::SESSION_EXPIRATION_NEVER {
+                    None
+                } else {
+                    session
+                        .expires_at
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .map(|remaining| remaining.as_secs())
+                        .ok()
+                };
+            crate::server_settings::PersistedSessionRecord {
+                token: session.token.clone(),
+                expires_at,
+            }
         })
-        .unwrap_or((false, String::new()));
+        .collect();
+    let record = crate::server_settings::PersistedSessionToken {
+        sessions: records,
+        token: None,
+        expires_at: None,
+    };
+    let rev = auth.sessions_rev;
+    drop(auth);
     let auth = state.auth.clone();
     tokio::task::spawn_blocking(move || {
         // Out-of-order task completion from concurrent logins could write an
-        // older token after the newest one. Re-check the live token at write
-        // time: if it moved on, this token is superseded and its sidecar
-        // write is skipped, so the file always ends up holding the newest
-        // token (or none, when the newest state is timed).
-        let current = auth.lock().map(|live| live.token.clone());
-        let superseded = matches!(current, Ok(ref live) if *live != token);
-        if superseded {
+        // older set after the newest one. Re-check the live rev at write
+        // time: if membership moved on, this snapshot is stale and skipped,
+        // so the file ends up holding the newest session set.
+        let current = auth.lock().map(|live| live.sessions_rev);
+        if matches!(current, Ok(live_rev) if live_rev != rev) {
             return;
         }
-        if never && !token.is_empty() {
-            let _ = crate::server_settings::save_persisted_session_token(&token);
-        } else if !never {
-            crate::server_settings::remove_persisted_session_token();
-        }
+        let _ = crate::server_settings::save_persisted_session_token(&record);
     });
 }
 
@@ -5091,6 +5232,11 @@ async fn events_ws(
     Query(query): Query<SessionQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
+    // Auth is checked once, at the upgrade handshake. An open websocket
+    // keeps streaming after the session that opened it is revoked (logout,
+    // expiry, credential change); the next upgrade with that cookie 401s.
+    // Same lifetime boundary as every handshake-authenticated socket.
+    // (Validated live in W34a: frames continue post-revocation.)
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }

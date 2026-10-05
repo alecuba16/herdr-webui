@@ -14,7 +14,18 @@
 //     clears itself, and server settings show a green saved vs red error state
 import { connectToPage, openApp } from './cdp-driver.mjs';
 
-const URL = process.env.E2E_BASE_URL || 'https://127.0.0.1:8899/';
+// No default on purpose: a bare run with the old `https://127.0.0.1:8899/`
+// fallback silently drove whatever stale server happened to listen there
+// (dev leftovers, an interrupted e2e run). Require the harness (run-e2e.sh)
+// or an explicit E2E_BASE_URL so acceptance only ever runs against a known
+// isolated server.
+const URL = process.env.E2E_BASE_URL;
+if (!URL) {
+  console.error(
+    'FAIL  missing E2E_BASE_URL :: run via scripts/e2e/run-e2e.sh, or set E2E_BASE_URL to the isolated server under test',
+  );
+  process.exit(2);
+}
 const results = [];
 function check(name, ok, detail = '') {
   results.push({ name, ok, detail });

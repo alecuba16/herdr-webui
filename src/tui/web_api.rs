@@ -219,7 +219,7 @@ impl WebApiClient {
                 }
             }
         }
-        Ok(Self::new("127.0.0.1", 8787))
+        Ok(Self::new("127.0.0.1", default_web_api_port()))
     }
 
     pub fn set_timeout(&mut self, timeout: Duration) {
@@ -1248,16 +1248,47 @@ fn urlencode(value: &str) -> String {
     out
 }
 
+/// The default WebUI API port.
+///
+/// Production builds default to the documented `127.0.0.1:8787`. Test builds
+/// default to port 1 (the dead-endpoint idiom used across the TUI tests): a
+/// test constructing the default client must NEVER end up pointing at the
+/// operator's LIVE server, where it would mint real sessions with the
+/// operator's persisted credentials.
+#[cfg(not(test))]
+pub const fn default_web_api_port() -> u16 {
+    8787
+}
+
+#[cfg(test)]
+pub fn default_web_api_port() -> u16 {
+    1
+}
+
+/// Read the persisted settings path: `XDG_CONFIG_HOME` first, real HOME
+/// config in production. In test builds an unset XDG resolves to an
+/// isolated nonexistent path — the same isolation rule as
+/// `backend_client::runtime_settings_path`.
+fn webui_settings_path() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
+        return Some(std::path::PathBuf::from(dir).join("herdr-webui/webui-settings.json"));
+    }
+    #[cfg(test)]
+    {
+        None
+    }
+    #[cfg(not(test))]
+    {
+        std::env::var("HOME").ok().map(|home| {
+            std::path::PathBuf::from(home).join(".config/herdr-webui/webui-settings.json")
+        })
+    }
+}
+
 /// Read `bind` from the WebUI settings file so the TUI finds the server even
 /// when the user changed the default port.
 fn persisted_bind_address() -> Option<String> {
-    let path = if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        std::path::PathBuf::from(dir).join("herdr-webui/webui-settings.json")
-    } else {
-        std::env::var("HOME").ok().map(|home| {
-            std::path::PathBuf::from(home).join(".config/herdr-webui/webui-settings.json")
-        })?
-    };
+    let path = webui_settings_path()?;
     let raw = std::fs::read_to_string(path).ok()?;
     let value: Value = serde_json::from_str(&raw).ok()?;
     value.get("bind")?.as_str().map(str::to_string)
@@ -1268,13 +1299,7 @@ fn persisted_bind_address() -> Option<String> {
 /// non-loopback bind forces them), so `None` here means the default
 /// localhost no-auth setup and the 401 path never triggers.
 fn persisted_credentials() -> Option<WebApiCredentials> {
-    let path = if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        std::path::PathBuf::from(dir).join("herdr-webui/webui-settings.json")
-    } else {
-        std::env::var("HOME").ok().map(|home| {
-            std::path::PathBuf::from(home).join(".config/herdr-webui/webui-settings.json")
-        })?
-    };
+    let path = webui_settings_path()?;
     let raw = std::fs::read_to_string(path).ok()?;
     let value: Value = serde_json::from_str(&raw).ok()?;
     Some(WebApiCredentials {
@@ -1934,7 +1959,7 @@ mod tests {
         let client = WebApiClient::discover().unwrap();
         assert_eq!(
             client.base_url(),
-            "http://127.0.0.1:8787",
+            format!("http://127.0.0.1:{}", default_web_api_port()),
             "empty env falls back to default"
         );
 
@@ -1948,7 +1973,7 @@ mod tests {
             let client = WebApiClient::discover().unwrap();
             assert_eq!(
                 client.base_url(),
-                "http://127.0.0.1:8787",
+                format!("http://127.0.0.1:{}", default_web_api_port()),
                 "bad bind {bad} falls back"
             );
         }
@@ -2100,7 +2125,10 @@ mod tests {
             std::env::set_var("XDG_CONFIG_HOME", &dir);
         }
         let client = WebApiClient::discover().expect("default discovery");
-        assert_eq!(client.base_url(), "http://127.0.0.1:8787");
+        assert_eq!(
+            client.base_url(),
+            format!("http://127.0.0.1:{}", default_web_api_port())
+        );
 
         // A settings file with a bind address wins over the default.
         let settings = serde_json::json!({"bind": "192.168.1.10:9999"});

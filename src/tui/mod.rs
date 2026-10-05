@@ -21,6 +21,7 @@ use serde_json::Value;
 
 use crate::backend_client::{BackendClient, BackendClientError, TerminalOutput};
 use crate::terminal_text::{self, StripCarriageReturn};
+use crate::tui::web_api::{default_web_api_port, WebApiClient};
 pub use keys::{PrefixState, Shortcut};
 use lens::{refusal_reason_copy, LensGate, LensState};
 pub use model::{
@@ -34,7 +35,6 @@ pub use render::render;
 use terminal::{terminal_output_styled_lines_for_width, TuiTextSpan};
 use theme::Palette;
 pub use theme::TuiTheme;
-use web_api::WebApiClient;
 
 impl PromptKind {
     /// Map the workspace-management prompt kinds onto the workspace
@@ -257,7 +257,7 @@ impl Default for TuiOptions {
             terminal_socket: None,
             refresh_interval: Duration::from_millis(1000),
             theme: TuiTheme::from_env(),
-            web_api: WebApiClient::new("127.0.0.1", 8787),
+            web_api: WebApiClient::new("127.0.0.1", default_web_api_port()),
         }
     }
 }
@@ -530,7 +530,7 @@ impl TuiApp {
             client,
             refresh_interval,
             theme,
-            WebApiClient::new("127.0.0.1", 8787),
+            WebApiClient::new("127.0.0.1", default_web_api_port()),
         )
     }
 
