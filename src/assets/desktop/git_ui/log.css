@@ -202,10 +202,6 @@
   background: var(--panel2);
   outline: 1px solid var(--accent);
 }
-.git-ui-log-row.current .git-ui-log-title {
-  color: var(--accent);
-  font-weight: 700;
-}
 .git-ui-log-row.graph-only:hover {
   background: transparent;
 }
@@ -465,6 +461,8 @@
 .git-ui-log-row.origin-tip {
   box-shadow: inset 3px 0 0 var(--git-log-origin, #f59e0b);
 }
+/* After the hover and origin-tip rules so a row that is current keeps the
+ * accent even while hovered or at the origin tip. */
 .git-ui-log-row.current .git-ui-log-title {
   color: var(--accent);
   font-weight: 700;
