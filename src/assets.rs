@@ -103,6 +103,7 @@ const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/shortcuts.js"),
     include_str!("assets/desktop/app_js/workspace_create.js"),
     include_str!("assets/desktop/lsp_settings.js"),
+    include_str!("assets/desktop/layout_settings.js"),
     include_str!("assets/desktop/app_js/bindings.js"),
 );
 const MOBILE_ATTENTION_JS: &str = include_str!("assets/mobile/attention.js");

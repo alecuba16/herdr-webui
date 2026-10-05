@@ -265,7 +265,7 @@
     }
 
     function dataSection() {
-      return `<div class="mobile-settings-group"><h3>Data</h3><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.refresh()">Refresh data</button><button class="mobile-btn mobile-wide" onclick="location.reload()">Reload selected layout</button><button class="mobile-btn mobile-wide" onclick="HerdrMobile.logout()">Logout</button><small>Logout ends the server session. Every logged-in browser needs to log in again.</small></div>`;
+      return `<div class="mobile-settings-group"><h3>Data</h3><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.refresh()">Refresh data</button><button class="mobile-btn mobile-wide" onclick="location.reload()">Reload selected layout</button><button class="mobile-btn mobile-wide" onclick="HerdrMobile.logout()">Logout</button><small>Logout ends the server session. Every logged-in browser needs to log in again.</small><small class="mobile-version-footer" id="mobileVersionFooter" title="${escapeHtml(state.versionsTitle || "")}">${escapeHtml(state.versionsText || "webui - · backend -")}</small></div>`;
     }
 
     // Explicit sign-out from the server (POST /api/logout rotates the token

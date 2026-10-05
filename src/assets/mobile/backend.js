@@ -13,6 +13,10 @@
 
     async function loadServerSettings() {
       try {
+        // Versions in parallel with settings: the settings screen footer
+        // shows webui/backend versions the same way the desktop sidebar
+        // does, and both come from one boot-time fetch each.
+        loadVersions();
         const settings = await api("/api/server-settings");
         state.backendMode = settings.backend_mode || state.backendMode;
         state.defaultFolder = settings.default_folder || state.defaultFolder || "";
@@ -191,6 +195,30 @@
       return backend === "external-herdr" ? "backend-herdr" : "backend-builtin";
     }
 
+    // Desktop loadVersions twin: fills state.versionsText for the settings
+    // footer. Kept silent on failure; the footer just keeps its placeholder.
+    async function loadVersions() {
+      if (state.versionsLoading) return;
+      state.versionsLoading = true;
+      try {
+        const v = await api("/api/versions");
+        if (v.backend_mode) state.backendMode = v.backend_mode;
+        const backendIsBuiltin =
+          state.sessionBackend === "builtin" ||
+          String(v.backend || "") === "builtin" ||
+          String(v.backend || "").startsWith("builtin-");
+        const backendLabel = backendIsBuiltin ? "built-in" : v.backend || "offline";
+        const compat = v.compatibility || {};
+        const status = compat.status && compat.status !== "compatible" ? " · " + compat.status : "";
+        state.versionsText = `webui ${v.webui || "-"} · backend ${backendLabel}${status}`;
+        state.versionsTitle = `session ${v.session || state.session || "default"}${compat.message ? " · " + compat.message : ""}`;
+      } catch (_) {
+        state.versionsText = "webui - · backend offline";
+      } finally {
+        state.versionsLoading = false;
+      }
+    }
+
     function handleServerSettingsChanged(msg) {
       const enabled = msg.enabled_backends;
       if (!enabled) return;
@@ -205,6 +233,7 @@
 
     return {
       loadServerSettings,
+      loadVersions,
       loadSessions,
       handleHerdrErrorFrame,
       currentSessionBackend,

@@ -929,6 +929,14 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   color: var(--status-blocked, #f38ba8);
   border-color: var(--border);
 }
+.mobile-version-footer {
+  display: block;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
 .herdr-file-tree {
   display: flex;
   flex-direction: column;
