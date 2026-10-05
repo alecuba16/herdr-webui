@@ -29,15 +29,10 @@ node --test src/assets/*.test.mjs
 
 The synthetic suites run in a fake DOM and cannot catch DOM-liveness bugs.
 When changing the file browser editor flow (lock toggle, dirty tabs, save),
-also run the real-browser acceptance harness:
-
-```sh
-just e2e            # or: scripts/e2e/run-e2e.sh
-```
-
-It builds an isolated server (own config dir and session, so a locally
-running instance is never touched), drives the served app in headless
-Chrome over CDP, and tears everything down. See `scripts/e2e/README.md`.
+also run a real-browser acceptance pass. The in-repo CDP harness was removed
+(extension install is not always available); use the external cdp-chrome
+skill (`~/.agents/skills/cdp-chrome`) to launch a self-contained headless
+Chrome for Testing and drive the served app per `docs/e2e-external.md`.
 
 When changing the Git explorer (folder actions, compare modes, discard),
 also run the no-browser acceptance harness:
