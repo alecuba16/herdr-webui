@@ -51,6 +51,10 @@
   // sync would swap the row back to trimmed. The ref guards against a
   // rotation reusing a part key for a different tool.
   const fetchedOutputs = new Map();
+  // Session metadata row (model / reasoning effort) for the composer
+  // status line: reference parity ("composer status line displays the
+  // model and Reasoning <level>"). null while unknown.
+  let sessionMeta = null;
 
   const PROMPT_LINE = /(?:❯|›|➜)\s+|\$\s+/;
 
@@ -162,6 +166,17 @@
       convError = null;
       loadingChat = false;
       conversation = response;
+      // Session metadata travels on every poll (model/effort refresh
+      // even without a new message, reference parity): publish it so the
+      // composer status line can render it.
+      sessionMeta = {
+        model: response && response.model ? String(response.model) : null,
+        reasoning_effort:
+          response && response.reasoning_effort
+            ? String(response.reasoning_effort)
+            : null,
+      };
+      publishSessionMeta();
       // Pending bubble: remove once the conversation contains a user
       // turn with the same text (the id is not known at submit time).
       if (pendingBubble && userTurnTexts(response).has(pendingBubble.text)) {
@@ -175,6 +190,11 @@
         code: (details && details.code) || "error",
       };
       loadingChat = false;
+      // A failed poll must not leave a stale model label on the
+      // composer: the conversation is unavailable, so the status line
+      // goes empty until a poll succeeds again.
+      sessionMeta = null;
+      publishSessionMeta();
       // Resolution failures keep the switch visible and the lens open:
       // the refusal copy replaces the turns (hint precedence, round 11).
       render();
@@ -206,10 +226,24 @@
     convError = null;
     loadingChat = true;
     pendingBubble = null;
+    sessionMeta = null;
+    publishSessionMeta();
     expandedTools.clear();
     expandedThinking.clear();
     fetchedOutputs.clear();
     stopPolling();
+  }
+
+  // Push the session metadata to the composer status line. The composer
+  // owns the DOM; the lens owns the data (it sees every poll). Keep this
+  // tolerant of load order: composer.js may not exist yet.
+  function publishSessionMeta() {
+    if (
+      globalThis.HerdrComposer &&
+      typeof globalThis.HerdrComposer.setSessionMeta === "function"
+    ) {
+      globalThis.HerdrComposer.setSessionMeta(sessionMeta);
+    }
   }
 
   // Public: forced re-poll after a successful submit (the user turn
@@ -241,6 +275,41 @@
     return `${turnIndex}:${partIndex}:${part.name || ""}`;
   }
 
+  // Duration label for one assistant turn: "Worked for 2m 36s" style,
+  // rendered as a muted meta line ABOVE the turn body (reference puts it
+  // on the folded work block; we have no work blocks yet, so the meta
+  // line carries it). Empty string when the span is unknown or bogus
+  // (missing end, unparseable, negative, or absurdly large — clock skew
+  // between snapshot and journal must not invent a 40-hour turn).
+  function turnDurationHtml(turn) {
+    const span = turnSpanSeconds(turn);
+    if (span === null) return "";
+    return `<div class="lens-turn-meta">Worked for ${formatDuration(span)}</div>`;
+  }
+
+  function turnSpanSeconds(turn) {
+    if (!turn || !turn.ts || !turn.end_ts) return null;
+    const start = Date.parse(String(turn.ts));
+    const end = Date.parse(String(turn.end_ts));
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    const seconds = Math.round((end - start) / 1000);
+    // <1s spans render as "0s" (fine, tool calls can be instant);
+    // anything negative or > 24h is data corruption, not a duration.
+    if (seconds < 0 || seconds > 24 * 60 * 60) return null;
+    return seconds;
+  }
+
+  function formatDuration(totalSeconds) {
+    const s = Math.max(0, Math.floor(totalSeconds));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const rest = s % 60;
+    if (m < 60) return rest ? `${m}m ${rest}s` : `${m}m`;
+    const h = Math.floor(m / 60);
+    const mRest = m % 60;
+    return mRest ? `${h}h ${mRest}m` : `${h}h`;
+  }
+
   function conversationHtml(response, opts) {
     const opts_ = opts || {};
     const fromTurn = opts_.from || 0;
@@ -260,13 +329,18 @@
         parts.push(partHtml(part, globalIndex, partIndex));
       });
       const body = parts.join("");
+      // Assistant turns carry the turn's wall-clock span (ts -> end_ts)
+      // as a muted duration line, reference parity ("Worked for 2m 36s"
+      // blocks). Only rendered when both ends exist and parse.
+      const metaHtml =
+        turn.role === "assistant" ? turnDurationHtml(turn) : "";
       if (turn.role === "user") {
         out.push(
           `<div class="lens-turn lens-turn-user" data-turn="${globalIndex}" data-ts="${escapeAttr(String(turn.ts || ""))}"><span>${body}</span></div>`,
         );
       } else {
         out.push(
-          `<div class="lens-turn lens-turn-assistant" data-turn="${globalIndex}" data-ts="${escapeAttr(String(turn.ts || ""))}">${body}</div>`,
+          `<div class="lens-turn lens-turn-assistant" data-turn="${globalIndex}" data-ts="${escapeAttr(String(turn.ts || ""))}">${metaHtml}${body}</div>`,
         );
       }
     });
@@ -944,5 +1018,8 @@
     // Test/diagnostic surface: the turn-shaping heuristics.
     transcriptHtml,
     PROMPT_LINE,
+    // Test/diagnostic surface: duration shaping for assistant turns.
+    turnDurationHtml,
+    formatDuration,
   };
 })();

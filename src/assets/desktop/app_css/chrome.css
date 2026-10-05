@@ -216,6 +216,35 @@
   min-height: 0;
   overflow: auto;
   padding-right: 2px;
+  /* Keyboard scroll: both sidebar panes must be reachable with Tab and
+     arrow keys, not only with a wheel (macOS overlay scrollbars render
+     nothing, so keyboard was the only remaining affordance and it was
+     missing). -1 keeps them out of natural Tab order to not steal focus
+     from workspace rows; focus() lands after a pane click. */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+}
+/* Slim visible track: overlay scrollbars hide on macOS, leaving the
+   agents pane with clipped rows and no scroll signal at all. A subtle
+   always-reserved thin scrollbar (scrollbar-gutter above) restores the
+   affordance without stealing row width on hover-only platforms. */
+.sidebar-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: var(--border2);
+  border-radius: 8px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll:focus-visible {
+  outline: var(--ring, 2px solid var(--accent, #89b4fa));
+  outline-offset: var(--ring-offset, 2px);
 }
 .side-footer {
   flex: none;

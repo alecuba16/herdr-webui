@@ -638,6 +638,30 @@ input {
   color: var(--fg-dim, #a6adc8);
   pointer-events: auto;
 }
+/* Session metadata line (model · Reasoning <level>): same column as the
+ * note, one step quieter; title carries the full text on hover. */
+.terminal-composer-session {
+  max-width: 720px;
+  margin: 0 auto 4px;
+  font-size: var(--fs-2xs, 11px);
+  color: var(--fg-dim, #a6adc8);
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+.terminal-composer-session[hidden] {
+  display: none;
+}
+/* Assistant turn duration meta ("Worked for 2m 36s"): muted, one line,
+ * above the turn body. */
+.lens-turn-meta {
+  color: var(--fg-dim, #a6adc8);
+  font-size: var(--fs-2xs, 11px);
+  margin: 2px 0;
+  user-select: none;
+}
 .terminal-composer-row {
   display: flex;
   gap: 8px;

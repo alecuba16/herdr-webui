@@ -27,6 +27,7 @@ function stubNode(id) {
     className: "",
     hidden: false,
     textContent: "",
+    title: "",
     children: [],
     listeners: {},
     value: "",
@@ -35,6 +36,7 @@ function stubNode(id) {
     // across querySelector calls.
     _innerHTML: "",
     _note: null,
+    _session: null,
     _input: null,
     _send: null,
     get innerHTML() {
@@ -44,6 +46,10 @@ function stubNode(id) {
       this._innerHTML = html;
       if (!/id="terminalComposerNote"/.test(html)) return;
       this._note = stubNode("terminalComposerNote");
+      this._session = stubNode("terminalComposerSession");
+      // Faithful to the markup: the session line ships hidden until the
+      // first poll publishes real metadata.
+      this._session.hidden = /terminalComposerSession"\s+hidden/.test(html);
       this._input = stubNode("terminalComposerInput");
       this._input.value = "";
       this._send = stubNode("terminalComposerSend");
@@ -59,6 +65,7 @@ function stubNode(id) {
     querySelector(sel) {
       if (!this._note) return null;
       if (sel === "#terminalComposerNote") return this._note;
+      if (sel === "#terminalComposerSession") return this._session;
       if (sel === "#terminalComposerInput") return this._input;
       if (sel === "#terminalComposerSend") return this._send;
       return null;
@@ -323,6 +330,47 @@ describe("composer module", () => {
     equal(note.hidden, false);
     result.ctx.HerdrComposer.note("");
     equal(note.hidden, true, "empty note hides the row");
+  });
+
+  it("setSessionMeta renders model and effort, null clears", () => {
+    const result = loadComposer();
+    result.ctx.HerdrComposer.overlay();
+    const session = overlayOf(result).querySelector("#terminalComposerSession");
+    ok(session, "session metadata line exists in the overlay");
+    equal(session.hidden, true, "starts hidden while unknown");
+
+    // Model + effort: "<model> · Reasoning <level>".
+    result.ctx.HerdrComposer.setSessionMeta({ model: "gpt-5.5", reasoning_effort: "high" });
+    equal(session.textContent, "gpt-5.5 · Reasoning high");
+    equal(session.hidden, false);
+    equal(session.title, "gpt-5.5 · Reasoning high", "title carries the full text");
+
+    // Model only.
+    result.ctx.HerdrComposer.setSessionMeta({ model: "gpt-5.5", reasoning_effort: null });
+    equal(session.textContent, "gpt-5.5");
+
+    // Effort only.
+    result.ctx.HerdrComposer.setSessionMeta({ model: null, reasoning_effort: "low" });
+    equal(session.textContent, "Reasoning low");
+
+    // Empty shape: hidden again.
+    result.ctx.HerdrComposer.setSessionMeta({ model: null, reasoning_effort: null });
+    equal(session.textContent, "");
+    equal(session.hidden, true);
+
+    // null clears (pane change / failed poll parity).
+    result.ctx.HerdrComposer.setSessionMeta({ model: "gpt-5.5" });
+    result.ctx.HerdrComposer.setSessionMeta(null);
+    equal(session.textContent, "");
+    equal(session.hidden, true);
+  });
+
+  it("sessionMetaText covers the copy shapes", () => {
+    const result = loadComposer();
+    equal(result.ctx.HerdrComposer.sessionMetaText(null), "");
+    equal(result.ctx.HerdrComposer.sessionMetaText({}), "");
+    equal(result.ctx.HerdrComposer.sessionMetaText({ model: "m", reasoning_effort: "max" }), "m · Reasoning max");
+    equal(result.ctx.HerdrComposer.sessionMetaText({ model: "m", reasoning_effort: "" }), "m");
   });
 
   it("guards against a missing active pane", async () => {

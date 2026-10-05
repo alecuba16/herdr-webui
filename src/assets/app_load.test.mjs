@@ -5849,4 +5849,27 @@ describe("a11y audit contract", () => {
     match(tokensCss, /transition-duration: 0\.01ms !important;/);
     match(tokensCss, /scroll-behavior: auto !important;/);
   });
+
+  it("gives the sidebar panes a visible and keyboard scroll affordance", () => {
+    const chromeCss = read("./desktop/app_css/chrome.css");
+    // macOS overlay scrollbars render nothing on overflow:auto, so a
+    // clipped agents pane showed no scroll signal at all: the scroller
+    // needs a styled thin scrollbar plus a stable gutter.
+    match(chromeCss, /\.sidebar-scroll \{[\s\S]*?scrollbar-gutter: stable;/);
+    match(chromeCss, /\.sidebar-scroll \{[\s\S]*?scrollbar-width: thin;/);
+    match(chromeCss, /\.sidebar-scroll::-webkit-scrollbar \{[\s\S]*?width: 8px;/);
+    match(chromeCss, /\.sidebar-scroll::-webkit-scrollbar-thumb \{[\s\S]*?background: var\(--border2\);/);
+    // Wheel chaining stops at the pane instead of scrolling the page
+    // behind the sidebar.
+    match(chromeCss, /\.sidebar-scroll \{[\s\S]*?overscroll-behavior: contain;/);
+    // Keyboard: click-to-focus scrollers so arrows page the list once
+    // the pane is the active region (tabIndex stays -1 so Tab order keeps
+    // the rows first).
+    match(coreSource, /workspaceScroll\.tabIndex = -1;/);
+    match(coreSource, /agentsScroll\.tabIndex = -1;/);
+    match(coreSource, /workspaceScroll\.focus\(\)/);
+    match(coreSource, /agentsScroll\.focus\(\)/);
+    // Focus ring contract applies to the scroller too.
+    match(chromeCss, /\.sidebar-scroll:focus-visible \{[\s\S]*?outline: var\(--ring/);
+  });
 });
