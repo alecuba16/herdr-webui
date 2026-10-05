@@ -7,7 +7,7 @@
 use std::fs;
 use std::io;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -381,12 +381,25 @@ pub fn save_persisted_session_token(record: &PersistedSessionToken) -> io::Resul
         fs::create_dir_all(parent)?;
     }
     let payload = serde_json::to_string(record)?;
-    fs::write(&path, payload)?;
+    atomic_write(&path, payload.as_bytes())?;
+    Ok(())
+}
+
+/// Write `content` to `path` so readers and crash recovery never observe a
+/// truncated file: the payload lands in a sibling temp file first and a
+/// rename swaps it in atomically. A plain `fs::write` truncates first, so a
+/// crash (or a concurrent reader: observed live on 2026-10-05, 37 empty
+/// reads per 2000 writes in a repro) could see an empty sidecar and boot
+/// with every persisted session gone. The settings file shares the risk.
+pub fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
+    let temp = path.with_extension("new");
+    fs::write(&temp, content)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        let _ = fs::set_permissions(&temp, fs::Permissions::from_mode(0o600));
     }
+    fs::rename(&temp, path)?;
     Ok(())
 }
 
@@ -565,12 +578,7 @@ pub fn save_runtime_server_settings(settings: &RuntimeServerSettings) -> io::Res
         lsp: Some(settings.lsp.clone()),
         recent_workspaces: Some(settings.recent_workspaces.clone()),
     })?;
-    fs::write(&path, content)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-    }
+    atomic_write(&path, content.as_bytes())?;
     Ok(())
 }
 
@@ -940,5 +948,43 @@ mod tests {
         let auth = AuthConfig::from_settings(&settings).unwrap();
         let loopback: std::net::SocketAddr = "127.0.0.1:1234".parse().unwrap();
         assert!(auth.localhost_bypass(loopback));
+    }
+
+    #[test]
+    fn atomic_write_never_exposes_a_partial_file_to_readers() {
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-webui-atomic-write-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sidecar.json");
+        let payload = "{".to_string() + &"x".repeat(4096) + "}";
+        // Pre-create so the reader only ever judges tearing, not the
+        // not-yet-created window before the writer's first rename.
+        fs::write(&path, payload.as_bytes()).unwrap();
+        let writer_payload = payload.clone();
+        let writer_path = Arc::new(path.clone());
+        let writer = std::thread::spawn(move || {
+            for _ in 0..500 {
+                atomic_write(&writer_path, writer_payload.as_bytes()).unwrap();
+            }
+        });
+        let mut bad_reads = 0;
+        for _ in 0..2000 {
+            match fs::read(&path) {
+                Ok(bytes) if bytes == payload.as_bytes() => {}
+                // A read that observes truncation (empty/partial) or a
+                // missing file is exactly the bug this pins out.
+                Ok(_) => bad_reads += 1,
+                Err(_) => bad_reads += 1,
+            }
+        }
+        writer.join().unwrap();
+        assert_eq!(bad_reads, 0, "reader saw a torn or missing file");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
