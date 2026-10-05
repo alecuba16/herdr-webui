@@ -63,6 +63,10 @@
       }
       if (!el("terminal")) {
         screen.innerHTML = renderTerminal();
+        // First paint of the terminal shell: mount the composer now too.
+        // The early return below would otherwise defer it to the next
+        // refresh, and a quiet pane may not produce one for a long time.
+        syncComposer(screen);
         return;
       }
       const tabs = el("mobileTerminalTabs");
