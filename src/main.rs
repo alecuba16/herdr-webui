@@ -6125,6 +6125,9 @@ fn terminal_release_toggle(text: &str, armed: &mut bool) -> bool {
 mod tests;
 
 #[cfg(test)]
+mod test_env_guard;
+
+#[cfg(test)]
 mod tui_parity_e2e_tests;
 
 #[cfg(test)]
