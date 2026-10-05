@@ -22,7 +22,6 @@ use axum_server::tls_rustls::RustlsConfig;
 use interprocess::TryClone as _;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
 use crate::auth::{AuthConfig, LoginRateLimiter, LoginRequest, DEFAULT_SESSION_EXPIRATION_MINUTES};
 #[cfg(test)]
@@ -999,84 +998,22 @@ fn resolve_backend_mode(
     }
 }
 
+// Socket-path derivation lives in herdr_webui::socket_paths (shared with
+// BackendClient so server and client compute byte-identical paths). Local
+// wrappers keep the settings-dir injection server-side and the names the
+// tests use.
+use herdr_webui::socket_paths::{builtin_socket_paths_in, socket_path_fits, SOCKET_PATH_LIMIT};
+
 fn builtin_socket_paths(session: Option<&str>) -> (PathBuf, PathBuf) {
-    let session = session
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(safe_socket_component)
-        .unwrap_or_else(|| "default".to_string());
-    let dir = server_settings_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui"))
-        .join("builtin")
-        .join(&session);
-    let paths = (dir.join("herdr.sock"), dir.join("herdr-client.sock"));
-    if socket_path_pair_fits(&paths) {
-        return paths;
-    }
-
-    let hash = short_socket_hash(&format!("{}:{session}", dir.display()));
-    let dir = short_builtin_socket_dir(&hash);
-    (dir.join("herdr.sock"), dir.join("herdr-client.sock"))
-}
-
-#[cfg(unix)]
-fn short_builtin_socket_dir(hash: &str) -> PathBuf {
-    PathBuf::from("/tmp").join(format!("herdr-webui-builtin-{hash}"))
-}
-
-#[cfg(not(unix))]
-fn short_builtin_socket_dir(hash: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("herdr-webui-builtin-{hash}"))
-}
-
-fn safe_socket_component(value: &str) -> String {
-    let sanitized = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if sanitized.is_empty() {
-        "default".to_string()
-    } else {
-        sanitized
-    }
-}
-
-fn short_socket_hash(value: &str) -> String {
-    Sha256::digest(value.as_bytes())
-        .iter()
-        .take(8)
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-/// Maximum socket path length the OS can bind/connect. Unix sun_path is
-/// 104 bytes on macOS (108 on Linux) but the built-in backend deliberately
-/// keeps a stricter budget (<100) so the same guard works everywhere; the
-/// external-session guard reuses it. On Windows named pipes have no such
-/// limit and the check passes trivially.
-pub const SOCKET_PATH_LIMIT: usize = 100;
-
-fn socket_path_pair_fits(paths: &(PathBuf, PathBuf)) -> bool {
-    socket_path_fits(&paths.0) && socket_path_fits(&paths.1)
-}
-
-#[cfg(unix)]
-fn socket_path_fits(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    path.as_os_str().as_bytes().len() < SOCKET_PATH_LIMIT
-}
-
-#[cfg(not(unix))]
-fn socket_path_fits(_path: &Path) -> bool {
-    true
+    // Server side resolves its settings dir; the client side resolves
+    // the runtime settings path with its test isolation.
+    builtin_socket_paths_in(
+        &server_settings_path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui")),
+        session,
+    )
 }
 
 async fn serve_rebindable(

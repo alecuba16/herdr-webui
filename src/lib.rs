@@ -2,6 +2,7 @@ mod protocol;
 mod terminal_text;
 
 pub mod backend_client;
+pub mod socket_paths;
 pub mod tui;
 
 // Compatibility re-exports: the public TUI surface stays `herdr_webui::tui_*`

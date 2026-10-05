@@ -7,7 +7,6 @@ use interprocess::local_socket::traits::Stream as _;
 use interprocess::local_socket::Stream as LocalStream;
 use interprocess::TryClone as _;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 use crate::protocol::{read_message, write_message, ClientMessage, ServerMessage, TerminalFrame};
 
@@ -507,25 +506,16 @@ fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
 }
 
 fn builtin_socket_paths(session: Option<&str>) -> (PathBuf, PathBuf) {
-    let session = session
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(safe_socket_component)
-        .unwrap_or_else(|| "default".to_string());
-    let dir = runtime_settings_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui"))
-        .join("builtin")
-        .join(&session);
-    let paths = (dir.join("herdr.sock"), dir.join("herdr-client.sock"));
-    if socket_path_pair_fits(&paths) {
-        return paths;
-    }
-
-    let hash = short_socket_hash(&format!("{}:{session}", dir.display()));
-    let dir = short_builtin_socket_dir(&hash);
-    (dir.join("herdr.sock"), dir.join("herdr-client.sock"))
+    // Shared derivation lives in socket_paths so the server and this
+    // client stay byte-identical; only the settings dir differs (this
+    // side resolves the runtime settings path with its test isolation).
+    crate::socket_paths::builtin_socket_paths_in(
+        &runtime_settings_path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::temp_dir().join("herdr-webui")),
+        session,
+    )
 }
 
 fn runtime_settings_path() -> PathBuf {
@@ -552,23 +542,8 @@ fn runtime_settings_path() -> PathBuf {
     }
 }
 
-fn safe_socket_component(value: &str) -> String {
-    let sanitized = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if sanitized.is_empty() {
-        "default".to_string()
-    } else {
-        sanitized
-    }
-}
+// Socket-path helpers live in crate::socket_paths (shared with the
+// server binary so client and server derive identical paths).
 
 /// Unique scratch path for test fakes (local-socket listeners, temp
 /// files). Process id plus a global atomic counter: unlike a clock
@@ -582,43 +557,13 @@ pub fn unique_test_path(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{prefix}-{}-{seq}.sock", std::process::id(),))
 }
 
-fn short_socket_hash(value: &str) -> String {
-    Sha256::digest(value.as_bytes())
-        .iter()
-        .take(8)
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-fn socket_path_pair_fits(paths: &(PathBuf, PathBuf)) -> bool {
-    socket_path_fits(&paths.0) && socket_path_fits(&paths.1)
-}
-
-#[cfg(unix)]
-fn socket_path_fits(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    path.as_os_str().as_bytes().len() < 100
-}
-
-#[cfg(not(unix))]
-fn socket_path_fits(_path: &Path) -> bool {
-    true
-}
-
-#[cfg(unix)]
-fn short_builtin_socket_dir(hash: &str) -> PathBuf {
-    PathBuf::from("/tmp").join(format!("herdr-webui-builtin-{hash}"))
-}
-
-#[cfg(not(unix))]
-fn short_builtin_socket_dir(hash: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("herdr-webui-builtin-{hash}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::protocol::RenderEncoding;
+    use crate::socket_paths::{
+        safe_socket_component, short_builtin_socket_dir, short_socket_hash, socket_path_pair_fits,
+    };
     use std::fs;
     use std::sync::{mpsc, Mutex};
     use std::thread;
