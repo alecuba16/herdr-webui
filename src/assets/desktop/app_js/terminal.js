@@ -1246,6 +1246,13 @@ function applyScheduledTerminalResize() {
   terminalResizeLastAppliedAt = terminalResizeNow();
   if (!state.terminalId || document.hidden) return;
 
+  // Display/raster changes (cross-monitor moves, fullscreen, zoom) can
+  // invalidate cached cell metrics even when the grid itself did not
+  // change; detect and revalidate before measuring the new grid (see
+  // observeDisplayGeometry at the bottom of this file).
+  detectTerminalGeometryDrift();
+  applyTerminalGeometryRevalidation();
+
   const shouldFit =
     options.fitToBrowser ||
     shouldFitFocusedWebTerminal() ||
@@ -1286,6 +1293,85 @@ function scheduleTerminalResize() {
   if (delay > 0) terminalResizeTimer = setTimeout(queueFrame, delay);
   else queueFrame();
 }
+
+// Revalidate terminal geometry after a display/rasterization change (window
+// moved between monitors, fullscreen enter/exit, zoom, GPU raster change).
+// wterm 0.5.4 only re-measures its font probe when the probe element itself
+// resizes, and its row height is circular (the .term-row probe measures
+// var(--term-row-height) it wrote itself). Moving a window between displays
+// with different device pixel ratios leaves wterm's --term-cell-width and
+// the app's cell caches stale while the renderer lays out with fresh
+// geometry: partial bottom rows ("one line overlapping another") and
+// follow-scroll oscillation (flicker). Invalidating the caches and running
+// one wterm.fit() re-measures the font probe at the new raster and resizes
+// the grid only if it actually changed, so the common case is a no-op.
+// Minimize+restore healed this by chance: teardown dropped the probe, and
+// the re-attach's term.resize() rebuilt the renderer with fresh metrics.
+let terminalGeometryInvalidated = false;
+function invalidateTerminalGeometry() {
+  terminalGeometryInvalidated = true;
+  scheduleTerminalResize();
+}
+
+function applyTerminalGeometryRevalidation() {
+  if (!terminalGeometryInvalidated) return;
+  // Nothing attached yet: keep the flag armed; the attach path measures
+  // fresh anyway, and the next scheduled tick after attach consumes it.
+  if (!term) return;
+  terminalGeometryInvalidated = false;
+  const wterm = term.wterm;
+  // wterm's fit() re-measures its font probe, refreshes --term-cell-width
+  // and its internal row height, and re-grids only if its own measurement
+  // basis says the grid changed. wterm 0.5.4's fit() is cheap when the
+  // grid is unchanged.
+  if (wterm && typeof wterm.fit === "function") {
+    try { wterm.fit(); } catch (e) {}
+    // The app owns the grid (it drives the pty resize), so snap wterm
+    // back to the app's cols/rows if fit() re-gridded from its own basis.
+    const gridCols = state.termCols || term.cols;
+    const gridRows = state.termRows || term.rows;
+    if (
+      (wterm.cols !== gridCols || wterm.rows !== gridRows) &&
+      typeof term.resize === "function"
+    ) {
+      try { term.resize(gridCols, gridRows); } catch (e) {}
+    }
+  }
+  // Both caches were filled from the previous raster's spans: drop them
+  // so the grid/surface math in this tick re-measures.
+  if (typeof term.invalidateCellMetrics === "function") term.invalidateCellMetrics();
+  if (window.HerdrTerminalFit && window.HerdrTerminalFit.invalidateCellSizeCache)
+    window.HerdrTerminalFit.invalidateCellSizeCache();
+}
+
+// Cheap per-tick drift check: if wterm's own metrics moved (its probe
+// ResizeObserver re-measures on raster/layout changes even when autoResize
+// is off) or the rendered row geometry changed, the app's cached cell is
+// stale. One computed-style read plus one rect read, both after the
+// hidden/attach guards, so the common path costs a couple of checks.
+function detectTerminalGeometryDrift() {
+  if (terminalGeometryInvalidated || !term) return;
+  const host =
+    (term && term.element) ||
+    (typeof el === "function" && el("terminal")) ||
+    null;
+  if (!host) return;
+  const cached = typeof term.cellSize === "function" ? term.cellSize() : null;
+  if (!cached || !(cached.width > 0) || !(cached.height > 0)) return;
+  if (typeof getComputedStyle === "function") {
+    const liveWidth = parseFloat(
+      getComputedStyle(host).getPropertyValue("--term-cell-width")
+    );
+    if (Number.isFinite(liveWidth) && liveWidth > 0 && Math.abs(liveWidth - cached.width) > 0.25) {
+      invalidateTerminalGeometry();
+      return;
+    }
+  }
+  const row = host.querySelector ? host.querySelector(".term-row") : null;
+  const rect = row && row.getBoundingClientRect ? row.getBoundingClientRect() : null;
+  if (rect && rect.height > 0 && Math.abs(rect.height - cached.height) > 0.5)
+    invalidateTerminalGeometry();
+}
 // Cross-module hook: core.js's sidebar toggle refits the terminal grid
 // after the shell geometry change. Guarded at the call site, so a missing
 // hook (older core.js) is a no-op rather than an error.
@@ -1313,6 +1399,56 @@ window.addEventListener("resize", scheduleTerminalResize);
   // The observer owns refits whenever the shell geometry changes, so render()
   // does not need to re-fit on every refresh (see render.js).
   terminalShellResizeObserverActive = true;
+})();
+
+// Display geometry changes: moving a window between monitors (UWQHD@1x ->
+// MacBook@2x flips the effective devicePixelRatio), fullscreen transitions,
+// zoom, and refocusing a window that was moved while unfocused all change
+// rasterization or CSS-px geometry without necessarily resizing the shell.
+// wterm 0.5.4 is DPR-blind (no devicePixelRatio anywhere) and its probe
+// ResizeObserver only re-measures when the probe's own CSS-px box changes,
+// so these transitions leave every cached metric stale until something
+// tears the layout down (the accidental minimize+restore heal). Arm the
+// revalidation flag on each signal and let the scheduled resize tick do
+// the work: one wterm.fit() re-measure, cache drop, and refit - not per-event
+// layout thrash.
+(function observeDisplayGeometry() {
+  // Resolution media query: fires exactly when the effective DPR changes.
+  // Re-arm the query after each change: a query built for the initial DPR
+  // only reports flips across that one value, so a third display with
+  // another DPR (1 -> 2 -> 3) would go unnoticed by a static query.
+  if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+    let query = null;
+    const armResolutionQuery = () => {
+      const next = window.matchMedia(
+        "(resolution: " + (window.devicePixelRatio || 1) + "dppx)"
+      );
+      const onResolutionChange = () => {
+        invalidateTerminalGeometry();
+        if (query && typeof query.removeEventListener === "function")
+          query.removeEventListener("change", onResolutionChange);
+        else if (query && typeof query.removeListener === "function")
+          query.removeListener(onResolutionChange);
+        query = next;
+        armResolutionQuery();
+      };
+      if (typeof next.addEventListener === "function")
+        next.addEventListener("change", onResolutionChange);
+      else if (typeof next.addListener === "function")
+        next.addListener(onResolutionChange);
+    };
+    try { armResolutionQuery(); } catch (e) {}
+  }
+  // Fullscreen can cross displays while keeping the window's CSS size.
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function")
+    document.addEventListener("fullscreenchange", () => invalidateTerminalGeometry());
+  // Focus is the user-visible end of a cross-display drag: macOS moves the
+  // window unfocused and the geometry settles before focus returns. The
+  // existing focus handler fits with cached metrics; this listener arms
+  // revalidation so the tick immediately after it re-measures and corrects
+  // any drift the move introduced.
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function")
+    window.addEventListener("focus", () => invalidateTerminalGeometry());
 })();
 window.addEventListener("focus", () =>
   requestAnimationFrame(fitFocusedTerminal),
