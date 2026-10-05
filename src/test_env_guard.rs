@@ -44,7 +44,10 @@
 //! is covered only via the allowlist (flow-insensitive residual FP).
 //! Locks inside conditionally-executed blocks (`if`/`match` arms) still
 //! cover later writes syntactically: the approximation is order-sensitive,
-//! not flow-sensitive (same residual as before, unchanged in class).
+//! not flow-sensitive (same residual as before, unchanged in class). Nested
+//! fns are scanned as their own units: their lock/write events never leak
+//! into the enclosing fn's stream, and a call to a lock-named nested fn
+//! resolves through its own registry unit.
 //!
 //! Known blind spots, accepted as residual risk:
 //! - A `use crate::tests::*;` glob import brings `env_lock` in unqualified,
@@ -137,7 +140,7 @@ fn is_tests_lock_fn(file: &str, name: &str) -> bool {
 
 /// Per-fn facts collected from the AST.
 #[derive(Default)]
-struct FnScan {
+struct FnScan<'ast> {
     env_writes: Vec<String>,
     /// Last path segments of fns called with a LOCK_NAMES name, plus the
     /// qualifier path (`crate::tests::env_lock` stores `crate::tests`).
@@ -153,6 +156,10 @@ struct FnScan {
     /// own scope. A lock in the parent body does not cover a write inside
     /// a closure body that may run after the guard is dropped.
     closure_depth: usize,
+    /// Nested fns declared inside the fn being scanned. The scan does NOT
+    /// descend into them (their events belong to their own runtime unit);
+    /// scan_fn scans each as its own ScannedFn.
+    nested_fns: Vec<&'ast ItemFn>,
     unit_mutex_statics: Vec<String>,
     /// Local names bound to env-write paths inside this fn, so calls through
     /// the binding still count (`let write = std::env::set_var;`). Aliases of
@@ -190,7 +197,7 @@ fn path_contains_env_write(path: &syn::Path) -> bool {
         .unwrap_or(false)
 }
 
-impl FnScan {
+impl FnScan<'_> {
     /// Record a lock-name call: into the flat list (resolution) and the
     /// ordered event stream (R1 coverage check).
     fn record_lock(&mut self, qual: String, name: String) {
@@ -215,7 +222,16 @@ impl FnScan {
     }
 }
 
-impl<'ast> Visit<'ast> for FnScan {
+impl<'ast> Visit<'ast> for FnScan<'ast> {
+    fn visit_item_fn(&mut self, fn_item: &'ast ItemFn) {
+        // Nested fns inside a fn body are separate runtime units: record
+        // them without descending, so their lock/write events stay in their
+        // own stream. scan_fn enters through the fn's block instead, so
+        // this only fires for nested fns, never for the root being
+        // scanned (no self-capture, no infinite recursion).
+        self.nested_fns.push(fn_item);
+    }
+
     fn visit_expr_call(&mut self, call: &'ast ExprCall) {
         // Parenthesized call target `(std::env::set_var)(..)`: unwrap so the
         // write is still seen.
@@ -618,19 +634,24 @@ struct TopLevelStatic {
     name: String,
 }
 
+/// Scan one fn: its own events, plus its nested fns scanned as their own
+/// units (a nested fn body is its own runtime unit; its lock/write events
+/// must not leak into the parent stream, masking an uncovered write or
+/// blaming the parent for a write it never performs).
 fn scan_fn(
     file: &str,
     module: &str,
     name: &str,
     func: &ItemFn,
     aliases: &HashMap<String, syn::Path>,
-) -> ScannedFn {
+    out: &mut Vec<ScannedFn>,
+) {
     let mut scan = FnScan {
         aliases: aliases.clone(),
         ..FnScan::default()
     };
-    scan.visit_item_fn(func);
-    ScannedFn {
+    scan.visit_block(&func.block);
+    out.push(ScannedFn {
         file: file.to_string(),
         module: module.to_string(),
         name: name.to_string(),
@@ -640,6 +661,10 @@ fn scan_fn(
         lock_calls: scan.lock_calls,
         events: scan.events,
         unit_mutex_statics: scan.unit_mutex_statics,
+    });
+    for nested in scan.nested_fns {
+        let nested_name = nested.sig.ident.to_string();
+        scan_fn(file, module, &nested_name, nested, aliases, out);
     }
 }
 
@@ -665,7 +690,7 @@ fn walk_module_items(
         match item {
             Item::Fn(func) => {
                 let name = func.sig.ident.to_string();
-                fns.push(scan_fn(file, module, &name, func, aliases));
+                scan_fn(file, module, &name, func, aliases, fns);
             }
             Item::Impl(imp) => {
                 let impl_type = type_name(&imp.self_ty).map(|name| name.to_string());
@@ -690,6 +715,10 @@ fn walk_module_items(
                             events: scan.events,
                             unit_mutex_statics: scan.unit_mutex_statics,
                         });
+                        for nested in scan.nested_fns {
+                            let nested_name = nested.sig.ident.to_string();
+                            scan_fn(file, module, &nested_name, nested, aliases, fns);
+                        }
                     }
                 }
             }
@@ -714,6 +743,10 @@ fn walk_module_items(
                                 events: scan.events,
                                 unit_mutex_statics: scan.unit_mutex_statics,
                             });
+                            for nested in scan.nested_fns {
+                                let nested_name = nested.sig.ident.to_string();
+                                scan_fn(file, module, &nested_name, nested, aliases, fns);
+                            }
                         }
                     }
                 }
