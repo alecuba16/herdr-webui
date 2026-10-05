@@ -211,6 +211,9 @@ describe("mobile composer + prompt cards module", () => {
     const blocked = composerContext({ status: "blocked", term });
     const card = blocked.module.renderPromptCard();
     assert.match(card, /mobile-prompt-card/);
+    // panels.js syncComposer tracks the card by id (el("mobilePromptCard"))
+    // to replace/remove it across renders; a missing id would stack duplicates.
+    assert.match(card, /id="mobilePromptCard"/);
     assert.match(card, /Allow network access/);
 
     const working = composerContext({ status: "working", term });
