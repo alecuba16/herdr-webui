@@ -901,6 +901,34 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 .mobile-prompt-option:active {
   filter: brightness(1.15);
 }
+.mobile-workspace-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mobile-workspace-row .mobile-row {
+  flex: 1;
+  min-width: 0;
+}
+.mobile-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.mobile-row-actions .mobile-btn.mini {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+}
+.mobile-row-actions .mobile-btn.mini.danger {
+  color: var(--status-blocked, #f38ba8);
+  border-color: var(--border);
+}
 .herdr-file-tree {
   display: flex;
   flex-direction: column;
