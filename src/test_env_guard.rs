@@ -115,7 +115,9 @@ fn is_tests_lock_fn(file: &str, name: &str) -> bool {
 #[derive(Default)]
 struct FnScan {
     env_writes: Vec<String>,
-    lock_acquired: bool,
+    /// Last path segments of fns called with a LOCK_NAMES name, plus the
+    /// qualifier path (`crate::tests::env_lock` stores `crate::tests`).
+    lock_calls: Vec<(String, String)>,
     unit_mutex_statics: Vec<String>,
 }
 
@@ -132,7 +134,19 @@ impl<'ast> Visit<'ast> for FnScan {
                 self.env_writes.push(last.clone());
             }
             if LOCK_NAMES.contains(&last.as_str()) {
-                self.lock_acquired = true;
+                let qualifier = path
+                    .path
+                    .segments
+                    .iter()
+                    .rev()
+                    .skip(1)
+                    .map(|seg| seg.ident.to_string())
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("::");
+                self.lock_calls.push((qualifier, last));
             }
         }
         syn::visit::visit_expr_call(self, call);
@@ -191,7 +205,7 @@ struct ScannedFn {
     file: String,
     name: String,
     env_writes: Vec<String>,
-    lock_acquired: bool,
+    lock_calls: Vec<(String, String)>,
     unit_mutex_statics: Vec<String>,
 }
 
@@ -208,7 +222,7 @@ fn scan_fn(file: &str, name: &str, func: &ItemFn) -> ScannedFn {
         file: file.to_string(),
         name: name.to_string(),
         env_writes: scan.env_writes,
-        lock_acquired: scan.lock_acquired,
+        lock_calls: scan.lock_calls,
         unit_mutex_statics: scan.unit_mutex_statics,
     }
 }
@@ -235,7 +249,7 @@ fn walk_items(
                             file: file.to_string(),
                             name,
                             env_writes: scan.env_writes,
-                            lock_acquired: scan.lock_acquired,
+                            lock_calls: scan.lock_calls,
                             unit_mutex_statics: scan.unit_mutex_statics,
                         });
                     }
@@ -252,7 +266,7 @@ fn walk_items(
                                 file: file.to_string(),
                                 name,
                                 env_writes: scan.env_writes,
-                                lock_acquired: scan.lock_acquired,
+                                lock_calls: scan.lock_calls,
                                 unit_mutex_statics: scan.unit_mutex_statics,
                             });
                         }
@@ -297,6 +311,176 @@ fn rel_path(file: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// True when the fn called as `qualifier::name` (`crate::tests::env_lock`
+/// stores qualifier `crate::tests`) resolves to a genuine lock: a fn in the
+/// scan that owns a unit-mutex static (canonical lock fn), or one that
+/// calls another genuine lock (wrapper). Follows the chain transitively,
+/// stopping on cycles (a cyclic chain locks nothing).
+fn lock_call_is_genuine(
+    fns: &[ScannedFn],
+    imports: &HashMap<(String, String), (String, String)>,
+    caller_file: &str,
+    qualifier: &str,
+    name: &str,
+    visiting: &mut Vec<(String, String)>,
+) -> bool {
+    let targets: Vec<(String, String)> = if qualifier.is_empty() {
+        // Unqualified call: resolve via an explicit `use` import if one
+        // exists, otherwise a fn defined in the caller's own file.
+        match imports.get(&(caller_file.to_string(), name.to_string())) {
+            Some((file, module)) => {
+                if module.is_empty() {
+                    vec![(file.to_string(), name.to_string())]
+                } else {
+                    vec![
+                        (file.to_string(), format!("{module}::{name}")),
+                        (file.to_string(), name.to_string()),
+                    ]
+                }
+            }
+            None => vec![(caller_file.to_string(), name.to_string())],
+        }
+    } else {
+        let trimmed = qualifier.trim_end_matches("::");
+        match canonical_module(trimmed) {
+            Some((file, module)) => {
+                if module.is_empty() {
+                    vec![(file.to_string(), name.to_string())]
+                } else {
+                    vec![
+                        (file.to_string(), format!("{module}::{name}")),
+                        (file.to_string(), name.to_string()),
+                    ]
+                }
+            }
+            None => return false,
+        }
+    };
+    targets.into_iter().any(|target| {
+        if visiting.contains(&target) {
+            return false;
+        }
+        let Some(candidate) = fns
+            .iter()
+            .find(|func| func.file == target.0 && (func.name == target.1 || func.name == name))
+        else {
+            return false;
+        };
+        if candidate.unit_mutex_statics.len() == 1 {
+            return true;
+        }
+        visiting.push(target);
+        let genuine = candidate.lock_calls.iter().any(|(qual, lock)| {
+            lock_call_is_genuine(fns, imports, &candidate.file, qual, lock, visiting)
+        });
+        visiting.pop();
+        genuine
+    })
+}
+
+/// Map a lock-fn qualifier to its defining file and module path:
+/// `crate::test_env_lock` lives in src/lib.rs, `crate::tests::env_lock` in
+/// src/tests.rs, `crate::tui::*` in src/tui.rs, `crate::<mod>::*` in
+/// src/<mod>.rs. Returns None for unresolvable qualifiers: no lock call is
+/// safe by guesswork.
+fn canonical_module(qualifier: &str) -> Option<(&'static str, &str)> {
+    if qualifier == "crate" {
+        return Some(("src/lib.rs", ""));
+    }
+    let mut segments = qualifier.split("::").peekable();
+    if segments.next() != Some("crate") {
+        return None;
+    }
+    let module = segments.next()?;
+    if segments.peek().is_some() {
+        return None;
+    }
+    match module {
+        "tests" => Some(("src/tests.rs", "tests")),
+        "tui" => Some(("src/tui.rs", "tui")),
+        other => Some(("src", other)),
+    }
+}
+
+/// Scan every file's `use` items for explicit imports of lock fns
+/// (`use crate::tests::lock_env;`). Maps (importing file, local name) to
+/// (defining file, module path). Only these make an unqualified call in the
+/// importing file resolvable to another file's fn; the guard never guesses.
+fn collect_lock_imports(files: &[PathBuf]) -> HashMap<(String, String), (String, String)> {
+    let mut imports = HashMap::new();
+    for file in files {
+        let Ok(source) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let Ok(parsed) = syn::parse_file(&source) else {
+            continue;
+        };
+        let rel = rel_path(file);
+        walk_imports(&rel, &parsed.items, &mut imports);
+    }
+    imports
+}
+
+fn walk_imports(
+    file: &str,
+    items: &[Item],
+    imports: &mut HashMap<(String, String), (String, String)>,
+) {
+    for item in items {
+        match item {
+            Item::Use(use_item) => {
+                record_lock_import(file, &use_item.tree, imports);
+            }
+            Item::Mod(module) => {
+                if let Some((_, inner)) = &module.content {
+                    walk_imports(file, inner, imports);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Record a lock-fn import: the path's last segment must be a LOCK_NAMES
+/// name, and the qualifier must resolve to a canonical module.
+fn record_lock_import(
+    file: &str,
+    tree: &syn::UseTree,
+    imports: &mut HashMap<(String, String), (String, String)>,
+) {
+    let Some(path) = use_tree_path(tree) else {
+        return;
+    };
+    let segments: Vec<&str> = path.split("::").collect();
+    if segments.len() < 2 {
+        return;
+    }
+    let (qualifier, name) = segments.split_at(segments.len() - 1);
+    let name = name[0];
+    if LOCK_NAMES.contains(&name) {
+        let qualifier = qualifier.join("::");
+        if let Some((def_file, module)) = canonical_module(&qualifier) {
+            imports.insert(
+                (file.to_string(), name.to_string()),
+                (def_file.to_string(), module.to_string()),
+            );
+        }
+    }
+}
+
+/// Flatten a `use` tree to its full path when it is a simple path.
+/// Renames and globs return None: the guard refuses to guess through them.
+fn use_tree_path(tree: &syn::UseTree) -> Option<String> {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let rest = use_tree_path(&path.tree)?;
+            Some(format!("{}::{}", path.ident, rest))
+        }
+        syn::UseTree::Name(name) => Some(name.ident.to_string()),
+        _ => None,
+    }
+}
+
 #[test]
 fn test_env_convention_is_enforced() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -334,8 +518,11 @@ fn test_env_convention_is_enforced() {
 
     let mut violations = Vec::new();
 
-    // R1: env writes need a lock acquisition in the same fn body, or an
-    // allowlist entry with written evidence.
+    // R1: env writes need a genuine lock acquisition in the same fn body, or
+    // an allowlist entry with written evidence. Genuine means the callee owns
+    // a unit-mutex static (canonical lock fn) or calls another genuine lock
+    // (wrapper); a fn merely named like a lock satisfies nothing.
+    let imports = collect_lock_imports(&files);
     let mut allowlist_used = vec![false; ALLOWLIST.len()];
     for func in &fns {
         if func.env_writes.is_empty() {
@@ -348,17 +535,21 @@ fn test_env_convention_is_enforced() {
             allowlist_used[slot] = true;
             continue;
         }
-        if func.lock_acquired {
+        let mut visiting = Vec::new();
+        let locked = func.lock_calls.iter().any(|(qual, lock)| {
+            lock_call_is_genuine(&fns, &imports, &func.file, qual, lock, &mut visiting)
+        });
+        if locked {
             continue;
         }
         violations.push(format!(
-            "  [R1] {} fn `{}` writes env ({}) without acquiring a shared env lock",
+            "  [R1] {} fn `{}` writes env ({}) without acquiring a genuine shared env lock",
             func.file,
             func.name,
             func.env_writes.join(", ")
         ));
         violations.push(
-            "       fix: take the lock at fn start (`let _guard = env_lock();` via your module's wrapper over crate::tests::env_lock / crate::test_env_lock), or, if the mutation is provably race-free, add an entry to ALLOWLIST in src/test_env_guard.rs with the evidence".to_string()
+            "       fix: take the lock at fn start via your module's wrapper over crate::tests::env_lock / crate::test_env_lock (a fn merely named like a lock does not count), or, if the mutation is provably race-free, add an entry to ALLOWLIST in src/test_env_guard.rs with the evidence".to_string()
         );
     }
 
