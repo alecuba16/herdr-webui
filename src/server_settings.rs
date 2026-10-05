@@ -646,6 +646,12 @@ mod tests {
         let saved = std::env::var("XDG_CONFIG_HOME");
         std::env::remove_var("XDG_CONFIG_HOME");
         let caught = std::panic::catch_unwind(assert_test_settings_isolation);
+        // Restore before asserting: a failed assert must not leak the
+        // unset XDG window into later tests in the same binary.
+        match saved {
+            Ok(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            Err(_) => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
         let payload = caught.expect_err("isolation guard must panic when XDG_CONFIG_HOME is unset");
         let panic_msg: String = if let Some(s) = payload.downcast_ref::<&'static str>() {
             (*s).to_string()
@@ -658,10 +664,6 @@ mod tests {
             panic_msg.contains("test would write the real settings path"),
             "isolation guard panicked with an unexpected message: {panic_msg}"
         );
-        match saved {
-            Ok(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-            Err(_) => std::env::remove_var("XDG_CONFIG_HOME"),
-        }
     }
 
     /// The guard must NOT fire when isolation is in place, and the save
