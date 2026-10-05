@@ -63,9 +63,18 @@ async function workspaceDrop(e, targetId) {
   });
 }
 function orderedWorkspaceIds() {
-  return Array.from(document.querySelectorAll("#workspaces .item"))
-    .map((x) => x.dataset.workspaceId)
-    .filter(Boolean);
+  // Sidebar order must match what the user sees: options.workspaceSort ===
+  // "drag" renders by the persisted state.workspaceOrder (see
+  // workspaceOrderIndex in render.js), and the selected workspace floats
+  // to front, so the DOM is not a stable source. Derive the sequence from
+  // the persisted order and append unseen workspaces in state order.
+  const seen = new Set(state.workspaceOrder);
+  return [
+    ...state.workspaceOrder,
+    ...state.workspaces
+      .map((w) => w.workspace_id)
+      .filter((id) => id && !seen.has(id)),
+  ];
 }
 function openWorktreeCreateModal(id) {
   const w = state.workspaces.find((x) => x.workspace_id === id);
