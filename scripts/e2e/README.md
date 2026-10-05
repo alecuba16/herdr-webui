@@ -1,384 +1,44 @@
-# End-to-end acceptance checks
+# Acceptance checks
 
-The desktop file explorer has an editable-by-default rework (lock toggle,
-dirty tab dots, Cmd/Ctrl+S save). Synthetic `node --test` suites cover the
-logic in a fake DOM, but they cannot catch DOM-liveness bugs (a real
-regression was found this way: the dirty dot never appeared while typing).
-These scripts drive the **actually served app** in a real browser.
+Only no-browser harnesses live in this repo. They drive the actually
+served app over plain HTTPS or a node vm, no Chrome involved.
 
-## One command
+## Git explorer (git-e2e)
 
 ```sh
-just e2e            # or: scripts/e2e/run-e2e.sh
+just git-e2e        # or: scripts/e2e/run-git-e2e.sh
 ```
 
-What it does:
+Boots the served git-ui bundle in a node vm with fetch proxied to the real
+backend. Covers folder actions, compare modes, discard.
 
-1. Builds the debug binary.
-2. Creates a throwaway git fixture repo (`src/demo.py`) in a temp dir.
-3. Starts an **isolated** server: its own `XDG_CONFIG_HOME` and
-   `--session`, so a locally running herdr-webui instance is never touched.
-4. Launches headless Chrome with remote debugging.
-5. Runs `acceptance.mjs` over CDP: dashboard → open-workspace modal →
-   files mode → expand `src` → open `demo.py`, then verifies:
-   - lock toggle renders; file opens editable (`contenteditable="true"`)
-   - lock → read-only + active state; unlock → editable again
-   - typing shows the live dirty dot
-   - Cmd+S saves (POST), clears the dot, keeps editing, **and the edit is
-     really on disk**
-   - locking a dirty file asks "Discard unsaved changes..." and discards
-   - Cmd+S on a locked file makes no disk write
-6. Runs `session-ux-acceptance.mjs` over CDP against the same server:
-   - fresh browser lands on the built-in backend (`default · built-in` footer,
-     accent-family color, `backend-builtin` class)
-   - session manager opens via the footer button, shows the backend-aware
-     current label, and carries the ✕ close button
-   - session rows and status pills carry backend color classes
-   - ✕ button and backdrop click both close the manager
-   - picking an external herdr row (when a compatible install exists) flips
-     the footer to `· Herdr` with the mauve `backend-herdr` color
-   - the New Herdr offer's hidden state matches the detected install in the
-     real DOM (the `hidden` attribute must actually hide the button)
-   - closing a stale session (backend died without removing its socket, so
-     the row has no live backend) returns `ok + already_stopped` instead of
-     a 502 ENOENT error, and the UI shows the clean already-stopped message
-     without the offline auto-open manager overwriting it
-   - closing a dead-listener session (socket file present, nobody accepts:
-     ECONNREFUSED) behaves the same, both via the row Close button and via
-     the CURRENT-session Close button (`closeCurrentSession`, which must
-     also tolerate the legacy 400 error shape from older/proxied servers,
-     forget the session, and retarget the default)
-   - the mobile layout renders the backend badge with matching colors
-7. Tears everything down (pass `--keep` to leave the stack up for debugging).
-
-## Environment knobs
-
-| Variable    | Default | Meaning                              |
-| ----------- | ------- | ------------------------------------ |
-| `E2E_PORT`  | `8899`  | HTTPS port of the isolated server   |
-| `CDP_PORT`  | `9222`  | Chrome remote debugging port         |
-| `CHROME_BIN`| auto    | Path to Chrome/Chromium if not found |
-
-## Requirements
-
-- Node >= 21 (global `WebSocket` used by the CDP driver).
-- Chrome or Chromium installed.
-- `curl` and `git` on PATH.
-
-The harness needs HTTPS with a self-signed cert; the CDP session sets
-`Security.setIgnoreCertificateErrors` so no interstitial blocks the run.
-
-Note: run this locally; it is not wired into CI (macos-latest runners have
-Chrome, but the suite is intentionally kept as a pre-merge manual gate).
-
-## Logout acceptance (any running server)
-
-`logout-acceptance.mjs` and `mobile-logout-acceptance.mjs` drive the
-never-expire + explicit-logout flow in a real headless Chrome. Unlike the
-suite above they need no fixture repo: point them at any running server
-with credentials and `localhost_no_auth` off:
+## Content search (content-search-e2e)
 
 ```sh
-CDP_PORT=9223 E2E_BASE_URL=http://127.0.0.1:18787/ \
-  node scripts/e2e/logout-acceptance.mjs
-CDP_PORT=9223 E2E_BASE_URL=http://127.0.0.1:18787/ \
-  node scripts/e2e/mobile-logout-acceptance.mjs
+just content-search-e2e   # or: scripts/e2e/run-content-search-e2e.sh
 ```
 
-- `logout-acceptance.mjs`: login → settings modal → server settings shows
-  session expiration `0` and a visible Logout button → Logout opens the
-  askQuestion confirm dialog → confirming lands on the login page and a
-  reload stays there (session dead server-side).
-- `mobile-logout-acceptance.mjs`: forces the mobile layout via
-  `herdr-web-layout`, login → Settings → Data → Logout (native confirm,
-  auto-accepted by the driver) → login page.
-- `logout-cancel-401-acceptance.mjs`: Logout confirm dialog canceled must
-  keep the session (still in the app, API still authorized), and a session
-  killed under an open window (logout from a second context) must bounce
-  that window to the login page on its next API call.
+Backend-built content-search chunks served and checked over HTTPS.
 
-Credentials come from `E2E_USER`/`E2E_PASS` (default `admin`/`secret`, the
-same throwaway pair used across these scripts). Not wired into CI either.
+## External-backend graphics probe (external-graphics-probe)
 
-## Git explorer acceptance (no browser needed)
+```sh
+just external-graphics-probe
+# or: scripts/e2e/run-external-graphics-probe.sh
+```
 
-`scripts/e2e/run-git-e2e.sh` covers the Git explorer rework (folder rows,
-folder stage/unstage/discard, compare modes) against the real server. It
-boots the JS bundles the server actually serves in a node vm and proxies
-every fetch to the backend, so it needs no browser and runs anywhere node
-and cargo do.
+Isolated herdr 0.9.0 daemon + the webui protocol.rs types speaking the real
+ClientShell endpoint protocol.
 
-What it verifies on a throwaway dirty repo:
+## Real-browser e2e
 
-- the Git panel loads status from the real backend
-- untracked `scratchdir/` renders as a dir row with no phantom file row
-- the dir context menu posts `discard` with the folder path and
-  `confirmed: true` to the real backend
-- the folder is really gone from the repo afterwards
+The in-repo CDP harness was removed (extension installs are not always
+available). Run real-browser acceptance with the external cdp-chrome skill
+and a self-contained headless Chrome for Testing; see
+`docs/e2e-external.md`.
 
-| Variable    | Default | Meaning                            |
-| ----------- | ------- | ---------------------------------- |
-| `E2E_PORT`  | `8898`  | HTTPS port of the isolated server  |
+## Utility scripts
 
-Run it locally with `just git-e2e` (also not wired into CI).
-
-## Content search acceptance (no browser needed)
-
-`scripts/e2e/run-content-search-e2e.sh` covers the backend-built content
-search chunks. Like the git acceptance it boots the served JS bundles in a
-node vm and proxies every fetch to the real backend, so it runs anywhere
-node and cargo do.
-
-What it verifies on a fixture repo with two overlapping matches:
-
-- both search routes return pre-merged chunks with per-row `highlight_html`
-- overlapping context windows arrive as one continuous chunk
-- matched rows carry `match_id` and the hit is wrapped in `<mark>`
-- HTML in the fixture line arrives escaped from the backend
-- the served renderer emits the markup verbatim (no double-escaping) and
-  wires `openMatch` / `expandSnippet` from backend ids
-- repeat renders reuse the normalized chunk cache
-- the single-file route (Load all matches) also returns chunks
-
-| Variable    | Default | Meaning                            |
-| ----------- | ------- | ---------------------------------- |
-| `E2E_PORT`  | `8897`  | HTTPS port of the isolated server |
-
-## Theme system acceptance
-
-`just theme-e2e` (or `scripts/e2e/run-theme-e2e.sh`) covers the theme system
-in a real browser over CDP. It boots the isolated server plus headless
-Chrome, emulates `prefers-color-scheme` flips, and drives the real UI:
-
-- auto mode follows the emulated system preference
-- the toggle cycles auto -> dark -> light -> auto and updates
-  `aria-pressed`, `aria-label`, `title`, and `data-herdr-theme` in sync
-- light mode applies immediately (a regression where the effective theme
-  lagged one click behind the toggle was caught here)
-- auto mode re-resolves live when the system theme flips
-- the settings `Default theme` select drives the same state machine
-- the choice persists across reload
-- body text contrast is measured on the actually rendered light palette
-
-| Variable    | Default | Meaning                              |
-| ----------- | ------- | ------------------------------------ |
-| `E2E_PORT`  | `8897`  | HTTPS port of the isolated server    |
-| `CDP_PORT`  | `9222`  | Chrome remote debugging port         |
-
-Run it locally; it is also kept as a pre-merge manual gate (not in CI).
-
-## Branch-changes highlight acceptance
-
-`scripts/e2e/run-branch-changes-e2e.sh` covers the file-explorer
-branch-changes highlight end to end in a real browser. It is fully
-self-contained: builds the binary, creates a throwaway fixture repo
-(`main` with `src/demo.py` + `README.md`, then a `feat` branch committing
-`src/branch_only.py`), boots the isolated server and headless Chrome, and
-drives the real UI over CDP:
-
-- workspace opens via the dashboard modal
-- files mode renders the tree; `src/` expands and `branch_only.py` shows up
-- the branch-only committed file carries `git-changed` and is blue in the
-  effective theme (`rgb(33, 80, 174)` light, `rgb(137, 180, 250)` dark),
-  while untouched rows keep the default fg
-- priority: after making `demo.py` dirty through the real save API
-  (`POST /api/file-browser/file` with a hash-protected payload), it takes
-  the yellow `git-modified` color over blue, and the branch-only file stays
-  blue
-- the theme toggle switches the palette live and the colors follow
-  (dark blue in dark theme, darker blue in light theme)
-
-| Variable      | Default | Meaning                              |
-| ------------- | ------- | ------------------------------------ |
-| `E2E_PORT`    | `8899`  | HTTPS port of the isolated server    |
-| `CDP_PORT`    | `9222`  | Chrome remote debugging port         |
-| `CHROME_BIN`  | auto    | Chrome/Chromium path (corporate-policy systems: point at chrome-headless-shell) |
-
-Run it locally; it is also kept as a pre-merge manual gate (not in CI).
-
-## Settings confirm/rollback acceptance
-
-`scripts/e2e/settings-confirm-acceptance.mjs` (desktop) and
-`scripts/e2e/settings-confirm-mobile-acceptance.mjs` (mobile) cover the
-settings confirm/rollback UX in a real browser over CDP. They expect an
-isolated server and headless Chrome already up (same stack as
-`run-e2e.sh` steps 1-4, or point `E2E_BASE_URL` at your own server and
-`CDP_PORT` at the debugging port).
-
-Desktop script verifies on the served app:
-
-- editing a text-like setting (exploration dir) without confirming does
-  NOT touch the saved options, and the row shows the pending outline,
-  yellow pencil ("Enter or press to confirm"), and rollback arrow
-- Enter commits: value saved, chrome hidden, row outline cleared
-- the pencil click commits the same way
-- the rollback arrow restores the open-time baseline without saving it
-  (a subsequent Enter still saves the restored text)
-- selects (agent sorting) save immediately and show only the rollback
-  arrow; rolling back restores the baseline and persists the restore
-- the notification-volume range saves immediately and its rollback
-  restores the open-time baseline
-- reopening Settings re-reads baselines: freshly saved values show no
-  chrome, and rollback targets the latest open-time baseline, not a
-  stale first-visit one
-
-Mobile script forces the mobile layout via device metrics emulation and
-verifies:
-
-- no rollback chip before any change
-- a change shows the ↺ chip and persists immediately
-- tapping the chip restores the baseline value and clears the chip
-- re-entering Settings re-captures the open-time baseline
-
-## Terminal fill + panel refit acceptance
-
-`just terminal-fit-e2e` (or `scripts/e2e/run-terminal-fit-e2e.sh`) drives
-the served desktop app in headless Chrome over CDP against a fixture git
-repo. This is also the only browser-level check that opens the real Git
-drawer (`openWorkspaceGitUi`) and asserts `HerdrGitUi.isVisible()`, so it
-guards the git_ui.js module decomposition against DOM-liveness breakage.
-
-It verifies:
-
-- the terminal fills the shell horizontally and vertically (8px shell
-  padding accounted) and cols/rows match the measured cell size
-- opening the Git drawer and returning to the terminal refits it
-- opening the Files browser and back refits it
-- a sidebar toggle (shell width change without window resize) refits,
-  and restoring the sidebar restores the original width and fit
-
-| Variable    | Default | Meaning                              |
-| ----------- | ------- | ------------------------------------ |
-| `E2E_PORT`  | `8899`  | HTTPS port of the isolated server    |
-| `CDP_PORT`  | `9222`  | Chrome remote debugging port         |
-
-## Git drawer content acceptance
-
-`just git-drawer-e2e` (or `scripts/e2e/run-git-drawer-e2e.sh`) drives the
-served desktop app in headless Chrome over CDP against a fixture git repo
-with a dirty worktree, a feature branch, and a multi-commit log. The
-no-browser git e2e proves the served bundle and the real backend, but not
-that the drawer's rendered HTML survives attach in a real DOM with real
-event wiring; this run closes that gap for the git_ui.js module
-decomposition.
-
-Both runners fail fast when `E2E_PORT` (and `CDP_PORT` for the drawer
-run) is already listening: a leftover `--keep` instance would otherwise
-answer the health check and the run would silently test the stale build.
-Kill the leftover instance (the error lists the listening PID) and rerun.
-
-It verifies in the live DOM:
-
-- the drawer opens through the app path (`openWorkspaceGitUi`) and shows
-  the real branch chip name
-- the changes tree renders the untracked `scratchdir/` dir row and the
-  modified `README.md` row with real +N/-N counts from backend diff stats
-- clicking the file row loads the real diff view: diff rows for the edited
-  lines (including the fixture's marker line) and the layout toggle
-- the log tab renders the commit graph table (column head, at least three
-  commit rows, both fixture commit subjects)
-- the branch list popover lists local branches (including `feature/drawer`)
-  with author · relative-time rows
-- returning to the terminal hides the panel and restores the shell
-- the navigation redesign: real `Input.dispatchMouseEvent` clicks on the
-  changes tab, the file row, the History button, `View change`, `Back`,
-  `Find in log`, and the clear-scope `×` (the inline `onclick` wiring the
-  no-browser VM never parses), breadcrumb titles per step
-  (`Changes › file › History`, `History › file › Committed <hash>`,
-  `Log › file`, `Log`), real layout measurement of the location bar (size,
-  horizontal overflow, panel bounds, clickable clear-scope size), and real
-  `Input.dispatchKeyEvent` Esc presses walking the ladder one level at a
-  time (scoped log → history → changes root → hide, with the native
-  `confirm` auto-accepted by the driver)
-- narrow-window edge: a real long file name (the fixture's 60-char
-  checklist file) clicked open, then viewport emulation at 900px — above
-  the app's 760px mobile breakpoint so the desktop panel never reloads —
-  must keep the location bar inside the panel bounds with zero horizontal
-  overflow, and the crumb steps must ellipsize (clipped) instead of
-  pushing the bar out
-
-| Variable    | Default | Meaning                              |
-| ----------- | ------- | ------------------------------------ |
-| `E2E_PORT`  | `8899`  | HTTPS port of the isolated server    |
-| `CDP_PORT`  | `9222`  | Chrome remote debugging port         |
-
-## Terminal image support acceptance (4 runs)
-
-The terminal-image work (see `docs/terminal-image-support.md`) has four
-live checks, all self-contained (isolated server + headless Chrome, own
-scratch dirs, cleanup on exit):
-
-- `just ghostty-core-e2e` (`run-ghostty-core-e2e.sh`): forces each
-  terminal core via localStorage and emits a known Kitty direct-RGBA
-  transmit + placement through a live pane. Ghostty core must render the
-  `.term-image` canvas; wterm core must substitute the
-  `[inline image omitted]` placeholder. 7 checks per core.
-- `scripts/e2e/run-env-hints-check.sh`: boots a server whose process env
-  is poisoned (`TERM_PROGRAM=iTerm.app`, `KITTY_WINDOW_ID=999`), types an
-  env printf into a real pane, and asserts the pane sees
-  `TP=ghostty KID= TERM=xterm-256color` (the PTY env hints + spawn-site
-  scrub).
-- `just jcode-image-flow-e2e` (`run-jcode-image-flow-e2e.sh`): the full
-  production path with the real jcode binary. A real `jcode serve` runs
-  INSIDE a pane (its stdout is the pane PTY and `TERM_PROGRAM=ghostty`
-  comes from the real pane env), the real `read` tool is driven over the
-  debug socket (`JCODE_RUNTIME_DIR` isolated, `JCODE_DEBUG_CONTROL=1`),
-  and its Kitty `a=T,f=100` PNG emit must render as an image on the
-  Ghostty core / substitute the placeholder on wterm, with no base64
-  leak in the visible grid text. 8 checks per core.
-- `scripts/e2e/run-external-graphics-probe.sh`: the external-backend
-  probe for phase 2. Boots an ISOLATED herdr 0.9.0 daemon (scratch
-  `XDG_CONFIG_HOME` + `HERDR_SESSION`), then runs the env-gated Rust
-  probe test (`HERDR_WEBUI_EXTERNAL_PROBE`) which speaks the real
-  ClientShell endpoint protocol with the WebUI's own protocol.rs types:
-  `endpoint.hello.v1` handshake, `endpoint.welcome.v1` codec check,
-  a pane Kitty emission (the same f=32 RGBA transmit + placement
-  herdr's own headless tests use) driven through `tab.create` +
-  `pane.send_text`, a decoded PaneSurface graphics scene (1 asset +
-  1 placement, RGBA `[ff,00,00,ff]`), and a no-cell-metrics negative
-  control that must receive surfaces with NO graphics scene. Normal
-  `cargo test` runs skip the probe entirely (the env gate makes it a
-  no-op), so CI never spawns daemons.
-
-- `scripts/e2e/run-external-graphics-e2e.sh`: the p6 end-to-end
-  acceptance for the external-backend graphics bridge. Boots an
-  ISOLATED herdr daemon plus an isolated webui with
-  `--backend-mode external-herdr` on the same scratch session, drives
-  headless Chrome over CDP, and asserts the full pipeline: workspace
-  creation on the external backend, shell prompt in the attach
-  terminal, bridge canvas overlay attached, the p2 Kitty transmission
-  typed into the pane PTY, overlay pixel readback (exactly the
-  `[255,0,0,255]` red asset drawn on desktop AND mobile viewports),
-  no raw `\x1b_G` escape leak in the text grid, and the teardown: it
-  closes the browser page for real (CDP `Target.closeTarget`) and
-  asserts that the daemon removed every client — `herdr-server.log`
-  must show a `client detached`/`client disconnected` line for every
-  client id (18/18 checks). Requires `herdr` on PATH; exits early
-  (clean skip) otherwise so CI stays daemon-free.
-
-- `scripts/e2e/run-recent-workspace-e2e.sh`: the recent-workspace
-  acceptance for the direct panel open and per-workspace shell mode
-  persistence. Boots an isolated server plus headless Chrome and drives
-  the real UI end to end: open a workspace through the real smart modal
-  (palette -> Open workspace action), switch to Git mode with the real
-  header toggle, close it via the real sidebar button, then reopen the
-  same folder from the real Recent workspaces section of the search
-  palette. Asserts the URL lands directly on
-  `/workspace/<id>/tab/<tab>/pane/<pane>` with a live terminal id, that
-  the Git shell mode is restored un-minimized (real git drawer visible),
-  and that the localStorage `path:` entry survives the close while the
-  workspace-id entry is pruned (10/10 checks).
-
-`scripts/e2e/smoke-jcode-kitty-emit.sh` is the no-browser smoke of the
-jcode side: a real `jcode serve` on a `pty_capture.py` PTY plus the real
-read tool must emit `ESC_G a=T,f=100` under `TERM_PROGRAM=ghostty`
-(`SMOKE_MODE=noemit` is the negative control without the hint).
-
-| Variable               | Default | Meaning                                  |
-| ---------------------- | ------- | ---------------------------------------- |
-| `E2E_PORT`             | `8895`  | HTTPS port of the isolated server        |
-| `CDP_PORT`             | `9340`  | Chrome remote debugging port             |
-
-Headless Chrome must launch with `--window-size=1600,1000` for the
-desktop layout: `app_boot.js` serves the mobile bundle under 760px
-width, and the mobile app has no desktop `go()` for the harness to call.
+- `probe-submit-route.sh` - route probe for submit endpoints
+- `pty_capture.py` - PTY capture helper for terminal work
+- `smoke-jcode-kitty-emit.sh` - kitty-graphics emit smoke test

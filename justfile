@@ -14,9 +14,11 @@ test-js:
 test: test-js
     cargo test --target-dir {{target_dir}}
 
-# Real-browser acceptance run (file explorer edit flow). See scripts/e2e/README.md.
-e2e:
-    scripts/e2e/run-e2e.sh
+# Acceptance checks live in scripts/e2e. No-browser ones run from here.
+# Real-browser acceptance (headless Chrome over CDP) moved out of the repo:
+# use the external cdp-chrome skill (~/.agents/skills/cdp-chrome) to launch
+# a headless Chrome for Testing, then drive the served app per
+# docs/e2e-external.md.
 
 # No-browser acceptance run for the Git explorer rework. See scripts/e2e/README.md.
 git-e2e:
@@ -26,41 +28,11 @@ git-e2e:
 content-search-e2e:
     scripts/e2e/run-content-search-e2e.sh
 
-# Real-browser acceptance run for the theme system. See scripts/e2e/README.md.
-theme-e2e:
-    scripts/e2e/run-theme-e2e.sh
-
-# Real-browser acceptance run for terminal fill + panel-switch refit
-# (includes opening the Git drawer in the live DOM). See scripts/e2e/README.md.
-terminal-fit-e2e:
-    scripts/e2e/run-terminal-fit-e2e.sh
-
-# Real-browser acceptance run for the Ghostty terminal core (attach,
-# prompt render, 0.5.0 graphics layer container). See scripts/e2e/README.md.
-ghostty-core-e2e:
-    scripts/e2e/run-ghostty-core-e2e.sh
-
-# Real-flow acceptance: a real jcode read-tool PNG rendered through a live
-# pane on both cores (ghostty renders, wterm substitutes). See scripts/e2e/README.md.
-jcode-image-flow-e2e:
-    scripts/e2e/run-jcode-image-flow-e2e.sh
-
 # External-backend graphics probe: isolated herdr 0.9.0 daemon + the webui's
 # protocol.rs types speaking the real ClientShell endpoint protocol. See
 # scripts/e2e/README.md.
 external-graphics-probe:
     scripts/e2e/run-external-graphics-probe.sh
-
-# Real-browser acceptance run for the Git drawer CONTENT (changes tree,
-# diff view, log graph, branch list) in the live DOM. See scripts/e2e/README.md.
-git-drawer-e2e:
-    scripts/e2e/run-git-drawer-e2e.sh
-
-# Real-browser acceptance run for the recent-workspace direct panel open
-# and shell mode persistence (smart-modal open -> Git toggle -> close ->
-# reopen from the Recent palette section). See scripts/e2e/README.md.
-recent-workspace-e2e:
-    scripts/e2e/run-recent-workspace-e2e.sh
 
 check: lint test
 
