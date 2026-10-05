@@ -128,14 +128,16 @@ struct FnScan {
     lock_calls: Vec<(String, String)>,
     unit_mutex_statics: Vec<String>,
     /// Local names bound to env-write paths inside this fn, so calls through
-    /// the binding still count (`let write = std::env::set_var;`).
+    /// the binding still count (`let write = std::env::set_var;`). Aliases of
+    /// a binding (`let w1 = w0;`) resolve transitively.
     env_write_bindings: Vec<String>,
     /// Crate-wide `type` aliases (`type M = Mutex<()>;`), cloned per scan so
     /// static types can resolve through them.
     aliases: HashMap<String, syn::Path>,
-    /// Binding name awaiting its initializer during a cast, if any
-    /// (`let w = set_var as fn(..)`).
-    pending_cast_binding: Option<String>,
+    /// Names of locals bound to a cast of an env-write path (`let w =
+    /// set_var as fn(..)`), plus aliases of those names, so chained bindings
+    /// (`let w2 = w;`) still count as env writes.
+    cast_write_bindings: Vec<String>,
     /// Local names bound to lock-fn paths in this fn (`let lock = lock_env;`),
     /// mapping to the bound path's (qualifier, fn name) so calls through the
     /// binding still count as lock acquisitions.
@@ -175,6 +177,7 @@ impl FnScan {
             .unwrap_or_default();
         ENV_WRITE_NAMES.contains(&last.as_str())
             || self.env_write_bindings.iter().any(|b| b == &last)
+            || self.cast_write_bindings.iter().any(|b| b == &last)
     }
 }
 
@@ -297,7 +300,8 @@ impl<'ast> Visit<'ast> for FnScan {
                     .map(|s| s.ident.to_string())
                     .unwrap_or_default();
                 if let syn::Pat::Ident(pat) = &local.pat {
-                    self.locals.push(pat.ident.to_string());
+                    let name = pat.ident.to_string();
+                    self.locals.push(name.clone());
                     if LOCK_NAMES.contains(&last.as_str()) {
                         let qualifier = path
                             .path
@@ -312,18 +316,40 @@ impl<'ast> Visit<'ast> for FnScan {
                             .collect::<Vec<_>>()
                             .join("::");
                         self.lock_bindings
-                            .insert(pat.ident.to_string(), (qualifier, last.clone()));
+                            .insert(name.clone(), (qualifier, last.clone()));
                     }
                     // `let holder = Holder;` / `let h = tests::Holder;`:
                     // record the receiver type (last path segment; value
                     // paths to unit constructors end with the type name) so
                     // method calls on this local resolve to the impl.
-                    let ty = last.clone();
-                    self.receiver_types.insert(pat.ident.to_string(), ty);
+                    self.receiver_types.insert(name.clone(), last.clone());
+                    // `let w1 = w0;`: alias of an existing binding resolves
+                    // transitively across all binding kinds, so chains of
+                    // aliases keep the original meaning.
+                    if self.env_write_bindings.contains(&last) {
+                        self.env_write_bindings.push(name.clone());
+                    }
+                    if let Some(bound) = self.lock_bindings.get(&last).cloned() {
+                        self.lock_bindings.insert(name.clone(), bound);
+                    }
+                    if let Some(ty) = self.receiver_types.get(&last).cloned() {
+                        self.receiver_types.insert(name.clone(), ty);
+                    }
+                    if self.cast_write_bindings.contains(&last) {
+                        self.cast_write_bindings.push(name);
+                    }
                 }
-            } else if matches!(&*init.expr, syn::Expr::Cast(_)) {
-                if let syn::Pat::Ident(pat) = &local.pat {
-                    self.pending_cast_binding = Some(pat.ident.to_string());
+            } else if let syn::Expr::Cast(cast) = &*init.expr {
+                // `let w = std::env::set_var as fn(..);`: the cast binds an
+                // env write under a new name. Check the inner path here,
+                // where the binding name is known, so no pending state can
+                // go stale between casts.
+                if matches!(&*cast.expr, syn::Expr::Path(path)
+                    if path_contains_env_write(&path.path))
+                {
+                    if let syn::Pat::Ident(pat) = &local.pat {
+                        self.cast_write_bindings.push(pat.ident.to_string());
+                    }
                 }
             }
         }
@@ -340,15 +366,9 @@ impl<'ast> Visit<'ast> for FnScan {
     }
 
     fn visit_expr_cast(&mut self, cast: &'ast syn::ExprCast) {
-        // `let w = std::env::set_var as fn(&str, &str);` binds an env write
-        // through a cast: unwrap to the inner path.
-        if matches!(&*cast.expr, syn::Expr::Path(path)
-            if path_contains_env_write(&path.path))
-        {
-            if let Some(name) = self.pending_cast_binding.take() {
-                self.env_write_bindings.push(name);
-            }
-        }
+        // Env writes through casts are handled in visit_local, where the
+        // binding name and the cast initializer are both in hand. Nothing
+        // pending here.
         syn::visit::visit_expr_cast(self, cast);
     }
 
@@ -510,6 +530,10 @@ struct ScannedFn {
     /// Impl type when this fn is a method (`impl Wrapper { fn env_lock }`),
     /// so `Wrapper::env_lock` and method-call lock acquisition resolve.
     impl_type: Option<String>,
+    /// True when this method comes from a trait impl (`impl T for X`):
+    /// Rust resolves inherent impls before trait impls, so method calls
+    /// only reach trait impls when no inherent method has that name.
+    is_trait_impl: bool,
     env_writes: Vec<String>,
     lock_calls: Vec<(String, String)>,
     unit_mutex_statics: Vec<String>,
@@ -538,6 +562,7 @@ fn scan_fn(
         module: module.to_string(),
         name: name.to_string(),
         impl_type: None,
+        is_trait_impl: false,
         env_writes: scan.env_writes,
         lock_calls: scan.lock_calls,
         unit_mutex_statics: scan.unit_mutex_statics,
@@ -570,6 +595,7 @@ fn walk_module_items(
             }
             Item::Impl(imp) => {
                 let impl_type = type_name(&imp.self_ty).map(|name| name.to_string());
+                let is_trait_impl = imp.trait_.is_some();
                 for impl_item in &imp.items {
                     if let syn::ImplItem::Fn(method) = impl_item {
                         let name = method.sig.ident.to_string();
@@ -584,6 +610,7 @@ fn walk_module_items(
                             module: module.to_string(),
                             name,
                             impl_type: impl_type.clone(),
+                            is_trait_impl,
                             env_writes: scan.env_writes,
                             lock_calls: scan.lock_calls,
                             unit_mutex_statics: scan.unit_mutex_statics,
@@ -606,6 +633,7 @@ fn walk_module_items(
                                 module: module.to_string(),
                                 name,
                                 impl_type: None,
+                                is_trait_impl: false,
                                 env_writes: scan.env_writes,
                                 lock_calls: scan.lock_calls,
                                 unit_mutex_statics: scan.unit_mutex_statics,
@@ -743,11 +771,20 @@ fn lock_call_is_genuine(
         }
         // `<any>:Type` target (Type::/method-call with a resolved receiver
         // type): candidates are impl methods of that exact type with the lock
-        // name; free fns never satisfy a method call.
+        // name; free fns never satisfy a method call. Rust resolves inherent
+        // impls before trait impls: when an inherent method with the name
+        // exists, trait impls are shadowed and never run, so they cannot
+        // vouch for the call.
         let candidates: Vec<&ScannedFn> = if let Some(ty) = target.0.strip_prefix("<any>:") {
+            let has_inherent = fns.iter().any(|func| {
+                func.impl_type.as_deref() == Some(ty)
+                    && !func.is_trait_impl
+                    && (func.name == target.1 || func.name == name)
+            });
             fns.iter()
                 .filter(|func| {
                     func.impl_type.as_deref() == Some(ty)
+                        && (!func.is_trait_impl || !has_inherent)
                         && (func.name == target.1 || func.name == name)
                 })
                 .collect()
