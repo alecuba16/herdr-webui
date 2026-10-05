@@ -5872,4 +5872,20 @@ describe("a11y audit contract", () => {
     // Focus ring contract applies to the scroller too.
     match(chromeCss, /\.sidebar-scroll:focus-visible \{[\s\S]*?outline: var\(--ring/);
   });
+
+  it("gives the other overlay scroll surfaces a visible scrollbar too (audit fix)", () => {
+    const chromeCss = read("./desktop/app_css/chrome.css");
+    // Same glitch family as the sidebar panes, found by the app-wide
+    // overflow audit: the chat-lens transcript, the settings modal, and
+    // the search palette results all scroll with default macOS overlay
+    // scrollbars (invisible until dragged). One shared selector list in
+    // chrome.css gives each the slim visible thumb.
+    match(chromeCss, /\.terminal-lens-scroller,\n\.search-results,\n\.modal-backdrop:not\(\.search-palette\) \.modal \{[\s\S]*?scrollbar-width: thin;/);
+    match(chromeCss, /\.terminal-lens-scroller::-webkit-scrollbar-thumb,\n\.search-results::-webkit-scrollbar-thumb,/);
+    match(chromeCss, /\.search-results::-webkit-scrollbar-thumb,\n\.modal-backdrop:not\(\.search-palette\) \.modal::-webkit-scrollbar-thumb \{[\s\S]*?background: var\(--border2\);/);
+    // Lens transcript keeps its keyboard path (tabindex 0 + autofocus on
+    // open lives in lens.js) so the thumb is the only missing piece.
+    const lensSource = read("./desktop/app_js/lens.js");
+    match(lensSource, /lens-scroller" id="terminalLensScroller" tabindex="0"/);
+  });
 });

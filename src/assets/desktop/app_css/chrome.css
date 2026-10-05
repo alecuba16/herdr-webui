@@ -246,6 +246,39 @@
   outline: var(--ring, 2px solid var(--accent, #89b4fa));
   outline-offset: var(--ring-offset, 2px);
 }
+/* Same hidden-scrollbar glitch family, app-wide (audit finding): every
+   overlay surface that scrolls with default macOS overlay scrollbars
+   renders no scroll signal — lens transcript, settings modal, search
+   palette results. One shared selector list gives them the same slim
+   visible thumb the sidebar panes got; keyboard paths already exist
+   there (lens scroller is tabindex 0 + autofocused, palette/modal are
+   mouse-driven). */
+.terminal-lens-scroller,
+.search-results,
+.modal-backdrop:not(.search-palette) .modal {
+  scrollbar-width: thin;
+}
+.terminal-lens-scroller::-webkit-scrollbar,
+.search-results::-webkit-scrollbar,
+.modal-backdrop:not(.search-palette) .modal::-webkit-scrollbar {
+  width: 8px;
+}
+.terminal-lens-scroller::-webkit-scrollbar-thumb,
+.search-results::-webkit-scrollbar-thumb,
+.modal-backdrop:not(.search-palette) .modal::-webkit-scrollbar-thumb {
+  background: var(--border2);
+  border-radius: 8px;
+}
+.terminal-lens-scroller::-webkit-scrollbar-thumb:hover,
+.search-results::-webkit-scrollbar-thumb:hover,
+.modal-backdrop:not(.search-palette) .modal::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+.terminal-lens-scroller::-webkit-scrollbar-track,
+.search-results::-webkit-scrollbar-track,
+.modal-backdrop:not(.search-palette) .modal::-webkit-scrollbar-track {
+  background: transparent;
+}
 .side-footer {
   flex: none;
 }
