@@ -144,7 +144,7 @@
     }
 
     async function closeWorkspaceById(workspaceId) {
-      if (!confirmFn(`Close workspace ${workspaceId}? Unsaved work in its agents may be lost.`)) return;
+      if (!(await confirmFn(`Close workspace ${workspaceId}? Unsaved work in its agents may be lost.`))) return;
       try {
         await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/close`, {
           method: "POST",

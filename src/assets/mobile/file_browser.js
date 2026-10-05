@@ -307,9 +307,9 @@
       return !!(file && !file.binary && !file.truncated);
     }
 
-    function confirmDiscardDraft() {
+    async function confirmDiscardDraft() {
       if (!local.editing || !local.dirty) return true;
-      const ok = deps.confirm(`Discard unsaved changes to ${local.file ? local.file.path : "this file"}?`);
+      const ok = await deps.confirm(`Discard unsaved changes to ${local.file ? local.file.path : "this file"}?`);
       if (!ok) return false;
       local.draft = local.file ? local.file.content || "" : "";
       local.dirty = false;
@@ -327,9 +327,9 @@
       deps.render();
     }
 
-    function cancelEdit() {
+    async function cancelEdit() {
       if (!local.editing) return;
-      if (!confirmDiscardDraft()) return;
+      if (!(await confirmDiscardDraft())) return;
       local.editing = false;
       local.saveError = "";
       deps.render();
@@ -361,8 +361,8 @@
 
     // ---- Row actions: rename / delete / new file (IDE-review B2) ----
 
-    function openActionSheet(encodedPath, kind) {
-      if (local.editing && !confirmDiscardDraft()) return;
+    async function openActionSheet(encodedPath, kind) {
+      if (local.editing && !(await confirmDiscardDraft())) return;
       const path = decodeURIComponent(encodedPath);
       local.actionSheet = { path, kind: kind === "dir" ? "dir" : "file" };
       deps.render();
@@ -420,7 +420,7 @@
     async function deletePath(encodedPath) {
       const path = decodeURIComponent(encodedPath);
       local.actionSheet = null;
-      if (!deps.confirm(`Delete ${path}? This cannot be undone.`)) return;
+      if (!(await deps.confirm(`Delete ${path}? This cannot be undone.`))) return;
       local.mutating = true;
       deps.render();
       try {
@@ -821,13 +821,13 @@
         local.mutating = false;
         local.contentSearch = createContentSearchState();
       },
-      toggle(encodedPath) {
-        if (!confirmDiscardDraft()) return;
+      async toggle(encodedPath) {
+        if (!(await confirmDiscardDraft())) return;
         load(decodeURIComponent(encodedPath));
       },
       async select(encodedPath) {
         if (local.file && local.file.path === decodeURIComponent(encodedPath)) return;
-        if (!confirmDiscardDraft()) return;
+        if (!(await confirmDiscardDraft())) return;
         await openFile(decodeURIComponent(encodedPath));
       },
         setFilterKind(kind) {

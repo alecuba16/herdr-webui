@@ -115,7 +115,7 @@
       if (!state.tab) return;
       const tab = state.tabs.find((item) => item.tab_id === state.tab) || { tab_id: state.tab, workspace_id: state.ws };
       const label = tabTitle(tab);
-      if (!confirmFn(`Close panel "${label}"?`)) return;
+      if (!(await confirmFn(`Close panel "${label}"?`))) return;
       try {
         const workspaceTabs = state.tabs.filter((item) => item.workspace_id === state.ws);
         if (workspaceTabs.length > 1) {

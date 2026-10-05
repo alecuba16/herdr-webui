@@ -120,10 +120,10 @@
           // instead of silently rerouting to a disabled backend.
           const wantsBuiltin =
             backendEnabled("builtin") &&
-            confirmFn(
+            (await confirmFn(
               `The ${failedLabel} backend could not be attached${detail}. ` +
                 "It has been disconnected. Start a built-in session instead?",
-            );
+            ));
           if (wantsBuiltin) {
             try {
               await api("/api/session/launch", {

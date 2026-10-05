@@ -5,6 +5,7 @@
     escapeHtml,
     localStorage,
     state,
+    confirmFn,
   }) {
     const normalizeOrder = globalThis.HerdrAppHelpers.normalizeOrder;
     let settingsFilter = "";
@@ -272,7 +273,9 @@
     // servers with localhost bypass there is nothing to log out of, but the
     // call stays harmless: the endpoint still answers ok.
     async function logout() {
-      if (typeof globalThis.confirm === "function" && !globalThis.confirm("Log out from this server?"))
+      if (typeof confirmFn === "function" && !(await confirmFn("Log out from this server?")))
+        return;
+      if (typeof confirmFn !== "function" && typeof globalThis.confirm === "function" && !globalThis.confirm("Log out from this server?"))
         return;
       try {
         await api("/api/logout", { method: "POST" });

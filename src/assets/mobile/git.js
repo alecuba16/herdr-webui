@@ -132,7 +132,7 @@
 
     async function gitDiscardFile() {
       if (!state.gitFile) return;
-      if (!confirmFn(`Discard all uncommitted changes to ${state.gitFile}? This cannot be undone.`)) return;
+      if (!(await confirmFn(`Discard all uncommitted changes to ${state.gitFile}? This cannot be undone.`))) return;
       await gitMutate("Discarding", async (cwd) => {
         await api("/api/git-ui/discard", {
           method: "POST",
@@ -220,7 +220,7 @@
 
     async function gitSwitchBranch(name) {
       if (!name || state.gitMutating) return;
-      if (!confirmFn(`Switch to branch ${name}?`)) return;
+      if (!(await confirmFn(`Switch to branch ${name}?`))) return;
       await gitMutate("Switching branch", async (cwd) => {
         await api("/api/git-ui/switch", {
           method: "POST",

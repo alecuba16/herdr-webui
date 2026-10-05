@@ -87,7 +87,7 @@
     // offline rows.
     async function cleanupSessions() {
       if (state.sessionBusy) return;
-      if (!confirmFn("Remove stale closed built-in sessions?")) return;
+      if (!(await confirmFn("Remove stale closed built-in sessions?"))) return;
       state.sessionBusy = true;
       state.sessionBusyLabel = "Cleaning up sessions...";
       render();
@@ -216,7 +216,7 @@
     // to the server's default backend so the refresh lands on a live target.
     async function closeSession() {
       if (state.sessionBusy) return;
-      if (!confirmFn(`Close current ${sessionBackendLabel(currentSessionBackend())} session?`)) return;
+      if (!(await confirmFn(`Close current ${sessionBackendLabel(currentSessionBackend())} session?`))) return;
       const session = state.session || "default";
       const backend = currentSessionBackend();
       state.sessionBusy = true;
@@ -297,7 +297,7 @@
         await closeSession();
         return;
       }
-      if (!confirmFn(`Close ${sessionBackendLabel(rowBackend)} session ${session}?`)) return;
+      if (!(await confirmFn(`Close ${sessionBackendLabel(rowBackend)} session ${session}?`))) return;
       state.sessionBusy = true;
       state.sessionBusyLabel = "Closing session...";
       render();

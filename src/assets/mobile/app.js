@@ -299,6 +299,53 @@
     badge.onclick = () => showScreen("sessions");
   }
 
+  // Styled in-app confirm sheet. Replaces raw window.confirm in the mobile
+  // bundle (the desktop parity gap): one promise-based surface, mounted in
+  // the shell so screen re-renders never destroy it.
+  const confirmQueue = [];
+  let pendingConfirmResolve = null;
+
+  function mobileConfirm(message) {
+    return new Promise((resolve) => {
+      // Shell may not exist yet (module init before first renderShell).
+      const sheet = el("mobileConfirmSheet");
+      const backdrop = el("mobileConfirmBackdrop");
+      if (!sheet || !backdrop) {
+        resolve(window.confirm(message));
+        return;
+      }
+      confirmQueue.push({ message: String(message || ""), resolve });
+      if (!pendingConfirmResolve) showNextConfirm();
+    });
+  }
+
+  function showNextConfirm() {
+    const next = confirmQueue.shift();
+    if (!next) return;
+    const sheet = el("mobileConfirmSheet");
+    const backdrop = el("mobileConfirmBackdrop");
+    if (!sheet || !backdrop) {
+      next.resolve(window.confirm(next.message));
+      showNextConfirm();
+      return;
+    }
+    pendingConfirmResolve = next.resolve;
+    sheet.querySelector("#mobileConfirmMessage").textContent = next.message;
+    sheet.hidden = false;
+    backdrop.hidden = false;
+  }
+
+  function resolveConfirm(value) {
+    const sheet = el("mobileConfirmSheet");
+    const backdrop = el("mobileConfirmBackdrop");
+    if (sheet) sheet.hidden = true;
+    if (backdrop) backdrop.hidden = true;
+    const resolve = pendingConfirmResolve;
+    pendingConfirmResolve = null;
+    if (resolve) resolve(!!value);
+    showNextConfirm();
+  }
+
   function renderShell() {
     // Shell rebuild recreates the nav bar, so the cached button list from a
     // previous shell is stale.
@@ -326,6 +373,8 @@
         </nav>
         <div class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" hidden onclick="HerdrMobile.closeDrawer()"></div>
         <aside class="mobile-drawer" id="mobileDrawer" hidden role="dialog" aria-modal="true" aria-label="Tools menu"><div class="mobile-drawer-items" id="mobileDrawerItems"></div></aside>
+        <div class="mobile-sheet-backdrop" id="mobileConfirmBackdrop" hidden onclick="HerdrMobile.resolveConfirm(false)"></div>
+        <div class="mobile-sheet mobile-confirm-sheet" id="mobileConfirmSheet" hidden role="alertdialog" aria-modal="true" aria-label="Confirm"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title" id="mobileConfirmMessage"></div><div class="mobile-sheet-actions"><button class="mobile-btn" id="mobileConfirmCancel" onclick="HerdrMobile.resolveConfirm(false)">Cancel</button><button class="mobile-btn primary" id="mobileConfirmOk" onclick="HerdrMobile.resolveConfirm(true)">Confirm</button></div></div>
       </div>
       </div>`;
     el("mobileBack").onclick = () => showScreen("home");
@@ -731,7 +780,7 @@
   mobileActions = globalThis.HerdrMobileActionsModule.create({
     state,
     api,
-    confirmFn: (...args) => confirm(...args),
+    confirmFn: (...args) => mobileConfirm(...args),
     refresh,
     render,
     showScreen,
@@ -751,7 +800,7 @@
   mobileBackend = globalThis.HerdrMobileBackendModule.create({
     state,
     api,
-    confirmFn: (...args) => confirm(...args),
+    confirmFn: (...args) => mobileConfirm(...args),
     localStorage,
     refresh,
     getMobileEvents: () => mobileEvents,
@@ -836,6 +885,7 @@
     escapeHtml,
     localStorage,
     state,
+    confirmFn: (...args) => mobileConfirm(...args),
   });
   mobileWorktrees = globalThis.HerdrMobileWorktrees.create({
     api,
@@ -852,7 +902,7 @@
   });
   mobileFileBrowser = globalThis.HerdrMobileFileBrowser.create({
     api,
-    confirm: (...args) => confirm(...args),
+    confirm: (...args) => mobileConfirm(...args),
     currentWorkspaceCwd,
     escapeHtml,
     render,
@@ -885,7 +935,7 @@
     jsArg,
     pathBasename,
     currentWorkspaceCwd,
-    confirmFn: (...args) => confirm(...args),
+    confirmFn: (...args) => mobileConfirm(...args),
   });
 
   mobileComposer = globalThis.HerdrMobileComposerModule.create({
@@ -929,7 +979,7 @@
     escapeHtml,
     jsArg,
     localStorage,
-    confirmFn: (...args) => confirm(...args),
+    confirmFn: (...args) => mobileConfirm(...args),
     loadSessions,
     refresh,
     connectEvents: (...args) => mobileEvents.connectEvents(...args),
@@ -977,7 +1027,7 @@
     mobileAttention,
     api,
     refresh,
-    confirmFn: (...args) => confirm(...args),
+    confirmFn: (...args) => mobileConfirm(...args),
     getWorkingDismissals: () => workingDismissals,
     getMobileTempTerminal: () => mobileTempTerminal,
     workspacesById,
@@ -1015,6 +1065,7 @@
     submitRenameWorkspace: (...args) => mobileScreens.submitRenameWorkspace(...args),
     cancelRenameWorkspace: (...args) => mobileScreens.cancelRenameWorkspace(...args),
     closeWorkspace: (...args) => mobileScreens.closeWorkspaceById(...args),
+    resolveConfirm,
     promptAnswer: (...args) => mobileComposer.promptAnswer(...args),
     promptAnswerText: (...args) => mobileComposer.promptAnswerText(...args),
     promptDismiss: (...args) => mobileComposer.promptDismiss(...args),
