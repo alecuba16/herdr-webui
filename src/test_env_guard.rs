@@ -21,14 +21,15 @@
 //! `ALLOWLIST` with written evidence.
 //!
 //! R3 - no static unit mutex (`Mutex<()>`, including `OnceLock<Mutex<()>>`)
-//! may exist outside the allowed lock fns. In `src/` the only allowed owners
-//! are the two canonical lock factories; in `tests/` each integration binary
-//! owns one lock convention of its own, so a fn whose name is in `LOCK_NAMES`
-//! may own one (at most one per file: two islands in the same binary can
-//! race). A private island lets its holder race every other module's env
-//! window in the same test binary, which is exactly the PR #240 bug class,
-//! so R3 bans the island itself rather than trusting wrapper fns to point at
-//! a canonical lock.
+//! may exist outside the allowed lock fns, and an allowed lock fn may own
+//! exactly one such static. In `src/` the only allowed owners are the two
+//! canonical lock factories; in `tests/` each integration binary owns one
+//! lock convention of its own, so a fn whose name is in `LOCK_NAMES` may own
+//! one (at most one per file: two islands in the same binary can race). A
+//! private island lets its holder race every other module's env window in
+//! the same test binary, which is exactly the PR #240 bug class, so R3 bans
+//! the island itself rather than trusting wrapper fns to point at a
+//! canonical lock.
 //!
 //! Stale entries: an `ALLOWLIST` entry that no longer matches a real
 //! env-writing fn fails the guard, so the evidence cannot silently rot.
@@ -374,6 +375,20 @@ fn test_env_convention_is_enforced() {
     let mut tests_lock_owners: HashMap<String, String> = HashMap::new();
     for func in &fns {
         if func.unit_mutex_statics.is_empty() {
+            continue;
+        }
+        let exempted = CANONICAL_LOCK_FNS
+            .iter()
+            .any(|(file, name)| *file == func.file && *name == func.name)
+            || is_tests_lock_fn(&func.file, &func.name);
+        if exempted && func.unit_mutex_statics.len() > 1 {
+            violations.push(format!(
+                "  [R3] {} fn `{}` declares {} unit-mutex statics {}; an exempted lock fn must own exactly one: a second island inside it lets two env windows race without serializing. Remove the extra static(s)",
+                func.file,
+                func.name,
+                func.unit_mutex_statics.len(),
+                func.unit_mutex_statics.join(", ")
+            ));
             continue;
         }
         if CANONICAL_LOCK_FNS
