@@ -768,7 +768,7 @@ unsafe fn libc_geteuid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
 
     fn test_config(tls: crate::TlsConfig) -> WebConfig {
         WebConfig {
@@ -944,9 +944,12 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
 
+    /// Reuses the crate-wide env lock from `tests.rs` instead of a private
+    /// mutex: a module-private lock lets a HOME/XDG window here race any
+    /// other module's env-mutating window (server_settings, parity e2e)
+    /// in the same test binary.
     fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+        crate::tests::env_lock()
     }
 
     #[test]

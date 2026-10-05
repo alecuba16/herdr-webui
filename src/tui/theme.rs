@@ -160,7 +160,6 @@ impl Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
 
     #[test]
     fn parses_theme_names_and_aliases() {
@@ -197,7 +196,7 @@ mod tests {
 
     #[test]
     fn theme_env_prefers_webui_setting_then_jcode_then_system() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let original_webui = std::env::var_os("HERDR_WEBUI_TUI_THEME");
         let original_jcode = std::env::var_os("JCODE_THEME");
 
@@ -237,16 +236,21 @@ mod tests {
         assert_eq!(TuiTheme::Dark.label(), "dark");
         assert_eq!(TuiTheme::Light.label(), "light");
 
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock();
         let original = std::env::var_os("HERDR_WEBUI_TUI_THEME");
         restore_env_var("HERDR_WEBUI_TUI_THEME", Some("dark".into()));
         assert_eq!(std::env::var("HERDR_WEBUI_TUI_THEME").unwrap(), "dark");
         restore_env_var("HERDR_WEBUI_TUI_THEME", original);
     }
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    /// Reuses the crate-wide `test_env_lock` (lib.rs) instead of a private
+    /// mutex: a module-private lock lets a THEME env window here race any
+    /// other module's env-mutating window (workspace, web_api) in the same
+    /// test binary.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_env_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 
     fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {

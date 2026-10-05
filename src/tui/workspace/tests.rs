@@ -684,11 +684,18 @@ fn round4_workspace_temp_empty_ids_and_create_path_backend_error() {
 /// Serializes tests that touch `$HOME`: one removes it process-wide
 /// (expand_tilde_falls_back_without_home) while the other expands `~`
 /// against it, so running them concurrently is a race.
-static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Reuses the crate-wide `test_env_lock` (lib.rs) instead of a private
+/// mutex: a module-private lock lets a HOME window here race any other
+/// module's env-mutating window (theme, web_api) in the same test binary.
+fn home_lock() -> std::sync::MutexGuard<'static, ()> {
+    crate::test_env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+}
 
 #[test]
 fn new_workspace_prompt_validates_tilde_expands_and_chains_name_step() {
-    let _guard = HOME_LOCK.lock().unwrap();
+    let _guard = home_lock();
     use super::{validate_workspace_folder, WorkspaceCreateStage};
 
     // Tilde expansion mirrors the webui expand_user_path_string.
@@ -962,7 +969,7 @@ fn worktree_backspace_clamps_cursor_when_filter_shrinks() {
 
 #[test]
 fn expand_tilde_falls_back_without_home() {
-    let _guard = HOME_LOCK.lock().unwrap();
+    let _guard = home_lock();
     // Without $HOME a ~/path stays as typed instead of panicking.
     let prev = std::env::var_os("HOME");
     unsafe { std::env::remove_var("HOME") };
