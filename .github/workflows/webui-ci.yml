@@ -40,6 +40,27 @@ jobs:
       - name: Test
         run: cargo test --target-dir target
 
+      - name: Composer e2e
+        run: |
+          scripts/e2e/run-composer-e2e.sh || {
+            echo "composer e2e failed once, retrying (runner timing flake)"
+            scripts/e2e/run-composer-e2e.sh
+          }
+
+      - name: Lens e2e
+        run: |
+          scripts/e2e/run-lens-e2e.sh || {
+            echo "lens e2e failed once, retrying (runner timing flake)"
+            scripts/e2e/run-lens-e2e.sh
+          }
+
+      - name: Lens chat e2e
+        run: |
+          scripts/e2e/run-lens-chat-e2e.sh || {
+            echo "lens chat e2e failed once, retrying (runner timing flake)"
+            scripts/e2e/run-lens-chat-e2e.sh
+          }
+
       - name: Build release
         run: cargo build --release --target-dir target
 

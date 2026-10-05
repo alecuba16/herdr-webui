@@ -900,6 +900,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "syn 2.0.118",
  "terminal-colorsaurus",
  "tokio",
  "tokio-tungstenite 0.30.0",
