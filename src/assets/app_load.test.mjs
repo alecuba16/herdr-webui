@@ -5543,6 +5543,113 @@ describe("app bundle load", () => {
   });
 });
 
+describe("workspace sidebar order", () => {
+  // Mirror the production concat order from assets.rs DESKTOP_JS: shared
+  // core first, then desktop modules with worktrees.js before shortcuts.js.
+  const desktopModules = [
+    "./desktop/app_js/core.js",
+    "./desktop/app_js/workspace_shell.js",
+    "./desktop/app_js/legacy_polling.js",
+    "./desktop/app_js/panel_switcher.js",
+    "./desktop/app_js/render.js",
+    "./desktop/app_js/terminal.js",
+    "./desktop/app_js/lens.js",
+    "./desktop/app_js/prompt_cards.js",
+    "./desktop/app_js/composer.js",
+    "./desktop/app_js/worktrees.js",
+    "./desktop/app_js/shortcuts.js",
+    "./desktop/app_js/workspace_create.js",
+    "./desktop/app_js/bindings.js",
+  ]
+    .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
+    .join("");
+  const bundleSource =
+    readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
+    "\n" +
+    desktopModules;
+
+  it("defines orderedWorkspaceIds exactly once across the desktop bundle", () => {
+    // worktrees.js loads before shortcuts.js (production concat order), so a
+    // second global definition in shortcuts.js would silently override the
+    // one workspaceDrop relies on.
+    const count = (re) => [...bundleSource.matchAll(re)].length;
+    equal(
+      count(/function orderedWorkspaceIds\(\)/g),
+      1,
+      "exactly one orderedWorkspaceIds definition in the concatenated bundle",
+    );
+  });
+
+  it("derives sidebar order from the persisted workspaceOrder, not the state array", () => {
+    const ctx = context();
+    vm.runInContext(bundleSource, ctx);
+    vm.runInContext(
+      `state.workspaces = [
+        { workspace_id: "ws_a" },
+        { workspace_id: "ws_b" },
+        { workspace_id: "ws_c" },
+      ];
+      state.workspaceOrder = ["ws_b", "ws_a"];`,
+      ctx,
+    );
+
+    // String round-trip avoids cross-realm Array prototype mismatches.
+    const ids = vm.runInContext("orderedWorkspaceIds().join('|')", ctx);
+    equal(ids, "ws_b|ws_a|ws_c");
+  });
+
+  it("workspaceDrop posts the rendered order with the dropped workspace spliced in", async () => {
+    const ctx = context();
+    let posted = null;
+    let postedOrder = null;
+    const originalFetch = ctx.fetch;
+    ctx.fetch = async (url, init) => {
+      if (String(url).includes("/api/workspace-order")) {
+        posted = String(url);
+        postedOrder = JSON.parse(init.body).order;
+        return { status: 200, ok: true, json: async () => ({ ok: true }) };
+      }
+      return originalFetch(url, init);
+    };
+    vm.runInContext(bundleSource, ctx);
+    vm.runInContext(
+      `state.workspaces = [
+        { workspace_id: "ws_a" },
+        { workspace_id: "ws_b" },
+        { workspace_id: "ws_c" },
+      ];
+      state.workspaceOrder = ["ws_b", "ws_a", "ws_c"];
+      state.dragWorkspace = "ws_c";`,
+      ctx,
+    );
+
+    // User drags ws_c (state-array last) before ws_a: the posted order must
+    // reflect the rendered sequence, so ws_c lands before ws_a.
+    await vm.runInContext(
+      "workspaceDrop({ preventDefault() {}, currentTarget: { classList: { remove() {} } } }, 'ws_a')",
+      ctx,
+    );
+
+    equal(posted, "/api/workspace-order");
+    deepEqual(postedOrder, ["ws_b", "ws_c", "ws_a"]);
+
+    // state.workspaceOrder is updated optimistically to the posted order.
+    const updatedOrder = vm.runInContext(
+      "state.workspaceOrder.join('|')",
+      ctx,
+    );
+    equal(updatedOrder, "ws_b|ws_c|ws_a");
+  });
+});
+
 describe("alert card module", () => {
   const alertCardSource = () =>
     readFileSync(new URL("./shared/alert_card.js", import.meta.url), "utf8");

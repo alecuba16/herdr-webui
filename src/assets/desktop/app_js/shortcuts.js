@@ -90,9 +90,9 @@ function showSettingsModal() {
 function currentWorkspace() {
   return state.workspaces.find((w) => w.workspace_id === state.ws) || null;
 }
-function orderedWorkspaceIds() {
-  return state.workspaces.map((w) => w.workspace_id).filter(Boolean);
-}
+// orderedWorkspaceIds lives in worktrees.js (loaded before this file) and
+// now reflects the persisted sidebar order (state.workspaceOrder), so the
+// workspace cycling shortcuts follow the same sequence the user sees.
 function selectRelativeWorkspace(delta) {
   const ids = orderedWorkspaceIds();
   if (!ids.length) return false;
