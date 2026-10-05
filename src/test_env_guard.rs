@@ -609,6 +609,17 @@ fn collect_type_aliases(items: &[Item], aliases: &mut HashMap<String, syn::Path>
 /// One scanned fn (or impl/trait method) with its collected facts.
 struct ScannedFn {
     file: String,
+    /// Index of this unit in the scan output; nested children reference it
+    /// so unqualified calls from a parent resolve to its own children only.
+    id: usize,
+    /// Id of the fn whose body directly contains this unit: Some for a
+    /// nested fn (fn inside a fn body or a method body), None for a
+    /// module-level fn or a method (units declared in item position).
+    parent_id: Option<usize>,
+    /// True only for plain fns (`fn name(..)` items and their nested fns):
+    /// bare unqualified calls bind to free fns, never to impl or trait
+    /// methods, so scope resolution filters on this.
+    is_free_fn: bool,
     /// Module path within the file ("" for file top level, "child" for a fn
     /// inside `mod child { ... }`), so `super::` calls from inline child mods
     /// resolve to the parent module's fns.
@@ -645,14 +656,19 @@ fn scan_fn(
     func: &ItemFn,
     aliases: &HashMap<String, syn::Path>,
     out: &mut Vec<ScannedFn>,
+    parent: Option<usize>,
 ) {
     let mut scan = FnScan {
         aliases: aliases.clone(),
         ..FnScan::default()
     };
     scan.visit_block(&func.block);
+    let id = out.len();
     out.push(ScannedFn {
         file: file.to_string(),
+        id,
+        parent_id: parent,
+        is_free_fn: true,
         module: module.to_string(),
         name: name.to_string(),
         impl_type: None,
@@ -664,7 +680,7 @@ fn scan_fn(
     });
     for nested in scan.nested_fns {
         let nested_name = nested.sig.ident.to_string();
-        scan_fn(file, module, &nested_name, nested, aliases, out);
+        scan_fn(file, module, &nested_name, nested, aliases, out, Some(id));
     }
 }
 
@@ -690,7 +706,7 @@ fn walk_module_items(
         match item {
             Item::Fn(func) => {
                 let name = func.sig.ident.to_string();
-                scan_fn(file, module, &name, func, aliases, fns);
+                scan_fn(file, module, &name, func, aliases, fns, None);
             }
             Item::Impl(imp) => {
                 let impl_type = type_name(&imp.self_ty).map(|name| name.to_string());
@@ -698,6 +714,7 @@ fn walk_module_items(
                 for impl_item in &imp.items {
                     if let syn::ImplItem::Fn(method) = impl_item {
                         let name = method.sig.ident.to_string();
+                        let method_id = fns.len();
                         let mut scan = FnScan {
                             aliases: aliases.clone(),
                             impl_type: impl_type.clone(),
@@ -706,6 +723,9 @@ fn walk_module_items(
                         scan.visit_impl_item_fn(method);
                         fns.push(ScannedFn {
                             file: file.to_string(),
+                            id: method_id,
+                            parent_id: None,
+                            is_free_fn: false,
                             module: module.to_string(),
                             name,
                             impl_type: impl_type.clone(),
@@ -717,7 +737,15 @@ fn walk_module_items(
                         });
                         for nested in scan.nested_fns {
                             let nested_name = nested.sig.ident.to_string();
-                            scan_fn(file, module, &nested_name, nested, aliases, fns);
+                            scan_fn(
+                                file,
+                                module,
+                                &nested_name,
+                                nested,
+                                aliases,
+                                fns,
+                                Some(method_id),
+                            );
                         }
                     }
                 }
@@ -727,6 +755,7 @@ fn walk_module_items(
                     if let syn::TraitItem::Fn(method) = trait_item {
                         if method.default.is_some() {
                             let name = method.sig.ident.to_string();
+                            let method_id = fns.len();
                             let mut scan = FnScan {
                                 aliases: aliases.clone(),
                                 ..FnScan::default()
@@ -734,6 +763,9 @@ fn walk_module_items(
                             scan.visit_trait_item_fn(method);
                             fns.push(ScannedFn {
                                 file: file.to_string(),
+                                id: method_id,
+                                parent_id: None,
+                                is_free_fn: false,
                                 module: module.to_string(),
                                 name,
                                 impl_type: None,
@@ -745,7 +777,15 @@ fn walk_module_items(
                             });
                             for nested in scan.nested_fns {
                                 let nested_name = nested.sig.ident.to_string();
-                                scan_fn(file, module, &nested_name, nested, aliases, fns);
+                                scan_fn(
+                                    file,
+                                    module,
+                                    &nested_name,
+                                    nested,
+                                    aliases,
+                                    fns,
+                                    Some(method_id),
+                                );
                             }
                         }
                     }
@@ -810,12 +850,11 @@ fn type_name(ty: &syn::Type) -> Option<String> {
 /// stopping on cycles (a cyclic chain locks nothing).
 fn lock_call_is_genuine(
     fns: &[ScannedFn],
-    imports: &HashMap<(String, String), (String, String)>,
-    caller_file: &str,
-    caller_module: &str,
+    imports: &HashMap<(String, String, String), (String, String)>,
+    caller_id: usize,
     qualifier: &str,
     name: &str,
-    visiting: &mut Vec<(String, String)>,
+    visiting: &mut Vec<usize>,
 ) -> bool {
     // Unprovable method syntax (unknown receiver, shadowed local, Self
     // outside any impl): never a genuine lock. No lock call is safe by
@@ -823,106 +862,167 @@ fn lock_call_is_genuine(
     if qualifier == "<method>" {
         return false;
     }
-    let targets: Vec<(String, String)> = if qualifier.is_empty() {
-        // Unqualified call: resolve via an explicit `use` import if one
-        // exists, otherwise a fn defined in the caller's own module.
-        match imports.get(&(caller_file.to_string(), name.to_string())) {
-            Some((file, module)) => {
-                if module.is_empty() {
-                    vec![(file.to_string(), name.to_string())]
-                } else {
-                    vec![
-                        (file.to_string(), format!("{module}::{name}")),
-                        (file.to_string(), name.to_string()),
-                    ]
+    let targets: Vec<usize> = if qualifier.is_empty() {
+        // Unqualified call: Rust resolves the name in the innermost enclosing
+        // scope that declares it, walking outward. Mirror that: the caller's
+        // own nested children first, then each enclosing ancestor scope
+        // (nested fns are visible to their parent and to sibling fns
+        // sharing that ancestor, but NOT to fns in unrelated units), then
+        // module-visible imports, then the caller's own module's item fns.
+        // A fake in an inner scope shadows a genuine in an outer one (no
+        // cross-scope fallback: that is the hole being closed).
+        let caller = &fns[caller_id];
+        // (a) innermost-first walk over the caller's ancestor chain. For
+        // each scope unit, its nested children with the name are in scope;
+        // the scope unit's own name is additionally in scope for units
+        // nested inside it (recursion), never for the caller itself.
+        let mut scope_units: Vec<usize> = Vec::new();
+        let mut scope = Some(caller_id);
+        while let Some(current) = scope {
+            scope_units.push(current);
+            scope = fns[current].parent_id;
+        }
+        let mut resolved: Vec<usize> = Vec::new();
+        let mut resolved_any = false;
+        for &unit_id in &scope_units {
+            let mut scope_hit = false;
+            for func in fns {
+                if func.parent_id == Some(unit_id) && func.is_free_fn && func.name == name {
+                    resolved.push(func.id);
+                    scope_hit = true;
                 }
             }
-            None => vec![(caller_file.to_string(), name.to_string())],
+            if !scope_hit
+                && unit_id != caller_id
+                && fns[unit_id].name == name
+                && fns[unit_id].is_free_fn
+                && fns[unit_id].parent_id.is_none()
+            {
+                // The unit's own name is shadowed by a same-named child in
+                // its block (checked above), so it is only a candidate
+                // when no child matched in this scope.
+                resolved.push(unit_id);
+                scope_hit = true;
+            }
+            if scope_hit {
+                // Rust binds the innermost scope that declares the name;
+                // outer-scope candidates are shadowed, never fallbacks.
+                resolved_any = true;
+                break;
+            }
+        }
+        if resolved_any {
+            resolved
+        } else {
+            // (b) an explicit `use` import visible in the caller's module.
+            match imports.get(&(caller.file.clone(), caller.module.clone(), name.to_string())) {
+                Some((def_file, def_module)) => {
+                    // The import targets a canonical module whose definition
+                    // file's file-top units are that module's items; match
+                    // only those (the module string is redundant because
+                    // canonical_module maps each module to one file).
+                    let _ = def_module;
+                    fns.iter()
+                        .filter(|func| {
+                            func.file == *def_file
+                                && func.module.is_empty()
+                                && func.is_free_fn
+                                && func.name == name
+                        })
+                        .map(|func| func.id)
+                        .collect()
+                }
+                None => {
+                    // (c) fns declared at item position in the caller's
+                    // own module (same file, same module path).
+                    fns.iter()
+                        .filter(|func| {
+                            func.parent_id.is_none()
+                                && func.is_free_fn
+                                && func.file == caller.file
+                                && func.module == caller.module
+                                && func.name == name
+                        })
+                        .map(|func| func.id)
+                        .collect()
+                }
+            }
         }
     } else {
+        let caller = &fns[caller_id];
         let trimmed = qualifier.trim_end_matches("::");
         if trimmed == "super" {
             // super:: from an inline child mod: the parent module of the
-            // caller's module path, same file. At file top level super:: is
-            // crate-rooted, resolved by canonical_module below.
-            let parent = parent_module(caller_module);
-            return resolve_in_module(fns, imports, caller_file, &parent, name, visiting);
+            // caller's module path, same file. Only item-position free fns
+            // of that module can satisfy the name: a nested fn inside some
+            // other fn of the parent module is not visible to a sibling
+            // module. File-top super:: stays same-file conservative.
+            let parent = parent_module(&caller.module);
+            return resolve_in_module(fns, imports, &caller.file, &parent, name, visiting);
         }
         // Type-qualified lock call (`Wrapper::lock_env()`, `Self::lock_env()`
         // after the Self rewrite): resolve to methods of that type across
         // impls in the scan. Falls back to canonical_module for module
         // qualifiers (`crate::tests`, `crate::tui`).
-        if let Some((file, module)) = canonical_module(caller_file, trimmed) {
-            if module.is_empty() {
-                vec![(file, name.to_string())]
-            } else {
-                vec![
-                    (file.clone(), format!("{module}::{name}")),
-                    (file, name.to_string()),
-                ]
-            }
+        if let Some((file, module)) = canonical_module(&caller.file, trimmed) {
+            // The module qualifier names a crate module whose items are the
+            // file-top free fns of its definition file (src/<mod>.rs file top
+            // IS crate::<mod>; src/tests.rs file top IS crate::tests). The
+            // module string is redundant: canonical_module maps each module
+            // to exactly one file. Units in inline child mods of that file
+            // or nested in its fns are not reachable through this qualifier.
+            let _ = module;
+            fns.iter()
+                .filter(|func| {
+                    func.file == file
+                        && func.module.is_empty()
+                        && func.is_free_fn
+                        && func.name == name
+                })
+                .map(|func| func.id)
+                .collect()
         } else if fns
             .iter()
             .any(|func| func.impl_type.as_deref() == Some(trimmed))
         {
             // Impl methods of this type exist; resolve by name across impls.
             // Only that type's impls match, so a same-named fake method on
-            // another type cannot shield it. The type rides in the target
-            // key so cross-type chains do not trip the cycle guard.
-            vec![(format!("<any>:{trimmed}"), name.to_string())]
+            // another type cannot shield it. Free fns never satisfy a
+            // method call. Rust resolves inherent impls before trait impls:
+            // when an inherent method with the name exists, trait impls are
+            // shadowed and never run, so they cannot vouch for the call.
+            let has_inherent = fns.iter().any(|func| {
+                func.impl_type.as_deref() == Some(trimmed)
+                    && !func.is_trait_impl
+                    && func.name == name
+            });
+            fns.iter()
+                .filter(|func| {
+                    func.impl_type.as_deref() == Some(trimmed)
+                        && (!func.is_trait_impl || !has_inherent)
+                        && func.name == name
+                })
+                .map(|func| func.id)
+                .collect()
         } else {
             return false;
         }
     };
     targets.into_iter().any(|target| {
+        let candidate = &fns[target];
         if visiting.contains(&target) {
             return false;
         }
-        // `<any>:Type` target (Type::/method-call with a resolved receiver
-        // type): candidates are impl methods of that exact type with the lock
-        // name; free fns never satisfy a method call. Rust resolves inherent
-        // impls before trait impls: when an inherent method with the name
-        // exists, trait impls are shadowed and never run, so they cannot
-        // vouch for the call.
-        let candidates: Vec<&ScannedFn> = if let Some(ty) = target.0.strip_prefix("<any>:") {
-            let has_inherent = fns.iter().any(|func| {
-                func.impl_type.as_deref() == Some(ty)
-                    && !func.is_trait_impl
-                    && (func.name == target.1 || func.name == name)
-            });
-            fns.iter()
-                .filter(|func| {
-                    func.impl_type.as_deref() == Some(ty)
-                        && (!func.is_trait_impl || !has_inherent)
-                        && (func.name == target.1 || func.name == name)
-                })
-                .collect()
-        } else {
-            fns.iter()
-                .filter(|func| {
-                    func.file == target.0 && (func.name == target.1 || func.name == name)
-                })
-                .collect()
-        };
-        candidates.into_iter().any(|candidate| {
-            if candidate.unit_mutex_statics.len() == 1 {
-                return true;
-            }
-            visiting.push(target.clone());
-            let genuine = candidate.lock_calls.iter().any(|(qual, lock)| {
-                lock_call_is_genuine(
-                    fns,
-                    imports,
-                    &candidate.file,
-                    &candidate.module,
-                    qual,
-                    lock,
-                    visiting,
-                )
-            });
-            visiting.pop();
-            genuine
-        })
+        if candidate.unit_mutex_statics.len() == 1 {
+            return true;
+        }
+        visiting.push(target);
+        let genuine = candidate
+            .lock_calls
+            .iter()
+            .any(|(qual, lock)| lock_call_is_genuine(fns, imports, target, qual, lock, visiting));
+        visiting.pop();
+        genuine
     })
 }
 
@@ -935,50 +1035,42 @@ fn parent_module(module: &str) -> String {
     }
 }
 
-/// Resolve a lock name in an explicit module of a file, mirroring the
-/// candidate-search used for unqualified calls: qualified name first, plain
-/// name fallback.
+/// Resolve a lock name in an explicit module of a file: only item-position
+/// free fns declared in exactly that (file, module) can satisfy the name.
+/// A nested fn inside some fn of that module is not in the module's scope,
+/// and fns of other modules or files never match.
 fn resolve_in_module(
     fns: &[ScannedFn],
-    imports: &HashMap<(String, String), (String, String)>,
+    imports: &HashMap<(String, String, String), (String, String)>,
     file: &str,
     module: &str,
     name: &str,
-    visiting: &mut Vec<(String, String)>,
+    visiting: &mut Vec<usize>,
 ) -> bool {
-    let targets: Vec<(String, String)> = if module.is_empty() {
-        vec![(file.to_string(), name.to_string())]
-    } else {
-        vec![
-            (file.to_string(), format!("{module}::{name}")),
-            (file.to_string(), name.to_string()),
-        ]
-    };
+    let targets: Vec<usize> = fns
+        .iter()
+        .filter(|func| {
+            func.parent_id.is_none()
+                && func.is_free_fn
+                && func.file == file
+                && func.module == module
+                && func.name == name
+        })
+        .map(|func| func.id)
+        .collect();
     targets.into_iter().any(|target| {
+        let candidate = &fns[target];
         if visiting.contains(&target) {
             return false;
         }
-        let Some(candidate) = fns
-            .iter()
-            .find(|func| func.file == target.0 && (func.name == target.1 || func.name == name))
-        else {
-            return false;
-        };
         if candidate.unit_mutex_statics.len() == 1 {
             return true;
         }
         visiting.push(target);
-        let genuine = candidate.lock_calls.iter().any(|(qual, lock)| {
-            lock_call_is_genuine(
-                fns,
-                imports,
-                &candidate.file,
-                &candidate.module,
-                qual,
-                lock,
-                visiting,
-            )
-        });
+        let genuine = candidate
+            .lock_calls
+            .iter()
+            .any(|(qual, lock)| lock_call_is_genuine(fns, imports, target, qual, lock, visiting));
         visiting.pop();
         genuine
     })
@@ -1014,8 +1106,10 @@ fn canonical_module(caller_file: &str, qualifier: &str) -> Option<(String, Strin
     }
 }
 
-/// Local name -> defining location for lock-fn imports across files.
-type LockImports = HashMap<(String, String), (String, String)>;
+/// Local name -> defining location for lock-fn imports across files,
+/// scoped to the importing (file, module): a `use` inside `mod tests`
+/// vouches only for callers in that same module.
+type LockImports = HashMap<(String, String, String), (String, String)>;
 
 /// Scan every file's `use` items for explicit imports of lock fns
 /// (`use crate::tests::lock_env;`), mapping (importing file, local name) to
@@ -1034,25 +1128,37 @@ fn collect_lock_imports(files: &[PathBuf]) -> (LockImports, Vec<String>) {
             continue;
         };
         let rel = rel_path(file);
-        walk_imports(&rel, &parsed.items, &mut imports, &mut env_write_renames);
+        walk_imports(
+            &rel,
+            "",
+            &parsed.items,
+            &mut imports,
+            &mut env_write_renames,
+        );
     }
     (imports, env_write_renames)
 }
 
 fn walk_imports(
     file: &str,
+    module: &str,
     items: &[Item],
-    imports: &mut HashMap<(String, String), (String, String)>,
+    imports: &mut LockImports,
     env_write_renames: &mut Vec<String>,
 ) {
     for item in items {
         match item {
             Item::Use(use_item) => {
-                record_lock_import(file, &use_item.tree, "", imports, env_write_renames);
+                record_lock_import(file, module, &use_item.tree, "", imports, env_write_renames);
             }
-            Item::Mod(module) => {
-                if let Some((_, inner)) = &module.content {
-                    walk_imports(file, inner, imports, env_write_renames);
+            Item::Mod(module_item) => {
+                if let Some((_, inner)) = &module_item.content {
+                    let child = if module.is_empty() {
+                        module_item.ident.to_string()
+                    } else {
+                        format!("{module}::{}", module_item.ident)
+                    };
+                    walk_imports(file, &child, inner, imports, env_write_renames);
                 }
             }
             _ => {}
@@ -1068,9 +1174,10 @@ fn walk_imports(
 /// resolved through.
 fn record_lock_import(
     file: &str,
+    module: &str,
     tree: &syn::UseTree,
     prefix: &str,
-    imports: &mut HashMap<(String, String), (String, String)>,
+    imports: &mut LockImports,
     env_write_renames: &mut Vec<String>,
 ) {
     match tree {
@@ -1080,7 +1187,14 @@ fn record_lock_import(
             } else {
                 format!("{prefix}::{}", path.ident)
             };
-            record_lock_import(file, &path.tree, &extended, imports, env_write_renames);
+            record_lock_import(
+                file,
+                module,
+                &path.tree,
+                &extended,
+                imports,
+                env_write_renames,
+            );
         }
         syn::UseTree::Name(name) => {
             let path = if prefix.is_empty() {
@@ -1088,11 +1202,11 @@ fn record_lock_import(
             } else {
                 format!("{prefix}::{}", name.ident)
             };
-            record_lock_import_path(file, &path, imports);
+            record_lock_import_path(file, module, &path, imports);
         }
         syn::UseTree::Group(group) => {
             for item in &group.items {
-                record_lock_import(file, item, prefix, imports, env_write_renames);
+                record_lock_import(file, module, item, prefix, imports, env_write_renames);
             }
         }
         syn::UseTree::Rename(rename) => {
@@ -1109,11 +1223,7 @@ fn record_lock_import(
 
 /// Register one concrete import path when its last segment is a LOCK_NAMES
 /// name and its qualifier resolves to a canonical module.
-fn record_lock_import_path(
-    file: &str,
-    path: &str,
-    imports: &mut HashMap<(String, String), (String, String)>,
-) {
+fn record_lock_import_path(file: &str, module: &str, path: &str, imports: &mut LockImports) {
     let segments: Vec<&str> = path.split("::").collect();
     if segments.len() < 2 {
         return;
@@ -1122,8 +1232,11 @@ fn record_lock_import_path(
     let name = name[0];
     if LOCK_NAMES.contains(&name) {
         let qualifier = qualifier.join("::");
-        if let Some((def_file, module)) = canonical_module(file, &qualifier) {
-            imports.insert((file.to_string(), name.to_string()), (def_file, module));
+        if let Some((def_file, def_module)) = canonical_module(file, &qualifier) {
+            imports.insert(
+                (file.to_string(), module.to_string(), name.to_string()),
+                (def_file, def_module),
+            );
         }
     }
 }
@@ -1222,15 +1335,8 @@ fn test_env_convention_is_enforced() {
                 }
                 ScanEvent::Lock(qual, lock) => {
                     let mut visiting = Vec::new();
-                    let genuine = lock_call_is_genuine(
-                        &fns,
-                        &imports,
-                        &func.file,
-                        &func.module,
-                        qual,
-                        lock,
-                        &mut visiting,
-                    );
+                    let genuine =
+                        lock_call_is_genuine(&fns, &imports, func.id, qual, lock, &mut visiting);
                     if genuine {
                         if let Some(flag) = locked_by_depth.last_mut() {
                             *flag = true;
