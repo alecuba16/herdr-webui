@@ -113,6 +113,7 @@ const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile/worktrees.js");
 const MOBILE_FILE_BROWSER_JS: &str = include_str!("assets/mobile/file_browser.js");
 const MOBILE_SEARCH_JS: &str = include_str!("assets/mobile/search.js");
 const MOBILE_GIT_JS: &str = include_str!("assets/mobile/git.js");
+const MOBILE_COMPOSER_JS: &str = include_str!("assets/mobile/composer.js");
 const MOBILE_SESSIONS_JS: &str = include_str!("assets/mobile/sessions.js");
 const MOBILE_EVENTS_JS: &str = include_str!("assets/mobile/events.js");
 const MOBILE_SCREENS_JS: &str = include_str!("assets/mobile/screens.js");
@@ -433,6 +434,10 @@ pub(crate) async fn mobile_search_js() -> Response {
 
 pub(crate) async fn mobile_git_js() -> Response {
     static_text(MOBILE_GIT_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_composer_js() -> Response {
+    static_text(MOBILE_COMPOSER_JS, "application/javascript; charset=utf-8")
 }
 
 pub(crate) async fn mobile_sessions_js() -> Response {

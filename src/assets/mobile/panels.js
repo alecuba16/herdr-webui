@@ -76,6 +76,70 @@
           tabs.__lastTabsHtml = html;
         }
       }
+      syncComposer(screen);
+    }
+
+    // Composer bar + prompt card live under the terminal shell. The
+    // terminal itself is append-once (wterm owns that DOM); these two
+    // mount as siblings so a re-render never touches wterm.
+    function syncComposer(screen) {
+      const deps = globalThis.HerdrMobileComposerDeps;
+      if (!deps) return;
+      const existingBar = el("mobileComposer");
+      const wantedBar = deps.renderComposerBar();
+      if (existingBar) {
+        const next = document.createElement("div");
+        next.innerHTML = wantedBar;
+        const nextBar = next.firstElementChild;
+        if (nextBar && existingBar.innerHTML !== nextBar.innerHTML) {
+          const active = document.activeElement === existingBar.querySelector("#mobileComposerInput");
+          const value = deps.draftValue();
+          existingBar.replaceWith(nextBar);
+          const input = nextBar.querySelector("#mobileComposerInput");
+          if (input) {
+            input.value = value;
+            if (active) input.focus({ preventScroll: true });
+          }
+        }
+      } else {
+        const shell = el("terminalShell");
+        if (shell) {
+          const wrap = document.createElement("div");
+          wrap.innerHTML = wantedBar;
+          if (wrap.firstElementChild) shell.appendChild(wrap.firstElementChild);
+        }
+      }
+      const existingNote = el("mobileComposerNote");
+      const wantedNote = deps.renderComposerNote();
+      if (!existingNote && wantedNote) {
+        const shell = el("terminalShell");
+        if (shell) {
+          const wrap = document.createElement("div");
+          wrap.innerHTML = wantedNote;
+          if (wrap.firstElementChild) shell.appendChild(wrap.firstElementChild);
+        }
+      } else if (existingNote && wantedNote) {
+        if (existingNote.textContent !== wantedNote.replace(/<[^>]*>/g, "")) existingNote.textContent = wantedNote.replace(/<[^>]*>/g, "");
+      } else if (existingNote && !wantedNote) {
+        existingNote.remove();
+      }
+      const existingCard = el("mobilePromptCard");
+      const wantedCard = deps.renderPromptCard();
+      if (existingCard) {
+        if (!wantedCard) existingCard.remove();
+        else if (existingCard.outerHTML !== wantedCard) {
+          const wrap = document.createElement("div");
+          wrap.innerHTML = wantedCard;
+          if (wrap.firstElementChild) existingCard.replaceWith(wrap.firstElementChild);
+        }
+      } else if (wantedCard) {
+        const shell = el("terminalShell");
+        if (shell) {
+          const wrap = document.createElement("div");
+          wrap.innerHTML = wantedCard;
+          if (wrap.firstElementChild) shell.appendChild(wrap.firstElementChild);
+        }
+      }
     }
 
     return {
@@ -85,6 +149,7 @@
       renderTerminalTabsWithAdd,
       renderTerminalTabs,
       renderTerminalScreen,
+      syncComposer,
       setBrowserFaviconError,
     };
   }

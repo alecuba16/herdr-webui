@@ -105,6 +105,7 @@
     mobileWorktrees,
     mobileSearch,
     mobileGit,
+    mobileComposer,
     mobileEvents,
     mobileSessions,
     mobileScreens,
@@ -887,6 +888,23 @@
     confirmFn: (...args) => confirm(...args),
   });
 
+  mobileComposer = globalThis.HerdrMobileComposerModule.create({
+    state,
+    api,
+    render,
+    escapeHtml,
+    statusClassFn: (status) => mobileAttention.statusClass(status),
+    getTerminal: () => mobileTerminal.getTerm(),
+  });
+  // panels.js reads these through a global dep hook: it has no direct
+  // reference to the composer module (load order would flip otherwise).
+  globalThis.HerdrMobileComposerDeps = {
+    renderComposerBar: (...args) => mobileComposer.renderComposerBar(...args),
+    renderComposerNote: (...args) => mobileComposer.renderComposerNote(...args),
+    renderPromptCard: (...args) => mobileComposer.renderPromptCard(...args),
+    draftValue: (...args) => mobileComposer.draftValue(...args),
+  };
+
   mobileEvents = globalThis.HerdrMobileEventsModule.create({
     document,
     globalThisWebSocket: globalThis.WebSocket,
@@ -987,6 +1005,11 @@
     setCommitField: (...args) => mobileGit.setCommitField(...args),
     submitCommit: (...args) => mobileGit.submitCommit(...args),
     dismissCommitDone: (...args) => mobileGit.dismissCommitDone(...args),
+    composerInput: (...args) => mobileComposer.setDraft(...args),
+    composerSubmit: (...args) => mobileComposer.submit(...args),
+    promptAnswer: (...args) => mobileComposer.promptAnswer(...args),
+    promptAnswerText: (...args) => mobileComposer.promptAnswerText(...args),
+    promptDismiss: (...args) => mobileComposer.promptDismiss(...args),
     toggleGitBranches: (...args) => mobileGit.toggleGitBranches(...args),
     gitSwitchBranch: (...args) => mobileGit.gitSwitchBranch(...args),
     filesToggle: mobileFileBrowser.toggle,
