@@ -827,6 +827,17 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   gap: 8px;
   justify-content: flex-end;
 }
+.mobile-commit-done {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--status-done, #89b4fa);
+  border-radius: 10px;
+  color: var(--status-done, #89b4fa);
+  font-size: 14px;
+}
 .herdr-file-tree {
   display: flex;
   flex-direction: column;

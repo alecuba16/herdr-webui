@@ -159,8 +159,13 @@
       if (screen === "search") return "Search";
       if (screen === "terminal") return "Terminal";
       if (screen !== "more") return screen;
+      // Only surface attention pills for statuses the CSS styles; an unknown
+      // agent status would render an unstyled "unknown" pill permanently.
       const status = mobileAttention.topStatus();
-      return `More${status ? ` <span class="mobile-nav-status ${escapeHtml(status)}">${escapeHtml(status)}</span>` : ""}`;
+      const pill = ["blocked", "done", "idle", "working"].includes(status)
+        ? ` <span class="mobile-nav-status ${escapeHtml(status)}">${escapeHtml(status)}</span>`
+        : "";
+      return `More${pill}`;
     }
 
     function mobileNavActive(screen) {
