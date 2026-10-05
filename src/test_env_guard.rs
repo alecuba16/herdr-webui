@@ -429,7 +429,7 @@ fn walk_imports(
     for item in items {
         match item {
             Item::Use(use_item) => {
-                record_lock_import(file, &use_item.tree, imports);
+                record_lock_import(file, &use_item.tree, "", imports);
             }
             Item::Mod(module) => {
                 if let Some((_, inner)) = &module.content {
@@ -441,16 +441,51 @@ fn walk_imports(
     }
 }
 
-/// Record a lock-fn import: the path's last segment must be a LOCK_NAMES
-/// name, and the qualifier must resolve to a canonical module.
+/// Record lock-fn imports from a `use` tree, accumulating the path prefix
+/// through `use a::{b, c}` groups. A group item that is itself a plain name
+/// resolves to prefix::name; renames are still refused because the call site
+/// no longer shows the lock name.
 fn record_lock_import(
     file: &str,
     tree: &syn::UseTree,
+    prefix: &str,
     imports: &mut HashMap<(String, String), (String, String)>,
 ) {
-    let Some(path) = use_tree_path(tree) else {
-        return;
-    };
+    match tree {
+        syn::UseTree::Path(path) => {
+            let extended = if prefix.is_empty() {
+                path.ident.to_string()
+            } else {
+                format!("{prefix}::{}", path.ident)
+            };
+            record_lock_import(file, &path.tree, &extended, imports);
+        }
+        syn::UseTree::Name(name) => {
+            let path = if prefix.is_empty() {
+                name.ident.to_string()
+            } else {
+                format!("{prefix}::{}", name.ident)
+            };
+            record_lock_import_path(file, &path, imports);
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                record_lock_import(file, item, prefix, imports);
+            }
+        }
+        // Renames and globs: the call-site name stops matching the lock
+        // convention, so the guard refuses to resolve through them.
+        _ => {}
+    }
+}
+
+/// Register one concrete import path when its last segment is a LOCK_NAMES
+/// name and its qualifier resolves to a canonical module.
+fn record_lock_import_path(
+    file: &str,
+    path: &str,
+    imports: &mut HashMap<(String, String), (String, String)>,
+) {
     let segments: Vec<&str> = path.split("::").collect();
     if segments.len() < 2 {
         return;
@@ -465,19 +500,6 @@ fn record_lock_import(
                 (def_file.to_string(), module.to_string()),
             );
         }
-    }
-}
-
-/// Flatten a `use` tree to its full path when it is a simple path.
-/// Renames and globs return None: the guard refuses to guess through them.
-fn use_tree_path(tree: &syn::UseTree) -> Option<String> {
-    match tree {
-        syn::UseTree::Path(path) => {
-            let rest = use_tree_path(&path.tree)?;
-            Some(format!("{}::{}", path.ident, rest))
-        }
-        syn::UseTree::Name(name) => Some(name.ident.to_string()),
-        _ => None,
     }
 }
 
