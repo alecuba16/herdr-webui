@@ -52,7 +52,11 @@ use syn::{Expr, ExprCall, File, Item, ItemFn};
 /// Call names that count as acquiring the shared env lock.
 const LOCK_NAMES: [&str; 4] = ["env_lock", "lock_env", "home_lock", "test_env_lock"];
 
-/// Call names that count as an env write.
+/// Name shapes that count as an env write: `std::env::set_var`, a bare
+/// `set_var`, a `use std::env::set_var` import called bare, or the same
+/// bound to a local (`let write = std::env::set_var;`). A rename
+/// (`use std::env::set_var as sv`) makes the call invisible, so any rename
+/// of an env-write import is itself refused: the convention is plain names.
 const ENV_WRITE_NAMES: [&str; 2] = ["set_var", "remove_var"];
 
 /// (file, fn, written evidence) for env-writing fns exempted from R1.
@@ -119,6 +123,41 @@ struct FnScan {
     /// qualifier path (`crate::tests::env_lock` stores `crate::tests`).
     lock_calls: Vec<(String, String)>,
     unit_mutex_statics: Vec<String>,
+    /// Local names bound to env-write paths inside this fn, so calls through
+    /// the binding still count (`let write = std::env::set_var;`).
+    env_write_bindings: Vec<String>,
+    /// Crate-wide `type` aliases (`type M = Mutex<()>;`), cloned per scan so
+    /// static types can resolve through them.
+    aliases: HashMap<String, syn::Path>,
+    /// Binding name awaiting its initializer during a cast, if any
+    /// (`let w = set_var as fn(..)`).
+    pending_cast_binding: Option<String>,
+}
+
+/// True when the path names an env write directly (last segment is one of
+/// `ENV_WRITE_NAMES`), covering qualified and imported-bare forms alike.
+fn path_contains_env_write(path: &syn::Path) -> bool {
+    path.segments
+        .last()
+        .map(|seg| ENV_WRITE_NAMES.contains(&seg.ident.to_string().as_str()))
+        .unwrap_or(false)
+}
+
+impl FnScan {
+    /// True when the call target references an env write either directly
+    /// (`std::env::set_var`, bare `set_var` via a `use std::env::set_var`
+    /// import) or through a local binding of this fn
+    /// (`let write = std::env::set_var;`).
+    fn expr_referencing_env_write(&self, path: &syn::ExprPath) -> bool {
+        let last = path
+            .path
+            .segments
+            .last()
+            .map(|seg| seg.ident.to_string())
+            .unwrap_or_default();
+        ENV_WRITE_NAMES.contains(&last.as_str())
+            || self.env_write_bindings.iter().any(|b| b == &last)
+    }
 }
 
 impl<'ast> Visit<'ast> for FnScan {
@@ -130,7 +169,7 @@ impl<'ast> Visit<'ast> for FnScan {
                 .last()
                 .map(|seg| seg.ident.to_string())
                 .unwrap_or_default();
-            if ENV_WRITE_NAMES.contains(&last.as_str()) {
+            if self.expr_referencing_env_write(path) {
                 self.env_writes.push(last.clone());
             }
             if LOCK_NAMES.contains(&last.as_str()) {
@@ -152,24 +191,100 @@ impl<'ast> Visit<'ast> for FnScan {
         syn::visit::visit_expr_call(self, call);
     }
 
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        if let Some(init) = &local.init {
+            if matches!(&*init.expr, syn::Expr::Path(path)
+                if path_contains_env_write(&path.path))
+            {
+                if let syn::Pat::Ident(pat) = &local.pat {
+                    self.env_write_bindings.push(pat.ident.to_string());
+                }
+            } else if matches!(&*init.expr, syn::Expr::Cast(_)) {
+                if let syn::Pat::Ident(pat) = &local.pat {
+                    self.pending_cast_binding = Some(pat.ident.to_string());
+                }
+            }
+        }
+        syn::visit::visit_local(self, local);
+    }
+
+    fn visit_item_type(&mut self, ty: &'ast syn::ItemType) {
+        // Fn-local `type M = Mutex<()>;` ahead of a `static S: M`: resolve
+        // like crate-wide aliases.
+        if let syn::Type::Path(path) = &*ty.ty {
+            self.aliases.insert(ty.ident.to_string(), path.path.clone());
+        }
+        syn::visit::visit_item_type(self, ty);
+    }
+
+    fn visit_expr_cast(&mut self, cast: &'ast syn::ExprCast) {
+        // `let w = std::env::set_var as fn(&str, &str);` binds an env write
+        // through a cast: unwrap to the inner path.
+        if matches!(&*cast.expr, syn::Expr::Path(path)
+            if path_contains_env_write(&path.path))
+        {
+            if let Some(name) = self.pending_cast_binding.take() {
+                self.env_write_bindings.push(name);
+            }
+        }
+        syn::visit::visit_expr_cast(self, cast);
+    }
+
+    fn visit_item_use(&mut self, use_item: &'ast syn::ItemUse) {
+        walk_local_use_tree(&use_item.tree, &mut self.env_write_bindings);
+        syn::visit::visit_item_use(self, use_item);
+    }
+
     fn visit_item_static(&mut self, stat: &'ast syn::ItemStatic) {
-        if ty_contains_unit_mutex(&stat.ty) {
+        if ty_contains_unit_mutex(&stat.ty, &self.aliases) {
             self.unit_mutex_statics.push(stat.ident.to_string());
         }
         syn::visit::visit_item_static(self, stat);
     }
 }
 
+/// Fold a use tree inside a fn body (`use std::env::set_var as sv;`) into
+/// the env-write binding names, so a call through the local alias still
+/// counts as an env write. Renames of env writes are covered; plain imports
+/// are already caught by the last-segment name match.
+fn walk_local_use_tree(tree: &syn::UseTree, bindings: &mut Vec<String>) {
+    match tree {
+        syn::UseTree::Path(path) => walk_local_use_tree(&path.tree, bindings),
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                walk_local_use_tree(item, bindings);
+            }
+        }
+        syn::UseTree::Rename(rename) => {
+            if ENV_WRITE_NAMES.contains(&rename.ident.to_string().as_str()) {
+                bindings.push(rename.rename.to_string());
+            }
+        }
+        syn::UseTree::Name(_) | syn::UseTree::Glob(_) => {}
+    }
+}
+
 /// True when the type mentions `Mutex<()>` (or an alias like `StdMutex<()>`),
-/// including through wrappers such as `OnceLock<StdMutex<()>>`. Structural
-/// walk, no token stringification needed.
-fn ty_contains_unit_mutex(ty: &syn::Type) -> bool {
+/// including through wrappers such as `OnceLock<StdMutex<()>>` and through
+/// `type` aliases (`type M = Mutex<()>;`). Structural walk, no token
+/// stringification needed.
+fn ty_contains_unit_mutex(ty: &syn::Type, aliases: &HashMap<String, syn::Path>) -> bool {
     match ty {
         syn::Type::Path(path) => {
             let Some(last) = path.path.segments.last() else {
                 return false;
             };
             let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+                // No type arguments: the name itself may be an alias for a
+                // mutex type (`type M = Mutex<()>; static L: M`).
+                let name = last.ident.to_string();
+                if let Some(target) = aliases.get(&name) {
+                    let resolved = syn::TypePath {
+                        qself: None,
+                        path: target.clone(),
+                    };
+                    return ty_contains_unit_mutex(&syn::Type::Path(resolved), aliases);
+                }
                 return false;
             };
             let type_args: Vec<&syn::Type> = args
@@ -181,28 +296,94 @@ fn ty_contains_unit_mutex(ty: &syn::Type) -> bool {
                 })
                 .collect();
             let mutex_like = matches!(last.ident.to_string().as_str(), "Mutex" | "StdMutex");
+            let mut visiting = Vec::new();
             let unit_arg = type_args
                 .iter()
-                .any(|inner| matches!(inner, syn::Type::Tuple(tuple) if tuple.elems.is_empty()));
+                .any(|inner| resolves_to_unit(inner, aliases, &mut visiting));
             if mutex_like && unit_arg {
                 return true;
             }
-            type_args.iter().any(|inner| ty_contains_unit_mutex(inner))
+            type_args
+                .iter()
+                .any(|inner| ty_contains_unit_mutex(inner, aliases))
         }
-        syn::Type::Reference(r) => ty_contains_unit_mutex(&r.elem),
-        syn::Type::Paren(p) => ty_contains_unit_mutex(&p.elem),
-        syn::Type::Group(g) => ty_contains_unit_mutex(&g.elem),
-        syn::Type::Tuple(t) => t.elems.iter().any(ty_contains_unit_mutex),
-        syn::Type::Array(a) => ty_contains_unit_mutex(&a.elem),
-        syn::Type::Slice(s) => ty_contains_unit_mutex(&s.elem),
-        syn::Type::Ptr(p) => ty_contains_unit_mutex(&p.elem),
+        syn::Type::Reference(r) => ty_contains_unit_mutex(&r.elem, aliases),
+        syn::Type::Paren(p) => ty_contains_unit_mutex(&p.elem, aliases),
+        syn::Type::Group(g) => ty_contains_unit_mutex(&g.elem, aliases),
+        syn::Type::Tuple(t) => t
+            .elems
+            .iter()
+            .any(|inner| ty_contains_unit_mutex(inner, aliases)),
+        syn::Type::Array(a) => ty_contains_unit_mutex(&a.elem, aliases),
+        syn::Type::Slice(s) => ty_contains_unit_mutex(&s.elem, aliases),
+        syn::Type::Ptr(p) => ty_contains_unit_mutex(&p.elem, aliases),
         _ => false,
+    }
+}
+
+/// True when the type is the unit type `()`, resolving `type` aliases on the
+/// way (`type U = ();`). Cycle-safe via the visiting list.
+fn resolves_to_unit(
+    ty: &syn::Type,
+    aliases: &HashMap<String, syn::Path>,
+    visiting: &mut Vec<String>,
+) -> bool {
+    match ty {
+        syn::Type::Tuple(tuple) => tuple.elems.is_empty(),
+        syn::Type::Path(path) => {
+            let Some(last) = path.path.segments.last() else {
+                return false;
+            };
+            if !matches!(last.arguments, syn::PathArguments::None) {
+                return false;
+            }
+            let name = last.ident.to_string();
+            if visiting.contains(&name) {
+                return false;
+            }
+            let Some(target) = aliases.get(&name) else {
+                return false;
+            };
+            visiting.push(name);
+            let resolved = syn::TypePath {
+                qself: None,
+                path: target.clone(),
+            };
+            let unit = resolves_to_unit(&syn::Type::Path(resolved), aliases, visiting);
+            visiting.pop();
+            unit
+        }
+        _ => false,
+    }
+}
+
+/// Collect crate-wide `type` aliases so static types can resolve through
+/// them. Aliases live at module top level (also inside inline mods).
+fn collect_type_aliases(items: &[Item], aliases: &mut HashMap<String, syn::Path>) {
+    for item in items {
+        match item {
+            Item::Type(ty) => {
+                if let syn::Type::Path(path) = &*ty.ty {
+                    aliases.insert(ty.ident.to_string(), path.path.clone());
+                }
+            }
+            Item::Mod(module) => {
+                if let Some((_, inner)) = &module.content {
+                    collect_type_aliases(inner, aliases);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
 /// One scanned fn (or impl/trait method) with its collected facts.
 struct ScannedFn {
     file: String,
+    /// Module path within the file ("" for file top level, "child" for a fn
+    /// inside `mod child { ... }`), so `super::` calls from inline child mods
+    /// resolve to the parent module's fns.
+    module: String,
     name: String,
     env_writes: Vec<String>,
     lock_calls: Vec<(String, String)>,
@@ -215,11 +396,21 @@ struct TopLevelStatic {
     name: String,
 }
 
-fn scan_fn(file: &str, name: &str, func: &ItemFn) -> ScannedFn {
-    let mut scan = FnScan::default();
+fn scan_fn(
+    file: &str,
+    module: &str,
+    name: &str,
+    func: &ItemFn,
+    aliases: &HashMap<String, syn::Path>,
+) -> ScannedFn {
+    let mut scan = FnScan {
+        aliases: aliases.clone(),
+        ..FnScan::default()
+    };
     scan.visit_item_fn(func);
     ScannedFn {
         file: file.to_string(),
+        module: module.to_string(),
         name: name.to_string(),
         env_writes: scan.env_writes,
         lock_calls: scan.lock_calls,
@@ -230,6 +421,18 @@ fn scan_fn(file: &str, name: &str, func: &ItemFn) -> ScannedFn {
 fn walk_items(
     file: &str,
     items: &[Item],
+    aliases: &HashMap<String, syn::Path>,
+    fns: &mut Vec<ScannedFn>,
+    statics: &mut Vec<TopLevelStatic>,
+) {
+    walk_module_items(file, "", items, aliases, fns, statics);
+}
+
+fn walk_module_items(
+    file: &str,
+    module: &str,
+    items: &[Item],
+    aliases: &HashMap<String, syn::Path>,
     fns: &mut Vec<ScannedFn>,
     statics: &mut Vec<TopLevelStatic>,
 ) {
@@ -237,16 +440,20 @@ fn walk_items(
         match item {
             Item::Fn(func) => {
                 let name = func.sig.ident.to_string();
-                fns.push(scan_fn(file, &name, func));
+                fns.push(scan_fn(file, module, &name, func, aliases));
             }
             Item::Impl(imp) => {
                 for impl_item in &imp.items {
                     if let syn::ImplItem::Fn(method) = impl_item {
                         let name = method.sig.ident.to_string();
-                        let mut scan = FnScan::default();
+                        let mut scan = FnScan {
+                            aliases: aliases.clone(),
+                            ..FnScan::default()
+                        };
                         scan.visit_impl_item_fn(method);
                         fns.push(ScannedFn {
                             file: file.to_string(),
+                            module: module.to_string(),
                             name,
                             env_writes: scan.env_writes,
                             lock_calls: scan.lock_calls,
@@ -260,10 +467,14 @@ fn walk_items(
                     if let syn::TraitItem::Fn(method) = trait_item {
                         if method.default.is_some() {
                             let name = method.sig.ident.to_string();
-                            let mut scan = FnScan::default();
+                            let mut scan = FnScan {
+                                aliases: aliases.clone(),
+                                ..FnScan::default()
+                            };
                             scan.visit_trait_item_fn(method);
                             fns.push(ScannedFn {
                                 file: file.to_string(),
+                                module: module.to_string(),
                                 name,
                                 env_writes: scan.env_writes,
                                 lock_calls: scan.lock_calls,
@@ -273,12 +484,17 @@ fn walk_items(
                     }
                 }
             }
-            Item::Mod(module) => {
-                if let Some((_, inner)) = &module.content {
-                    walk_items(file, inner, fns, statics);
+            Item::Mod(module_item) => {
+                if let Some((_, inner)) = &module_item.content {
+                    let child = if module.is_empty() {
+                        module_item.ident.to_string()
+                    } else {
+                        format!("{module}::{}", module_item.ident)
+                    };
+                    walk_module_items(file, &child, inner, aliases, fns, statics);
                 }
             }
-            Item::Static(stat) if ty_contains_unit_mutex(&stat.ty) => {
+            Item::Static(stat) if ty_contains_unit_mutex(&stat.ty, aliases) => {
                 statics.push(TopLevelStatic {
                     file: file.to_string(),
                     name: stat.ident.to_string(),
@@ -320,13 +536,14 @@ fn lock_call_is_genuine(
     fns: &[ScannedFn],
     imports: &HashMap<(String, String), (String, String)>,
     caller_file: &str,
+    caller_module: &str,
     qualifier: &str,
     name: &str,
     visiting: &mut Vec<(String, String)>,
 ) -> bool {
     let targets: Vec<(String, String)> = if qualifier.is_empty() {
         // Unqualified call: resolve via an explicit `use` import if one
-        // exists, otherwise a fn defined in the caller's own file.
+        // exists, otherwise a fn defined in the caller's own module.
         match imports.get(&(caller_file.to_string(), name.to_string())) {
             Some((file, module)) => {
                 if module.is_empty() {
@@ -342,14 +559,21 @@ fn lock_call_is_genuine(
         }
     } else {
         let trimmed = qualifier.trim_end_matches("::");
-        match canonical_module(trimmed) {
+        if trimmed == "super" {
+            // super:: from an inline child mod: the parent module of the
+            // caller's module path, same file. At file top level super:: is
+            // crate-rooted, resolved by canonical_module below.
+            let parent = parent_module(caller_module);
+            return resolve_in_module(fns, imports, caller_file, &parent, name, visiting);
+        }
+        match canonical_module(caller_file, trimmed) {
             Some((file, module)) => {
                 if module.is_empty() {
-                    vec![(file.to_string(), name.to_string())]
+                    vec![(file, name.to_string())]
                 } else {
                     vec![
-                        (file.to_string(), format!("{module}::{name}")),
-                        (file.to_string(), name.to_string()),
+                        (file.clone(), format!("{module}::{name}")),
+                        (file, name.to_string()),
                     ]
                 }
             }
@@ -371,7 +595,73 @@ fn lock_call_is_genuine(
         }
         visiting.push(target);
         let genuine = candidate.lock_calls.iter().any(|(qual, lock)| {
-            lock_call_is_genuine(fns, imports, &candidate.file, qual, lock, visiting)
+            lock_call_is_genuine(
+                fns,
+                imports,
+                &candidate.file,
+                &candidate.module,
+                qual,
+                lock,
+                visiting,
+            )
+        });
+        visiting.pop();
+        genuine
+    })
+}
+
+/// Parent module path of a module path: "a::b" -> "a", "" -> "" (file top
+/// level has no parent in-file; super:: there is crate-rooted).
+fn parent_module(module: &str) -> String {
+    match module.rsplit_once("::") {
+        Some((parent, _)) => parent.to_string(),
+        None => String::new(),
+    }
+}
+
+/// Resolve a lock name in an explicit module of a file, mirroring the
+/// candidate-search used for unqualified calls: qualified name first, plain
+/// name fallback.
+fn resolve_in_module(
+    fns: &[ScannedFn],
+    imports: &HashMap<(String, String), (String, String)>,
+    file: &str,
+    module: &str,
+    name: &str,
+    visiting: &mut Vec<(String, String)>,
+) -> bool {
+    let targets: Vec<(String, String)> = if module.is_empty() {
+        vec![(file.to_string(), name.to_string())]
+    } else {
+        vec![
+            (file.to_string(), format!("{module}::{name}")),
+            (file.to_string(), name.to_string()),
+        ]
+    };
+    targets.into_iter().any(|target| {
+        if visiting.contains(&target) {
+            return false;
+        }
+        let Some(candidate) = fns
+            .iter()
+            .find(|func| func.file == target.0 && (func.name == target.1 || func.name == name))
+        else {
+            return false;
+        };
+        if candidate.unit_mutex_statics.len() == 1 {
+            return true;
+        }
+        visiting.push(target);
+        let genuine = candidate.lock_calls.iter().any(|(qual, lock)| {
+            lock_call_is_genuine(
+                fns,
+                imports,
+                &candidate.file,
+                &candidate.module,
+                qual,
+                lock,
+                visiting,
+            )
         });
         visiting.pop();
         genuine
@@ -379,13 +669,19 @@ fn lock_call_is_genuine(
 }
 
 /// Map a lock-fn qualifier to its defining file and module path:
-/// `crate::test_env_lock` lives in src/lib.rs, `crate::tests::env_lock` in
-/// src/tests.rs, `crate::tui::*` in src/tui.rs, `crate::<mod>::*` in
-/// src/<mod>.rs. Returns None for unresolvable qualifiers: no lock call is
-/// safe by guesswork.
-fn canonical_module(qualifier: &str) -> Option<(&'static str, &str)> {
+/// `crate::test_env_lock` lives in src/lib.rs (the test file itself for a
+/// tests/ integration binary, which is its own crate root),
+/// `crate::tests::env_lock` in src/tests.rs, `crate::tui::*` in src/tui.rs,
+/// `crate::<mod>::*` in src/<mod>.rs. Returns None for unresolvable
+/// qualifiers: no lock call is safe by guesswork.
+fn canonical_module(caller_file: &str, qualifier: &str) -> Option<(String, String)> {
     if qualifier == "crate" {
-        return Some(("src/lib.rs", ""));
+        let file = if caller_file.starts_with("tests/") {
+            caller_file.to_string()
+        } else {
+            "src/lib.rs".to_string()
+        };
+        return Some((file, String::new()));
     }
     let mut segments = qualifier.split("::").peekable();
     if segments.next() != Some("crate") {
@@ -396,18 +692,24 @@ fn canonical_module(qualifier: &str) -> Option<(&'static str, &str)> {
         return None;
     }
     match module {
-        "tests" => Some(("src/tests.rs", "tests")),
-        "tui" => Some(("src/tui.rs", "tui")),
-        other => Some(("src", other)),
+        "tests" => Some(("src/tests.rs".to_string(), "tests".to_string())),
+        "tui" => Some(("src/tui.rs".to_string(), "tui".to_string())),
+        other => Some((format!("src/{other}.rs"), other.to_string())),
     }
 }
 
+/// Local name -> defining location for lock-fn imports across files.
+type LockImports = HashMap<(String, String), (String, String)>;
+
 /// Scan every file's `use` items for explicit imports of lock fns
-/// (`use crate::tests::lock_env;`). Maps (importing file, local name) to
-/// (defining file, module path). Only these make an unqualified call in the
-/// importing file resolvable to another file's fn; the guard never guesses.
-fn collect_lock_imports(files: &[PathBuf]) -> HashMap<(String, String), (String, String)> {
-    let mut imports = HashMap::new();
+/// (`use crate::tests::lock_env;`), mapping (importing file, local name) to
+/// (defining file, module path), and for renames of env writes
+/// (`use std::env::set_var as sv;`), which are refused because a renamed
+/// write is invisible to name-based detection. Only explicit imports make an
+/// unqualified call resolvable to another file's fn; the guard never guesses.
+fn collect_lock_imports(files: &[PathBuf]) -> (LockImports, Vec<String>) {
+    let mut imports: LockImports = HashMap::new();
+    let mut env_write_renames = Vec::new();
     for file in files {
         let Ok(source) = std::fs::read_to_string(file) else {
             continue;
@@ -416,24 +718,25 @@ fn collect_lock_imports(files: &[PathBuf]) -> HashMap<(String, String), (String,
             continue;
         };
         let rel = rel_path(file);
-        walk_imports(&rel, &parsed.items, &mut imports);
+        walk_imports(&rel, &parsed.items, &mut imports, &mut env_write_renames);
     }
-    imports
+    (imports, env_write_renames)
 }
 
 fn walk_imports(
     file: &str,
     items: &[Item],
     imports: &mut HashMap<(String, String), (String, String)>,
+    env_write_renames: &mut Vec<String>,
 ) {
     for item in items {
         match item {
             Item::Use(use_item) => {
-                record_lock_import(file, &use_item.tree, "", imports);
+                record_lock_import(file, &use_item.tree, "", imports, env_write_renames);
             }
             Item::Mod(module) => {
                 if let Some((_, inner)) = &module.content {
-                    walk_imports(file, inner, imports);
+                    walk_imports(file, inner, imports, env_write_renames);
                 }
             }
             _ => {}
@@ -443,13 +746,16 @@ fn walk_imports(
 
 /// Record lock-fn imports from a `use` tree, accumulating the path prefix
 /// through `use a::{b, c}` groups. A group item that is itself a plain name
-/// resolves to prefix::name; renames are still refused because the call site
-/// no longer shows the lock name.
+/// resolves to prefix::name. Renames are refused: a renamed lock breaks the
+/// call-site lock-name convention, and a renamed env write would be
+/// invisible to name-based detection, so either is reported instead of
+/// resolved through.
 fn record_lock_import(
     file: &str,
     tree: &syn::UseTree,
     prefix: &str,
     imports: &mut HashMap<(String, String), (String, String)>,
+    env_write_renames: &mut Vec<String>,
 ) {
     match tree {
         syn::UseTree::Path(path) => {
@@ -458,7 +764,7 @@ fn record_lock_import(
             } else {
                 format!("{prefix}::{}", path.ident)
             };
-            record_lock_import(file, &path.tree, &extended, imports);
+            record_lock_import(file, &path.tree, &extended, imports, env_write_renames);
         }
         syn::UseTree::Name(name) => {
             let path = if prefix.is_empty() {
@@ -470,12 +776,18 @@ fn record_lock_import(
         }
         syn::UseTree::Group(group) => {
             for item in &group.items {
-                record_lock_import(file, item, prefix, imports);
+                record_lock_import(file, item, prefix, imports, env_write_renames);
             }
         }
-        // Renames and globs: the call-site name stops matching the lock
-        // convention, so the guard refuses to resolve through them.
-        _ => {}
+        syn::UseTree::Rename(rename) => {
+            if ENV_WRITE_NAMES.contains(&rename.ident.to_string().as_str()) {
+                env_write_renames.push(format!(
+                    "  [R1] {file} renames env write `{}` as `{}`; call it by its plain name so the guard can see the write",
+                    rename.ident, rename.rename
+                ));
+            }
+        }
+        syn::UseTree::Glob(_) => {}
     }
 }
 
@@ -494,11 +806,8 @@ fn record_lock_import_path(
     let name = name[0];
     if LOCK_NAMES.contains(&name) {
         let qualifier = qualifier.join("::");
-        if let Some((def_file, module)) = canonical_module(&qualifier) {
-            imports.insert(
-                (file.to_string(), name.to_string()),
-                (def_file.to_string(), module.to_string()),
-            );
+        if let Some((def_file, module)) = canonical_module(file, &qualifier) {
+            imports.insert((file.to_string(), name.to_string()), (def_file, module));
         }
     }
 }
@@ -525,6 +834,21 @@ fn test_env_convention_is_enforced() {
 
     let mut fns = Vec::new();
     let mut statics = Vec::new();
+    // Crate-wide type aliases collected first (see ty_contains_unit_mutex):
+    // every file's top-level `type X = ...;` entries, so `static L: M` with
+    // `type M = Mutex<()>;` still counts as a unit-mutex static.
+    let mut aliases: HashMap<String, syn::Path> = HashMap::new();
+    for file in &files {
+        let source = std::fs::read_to_string(file)
+            .unwrap_or_else(|err| panic!("read {}: {err}", file.display()));
+        let parsed: File = syn::parse_file(&source).unwrap_or_else(|err| {
+            panic!(
+                "{} does not parse; the guard is blind to it: {err}",
+                file.display()
+            )
+        });
+        collect_type_aliases(&parsed.items, &mut aliases);
+    }
     for file in &files {
         let source = std::fs::read_to_string(file)
             .unwrap_or_else(|err| panic!("read {}: {err}", file.display()));
@@ -535,7 +859,7 @@ fn test_env_convention_is_enforced() {
             )
         });
         let rel = rel_path(file);
-        walk_items(&rel, &parsed.items, &mut fns, &mut statics);
+        walk_items(&rel, &parsed.items, &aliases, &mut fns, &mut statics);
     }
 
     let mut violations = Vec::new();
@@ -544,7 +868,8 @@ fn test_env_convention_is_enforced() {
     // an allowlist entry with written evidence. Genuine means the callee owns
     // a unit-mutex static (canonical lock fn) or calls another genuine lock
     // (wrapper); a fn merely named like a lock satisfies nothing.
-    let imports = collect_lock_imports(&files);
+    let (imports, env_write_renames) = collect_lock_imports(&files);
+    violations.extend(env_write_renames);
     let mut allowlist_used = vec![false; ALLOWLIST.len()];
     for func in &fns {
         if func.env_writes.is_empty() {
@@ -559,7 +884,15 @@ fn test_env_convention_is_enforced() {
         }
         let mut visiting = Vec::new();
         let locked = func.lock_calls.iter().any(|(qual, lock)| {
-            lock_call_is_genuine(&fns, &imports, &func.file, qual, lock, &mut visiting)
+            lock_call_is_genuine(
+                &fns,
+                &imports,
+                &func.file,
+                &func.module,
+                qual,
+                lock,
+                &mut visiting,
+            )
         });
         if locked {
             continue;
