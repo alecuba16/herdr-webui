@@ -948,8 +948,8 @@
         }
         if (path) await openFile(path, options.highlight || null);
       },
-      backToTree() {
-        if (!confirmDiscardDraft()) return;
+      async backToTree() {
+        if (!(await confirmDiscardDraft())) return;
         if (local.file && local.file.path) lspDidClose(local.file.path);
         local.file = null;
         local.editing = false;

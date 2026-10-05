@@ -34,9 +34,15 @@ function element(id = "") {
       (this.listeners[event] || (this.listeners[event] = [])).push(listener);
     },
     setAttribute() {},
+    querySelector() {
+      return null;
+    },
     querySelectorAll() {
       return [];
     },
+    remove() {},
+    replaceWith() {},
+    parentNode: null,
   };
 }
 
@@ -57,6 +63,29 @@ function context(pathname = "/", options = {}) {
     if (!elements.has(id)) elements.set(id, element(id));
     return elements.get(id);
   };
+  // The mobile app now uses a styled confirm sheet (mobileConfirm) instead
+  // of window.confirm. Simulate the user tapping Confirm/Cancel: when the
+  // sheet is shown, auto-resolve it with the injected confirm stub's answer
+  // so the real promise path runs while tests keep their confirm semantics.
+  const confirmSheet = element("mobileConfirmSheet");
+  let confirmSheetShown = false;
+  Object.defineProperty(confirmSheet, "hidden", {
+    configurable: true,
+    get: () => !confirmSheetShown,
+    set: (value) => {
+      confirmSheetShown = !value;
+      if (confirmSheetShown) {
+        // Live lookup: tests may swap ctx.confirm after context creation.
+        const confirmImpl = ctx.confirm || options.confirm || (() => true);
+        const answer = confirmImpl();
+        Promise.resolve().then(() => {
+          if (ctx.HerdrMobile && ctx.HerdrMobile.resolveConfirm)
+            ctx.HerdrMobile.resolveConfirm(answer);
+        });
+      }
+    },
+  });
+  elements.set("mobileConfirmSheet", confirmSheet);
   const locationRef = {
     pathname,
     href: "",
@@ -487,6 +516,8 @@ describe("mobile bundle load", () => {
     readFileSync(new URL("./mobile/search.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/git.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/composer.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/sessions.js", import.meta.url), "utf8") +
     "\n" +

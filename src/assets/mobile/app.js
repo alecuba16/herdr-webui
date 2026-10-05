@@ -330,7 +330,8 @@
       return;
     }
     pendingConfirmResolve = next.resolve;
-    sheet.querySelector("#mobileConfirmMessage").textContent = next.message;
+    const message = sheet.querySelector("#mobileConfirmMessage");
+    if (message) message.textContent = next.message;
     sheet.hidden = false;
     backdrop.hidden = false;
   }

@@ -183,9 +183,9 @@ describe("mobile file browser edit mode", () => {
     module.startEdit();
     module.renderScreen();
     editors.at(-1).onChange("print('dirty')");
-    module.cancelEdit();
+    await module.cancelEdit();
     assert.match(module.renderScreen(), /filesSaveFile/, "declined discard stays in edit mode");
-    module.backToTree();
+    await module.backToTree();
     assert.match(module.renderScreen(), /filesSaveFile/, "declined discard keeps the preview open");
   });
 
@@ -197,7 +197,7 @@ describe("mobile file browser edit mode", () => {
     module.startEdit();
     module.renderScreen();
     editors.at(-1).onChange("print('dirty')");
-    module.cancelEdit();
+    await module.cancelEdit();
     assert.match(module.renderScreen(), /filesStartEdit/);
     assert.doesNotMatch(module.renderScreen(), /filesSaveFile/);
   });
@@ -353,7 +353,7 @@ describe("mobile file browser edit mode", () => {
     const editor = editors.at(-1);
     editor.onChange("print('oops')");
     assert.ok(lspCalls.some((call) => call.method === "didChange" && call.path === "src/demo.py" && call.content === "print('oops')"), "didChange fired on edit");
-    module.backToTree();
+    await module.backToTree();
     assert.ok(lspCalls.some((call) => call.method === "didClose" && call.path === "src/demo.py"), "didClose fired on back");
   });
 
