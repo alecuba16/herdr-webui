@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import { ok, equal } from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 
 // Static source-scan test: every text-like <input>/<textarea> tag in the
 // mobile templates must be built through the guarded inputAttrs() helper.
@@ -47,38 +47,40 @@ const ALLOWLIST = [
   ["login.html", 'name="username"'],
 ];
 
-// Files scanned for tag opens, grouped by layout directory. Mobile modules
-// take inputAttrs via deps; desktop core.js destructures it from
-// HerdrAppHelpers; shared modules read globalThis.HerdrAppHelpers lazily.
-// All three spellings match the guard patterns below.
-const files = [
-  "actions.js", "app.js", "attention.js", "backend.js", "composer.js", "core.js",
-  "events.js", "file_browser.js", "git.js", "panels.js", "screens.js", "search.js",
-  "sessions.js", "settings.js", "terminal.js", "theme.js", "workmeta.js", "worktrees.js",
-];
+// Files scanned for tag opens: the ENTIRE src/assets tree, discovered at run
+// time so a new input added to any file (including files nobody remembers
+// to list) fails automatically. Grouped by directory kind only so the
+// per-file test names stay readable. Mobile modules take inputAttrs via
+// deps; desktop core.js destructures it from HerdrAppHelpers; shared modules
+// read globalThis.HerdrAppHelpers lazily. All spellings match the guard
+// patterns below.
+function listJs(dir, prefix = "") {
+  const out = [];
+  for (const entry of readdirSync(new URL(dir, import.meta.url))) {
+    const full = `${dir}/${entry}`;
+    if (statSync(new URL(full, import.meta.url)).isDirectory()) {
+      out.push(...listJs(full, `${prefix}${entry}/`));
+    } else if (/\.js$/.test(entry) && !/\.test\.mjs$/.test(entry)) {
+      out.push({ dir, name: `${prefix}${entry}` });
+    }
+  }
+  return out;
+}
 
-const desktopFiles = [
-  "composer.js", "core.js", "panel_switcher.js", "prompt_cards.js", "render.js",
-];
+// .mjs test files are excluded above; also skip the vendor bundle (it is
+// pinned separately below) and non-source helpers.
+function assetJsFiles(dir) {
+  return listJs(dir)
+    .filter((f) => f.name !== "wterm.bundle.js")
+    .map((f) => ({ path: `./mobile/${f.name.split("/").pop()}`, name: f.name.split("/").pop() }));
+}
 
-// Lazy-loaded desktop feature modules (loaded on demand via
-// loadDesktopFeature / ensureFileBrowserLoaded). They are classic scripts
-// loaded after core.js, so the shared script-scope inputAttrs binding is
-// available at their render time.
-const desktopLazyFiles = [
-  "directory_picker.js",
-  "lsp_settings.js",
-  "git_ui/branch_list.js",
-  "git_ui/cleanup.js",
-  "git_ui/conflicts.js",
-  "git_ui/diff_view.js",
-  "git_ui/log.js",
-  "git_ui/modals.js",
-];
-
-const sharedFiles = [
-  "editor.js", "file_content_search.js",
-];
+const files = assetJsFiles("./mobile");
+const desktopFiles = listJs("./desktop/app_js").map((f) => ({ path: `./desktop/app_js/${f.name}`, name: f.name.split("/").pop() }));
+const desktopLazyFiles = listJs("./desktop")
+  .filter((f) => !f.name.startsWith("app_js/"))
+  .map((f) => ({ path: `./desktop/${f.name}`, name: f.name.split("/").pop() }));
+const sharedFiles = listJs("./shared").map((f) => ({ path: `./shared/${f.name}`, name: f.name }));
 
 // Static HTML files (the search palette input lives in app.html, not a JS
 // template; the login form keeps password-manager autocomplete on purpose).
@@ -139,9 +141,17 @@ function unguardedTags(source, name) {
 }
 
 describe("static mobile keyboard-guard scan", () => {
-  for (const name of files) {
+  // The tree glob must find files: if it returns zero the discovery broke.
+  it("discovers asset files to scan", () => {
+    ok(files.length >= 15, `mobile glob found only ${files.length} files`);
+    ok(desktopFiles.length >= 5, `desktop app_js glob found only ${desktopFiles.length} files`);
+    ok(desktopLazyFiles.length >= 8, `desktop lazy glob found only ${desktopLazyFiles.length} files`);
+    ok(sharedFiles.length >= 10, `shared glob found only ${sharedFiles.length} files`);
+  });
+
+  for (const { path, name } of files) {
     it(`${name}: every text-like input tag carries inputAttrs guards`, () => {
-      const source = readFileSync(new URL(`./mobile/${name}`, import.meta.url), "utf8");
+      const source = readFileSync(new URL(path, import.meta.url), "utf8");
       const { tags, unguarded } = unguardedTags(source, name);
       // Known-positive files must yield tags; that is the scanner's own
       // health check. Files without template inputs (search renders results,
@@ -154,20 +164,28 @@ describe("static mobile keyboard-guard scan", () => {
     });
   }
 
-  for (const name of desktopFiles) {
+  // Aggregate scanner health: across the whole tree the scan must still see
+  // plenty of markup; a regex or loader regression drops this to near zero.
+  it("scanner sees the markup (aggregate health)", () => {
+    let total = 0;
+    for (const { path } of [...files, ...desktopFiles, ...desktopLazyFiles, ...sharedFiles]) {
+      total += scanTagOpens(readFileSync(new URL(path, import.meta.url), "utf8")).length;
+    }
+    ok(total >= 60, `scanner found only ${total} input/textarea tags across the asset tree`);
+  });
+
+  for (const { path, name } of desktopFiles) {
     it(`desktop ${name}: every text-like input tag carries inputAttrs guards`, () => {
-      const source = readFileSync(new URL(`./desktop/app_js/${name}`, import.meta.url), "utf8");
-      const { tags, unguarded } = unguardedTags(source, name);
-      ok(tags.length > 0, `desktop ${name}: scanner found no input/textarea tags, scanner or markup moved`);
+      const source = readFileSync(new URL(path, import.meta.url), "utf8");
+      const { unguarded } = unguardedTags(source, name);
       equal(unguarded.length, 0, `desktop ${name}: unguarded input tags:\n${unguarded.join("\n")}`);
     });
   }
 
-  for (const name of sharedFiles) {
+  for (const { path, name } of sharedFiles) {
     it(`shared ${name}: every text-like input tag carries inputAttrs guards`, () => {
-      const source = readFileSync(new URL(`./shared/${name}`, import.meta.url), "utf8");
+      const source = readFileSync(new URL(path, import.meta.url), "utf8");
       const { tags, unguarded } = unguardedTags(source, name);
-      ok(tags.length > 0, `shared ${name}: scanner found no input/textarea tags, scanner or markup moved`);
       equal(unguarded.length, 0, `shared ${name}: unguarded input tags:\n${unguarded.join("\n")}`);
     });
   }
@@ -189,11 +207,10 @@ describe("static mobile keyboard-guard scan", () => {
     });
   }
 
-  for (const name of desktopLazyFiles) {
+  for (const { path, name } of desktopLazyFiles) {
     it(`desktop ${name}: every text-like input tag carries inputAttrs guards`, () => {
-      const source = readFileSync(new URL(`./desktop/${name}`, import.meta.url), "utf8");
+      const source = readFileSync(new URL(path, import.meta.url), "utf8");
       const { tags, unguarded } = unguardedTags(source, name);
-      ok(tags.length > 0, `desktop ${name}: scanner found no input/textarea tags, scanner or markup moved`);
       equal(unguarded.length, 0, `desktop ${name}: unguarded input tags:\n${unguarded.join("\n")}`);
     });
   }

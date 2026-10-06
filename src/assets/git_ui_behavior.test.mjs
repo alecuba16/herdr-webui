@@ -113,8 +113,11 @@ function context(fetchImpl) {
 }
 
 const GIT_UI_SOURCE = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+// shared/core.js runs FIRST on its own: it defines HerdrAppHelpers, and
+// git_ui/settings.js evaluates its html template literal at load time, so
+// the bare inputAttrs binding must exist before any git_ui module loads.
+const CORE_SOURCE = readFileSync(new URL("./shared/core.js", import.meta.url), "utf8");
 const SHARED_SOURCES = [
-  "./shared/core.js",
   "./shared/actions.js",
   "./shared/file_icons.js",
   "./shared/file_tree.js",
@@ -161,11 +164,14 @@ async function bootGitUi(responses) {
     return { ok: true, status: 200, json: async () => ({}) };
   };
   const ctx = context(fetchImpl);
+  vm.runInContext(CORE_SOURCE, ctx);
+  // git_ui modules render inputs with inputAttrs(...) from the shared
+  // HerdrAppHelpers (same binding the real concat bundle gets). settings.js
+  // evaluates its template literal at load time, so set the binding before
+  // loading any git_ui module.
+  vm.runInContext("inputAttrs = globalThis.HerdrAppHelpers.inputAttrs", ctx);
   vm.runInContext(SHARED_SOURCES, ctx);
   vm.runInContext(APP_STUBS, ctx);
-  // git_ui modules render inputs with inputAttrs(...) from the shared
-  // HerdrAppHelpers (same binding the real concat bundle gets).
-  vm.runInContext("inputAttrs = globalThis.HerdrAppHelpers.inputAttrs", ctx);
   vm.runInContext(GIT_UI_SOURCE, ctx);
   const ui = ctx.window.HerdrGitUi;
   return { ui, ctx, calls };
