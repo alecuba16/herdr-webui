@@ -9011,6 +9011,11 @@ fn temp_files_prompt_validates_folder_and_retargets_explorer() {
         "valid folder must not error: {:?}",
         app.error
     );
+    assert_eq!(
+        app.screen,
+        TuiScreen::Files,
+        "successful open switches to the Files screen"
+    );
     assert_eq!(app.file_explorer.cwd, folder, "explorer retargeted");
     assert_eq!(
         app.file_explorer.entries.len(),
@@ -9100,6 +9105,11 @@ fn temp_git_prompt_retargets_panel_without_workspace() {
         app.error.is_none(),
         "valid folder must not error: {:?}",
         app.error
+    );
+    assert_eq!(
+        app.screen,
+        TuiScreen::Git,
+        "successful open switches to the Git screen"
     );
     assert_eq!(app.git_panel.cwd, folder, "git panel retargeted");
     assert_eq!(app.git_panel.branch, "main", "status loaded");

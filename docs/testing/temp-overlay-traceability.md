@@ -45,16 +45,19 @@ node:test / cargo test.
 | R32 | Desktop: main-UI shell toggles close a minimized temp overlay first so the drawer re-homes into the main shell; visible overlays and absent hosts are untouched | app_load `closing a minimized temporary overlay before the main shell opens the drawer`, `leaves an unminimized temporary overlay alone...`, `still opens the main drawers when HerdrTempOverlays is absent` | pass |
 | R33 | TUI: Esc on the temp prompt leaves the app on the previous screen (ephemeral cancel) and a failed open rolls the screen switch back | `temp_files_shortcut_opens_folder_prompt_without_workspace` / `temp_git_shortcut_opens_repo_prompt_without_workspace` assert Terminal before and after Esc; `temp_overlay_open_failure_keeps_status_line_clean` also asserts `screen == Terminal` and the rolled-back explorer cwd | pass |
 | R34 | Mobile: `toggleGit` minimizes/restores; both overlays coexist with independent folders/instances; `pickerUp` climbs one level; `pickerFilter` narrows rows; `closeFiles`/`closeGit` parity exports | `toggleGit opens, minimizes, and restores...`, `both overlays open at once...`, `pickerUp climbs one level...`, `pickerFilter narrows the rendered rows` | pass |
+| R35 | Desktop picker exports the node-based `open(input)` entry the temp overlay host calls (shipped broken in 87ddc98: host called a missing export, Change-folder was dead in the browser) | picker suite `directory picker exposes the node-based open(input) entry the temp overlays use` | pass (fixed) |
+| R36 | End to end against served bundles + real backend: both overlays open at once on different folders, Change-folder drives the real picker module into a subfolder, picker close keeps the folder, closing one overlay leaves the sibling mounted, zero workspace/session API calls | `scripts/e2e/temp-overlays-acceptance.mjs` via `scripts/e2e/run-temp-overlays-e2e.sh` (isolated config, fixture folders, loopback login) | pass |
 
 ## Verification runs
 
-- `cargo test --lib`: 409/409 pass (includes the TUI temp tests with rollback assertions)
-- `node --test src/assets/*.test.mjs`: 817/817 pass (25 controller, 20 desktop host, 16 mobile host, plus app_load/app_core/git_ui_behavior guard and shell-toggle tests)
+- `cargo test --lib`: 409/409 pass (includes the TUI temp tests with rollback and positive-path screen assertions)
+- `node --test src/assets/*.test.mjs`: 818/818 pass (25 controller, 20 desktop host, 16 mobile host, 7 picker, plus app_load/app_core/git_ui_behavior guard and shell-toggle tests)
 - `cargo fmt --check`: clean
-- Runtime integration on debug binary (`127.0.0.1:18787 --session verify-temp`): login, asset 200s, dirs_only tree, bundle references all verified
+- Runtime integration on debug binary (`127.0.0.1:18787 --session verify-temp`): login, asset 200s, dirs_only tree, bundle references all verified; served bundles byte-checked against the sources for the coexistence guard, timeout fix, F6 fix, and mobile close exports
+- E2E acceptance: `scripts/e2e/run-temp-overlays-e2e.sh` PASS (boots the real served bundle set in a vm, proxies fetch to the live backend with the login cookie; found and pinned the R35 picker export fix)
 - Code review: Approve, no blocking findings
 
 ## Gaps / non-goals
 
-- Desktop picker widget is exercised via stub; its real DOM rendering is covered by existing picker tests in app_load/shared_actions suites
-- Browser-level E2E (clicking real DOM) is out of scope; host behavior is pinned by the vm suites above
+- Browser-level E2E (clicking real DOM in a real browser engine) is still out of scope; the acceptance run drives the served bundles' real modules over a parentage-correct DOM stub, which caught the one integration bug the unit stubs masked
+- The acceptance suite stubs the handful of app-core helpers the host closes over (`selectedOrDefaultWorkspace`, `shortcutLabel`, ...) instead of booting the whole desktop app bundle, matching the git-acceptance.mjs pattern
