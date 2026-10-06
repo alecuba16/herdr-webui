@@ -79,6 +79,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# An EXIT trap alone does not fire on SIGTERM/SIGINT: `timeout` or Ctrl+C
+# would leave the server, chrome and workdir behind. Route these signals to
+# the EXIT trap. The audit child runs with wait so the signal interrupts it
+# instead of being absorbed.
+on_signal() {
+  echo "run-keyboard-guards-e2e.sh: interrupted, tearing down" >&2
+  exit 130
+}
+trap on_signal INT TERM
+
 echo "==> workdir: $WORK"
 
 echo "==> building herdr-webui (debug)"
@@ -140,11 +150,16 @@ export E2E_REPO="$REPO"
 export NODE_TLS_REJECT_UNAUTHORIZED=0
 
 status=0
-echo "==> mobile keyboard-guards audit"
-node "$ROOT/scripts/e2e/keyboard-guards-audit-mobile.mjs" || status=1
-
-echo "==> desktop keyboard-guards audit"
-node "$ROOT/scripts/e2e/keyboard-guards-audit-desktop.mjs" || status=1
+run_audit() {
+  local name="$1" script="$2"
+  echo "==> $name keyboard-guards audit"
+  node "$ROOT/scripts/e2e/$script" &
+  local pid=$!
+  # wait is interrupted by the trapped signal (the handler exits the shell).
+  if ! wait "$pid" 2>/dev/null; then status=1; fi
+}
+run_audit mobile keyboard-guards-audit-mobile.mjs
+run_audit desktop keyboard-guards-audit-desktop.mjs
 
 if [[ $status -eq 0 ]]; then
   echo "==> keyboard-guards audit: PASSED (mobile + desktop)"
