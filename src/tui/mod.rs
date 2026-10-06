@@ -3542,13 +3542,28 @@ impl TuiApp {
     }
 
     pub fn selected_pane(&self) -> Option<&TuiPane> {
-        if self.sidebar_focus == SidebarFocus::Agents {
-            if let Some(agent) = self.selected_agent() {
-                return self
+        // The agent cursor is authoritative when it points at a pane in
+        // the selected workspace: the panel walk (Ctrl+B ] / [) and the
+        // agent list both move `selected_agent`, and the viewed pane
+        // must follow them even while the workspace list owns the
+        // sidebar focus (otherwise the tab marker, pane header, tail,
+        // and Enter-attach would all target the backend-active tab
+        // instead of the panel the user walked to).
+        if let Some(agent) = self.selected_agent() {
+            if let Some(pane) = self
+                .snapshot
+                .panes
+                .iter()
+                .find(|pane| pane.id == agent.pane_id)
+            {
+                let workspace_id = self
                     .snapshot
-                    .panes
-                    .iter()
-                    .find(|pane| pane.id == agent.pane_id);
+                    .workspaces
+                    .get(self.selected_workspace)
+                    .map(|workspace| workspace.id.as_str());
+                if workspace_id == Some(pane.workspace_id.as_str()) {
+                    return Some(pane);
+                }
             }
         }
         let workspace_id = &self.selected_workspace()?.id;
