@@ -73,6 +73,8 @@ Animated tour of the terminal UI (all screens, one pass):
 
 Static shots with captions per screen: [TUI screenshots](docs/tui-screenshots.md).
 
+Screenshots of the browser WebUI are coming soon.
+
 ## Documentation layout
 
 The README is the project summary and documentation index. Detailed functionality, technical decisions, performance boundaries, styling rules, and project structure live under `docs/`.
