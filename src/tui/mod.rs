@@ -1762,15 +1762,17 @@ impl TuiApp {
             Shortcut::Git => self.open_git_screen(),
             Shortcut::TempFiles => {
                 // Webui temporary Files overlay: prompt for any folder,
-                // open the explorer on it, create nothing.
-                self.screen = TuiScreen::Files;
+                // open the explorer on it, create nothing. The prompt is
+                // ephemeral: the screen only switches when a folder is
+                // actually opened, so Esc leaves the app untouched.
                 self.prompt_input = Some(PromptInput::new(PromptKind::TempFilesFolder));
                 self.status = PromptKind::TempFilesFolder.title().to_string();
             }
             Shortcut::TempGit => {
                 // Webui temporary Git overlay: prompt for any repository
-                // path, open the git panel on it, create nothing.
-                self.screen = TuiScreen::Git;
+                // path, open the git panel on it, create nothing. Same
+                // ephemeral contract: Esc cancels without switching
+                // screens.
                 self.prompt_input = Some(PromptInput::new(PromptKind::TempGitFolder));
                 self.status = PromptKind::TempGitFolder.title().to_string();
             }
@@ -2365,13 +2367,24 @@ impl TuiApp {
     /// explicit folder, bypassing the selected workspace entirely. No
     /// workspace or session is created; the explorer keeps its own state
     /// until another open replaces it (webui forgetWorkspace parity).
+    /// A failed refresh rolls the switch back so the temporary open
+    /// leaves the app untouched unless it actually succeeded.
     fn open_files_screen_at(
         &mut self,
         folder: &str,
     ) -> Result<(), crate::tui::web_api::WebApiError> {
+        let previous_screen = self.screen.clone();
+        let previous_explorer = self.file_explorer.clone();
         self.screen = TuiScreen::Files;
         self.file_explorer = FileExplorer::new(folder);
-        self.file_explorer.refresh(&self.web_api)
+        match self.file_explorer.refresh(&self.web_api) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.screen = previous_screen;
+                self.file_explorer = previous_explorer;
+                Err(err)
+            }
+        }
     }
 
     fn open_git_screen(&mut self) {
@@ -2391,10 +2404,21 @@ impl TuiApp {
     /// Temporary Git overlay (webui Shift+G): open the git panel on an
     /// explicit repository path, bypassing the selected workspace. No
     /// workspace or session is created (webui temporary Git parity).
+    /// A failed refresh rolls the switch back, same contract as the
+    /// temporary Files open.
     fn open_git_screen_at(&mut self, folder: &str) -> Result<(), crate::tui::web_api::WebApiError> {
+        let previous_screen = self.screen.clone();
+        let previous_cwd = self.git_panel.cwd.clone();
         self.screen = TuiScreen::Git;
         self.git_panel.set_cwd(folder);
-        self.git_panel.refresh_view(&self.web_api)
+        match self.git_panel.refresh_view(&self.web_api) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.screen = previous_screen;
+                self.git_panel.set_cwd(&previous_cwd);
+                Err(err)
+            }
+        }
     }
 
     fn refresh_active_screen(&mut self) {

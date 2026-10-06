@@ -1604,3 +1604,54 @@ test("Esc closes an open menu or modal before touching the navigation stack", as
   openWithState({ commitModal: { open: true } });
   assert.equal(lastAction, "", "Esc with the commit modal open never reaches the navigation stack");
 });
+
+test("hide keeps the git panel visible while a temporary Git overlay owns it", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+
+  // One stable gitUiPanel node with a parentNode chain that reaches
+  // tempGitOverlayModal: what HerdrTempOverlays.openSurface() produces.
+  const panel = element();
+  panel.id = "gitUiPanel";
+  const body = element();
+  const modal = element();
+  modal.id = "tempGitOverlayModal";
+  panel.parentNode = body;
+  body.parentNode = modal;
+  ctx.document.getElementById = (id) => (id === "gitUiPanel" ? panel : element());
+  ctx.HerdrTempOverlays = {
+    panelInTempOverlay(id) {
+      if (id !== "gitUiPanel") return false;
+      let node = ctx.document.getElementById(id);
+      while (node) {
+        if (node.id === "tempGitOverlayModal" || node.id === "tempFilesOverlayModal") return true;
+        node = node.parentNode || null;
+      }
+      return false;
+    },
+  };
+
+  let visibleAfterHide = null;
+  const originalShowPanelSet = Object.getOwnPropertyDescriptor(panel.style, "display");
+  // showPanel(false) sets display:none through the panel; record it.
+  panel.style.display = "grid";
+  ui.hide();
+  visibleAfterHide = panel.style.display;
+  assert.notEqual(visibleAfterHide, "none", "panel not display:none'd while owned by the temp overlay");
+
+  // Back outside the overlay, hide() dismisses the panel as before.
+  panel.parentNode = ctx.document.body;
+  ctx.HerdrTempOverlays = {
+    panelInTempOverlay: () => false,
+  };
+  panel.style.display = "grid";
+  ui.hide();
+  assert.equal(panel.style.display, "none", "panel hidden once back outside the overlay");
+  if (originalShowPanelSet) Object.defineProperty(panel.style, "display", originalShowPanelSet);
+});

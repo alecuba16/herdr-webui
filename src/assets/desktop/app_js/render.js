@@ -603,6 +603,14 @@ async function openWorkspaceGitUi(id, options) {
     minimizeWorkspaceShell(id);
     return;
   }
+  // The main-UI shell toggle wins over a minimized temporary overlay
+  // that currently holds the shared drawer panel: close the sibling temp
+  // surface first so the drawer re-homes into the main shell instead of
+  // rendering into the hidden overlay body.
+  if (globalThis.HerdrTempOverlays) {
+    const overlays = globalThis.HerdrTempOverlays;
+    if (overlays.isMinimized && overlays.isMinimized() && overlays.closeGit) overlays.closeGit();
+  }
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
   rememberWorkspaceShellMode("git", id, { minimized: false });
   window.HerdrGitUi.open(workspace, openOptions);
@@ -635,6 +643,12 @@ async function openWorkspaceFileBrowser(id, options) {
   if (!openOptions.forceOpen && currentWorkspaceShellMode(id) === "files" && !isWorkspaceShellMinimized(id) && window.HerdrFileBrowser.isWorkspaceVisible(workspace)) {
     minimizeWorkspaceShell(id);
     return;
+  }
+  // Same as openWorkspaceGitUi: a minimized temporary Files overlay must
+  // yield its panel when the user re-opens the main file browser.
+  if (globalThis.HerdrTempOverlays) {
+    const overlays = globalThis.HerdrTempOverlays;
+    if (overlays.isMinimized && overlays.isMinimized() && overlays.closeFiles) overlays.closeFiles();
   }
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
   rememberWorkspaceShellMode("files", id, { minimized: false });

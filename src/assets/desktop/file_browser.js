@@ -306,6 +306,14 @@
   }
 
   function hide() {
+    // A temporary overlay owns this panel while it is mounted inside the
+    // overlay body: stripping it would blank the overlay surface (the
+    // drawer renders into #fileBrowserPanel wherever it lives). Only the
+    // overlay's own close path may unmount it.
+    if (globalThis.HerdrTempOverlays && globalThis.HerdrTempOverlays.panelInTempOverlay &&
+        globalThis.HerdrTempOverlays.panelInTempOverlay("fileBrowserPanel")) {
+      return;
+    }
     stopTransientWork(state);
     state.open = false;
     const panel = document.getElementById("fileBrowserPanel");

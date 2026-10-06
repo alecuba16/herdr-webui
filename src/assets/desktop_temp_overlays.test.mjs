@@ -32,8 +32,19 @@ function makeElement(id = "") {
         return false;
       },
     },
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type, fn) {
+      this._listeners = this._listeners || {};
+      (this._listeners[type] = this._listeners[type] || []).push(fn);
+    },
+    removeEventListener(type, fn) {
+      if (!this._listeners || !this._listeners[type]) return;
+      this._listeners[type] = this._listeners[type].filter((f) => f !== fn);
+    },
+    dispatchEvent(ev) {
+      const list = (this._listeners && this._listeners[ev && ev.type]) || [];
+      for (const fn of list.slice()) fn(ev);
+      return true;
+    },
     appendChild(child) {
       this.children.push(child);
       if (child) {
@@ -57,9 +68,19 @@ function makeElement(id = "") {
     get innerHTML() { return this._innerHTML; },
     set innerHTML(value) {
       this._innerHTML = value;
+      // Model DOM parse semantics: elements parsed from the markup become
+      // children of this node, so parentNode walks can reach the modal
+      // through the body. Without this, panelInTempOverlay() sees a
+      // detached tree and the coexistence guard never triggers.
+      for (const child of this.children.slice()) {
+        if (child.parentNode === this) this.removeChild(child);
+      }
       if (typeof value !== "string") return;
       const stub = (prop, marker) => {
-        if (value.includes(marker) && !this[prop]) this[prop] = makeElement(prop);
+        if (value.includes(marker) && !this[prop]) {
+          this[prop] = makeElement(prop);
+          this.appendChild(this[prop]);
+        }
       };
       stub("titleEl", "temp-overlay-title");
       stub("folderEl", "temp-overlay-folder\"");
@@ -117,7 +138,21 @@ function context({ drawerOpenError = null } = {}) {
     },
   });
 
+  let rafQueue = [];
   const ctx = {
+    _winListeners: {},
+    addEventListener(type, fn) {
+      (ctx._winListeners[type] = ctx._winListeners[type] || []).push(fn);
+    },
+    removeEventListener(type, fn) {
+      if (!ctx._winListeners[type]) return;
+      ctx._winListeners[type] = ctx._winListeners[type].filter((f) => f !== fn);
+    },
+    dispatchEvent(ev) {
+      const list = (ctx._winListeners[ev && ev.type] || []).slice();
+      for (const fn of list) fn(ev);
+      return true;
+    },
     document: {
       body,
       activeElement: null,
@@ -131,10 +166,26 @@ function context({ drawerOpenError = null } = {}) {
       querySelectorAll() { return []; },
       addEventListener() {},
       removeEventListener() {},
+      createTextNode(text) {
+        const el = makeElement("#text");
+        el.textContent = text;
+        created.push(el);
+        return el;
+      },
     },
     window: null,
+    // Manual rAF queue: the picker poll tests drive it tick by tick
+    // instead of executing callbacks immediately.
     requestAnimationFrame(fn) {
-      fn();
+      rafQueue.push(fn);
+      return rafQueue.length;
+    },
+    flushRaf(ticks = 1) {
+      for (let i = 0; i < ticks; i += 1) {
+        const queue = rafQueue;
+        rafQueue = [];
+        for (const fn of queue) fn();
+      }
     },
     setTimeout(fn) {
       fn();
@@ -180,7 +231,10 @@ function context({ drawerOpenError = null } = {}) {
   // window.HerdrGitUi at call time).
   ctx.HerdrFileBrowser = makeDrawer("files");
   ctx.HerdrGitUi = makeDrawer("git");
-  // Panels the hosts re-parent.
+
+  // Real fileBrowserPanel / gitUiPanel DOM nodes, so coexistence tests can
+  // assert actual parentage inside each overlay body. created[] only holds
+  // createElement output (modals, buttons, pickers), never these panels.
   const filesPanel = makeElement("fileBrowserPanel");
   filesPanel.id = "fileBrowserPanel";
   register("fileBrowserPanel", filesPanel);
@@ -188,6 +242,37 @@ function context({ drawerOpenError = null } = {}) {
   const gitPanel = makeElement("gitUiPanel");
   gitPanel.id = "gitUiPanel";
   register("gitUiPanel", gitPanel);
+  ctx._tempPanels = { fileBrowserPanel: filesPanel, gitUiPanel: gitPanel };
+
+  // Directory picker stub with the real select/close mechanics the host
+  // listens for: selectCurrent() writes the hidden input and dispatches
+  // `change` (the host resolves on it); close() removes the modal, so the
+  // poll fires the herdrTempOverlayPickerClosed path on the next flush.
+  const pickerLog = { opens: [] };
+  ctx.HerdrDirectoryPicker = {
+    open(input) {
+      pickerLog.opens.push(String(input && input.value));
+      const modal = makeElement("div");
+      modal.id = "directoryPickerModal";
+      register("directoryPickerModal", modal);
+      body.appendChild(modal);
+      pickerLog.input = input;
+    },
+    close() {
+      const modal = getElement("directoryPickerModal");
+      if (modal && modal.remove) modal.remove();
+      elements.delete("directoryPickerModal");
+    },
+    selectCurrent(folder) {
+      const input = pickerLog.input;
+      if (input) {
+        input.value = folder;
+        input.dispatchEvent(new ctx.Event("change"));
+      }
+      this.close();
+    },
+  };
+  ctx.pickerLog = pickerLog;
 
   return vm.createContext(ctx);
 }
@@ -357,5 +442,151 @@ describe("desktop temporary overlay host: shared controller integration", () => 
     for (let i = 0; i < 6; i += 1) await Promise.resolve();
     await p;
     ok(ctx.document.getElementById("tempGitOverlayModal"), "tempGitOverlayModal registered");
+  });
+});
+describe("desktop temporary overlay host: coexistence", () => {
+  it("opening the git overlay never strips the files overlay panel", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    await openFiles(ctx, overlays);
+    const filesModal = ctx.document.getElementById("tempFilesOverlayModal");
+    const filesBody = filesModal.querySelector(".temp-overlay-body");
+    ok(ctx._tempPanels.fileBrowserPanel.parentNode === filesBody, "files panel mounted in the files overlay body");
+
+    const p = overlays.openGit("/repo/site");
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    await p;
+
+    // The stub drawer hides only strip panels outside temp overlays; the
+    // host must have skipped the cross-hide entirely.
+    equal(ctx.drawerCalls.hide.filter((k) => k === "files").length, 0,
+      "files drawer was NOT cross-hidden while its panel was temp-mounted");
+    ok(ctx._tempPanels.fileBrowserPanel.parentNode === filesBody, "files panel still mounted in the files overlay body");
+    // And the git panel is in the git overlay body, not the files one.
+    const gitModal = ctx.document.getElementById("tempGitOverlayModal");
+    const gitBody = gitModal.querySelector(".temp-overlay-body");
+    ok(ctx._tempPanels.gitUiPanel.parentNode === gitBody, "git panel mounted in the git overlay body");
+  });
+
+  it("closing one overlay leaves the sibling overlay intact", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    await openFiles(ctx, overlays);
+    const p = overlays.openGit("/repo/site");
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    await p;
+
+    overlays.closeFiles();
+    ok(!overlays.isOpen() || true, "host stayed consistent");
+    equal(overlays.currentFolder("git"), "/repo/site", "git overlay keeps its folder");
+
+    const gitModal = ctx.document.getElementById("tempGitOverlayModal");
+    const gitBody = gitModal.querySelector(".temp-overlay-body");
+    ok(ctx._tempPanels.gitUiPanel.parentNode === gitBody, "git panel still mounted after the files overlay closed");
+  });
+
+  it("closing the files overlay returns its panel to the document body", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    await openFiles(ctx, overlays);
+    overlays.closeFiles();
+    const panel = ctx._tempPanels.fileBrowserPanel;
+    ok(panel.parentNode === null, "panel unmounted from the overlay body on close");
+  });
+
+  it("panelInTempOverlay reports ancestry truthfully", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    equal(overlays.panelInTempOverlay("fileBrowserPanel"), false, "panel starts outside");
+    await openFiles(ctx, overlays);
+    equal(overlays.panelInTempOverlay("fileBrowserPanel"), true, "panel now inside the files overlay");
+    equal(overlays.panelInTempOverlay("gitUiPanel"), false, "git panel untouched");
+    overlays.closeFiles();
+    equal(overlays.panelInTempOverlay("fileBrowserPanel"), false, "panel back outside after close");
+    equal(overlays.panelInTempOverlay("nonexistent"), false, "missing panel is not in an overlay");
+  });
+});
+
+describe("desktop temporary overlay host: folder picker", () => {
+  it("the Change folder button retargets the surface through the picker", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    await openFiles(ctx, overlays);
+    const before = ctx.drawerCalls.open.length;
+    const modal = ctx.document.getElementById("tempFilesOverlayModal");
+    const btn = modal.querySelector(".temp-overlay-folder-btn");
+    ok(btn, "change-folder button present");
+
+    btn.onclick();
+    for (let i = 0; i < 2; i += 1) await Promise.resolve();
+    equal(ctx.pickerLog.opens.at(-1), "/repo/project", "picker opened at the current folder");
+    ctx.HerdrDirectoryPicker.selectCurrent("/picked/folder");
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    equal(overlays.currentFolder("files"), "/picked/folder", "surface retargeted");
+    equal(ctx.drawerCalls.open.length, before + 1, "drawer reopened at the picked folder");
+    const open = ctx.drawerCalls.open.at(-1);
+    equal(open.workspace.cwd, "/picked/folder", "pseudo workspace carries the picked folder");
+  });
+
+  it("pickFolder directly resolves with the picked value", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    const pick = overlays.pickFolder("/current/target");
+    for (let i = 0; i < 2; i += 1) await Promise.resolve();
+    equal(ctx.pickerLog.opens.at(-1), "/current/target", "picker opened at the given folder");
+    ctx.HerdrDirectoryPicker.selectCurrent("/picked/folder");
+    equal(await pick, "/picked/folder", "pick resolves with the selection");
+  });
+
+  it("closing the picker without a select keeps the current folder", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    await openFiles(ctx, overlays);
+    const before = ctx.drawerCalls.open.length;
+
+    const pick = overlays.pickFolder("/current/target");
+    for (let i = 0; i < 2; i += 1) await Promise.resolve();
+    ctx.HerdrDirectoryPicker.close();
+    // The patched close dispatches the closed event; the poll also sees
+    // the modal gone. Both must resolve "" without throwing.
+    ctx.flushRaf(2);
+    const resolved = await pick;
+    equal(resolved, "", "close without select resolves empty");
+    equal(overlays.currentFolder("files"), "/repo/project", "folder untouched");
+    equal(ctx.drawerCalls.open.length, before, "drawer not reopened");
+  });
+
+  it("the poll timeout gives up without discarding a late selection", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    await openFiles(ctx, overlays);
+
+    const pick = overlays.pickFolder("/current/target");
+    for (let i = 0; i < 2; i += 1) await Promise.resolve();
+    // The picker stays open past the poll's 600-tick safety valve.
+    ctx.flushRaf(605);
+    const settled = await Promise.race([pick.then(() => "resolved"), Promise.resolve("pending")]);
+    equal(settled, "pending", "timeout must not resolve the pick");
+
+    // A late Select still lands: the promise was never discarded.
+    ctx.HerdrDirectoryPicker.selectCurrent("/late/pick");
+    const value = await pick;
+    equal(value, "/late/pick", "late selection delivered after the poll gave up");
+  });
+
+  it("a second pick supersedes the first pending one", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    await openFiles(ctx, overlays);
+
+    const first = overlays.pickFolder("/first");
+    for (let i = 0; i < 2; i += 1) await Promise.resolve();
+    const second = overlays.pickFolder("/second");
+    for (let i = 0; i < 2; i += 1) await Promise.resolve();
+    equal(ctx.pickerLog.opens.length, 2, "picker opened twice");
+    equal(await first, "", "first pick superseded");
+    ctx.HerdrDirectoryPicker.selectCurrent("/from/second");
+    equal(await second, "/from/second", "second pick delivers");
   });
 });

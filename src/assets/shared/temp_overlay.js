@@ -75,7 +75,6 @@
 
     var active = null;
     var restoreBar = null;
-    var closing = false;
     var sessionCounter = 0;
 
     function doc() {
@@ -207,7 +206,6 @@
       active = { open: true, minimized: false, folder: folder, session: ++sessionCounter, handle: null, error: "" };
       modal.style.display = "grid";
       modal.removeAttribute("aria-hidden");
-      closing = false;
       syncHead();
       refreshRestoreBar();
       renderSurface();
@@ -277,16 +275,10 @@
       modal.style.display = "grid";
       modal.removeAttribute("aria-hidden");
       refreshRestoreBar();
-      if (active.onRestored) {
-        var cb = active.onRestored;
-        active.onRestored = null;
-        try { cb(); } catch (e) {}
-      }
     }
 
     function close() {
       if (!active || !active.open) return;
-      closing = true;
       teardownSurface();
       active.open = false;
       active = null;

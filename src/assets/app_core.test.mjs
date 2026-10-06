@@ -3135,4 +3135,84 @@ describe("desktop file browser editor integration", () => {
     assert.equal(postCalls.length, 1, "Cmd+S on locked file made no POST");
     assert.ok(lockedPrevented, "Cmd+S on locked file still prevented browser save dialog");
   });
+  
+  it("hide respects the temporary Files overlay: keeps the panel mounted when a temp overlay owns it", async () => {
+    const document = createFakeDocument();
+      const requests = [];
+      const context = {
+        window: {
+          addEventListener() {},
+          HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
+          HerdrGitUi: { hide() {} },
+          HerdrWorkspacePath(workspace) { return workspace.cwd; },
+          rememberWorkspaceShellMode() {},
+          syncShellModeButtons() {},
+        },
+        document,
+        localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+        fetch: async (url) => {
+          requests.push(String(url));
+          return {
+            ok: true,
+            async json() {
+              const path = decodeURIComponent((String(url).match(/path=([^&]*)/) || [null, ""])[1]);
+              return { path, entries: [{ kind: "file", name: "demo.txt", path: path ? `${path}/demo.txt` : "demo.txt" }], git_status: null };
+            },
+          };
+        },
+        confirm: () => true,
+        HerdrAppHelpers: require("./shared/core.js"),
+        appRefreshIconButton: () => "<button>Refresh</button>",
+        encodeURIComponent,
+        decodeURIComponent,
+        Error,
+        JSON,
+        Math,
+        String,
+        setTimeout(fn) { fn(); return 1; },
+        clearTimeout() {},
+        getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+      };
+      context.window.window = context.window;
+      context.window.document = document;
+      vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+      vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+  
+      await context.window.HerdrFileBrowser.openAt({ cwd: "~" }, "src", { kind: "dir" });
+      const panel = document.getElementById("fileBrowserPanel");
+      assert.ok(panel, "panel rendered");
+  
+      // Simulate the panel being re-parented into a temporary overlay modal
+      // body: exactly what HerdrTempOverlays.openSurface() does.
+      const modal = document.createElement("div");
+      modal.id = "tempFilesOverlayModal";
+      const body = document.createElement("div");
+      body.className = "temp-overlay-body";
+      body.appendChild(panel);
+      modal.appendChild(body);
+      document.body.appendChild(modal);
+      // file_browser's guard reads globalThis.HerdrTempOverlays, which in
+      // the vm context is the contextified global (not window).
+      context.HerdrTempOverlays = {
+        panelInTempOverlay(id) {
+          let node = document.getElementById(id);
+          while (node) {
+            if (node.id === "tempFilesOverlayModal" || node.id === "tempGitOverlayModal") return true;
+            node = node.parentNode;
+          }
+          return false;
+        },
+        suppressingFiles: () => false,
+      };
+  
+      context.window.HerdrFileBrowser.hide();
+      assert.ok(document.getElementById("fileBrowserPanel"), "panel NOT removed while owned by the temp overlay");
+      assert.ok(panel.parentNode === body, "panel still a child of the overlay body");
+  
+      // Outside a temp overlay, hide() strips the panel as before.
+      panel.remove();
+      document.body.appendChild(panel);
+      context.window.HerdrFileBrowser.hide();
+      assert.equal(document.getElementById("fileBrowserPanel"), null, "panel removed once back outside the overlay");
   });
+});

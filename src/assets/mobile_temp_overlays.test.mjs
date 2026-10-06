@@ -227,7 +227,7 @@ describe("mobile temporary overlay host", () => {
     const ctx = context();
     const overlays = loadHost(ctx);
     for (const name of [
-      "create", "files", "git", "openFiles", "openGit", "toggleFiles", "toggleGit",
+      "create", "files", "git", "openFiles", "openGit", "closeFiles", "closeGit", "toggleFiles", "toggleGit",
       "bindAppHelpers", "pickerClose", "pickerEnter", "pickerUp", "pickerSelect", "pickerFilter",
     ]) {
       equal(typeof overlays[name], "function", `${name} is a function`);
@@ -385,5 +385,73 @@ describe("mobile temporary overlay host: shared controller integration", () => {
     ok(restoreBar.restoreButton.onclick, "restore pill wired");
     restoreBar.restoreButton.onclick();
     ok(!overlays.files().isMinimized(), "restored via the pill");
+  });
+});
+
+describe("mobile temporary overlay host: coexistence and git toggles", () => {
+  it("toggleGit opens, minimizes, and restores the git overlay independently", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    await overlays.openGit("/repo/site");
+    ok(overlays.git().isOpen(), "git overlay open");
+
+    overlays.toggleGit();
+    ok(overlays.git().isMinimized(), "toggleGit minimizes an open overlay");
+    overlays.toggleGit();
+    ok(!overlays.git().isMinimized(), "toggleGit restores a minimized overlay");
+    equal(ctx.gitInstances.length, 1, "same instance through minimize/restore");
+  });
+
+  it("both overlays open at once, each keeping its own folder and instance", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    await overlays.openFiles("/repo/project");
+    await overlays.openGit("/repo/site");
+
+    ok(overlays.files().isOpen(), "files overlay open");
+    ok(overlays.git().isOpen(), "git overlay open");
+    equal(overlays.files().currentFolder(), "/repo/project", "files folder intact");
+    equal(overlays.git().currentFolder(), "/repo/site", "git folder intact");
+    equal(ctx.filesInstances.length, 1, "one files instance");
+    equal(ctx.gitInstances.length, 1, "one git instance");
+
+    // Closing one leaves the other fully usable.
+    overlays.closeFiles();
+    ok(!overlays.files().isOpen(), "files closed");
+    ok(overlays.git().isOpen(), "git still open after files closed");
+    await overlays.openGit("/repo/other");
+    equal(overlays.git().currentFolder(), "/repo/other", "git retarget still works");
+  });
+
+  it("pickerUp climbs one level and reloads the tree from the parent", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    await overlays.openFiles("/repo/project");
+    overlays.files().chooseFolder();
+    await flush(20);
+    overlays.pickerEnter(encodeURIComponent("docs"));
+    await flush(20);
+    const callsBefore = ctx.treeCalls.length;
+
+    overlays.pickerUp();
+    await flush(20);
+    const last = ctx.treeCalls.at(-1);
+    ok(last.includes(encodeURIComponent("/repo/project")), "up reloaded from the parent folder");
+    ok(ctx.treeCalls.length > callsBefore, "a fresh tree call was made");
+  });
+
+  it("pickerFilter narrows the rendered rows", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    await overlays.openFiles("/repo/project");
+    overlays.files().chooseFolder();
+    await flush(20);
+    const modal = ctx.document.getElementById("tempOverlayPickerModal");
+    ok(String(modal._innerHTML).includes("docs"), "unfiltered rows include docs");
+
+    overlays.pickerFilter("nope");
+    ok(!String(modal._innerHTML).includes("picker-row"), "no rows match the filter");
+    overlays.pickerFilter("doc");
+    ok(String(modal._innerHTML).includes("docs"), "matching rows come back after clearing the filter text");
   });
 });

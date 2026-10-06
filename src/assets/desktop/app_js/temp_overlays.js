@@ -109,7 +109,10 @@
       return;
     }
     if (attempt > 600) {
-      onRemovedResolved();
+      // Stop polling after ~10s of rAF ticks, but do NOT resolve: the
+      // change/closed events above stay authoritative, so a slow picker
+      // session can still deliver its selection. Resolving "" here
+      // would silently drop a late Select click.
       return;
     }
     requestAnimationFrame(() => pollPickerGone(id, onGone, attempt + 1));
@@ -159,7 +162,12 @@
         const workspace = pseudoWorkspace(tool, folder);
         if (!workspace.cwd) throw new Error("no folder selected");
         const other = tool === "git" ? window.HerdrFileBrowser : window.HerdrGitUi;
-        if (other && other.hide) other.hide();
+        // Only hide the other drawer when its panel is NOT mounted in the
+        // sibling temporary overlay: the drawers' hide() strips or blanks
+        // their panel wherever it lives, which would gut the sibling
+        // overlay's surface. Both overlays coexist, each keeps its panel.
+        const otherPanelId = tool === "git" ? "fileBrowserPanel" : "gitUiPanel";
+        if (other && other.hide && !panelInTempOverlay(otherPanelId)) other.hide();
         if (tool === "git") await ensureGitUiLoaded();
         else await ensureFileBrowserLoaded();
         const drawer = actions();
@@ -220,6 +228,19 @@
   function tempFilesSuppressing() { return !!suppression.files; }
   function tempGitSuppressing() { return !!suppression.git; }
 
+  // Drawers' hide() consults this so a panel mounted inside a temporary
+  // overlay body is never stripped from the DOM by cross-hide paths.
+  function panelInTempOverlay(panelId) {
+    const panel = document.getElementById(panelId);
+    if (!panel) return false;
+    let node = panel;
+    while (node) {
+      if (node.id === "tempFilesOverlayModal" || node.id === "tempGitOverlayModal") return true;
+      node = node.parentNode;
+    }
+    return false;
+  }
+
   globalThis.HerdrTempOverlays = {
     create: createManagers,
     files: tempFilesOverlay,
@@ -244,5 +265,6 @@
     suppressing: tempOverlaySuppressing,
     suppressingFiles: tempFilesSuppressing,
     suppressingGit: tempGitSuppressing,
+    panelInTempOverlay,
   };
 })();

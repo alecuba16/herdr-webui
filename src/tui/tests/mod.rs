@@ -8878,30 +8878,51 @@ fn footer_hint_names_common_files_actions() {
 fn temp_files_shortcut_opens_folder_prompt_without_workspace() {
     // Ctrl+B Shift+F: the webui temporary Files overlay opens on any
     // folder without creating a workspace; the TUI asks for the folder
-    // path first. The prompt opens on the Files screen and no backend
-    // workspace call can happen (nonexistent socket in app_with_snapshot).
+    // path first. The prompt is ephemeral: the screen only switches when
+    // a folder is actually opened, so Esc cancels leaving the app on the
+    // screen it started on (no backend workspace call can happen either,
+    // nonexistent socket in app_with_snapshot).
     let mut app = app_with_snapshot();
     app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
     app.handle_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
-    assert_eq!(app.screen, TuiScreen::Files);
+    assert_eq!(
+        app.screen,
+        TuiScreen::Terminal,
+        "prompt opens without switching screens"
+    );
     let prompt = app.prompt_input.as_ref().expect("temp files prompt open");
     assert_eq!(prompt.kind, PromptKind::TempFilesFolder);
     // Esc cancels without touching anything.
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert!(app.prompt_input.is_none());
+    assert_eq!(
+        app.screen,
+        TuiScreen::Terminal,
+        "cancel leaves the screen untouched"
+    );
 }
 
 #[test]
 fn temp_git_shortcut_opens_repo_prompt_without_workspace() {
-    // Ctrl+B Shift+G: same contract for the temporary Git overlay.
+    // Ctrl+B Shift+G: same contract for the temporary Git overlay. The
+    // prompt is ephemeral: no screen switch until a folder is opened.
     let mut app = app_with_snapshot();
     app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
     app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
-    assert_eq!(app.screen, TuiScreen::Git);
+    assert_eq!(
+        app.screen,
+        TuiScreen::Terminal,
+        "prompt opens without switching screens"
+    );
     let prompt = app.prompt_input.as_ref().expect("temp git prompt open");
     assert_eq!(prompt.kind, PromptKind::TempGitFolder);
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert!(app.prompt_input.is_none());
+    assert_eq!(
+        app.screen,
+        TuiScreen::Terminal,
+        "cancel leaves the screen untouched"
+    );
 }
 
 /// HTTP fake serving the surface the temporary overlays need: the
@@ -9021,7 +9042,7 @@ fn temp_overlay_open_failure_keeps_status_line_clean() {
     let dead_port = dead.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for stream in dead.incoming() {
-            let Ok(mut stream) = stream else { break };
+            let Ok(stream) = stream else { break };
             // Drop immediately: the client sees EOF before any status line.
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }
@@ -9047,6 +9068,14 @@ fn temp_overlay_open_failure_keeps_status_line_clean() {
         "status must not claim success on a failed open: {:?}",
         app.status
     );
+    // The ephemeral contract: a failed open rolls the switch back, so
+    // the app stays on the screen it was on (Terminal here).
+    assert_eq!(
+        app.screen,
+        crate::tui::TuiScreen::Terminal,
+        "failed open must not strand the user on the Files screen"
+    );
+    assert_eq!(app.file_explorer.cwd, "", "explorer cwd rolled back");
     let _ = std::fs::remove_dir(&temp);
 }
 

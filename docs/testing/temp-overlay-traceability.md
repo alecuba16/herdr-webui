@@ -1,9 +1,11 @@
 # Temporary Files/Git overlays: requirement-to-check traceability
 
-Scope: commit 87ddc98 (overlays feature) + host-behavior test suites.
-Every product requirement maps to at least one executable check and an
-observed pass result. "Runtime" checks drove the real debug binary; "unit"
-checks drive the real public interfaces inside node:test / cargo test.
+Scope: commit 87ddc98 (overlays feature) + the follow-up review pass
+(coexistence, picker timeout, ephemeral cancel, shell-toggle fixes and
+their behavioral tests). Every product requirement maps to at least one
+executable check and an observed pass result. "Runtime" checks drove the
+real debug binary; "unit" checks drive the real public interfaces inside
+node:test / cargo test.
 
 ## Requirements
 
@@ -35,11 +37,19 @@ checks drive the real public interfaces inside node:test / cargo test.
 | R24 | Server: tree API serves directories-only responses for the picker | Runtime: `GET /api/file-browser/tree?...&dirs_only=true` on the built binary returned directory-only entries | pass |
 | R25 | Server: new assets served with correct content | Runtime: `/assets/shared/temp-overlay.js`, `/assets/mobile/temp-overlays.js` → 200, refs present in `/assets/app-boot.js` and desktop bundle | pass |
 | R26 | Status only lands on successful open (`open_files_screen_at`/`open_git_screen_at` return Result) | `temp_overlay_open_failure_keeps_status_line_clean` asserts an API failure sets `error` and never the `temporary files:` status | pass |
+| R27 | Desktop: a slow directory-picker session never drops a late Select click (poll timeout stops polling but does not resolve) | `the poll timeout gives up without discarding a late selection` drives 605 rAF ticks, asserts the pick stays pending, then a late select still resolves | pass |
+| R28 | Desktop: picker closed without a select resolves empty and keeps the current folder | `closing the picker without a select keeps the current folder` | pass |
+| R29 | Desktop: a second pick supersedes the pending one (first resolves `""`) | `a second pick supersedes the first pending one` | pass |
+| R30 | Desktop: both temp overlays coexist: opening one never strips the other's panel (host skips cross-hide; drawers' `hide()` early-returns while temp-mounted) | `opening the git overlay never strips the files overlay panel`, `closing one overlay leaves the sibling overlay intact`, `panelInTempOverlay reports ancestry truthfully`, app_core `hide respects the temporary Files overlay...`, git_ui_behavior `hide keeps the git panel visible...` | pass |
+| R31 | Desktop: the overlay Change-folder button drives the picker and retargets the surface | `the Change folder button retargets the surface through the picker` | pass |
+| R32 | Desktop: main-UI shell toggles close a minimized temp overlay first so the drawer re-homes into the main shell; visible overlays and absent hosts are untouched | app_load `closing a minimized temporary overlay before the main shell opens the drawer`, `leaves an unminimized temporary overlay alone...`, `still opens the main drawers when HerdrTempOverlays is absent` | pass |
+| R33 | TUI: Esc on the temp prompt leaves the app on the previous screen (ephemeral cancel) and a failed open rolls the screen switch back | `temp_files_shortcut_opens_folder_prompt_without_workspace` / `temp_git_shortcut_opens_repo_prompt_without_workspace` assert Terminal before and after Esc; `temp_overlay_open_failure_keeps_status_line_clean` also asserts `screen == Terminal` and the rolled-back explorer cwd | pass |
+| R34 | Mobile: `toggleGit` minimizes/restores; both overlays coexist with independent folders/instances; `pickerUp` climbs one level; `pickerFilter` narrows rows; `closeFiles`/`closeGit` parity exports | `toggleGit opens, minimizes, and restores...`, `both overlays open at once...`, `pickerUp climbs one level...`, `pickerFilter narrows the rendered rows` | pass |
 
 ## Verification runs
 
-- `cargo test --lib`: 409/409 pass (includes 7 new TUI tests)
-- `node --test src/assets/*.test.mjs`: 799/799 pass (25 controller, 11 desktop host, 12 mobile host, plus existing suites)
+- `cargo test --lib`: 409/409 pass (includes the TUI temp tests with rollback assertions)
+- `node --test src/assets/*.test.mjs`: 817/817 pass (25 controller, 20 desktop host, 16 mobile host, plus app_load/app_core/git_ui_behavior guard and shell-toggle tests)
 - `cargo fmt --check`: clean
 - Runtime integration on debug binary (`127.0.0.1:18787 --session verify-temp`): login, asset 200s, dirs_only tree, bundle references all verified
 - Code review: Approve, no blocking findings

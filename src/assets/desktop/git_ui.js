@@ -603,6 +603,14 @@
   }
 
   function hide() {
+    // A temporary Git overlay owns this panel while it is mounted inside
+    // the overlay body: display:none here would blank that overlay's
+    // surface (e.g. when the file browser open() cross-hides the git
+    // drawer). Only the overlay's own close path may dismiss it.
+    if (globalThis.HerdrTempOverlays && globalThis.HerdrTempOverlays.panelInTempOverlay &&
+        globalThis.HerdrTempOverlays.panelInTempOverlay("gitUiPanel")) {
+      return;
+    }
     saveDraftFromDom();
     saveSideEditorFromDom();
     state.visible = false;

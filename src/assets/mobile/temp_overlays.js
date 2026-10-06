@@ -352,6 +352,8 @@
     create: createManagers,
     openFiles,
     openGit,
+    closeFiles: () => { if (managers.files) managers.files.close(); },
+    closeGit: () => { if (managers.git) managers.git.close(); },
     toggleFiles: (folder) => { createManagers(); return managers.files ? managers.files.toggle(folder) : null; },
     toggleGit: (folder) => { createManagers(); return managers.git ? managers.git.toggle(folder) : null; },
     bindAppHelpers,
