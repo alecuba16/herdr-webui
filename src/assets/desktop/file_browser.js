@@ -608,6 +608,9 @@
   }
 
   function syncTerminalVisibility() {
+    // A temporary Files overlay owns the viewport: never hide or refit the
+    // main shell from a temp-surface render.
+    if (globalThis.HerdrTempOverlays && globalThis.HerdrTempOverlays.suppressingFiles && globalThis.HerdrTempOverlays.suppressingFiles()) return;
     const shell = document.getElementById("terminalShell");
     if (!shell) return;
     const git = document.getElementById("gitUiPanel");

@@ -38,6 +38,7 @@ const SHARED_TERMINAL_FIT_JS: &str = include_str!("assets/shared/terminal_fit.js
 const SHARED_TERMINAL_ADAPTER_JS: &str = include_str!("assets/shared/terminal_adapter.js");
 const SHARED_GRAPHICS_BRIDGE_JS: &str = include_str!("assets/shared/graphics_bridge.js");
 const SHARED_TEMP_TERMINAL_JS: &str = include_str!("assets/shared/temp_terminal.js");
+const SHARED_TEMP_OVERLAY_JS: &str = include_str!("assets/shared/temp_overlay.js");
 const VENDOR_CODEMIRROR_JS: &str = include_str!("assets/vendor/codemirror.bundle.js");
 const VENDOR_MARKED_JS: &str = include_str!("assets/vendor/marked.bundle.js");
 const VENDOR_DOMPURIFY_JS: &str = include_str!("assets/vendor/dompurify.bundle.js");
@@ -101,6 +102,7 @@ const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/composer.js"),
     include_str!("assets/desktop/app_js/worktrees.js"),
     include_str!("assets/desktop/app_js/shortcuts.js"),
+    include_str!("assets/desktop/app_js/temp_overlays.js"),
     include_str!("assets/desktop/app_js/workspace_create.js"),
     include_str!("assets/desktop/lsp_settings.js"),
     include_str!("assets/desktop/app_js/bindings.js"),
@@ -113,6 +115,7 @@ const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile/worktrees.js");
 const MOBILE_FILE_BROWSER_JS: &str = include_str!("assets/mobile/file_browser.js");
 const MOBILE_SEARCH_JS: &str = include_str!("assets/mobile/search.js");
 const MOBILE_GIT_JS: &str = include_str!("assets/mobile/git.js");
+const MOBILE_TEMP_OVERLAYS_JS: &str = include_str!("assets/mobile/temp_overlays.js");
 const MOBILE_SESSIONS_JS: &str = include_str!("assets/mobile/sessions.js");
 const MOBILE_EVENTS_JS: &str = include_str!("assets/mobile/events.js");
 const MOBILE_SCREENS_JS: &str = include_str!("assets/mobile/screens.js");
@@ -350,6 +353,13 @@ pub(crate) async fn shared_temp_terminal_js() -> Response {
     )
 }
 
+pub(crate) async fn shared_temp_overlay_js() -> Response {
+    static_text(
+        SHARED_TEMP_OVERLAY_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
 pub(crate) async fn vendor_codemirror_js() -> Response {
     static_text(
         VENDOR_CODEMIRROR_JS,
@@ -433,6 +443,13 @@ pub(crate) async fn mobile_search_js() -> Response {
 
 pub(crate) async fn mobile_git_js() -> Response {
     static_text(MOBILE_GIT_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_temp_overlays_js() -> Response {
+    static_text(
+        MOBILE_TEMP_OVERLAYS_JS,
+        "application/javascript; charset=utf-8",
+    )
 }
 
 pub(crate) async fn mobile_sessions_js() -> Response {

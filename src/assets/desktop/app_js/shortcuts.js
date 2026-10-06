@@ -60,6 +60,23 @@ function tempTerminalShortcutAllowed() {
   }
   return true;
 }
+// While a temporary Files/Git overlay is visible, only the temporary-overlay
+// family shortcuts pass through (their own toggles + the temp terminal ones,
+// all overlays of the same family); everything else falls to the surface.
+function tempOverlayShortcutAllowed() {
+  const overlays = globalThis.HerdrTempOverlays;
+  if (!overlays || !overlays.isVisible || !overlays.isVisible()) return false;
+  // The directory picker opened from "Change folder" owns the keys while
+  // it is up: block shortcut dispatching entirely.
+  if (document.getElementById("directoryPickerModal")) return false;
+  return true;
+}
+function tempOverlayOwnShortcut(e) {
+  const webui = options.webuiShortcuts || {};
+  const key = shortcutKey(e);
+  return key === webui.tempFilesToggle || key === webui.tempGitToggle ||
+    key === webui.tempTerminalToggle || key === webui.tempTerminalPromote;
+}
 function toggleTempTerminalShortcut() {
   if (!tempTerminal) return false;
   if (tempTerminal.isVisible && tempTerminal.isVisible()) {
@@ -70,6 +87,19 @@ function toggleTempTerminalShortcut() {
   const folder = ws ? (workspacePath(ws) || "") : "";
   tempTerminal.open(folder);
   return true;
+}
+// Fresh temporary Files/Git overlays open on the selected workspace path
+// (or the default folder); an already-open overlay keeps its own folder and
+// the toggle just restores/minimizes it.
+function tempOverlayFolder() {
+  const overlays = globalThis.HerdrTempOverlays;
+  if (overlays) {
+    const filesOpen = overlays.files() && overlays.files().isOpen();
+    const gitOpen = overlays.git() && overlays.git().isOpen();
+    if (filesOpen || gitOpen) return "";
+  }
+  const ws = selectedOrDefaultWorkspace();
+  return ws ? (workspacePath(ws) || "") : "";
 }
 function closeShortcutKeydown(e) {
   if (tempTerminalModalOpen()) return false;
@@ -324,6 +354,20 @@ function runPrefixedShortcut(e) {
     tempTerminalToggle: () => {
       return toggleTempTerminalShortcut();
     },
+    tempFilesToggle: () => {
+      const overlays = globalThis.HerdrTempOverlays;
+      if (!overlays) return false;
+      const folder = tempOverlayFolder();
+      overlays.toggleFiles(folder);
+      return true;
+    },
+    tempGitToggle: () => {
+      const overlays = globalThis.HerdrTempOverlays;
+      if (!overlays) return false;
+      const folder = tempOverlayFolder();
+      overlays.toggleGit(folder);
+      return true;
+    },
     tempTerminalPromote: () => {
       // Only meaningful with the overlay visible: promote the visible
       // temporary terminal into a workspace at the shell's live cwd.
@@ -361,20 +405,21 @@ function handleGlobalShortcut(e) {
     }
   }
   const tempTerminalOnly = modalOpen() && tempTerminalShortcutAllowed();
-  if (modalOpen() && !tempTerminalOnly) {
+  const tempOverlayOnly = !tempTerminalOnly && modalOpen() && tempOverlayShortcutAllowed();
+  if (modalOpen() && !tempTerminalOnly && !tempOverlayOnly) {
     hideShortcutPrefixOverlay();
     return false;
   }
   const prefixActive = shortcutPrefixUntil > Date.now();
-  if (tempTerminalOnly) {
+  if (tempTerminalOnly || tempOverlayOnly) {
     if (prefixActive) {
       hideShortcutPrefixOverlay();
-      // While the temporary-terminal overlay is open the prefix branch
-      // only honours its own shortcuts (toggle + promote): anything else
-      // falls through, so the terminal keeps receiving its input.
+      // While a temporary overlay is open the prefix branch only honours
+      // its own family shortcuts (terminal + Files/Git toggles): anything
+      // else falls through, so the surface keeps receiving its input.
       const webui = options.webuiShortcuts || {};
       const key = shortcutKey(e);
-      if (key !== webui.tempTerminalToggle && key !== webui.tempTerminalPromote)
+      if (!tempOverlayOwnShortcut(e) && key !== webui.tempTerminalToggle && key !== webui.tempTerminalPromote)
         return false;
       runPrefixedShortcut(e);
       return consumeShortcutEvent(e);

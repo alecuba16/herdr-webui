@@ -874,6 +874,11 @@ function modalOpen() {
   for (const modal of tempModals) {
     if (modal.style.display && modal.style.display !== "none") return true;
   }
+  // Temporary Files/Git overlays follow the same rule.
+  const tempOverlayModals = document.querySelectorAll(".temp-overlay-backdrop");
+  for (const modal of tempOverlayModals) {
+    if (modal.style.display && modal.style.display !== "none") return true;
+  }
   return false;
 }
 function preserveActiveElementFocus() {

@@ -180,6 +180,23 @@
         tempTerminal.open(currentWorkspaceCwd());
         return;
       }
+      if (action === "temp-files") {
+        const overlays = globalThis.HerdrMobileTempOverlays;
+        if (!overlays) return;
+        // Same restore-first contract as the temporary terminal card.
+        const files = overlays.files && overlays.files();
+        if (files && files.isOpen && files.isOpen()) { if (files.isMinimized()) files.restore(); return; }
+        overlays.openFiles(currentWorkspaceCwd());
+        return;
+      }
+      if (action === "temp-git") {
+        const overlays = globalThis.HerdrMobileTempOverlays;
+        if (!overlays) return;
+        const git = overlays.git && overlays.git();
+        if (git && git.isOpen && git.isOpen()) { if (git.isMinimized()) git.restore(); return; }
+        overlays.openGit(currentWorkspaceCwd());
+        return;
+      }
       if (action === "sessions") {
         showScreen("sessions");
         return;

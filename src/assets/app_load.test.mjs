@@ -643,7 +643,7 @@ describe("app bundle load", () => {
     const actionNames = (query) => Array.from(ctx.searchActionCandidates(query), (action) => action.action);
     deepEqual(
       actionNames(""),
-      ["open-workspace", "temp-terminal", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
+      ["open-workspace", "temp-terminal", "temp-files", "temp-git", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
     );
     deepEqual(
       actionNames("session"),
@@ -655,7 +655,7 @@ describe("app bundle load", () => {
     );
     deepEqual(
       actionNames(">"),
-      ["open-workspace", "temp-terminal", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
+      ["open-workspace", "temp-terminal", "temp-files", "temp-git", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
     );
     deepEqual(
       actionNames(">theme"),

@@ -71,6 +71,8 @@ test("candidates '>' filter lists actions only, desktop surface", () => {
     JSON.stringify([
       "open-workspace",
       "temp-terminal",
+      "temp-files",
+      "temp-git",
       "sessions",
       "toggle-sidebar",
       "toggle-theme",
@@ -81,10 +83,9 @@ test("candidates '>' filter lists actions only, desktop surface", () => {
   const mobile = registry.candidates("", { platform: "mobile" }).map((a) => a.action);
   assert.ok(!mobile.includes("toggle-sidebar"));
   assert.ok(mobile.includes("toggle-theme"));
-  // ">temp" narrows to the matching action only ("term" also matches the
-  // settings subtitle which mentions "terminal").
+  // ">temp" narrows to the temporary tools only.
   const narrowed = registry.candidates(">temp", { platform: "desktop" }).map((a) => a.action);
-  assert.equal(JSON.stringify(narrowed), JSON.stringify(["temp-terminal"]));
+  assert.equal(JSON.stringify(narrowed), JSON.stringify(["temp-terminal", "temp-files", "temp-git"]));
 });
 
 test("candidates respects requiresWorkspace and includeMenuOnly gates", () => {

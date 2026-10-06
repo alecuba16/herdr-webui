@@ -180,6 +180,8 @@ const DEFAULT_WEBUI_SHORTCUTS = {
   focusTerminal: "KeyF",
   tempTerminalToggle: "Shift+KeyM",
   tempTerminalPromote: "Shift+KeyP",
+  tempFilesToggle: "Shift+KeyF",
+  tempGitToggle: "Shift+KeyG",
   focusNext: "Period",
   focusPrev: "Comma",
 };
@@ -702,6 +704,8 @@ function shortcutsModalHtml() {
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ] / [</kbd><span>Jump to next or previous panel.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then F</kbd><span>Focus the main terminal.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+M</kbd><span>Open, minimize to the restore pill, or restore the same live temporary terminal.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+F</kbd><span>Open, minimize, or restore a temporary Files overlay on any folder, without creating a workspace.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+G</kbd><span>Open, minimize, or restore a temporary Git overlay on any repository, without creating a workspace.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then V</kbd><span>In Git UI, open Git directory/branch dialog. Folder selection changes the Git panel cwd; Switch branch only changes branch in that cwd.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then . / ,</kbd><span>Focus next or previous visible UI control.</span></div>
           <div class="shortcut-row"><kbd>Ctrl+G</kbd><span>Detach temporary terminal when its overlay is open. The close button uses the same confirmation.</span></div>
@@ -745,6 +749,8 @@ const shortcutEditorGroups = [
       ["focusTerminal", "Focus terminal"],
       ["tempTerminalToggle", "Open/minimize/restore temporary terminal"],
       ["tempTerminalPromote", "Promote temporary terminal to workspace"],
+      ["tempFilesToggle", "Open/minimize/restore temporary Files"],
+      ["tempGitToggle", "Open/minimize/restore temporary Git"],
       ["focusNext", "Focus next control"],
       ["focusPrev", "Focus previous control"],
     ],

@@ -34,6 +34,22 @@
       surfaces: ["desktop", "mobile"],
     },
     {
+      id: "temp-files",
+      icon: "▤",
+      title: "Temporary Files",
+      subtitle: "Browse any folder without opening a workspace",
+      text: "temporary files folder browse",
+      surfaces: ["desktop", "mobile"],
+    },
+    {
+      id: "temp-git",
+      icon: "⑂",
+      title: "Temporary Git",
+      subtitle: "Review any repository without opening a workspace",
+      text: "temporary git repository status review",
+      surfaces: ["desktop", "mobile"],
+    },
+    {
       id: "sessions",
       icon: "se",
       title: "Manage sessions",

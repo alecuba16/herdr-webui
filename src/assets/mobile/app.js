@@ -1120,6 +1120,23 @@
     rowActions: mobileFileBrowser.rowActions,
   };
 
+  // Shared helpers for the temporary Files/Git overlays (mobile/temp-overlays.js
+  // loads before this file, so it reads them through these globals).
+  globalThis.HerdrMobileApi = api;
+  globalThis.HerdrMobileConfirm = (...args) => confirm(...args);
+  globalThis.HerdrMobileJsArg = jsArg;
+  globalThis.HerdrMobilePathBasename = pathBasename;
+  globalThis.HerdrMobileAppDeps = {
+    state,
+    api,
+    jsArg,
+    pathBasename,
+    confirm: (...args) => confirm(...args),
+    currentWorkspaceCwd,
+  };
+  if (globalThis.HerdrMobileTempOverlays && globalThis.HerdrMobileTempOverlays.bindAppHelpers)
+    globalThis.HerdrMobileTempOverlays.bindAppHelpers();
+
   renderShell();
   updateMobileViewport();
   applyTheme();

@@ -93,6 +93,7 @@
       "/assets/shared/terminal-adapter.js",
       "/assets/shared/graphics-bridge.js",
       "/assets/shared/temp-terminal.js",
+      "/assets/shared/temp-overlay.js",
       ...(mobile ? [
         "/assets/mobile/core.js",
         "/assets/mobile/attention.js",
@@ -102,6 +103,7 @@
         "/assets/mobile/settings.js",
         "/assets/mobile/search.js",
         "/assets/mobile/git.js",
+        "/assets/mobile/temp-overlays.js",
         "/assets/mobile/sessions.js",
         "/assets/mobile/events.js",
         "/assets/mobile/screens.js",

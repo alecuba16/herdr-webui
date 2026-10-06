@@ -1,6 +1,24 @@
 # Release notes
 
 ## 0.4.60 Release Notes
+- Temporary Files and temporary Git overlays join the temporary
+  terminal: quick access to any folder or repository without opening a
+  workspace or session, on desktop, mobile, and TUI, with state
+  discarded on close. Desktop uses `Ctrl+B` then `Shift+F`/`Shift+G`
+  (command palette and mobile More grid expose the same tools); the
+  TUI asks for a folder path and retargets the Files explorer or Git
+  panel in place.
+- The shared overlay controller (`shared/temp_overlay.js`) owns the
+  chrome (title, folder, picker, minimize/restore, close) and both
+  hosts plug their surfaces into it: desktop re-parents the singleton
+  file-browser/Git drawers behind pseudo workspaces with
+  `forgetWorkspace` cleanup, mobile creates a fresh drawer instance per
+  open with the workspace cwd pinned to the chosen folder and
+  overlay-scoped callback namespaces.
+- TUI behavior change: git stage-all moved from the prefix `Ctrl+B`
+  `Shift+G` to the in-screen plain `G` in the Git Changes view (webui
+  git-panel `stageAll: KeyG` parity), freeing the prefix for the
+  temporary Git overlay. `Ctrl+B` `Shift+F` stays temporary Files.
 - The chat lens gets a structured conversation mode for jcode panes:
   instead of only the terminal scrollback, a jcode pane can flip to a
   rendered conversation (user cards, thinking rows, tool calls with

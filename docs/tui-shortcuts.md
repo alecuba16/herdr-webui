@@ -125,6 +125,8 @@ the status says `question changed, not sent`.
 | `.` / `,` | focus next/prev region (sidebar -> main, wraps) |
 | `Shift+M` | temporary terminal (open or refocus) |
 | `Shift+P` | promote the temporary terminal to a workspace |
+| `Shift+F` | temporary Files: type a folder to browse without a workspace |
+| `Shift+G` | temporary Git: type a repo path to review without a workspace |
 | `Shift+L` | chat lens |
 | `Shift+C` | chat composer |
 | `e`, `E` | edit the current file (Files preview or Git Changes selection) |
@@ -136,7 +138,7 @@ the status says `question changed, not sent`.
 | `c` | git: commit modal |
 | `v` | git: switch branch |
 | `y` / `u` / `d` / `z` | git: stage / unstage / discard / stash the selected file |
-| `G` | git: toggle stage all |
+| `I` | git cwd: type a repo path |
 | `h` | git: file history of the Changes selection |
 | `o` | git: back to Changes |
 | `m` | git: toggle blame in the diff |
@@ -149,7 +151,9 @@ combinations). The complete list lives in the in-app help overlay;
 prose. Highlights: Files `Enter` enters/opens, `e` edits (Ctrl-S save,
 Ctrl-R reload, Ctrl-F find, Ctrl-H replace), `R`/`x` rename/delete,
 `/` filter with `t` scope cycle, `M` markdown outline. Git: `Tab`
-cycles views, `s`/`d` stage/discard, `Space`/`c` mark and compare
+cycles views, `s`/`d` stage/discard, `G` toggles stage all in the
+Changes view (webui `KeyG` parity; the old prefix `Shift+G` now opens
+the temporary Git overlay), `Space`/`c` mark and compare
 commits, `J`/`K`/`H` hunk cursor and apply, `D` delete branch or drop
 stash, `t`/`R`/`b` tag/reset/rebase.
 

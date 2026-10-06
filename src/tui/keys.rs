@@ -78,7 +78,6 @@ pub enum Shortcut {
     GitLog,
     GitStash,
     GitBranch,
-    GitStageAll,
     GitStageFile,
     GitUnstageFile,
     GitDiscardFile,
@@ -121,6 +120,14 @@ pub enum Shortcut {
     // old TUI-only prefix-GitPush moved aside (git screen keeps the
     // in-screen P push).
     TempTerminalPromote,
+    // Temporary Files (webui tempFilesToggle: Shift+KeyF): open the
+    // files explorer on a typed folder path without creating a
+    // workspace (parity with the webui temporary Files overlay).
+    TempFiles,
+    // Temporary Git (webui tempGitToggle: Shift+KeyG): open the git
+    // panel on a typed repository path without creating a workspace
+    // (parity with the webui temporary Git overlay).
+    TempGit,
     // Chat lens toggle (webui Chat/Terminal segmented switch on the
     // terminal screen; ux overhaul 2/3). Prefix L; plain l stays git
     // log from the git shortcut table.
@@ -153,7 +160,6 @@ impl Shortcut {
             Self::GitLog => "git log",
             Self::GitStash => "git stash",
             Self::GitBranch => "git branches",
-            Self::GitStageAll => "stage all",
             Self::GitStageFile => "stage file",
             Self::GitUnstageFile => "unstage file",
             Self::GitDiscardFile => "discard file",
@@ -180,6 +186,8 @@ impl Shortcut {
             Self::FocusPrev => "focus previous",
             Self::TempTerminalToggle => "temporary terminal",
             Self::TempTerminalPromote => "promote temporary terminal",
+            Self::TempFiles => "temporary files",
+            Self::TempGit => "temporary git",
             Self::Lens => "chat lens",
             Self::Composer => "composer",
         }
@@ -202,12 +210,15 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // TUI terminal always owns the keyboard (no DOM), so `F` needs
         // no parity key. The old TUI-only prefix-`f` Files screen stays
         // (the webui has no files-explorer shortcut at all).
+        // Webui tempFilesToggle: Shift+KeyF. Must precede the plain
+        // `f`/`F` Files arm, which would otherwise swallow the shifted
+        // key (the webui has no files-explorer shortcut at all).
+        (KeyCode::Char('F'), true) => Some(Shortcut::TempFiles),
         (KeyCode::Char('f') | KeyCode::Char('F'), _) => Some(Shortcut::Files),
         (KeyCode::Char('g'), false) => Some(Shortcut::Git),
-        // Webui `stageAll: KeyG` is plain G, but the TUI prefix table
-        // already maps plain `g` to the git screen (a TUI-era addition
-        // predating the parity work), so stage-all lands on Shift+G.
-        (KeyCode::Char('G'), true) => Some(Shortcut::GitStageAll),
+        // Stage all moved to the in-screen plain `G` (webui git-panel
+        // `stageAll: KeyG` parity); prefix Shift+G now opens the
+        // temporary Git overlay (see the TempGit arm below).
         (KeyCode::Char('t'), false) => Some(Shortcut::Terminal),
         (KeyCode::Char('r') | KeyCode::Char('R'), false) => Some(Shortcut::Refresh),
         // Rename panel: no webui prefix default (the webui renames from
@@ -257,6 +268,11 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // GitPush moved aside for parity (the git screen keeps the
         // in-screen P push).
         (KeyCode::Char('P'), true) => Some(Shortcut::TempTerminalPromote),
+        // Webui tempGitToggle: Shift+KeyG. The old prefix Shift+G stage
+        // all moved to the in-screen plain `G` (webui git-panel
+        // `stageAll: KeyG` parity), freeing Shift+G for the temporary
+        // Git overlay.
+        (KeyCode::Char('G'), true) => Some(Shortcut::TempGit),
         // Chat lens (ux overhaul): webui has no prefix binding (the
         // Chat/Terminal switch is a segmented control over the shell),
         // so Shift+L takes it while plain l stays git log.
@@ -338,6 +354,14 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B Shift+M", "temporary terminal (open or refocus)"),
         ("Ctrl+B Shift+P", "promote temporary terminal to workspace"),
         (
+            "Ctrl+B Shift+F",
+            "temporary Files: type a folder path, no workspace created",
+        ),
+        (
+            "Ctrl+B Shift+G",
+            "temporary Git: type a repository path, no workspace created",
+        ),
+        (
             "Ctrl+B Shift+L",
             "chat lens: transcript view (j/k scroll, Esc close)",
         ),
@@ -361,7 +385,10 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ),
         ("Ctrl+B m", "git: toggle blame in the diff"),
         ("Ctrl+B 0", "git: shortcut help"),
-        ("Ctrl+B G", "git: toggle stage all"),
+        (
+            "git: G",
+            "git: toggle stage all (in-screen, webui KeyG parity)",
+        ),
         ("Ctrl+B y/u/d/z", "git: stage/unstage/discard/stash file"),
         ("git: P", "git: push (in-screen on the Git screen)"),
         ("", ""),
@@ -509,7 +536,9 @@ mod tests {
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('4')), Some(Shortcut::GitStash));
         prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(shift_key('g')), Some(Shortcut::GitStageAll));
+        assert_eq!(prefix.feed(shift_key('g')), Some(Shortcut::TempGit));
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(shift_key('f')), Some(Shortcut::TempFiles));
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('y')), Some(Shortcut::GitStageFile));
         prefix.feed(ctrl('b'));
