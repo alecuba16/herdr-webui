@@ -945,6 +945,53 @@ describe("lens structured chat mode", () => {
     ok(content.innerHTML.includes("lens-tool-open"), "tool stays open across polls");
   });
 
+  it("tool and thinking heads expand from the keyboard (Enter and Space)", async () => {
+    // a11y gap fix: the heads were click-only. The carriers carry
+    // tabindex+role=button and a delegated keydown maps Enter/Space to
+    // the same toggle path as the click.
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    const fireKey = (target, key) => {
+      let prevented = false;
+      for (const fn of lens.listeners.keydown || []) {
+        fn({ target, key, preventDefault() { prevented = true; } });
+      }
+      return prevented;
+    };
+    // Thinking head: focusable carrier + Enter opens.
+    const think = content.querySelector("[data-toggle-thinking]");
+    ok(think, "thinking toggle exists");
+    ok(think._attrs && think._attrs.tabindex === "0", "thinking head is focusable (tabindex=0)");
+    ok(think._attrs && think._attrs.role === "button", "thinking head announces as button");
+    ok(fireKey(think, "Enter"), "Enter is preventDefault-ed");
+    ok(content.innerHTML.includes("pondering"), "Enter expands thinking");
+    // Space collapses it again.
+    fireKey(think, " ");
+    ok(!content.innerHTML.includes("pondering"), "Space collapses thinking");
+    // Tool head: same contract.
+    const toolHead = content.querySelector("[data-toggle-tool]");
+    ok(toolHead, "tool toggle exists");
+    ok(toolHead._attrs && toolHead._attrs.tabindex === "0", "tool head is focusable (tabindex=0)");
+    ok(toolHead._attrs && toolHead._attrs.role === "button", "tool head announces as button");
+    fireKey(toolHead, "Enter");
+    ok(content.innerHTML.includes("lens-tool-open"), "Enter expands the tool");
+    // Inner span carriers never fire the handler (target !== toggle).
+    const inner = toolHead.querySelector(".lens-tool-name") || toolHead.children[0];
+    if (inner) {
+      const prevented = fireKey(inner, "Enter");
+      ok(!prevented, "Enter on an inner span is not hijacked");
+    }
+    // Unrelated keys pass through untouched.
+    ok(!fireKey(toolHead, "ArrowDown"), "ArrowDown is left to the scroller");
+  });
+
 
   it("fetched full output survives the next poll", async () => {
     // The fetch lands the whole output in the pre (DOM-only, not in the

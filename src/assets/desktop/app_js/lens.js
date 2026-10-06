@@ -397,7 +397,11 @@
       const open = expandedThinking.has(key);
       // data-part-key on the thinking row too: the same-count sync
       // path updates it in place (expand/collapse without a rewrite).
-      const head = `<span class="lens-thinking-toggle" data-toggle-thinking="${escapeAttr(key)}">${open ? "▾" : "▸"} thinking</span>`;
+      // tabindex+role: the toggle must work from the keyboard alone
+      // (the lens is a keyboard-heavy surface). The delegated keydown
+      // handler below maps Enter/Space to the same toggle path as the
+      // click.
+      const head = `<span class="lens-thinking-toggle" data-toggle-thinking="${escapeAttr(key)}" tabindex="0" role="button" aria-expanded="${open}">${open ? "▾" : "▸"} thinking</span>`;
       const body = open
         ? `<div class="lens-thinking-body">${escapeHtml(part.text || "")}</div>`
         : "";
@@ -412,7 +416,7 @@
       const label = part.is_error ? "lens-tool-error" : "";
       // data-part-key sits on the OUTER row (not the head) so the
       // pending -> resolved swap finds and replaces the whole row.
-      const head = `<div class="lens-tool-head ${label}" data-toggle-tool="${escapeAttr(key)}">` +
+      const head = `<div class="lens-tool-head ${label}" data-toggle-tool="${escapeAttr(key)}" tabindex="0" role="button" aria-expanded="${open}">` +
         `<span class="lens-tool-name">${escapeHtml(part.name || "tool")}</span>` +
         `<span class="lens-tool-brief">${escapeHtml(part.brief || "")}</span>` +
         `<span class="lens-tool-caret">${open ? "▾" : "▸"}</span></div>`;
@@ -652,6 +656,28 @@
     }
   }
 
+  // Keyboard twin of onLensClick: Enter/Space on a focused tool or
+  // thinking head toggles the same way a click does. Delegated for the
+  // same leak reason as the click (the lens rewrites innerHTML). Native
+  // <button> elements (fetch-output) already handle their own keys, so
+  // this only serves the div/span carriers.
+  function onLensKeydown(event) {
+    const key = event && event.key;
+    if (key !== "Enter" && key !== " " && key !== "Spacebar") return;
+    const target = event && event.target;
+    if (!target || !target.closest) return;
+    const toggle =
+      target.closest("[data-toggle-tool]") ||
+      target.closest("[data-toggle-thinking]");
+    if (!toggle) return;
+    // Only act when the carrier itself has focus (not an inner span
+    // that happens to bubble): the carriers carry tabindex, inner
+    // spans do not, so target === toggle is the focused case.
+    if (target !== toggle) return;
+    event.preventDefault();
+    onLensClick({ target: toggle });
+  }
+
   async function expandToolFullOutput(button, reference) {
     const paneId = activePaneId();
     if (!paneId) return;
@@ -799,8 +825,9 @@
         };
       }
       // One delegated listener for tool/thinking toggles and full-output
-      // fetch buttons (structured mode).
+      // fetch buttons (structured mode), plus its keyboard twin.
       node.addEventListener("click", onLensClick);
+      node.addEventListener("keydown", onLensKeydown);
     }
     return node;
   }
