@@ -443,6 +443,14 @@ pub enum TurnRole {
     Assistant,
 }
 
+/// One offered choice of a blocking ask_user request: the label shown
+/// on the chooser row plus the optional one-line detail beneath it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecisionOption {
+    pub label: String,
+    pub detail: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TurnPart {
     Text {
@@ -469,6 +477,22 @@ pub enum TurnPart {
     /// In-flight call: no result yet (renders as `running <name>…`).
     ToolPending {
         name: String,
+    },
+    /// A blocking ask_user decision request that is still unanswered
+    /// (the jcode `decisions` feature): the tool_use was persisted to
+    /// the session BEFORE the tool blocked on the human, so its input
+    /// carries the question and the offered options. Renders as an
+    /// interactive chooser in the chat lens. When the answer lands the
+    /// tool_result folds in and the part flips to a normal Tool part,
+    /// same as any other in-flight call.
+    Decision {
+        /// What is being decided, phrased for the user.
+        question: String,
+        /// Offered options: (label, optional one-line detail), 1-based
+        /// numbering on the wire mirrors the TUI chooser (option N).
+        options: Vec<DecisionOption>,
+        /// Optional context on why the decision point is raised.
+        context: Option<String>,
     },
     /// Compaction summary (server emits it as its own user turn; the
     /// client folds nothing — design section 3).
@@ -505,6 +529,11 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
     let mut turns: Vec<Turn> = Vec::new();
     // tool_use id -> (turn index, part index) for result folding.
     let mut pending_tools: HashMap<String, (usize, usize)> = HashMap::new();
+    // tool_use id -> decision payload for in-flight ask_user calls. A
+    // blocking ask_user's options live in its tool_use input; kept
+    // aside so the inflight pass can turn the part into a Decision
+    // chooser (and only while no tool_result folded it).
+    let mut pending_decisions: HashMap<String, DecisionPayload> = HashMap::new();
 
     for message in messages {
         let role = message.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -666,6 +695,11 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
                                     id.to_string(),
                                     (turn_idx, turns[turn_idx].parts.len() - 1),
                                 );
+                                if name == "ask_user" {
+                                    if let Some(payload) = decision_payload(block) {
+                                        pending_decisions.insert(id.to_string(), payload);
+                                    }
+                                }
                             }
                         }
                         // image / provider_native / tool_reference /
@@ -686,6 +720,13 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
     // because turns are only appended after this point is false — safe
     // because folding happened during the walk and no parts are added
     // after this loop except via new messages.
+    //
+    // An in-flight ask_user is not `running…`: it blocks the turn on
+    // the human, so it becomes an interactive Decision part carrying
+    // the question and options. The payload was captured at tool_use
+    // parse time; only calls with a usable payload (>=1 option, a
+    // non-empty question) promote — a malformed ask_user degrades to a
+    // plain running row instead of a broken chooser.
     let inflight: Vec<(usize, usize)> = pending_tools.values().cloned().collect();
     for (turn_idx, part_idx) in inflight {
         if let Some(TurnPart::Tool { name, .. }) =
@@ -696,7 +737,31 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
                 .get_mut(turn_idx)
                 .and_then(|t| t.parts.get_mut(part_idx))
             {
-                *part = TurnPart::ToolPending { name };
+                // ask_user with a usable payload promotes to a Decision
+                // chooser; anything else stays a running row.
+                let decision = if name == "ask_user" {
+                    // The payload map is keyed by tool_use id: find the
+                    // id whose (turn, part) position is this part.
+                    pending_tools
+                        .iter()
+                        .find(|(_, &(t, p))| t == turn_idx && p == part_idx)
+                        .and_then(|(id, _)| pending_decisions.get(id))
+                        .cloned()
+                } else {
+                    None
+                };
+                *part = match decision {
+                    Some(DecisionPayload {
+                        question,
+                        options,
+                        context,
+                    }) => TurnPart::Decision {
+                        question,
+                        options,
+                        context,
+                    },
+                    None => TurnPart::ToolPending { name },
+                };
             }
         }
     }
@@ -935,6 +1000,60 @@ fn tool_result_text_uncapped(block: &serde_json::Map<String, serde_json::Value>)
             .join("\n"),
         _ => String::new(),
     }
+}
+
+/// Parsed ask_user tool_use input: the question, offered options, and
+/// optional context, as captured while the call blocks on the human.
+#[derive(Debug, Clone, PartialEq)]
+struct DecisionPayload {
+    question: String,
+    options: Vec<DecisionOption>,
+    context: Option<String>,
+}
+
+/// Extracts a decision payload from an ask_user tool_use block.
+/// Mirrors the jcode AskUserInput shape (question + options[{label,
+/// detail?}] + context?). Returns None when the input is unusable as a
+/// chooser (no question or no options): such a call renders as a plain
+/// running row and the terminal chooser remains the answer surface.
+fn decision_payload(block: &serde_json::Map<String, serde_json::Value>) -> Option<DecisionPayload> {
+    let input = block.get("input").and_then(|i| i.as_object())?;
+    let question = input
+        .get("question")
+        .and_then(|q| q.as_str())
+        .map(str::trim)
+        .filter(|q| !q.is_empty())?
+        .to_string();
+    let options: Vec<DecisionOption> = input
+        .get("options")
+        .and_then(|o| o.as_array())?
+        .iter()
+        .filter_map(|opt| {
+            let label = opt
+                .get("label")
+                .and_then(|l| l.as_str())
+                .map(str::trim)
+                .filter(|l| !l.is_empty())?
+                .to_string();
+            let detail = opt
+                .get("detail")
+                .and_then(|d| d.as_str())
+                .map(str::to_string);
+            Some(DecisionOption { label, detail })
+        })
+        .collect();
+    if options.is_empty() {
+        return None;
+    }
+    let context = input
+        .get("context")
+        .and_then(|c| c.as_str())
+        .map(str::to_string);
+    Some(DecisionPayload {
+        question,
+        options,
+        context,
+    })
 }
 
 /// One-line input summary for a tool call (bounded, escaped-content free).
@@ -1268,6 +1387,91 @@ mod tests {
         let turns = parse_jcode_transcript(&msgs);
         match &turns[0].parts[0] {
             TurnPart::ToolPending { name } => assert_eq!(name, "bash"),
+            other => panic!("expected pending tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pending_ask_user_becomes_decision_chooser() {
+        // Writer ground truth (jcode ask_user tool): the assistant
+        // message is persisted BEFORE the tool blocks, so while the
+        // human has not answered the only trace is the tool_use whose
+        // input carries question + options.
+        let msgs = vec![json!({"id": "m1", "role": "assistant", "content": [
+            {"type": "tool_use", "id": "call_d", "name": "ask_user",
+             "input": {
+                "intent": "Deployment target",
+                "question": "Deploy where?",
+                "options": [
+                    {"label": "dev", "detail": "staging cluster"},
+                    {"label": "prod"},
+                ],
+                "context": "release train",
+             }},
+        ]})];
+        let turns = parse_jcode_transcript(&msgs);
+        match &turns[0].parts[0] {
+            TurnPart::Decision {
+                question,
+                options,
+                context,
+            } => {
+                assert_eq!(question, "Deploy where?");
+                assert_eq!(options.len(), 2);
+                assert_eq!(options[0].label, "dev");
+                assert_eq!(options[0].detail.as_deref(), Some("staging cluster"));
+                assert_eq!(options[1].label, "prod");
+                assert_eq!(options[1].detail, None);
+                assert_eq!(context.as_deref(), Some("release train"));
+            }
+            other => panic!("expected decision part, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn answered_ask_user_folds_to_plain_tool() {
+        // Once the human answers, the tool_result lands and the part is
+        // an ordinary Tool row: the chooser must disappear.
+        let msgs = vec![
+            json!({"id": "m1", "role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_d", "name": "ask_user",
+                 "input": {
+                    "question": "Deploy where?",
+                    "options": [{"label": "dev"}, {"label": "prod"}],
+                 }},
+            ]}),
+            json!({"id": "m2", "role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_d",
+                 "content": "User chose option 1: dev"},
+            ]}),
+        ];
+        let turns = parse_jcode_transcript(&msgs);
+        match &turns[0].parts[0] {
+            TurnPart::Tool { name, output, .. } => {
+                assert_eq!(name, "ask_user");
+                assert_eq!(output, "User chose option 1: dev");
+            }
+            other => panic!("expected folded tool, got {other:?}"),
+        }
+        assert!(turns.iter().all(|t| {
+            t.parts
+                .iter()
+                .all(|p| !matches!(p, TurnPart::Decision { .. }))
+        }));
+    }
+
+    #[test]
+    fn malformed_ask_user_degrades_to_pending_row() {
+        // No options in the input: unusable as a chooser, so the part
+        // stays a plain running row (the terminal chooser is the
+        // answer surface there).
+        let msgs = vec![json!({"id": "m1", "role": "assistant", "content": [
+            {"type": "tool_use", "id": "call_d", "name": "ask_user",
+             "input": {"question": "Deploy where?"}},
+        ]})];
+        let turns = parse_jcode_transcript(&msgs);
+        match &turns[0].parts[0] {
+            TurnPart::ToolPending { name } => assert_eq!(name, "ask_user"),
             other => panic!("expected pending tool, got {other:?}"),
         }
     }

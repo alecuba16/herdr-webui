@@ -6041,3 +6041,60 @@ describe("a11y audit contract", () => {
     }
   });
 });
+
+// ---- working (thinking) block packaging contract ----
+// The lens emits working-block markup only while the pane's own agent
+// works; the classes it emits must exist in the SERVED CSS (terminal.css
+// is include_str!-packed into the binary, a missing rule ships silently)
+// and the bundle must define statusClass before lens.js runs (the gate
+// reads it). These checks run over the real packaged sources, so a
+// rename or reorder cannot drop the block silently.
+describe("lens working block packaging", () => {
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
+  const lensSource = read("./desktop/app_js/lens.js");
+  const cssSource = read("./desktop/app_css/terminal.css");
+
+  it("serves CSS for every class the working block emits", () => {
+    const emitted = [...lensSource.matchAll(/class="(lens-working[^"]*)"/g)].map(
+      (m) => m[1].split(/\s+/).filter(Boolean),
+    );
+    const flat = new Set(emitted.flat());
+    ok(flat.size > 0, "lens.js emits lens-working classes");
+    for (const cls of flat) {
+      match(
+        cssSource,
+        new RegExp(`\\.${cls.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} ?[{,]`),
+        `terminal.css must style .${cls}`,
+      );
+    }
+    // The animation keyframes + reduced-motion fallback are part of
+    // the feature, not decoration: without them the block reads frozen.
+    match(cssSource, /@keyframes lens-working-pulse/, "pulse keyframes exist");
+    match(
+      cssSource,
+      /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.lens-working-dots i \{[\s\S]*?animation: none;/,
+      "reduced-motion fallback exists",
+    );
+  });
+
+  it("defines statusClass before lens.js in the served bundle", () => {
+    // The gate calls statusClass (defined in desktop core.js). The
+    // bundle concat order is pinned in assets.rs; assert the sources
+    // agree: core.js defines it, lens.js only references it.
+    const coreSource = read("./desktop/app_js/core.js");
+    match(coreSource, /(?:const|function) statusClass/, "core.js defines statusClass");
+    ok(
+      !/\b(?:function|const|let|var)\s+statusClass\b/.test(lensSource),
+      "lens.js must not redefine statusClass",
+    );
+  });
+
+  it("binds the working block toggle in both key paths", () => {
+    // Click and keydown delegates must both carry the carrier: a miss
+    // in either leaves the block expandable by mouse but not keyboard.
+    match(lensSource, /closest\("\[data-toggle-working\]"\)/, "click delegate resolves the carrier");
+    const keydown = lensSource.match(/function onLensKeydown[\s\S]{0,900}/);
+    ok(keydown, "onLensKeydown exists");
+    match(keydown[0], /data-toggle-working/, "keydown delegate covers the working carrier");
+  });
+});
