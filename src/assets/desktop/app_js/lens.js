@@ -725,6 +725,10 @@
   // The body is a plain region: rewrite its innerHTML, create or drop
   // the wrapper as expansion demands. The head stays untouched.
   function syncWorkingBody(block) {
+    // Accepted tradeoff: only the elapsed line is 1s-tick fresh; the
+    // tools chips refresh on the poll cycle (~2s) because a body
+    // rewrite is the only honest way to recompute them from state,
+    // and body rewrites are exactly what the head must not do.
     let body = block.querySelector(".lens-working-body");
     if (!workingExpanded) {
       if (body) body.remove();
@@ -756,12 +760,17 @@
       // block re-arms through syncWorkingDom.
       if (!block) return;
       // Touch ONLY the elapsed line: the head keeps node identity
-      // (and keyboard focus) across every tick.
+      // (and keyboard focus) across every tick. A null startedAt here
+      // means the reference vanished mid-tick; keep the last honest
+      // text instead of blanking the line (the next poll rebuilds
+      // the body from fresh state).
       const elapsedLine = block.querySelector(".lens-working-elapsed");
       if (elapsedLine) {
         const startedAt = workingStartedAt();
-        const elapsed = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
-        elapsedLine.textContent = elapsed === null ? "" : `Working for ${formatDuration(elapsed)}`;
+        if (startedAt) {
+          const elapsed = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+          elapsedLine.textContent = `Working for ${formatDuration(elapsed)}`;
+        }
       }
       ensureWorkingTick();
     }, WORKING_TICK_MS);
@@ -1609,6 +1618,7 @@
     workingBlockHtml,
     syncWorkingDom,
     _workingExpanded: () => workingExpanded,
+    _workingStartedAt: workingStartedAt,
     _resetWorkingState: () => {
       workingExpanded = false;
       stopWorkingTick();

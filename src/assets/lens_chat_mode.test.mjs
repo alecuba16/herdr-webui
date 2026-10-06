@@ -373,7 +373,7 @@ function makeContext(overrides = {}) {
   vm.runInContext(SHARED_CORE_SOURCE, contextObject);
   vm.runInContext("var term = globalThis.__term;", contextObject);
   vm.runInContext(LENS_SOURCE, contextObject);
-  return { ctx, registry, shell };
+  return { ctx, registry, shell, vmCtx: contextObject };
 }
 
 function jcodeRow(agentSession) {
@@ -1376,7 +1376,7 @@ describe("lens decision chooser (ask_user)", () => {
 
 describe("lens working indicator (thinking animation)", () => {
   function workingContext(overrides = {}) {
-    const { ctx, registry } = makeContext({
+    const { ctx, registry, vmCtx } = makeContext({
       state: {
         pane: "pane_1",
         agents: [jcodeRow(resolvableSession)],
@@ -1385,7 +1385,7 @@ describe("lens working indicator (thinking animation)", () => {
       ...overrides,
     });
     ctx.state.agents[0].agent_status = "working";
-    return { ctx, registry };
+    return { ctx, registry, vmCtx };
   }
 
   async function openWorking(overrides = {}) {
@@ -1565,6 +1565,50 @@ describe("lens working indicator (thinking animation)", () => {
     ok(!after.textContent.includes("SENTINEL"), "sentinel gone: the block was recomputed");
     // The tick re-arms itself while still working + expanded.
     ok(ctx._timers.size >= 1, "tick re-armed for the next second");
+  });
+
+  it("tick keeps the last honest elapsed text when the reference vanishes mid-tick", async () => {
+    // workingStartedAt() can go null between a poll and the next tick
+    // (turn ts flipped invalid, status event expired). Blanking the
+    // elapsed line there would flash an empty line for a second; the
+    // tick keeps the last text instead and the next poll rebuilds the
+    // body from fresh state.
+    const { ctx, registry, vmCtx } = await openWorking({
+      api: async () => ({
+        ...conversationFixture(),
+        turns: [
+          conversationFixture().turns[0],
+          {
+            role: "assistant",
+            ts: new Date(Date.now() - 1000).toISOString(),
+            end_ts: new Date(Date.now() - 1000).toISOString(),
+            parts: [],
+          },
+        ],
+      }),
+    });
+    const { lens, content } = lensNodesWorking(registry);
+    const toggle = content.querySelector("[data-toggle-working]");
+    for (const fn of lens.listeners.click || []) fn({ target: toggle });
+    const before = content.querySelector(".lens-working-elapsed");
+    ok(before, "elapsed line renders while a reference exists");
+    match(before.textContent, /Working for/, "elapsed line has text");
+    // Reference vanished but the pane still works and stays expanded:
+    // the tick must keep the last text, not blank the line. No status
+    // event was ever fired in this test, so workingStartedAt() only has
+    // the turn-ts path; a NaN now (patched in the vm realm, where lens.js
+    // actually runs) kills its freshness window. The realm's Date is an
+    // intrinsic, not a sandbox property, so the patch runs inside the vm.
+    vm.runInContext("globalThis.__origNow = Date.now; Date.now = () => NaN;", vmCtx);
+    try {
+      ok(!ctx.HerdrLens._workingStartedAt(), "harness: reference is null now");
+      fireTimers(ctx);
+      const after = content.querySelector(".lens-working-elapsed");
+      ok(after, "elapsed node still exists after the tick");
+      match(after.textContent, /Working for/, "tick kept the last honest text instead of blanking");
+    } finally {
+      vm.runInContext("Date.now = globalThis.__origNow; delete globalThis.__origNow;", vmCtx);
+    }
   });
 
   it("head keeps node identity across syncs and ticks (focus stays on the toggle)", async () => {

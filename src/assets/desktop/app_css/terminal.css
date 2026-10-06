@@ -788,6 +788,7 @@ input {
   display: inline-flex;
   gap: 3px;
   align-items: center;
+  flex-shrink: 0;
 }
 .lens-working-dots i {
   width: 4px;
@@ -822,6 +823,7 @@ input {
 .lens-working-caret {
   color: var(--fg-dim, #a6adc8);
   font-size: 10px;
+  flex-shrink: 0;
 }
 .lens-working-body {
   color: var(--fg-dim, #a6adc8);
