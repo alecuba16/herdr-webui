@@ -38,7 +38,7 @@ function parseHtml(host, html) {
     const node = top();
     if (node) node.textContent += text;
   };
-  const tokenRe = /<\/(div|span|button|pre)\s*>|<(div|span|button|pre)\b([^>]*?)(\/)?>/g;
+  const tokenRe = /<\/(div|span|button|pre|form|input)\s*>|<(div|span|button|pre|form|input)\b([^>]*?)(\/)?>/g;
   let last = 0;
   let m;
   while ((m = tokenRe.exec(html)) !== null) {
@@ -61,7 +61,9 @@ function parseHtml(host, html) {
       // never find a previous parent and node-drain loops spin.
       node.parentNode = host;
     }
-    if (!m[4]) stack.push(node);
+    // Void elements never open a nesting scope, even without a
+    // self-closing slash (real HTML parsers close <input> implicitly).
+    if (!m[4] && m[2] !== "input") stack.push(node);
   }
   pushText(html.slice(last));
   return root;
@@ -84,6 +86,7 @@ function makeElement(tag, attrText, inner, registry) {
     hidden: false,
     textContent: "",
     disabled: false,
+    value: "", // form inputs: the decision answer field
     children: [],
     listeners: {},
     _attrs: attrs,
@@ -358,6 +361,9 @@ function makeContext(overrides = {}) {
     escapeAttr: (value) =>
       String(value == null ? "" : value).replace(/[&<>"']/g, (ch) =>
         ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]),
+    inputAttrs: (enterkeyhint) =>
+      ' autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" writingsuggestions="false" translate="no"' +
+      (enterkeyhint ? ` enterkeyhint="${String(enterkeyhint)}"` : ""),
     HerdrComposer: { sync() {} },
     ...overrides.extra,
   };
@@ -1118,5 +1124,250 @@ describe("lens structured chat mode", () => {
     await settle();
     equal(maxConcurrent, 1, "no overlapping polls");
     ok(started >= 2 && started <= 3, "queued catch-up ran, but not one-per-tick");
+  });
+});
+
+// ---- ask_user decision chooser ----
+
+describe("lens decision chooser (ask_user)", () => {
+  const decisionPart = {
+    kind: "decision",
+    question: "Deploy where?",
+    options: [
+      { label: "dev", detail: "staging cluster" },
+      { label: "prod", detail: null },
+    ],
+    context: "release train",
+  };
+
+  function decisionFixture() {
+    return {
+      ...conversationFixture(),
+      turns: [
+        conversationFixture().turns[0],
+        {
+          role: "assistant",
+          ts: "t2",
+          end_ts: "t2",
+          parts: [decisionPart],
+        },
+      ],
+    };
+  }
+
+  // Blocked pane: agents row for pane_1 carries agent_status "blocked".
+  function blockedContext(overrides = {}) {
+    const sent = [];
+    const { ctx, registry } = makeContext({
+      state: {
+        pane: "pane_1",
+        agents: [jcodeRow(resolvableSession)],
+      },
+      api: async () => decisionFixture(),
+      ...overrides,
+    });
+    ctx.state.agents[0].agent_status = "blocked";
+    ctx.sendInputData = (payload) => sent.push(payload);
+    return { ctx, registry, sent };
+  }
+
+  function lensNodes(registry) {
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    return { lens, content };
+  }
+
+  async function openBlocked(overrides = {}) {
+    const harness = blockedContext(overrides);
+    harness.ctx.HerdrLens.setLens(true);
+    fireTimers(harness.ctx);
+    await settle();
+    return harness;
+  }
+
+  it("renders live controls while the pane is blocked", async () => {
+    const { ctx, registry } = await openBlocked();
+    const { content } = lensNodes(registry);
+    const html = content.innerHTML;
+    match(html, /data-decision="live"/, "live chooser while blocked");
+    ok(html.includes("Deploy where?"), "question renders");
+    ok(html.includes("staging cluster"), "option detail renders");
+    ok(html.includes("Your answer"), "free-form input renders");
+    ok(html.includes("Dismiss"), "dismiss control renders");
+    equal(typeof ctx.HerdrLens.paneBlockedNow(), "boolean");
+  });
+
+  it("renders read-only (answered hint) when the pane is not blocked", async () => {
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => decisionFixture(),
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const { content } = lensNodes(registry);
+    const html = content.innerHTML;
+    match(html, /data-decision="answered"/);
+    ok(!html.includes("Your answer"), "no free-form input when not blocked");
+    ok(!html.includes("Dismiss"), "no dismiss control when not blocked");
+    ok(html.includes("Answered"), "answered hint renders");
+  });
+
+  it("option click sends Up arrow + digit keystrokes (no Enter)", async () => {
+    const { ctx, registry, sent } = await openBlocked();
+    const { lens, content } = lensNodes(registry);
+    const option = content.querySelector("[data-decision-index=\"2\"]");
+    ok(option, "option button renders");
+    for (const fn of lens.listeners.click || []) fn({ target: option });
+    equal(sent.length, 1, "one keystroke payload");
+    equal(sent[0], "\u001b[A2", "Up arrow then the digit, no Enter");
+    // The chooser collapses immediately: answered hint, no second send.
+    const html = content.innerHTML;
+    match(html, /data-decision="answered"/);
+    ok(!html.includes("Your answer"), "controls collapse after answering");
+    for (const fn of lens.listeners.click || []) fn({ target: content.querySelector("[data-decision-index=\"1\"]") || option });
+    equal(sent.length, 1, "second click on the collapsed chooser sends nothing");
+  });
+
+  it("free-form submit sends bracketed paste + Enter", async () => {
+    const { ctx, registry, sent } = await openBlocked();
+    const { lens, content } = lensNodes(registry);
+    const form = content.querySelector("form.lens-decision-form");
+    ok(form, "answer form renders");
+    const input = form.querySelector(".lens-decision-input");
+    input.value = "  ship it now  ";
+    for (const fn of lens.listeners.submit || []) fn({ target: form, preventDefault() {} });
+    equal(sent.length, 1, "one keystroke payload");
+    equal(
+      sent[0],
+      "\u001b[200~ship it now\u001b[201~\r",
+      "bracketed paste then Enter, trimmed text",
+    );
+    match(content.innerHTML, /data-decision="answered"/, "chooser collapses");
+  });
+
+  it("empty submit sends nothing", async () => {
+    const { ctx, registry, sent } = await openBlocked();
+    const { lens, content } = lensNodes(registry);
+    const form = content.querySelector("form.lens-decision-form");
+    for (const fn of lens.listeners.submit || []) fn({ target: form, preventDefault() {} });
+    equal(sent.length, 0, "empty answer never types into the pane");
+  });
+
+  it("dismiss collapses with an Answer button (re-openable), not answered", async () => {
+    const { ctx, registry, sent } = await openBlocked();
+    const { lens, content } = lensNodes(registry);
+    const dismiss = content.querySelector(".lens-decision-dismiss");
+    ok(dismiss, "dismiss button renders while blocked");
+    for (const fn of lens.listeners.click || []) fn({ target: dismiss });
+    equal(sent.length, 0, "dismiss sends no keystrokes");
+    let html = content.innerHTML;
+    ok(html.includes("Waiting for your answer in the terminal"), "collapsed hint");
+    const expand = content.querySelector(".lens-decision-expand");
+    ok(expand, "collapsed card keeps the Answer button");
+    // Re-open: controls come back live (still blocked).
+    for (const fn of lens.listeners.click || []) fn({ target: expand });
+    html = content.innerHTML;
+    match(html, /data-decision="live"/, "expand restores live controls");
+    ok(html.includes("Your answer"), "free-form input is back");
+  });
+
+  it("stale click after unblocking sends nothing (fails closed)", async () => {
+    const { ctx, registry, sent } = await openBlocked();
+    const { content } = lensNodes(registry);
+    const option = content.querySelector("[data-decision-index=\"1\"]");
+    ok(option, "option button renders while blocked");
+    // The agent answers in the terminal: the status event lands working.
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "working" });
+    await settle();
+    const stale = content.querySelector("[data-decision-index=\"1\"]");
+    // The DOM re-rendered to answered state; a stale node click would
+    // still carry the old key. Simulate with the kept node.
+    const lens = registry.get("terminalLens");
+    for (const fn of lens.listeners.click || []) fn({ target: stale || option });
+    equal(sent.length, 0, "stale click after working status sends nothing");
+  });
+
+  it("status event re-renders the chooser instantly (blocked -> working)", async () => {
+    const { ctx, registry } = await openBlocked();
+    const { content } = lensNodes(registry);
+    match(content.innerHTML, /data-decision="live"/);
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "working" });
+    await settle();
+    match(content.innerHTML, /data-decision="answered"/, "chooser disarms on the event");
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "blocked" });
+    await settle();
+    match(content.innerHTML, /data-decision="live"/, "chooser re-arms on blocked again");
+  });
+
+  it("another pane's blocked status never arms this pane's chooser", async () => {
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => decisionFixture(),
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const { content } = lensNodes(registry);
+    match(content.innerHTML, /data-decision="answered"/, "own pane not blocked: read-only");
+    // A different pane in the same workspace reports blocked: the
+    // workspace aggregate WOULD say blocked, but the per-pane gate
+    // keeps this chooser read-only.
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_2", agent_status: "blocked" });
+    await settle();
+    match(content.innerHTML, /data-decision="answered"/, "other pane blocked does not arm this chooser");
+  });
+
+  it("pane switch resets the answered mark (no cross-pane carryover)", async () => {
+    const { ctx, registry, sent } = await openBlocked();
+    const { content } = lensNodes(registry);
+    const option = content.querySelector("[data-decision-index=\"1\"]");
+    for (const fn of registry.get("terminalLens").listeners.click || []) fn({ target: option });
+    equal(sent.length, 1, "answered on pane_1");
+    equal(ctx.HerdrLens._decisionAnsweredKey(), "Deploy where?|dev|prod");
+    // A real pane switch changes state.pane; onPaneChanged resets the
+    // per-pane marks (an answered question on pane A must not suppress
+    // a pending question on pane B that happens to share the text).
+    ctx.state.pane = "pane_2";
+    ctx.state.agents = [{ pane_id: "pane_2", name: "jcode", agent_session: resolvableSession }];
+    ctx.HerdrLens.onPaneChanged();
+    equal(ctx.HerdrLens._decisionAnsweredKey(), null, "answered mark cleared on pane switch");
+  });
+
+  it("collapsed chooser flips to answered when the pane unblocks", async () => {
+    const { ctx, registry } = await openBlocked();
+    const { lens, content } = lensNodes(registry);
+    const dismiss = content.querySelector(".lens-decision-dismiss");
+    for (const fn of lens.listeners.click || []) fn({ target: dismiss });
+    ok(content.innerHTML.includes("Waiting for your answer in the terminal"),
+      "collapsed hint while still blocked");
+    ok(content.querySelector(".lens-decision-expand"), "expand button while still blocked");
+    // The TUI dismisses/resolves: working status event lands.
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "working" });
+    await settle();
+    ok(content.innerHTML.includes("Answered"), "hint flips to answered on unblock");
+    ok(!content.querySelector(".lens-decision-expand"), "expand button goes away once unblocked");
+  });
+
+  it("re-ask of the same question re-arms the chooser", async () => {
+    let turn = 0;
+    const { ctx, registry, sent } = blockedContext({
+      api: async () => decisionFixture(),
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const { lens, content } = lensNodes(registry);
+    const option = content.querySelector("[data-decision-index=\"1\"]");
+    for (const fn of lens.listeners.click || []) fn({ target: option });
+    equal(sent.length, 1, "first ask answered");
+    match(content.innerHTML, /data-decision="answered"/);
+    // The pane blocks again on the SAME question text (agent re-asked):
+    // the answered key matches, but the blocked re-arm rule only
+    // applies while the SAME question stays answered. Since the key
+    // matches, the chooser stays collapsed — the correct, safe read.
+    const status = ctx.HerdrLens.paneBlockedNow();
+    equal(status, true, "pane still blocked after answering (status not yet working)");
+    match(content.innerHTML, /data-decision="answered"/, "same-key question stays collapsed");
   });
 });

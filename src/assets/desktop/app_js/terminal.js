@@ -55,6 +55,10 @@ function connectEvents() {
         // Prompt cards re-evaluate on every status change: a blocked pane
         // may hold a question dialog the card can answer.
         if (globalThis.HerdrPromptCards) globalThis.HerdrPromptCards.evaluate();
+        // The lens decision chooser tracks the freshest per-pane status
+        // (its blocked gate reads this cache, not the poll-delayed row).
+        if (globalThis.HerdrLens && globalThis.HerdrLens.onAgentStatusChanged)
+          globalThis.HerdrLens.onAgentStatusChanged(d);
         if (statusClass(d.agent_status) !== "working") {
           for (const agent of state.agents) {
             if (

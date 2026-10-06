@@ -249,6 +249,25 @@ fn turn_json(turn: &Turn) -> Value {
                 part
             }
             TurnPart::ToolPending { name } => json!({ "kind": "tool_pending", "name": name }),
+            TurnPart::Decision {
+                question,
+                options,
+                context,
+            } => {
+                // Interactive ask_user chooser: same additive-shape rule
+                // as every part — unknown kinds render as nothing in old
+                // clients, and this carries no secrets (the options are
+                // already in the session file the poll reads).
+                json!({
+                    "kind": "decision",
+                    "question": question,
+                    "options": options.iter().map(|opt| json!({
+                        "label": opt.label,
+                        "detail": opt.detail,
+                    })).collect::<Vec<_>>(),
+                    "context": context,
+                })
+            }
             TurnPart::Compact { summary } => json!({ "kind": "compact", "summary": summary }),
         })
         .collect::<Vec<_>>();
@@ -325,6 +344,20 @@ mod tests {
                 TurnPart::ToolPending {
                     name: "read".into(),
                 },
+                TurnPart::Decision {
+                    question: "Deploy where?".into(),
+                    options: vec![
+                        crate::jcode_transcript::DecisionOption {
+                            label: "dev".into(),
+                            detail: Some("staging cluster".into()),
+                        },
+                        crate::jcode_transcript::DecisionOption {
+                            label: "prod".into(),
+                            detail: None,
+                        },
+                    ],
+                    context: Some("release train".into()),
+                },
                 TurnPart::Compact {
                     summary: "folded".into(),
                 },
@@ -341,11 +374,25 @@ mod tests {
             .collect();
         assert_eq!(
             kinds,
-            vec!["text", "thinking", "tool", "tool_pending", "compact"]
+            vec![
+                "text",
+                "thinking",
+                "tool",
+                "tool_pending",
+                "decision",
+                "compact"
+            ]
         );
         let tool = &wire["parts"][2];
         assert_eq!(tool["output_ref"], "call_1");
         assert_eq!(tool["output_size"], 5);
+        let decision = &wire["parts"][4];
+        assert_eq!(decision["question"], "Deploy where?");
+        assert_eq!(decision["options"][0]["label"], "dev");
+        assert_eq!(decision["options"][0]["detail"], "staging cluster");
+        assert_eq!(decision["options"][1]["label"], "prod");
+        assert_eq!(decision["options"][1]["detail"], serde_json::Value::Null);
+        assert_eq!(decision["context"], "release train");
     }
 
     #[test]

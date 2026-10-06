@@ -670,6 +670,94 @@ input {
   margin: 2px 0;
   user-select: none;
 }
+/* ---- ask_user decision chooser (blocked pane) ----
+ * Renders live controls only while the pane is blocked and the question
+ * was not answered/dismissed from the webui; otherwise a quiet answered
+ * hint. Answers synthesize keystrokes into the pane (prompt_cards
+ * pattern), so the buttons must be unmistakably clickable. */
+.lens-decision {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent, #89b4fa);
+  border-radius: var(--radius-md, 8px);
+  margin: 10px 0;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lens-decision-question {
+  color: var(--fg);
+  font-weight: 600;
+}
+.lens-decision-context {
+  color: var(--fg-dim, #a6adc8);
+  font-size: var(--fs-2xs, 11px);
+}
+.lens-decision-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: 6px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+.lens-decision-option[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.6;
+}
+.lens-decision-option:hover:not([aria-disabled="true"]) {
+  border-color: var(--accent, #89b4fa);
+}
+.lens-decision-label {
+  font-weight: 500;
+}
+.lens-decision-detail {
+  color: var(--fg-dim, #a6adc8);
+  font-size: var(--fs-2xs, 11px);
+}
+.lens-decision-form {
+  display: flex;
+  gap: 6px;
+}
+.lens-decision-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: 6px 10px;
+  font: inherit;
+}
+.lens-decision-input:focus-visible,
+.lens-decision-option:focus-visible,
+.lens-decision-dismiss:focus-visible,
+.lens-decision-expand:focus-visible,
+.lens-decision-send:focus-visible {
+  outline: var(--ring, 2px solid var(--accent, #89b4fa));
+  outline-offset: var(--ring-offset, 2px);
+}
+.lens-decision-send,
+.lens-decision-dismiss,
+.lens-decision-expand {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: 6px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+.lens-decision-hint {
+  color: var(--fg-dim, #a6adc8);
+  font-size: var(--fs-2xs, 11px);
+  user-select: none;
+}
 .terminal-composer-row {
   display: flex;
   gap: 8px;

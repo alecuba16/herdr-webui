@@ -261,6 +261,12 @@
     expandedTools.clear();
     expandedThinking.clear();
     fetchedOutputs.clear();
+    // The decision answered/collapsed marks are per pane: a decision
+    // answered on pane A must not suppress the chooser of a pending
+    // question on pane B (the old pane's answer key could match by
+    // text).
+    decisionAnsweredKey = null;
+    decisionCollapsedKey = null;
     stopPolling();
   }
 
@@ -441,6 +447,9 @@
         `</div>`
       );
     }
+    if (part.kind === "decision") {
+      return decisionHtml(part, turnIndex, partIndex);
+    }
     if (part.kind === "compact") {
       // Keyed like every other part: the same-count sync must find it
       // (an unkeyed row would be re-appended on every poll).
@@ -454,6 +463,199 @@
 
   function loadingHtml() {
     return '<div class="lens-loading">loading chat…</div>';
+  }
+
+  // ---- structured mode: decision chooser (ask_user) ----
+
+  // Identity of the decision the user answered/collapsed from the webui.
+  // The decision row keeps rendering (it is part of the transcript) but
+  // its interactive controls only show while the pane is blocked AND
+  // this question was not already answered/dismissed here. The key is
+  // the question + option labels so a re-ask of the SAME question in a
+  // later ask_user is treated as a new decision (blocked re-arms it).
+  // Answered from the webui (keystrokes sent): suppress the controls and
+  // hint "answered, waiting". Collapsed from the webui (local hide, the
+  // user wants to answer in the terminal): suppress the controls too, but
+  // the hint must say the agent is STILL waiting.
+  let decisionAnsweredKey = null;
+  let decisionCollapsedKey = null;
+
+  function decisionKey(part) {
+    return (
+      (part.question || "") +
+      "|" +
+      (part.options || []).map((o) => (o && o.label) || "").join("|")
+    );
+  }
+
+  // OSC 9 jcode:blocked is the ONLY reliable blocked signal: the
+  // session file alone cannot tell a blocked ask_user from a running
+  // one. Three sources, freshest first:
+  // 1. pane.agent_status_changed events (instant, per-pane)
+  // 2. the active pane's agents row (per-pane, snapshot-refreshed)
+  // 3. the workspace row (aggregated: strongest status wins)
+  // The event map carries a TTL so a dropped events socket cannot pin a
+  // stale `blocked` forever — the refreshed agents row takes over.
+  const paneStatusEvents = new Map(); // pane id -> {status, at}
+  const STATUS_EVENT_TTL_MS = 10000;
+
+  function onAgentStatusChanged(data) {
+    if (!data || !data.pane_id) return;
+    paneStatusEvents.set(data.pane_id, {
+      status: String(data.agent_status || ""),
+      at: Date.now(),
+    });
+    // Instant arming/disarming: the chooser reacts to the event itself,
+    // not the next poll tick (the agents row refreshes ~500ms later and
+    // the poll would add up to 2s more).
+    if (lensActive && data.pane_id === activePaneId()) render();
+  }
+
+  function paneBlockedNow() {
+    try {
+      if (typeof state === "undefined" || !state) return false;
+      const paneId = state.pane;
+      // 1. Freshest: the last status event for THIS pane (if recent).
+      const event = paneId && paneStatusEvents.get(paneId);
+      if (event && Date.now() - event.at < STATUS_EVENT_TTL_MS) {
+        return event.status === "blocked";
+      }
+      // 2. Per-pane agents row (never the workspace aggregate: another
+      // blocked pane in the same workspace must not arm THIS pane's
+      // chooser — a stale click there types into the main input).
+      const row = paneId && (state.agents || []).find((a) => a && a.pane_id === paneId);
+      if (row && row.agent_status) {
+        return (typeof statusClass === "function" ? statusClass(row.agent_status) : row.agent_status) === "blocked";
+      }
+      // 3. Workspace aggregate as the last resort (agents list empty).
+      const ws = (state.workspaces || []).find(
+        (w) => w && w.workspace_id === state.ws,
+      );
+      if (!ws) return false;
+      const status =
+        typeof statusClass === "function" ? statusClass(ws.agent_status) : ws.agent_status;
+      return status === "blocked";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function decisionHtml(part, turnIndex, partIndex) {
+    const key = partKey(turnIndex, partIndex, part);
+    const options = Array.isArray(part.options) ? part.options : [];
+    const identity = decisionKey(part);
+    const answeredHere = decisionAnsweredKey === identity;
+    const collapsedHere = decisionCollapsedKey === identity;
+    const interactive = paneBlockedNow() && !answeredHere && !collapsedHere;
+    const rows = options
+      .map((option, i) => {
+        const label = (option && option.label) || "";
+        const detail = option && option.detail;
+        return (
+          `<button type="button" class="lens-decision-option" data-decision-key="${escapeAttr(key)}" ` +
+          `data-decision-index="${i + 1}" tabindex="${interactive ? 0 : -1}" ` +
+          `aria-disabled="${!interactive}"><span class="lens-decision-label">${escapeHtml(label)}</span>` +
+          (detail
+            ? `<span class="lens-decision-detail">${escapeHtml(detail)}</span>`
+            : "") +
+          "</button>"
+        );
+      })
+      .join("");
+    const context = part.context
+      ? `<div class="lens-decision-context">${escapeHtml(part.context)}</div>`
+      : "";
+    const answerForm = interactive
+      ? `<form class="lens-decision-form" data-decision-key="${escapeAttr(key)}">` +
+        `<input class="lens-decision-input" placeholder="Your answer"${inputAttrs("send")} aria-label="Your answer">` +
+        `<button type="submit" class="lens-decision-send">Send</button></form>`
+      : "";
+    const expand = collapsedHere && paneBlockedNow()
+      ? `<button type="button" class="lens-decision-expand" data-decision-key="${escapeAttr(key)}">Answer</button>`
+      : "";
+    const dismiss = interactive
+      ? `<button type="button" class="lens-decision-dismiss" data-decision-key="${escapeAttr(key)}">Dismiss</button>`
+      : "";
+    // Answered state: one quiet line instead of live controls. The
+    // wording covers both ends (answered here, answered/dismissed in
+    // the terminal) because the poll cannot tell them apart — the
+    // tool_result simply has not landed yet. A collapsed card keeps an
+    // "Answer" button while the pane is STILL blocked; once the pane
+    // unblocks the decision resolved somewhere, so the hint flips to
+    // answered and the expand button goes away.
+    let hint;
+    if (interactive) hint = '<div class="lens-decision-hint">Pick a number or type your own answer</div>';
+    else if (collapsedHere && paneBlockedNow()) hint = '<div class="lens-decision-hint">Waiting for your answer in the terminal</div>';
+    else hint = '<div class="lens-decision-hint">Answered — waiting for the agent to continue</div>';
+    return (
+      `<div class="lens-decision" data-part-key="${escapeAttr(key)}" data-decision="${interactive ? "live" : "answered"}">` +
+      `<div class="lens-decision-question">${escapeHtml(part.question || "")}</div>` +
+      context +
+      rows +
+      answerForm +
+      dismiss +
+      expand +
+      hint +
+      `</div>`
+    );
+  }
+
+  // The DOM key is turn:part:name; recover the decision part from the
+  // CURRENT conversation by position so the dismissal marks the right
+  // question even after polls reshuffled rows. Decision parts carry no
+  // name, so the key's name segment is always the empty string.
+  function decisionPartFromDom(key) {
+    const turns = (conversation && conversation.turns) || [];
+    const parts = String(key).split(":");
+    const turnIndex = Number(parts[0]);
+    const partIndex = Number(parts[1]);
+    const name = parts.slice(2).join(":");
+    if (!Number.isInteger(turnIndex) || !Number.isInteger(partIndex)) return null;
+    const part = turns[turnIndex] && (turns[turnIndex].parts || [])[partIndex];
+    if (!part || part.kind !== "decision") return null;
+    if ((part.name || "") !== name) return null;
+    return part;
+  }
+
+  // Answering synthesizes keystrokes through the same sendInputData
+  // path prompt_cards uses: the TUI chooser owns the keyboard while
+  // visible, so a digit (option pick) or typed text + Enter (free-form
+  // answer) resolves it. Double-guarded: the pane must STILL be blocked
+  // (a stale click after the TUI answered types garbage into the main
+  // input) and the decision part must still be live in the current
+  // conversation (position + name match).
+  function decisionAnswer(key, payload) {
+    if (!paneBlockedNow()) return;
+    const part = decisionPartFromDom(key);
+    if (!part) return;
+    const identity = decisionKey(part);
+    // Already answered from the webui: the pane is STILL blocked on the
+    // same question (the tool_result has not landed yet). A second send
+    // would type into the chooser a second time — after the first
+    // answer resolves it, that lands in the re-enabled main input.
+    if (decisionAnsweredKey === identity) return;
+    if (typeof sendInputData !== "function") return;
+    sendInputData(payload);
+    decisionAnsweredKey = identity;
+    // The next poll folds the ask_user into a plain tool row once the
+    // tool_result lands; until then the answered hint replaces the
+    // controls immediately (no second click can double-send).
+    render();
+  }
+
+  function decisionDismiss(key) {
+    const part = decisionPartFromDom(key);
+    if (!part) return;
+    decisionCollapsedKey = decisionKey(part);
+    render();
+  }
+
+  function decisionExpand(key) {
+    const part = decisionPartFromDom(key);
+    if (!part) return;
+    if (decisionKey(part) !== decisionCollapsedKey) return;
+    decisionCollapsedKey = null;
+    render();
   }
 
   function refusalHtml(errorCode) {
@@ -625,12 +827,38 @@
     return String(value).replace(/[^a-zA-Z0-9_:-]/g, "\\$&");
   }
 
-  // Delegated clicks for toggles and fetch buttons: nodes come and go
-  // with each append, so per-node listeners would leak. Clicks land on
-  // inner spans (name/brief/caret), so resolve up to the carrier.
+  // Delegated clicks for toggles, decision buttons, and fetch buttons:
+  // nodes come and go with each append, so per-node listeners would leak.
+  // Clicks land on inner spans (name/brief/caret), so resolve up to the
+  // carrier.
   function onLensClick(event) {
     const target = event && event.target;
     if (!target || !target.closest) return;
+    const decisionOption = target.closest("[data-decision-key].lens-decision-option");
+    if (decisionOption) {
+      const key = decisionOption.getAttribute("data-decision-key");
+      const index = Number(decisionOption.getAttribute("data-decision-index"));
+      // TUI contract: digits 1-9 pick an option IMMEDIATELY when an
+      // option row is selected (no Enter). An Up arrow first guarantees
+      // an option row is selected even if the user had moved the TUI
+      // selection onto the "Your answer" row (Up from there lands on the
+      // last option; from an option row it moves up one, still an
+      // option). No trailing Enter: the chooser resolves on the digit,
+      // and an Enter after it would hit the re-enabled main input.
+      if (Number.isInteger(index) && index >= 1)
+        decisionAnswer(key, "\u001b[A" + String(index));
+      return;
+    }
+    const decisionDismissBtn = target.closest("[data-decision-key].lens-decision-dismiss");
+    if (decisionDismissBtn) {
+      decisionDismiss(decisionDismissBtn.getAttribute("data-decision-key"));
+      return;
+    }
+    const decisionExpandBtn = target.closest("[data-decision-key].lens-decision-expand");
+    if (decisionExpandBtn) {
+      decisionExpand(decisionExpandBtn.getAttribute("data-decision-key"));
+      return;
+    }
     const toolToggle = target.closest("[data-toggle-tool]");
     if (toolToggle) {
       const key = toolToggle.getAttribute("data-toggle-tool");
@@ -676,6 +904,36 @@
     if (target !== toggle) return;
     event.preventDefault();
     onLensClick({ target: toggle });
+  }
+
+  // The decision answer form's submit path: Enter in the input or the
+  // Send button. Delegated on the overlay root so it survives the
+  // innerHTML rewrites (same leak reason as the click).
+  function onLensSubmit(event) {
+    const target = event && event.target;
+    if (!target || !target.closest) return;
+    const form = target.closest("form.lens-decision-form");
+    if (!form) return;
+    if (event.preventDefault) event.preventDefault();
+    const key = form.getAttribute("data-decision-key");
+    const input = form.querySelector(".lens-decision-input");
+    const text = input && input.value ? String(input.value).trim() : "";
+    if (!text) return;
+    // TUI contract for free-form answers: typing only reaches the
+    // answer draft when the "Your answer" row is selected, and the
+    // selection state is invisible from here. A bracketed paste
+    // instead is deterministic: the TUI routes paste into the chooser's
+    // answer draft AND auto-selects the answer row (input.rs
+    // handle_paste), whatever row was selected. The trailing Enter then
+    // submits the draft. jcode enables bracketed paste, and the markers
+    // survive sendInputData (only OSC color replies and mouse reports
+    // are stripped). Newlines become spaces like any terminal paste.
+    const payload =
+      "\u001b[200~" +
+      text.replace(/[\r\n]+/g, " ") +
+      "\u001b[201~" +
+      "\r";
+    decisionAnswer(key, payload);
   }
 
   async function expandToolFullOutput(button, reference) {
@@ -824,10 +1082,13 @@
           if (sc) sc.scrollTop = sc.scrollHeight;
         };
       }
-      // One delegated listener for tool/thinking toggles and full-output
-      // fetch buttons (structured mode), plus its keyboard twin.
+      // One delegated listener for tool/thinking toggles, decision
+      // buttons, and full-output fetch buttons (structured mode), plus
+      // their keyboard twins. The decision answer form rides the same
+      // delegation through a submit listener (submit bubbles).
       node.addEventListener("click", onLensClick);
       node.addEventListener("keydown", onLensKeydown);
+      node.addEventListener("submit", onLensSubmit);
     }
     return node;
   }
@@ -1082,5 +1343,11 @@
     // Test/diagnostic surface: duration shaping for assistant turns.
     turnDurationHtml,
     formatDuration,
+    // Test/diagnostic surface: the decision chooser internals.
+    decisionHtml,
+    paneBlockedNow,
+    onAgentStatusChanged,
+    _decisionAnsweredKey: () => decisionAnsweredKey,
+    _resetDecisionState: () => { decisionAnsweredKey = null; },
   };
 })();
