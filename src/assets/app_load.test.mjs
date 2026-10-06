@@ -5888,4 +5888,36 @@ describe("a11y audit contract", () => {
     const lensSource = read("./desktop/app_js/lens.js");
     match(lensSource, /lens-scroller" id="terminalLensScroller" tabindex="0"/);
   });
+
+  it("covers the lazily-loaded feature bundles' scroll surfaces (audit pass 2)", () => {
+    const chromeCss = read("./desktop/app_css/chrome.css");
+    // The git UI, file browser, directory picker, and markdown preview
+    // bundles load lazily via HerdrLoadCss, but they land in the same
+    // document cascade, so their scrollbar rules live in chrome.css with
+    // the rest of the family. Pin each surface's presence in the shared
+    // thin/width groups so a rename cannot silently drop one.
+    const surfaces = [
+      ".git-ui-side",
+      ".git-ui-header-menu",
+      ".git-ui-branch-list-scroll",
+      ".git-ui-list",
+      ".git-ui-cleanup-confirm-list",
+      ".file-browser-side",
+      ".file-browser-pane-body",
+      ".directory-picker-tree",
+      ".herdr-markdown-body",
+      ".herdr-lsp-diagnostics",
+      ".herdr-content-search-preview",
+    ];
+    for (const surface of surfaces) {
+      // String.raw: template literals eat \s/\{ escapes (unknown escapes
+      // drop the backslash), which would silently weaken the pins.
+      const escaped = surface.replace(".", "\\.");
+      match(chromeCss, new RegExp(String.raw`${escaped}(?:,| \{)\n`));
+      match(chromeCss, new RegExp(String.raw`${escaped}::-webkit-scrollbar(?:,| \{)`));
+      match(chromeCss, new RegExp(String.raw`${escaped}::-webkit-scrollbar-thumb(?:,| \{)[\s\S]*?background: var\(--border2\);`));
+      match(chromeCss, new RegExp(String.raw`${escaped}::-webkit-scrollbar-thumb:hover ?(?:,|\{)[\s\S]*?background: var\(--muted\);`));
+      match(chromeCss, new RegExp(String.raw`${escaped}::-webkit-scrollbar-track ?(?:,|\{)[\s\S]*?background: transparent;`));
+    }
+  });
 });

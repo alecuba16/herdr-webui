@@ -279,6 +279,81 @@
 .modal-backdrop:not(.search-palette) .modal::-webkit-scrollbar-track {
   background: transparent;
 }
+/* Audit pass 2, feature bundles (loaded lazily via HerdrLoadCss but
+   same document cascade, so the rules live here with the rest of the
+   family): git UI lists and popovers, file browser panes, directory
+   picker tree, markdown preview body, plus the small clamped lists
+   (LSP diagnostics, content-search preview, cleanup confirm).
+   Editors, CodeMirror scrollers and horizontal-only scrollers
+   (diff xscroll, pre/mermaid blocks) stay default: they draw their
+   own edge affordances, and a styled track on top of code reads as
+   noise, not signal. */
+.git-ui-side,
+.git-ui-header-menu,
+.git-ui-branch-list-scroll,
+.git-ui-list,
+.git-ui-cleanup-confirm-list,
+.file-browser-side,
+.file-browser-pane-body,
+.directory-picker-tree,
+.herdr-markdown-body,
+.herdr-lsp-diagnostics,
+.herdr-content-search-preview {
+  scrollbar-width: thin;
+}
+.git-ui-side::-webkit-scrollbar,
+.git-ui-header-menu::-webkit-scrollbar,
+.git-ui-branch-list-scroll::-webkit-scrollbar,
+.git-ui-list::-webkit-scrollbar,
+.git-ui-cleanup-confirm-list::-webkit-scrollbar,
+.file-browser-side::-webkit-scrollbar,
+.file-browser-pane-body::-webkit-scrollbar,
+.directory-picker-tree::-webkit-scrollbar,
+.herdr-markdown-body::-webkit-scrollbar,
+.herdr-lsp-diagnostics::-webkit-scrollbar,
+.herdr-content-search-preview::-webkit-scrollbar {
+  width: 8px;
+}
+.git-ui-side::-webkit-scrollbar-thumb,
+.git-ui-header-menu::-webkit-scrollbar-thumb,
+.git-ui-branch-list-scroll::-webkit-scrollbar-thumb,
+.git-ui-list::-webkit-scrollbar-thumb,
+.git-ui-cleanup-confirm-list::-webkit-scrollbar-thumb,
+.file-browser-side::-webkit-scrollbar-thumb,
+.file-browser-pane-body::-webkit-scrollbar-thumb,
+.directory-picker-tree::-webkit-scrollbar-thumb,
+.herdr-markdown-body::-webkit-scrollbar-thumb,
+.herdr-lsp-diagnostics::-webkit-scrollbar-thumb,
+.herdr-content-search-preview::-webkit-scrollbar-thumb {
+  background: var(--border2);
+  border-radius: 8px;
+}
+.git-ui-side::-webkit-scrollbar-thumb:hover,
+.git-ui-header-menu::-webkit-scrollbar-thumb:hover,
+.git-ui-branch-list-scroll::-webkit-scrollbar-thumb:hover,
+.git-ui-list::-webkit-scrollbar-thumb:hover,
+.git-ui-cleanup-confirm-list::-webkit-scrollbar-thumb:hover,
+.file-browser-side::-webkit-scrollbar-thumb:hover,
+.file-browser-pane-body::-webkit-scrollbar-thumb:hover,
+.directory-picker-tree::-webkit-scrollbar-thumb:hover,
+.herdr-markdown-body::-webkit-scrollbar-thumb:hover,
+.herdr-lsp-diagnostics::-webkit-scrollbar-thumb:hover,
+.herdr-content-search-preview::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+.git-ui-side::-webkit-scrollbar-track,
+.git-ui-header-menu::-webkit-scrollbar-track,
+.git-ui-branch-list-scroll::-webkit-scrollbar-track,
+.git-ui-list::-webkit-scrollbar-track,
+.git-ui-cleanup-confirm-list::-webkit-scrollbar-track,
+.file-browser-side::-webkit-scrollbar-track,
+.file-browser-pane-body::-webkit-scrollbar-track,
+.directory-picker-tree::-webkit-scrollbar-track,
+.herdr-markdown-body::-webkit-scrollbar-track,
+.herdr-lsp-diagnostics::-webkit-scrollbar-track,
+.herdr-content-search-preview::-webkit-scrollbar-track {
+  background: transparent;
+}
 .side-footer {
   flex: none;
 }
