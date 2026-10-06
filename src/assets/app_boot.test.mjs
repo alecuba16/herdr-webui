@@ -44,6 +44,7 @@ const SHARED_SCRIPTS = [
   "/assets/shared/terminal-adapter.js",
   "/assets/shared/graphics-bridge.js",
   "/assets/shared/temp-terminal.js",
+  "/assets/shared/temp-overlay.js",
 ];
 const DESKTOP_SCRIPTS = [
   ...SHARED_SCRIPTS,
@@ -61,6 +62,7 @@ const MOBILE_SCRIPTS = [
   "/assets/mobile/settings.js",
   "/assets/mobile/search.js",
   "/assets/mobile/git.js",
+  "/assets/mobile/temp-overlays.js",
   "/assets/mobile/composer.js",
   "/assets/mobile/sessions.js",
   "/assets/mobile/events.js",

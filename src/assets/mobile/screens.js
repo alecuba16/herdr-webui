@@ -70,10 +70,12 @@
         { screen: "files", title: "Files", meta: workspace ? "Browse current workspace" : "Select workspace first", icon: "fi" },
         { screen: "git", title: "Git", meta: workspace ? "Status, diff, branches, history" : "Select workspace first", icon: "git" },
         { screen: "temp-terminal", title: "Temporary terminal", meta: tempMeta, icon: "T", action: true },
+        { screen: "temp-files", title: "Temporary Files", meta: "Browse any folder, no workspace", icon: "▤", action: true },
+        { screen: "temp-git", title: "Temporary Git", meta: "Review any repository, no workspace", icon: "⑂", action: true },
         { screen: "settings", title: "Settings", meta: "Appearance, search, alerts, terminal", icon: "⚙" },
         { screen: "sessions", title: "Sessions", meta: `${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`, icon: "se" },
       ];
-      return `<section class="mobile-section mobile-more"><h2>More tools</h2><p class="mobile-help">Less-used tools stay here so Home, Search, and Terminal remain fast.</p><div class="mobile-more-grid">${tools.map((tool) => tool.action ? `<button class="mobile-more-card" onclick="HerdrMobile.runAction('temp-terminal')"><span class="mobile-more-icon">${escapeHtml(tool.icon)}</span><strong>${escapeHtml(tool.title)}</strong><small>${escapeHtml(tool.meta)}</small></button>` : `<button class="mobile-more-card" onclick="HerdrMobile.showScreen('${tool.screen}')"><span class="mobile-more-icon">${escapeHtml(tool.icon)}</span><strong>${escapeHtml(tool.title)}</strong><small>${escapeHtml(tool.meta)}</small></button>`).join("")}</div></section>`;
+      return `<section class="mobile-section mobile-more"><h2>More tools</h2><p class="mobile-help">Less-used tools stay here so Home, Search, and Terminal remain fast.</p><div class="mobile-more-grid">${tools.map((tool) => tool.action ? `<button class="mobile-more-card" onclick="HerdrMobile.runAction('${tool.screen}')"><span class="mobile-more-icon">${escapeHtml(tool.icon)}</span><strong>${escapeHtml(tool.title)}</strong><small>${escapeHtml(tool.meta)}</small></button>` : `<button class="mobile-more-card" onclick="HerdrMobile.showScreen('${tool.screen}')"><span class="mobile-more-icon">${escapeHtml(tool.icon)}</span><strong>${escapeHtml(tool.title)}</strong><small>${escapeHtml(tool.meta)}</small></button>`).join("")}</div></section>`;
     }
 
     // Workspace rows (mobile parity with the desktop workspace list).

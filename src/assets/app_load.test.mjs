@@ -643,7 +643,7 @@ describe("app bundle load", () => {
     const actionNames = (query) => Array.from(ctx.searchActionCandidates(query), (action) => action.action);
     deepEqual(
       actionNames(""),
-      ["open-workspace", "temp-terminal", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
+      ["open-workspace", "temp-terminal", "temp-files", "temp-git", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
     );
     deepEqual(
       actionNames("session"),
@@ -655,7 +655,7 @@ describe("app bundle load", () => {
     );
     deepEqual(
       actionNames(">"),
-      ["open-workspace", "temp-terminal", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
+      ["open-workspace", "temp-terminal", "temp-files", "temp-git", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
     );
     deepEqual(
       actionNames(">theme"),
@@ -5540,6 +5540,122 @@ describe("app bundle load", () => {
     // explicitly chosen one.
     equal(ctx.localStorage.getItem("herdr-session-backend:work"), "builtin");
     equal(ctx.localStorage.getItem("herdr-session-backend:default"), "external-herdr");
+  });
+});
+
+describe("temporary overlay vs main shell toggles", () => {
+  let source;
+  beforeEach(() => {
+    // Full production bundle order (mirrors the "app bundle load" suite):
+    // shared helpers, search, then desktop modules. render.js shares the
+    // bundle scope with terminal.js/shortcuts.js helpers (escapeHtml,
+    // globalShortcutPrefixLabel), so partial loads miss them.
+    const desktopAppSource = [
+      "./desktop/app_js/core.js",
+      "./desktop/app_js/workspace_shell.js",
+      "./desktop/app_js/panel_switcher.js",
+      "./desktop/app_js/render.js",
+      "./desktop/app_js/terminal.js",
+      "./desktop/app_js/worktrees.js",
+      "./desktop/app_js/shortcuts.js",
+      "./desktop/app_js/workspace_create.js",
+      "./desktop/app_js/bindings.js",
+    ]
+      .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
+      .join("");
+    source =
+      readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
+      "\n" +
+      desktopAppSource;
+  });
+
+  it("closing a minimized temporary overlay before the main shell opens the drawer", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    vm.runInContext("state.workspaces = [{ workspace_id: 'ws-1', cwd: '/repo/main' }]; state.ws = 'ws-1';", ctx);
+
+    const calls = { closeGit: 0, closeFiles: 0, gitOpen: 0, filesOpen: 0, gitHide: 0, filesHide: 0 };
+    ctx.HerdrGitUi = {
+      open() { calls.gitOpen += 1; return Promise.resolve({ ok: true }); },
+      hide() { calls.gitHide += 1; },
+      isWorkspaceVisible: () => false,
+    };
+    ctx.HerdrFileBrowser = {
+      open() { calls.filesOpen += 1; return Promise.resolve({ ok: true }); },
+      hide() { calls.filesHide += 1; },
+      isWorkspaceVisible: () => false,
+    };
+    ctx.HerdrTempOverlays = {
+      isMinimized: () => true,
+      closeGit() { calls.closeGit += 1; },
+      closeFiles() { calls.closeFiles += 1; },
+    };
+
+    await ctx.openWorkspaceGitUi("ws-1");
+    equal(calls.closeGit, 1, "minimized temp git overlay closed before the main git shell opens");
+    equal(calls.gitOpen, 1, "main git drawer opened");
+
+    await ctx.openWorkspaceFileBrowser("ws-1");
+    equal(calls.closeFiles, 1, "minimized temp files overlay closed before the main file browser opens");
+    equal(calls.filesOpen, 1, "main file browser opened");
+  });
+
+  it("leaves an unminimized temporary overlay alone: only the cross-hide runs", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    vm.runInContext("state.workspaces = [{ workspace_id: 'ws-1', cwd: '/repo/main' }]; state.ws = 'ws-1';", ctx);
+
+    const calls = { closeGit: 0, closeFiles: 0, gitOpen: 0, filesOpen: 0 };
+    ctx.HerdrGitUi = {
+      open() { calls.gitOpen += 1; return Promise.resolve({ ok: true }); },
+      hide() {},
+      isWorkspaceVisible: () => false,
+    };
+    ctx.HerdrFileBrowser = {
+      open() { calls.filesOpen += 1; return Promise.resolve({ ok: true }); },
+      hide() {},
+      isWorkspaceVisible: () => false,
+    };
+    ctx.HerdrTempOverlays = {
+      isMinimized: () => false,
+      closeGit() { calls.closeGit += 1; },
+      closeFiles() { calls.closeFiles += 1; },
+    };
+
+    await ctx.openWorkspaceGitUi("ws-1");
+    equal(calls.closeGit, 0, "visible temp overlay not closed by the main toggle");
+    equal(calls.gitOpen, 1, "main git drawer opened");
+  });
+
+  it("still opens the main drawers when HerdrTempOverlays is absent", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    vm.runInContext("state.workspaces = [{ workspace_id: 'ws-1', cwd: '/repo/main' }]; state.ws = 'ws-1';", ctx);
+
+    const calls = { gitOpen: 0, filesOpen: 0 };
+    ctx.HerdrGitUi = {
+      open() { calls.gitOpen += 1; return Promise.resolve({ ok: true }); },
+      hide() {},
+      isWorkspaceVisible: () => false,
+    };
+    ctx.HerdrFileBrowser = {
+      open() { calls.filesOpen += 1; return Promise.resolve({ ok: true }); },
+      hide() {},
+      isWorkspaceVisible: () => false,
+    };
+
+    await ctx.openWorkspaceGitUi("ws-1");
+    equal(calls.gitOpen, 1, "git drawer opened without the temp overlay host");
+    await ctx.openWorkspaceFileBrowser("ws-1");
+    equal(calls.filesOpen, 1, "file browser opened without the temp overlay host");
   });
 });
 

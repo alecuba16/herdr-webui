@@ -437,6 +437,14 @@ pub enum PromptKind {
     /// Git cwd picker (prefix I): type a repo path, Enter switches the
     /// git panel to it (webui location bar).
     GitCwd,
+    /// Temporary Files overlay (prefix Shift+F): type a folder path,
+    /// Enter opens the files explorer on it. No workspace is created,
+    /// matching the webui temporary Files overlay.
+    TempFilesFolder,
+    /// Temporary Git overlay (prefix Shift+G): type a repository path,
+    /// Enter opens the git panel on it. No workspace is created,
+    /// matching the webui temporary Git overlay.
+    TempGitFolder,
     /// Branches view: create a new branch from the typed name
     /// (webui `git_switch` with create: true).
     CreateBranch,
@@ -498,6 +506,8 @@ impl PromptKind {
             Self::RebaseUpstream => "Rebase: upstream ref",
             Self::ConfirmRebase => "Rebase (y)",
             Self::GitCwd => "Git directory",
+            Self::TempFilesFolder => "Temporary Files: folder",
+            Self::TempGitFolder => "Temporary Git: repository",
             Self::CreateBranch => "Create branch",
             Self::CreateFile => "New file",
             Self::CreateDirectory => "New directory",
@@ -520,6 +530,12 @@ impl PromptKind {
             Self::ResetMode => "type soft, mixed or hard, Enter resets",
             Self::RebaseUpstream => "type the upstream ref, then y + Enter to rebase",
             Self::GitCwd => "type a repository path, Enter switches the git panel",
+            Self::TempFilesFolder => {
+                "type a folder path (~ works), Enter opens temporary Files on it"
+            }
+            Self::TempGitFolder => {
+                "type a repository path (~ works), Enter opens temporary Git on it"
+            }
             Self::CreateBranch => "type the branch name, Enter creates and switches",
             Self::CreateFile => "type the file name, Enter creates an empty file",
             Self::CreateDirectory => "type the directory name, Enter creates it",
@@ -1110,6 +1126,29 @@ impl TuiApp {
                     } else {
                         self.status = format!("git cwd: {path}");
                     }
+                }
+            }
+            PromptKind::TempFilesFolder => {
+                // Webui temporary Files overlay: open the explorer on the
+                // typed folder, no workspace created. Same validation as
+                // the workspace-create flow so typos surface fast.
+                match crate::tui::workspace::validate_workspace_folder(text) {
+                    Ok(folder) => match self.open_files_screen_at(&folder) {
+                        Ok(()) => self.status = format!("temporary files: {folder}"),
+                        Err(err) => self.error = Some(err.to_string()),
+                    },
+                    Err(err) => self.error = Some(err),
+                }
+            }
+            PromptKind::TempGitFolder => {
+                // Webui temporary Git overlay: open the git panel on the
+                // typed repository, no workspace created.
+                match crate::tui::workspace::validate_workspace_folder(text) {
+                    Ok(folder) => match self.open_git_screen_at(&folder) {
+                        Ok(()) => self.status = format!("temporary git: {folder}"),
+                        Err(err) => self.error = Some(err.to_string()),
+                    },
+                    Err(err) => self.error = Some(err),
                 }
             }
             PromptKind::CreateBranch => {
@@ -1721,6 +1760,22 @@ impl TuiApp {
             Shortcut::Help => self.open_help_overlay(),
             Shortcut::Files => self.open_files_screen(),
             Shortcut::Git => self.open_git_screen(),
+            Shortcut::TempFiles => {
+                // Webui temporary Files overlay: prompt for any folder,
+                // open the explorer on it, create nothing. The prompt is
+                // ephemeral: the screen only switches when a folder is
+                // actually opened, so Esc leaves the app untouched.
+                self.prompt_input = Some(PromptInput::new(PromptKind::TempFilesFolder));
+                self.status = PromptKind::TempFilesFolder.title().to_string();
+            }
+            Shortcut::TempGit => {
+                // Webui temporary Git overlay: prompt for any repository
+                // path, open the git panel on it, create nothing. Same
+                // ephemeral contract: Esc cancels without switching
+                // screens.
+                self.prompt_input = Some(PromptInput::new(PromptKind::TempGitFolder));
+                self.status = PromptKind::TempGitFolder.title().to_string();
+            }
             Shortcut::Terminal => self.screen = TuiScreen::Terminal,
             Shortcut::Search => self.open_search_palette(),
             Shortcut::Refresh => self.refresh_active_screen(),
@@ -2041,7 +2096,6 @@ impl TuiApp {
                     Err(err) => self.error = Some(err.to_string()),
                 }
             }
-            Shortcut::GitStageAll => self.run_git_action(|panel, api| panel.toggle_stage_all(api)),
             Shortcut::GitStageFile => self.run_git_action(|panel, api| panel.stage_selected(api)),
             Shortcut::GitUnstageFile => {
                 self.run_git_action(|panel, api| panel.unstage_selected(api))
@@ -2309,6 +2363,30 @@ impl TuiApp {
         }
     }
 
+    /// Temporary Files overlay (webui Shift+F): open the explorer on an
+    /// explicit folder, bypassing the selected workspace entirely. No
+    /// workspace or session is created; the explorer keeps its own state
+    /// until another open replaces it (webui forgetWorkspace parity).
+    /// A failed refresh rolls the switch back so the temporary open
+    /// leaves the app untouched unless it actually succeeded.
+    fn open_files_screen_at(
+        &mut self,
+        folder: &str,
+    ) -> Result<(), crate::tui::web_api::WebApiError> {
+        let previous_screen = self.screen;
+        let previous_explorer = self.file_explorer.clone();
+        self.screen = TuiScreen::Files;
+        self.file_explorer = FileExplorer::new(folder);
+        match self.file_explorer.refresh(&self.web_api) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.screen = previous_screen;
+                self.file_explorer = previous_explorer;
+                Err(err)
+            }
+        }
+    }
+
     fn open_git_screen(&mut self) {
         if self.screen == TuiScreen::Git {
             return;
@@ -2320,6 +2398,26 @@ impl TuiApp {
         self.git_panel.set_cwd(&cwd);
         if let Err(err) = self.git_panel.refresh_view(&self.web_api) {
             self.error = Some(err.to_string());
+        }
+    }
+
+    /// Temporary Git overlay (webui Shift+G): open the git panel on an
+    /// explicit repository path, bypassing the selected workspace. No
+    /// workspace or session is created (webui temporary Git parity).
+    /// A failed refresh rolls the switch back, same contract as the
+    /// temporary Files open.
+    fn open_git_screen_at(&mut self, folder: &str) -> Result<(), crate::tui::web_api::WebApiError> {
+        let previous_screen = self.screen;
+        let previous_cwd = self.git_panel.cwd.clone();
+        self.screen = TuiScreen::Git;
+        self.git_panel.set_cwd(folder);
+        match self.git_panel.refresh_view(&self.web_api) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.screen = previous_screen;
+                self.git_panel.set_cwd(&previous_cwd);
+                Err(err)
+            }
         }
     }
 
@@ -2810,6 +2908,15 @@ impl TuiApp {
             KeyCode::Char('s') => {
                 if let Err(err) = self.git_panel.stage_selected(&self.web_api) {
                     self.error = Some(err.to_string());
+                }
+            }
+            // Webui git-panel `stageAll: KeyG`: toggle stage all from
+            // the Changes view without the prefix (the old prefix
+            // Shift+G now opens the temporary Git overlay).
+            KeyCode::Char('G') if self.git_panel.view == GitView::Changes => {
+                match self.git_panel.toggle_stage_all(&self.web_api) {
+                    Ok(()) => self.status = "staged state toggled".to_string(),
+                    Err(err) => self.error = Some(err.to_string()),
                 }
             }
             KeyCode::Char('d') => {

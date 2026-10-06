@@ -424,6 +424,11 @@
           return;
         }
         if (key === "Escape" && !event.metaKey && !event.altKey && !event.ctrlKey && !confirmVisible) {
+          // A temporary Files/Git overlay stacked above this terminal (same
+          // z-index, later in DOM order) owns Escape instead: the shared
+          // overlay trap closes that overlay. Registration order of the two
+          // document traps must not decide this.
+          if (tempOverlayAboveTerminal()) return;
           event.preventDefault();
           event.stopImmediatePropagation();
           if (!isMinimized && term) {
@@ -459,6 +464,27 @@
 
       function isCloseControl(target) {
         return !!(target && target.closest && target.closest(".temp-terminal-close, .temp-terminal-minimize, .temp-terminal-restore, .temp-terminal-confirm, .temp-terminal-promote"));
+      }
+
+      // True when a temporary Files/Git overlay modal is visible and
+      // stacked above this terminal's modal: same z-index, later in DOM
+      // order. The terminal yields Escape (and lets the overlay trap run)
+      // so the visually topmost surface always owns the key.
+      function tempOverlayAboveTerminal() {
+        var doc = globalThis.document;
+        if (!doc || !doc.querySelectorAll || !modal) return false;
+        var overlays = doc.querySelectorAll(".temp-overlay-backdrop");
+        for (var i = 0; i < overlays.length; i += 1) {
+          var overlayModal = overlays[i];
+          var hidden = overlayModal.style && overlayModal.style.display === "none";
+          var ariaHidden = overlayModal.getAttribute && overlayModal.getAttribute("aria-hidden") === "true";
+          if (hidden || ariaHidden) continue;
+          // Node.DOCUMENT_POSITION_FOLLOWING (4): the overlay is after this
+          // terminal in DOM order, so it renders on top at equal z-index.
+          var rel = modal.compareDocumentPosition(overlayModal);
+          if (rel & 4) return true;
+        }
+        return false;
       }
 
       function tempTerminalOwnsEventTarget(target) {

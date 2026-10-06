@@ -1269,7 +1269,7 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
         app.status
     );
 
-    // --- Prefix git action arms against the live server: stage-all,
+    // --- In-screen git action arms against the live server: stage-all,
     // unstage, stage-file, and stash-file all run through the panel
     // wrappers (which refresh the view after each action).
     std::fs::write(
@@ -1288,13 +1288,11 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
         .refresh_view(&app.web_api)
         .map_err(|e| e.to_string())?;
 
-    // Prefix G toggles stage-all: tracked changes stage (untracked files
-    // stay untracked, like `git add -u`), then toggle back.
-    app.handle_key(ctrl_b);
-    app.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Char('G'),
-        crossterm::event::KeyModifiers::SHIFT,
-    ));
+    // In-screen G toggles stage-all (webui git-panel `stageAll: KeyG`
+    // parity): tracked changes stage (untracked files stay untracked,
+    // like `git add -u`), then toggle back. The old prefix Shift+G now
+    // opens the temporary Git overlay.
+    press(&mut app, 'G');
     assert!(
         app.git_panel
             .files
@@ -1308,11 +1306,7 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
             .map(|f| (f.path.clone(), f.status.clone()))
             .collect::<Vec<_>>()
     );
-    app.handle_key(ctrl_b);
-    app.handle_key(crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Char('G'),
-        crossterm::event::KeyModifiers::SHIFT,
-    ));
+    press(&mut app, 'G');
     assert!(
         !app.git_panel
             .files

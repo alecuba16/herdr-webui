@@ -584,7 +584,12 @@ describe("mobile bundle load", () => {
     // through the shared runAction('temp-terminal') path.
     match(mobileSource, /getMobileTempTerminal: \(\) => mobileTempTerminal/);
     const mobileScreensSource = readFileSync(new URL("./mobile/screens.js", import.meta.url), "utf8");
-    match(mobileScreensSource, /runAction\('temp-terminal'\)/);
+    // The More grid drives every action tool through the same runAction
+    // path (temp-terminal, temp-files, temp-git), keyed by tool.screen.
+    match(mobileScreensSource, /runAction\('\$\{tool\.screen\}'\)/);
+    ok(mobileScreensSource.includes("temp-terminal"), "temp-terminal card present");
+    ok(mobileScreensSource.includes("temp-files"), "temp-files card present");
+    ok(mobileScreensSource.includes("temp-git"), "temp-git card present");
     match(mobileScreensSource, /getMobileTempTerminal/);
     // Mobile must wire handlePaneExited for server-side pane exit events
     // (now in the events module, reached via the getTempTerminal dep).

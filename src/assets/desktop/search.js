@@ -691,6 +691,20 @@ function runSearchAction(action) {
     const ws = currentSearchWorkspace();
     const folder = ws ? (workspacePath(ws) || "") : "";
     tempTerminal.open(folder);
+  } else if (action === "temp-files") {
+    const overlays = globalThis.HerdrTempOverlays;
+    if (overlays) {
+      const ws = currentSearchWorkspace();
+      const folder = ws ? (workspacePath(ws) || "") : "";
+      overlays.openFiles(folder);
+    }
+  } else if (action === "temp-git") {
+    const overlays = globalThis.HerdrTempOverlays;
+    if (overlays) {
+      const ws = currentSearchWorkspace();
+      const folder = ws ? (workspacePath(ws) || "") : "";
+      overlays.openGit(folder);
+    }
   } else if (action === "sessions") showSessionManager();
   else if (action === "files") openWorkspaceFileBrowser(state.ws);
   else if (action === "git") openWorkspaceGitUi(state.ws);

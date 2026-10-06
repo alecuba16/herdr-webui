@@ -549,3 +549,147 @@
   outline: 1px dashed #f9e2af;
   outline-offset: 1px;
 }
+
+/* Temporary Files/Git overlays (shared chrome from temp_overlay.js). The
+   layout mirrors the temporary terminal modal; the body hosts the re-parented
+   drawer panel instead of a terminal. */
+.temp-overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  display: none;
+  place-items: center;
+  background: #000c;
+  overflow: hidden;
+  padding: 16px;
+  z-index: 1200;
+}
+.temp-overlay-modal {
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px #000a;
+  width: calc(100vw - 32px);
+  height: calc(100dvh - 32px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.temp-overlay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.temp-overlay-head-main {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+}
+.temp-overlay-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.temp-overlay-folder {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.temp-overlay-head-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.temp-overlay-hint {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.temp-overlay-hint-error {
+  color: var(--danger, #f38ba8);
+}
+.temp-overlay-folder-btn,
+.temp-overlay-minimize,
+.temp-overlay-close {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.temp-overlay-folder-btn {
+  border: 1px solid var(--border2);
+  font-size: 12px;
+}
+.temp-overlay-folder-btn:hover,
+.temp-overlay-minimize:hover,
+.temp-overlay-close:hover {
+  background: var(--border);
+  color: var(--fg);
+}
+.temp-overlay-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.temp-overlay-body .file-browser-panel,
+.temp-overlay-body .git-ui-panel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+}
+.temp-overlay-restore-bar {
+  align-items: flex-end;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 18px);
+  z-index: 1199;
+}
+.temp-overlay-restore {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  box-shadow: 0 10px 28px #0008;
+  color: var(--fg);
+  cursor: pointer;
+  display: inline-flex;
+  gap: 8px;
+  padding: 8px 12px;
+}
+.temp-overlay-restore:hover {
+  background: var(--border);
+}
+.temp-overlay-restore-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+.temp-overlay-restore-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+/* The directory picker opened from "Change folder" must stack above the
+   overlay backdrop (both default to 1200). */
+body .directory-picker-backdrop {
+  z-index: 1250;
+}
