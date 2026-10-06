@@ -73,6 +73,8 @@ There is no single `run.sh`. Regenerate manually with the helpers in
 4. Launch the TUI in iTerm2 tab 4 with explicit sockets, then drive keys with
    `tui_send.py` (AppleScript `write text` + `ASCII character` control bytes).
 5. `capture.sh` finds the iTerm window and runs `screencapture -x -l <id>`.
+6. Animated GIF: two-pass ffmpeg (`palettegen`/`paletteuse`, 960px, 1.2s per
+   frame over a concat list of the 37 PNGs) produces `00-tui-tour.gif`.
 
 Driving happens through iTerm2 AppleScript, so regeneration needs macOS with
 Accessibility and Screen Recording permissions granted.
