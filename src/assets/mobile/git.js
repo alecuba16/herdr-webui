@@ -4,6 +4,7 @@
     api,
     render,
     escapeHtml,
+    inputAttrs,
     jsArg,
     pathBasename,
     currentWorkspaceCwd,
@@ -43,6 +44,8 @@
       state.gitBranchesError = "";
       state.gitBusy = "";
       state.gitMutating = false;
+      state.gitCommitSheet = null;
+      state.gitCommitDone = false;
     }
 
     async function selectGitFile(file, kind) {
@@ -130,7 +133,7 @@
 
     async function gitDiscardFile() {
       if (!state.gitFile) return;
-      if (!confirmFn(`Discard all uncommitted changes to ${state.gitFile}? This cannot be undone.`)) return;
+      if (!(await confirmFn(`Discard all uncommitted changes to ${state.gitFile}? This cannot be undone.`))) return;
       await gitMutate("Discarding", async (cwd) => {
         await api("/api/git-ui/discard", {
           method: "POST",
@@ -139,6 +142,66 @@
         });
         backGitFiles();
       });
+    }
+
+    // Commit: staged changes only, same contract as the desktop drawer.
+    // POST /api/git-ui/commit with {cwd, title, body, amend}.
+    function openCommitSheet() {
+      const status = state.gitStatus;
+      const staged = (status && status.staged) || [];
+      if (!staged.length) {
+        state.gitError = "Stage changes before committing.";
+        render();
+        return;
+      }
+      state.gitError = "";
+      state.gitCommitSheet = { title: "", body: "" };
+      render();
+    }
+
+    function closeCommitSheet() {
+      state.gitCommitSheet = null;
+      render();
+    }
+
+    function setCommitField(field, value) {
+      if (!state.gitCommitSheet) return;
+      state.gitCommitSheet[field] = String(value || "");
+    }
+
+    async function submitCommit() {
+      const sheet = state.gitCommitSheet;
+      if (!sheet || state.gitMutating) return;
+      const title = (sheet.title || "").trim();
+      if (!title) {
+        state.gitError = "Commit title is required.";
+        render();
+        return;
+      }
+      const cwd = currentWorkspaceCwd();
+      if (!cwd) return;
+      state.gitMutating = true;
+      state.gitBusy = "Committing";
+      render();
+      try {
+        await api("/api/git-ui/commit", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cwd, title, body: sheet.body || "", amend: false }),
+        });
+        state.gitCommitSheet = null;
+        state.gitCommitDone = true;
+      } catch (error) {
+        state.gitError = error.message || String(error);
+      }
+      state.gitMutating = false;
+      state.gitBusy = "";
+      await loadGitStatus();
+    }
+
+    function dismissCommitDone() {
+      state.gitCommitDone = false;
+      render();
     }
 
     async function loadGitBranches() {
@@ -158,7 +221,7 @@
 
     async function gitSwitchBranch(name) {
       if (!name || state.gitMutating) return;
-      if (!confirmFn(`Switch to branch ${name}?`)) return;
+      if (!(await confirmFn(`Switch to branch ${name}?`))) return;
       await gitMutate("Switching branch", async (cwd) => {
         await api("/api/git-ui/switch", {
           method: "POST",
@@ -212,7 +275,15 @@
       const branchesBlock = state.gitBranches
         ? renderGitBranchList(state.gitBranches)
         : `<button class="mobile-btn mobile-wide" onclick="HerdrMobile.toggleGitBranches()">Branches</button>${state.gitBranchesError ? `<div class="mobile-error">${escapeHtml(state.gitBranchesError)}</div>` : ""}`;
-      screen.innerHTML = `<section class="mobile-section mobile-git"><h2>Git</h2><p class="mobile-help">${escapeHtml(status.branch || "detached")} · ${escapeHtml(status.state || "")}</p><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadGitStatus()">Refresh</button>${busy}${state.gitError ? `<div class="mobile-error">${escapeHtml(state.gitError)}</div>` : ""}${rows}${branchesBlock}</section>`;
+      const stagedCount = ((status.staged || []).length);
+      const commitSheet = state.gitCommitSheet
+        ? `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.closeCommitSheet()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Commit staged changes"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">Commit ${stagedCount} staged file${stagedCount === 1 ? "" : "s"}</p><input id="mobileCommitTitle" class="mobile-sheet-input" type="text"${inputAttrs("done")} placeholder="commit title" value="${escapeHtml(state.gitCommitSheet.title)}" oninput="HerdrMobile.setCommitField('title', this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.submitCommit(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.closeCommitSheet(); }" /><textarea id="mobileCommitBody" class="mobile-sheet-input" rows="3"${inputAttrs()} placeholder="details (optional)" oninput="HerdrMobile.setCommitField('body', this.value)">${escapeHtml(state.gitCommitSheet.body)}</textarea><div class="mobile-sheet-actions"><button class="mobile-btn" ${state.gitMutating ? "disabled" : ""} onclick="HerdrMobile.closeCommitSheet()">Cancel</button><button class="mobile-btn primary" id="mobileCommitSubmit" ${state.gitMutating ? "disabled" : ""} onclick="HerdrMobile.submitCommit()">${state.gitMutating ? "Committing…" : "Commit"}</button></div></div>`
+        : "";
+      const commitDone = state.gitCommitDone
+        ? `<div class="mobile-commit-done" role="status"><span>Commit created</span><button class="mobile-btn mini" onclick="HerdrMobile.dismissCommitDone()">Done</button></div>`
+        : "";
+      const commitButton = `<button class="mobile-btn primary mobile-wide" ${stagedCount ? "" : "disabled"} title="${stagedCount ? "Commit staged changes" : "Stage changes before committing"}" onclick="HerdrMobile.openCommitSheet()">Commit staged</button>`;
+      screen.innerHTML = `<section class="mobile-section mobile-git"><h2>Git</h2><p class="mobile-help">${escapeHtml(status.branch || "detached")} · ${escapeHtml(status.state || "")}</p><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadGitStatus()">Refresh</button>${commitButton}${busy}${commitDone}${state.gitError ? `<div class="mobile-error">${escapeHtml(state.gitError)}</div>` : ""}${rows}${branchesBlock}${commitSheet}</section>`;
     }
 
     function renderGitBranchList(branchesData) {
@@ -260,6 +331,11 @@
       gitStageFile,
       gitUnstageFile,
       gitDiscardFile,
+      openCommitSheet,
+      closeCommitSheet,
+      setCommitField,
+      submitCommit,
+      dismissCommitDone,
       loadGitBranches,
       gitSwitchBranch,
       toggleGitBranches,

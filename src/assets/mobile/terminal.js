@@ -338,7 +338,20 @@
       sendInputData(String(data || ""));
     }
 
-    return { connect, destroy, disconnect, applyFontFamily, applyLinks, scrollToBottom, sendControlKey };
+    return {
+      connect,
+      destroy,
+      disconnect,
+      applyFontFamily,
+      applyLinks,
+      scrollToBottom,
+      sendControlKey,
+      // Composer/prompt-card support: the wterm adapter exposes .wterm
+      // (with .bridge for grid reads), and paste is the safest text path
+      // (normalizes newlines, strips reports/replies like typed input).
+      getTerm: () => term,
+      sendPasteToTerminal,
+    };
   }
 
   globalThis.HerdrMobileTerminal = { create: createMobileTerminal };

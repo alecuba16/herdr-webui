@@ -11,14 +11,16 @@ lint: fmt
 test-js:
     node --test src/assets/*.test.mjs
 
-test: test-js
+# Live keyboard-guards audits: the runner builds, boots its own isolated
+# server + headless Chrome and tears both down. Nothing external needed.
+test-e2e:
+    bash scripts/e2e/run-keyboard-guards-e2e.sh
+
+test-all: test-js test-e2e
     cargo test --target-dir {{target_dir}}
 
-# Acceptance checks live in scripts/e2e. No-browser ones run from here.
-# Real-browser acceptance (headless Chrome over CDP) moved out of the repo:
-# use the external cdp-chrome skill (~/.agents/skills/cdp-chrome) to launch
-# a headless Chrome for Testing, then drive the served app per
-# docs/e2e-external.md.
+test: test-js
+    cargo test --target-dir {{target_dir}}
 
 # No-browser acceptance run for the Git explorer rework. See scripts/e2e/README.md.
 git-e2e:

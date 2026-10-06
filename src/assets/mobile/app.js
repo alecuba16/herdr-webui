@@ -3,6 +3,7 @@
     escapeHtml,
     createTerminalInputGate,
     forgetSessionState,
+    inputAttrs,
     jsArg,
     parseRoutePath,
     pathBasename,
@@ -105,6 +106,7 @@
     mobileWorktrees,
     mobileSearch,
     mobileGit,
+    mobileComposer,
     mobileEvents,
     mobileSessions,
     mobileScreens,
@@ -298,6 +300,54 @@
     badge.onclick = () => showScreen("sessions");
   }
 
+  // Styled in-app confirm sheet. Replaces raw window.confirm in the mobile
+  // bundle (the desktop parity gap): one promise-based surface, mounted in
+  // the shell so screen re-renders never destroy it.
+  const confirmQueue = [];
+  let pendingConfirmResolve = null;
+
+  function mobileConfirm(message) {
+    return new Promise((resolve) => {
+      // Shell may not exist yet (module init before first renderShell).
+      const sheet = el("mobileConfirmSheet");
+      const backdrop = el("mobileConfirmBackdrop");
+      if (!sheet || !backdrop) {
+        resolve(window.confirm(message));
+        return;
+      }
+      confirmQueue.push({ message: String(message || ""), resolve });
+      if (!pendingConfirmResolve) showNextConfirm();
+    });
+  }
+
+  function showNextConfirm() {
+    const next = confirmQueue.shift();
+    if (!next) return;
+    const sheet = el("mobileConfirmSheet");
+    const backdrop = el("mobileConfirmBackdrop");
+    if (!sheet || !backdrop) {
+      next.resolve(window.confirm(next.message));
+      showNextConfirm();
+      return;
+    }
+    pendingConfirmResolve = next.resolve;
+    const message = sheet.querySelector("#mobileConfirmMessage");
+    if (message) message.textContent = next.message;
+    sheet.hidden = false;
+    backdrop.hidden = false;
+  }
+
+  function resolveConfirm(value) {
+    const sheet = el("mobileConfirmSheet");
+    const backdrop = el("mobileConfirmBackdrop");
+    if (sheet) sheet.hidden = true;
+    if (backdrop) backdrop.hidden = true;
+    const resolve = pendingConfirmResolve;
+    pendingConfirmResolve = null;
+    if (resolve) resolve(!!value);
+    showNextConfirm();
+  }
+
   function renderShell() {
     // Shell rebuild recreates the nav bar, so the cached button list from a
     // previous shell is stale.
@@ -312,7 +362,7 @@
         <main class="mobile-screen" id="mobileScreen"></main>
         <div class="mobile-search-sheet" id="mobileSearchSheet" hidden>
           <div class="mobile-search-card">
-            <div class="mobile-search-head"><input id="mobileSearchInput" placeholder="Search workspaces, files, folders, content" autocomplete="off" /><button class="mobile-btn" id="mobileSearchClose">✕</button></div>
+            <div class="mobile-search-head"><input id="mobileSearchInput"${inputAttrs("search")} placeholder="Search workspaces, files, folders, content" /><button class="mobile-btn" id="mobileSearchClose">✕</button></div>
             <div class="mobile-search-results" id="mobileSearchResults"></div>
             <div class="mobile-help">Enter opens · Alt+F files · Alt+D folders · Esc closes</div>
           </div>
@@ -325,6 +375,8 @@
         </nav>
         <div class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" hidden onclick="HerdrMobile.closeDrawer()"></div>
         <aside class="mobile-drawer" id="mobileDrawer" hidden role="dialog" aria-modal="true" aria-label="Tools menu"><div class="mobile-drawer-items" id="mobileDrawerItems"></div></aside>
+        <div class="mobile-sheet-backdrop" id="mobileConfirmBackdrop" hidden onclick="HerdrMobile.resolveConfirm(false)"></div>
+        <div class="mobile-sheet mobile-confirm-sheet" id="mobileConfirmSheet" hidden role="alertdialog" aria-modal="true" aria-label="Confirm"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title" id="mobileConfirmMessage"></div><div class="mobile-sheet-actions"><button class="mobile-btn" id="mobileConfirmCancel" onclick="HerdrMobile.resolveConfirm(false)">Cancel</button><button class="mobile-btn primary" id="mobileConfirmOk" onclick="HerdrMobile.resolveConfirm(true)">Confirm</button></div></div>
       </div>
       </div>`;
     el("mobileBack").onclick = () => showScreen("home");
@@ -730,7 +782,7 @@
   mobileActions = globalThis.HerdrMobileActionsModule.create({
     state,
     api,
-    confirmFn: (...args) => confirm(...args),
+    confirmFn: (...args) => mobileConfirm(...args),
     refresh,
     render,
     showScreen,
@@ -750,7 +802,7 @@
   mobileBackend = globalThis.HerdrMobileBackendModule.create({
     state,
     api,
-    confirmFn: (...args) => confirm(...args),
+    confirmFn: (...args) => mobileConfirm(...args),
     localStorage,
     refresh,
     getMobileEvents: () => mobileEvents,
@@ -833,8 +885,10 @@
     api,
     applyTheme,
     escapeHtml,
+    inputAttrs,
     localStorage,
     state,
+    confirmFn: (...args) => mobileConfirm(...args),
   });
   mobileWorktrees = globalThis.HerdrMobileWorktrees.create({
     api,
@@ -842,6 +896,7 @@
     defaultFolderFn: () => state.defaultFolder || "",
     destroyTerminal: mobileTerminal.destroy,
     escapeHtml,
+    inputAttrs,
     jsArg,
     refresh,
     render,
@@ -851,9 +906,10 @@
   });
   mobileFileBrowser = globalThis.HerdrMobileFileBrowser.create({
     api,
-    confirm: (...args) => confirm(...args),
+    confirm: (...args) => mobileConfirm(...args),
     currentWorkspaceCwd,
     escapeHtml,
+    inputAttrs,
     render,
     state,
   });
@@ -881,11 +937,30 @@
     api,
     render,
     escapeHtml,
+    inputAttrs,
     jsArg,
     pathBasename,
     currentWorkspaceCwd,
-    confirmFn: (...args) => confirm(...args),
+    confirmFn: (...args) => mobileConfirm(...args),
   });
+
+  mobileComposer = globalThis.HerdrMobileComposerModule.create({
+    state,
+    api,
+    render,
+    escapeHtml,
+    inputAttrs,
+    statusClassFn: (status) => mobileAttention.statusClass(status),
+    getTerminal: () => mobileTerminal.getTerm(),
+  });
+  // panels.js reads these through a global dep hook: it has no direct
+  // reference to the composer module (load order would flip otherwise).
+  globalThis.HerdrMobileComposerDeps = {
+    renderComposerBar: (...args) => mobileComposer.renderComposerBar(...args),
+    renderComposerNote: (...args) => mobileComposer.renderComposerNote(...args),
+    renderPromptCard: (...args) => mobileComposer.renderPromptCard(...args),
+    draftValue: (...args) => mobileComposer.draftValue(...args),
+  };
 
   mobileEvents = globalThis.HerdrMobileEventsModule.create({
     document,
@@ -909,9 +984,10 @@
     api,
     render,
     escapeHtml,
+    inputAttrs,
     jsArg,
     localStorage,
-    confirmFn: (...args) => confirm(...args),
+    confirmFn: (...args) => mobileConfirm(...args),
     loadSessions,
     refresh,
     connectEvents: (...args) => mobileEvents.connectEvents(...args),
@@ -948,6 +1024,7 @@
     state,
     render,
     escapeHtml,
+    inputAttrs,
     jsArg,
     MORE_SCREENS,
     currentWorkspace,
@@ -957,6 +1034,9 @@
     sessionBackendLabel,
     currentSessionBackend,
     mobileAttention,
+    api,
+    refresh,
+    confirmFn: (...args) => mobileConfirm(...args),
     getWorkingDismissals: () => workingDismissals,
     getMobileTempTerminal: () => mobileTempTerminal,
     workspacesById,
@@ -982,6 +1062,22 @@
     gitStageFile: (...args) => mobileGit.gitStageFile(...args),
     gitUnstageFile: (...args) => mobileGit.gitUnstageFile(...args),
     gitDiscardFile: (...args) => mobileGit.gitDiscardFile(...args),
+    openCommitSheet: (...args) => mobileGit.openCommitSheet(...args),
+    closeCommitSheet: (...args) => mobileGit.closeCommitSheet(...args),
+    setCommitField: (...args) => mobileGit.setCommitField(...args),
+    submitCommit: (...args) => mobileGit.submitCommit(...args),
+    dismissCommitDone: (...args) => mobileGit.dismissCommitDone(...args),
+    composerInput: (...args) => mobileComposer.setDraft(...args),
+    composerSubmit: (...args) => mobileComposer.submit(...args),
+    renameWorkspace: (...args) => mobileScreens.startRenameWorkspace(...args),
+    setRenameWorkspaceValue: (...args) => mobileScreens.setRenameWorkspaceValue(...args),
+    submitRenameWorkspace: (...args) => mobileScreens.submitRenameWorkspace(...args),
+    cancelRenameWorkspace: (...args) => mobileScreens.cancelRenameWorkspace(...args),
+    closeWorkspace: (...args) => mobileScreens.closeWorkspaceById(...args),
+    resolveConfirm,
+    promptAnswer: (...args) => mobileComposer.promptAnswer(...args),
+    promptAnswerText: (...args) => mobileComposer.promptAnswerText(...args),
+    promptDismiss: (...args) => mobileComposer.promptDismiss(...args),
     toggleGitBranches: (...args) => mobileGit.toggleGitBranches(...args),
     gitSwitchBranch: (...args) => mobileGit.gitSwitchBranch(...args),
     filesToggle: mobileFileBrowser.toggle,
@@ -1054,6 +1150,11 @@
     setSearchFoldersEnabled: mobileSettings.setSearchFoldersEnabled,
     setSearchContentEnabled: mobileSettings.setSearchContentEnabled,
     setSearchSectionOrder: mobileSettings.setSearchSectionOrder,
+    toggleSearchSection: mobileSettings.toggleSearchSection,
+    setTerminalCore: mobileSettings.setTerminalCore,
+    setFileContentSearchDefaultExpanded: mobileSettings.setFileContentSearchDefaultExpanded,
+    setFileContentSearchMatchCase: mobileSettings.setFileContentSearchMatchCase,
+    setFileContentSearchRegex: mobileSettings.setFileContentSearchRegex,
     setSettingsFilter: mobileSettings.setSettingsFilter,
     moveSearchSection: mobileSettings.moveSearchSection,
     setFileContentSearchMinChars: mobileSettings.setFileContentSearchMinChars,

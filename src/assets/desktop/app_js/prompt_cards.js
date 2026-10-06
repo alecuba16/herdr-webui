@@ -182,7 +182,7 @@
       ? prompt.options.map((o) =>
           `<button type="button" class="prompt-card-option" data-option-key="${escapeHtml(o.key)}">${escapeHtml(o.label)}</button>`
         ).join("")
-      : `<form id="promptCardForm"><input id="promptCardInput" class="prompt-card-input" placeholder="Type your response" autocomplete="off"><button type="submit" class="prompt-card-send">Send</button></form>`;
+      : `<form id="promptCardForm"><input id="promptCardInput" class="prompt-card-input" placeholder="Type your response"${inputAttrs("send")}><button type="submit" class="prompt-card-send">Send</button></form>`;
     node.innerHTML =
       `<div class="prompt-card" role="dialog" aria-label="${escapeHtml(prompt.title)}">` +
       `<div class="prompt-card-head"><strong>${escapeHtml(prompt.title)}</strong>` +

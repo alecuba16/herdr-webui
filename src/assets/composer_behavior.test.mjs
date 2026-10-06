@@ -21,6 +21,12 @@ const SOURCE = readFileSync(
   "utf8",
 );
 
+// The real inputAttrs guard helper from shared/core.js (module.exports),
+// injected into the vm sandbox exactly like DESKTOP_JS scope provides it.
+const { createRequire } = await import("node:module");
+const require = createRequire(import.meta.url);
+const { inputAttrs } = require("./shared/core.js");
+
 function stubNode(id) {
   const node = {
     id,
@@ -98,6 +104,7 @@ function loadComposer(overrides = {}) {
     console,
     document,
     state,
+    inputAttrs,
     api: async (url, opt) => {
       apiCalls.push({ url, opt });
       return api(url, opt);
@@ -167,6 +174,11 @@ describe("composer module", () => {
     ok(
       /role="status"/.test(overlay.innerHTML),
       "the note row is a live region",
+    );
+    // The composer textarea must carry the full Android keyboard guard set.
+    ok(
+      /<textarea id="terminalComposerInput"[^>]*autocomplete="off"[^>]*autocorrect="off"[^>]*autocapitalize="none"[^>]*spellcheck="false"[^>]*writingsuggestions="false"[^>]*translate="no"[^>]*enterkeyhint="send"/.test(overlay.innerHTML),
+      "composer textarea carries the full keyboard guard set with enterkeyhint=send",
     );
   });
 

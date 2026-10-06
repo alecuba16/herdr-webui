@@ -827,6 +827,116 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   gap: 8px;
   justify-content: flex-end;
 }
+.mobile-commit-done {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--status-done, #89b4fa);
+  border-radius: 10px;
+  color: var(--status-done, #89b4fa);
+  font-size: 14px;
+}
+.mobile-composer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--border);
+  background: var(--bg, #1e1e2e);
+}
+.mobile-composer textarea {
+  flex: 1;
+  min-height: 38px;
+  max-height: 120px;
+  resize: none;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft, rgba(255, 255, 255, 0.04));
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.3;
+}
+.mobile-composer-note {
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+  background: var(--bg, #1e1e2e);
+}
+.mobile-prompt-card {
+  margin: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  padding: 12px;
+  border: 1px solid var(--status-blocked, #f38ba8);
+  border-radius: 12px;
+  background: var(--bg, #1e1e2e);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+.mobile-prompt-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.mobile-prompt-body {
+  display: grid;
+  gap: 8px;
+}
+.mobile-prompt-option {
+  display: block;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft, rgba(255, 255, 255, 0.04));
+  color: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+.mobile-prompt-option:active {
+  filter: brightness(1.15);
+}
+.mobile-workspace-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mobile-workspace-row .mobile-row {
+  flex: 1;
+  min-width: 0;
+}
+.mobile-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.mobile-row-actions .mobile-btn.mini {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+}
+.mobile-row-actions .mobile-btn.mini.danger {
+  color: var(--status-blocked, #f38ba8);
+  border-color: var(--border);
+}
+.mobile-version-footer {
+  display: block;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
 .herdr-file-tree {
   display: flex;
   flex-direction: column;

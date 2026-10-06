@@ -46,8 +46,7 @@
         '<div class="terminal-composer-note" id="terminalComposerNote" role="status" hidden></div>' +
         '<div class="terminal-composer-session" id="terminalComposerSession" hidden></div>' +
         '<div class="terminal-composer-row">' +
-        '<textarea id="terminalComposerInput" rows="2" placeholder="Send a message" ' +
-        'aria-label="Message to this panel"></textarea>' +
+        `<textarea id="terminalComposerInput" rows="2" placeholder="Send a message" aria-label="Message to this panel"${inputAttrs("send")}></textarea>` +
         '<button type="button" class="btn btn-primary" id="terminalComposerSend">Send</button>' +
         "</div>";
       shell.appendChild(node);

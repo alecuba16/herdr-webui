@@ -13,6 +13,12 @@ const SOURCE = readFileSync(
   "utf8",
 );
 
+// The real inputAttrs guard helper from shared/core.js (module.exports),
+// injected into the vm sandbox exactly like DESKTOP_JS scope provides it.
+const { createRequire } = await import("node:module");
+const require = createRequire(import.meta.url);
+const { inputAttrs } = require("./shared/core.js");
+
 function element(id) {
   const el = {
     id,
@@ -159,6 +165,7 @@ function loadModule(overrides = {}) {
       String(value).replace(/[&<>"']/g, (ch) =>
         ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]),
     sendInputData: (data) => sent.push(data),
+    inputAttrs,
     ...overrides.extra,
   };
   ctx.globalThis = ctx;
@@ -291,6 +298,11 @@ describe("prompt cards module", () => {
     ok(form, "text prompt renders the form");
     const input = card.querySelector("#promptCardInput");
     ok(input, "input present");
+    // The free-text input must carry the full Android keyboard guard set.
+    ok(
+      /<input id="promptCardInput"[^>]*autocomplete="off"[^>]*autocorrect="off"[^>]*autocapitalize="none"[^>]*spellcheck="false"[^>]*writingsuggestions="false"[^>]*translate="no"[^>]*enterkeyhint="send"/.test(card.innerHTML),
+      "prompt card input carries the full keyboard guard set with enterkeyhint=send",
+    );
     input.value = "refactor the parser";
     form.onsubmit({ preventDefault() {} });
     equal(sent.length, 1);

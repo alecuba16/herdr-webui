@@ -34,9 +34,15 @@ function element(id = "") {
       (this.listeners[event] || (this.listeners[event] = [])).push(listener);
     },
     setAttribute() {},
+    querySelector() {
+      return null;
+    },
     querySelectorAll() {
       return [];
     },
+    remove() {},
+    replaceWith() {},
+    parentNode: null,
   };
 }
 
@@ -57,6 +63,29 @@ function context(pathname = "/", options = {}) {
     if (!elements.has(id)) elements.set(id, element(id));
     return elements.get(id);
   };
+  // The mobile app now uses a styled confirm sheet (mobileConfirm) instead
+  // of window.confirm. Simulate the user tapping Confirm/Cancel: when the
+  // sheet is shown, auto-resolve it with the injected confirm stub's answer
+  // so the real promise path runs while tests keep their confirm semantics.
+  const confirmSheet = element("mobileConfirmSheet");
+  let confirmSheetShown = false;
+  Object.defineProperty(confirmSheet, "hidden", {
+    configurable: true,
+    get: () => !confirmSheetShown,
+    set: (value) => {
+      confirmSheetShown = !value;
+      if (confirmSheetShown) {
+        // Live lookup: tests may swap ctx.confirm after context creation.
+        const confirmImpl = ctx.confirm || options.confirm || (() => true);
+        const answer = confirmImpl();
+        Promise.resolve().then(() => {
+          if (ctx.HerdrMobile && ctx.HerdrMobile.resolveConfirm)
+            ctx.HerdrMobile.resolveConfirm(answer);
+        });
+      }
+    },
+  });
+  elements.set("mobileConfirmSheet", confirmSheet);
   const locationRef = {
     pathname,
     href: "",
@@ -488,6 +517,8 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./mobile/git.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./mobile/composer.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./mobile/sessions.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8") +
@@ -635,6 +666,29 @@ describe("mobile bundle load", () => {
     equal(gate(), true);
     gate.enable();
     equal(gate(), false);
+  });
+
+  it("emits the full keyboard guard set from the real inputAttrs helper", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const attrs = ctx.HerdrMobileCore.inputAttrs();
+    // Full guard set: Android autocorrect/grammar must never engage on any
+    // mobile text input. If someone trims a guard from mobile core.js this
+    // fails even though per-module tests stub inputAttrs and stay green.
+    match(attrs, /autocomplete="off"/);
+    match(attrs, /autocorrect="off"/);
+    match(attrs, /autocapitalize="none"/);
+    match(attrs, /spellcheck="false"/);
+    match(attrs, /writingsuggestions="false"/);
+    match(attrs, /translate="no"/);
+    // No enterkeyhint without an argument.
+    ok(!attrs.includes("enterkeyhint"));
+    // With one, it is escaped and appended.
+    const withHint = ctx.HerdrMobileCore.inputAttrs("send");
+    match(withHint, /enterkeyhint="send"/);
+    ok(withHint.includes(attrs));
+    const escaped = ctx.HerdrMobileCore.inputAttrs('"><img onerror=alert(1)>');
+    ok(!escaped.includes('enterkeyhint="\"><img'), "enterkeyhint must be escaped");
   });
 
   it("renders mobile task hub and action search", () => {
