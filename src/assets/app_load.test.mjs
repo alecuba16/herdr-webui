@@ -5909,6 +5909,9 @@ describe("a11y audit contract", () => {
       ".herdr-markdown-body",
       ".herdr-lsp-diagnostics",
       ".herdr-content-search-preview",
+      ".panel-menu",
+      ".lens-tool-output",
+      ".worktree-open-list",
     ];
     for (const surface of surfaces) {
       // String.raw: template literals eat \s/\{ escapes (unknown escapes

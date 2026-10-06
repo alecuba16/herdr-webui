@@ -288,6 +288,14 @@
    stacks 15k+ px of hunks and its default overlay scrollbar gives
    the same no-signal glitch as the lists (found on the real git UI,
    not by enumeration alone).
+   Pass 3 additions, each proven scrolling on the live DOM with real
+   overflow: .panel-menu (viewport-clamped via
+   --workspace-panel-menu-max-height, measured 1190px in a 393px
+   clamp), .lens-tool-output (40vh clamp, 796px in 238px),
+   .worktree-open-list (min(340px, 38vh) clamp, 756px in 228px).
+   .section and .project-dashboard stay out: the side context forces
+   overflow hidden on .section, and the dashboard is a single
+   centered hero card that only overflows below ~350px viewports.
    Editors, CodeMirror scrollers and horizontal-only scrollers
    (diff xscroll, pre/mermaid blocks) stay default: they draw their
    own edge affordances, and a styled track on top of code reads as
@@ -303,7 +311,10 @@
 .directory-picker-tree,
 .herdr-markdown-body,
 .herdr-lsp-diagnostics,
-.herdr-content-search-preview {
+.herdr-content-search-preview,
+.panel-menu,
+.lens-tool-output,
+.worktree-open-list {
   scrollbar-width: thin;
 }
 .git-ui-side::-webkit-scrollbar,
@@ -317,7 +328,10 @@
 .directory-picker-tree::-webkit-scrollbar,
 .herdr-markdown-body::-webkit-scrollbar,
 .herdr-lsp-diagnostics::-webkit-scrollbar,
-.herdr-content-search-preview::-webkit-scrollbar {
+.herdr-content-search-preview::-webkit-scrollbar,
+.panel-menu::-webkit-scrollbar,
+.lens-tool-output::-webkit-scrollbar,
+.worktree-open-list::-webkit-scrollbar {
   width: 8px;
 }
 .git-ui-side::-webkit-scrollbar-thumb,
@@ -331,7 +345,10 @@
 .directory-picker-tree::-webkit-scrollbar-thumb,
 .herdr-markdown-body::-webkit-scrollbar-thumb,
 .herdr-lsp-diagnostics::-webkit-scrollbar-thumb,
-.herdr-content-search-preview::-webkit-scrollbar-thumb {
+.herdr-content-search-preview::-webkit-scrollbar-thumb,
+.panel-menu::-webkit-scrollbar-thumb,
+.lens-tool-output::-webkit-scrollbar-thumb,
+.worktree-open-list::-webkit-scrollbar-thumb {
   background: var(--border2);
   border-radius: 8px;
 }
@@ -346,7 +363,10 @@
 .directory-picker-tree::-webkit-scrollbar-thumb:hover,
 .herdr-markdown-body::-webkit-scrollbar-thumb:hover,
 .herdr-lsp-diagnostics::-webkit-scrollbar-thumb:hover,
-.herdr-content-search-preview::-webkit-scrollbar-thumb:hover {
+.herdr-content-search-preview::-webkit-scrollbar-thumb:hover,
+.panel-menu::-webkit-scrollbar-thumb:hover,
+.lens-tool-output::-webkit-scrollbar-thumb:hover,
+.worktree-open-list::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
 }
 .git-ui-side::-webkit-scrollbar-track,
@@ -360,7 +380,10 @@
 .directory-picker-tree::-webkit-scrollbar-track,
 .herdr-markdown-body::-webkit-scrollbar-track,
 .herdr-lsp-diagnostics::-webkit-scrollbar-track,
-.herdr-content-search-preview::-webkit-scrollbar-track {
+.herdr-content-search-preview::-webkit-scrollbar-track,
+.panel-menu::-webkit-scrollbar-track,
+.lens-tool-output::-webkit-scrollbar-track,
+.worktree-open-list::-webkit-scrollbar-track {
   background: transparent;
 }
 .side-footer {
