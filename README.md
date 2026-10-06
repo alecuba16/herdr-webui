@@ -65,6 +65,16 @@ herdr-webui-tui --api-socket /path/to/herdr.sock --terminal-socket /path/to/herd
 
 `make install-mac`, `make update-mac`, `make install-linux`, and `make update-linux` install both `herdr-webui` and `herdr-webui-tui`. The browser WebUI and TUI can run in parallel against the same built-in backend session; both attach to the same terminal socket protocol. For predictable input, only type into one client for the same pane at a time.
 
+## Screenshots
+
+Animated tour of the terminal UI (all screens, one pass):
+
+![TUI tour](docs/screens/tui/00-tui-tour.gif)
+
+Static shots with captions per screen: [TUI screenshots](docs/tui-screenshots.md).
+
+Screenshots of the browser WebUI are coming soon.
+
 ## Documentation layout
 
 The README is the project summary and documentation index. Detailed functionality, technical decisions, performance boundaries, styling rules, and project structure live under `docs/`.
@@ -75,6 +85,7 @@ The README is the project summary and documentation index. Detailed functionalit
 | [Installation and local run](docs/installation.md) | Requirements, local run, HTTPS, auth, service install, update, FAQ. |
 | [Features](docs/features.md) | User-facing desktop and mobile functionality details. |
 | [Technical details](docs/technical-details.md) | Architecture, API decisions, file explorer internals, settings, performance, styling. |
+| [TUI screenshots](docs/tui-screenshots.md) | Every `herdr-webui-tui` screen with captions: terminal, overlays, git, files, tabs, CLI modes. |
 | [TUI backend API and prototype](docs/tui-backend-api.md) | Reusable Rust client layer over built-in backend sockets, first-party TUI prototype, and parity gaps. |
 | [Development guide](docs/development.md) | Repo layout, frontend structure, parity rules, maintainability guidance. |
 | [Release notes](docs/release-notes.md) | Release policy and change history. |
