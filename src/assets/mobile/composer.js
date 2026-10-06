@@ -15,7 +15,7 @@
   const MAX_COMPOSER_CHARS = 20000;
   const PILL_STATUSES = ["blocked", "done", "idle", "working"];
 
-  function createMobileComposer({ state, api, render, escapeHtml, statusClassFn, getTerminal }) {
+  function createMobileComposer({ state, api, render, escapeHtml, inputAttrs, statusClassFn, getTerminal }) {
     const drafts = new Map();
     let sending = false;
 
@@ -226,7 +226,7 @@
       if (!composerVisible()) return "";
       const disabled = sending || !state.pane;
       const value = state.pane ? draftFor(state.pane) : "";
-      return `<div class="mobile-composer" id="mobileComposer"><textarea id="mobileComposerInput" rows="1" placeholder="${disabled ? "Sending…" : "Message this panel"}" ${disabled ? "disabled" : ""} oninput="HerdrMobile.composerInput(this.value)" onkeydown="if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); HerdrMobile.composerSubmit(); }">${escapeHtml(value)}</textarea><button class="mobile-btn primary" id="mobileComposerSend" ${disabled ? "disabled" : ""} onclick="HerdrMobile.composerSubmit()">${sending ? "…" : "Send"}</button></div>`;
+      return `<div class="mobile-composer" id="mobileComposer"><textarea id="mobileComposerInput" rows="1"${inputAttrs("send")} placeholder="${disabled ? "Sending…" : "Message this panel"}" ${disabled ? "disabled" : ""} oninput="HerdrMobile.composerInput(this.value)" onkeydown="if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); HerdrMobile.composerSubmit(); }">${escapeHtml(value)}</textarea><button class="mobile-btn primary" id="mobileComposerSend" ${disabled ? "disabled" : ""} onclick="HerdrMobile.composerSubmit()">${sending ? "…" : "Send"}</button></div>`;
     }
 
     function renderComposerNote() {
@@ -244,7 +244,7 @@
       if (!prompt) return "";
       const body = prompt.kind === "options"
         ? prompt.options.map((o) => `<button type="button" class="mobile-prompt-option" onclick="HerdrMobile.promptAnswer(${JSON.stringify(prompt.title.replace(/"/g, '\\"'))}, '${escapeHtml(o.key)}')">${escapeHtml(o.label)}</button>`).join("")
-        : `<div class="mobile-prompt-text-row"><input id="mobilePromptInput" class="mobile-sheet-input" type="text" placeholder="Type your response" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.promptAnswerText(${JSON.stringify(prompt.title.replace(/"/g, '\\"'))}, this.value); }"></div>`;
+        : `<div class="mobile-prompt-text-row"><input id="mobilePromptInput" class="mobile-sheet-input" type="text"${inputAttrs("send")} placeholder="Type your response" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.promptAnswerText(${JSON.stringify(prompt.title.replace(/"/g, '\\"'))}, this.value); }"></div>`;
       return `<div class="mobile-prompt-card" id="mobilePromptCard" role="dialog" aria-label="${escapeHtml(prompt.title)}"><div class="mobile-prompt-head"><strong>${escapeHtml(prompt.title)}</strong><button type="button" class="mobile-btn mini" aria-label="Dismiss question" onclick="HerdrMobile.promptDismiss(${JSON.stringify(prompt.title.replace(/"/g, '\\"'))})">✕</button></div><div class="mobile-prompt-body">${body}</div></div>`;
     }
 

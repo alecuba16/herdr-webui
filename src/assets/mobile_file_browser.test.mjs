@@ -134,6 +134,7 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
     confirm: () => confirmAnswer,
     currentWorkspaceCwd: () => "/tmp/repo",
     escapeHtml: (v) => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"),
+    inputAttrs: () => "",
     render: () => {},
     state: { screen: "files" },
   };

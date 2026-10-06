@@ -57,6 +57,7 @@ function composerContext({ status = "blocked", term = null } = {}) {
       calls.renders++;
     },
     escapeHtml: (s) => String(s).replace(/[&<>"']/g, "c"),
+    inputAttrs: (hint) => ` autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" writingsuggestions="false" translate="no"${hint ? ` enterkeyhint="${hint}"` : ""}`,
     statusClassFn: () => status,
     getTerminal: () => term,
   });
@@ -81,6 +82,17 @@ describe("mobile composer + prompt cards module", () => {
     state.screen = "terminal";
     state.pane = null;
     assert.equal(module.renderComposerBar(), "");
+  });
+
+  it("composer input carries the full mobile keyboard guard attribute set", () => {
+    const { module } = composerContext();
+    const html = module.renderComposerBar();
+    assert.match(html, /autocomplete="off"/);
+    assert.match(html, /autocorrect="off"/);
+    assert.match(html, /autocapitalize="none"/);
+    assert.match(html, /spellcheck="false"/);
+    assert.match(html, /writingsuggestions="false"/);
+    assert.match(html, /enterkeyhint="send"/);
   });
 
   it("drafts are per-pane and survive renders", () => {
@@ -140,6 +152,7 @@ describe("mobile composer + prompt cards module", () => {
       },
       render: () => {},
       escapeHtml: (s) => String(s),
+      inputAttrs: () => "",
       statusClassFn: () => "working",
       getTerminal: () => null,
     });

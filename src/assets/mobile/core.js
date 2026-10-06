@@ -12,6 +12,23 @@
     return escapeHtml(JSON.stringify(String(value == null ? "" : value)));
   }
 
+  // Android/iOS keyboard guards: without these, Gboard grammar checker,
+  // autocorrect, and text suggestions rewrite terminal commands, branch
+  // names, and paths typed into mobile inputs. `writingsuggestions="false"`
+  // is the attribute Gboard's writing/grammar layer respects on Android;
+  // `autocapitalize="none"` (not "off") is the valid value for iOS/Safari;
+  // `autocorrect="off"` is the iOS-specific spell-replace switch;
+  // `spellcheck="false"` kills the red squiggles + browser replace on
+  // desktop and Android Chrome; `autocomplete="off"` stops suggestions
+  // from the browser's own dictionary.
+  function inputAttrs(enterkeyhint) {
+    const attrs =
+      ' autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" writingsuggestions="false" translate="no"';
+    return enterkeyhint
+      ? attrs + ` enterkeyhint="${escapeHtml(enterkeyhint)}"`
+      : attrs;
+  }
+
   function compactScopedId(ws, id) {
     if (!ws || !id) return id || null;
     const prefix = `${ws}:`;
@@ -150,6 +167,7 @@
     createTerminalInputGate,
     escapeHtml,
     forgetSessionState,
+    inputAttrs,
     jsArg,
     parseRoutePath,
     pathBasename,

@@ -4,6 +4,7 @@
     api,
     render,
     escapeHtml,
+    inputAttrs,
     jsArg,
     pathBasename,
     currentWorkspaceCwd,
@@ -276,7 +277,7 @@
         : `<button class="mobile-btn mobile-wide" onclick="HerdrMobile.toggleGitBranches()">Branches</button>${state.gitBranchesError ? `<div class="mobile-error">${escapeHtml(state.gitBranchesError)}</div>` : ""}`;
       const stagedCount = ((status.staged || []).length);
       const commitSheet = state.gitCommitSheet
-        ? `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.closeCommitSheet()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Commit staged changes"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">Commit ${stagedCount} staged file${stagedCount === 1 ? "" : "s"}</p><input id="mobileCommitTitle" class="mobile-sheet-input" type="text" placeholder="commit title" value="${escapeHtml(state.gitCommitSheet.title)}" oninput="HerdrMobile.setCommitField('title', this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.submitCommit(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.closeCommitSheet(); }" autocomplete="off" spellcheck="false" /><textarea id="mobileCommitBody" class="mobile-sheet-input" rows="3" placeholder="details (optional)" oninput="HerdrMobile.setCommitField('body', this.value)">${escapeHtml(state.gitCommitSheet.body)}</textarea><div class="mobile-sheet-actions"><button class="mobile-btn" ${state.gitMutating ? "disabled" : ""} onclick="HerdrMobile.closeCommitSheet()">Cancel</button><button class="mobile-btn primary" id="mobileCommitSubmit" ${state.gitMutating ? "disabled" : ""} onclick="HerdrMobile.submitCommit()">${state.gitMutating ? "Committing…" : "Commit"}</button></div></div>`
+        ? `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.closeCommitSheet()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Commit staged changes"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">Commit ${stagedCount} staged file${stagedCount === 1 ? "" : "s"}</p><input id="mobileCommitTitle" class="mobile-sheet-input" type="text"${inputAttrs("done")} placeholder="commit title" value="${escapeHtml(state.gitCommitSheet.title)}" oninput="HerdrMobile.setCommitField('title', this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.submitCommit(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.closeCommitSheet(); }" /><textarea id="mobileCommitBody" class="mobile-sheet-input" rows="3"${inputAttrs()} placeholder="details (optional)" oninput="HerdrMobile.setCommitField('body', this.value)">${escapeHtml(state.gitCommitSheet.body)}</textarea><div class="mobile-sheet-actions"><button class="mobile-btn" ${state.gitMutating ? "disabled" : ""} onclick="HerdrMobile.closeCommitSheet()">Cancel</button><button class="mobile-btn primary" id="mobileCommitSubmit" ${state.gitMutating ? "disabled" : ""} onclick="HerdrMobile.submitCommit()">${state.gitMutating ? "Committing…" : "Commit"}</button></div></div>`
         : "";
       const commitDone = state.gitCommitDone
         ? `<div class="mobile-commit-done" role="status"><span>Commit created</span><button class="mobile-btn mini" onclick="HerdrMobile.dismissCommitDone()">Done</button></div>`

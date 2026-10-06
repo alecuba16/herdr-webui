@@ -3,6 +3,7 @@
     escapeHtml,
     createTerminalInputGate,
     forgetSessionState,
+    inputAttrs,
     jsArg,
     parseRoutePath,
     pathBasename,
@@ -361,7 +362,7 @@
         <main class="mobile-screen" id="mobileScreen"></main>
         <div class="mobile-search-sheet" id="mobileSearchSheet" hidden>
           <div class="mobile-search-card">
-            <div class="mobile-search-head"><input id="mobileSearchInput" placeholder="Search workspaces, files, folders, content" autocomplete="off" /><button class="mobile-btn" id="mobileSearchClose">✕</button></div>
+            <div class="mobile-search-head"><input id="mobileSearchInput"${inputAttrs("search")} placeholder="Search workspaces, files, folders, content" /><button class="mobile-btn" id="mobileSearchClose">✕</button></div>
             <div class="mobile-search-results" id="mobileSearchResults"></div>
             <div class="mobile-help">Enter opens · Alt+F files · Alt+D folders · Esc closes</div>
           </div>
@@ -884,6 +885,7 @@
     api,
     applyTheme,
     escapeHtml,
+    inputAttrs,
     localStorage,
     state,
     confirmFn: (...args) => mobileConfirm(...args),
@@ -894,6 +896,7 @@
     defaultFolderFn: () => state.defaultFolder || "",
     destroyTerminal: mobileTerminal.destroy,
     escapeHtml,
+    inputAttrs,
     jsArg,
     refresh,
     render,
@@ -906,6 +909,7 @@
     confirm: (...args) => mobileConfirm(...args),
     currentWorkspaceCwd,
     escapeHtml,
+    inputAttrs,
     render,
     state,
   });
@@ -933,6 +937,7 @@
     api,
     render,
     escapeHtml,
+    inputAttrs,
     jsArg,
     pathBasename,
     currentWorkspaceCwd,
@@ -944,6 +949,7 @@
     api,
     render,
     escapeHtml,
+    inputAttrs,
     statusClassFn: (status) => mobileAttention.statusClass(status),
     getTerminal: () => mobileTerminal.getTerm(),
   });
@@ -978,6 +984,7 @@
     api,
     render,
     escapeHtml,
+    inputAttrs,
     jsArg,
     localStorage,
     confirmFn: (...args) => mobileConfirm(...args),
@@ -1017,6 +1024,7 @@
     state,
     render,
     escapeHtml,
+    inputAttrs,
     jsArg,
     MORE_SCREENS,
     currentWorkspace,
