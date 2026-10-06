@@ -81,6 +81,11 @@ const desktopLazyFiles = listJs("./desktop")
   .filter((f) => !f.name.startsWith("app_js/"))
   .map((f) => ({ path: `./desktop/${f.name}`, name: f.name.split("/").pop() }));
 const sharedFiles = listJs("./shared").map((f) => ({ path: `./shared/${f.name}`, name: f.name }));
+// Root scripts rendered by app.html itself. Neither currently contains an
+// input template, but scanning them keeps the "entire tree" claim true and
+// catches inputs added there later. Vendor bundles are third-party pinned
+// artifacts and stay out; login.html stays out on purpose (see ALLOWLIST).
+const rootFiles = ["app_boot.js", "login.js"].map((n) => ({ path: `./${n}`, name: n }));
 
 // Static HTML files (the search palette input lives in app.html, not a JS
 // template; the login form keeps password-manager autocomplete on purpose).
@@ -147,6 +152,7 @@ describe("static mobile keyboard-guard scan", () => {
     ok(desktopFiles.length >= 5, `desktop app_js glob found only ${desktopFiles.length} files`);
     ok(desktopLazyFiles.length >= 8, `desktop lazy glob found only ${desktopLazyFiles.length} files`);
     ok(sharedFiles.length >= 10, `shared glob found only ${sharedFiles.length} files`);
+    ok(rootFiles.length === 2, `root scripts glob found only ${rootFiles.length} files`);
   });
 
   for (const { path, name } of files) {
@@ -168,11 +174,19 @@ describe("static mobile keyboard-guard scan", () => {
   // plenty of markup; a regex or loader regression drops this to near zero.
   it("scanner sees the markup (aggregate health)", () => {
     let total = 0;
-    for (const { path } of [...files, ...desktopFiles, ...desktopLazyFiles, ...sharedFiles]) {
+    for (const { path } of [...files, ...desktopFiles, ...desktopLazyFiles, ...sharedFiles, ...rootFiles]) {
       total += scanTagOpens(readFileSync(new URL(path, import.meta.url), "utf8")).length;
     }
     ok(total >= 60, `scanner found only ${total} input/textarea tags across the asset tree`);
   });
+
+  for (const { path, name } of rootFiles) {
+    it(`root ${name}: every text-like input tag carries inputAttrs guards`, () => {
+      const source = readFileSync(new URL(path, import.meta.url), "utf8");
+      const { unguarded } = unguardedTags(source, name);
+      equal(unguarded.length, 0, `root ${name}: unguarded input tags:\n${unguarded.join("\n")}`);
+    });
+  }
 
   for (const { path, name } of desktopFiles) {
     it(`desktop ${name}: every text-like input tag carries inputAttrs guards`, () => {
