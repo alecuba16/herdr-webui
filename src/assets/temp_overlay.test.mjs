@@ -26,6 +26,10 @@ function makeElement(id = "") {
     addEventListener() {},
     removeEventListener() {},
     appendChild(child) {
+      // Real DOM move semantics: appending an already-attached node
+      // re-raises it (controller raiseModal relies on this).
+      const existing = this.children.indexOf(child);
+      if (existing >= 0) this.children.splice(existing, 1);
       this.children.push(child);
       if (child) {
         child.parentNode = this;
@@ -78,6 +82,7 @@ function context() {
     if (id && !elements.has(id)) elements.set(id, el);
   };
   const getElement = (id) => elements.get(id) || null;
+  const docListeners = {};
   const ctx = {
     document: {
       body,
@@ -89,8 +94,20 @@ function context() {
         return el;
       },
       getElementById: getElement,
-      addEventListener() {},
-      removeEventListener() {},
+      querySelectorAll() { return []; },
+      addEventListener(type, fn) {
+        (docListeners[type] = docListeners[type] || []).push(fn);
+      },
+      removeEventListener(type, fn) {
+        if (!docListeners[type]) return;
+        docListeners[type] = docListeners[type].filter((f) => f !== fn);
+      },
+      dispatchEvent(ev) {
+        const list = (docListeners[ev && ev.type] || []).slice();
+        for (const fn of list) fn(ev);
+        return true;
+      },
+      docListeners,
     },
     setTimeout(fn) {
       fn();
@@ -438,6 +455,165 @@ describe("temporary overlay controller (shared)", () => {
     equal(calls.closed[0].session, 1);
     equal(calls.opened.length, 2);
     equal(calls.opened[1].folder, "/two");
+  });
+
+  // ---- Document-level Escape capture (terminal parity) ----
+
+  function escEvent(overrides = {}) {
+    return Object.assign(
+      {
+        type: "keydown",
+        key: "Escape",
+        target: null,
+        defaultPrevented: false,
+        preventDefault() { this.defaultPrevented = true; this._prevented = true; },
+        stopPropagation() { this._stopped = true; },
+      },
+      overrides,
+    );
+  }
+
+  it("Escape closes an open overlay through the document trap", () => {
+    const { ctx, manager, calls } = makeHost();
+    manager.open("/repo");
+    equal(manager.isOpen(), true);
+    const event = escEvent();
+    ctx.document.dispatchEvent(event);
+    equal(calls.closed.length, 1, "closeSurface ran on Escape");
+    equal(manager.isOpen(), false, "overlay closed");
+    ok(event._prevented, "Escape consumed");
+    ok(event._stopped, "propagation stopped");
+  });
+
+  it("Escape does nothing when no overlay is open", () => {
+    const { ctx, manager, calls } = makeHost();
+    const event = escEvent();
+    ctx.document.dispatchEvent(event);
+    equal(calls.closed.length, 0);
+    equal(event._prevented, undefined, "key untouched");
+  });
+
+  it("Escape is ignored when the key was already consumed (drawer paths win)", () => {
+    const { ctx, manager, calls } = makeHost();
+    manager.open("/repo");
+    const event = escEvent({ defaultPrevented: true });
+    ctx.document.dispatchEvent(event);
+    equal(manager.isOpen(), true, "overlay stays open when a drawer consumed Esc");
+    equal(calls.closed.length, 0);
+  });
+
+  it("Escape is ignored while the overlay is minimized", () => {
+    const { ctx, manager, calls } = makeHost();
+    manager.open("/repo");
+    manager.minimize();
+    ctx.document.dispatchEvent(escEvent());
+    equal(manager.isOpen(), true, "minimized overlay stays");
+    equal(manager.isMinimized(), true);
+    equal(calls.closed.length, 0);
+  });
+
+  it("Escape is ignored while an editable field has focus", () => {
+    const { ctx, manager } = makeHost();
+    manager.open("/repo");
+    const event = escEvent({ target: { tagName: "INPUT" } });
+    ctx.document.dispatchEvent(event);
+    equal(manager.isOpen(), true, "input keeps its own Esc behavior");
+  });
+
+  it("Escape yields to a foreign modal stacked above the overlay", () => {
+    const { ctx, manager } = makeHost();
+    manager.open("/repo");
+    // Desktop picker: modal node exists while open (created/removed per
+    // session, no inline display style).
+    ctx.document.getElementById("directoryPickerModal");
+    const picker = ctx.document.createElement("div");
+    picker.id = "directoryPickerModal";
+    ctx.elements.set("directoryPickerModal", picker);
+    ctx.document.dispatchEvent(escEvent());
+    equal(manager.isOpen(), true, "picker owns Esc, overlay stays");
+  });
+
+  it("Escape closes the DOM-topmost overlay when both are open", () => {
+    const ctxA = context();
+    const H = loadController(ctxA);
+    const files = H.create({
+      tool: "files",
+      modalIdPrefix: "tempFilesOverlay",
+      defaultFolderFn: () => "/a",
+      openSurface() { return null; },
+    });
+    const git = H.create({
+      tool: "git",
+      modalIdPrefix: "tempGitOverlay",
+      defaultFolderFn: () => "/b",
+      openSurface() { return null; },
+    });
+    files.open("/a");
+    git.open("/b");
+    // Both modals live in the same body; git was opened last so its modal
+    // node was re-raised: DOM order decides stacking.
+    const filesModal = ctxA.document.getElementById("tempFilesOverlayModal");
+    const gitModal = ctxA.document.getElementById("tempGitOverlayModal");
+    ok(ctxA.document.body.children.indexOf(gitModal) > ctxA.document.body.children.indexOf(filesModal), "git modal raised above files");
+    ctxA.document.dispatchEvent(escEvent());
+    equal(git.isOpen(), false, "DOM-topmost (git) closed");
+    equal(files.isOpen(), true, "files overlay stays");
+  });
+
+  it("restore re-raises the modal above the other overlay and Esc closes it", () => {
+    const ctxA = context();
+    const H = loadController(ctxA);
+    const files = H.create({
+      tool: "files",
+      modalIdPrefix: "tempFilesOverlay",
+      defaultFolderFn: () => "/a",
+      openSurface() { return null; },
+    });
+    const git = H.create({
+      tool: "git",
+      modalIdPrefix: "tempGitOverlay",
+      defaultFolderFn: () => "/b",
+      openSurface() { return null; },
+    });
+    files.open("/a");
+    git.open("/b");
+    files.minimize();
+    files.restore();
+    const filesModal = ctxA.document.getElementById("tempFilesOverlayModal");
+    const gitModal = ctxA.document.getElementById("tempGitOverlayModal");
+    ok(ctxA.document.body.children.indexOf(filesModal) > ctxA.document.body.children.indexOf(gitModal), "restored files modal raised above git");
+    ctxA.document.dispatchEvent(escEvent());
+    equal(files.isOpen(), false, "restored overlay owns Esc");
+    equal(git.isOpen(), true, "lower overlay stays");
+  });
+
+  it("closeTopmost closes the visible overlay and reports false with none", () => {
+    const ctxA = context();
+    const H = loadController(ctxA);
+    equal(H.closeTopmost(), false, "no overlay open");
+    const manager = H.create({
+      tool: "files",
+      modalIdPrefix: "tempFilesOverlay",
+      defaultFolderFn: () => "/a",
+      openSurface() { return null; },
+    });
+    manager.open("/a");
+    equal(H.closeTopmost(), true);
+    equal(manager.isOpen(), false);
+  });
+
+  it("isForeignModalVisible reports picker modals and ignores overlay/terminal modals", () => {
+    const ctxA = context();
+    const H = loadController(ctxA);
+    const manager = H.create({
+      tool: "files",
+      modalIdPrefix: "tempFilesOverlay",
+      defaultFolderFn: () => "/a",
+      openSurface() { return null; },
+    });
+    equal(H.isForeignModalVisible(), false, "nothing open");
+    manager.open("/a");
+    equal(H.isForeignModalVisible(), false, "own overlay modal is not foreign");
   });
 
 });

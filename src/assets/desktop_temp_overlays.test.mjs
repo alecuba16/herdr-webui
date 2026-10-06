@@ -303,7 +303,8 @@ describe("desktop temporary overlay host", () => {
     for (const name of [
       "create", "files", "git", "openFiles", "openGit", "toggleFiles", "toggleGit",
       "closeFiles", "closeGit", "isOpen", "isVisible", "isMinimized", "currentFolder",
-      "pickFolder", "suppressing", "suppressingFiles", "suppressingGit",
+      "isToolMinimized", "pickFolder", "suppressing", "suppressingFiles", "suppressingGit",
+      "panelInTempOverlay",
     ]) {
       equal(typeof overlays[name], "function", `${name} is a function`);
     }
@@ -359,6 +360,18 @@ describe("desktop temporary overlay host", () => {
     overlays.toggleFiles();
     ok(!overlays.isMinimized(), "restored");
     equal(ctx.drawerCalls.open.length, opensBefore, "restore reuses the open drawer");
+  });
+
+  it("isToolMinimized reports per tool so files-minimized never releases git keys", async () => {
+    const ctx = context();
+    const overlays = loadHost(ctx);
+    await openFiles(ctx, overlays);
+    ok(!overlays.isToolMinimized("files"), "files starts visible");
+    ok(!overlays.isToolMinimized("git"), "git never opened");
+    overlays.toggleFiles();
+    ok(overlays.isToolMinimized("files"), "files minimized");
+    ok(!overlays.isToolMinimized("git"), "git untouched by files minimize");
+    ok(overlays.isMinimized(), "any-tool isMinimized stays true");
   });
 
   it("closeFiles forgets the pseudo workspace and clears suppression", async () => {

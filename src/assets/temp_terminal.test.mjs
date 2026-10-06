@@ -6,6 +6,10 @@ import vm from "node:vm";
 
 const require = createRequire(import.meta.url);
 
+// DOM order shared by all stub elements within one context() so
+// compareDocumentPosition can emulate stacking order. context() resets it.
+let ctxDomOrder = [];
+
 function makeElement(id = "") {
   const el = {
     id,
@@ -96,6 +100,18 @@ function makeElement(id = "") {
     removeAttribute(name) {
       delete this.attributes[name];
     },
+    getAttribute(name) {
+      const value = this.attributes[name];
+      return value === undefined ? null : value;
+    },
+    compareDocumentPosition(other) {
+      const order = ctxDomOrder;
+      const a = order.indexOf(this);
+      const b = order.indexOf(other);
+      if (a < 0 || b < 0) return 0;
+      // this before other: other FOLLOWS this (4); else other PRECEDES (2).
+      return a < b ? 4 : 2;
+    },
     setAttribute(name, value) {
       this.attributes[name] = String(value);
     },
@@ -116,6 +132,7 @@ function context() {
   const timeouts = [];
   const apiCalls = [];
   const apiRequests = [];
+  ctxDomOrder = [];
 
   const getElement = (id) => {
     if (!elements.has(id)) elements.set(id, makeElement(id));
@@ -228,6 +245,7 @@ function context() {
       querySelectorAll(selector) {
         if (selector === ".temp-terminal-backdrop") return ctx.body.backdrops || [];
         if (selector === ".temp-terminal-restore") return ctx.body.restoreButtons || [];
+        if (selector === ".temp-overlay-backdrop") return ctx.overlayBackdrops || [];
         return [];
       },
     },
@@ -257,6 +275,7 @@ function context() {
       return Promise.resolve({ result: {} });
     },
     sentFrames,
+    domOrder: ctxDomOrder,
     flushWsOnOpen,
     listeners,
     createdElements,
@@ -352,6 +371,59 @@ describe("temporary terminal", () => {
       equal(event.immediateStopped, true, key);
       equal(terminalInputFrames(ctx).at(-1), value, key);
     }
+  });
+
+  it("yields Escape when a temporary overlay is stacked above the terminal", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx);
+    const listener = ctx.listeners.get("keydown");
+    ok(listener);
+
+    // The session modal is created by the module (id tempTerminalModal-1),
+    // not the placeholder registered under "tempTerminalModal".
+    const modal = ctx.createdElements.find((el) => String(el.className).includes("temp-terminal-backdrop"));
+    ok(modal, "session modal created");
+    const overlay = makeElement("tempFilesOverlayModal");
+    overlay.style = { display: "grid" };
+    ctx.overlayBackdrops = [overlay];
+    // Same z-index, later in DOM order: the overlay renders on top.
+    ctx.domOrder.length = 0;
+    ctx.domOrder.push(modal, overlay);
+
+    const before = terminalInputFrames(ctx).length;
+    const event = keyEvent("Escape", ctx.document.body);
+    listener(event);
+    equal(event.defaultPrevented, false, "terminal did not consume Esc");
+    equal(event.immediateStopped, false, "event left for the overlay trap");
+    equal(terminalInputFrames(ctx).length, before, "no ESC byte sent to the shell");
+  });
+
+  it("keeps Escape when the overlay is minimized or stacked below", async () => {
+    const ctx = context();
+    await openTempTerminal(ctx);
+    const listener = ctx.listeners.get("keydown");
+    ok(listener);
+
+    const modal = ctx.createdElements.find((el) => String(el.className).includes("temp-terminal-backdrop"));
+    ok(modal, "session modal created");
+    const overlay = makeElement("tempFilesOverlayModal");
+    ctx.domOrder.length = 0;
+    ctx.domOrder.push(overlay, modal);
+
+    // Overlay minimized: display none, terminal keeps Escape.
+    overlay.style = { display: "none" };
+    ctx.overlayBackdrops = [overlay];
+    let event = keyEvent("Escape", ctx.document.body);
+    listener(event);
+    equal(event.defaultPrevented, true, "minimized overlay releases Esc");
+    equal(terminalInputFrames(ctx).at(-1), "\x1b");
+
+    // Overlay visible but below the terminal in DOM order: terminal keeps Escape.
+    overlay.style = { display: "grid" };
+    event = keyEvent("Escape", ctx.document.body);
+    listener(event);
+    equal(event.defaultPrevented, true, "lower overlay does not own Esc");
+    equal(terminalInputFrames(ctx).at(-1), "\x1b");
   });
 
   it("creates temporary tabs in the active workspace without making a temporary workspace", async () => {

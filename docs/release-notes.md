@@ -15,6 +15,12 @@
   `forgetWorkspace` cleanup, mobile creates a fresh drawer instance per
   open with the workspace cwd pinned to the chosen folder and
   overlay-scoped callback namespaces.
+- Escape closes a visible overlay, matching the temporary terminal's
+  key contract: the visually topmost surface owns the key regardless
+  of handler registration order, a stacked folder picker wins, a
+  minimized overlay releases the keyboard, and in-panel Escape paths
+  (context menus, commit modal, filters) consume it first. Overlays
+  discard disposable state, so no close confirmation is needed.
 - TUI behavior change: git stage-all moved from the prefix `Ctrl+B`
   `Shift+G` to the in-screen plain `G` in the Git Changes view (webui
   git-panel `stageAll: KeyG` parity), freeing the prefix for the

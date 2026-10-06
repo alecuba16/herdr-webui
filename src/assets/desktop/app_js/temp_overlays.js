@@ -260,6 +260,10 @@
       const minimized = (manager) => !!(manager && manager.isMinimized && manager.isMinimized());
       return minimized(managers.files) || minimized(managers.git);
     },
+    isToolMinimized(tool) {
+      const manager = tool === "git" ? managers.git : managers.files;
+      return !!(manager && manager.isMinimized && manager.isMinimized());
+    },
     currentFolder(tool) {
       const manager = tool === "git" ? managers.git : managers.files;
       return manager ? manager.currentFolder() : "";

@@ -42,6 +42,137 @@
     git: "Temporary Git · review any repository without opening a workspace",
   };
 
+  // Document-level Escape capture, mirroring the temporary terminal's
+  // input trap: while a temporary overlay is visible, Escape closes the
+  // topmost one. The modal-subtree keydown alone cannot do this because
+  // nothing focuses the overlay chrome on open (the terminal focuses its
+  // surface; the drawers own focus once mounted). Capturing at document
+  // level, after the drawers' own capture handlers, lets in-panel Esc
+  // paths (context menus, commit modal, filters) consume the key first:
+  // defaultPrevented events are ignored here.
+  var escapeStack = [];
+  var escapeTrapBound = false;
+
+  function escapeTargetEditable(target) {
+    if (!target || !target.tagName) return false;
+    var tag = String(target.tagName).toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable === true;
+  }
+
+  function escapeTrap(event) {
+    if (!escapeStack.length) return;
+    if (event.defaultPrevented) return;
+    if (event.key !== "Escape") return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (escapeTargetEditable(event.target)) return;
+    // A stacked modal that is not one of ours (folder picker, workspace
+    // modal) owns Escape: the overlays stay, the top modal dismisses.
+    if (foreignModalVisible()) return;
+    // Only a visible (not minimized) overlay owns Escape: a minimized pill
+    // must let the key reach whatever the user is actually doing.
+    var target = visibleTopmost();
+    if (!target) return;
+    // A visible temporary terminal stacked above the overlay (same
+    // z-index, later in DOM) owns Escape: it forwards the key to the
+    // shell, and registration order of the two document traps must not
+    // decide this.
+    if (tempTerminalAbove(target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (target.close) target.close();
+  }
+
+  function overlayModalEl(entry) {
+    if (!entry || !entry.modalId) return null;
+    var d = globalThis.document;
+    if (!d || !d.getElementById) return null;
+    return d.getElementById(entry.modalId);
+  }
+
+  function tempTerminalAbove(entry) {
+    var d = globalThis.document;
+    if (!d || !d.querySelectorAll) return false;
+    var terminals = d.querySelectorAll(".temp-terminal-backdrop");
+    if (!terminals || !terminals.length) return false;
+    var overlayModal = overlayModalEl(entry);
+    for (var i = 0; i < terminals.length; i += 1) {
+      var terminal = terminals[i];
+      var display = terminal.style && terminal.style.display;
+      if (!display || display === "none") continue;
+      if (overlayModal && overlayModal.compareDocumentPosition) {
+        // Node.DOCUMENT_POSITION_FOLLOWING (4): terminal is after the
+        // overlay in DOM order, so with equal z-index it renders on top.
+        var rel = overlayModal.compareDocumentPosition(terminal);
+        if (rel & 4) return true;
+      }
+    }
+    return false;
+  }
+
+  // Any visible modal that is not a temporary overlay: the key belongs to
+  // that top modal instead. App modals (workspace/settings/terminal) open
+  // with inline display "grid" and close with "none", so the inline style
+  // is their visibility signal. The two folder pickers instead create and
+  // remove their modal node per session, so node existence is their open
+  // signal (the desktop picker never sets an inline display style).
+  function foreignModalVisible() {
+    var d = globalThis.document;
+    if (!d || !d.querySelectorAll) return false;
+    if (d.getElementById && (d.getElementById("directoryPickerModal") || d.getElementById("tempOverlayPickerModal"))) return true;
+    var modals = d.querySelectorAll(".modal-backdrop, .temp-overlay-picker-backdrop, .directory-picker-backdrop");
+    for (var i = 0; i < modals.length; i += 1) {
+      var modal = modals[i];
+      if (modal.id === "tempFilesOverlayModal" || modal.id === "tempGitOverlayModal") continue;
+      if (modal.id === "tempTerminalModal" || (modal.id || "").indexOf("tempTerminalModal") === 0) continue;
+      var display = modal.style && modal.style.display;
+      if (display && display !== "none") return true;
+    }
+    return false;
+  }
+
+  function bindEscapeTrap() {
+    if (escapeTrapBound) return;
+    escapeTrapBound = true;
+    var d = globalThis.document;
+    if (d && d.addEventListener) d.addEventListener("keydown", escapeTrap, true);
+  }
+
+  function pushEscapeEntry(entry) {
+    var index = escapeStack.indexOf(entry);
+    if (index >= 0) escapeStack.splice(index, 1);
+    escapeStack.push(entry);
+    bindEscapeTrap();
+  }
+
+  function removeEscapeEntry(entry) {
+    var index = escapeStack.indexOf(entry);
+    if (index >= 0) escapeStack.splice(index, 1);
+  }
+
+  // The topmost entry must be a visible (not minimized) overlay. Stacking
+  // is DOM order (equal z-index): the visible overlay whose modal is last
+  // in document.body owns Escape. Minimized overlays never capture the key.
+  function visibleTopmost() {
+    var d = globalThis.document;
+    var body = d && d.body;
+    var children = (body && body.children) || [];
+    // body.children is an HTMLCollection in a real browser (no indexOf).
+    var indexOf = Array.prototype.indexOf;
+    var top = null;
+    var topIndex = -1;
+    for (var i = 0; i < escapeStack.length; i += 1) {
+      var entry = escapeStack[i];
+      if (!entry.isVisible()) continue;
+      var modal = overlayModalEl(entry);
+      var index = modal ? indexOf.call(children, modal) : -1;
+      if (index > topIndex) {
+        top = entry;
+        topIndex = index;
+      }
+    }
+    return top;
+  }
+
   function toolLabel(tool) {
     return toolLabels[tool] || "Files";
   }
@@ -76,6 +207,7 @@
     var active = null;
     var restoreBar = null;
     var sessionCounter = 0;
+    var escapeEntry = null;
 
     function doc() {
       return globalThis.document;
@@ -135,7 +267,7 @@
       modal.style.display = "none";
       modal.setAttribute("aria-hidden", "true");
       modal.innerHTML =
-        '<div class="temp-overlay-modal" role="dialog" aria-modal="true">' +
+        '<div class="temp-overlay-modal" role="dialog" aria-modal="true" tabindex="-1">' +
         '<div class="temp-overlay-head">' +
         '<div class="temp-overlay-head-main">' +
         '<h2 class="temp-overlay-title"></h2>' +
@@ -185,6 +317,19 @@
       }
     }
 
+    // Escape stack entry for this manager: while visible, document-level
+    // Escape closes this overlay (see escapeTrap above).
+    function ensureEscapeEntry() {
+      if (!escapeEntry) {
+        escapeEntry = {
+          modalId: modalIdPrefix + "Modal",
+          isVisible: function () { return isOpen() && !isMinimized(); },
+          close: function () { close(); },
+        };
+      }
+      pushEscapeEntry(escapeEntry);
+    }
+
     // Open (or replace the folder of) the temporary surface. With no
     // folder argument: restore the minimized surface when one exists,
     // otherwise open a fresh one on the default folder.
@@ -201,14 +346,47 @@
       return createActive(target);
     }
 
+    // Both overlays share z-index: appendChild re-raises this modal so the
+    // most recently opened/restored overlay always stacks above the other.
+    function raiseModal(modal) {
+      if (!modal || !modal.parentNode || !modal.parentNode.appendChild) return;
+      modal.parentNode.appendChild(modal);
+    }
+
+    // Terminal parity: the temporary terminal focuses its surface on open
+    // so keyboard input lands inside the overlay; the overlay focuses its
+    // dialog chrome the same way (Esc is handled at document level, focus
+    // only restores a sane tab stop after close).
+    function focusModal(modal) {
+      var dialog = modal.querySelector(".temp-overlay-modal");
+      if (dialog && typeof dialog.focus === "function") {
+        try { dialog.focus(); } catch (e) {}
+      }
+    }
+
+    // Release keyboard focus when the surface hides (minimize) or unmounts
+    // (close): a focused node inside a display:none modal would leave the
+    // app without a key target. Mirrors the terminal's blurTerminalFocus.
+    function blurModalFocus(modal) {
+      var d = doc();
+      var focused = d && d.activeElement;
+      if (!focused || !modal || !modal.contains || !modal.contains(focused)) return;
+      if (focused && typeof focused.blur === "function") {
+        try { focused.blur(); } catch (e) {}
+      }
+    }
+
     function createActive(folder) {
       var modal = ensureModal();
       active = { open: true, minimized: false, folder: folder, session: ++sessionCounter, handle: null, error: "" };
+      ensureEscapeEntry();
+      raiseModal(modal);
       modal.style.display = "grid";
       modal.removeAttribute("aria-hidden");
       syncHead();
       refreshRestoreBar();
       renderSurface();
+      focusModal(modal);
       return active;
     }
 
@@ -263,6 +441,7 @@
       if (!active || !active.open || active.minimized) return;
       active.minimized = true;
       var modal = ensureModal();
+      blurModalFocus(modal);
       modal.style.display = "none";
       modal.setAttribute("aria-hidden", "true");
       refreshRestoreBar();
@@ -272,9 +451,12 @@
       if (!active || !active.open || !active.minimized) return;
       active.minimized = false;
       var modal = ensureModal();
+      raiseModal(modal);
       modal.style.display = "grid";
       modal.removeAttribute("aria-hidden");
+      ensureEscapeEntry();
       refreshRestoreBar();
+      focusModal(modal);
     }
 
     function close() {
@@ -282,7 +464,9 @@
       teardownSurface();
       active.open = false;
       active = null;
+      removeEscapeEntry(escapeEntry);
       var modal = ensureModal();
+      blurModalFocus(modal);
       var body = modal.querySelector(".temp-overlay-body");
       if (body) body.innerHTML = "";
       modal.style.display = "none";
@@ -335,5 +519,24 @@
     lastPathLevel: lastPathLevel,
     toolLabel: toolLabel,
     toolHint: toolHint,
+    // True when a non-overlay modal (folder picker, workspace modal) is
+    // visible: Escape belongs to that modal, not to a temporary overlay.
+    // The desktop Git drawer needs this because its window-capture key
+    // handler runs before the shared document-level escapeTrap.
+    isForeignModalVisible: function () {
+      return foreignModalVisible();
+    },
+    // Close the topmost visible temporary overlay. The desktop Git drawer
+    // swallows every key at window-capture while its panel is mounted in
+    // the Git overlay, so the shared document-level escapeTrap never sees
+    // that key; git_ui's own Escape fallback calls this instead.
+    closeTopmost: function () {
+      var target = visibleTopmost();
+      if (target && target.close) {
+        target.close();
+        return true;
+      }
+      return false;
+    },
   };
 })();

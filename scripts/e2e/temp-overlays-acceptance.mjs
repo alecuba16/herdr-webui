@@ -212,8 +212,8 @@ function makeDom() {
     execCommand: () => true,
     querySelector: () => null,
     querySelectorAll: () => [],
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type, fn) { (this._listeners = this._listeners || {})[type] = (this._listeners[type] || []).concat(fn); },
+    removeEventListener(type, fn) { if (this._listeners && this._listeners[type]) this._listeners[type] = this._listeners[type].filter((f) => f !== fn); },
     dispatchEvent() { return true; },
   };
   return { doc, elements, makeElement };
@@ -261,8 +261,8 @@ function context(dom) {
     window: null,
     globalThis: null,
     WebSocket: class {},
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type, fn) { (this._winListeners = this._winListeners || {})[type] = (this._winListeners[type] || []).concat(fn); },
+    removeEventListener(type, fn) { if (this._winListeners && this._winListeners[type]) this._winListeners[type] = this._winListeners[type].filter((f) => f !== fn); },
     dispatchEvent() { return true; },
   };
   ctx.window = ctx;
@@ -546,7 +546,114 @@ assert(gitPanelAfter === gitPanel, "git panel untouched by the files overlay clo
   await nextFrame();
 }
 
-// 10. No workspace/session API was ever called by the overlay flows.
+// 10. Escape parity with the temporary terminal: the visually topmost
+// surface owns the key, whatever registered first.
+{
+  // Real browser capture order: window capture, then document capture.
+  // stopPropagation at window stops the descent to the document trap
+  // (exactly why git_ui's own fallback must close the overlay).
+  const dispatchKey = (key) => {
+    const event = {
+      type: "keydown",
+      key,
+      code: key,
+      target: null,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      shiftKey: false,
+      defaultPrevented: false,
+      _stopped: false,
+      _immediate: false,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() { this._stopped = true; },
+      stopImmediatePropagation() { this._stopped = true; this._immediate = true; },
+    };
+    for (const fn of ((ctx._winListeners && ctx._winListeners.keydown) || []).slice()) {
+      fn(event);
+      if (event._immediate) break;
+    }
+    if (!event._stopped) {
+      for (const fn of ((dom.doc._listeners && dom.doc._listeners.keydown) || []).slice()) {
+        fn(event);
+        if (event._immediate) break;
+      }
+    }
+    return event;
+  };
+
+  // Both overlays open: git opened last renders on top (equal z-index,
+  // DOM order), so Escape closes git and leaves files alone.
+  {
+    const of = overlays.openFiles(FILES_DIR);
+    await Promise.all([of, nextFrame()]);
+    await of; await nextFrame();
+    const og = overlays.openGit(GIT_DIR);
+    await Promise.all([og, nextFrame()]);
+    await og; await nextFrame();
+    assert(overlays.files().isOpen() && overlays.git().isOpen(), "both overlays open before Esc");
+    const ev = dispatchKey("Escape");
+    assert(ev.defaultPrevented, "Escape consumed by the git window-capture fallback");
+    assert(overlays.git().isOpen() === false, "Esc closed the DOM-topmost git overlay");
+    assert(overlays.files().isOpen(), "files overlay survived under git");
+  }
+  // Next Esc reaches the shared document trap and closes files.
+  {
+    const ev = dispatchKey("Escape");
+    assert(ev.defaultPrevented, "Escape consumed by the document trap");
+    assert(overlays.files().isOpen() === false, "Esc closed the files overlay too");
+  }
+  // Minimized git releases the keyboard: Esc closes the visible files
+  // overlay, never the minimized one, and a second Esc is a no-op.
+  {
+    const of = overlays.openFiles(FILES_DIR);
+    await Promise.all([of, nextFrame()]);
+    await of; await nextFrame();
+    const og = overlays.openGit(GIT_DIR);
+    await Promise.all([og, nextFrame()]);
+    await og; await nextFrame();
+    const gitModal = dom.doc.getElementById("tempGitOverlayModal");
+    gitModal.querySelector(".temp-overlay-minimize").onclick();
+    assert(overlays.git().isMinimized(), "git minimized");
+    dispatchKey("Escape");
+    assert(overlays.files().isOpen() === false, "Esc closed the only visible overlay (files)");
+    assert(overlays.git().isOpen() && overlays.git().isMinimized(), "minimized git untouched by Esc");
+    const ev2 = dispatchKey("Escape");
+    assert(overlays.git().isOpen() && overlays.git().isMinimized(), "Esc with nothing visible is a no-op");
+    // Restore through the pill: two per-tool restore bars exist in the
+    // body (files' is hidden and stale); the visible one is git's.
+    const bars = dom.doc.body.children.filter((c) => String(c.className).indexOf("temp-overlay-restore-bar") !== -1);
+    const visibleBar = bars.find((c) => String(c.style.display) === "flex");
+    assert(visibleBar, "git restore pill visible");
+    const restoreBtn = visibleBar.querySelector(".temp-overlay-restore");
+    assert(restoreBtn, "restore pill rendered");
+    restoreBtn.onclick();
+    assert(!overlays.git().isMinimized(), "git restored");
+    dispatchKey("Escape");
+    assert(overlays.git().isOpen() === false, "Esc closed the restored git overlay");
+  }
+  // Foreign modal arbitration: while the desktop folder picker is open,
+  // Escape closes nothing; once the picker is gone it closes the overlay.
+  {
+    const of = overlays.openFiles(FILES_DIR);
+    await Promise.all([of, nextFrame()]);
+    await of; await nextFrame();
+    const modal = dom.doc.getElementById("tempFilesOverlayModal");
+    modal.querySelector(".temp-overlay-folder-btn").onclick();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert(dom.doc.getElementById("directoryPickerModal"), "picker opened");
+    dispatchKey("Escape");
+    assert(dom.doc.getElementById("directoryPickerModal"), "picker owns Esc: it stays open");
+    assert(overlays.files().isOpen(), "overlay stays open under the picker");
+    ctx.window.HerdrDirectoryPicker.close();
+    ctx.flushRaf(5);
+    await nextFrame();
+    dispatchKey("Escape");
+    assert(overlays.files().isOpen() === false, "Esc closes the overlay once the picker is gone");
+  }
+}
+
+// 11. No workspace/session API was ever called by the overlay flows.
 const workspaceCalls = apiCalls.filter((c) => c.path.indexOf("/api/workspaces") === 0 || c.path.indexOf("/api/sessions") === 0);
 assert(workspaceCalls.length === 0, `no workspace/session API calls from the overlays (got ${workspaceCalls.length})`);
 
