@@ -216,6 +216,175 @@
   min-height: 0;
   overflow: auto;
   padding-right: 2px;
+  /* Keyboard scroll: both sidebar panes must be reachable with Tab and
+     arrow keys, not only with a wheel (macOS overlay scrollbars render
+     nothing, so keyboard was the only remaining affordance and it was
+     missing). -1 keeps them out of natural Tab order to not steal focus
+     from workspace rows; focus() lands after a pane click. */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+}
+/* Slim visible track: overlay scrollbars hide on macOS, leaving the
+   agents pane with clipped rows and no scroll signal at all. A subtle
+   always-reserved thin scrollbar (scrollbar-gutter above) restores the
+   affordance without stealing row width on hover-only platforms. */
+.sidebar-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: var(--border2);
+  border-radius: 8px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll:focus-visible {
+  outline: var(--ring, 2px solid var(--accent, #89b4fa));
+  outline-offset: var(--ring-offset, 2px);
+}
+/* Same hidden-scrollbar glitch family, app-wide (audit finding): every
+   overlay surface that scrolls with default macOS overlay scrollbars
+   renders no scroll signal — lens transcript, settings modal, search
+   palette results. One shared selector list gives them the same slim
+   visible thumb the sidebar panes got; keyboard paths already exist
+   there (lens scroller is tabindex 0 + autofocused, palette/modal are
+   mouse-driven). */
+.terminal-lens-scroller,
+.search-results,
+.modal-backdrop:not(.search-palette) .modal {
+  scrollbar-width: thin;
+}
+.terminal-lens-scroller::-webkit-scrollbar,
+.search-results::-webkit-scrollbar,
+.modal-backdrop:not(.search-palette) .modal::-webkit-scrollbar {
+  width: 8px;
+}
+.terminal-lens-scroller::-webkit-scrollbar-thumb,
+.search-results::-webkit-scrollbar-thumb,
+.modal-backdrop:not(.search-palette) .modal::-webkit-scrollbar-thumb {
+  background: var(--border2);
+  border-radius: 8px;
+}
+.terminal-lens-scroller::-webkit-scrollbar-thumb:hover,
+.search-results::-webkit-scrollbar-thumb:hover,
+.modal-backdrop:not(.search-palette) .modal::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+.terminal-lens-scroller::-webkit-scrollbar-track,
+.search-results::-webkit-scrollbar-track,
+.modal-backdrop:not(.search-palette) .modal::-webkit-scrollbar-track {
+  background: transparent;
+}
+/* Audit pass 2, feature bundles (loaded lazily via HerdrLoadCss but
+   same document cascade, so the rules live here with the rest of the
+   family): git UI lists and popovers, file browser panes, directory
+   picker tree, markdown preview body, plus the small clamped lists
+   (LSP diagnostics, content-search preview, cleanup confirm).
+   .git-ui-content joins after live-DOM verification: the diff view
+   stacks 15k+ px of hunks and its default overlay scrollbar gives
+   the same no-signal glitch as the lists (found on the real git UI,
+   not by enumeration alone).
+   Pass 3 additions, each proven scrolling on the live DOM with real
+   overflow: .panel-menu (viewport-clamped via
+   --workspace-panel-menu-max-height, measured 1190px in a 393px
+   clamp), .lens-tool-output (40vh clamp, 796px in 238px),
+   .worktree-open-list (min(340px, 38vh) clamp, 756px in 228px).
+   .section and .project-dashboard stay out: the side context forces
+   overflow hidden on .section, and the dashboard is a single
+   centered hero card that only overflows below ~350px viewports.
+   Editors, CodeMirror scrollers and horizontal-only scrollers
+   (diff xscroll, pre/mermaid blocks) stay default: they draw their
+   own edge affordances, and a styled track on top of code reads as
+   noise, not signal. */
+.git-ui-side,
+.git-ui-content,
+.git-ui-header-menu,
+.git-ui-branch-list-scroll,
+.git-ui-list,
+.git-ui-cleanup-confirm-list,
+.file-browser-side,
+.file-browser-pane-body,
+.directory-picker-tree,
+.herdr-markdown-body,
+.herdr-lsp-diagnostics,
+.herdr-content-search-preview,
+.panel-menu,
+.lens-tool-output,
+.worktree-open-list {
+  scrollbar-width: thin;
+}
+.git-ui-side::-webkit-scrollbar,
+.git-ui-content::-webkit-scrollbar,
+.git-ui-header-menu::-webkit-scrollbar,
+.git-ui-branch-list-scroll::-webkit-scrollbar,
+.git-ui-list::-webkit-scrollbar,
+.git-ui-cleanup-confirm-list::-webkit-scrollbar,
+.file-browser-side::-webkit-scrollbar,
+.file-browser-pane-body::-webkit-scrollbar,
+.directory-picker-tree::-webkit-scrollbar,
+.herdr-markdown-body::-webkit-scrollbar,
+.herdr-lsp-diagnostics::-webkit-scrollbar,
+.herdr-content-search-preview::-webkit-scrollbar,
+.panel-menu::-webkit-scrollbar,
+.lens-tool-output::-webkit-scrollbar,
+.worktree-open-list::-webkit-scrollbar {
+  width: 8px;
+}
+.git-ui-side::-webkit-scrollbar-thumb,
+.git-ui-content::-webkit-scrollbar-thumb,
+.git-ui-header-menu::-webkit-scrollbar-thumb,
+.git-ui-branch-list-scroll::-webkit-scrollbar-thumb,
+.git-ui-list::-webkit-scrollbar-thumb,
+.git-ui-cleanup-confirm-list::-webkit-scrollbar-thumb,
+.file-browser-side::-webkit-scrollbar-thumb,
+.file-browser-pane-body::-webkit-scrollbar-thumb,
+.directory-picker-tree::-webkit-scrollbar-thumb,
+.herdr-markdown-body::-webkit-scrollbar-thumb,
+.herdr-lsp-diagnostics::-webkit-scrollbar-thumb,
+.herdr-content-search-preview::-webkit-scrollbar-thumb,
+.panel-menu::-webkit-scrollbar-thumb,
+.lens-tool-output::-webkit-scrollbar-thumb,
+.worktree-open-list::-webkit-scrollbar-thumb {
+  background: var(--border2);
+  border-radius: 8px;
+}
+.git-ui-side::-webkit-scrollbar-thumb:hover,
+.git-ui-content::-webkit-scrollbar-thumb:hover,
+.git-ui-header-menu::-webkit-scrollbar-thumb:hover,
+.git-ui-branch-list-scroll::-webkit-scrollbar-thumb:hover,
+.git-ui-list::-webkit-scrollbar-thumb:hover,
+.git-ui-cleanup-confirm-list::-webkit-scrollbar-thumb:hover,
+.file-browser-side::-webkit-scrollbar-thumb:hover,
+.file-browser-pane-body::-webkit-scrollbar-thumb:hover,
+.directory-picker-tree::-webkit-scrollbar-thumb:hover,
+.herdr-markdown-body::-webkit-scrollbar-thumb:hover,
+.herdr-lsp-diagnostics::-webkit-scrollbar-thumb:hover,
+.herdr-content-search-preview::-webkit-scrollbar-thumb:hover,
+.panel-menu::-webkit-scrollbar-thumb:hover,
+.lens-tool-output::-webkit-scrollbar-thumb:hover,
+.worktree-open-list::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+.git-ui-side::-webkit-scrollbar-track,
+.git-ui-content::-webkit-scrollbar-track,
+.git-ui-header-menu::-webkit-scrollbar-track,
+.git-ui-branch-list-scroll::-webkit-scrollbar-track,
+.git-ui-list::-webkit-scrollbar-track,
+.git-ui-cleanup-confirm-list::-webkit-scrollbar-track,
+.file-browser-side::-webkit-scrollbar-track,
+.file-browser-pane-body::-webkit-scrollbar-track,
+.directory-picker-tree::-webkit-scrollbar-track,
+.herdr-markdown-body::-webkit-scrollbar-track,
+.herdr-lsp-diagnostics::-webkit-scrollbar-track,
+.herdr-content-search-preview::-webkit-scrollbar-track,
+.panel-menu::-webkit-scrollbar-track,
+.lens-tool-output::-webkit-scrollbar-track,
+.worktree-open-list::-webkit-scrollbar-track {
+  background: transparent;
 }
 .side-footer {
   flex: none;

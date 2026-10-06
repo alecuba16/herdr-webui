@@ -444,6 +444,13 @@ if (sectionEl && !el("workspacePane")) {
   );
   const workspaceScroll = document.createElement("div");
   workspaceScroll.className = "sidebar-scroll";
+  // Keyboard scrolling: the scroller takes focus on click (mousedown) so
+  // arrow keys page the list. tabIndex would add it to the natural Tab
+  // order BEFORE the rows, stealing focus from them; click-to-focus
+  // keeps Tab order intact while making arrows work when the pane is
+  // the active region.
+  workspaceScroll.tabIndex = -1;
+  workspaceScroll.addEventListener("mousedown", () => workspaceScroll.focus());
   workspaceScroll.appendChild(workspacesEl);
   workspacePane.appendChild(workspaceScroll);
   const agentsPane = document.createElement("div");
@@ -451,6 +458,8 @@ if (sectionEl && !el("workspacePane")) {
   agentsPane.innerHTML = '<div class="section-header">Agents</div>';
   const agentsScroll = document.createElement("div");
   agentsScroll.className = "sidebar-scroll";
+  agentsScroll.tabIndex = -1;
+  agentsScroll.addEventListener("mousedown", () => agentsScroll.focus());
   agentsScroll.appendChild(agentsEl);
   agentsPane.appendChild(agentsScroll);
   if (oldAgentsHeader) oldAgentsHeader.remove();

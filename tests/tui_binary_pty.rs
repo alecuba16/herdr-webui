@@ -185,6 +185,167 @@ fn strip_sgr(wire: &str) -> String {
     out
 }
 
+/// Reconstruct the screen the user sees from the raw wire. Ratatui's
+/// diff renderer re-emits only changed cells and jumps the cursor
+/// between runs, so text whose run boundary moved mid-word (a tab
+/// marker sliding one tab over, a footer hint swapping) never appears
+/// contiguously on the wire even though the screen shows it as one
+/// string. This emulator tracks the sequences the ratatui/crossterm
+/// pair actually emits: CUP jumps, SGR styles (ignored), clears, alt
+/// screen switches, and printable text; everything else is skipped.
+fn render_screen(wire: &str, rows: usize, cols: usize) -> Vec<String> {
+    let mut grid = vec![vec![' '; cols]; rows];
+    let (mut row, mut col) = (0usize, 0usize);
+    let mut chars = wire.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\u{1b}' => match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    let mut params = String::new();
+                    // CSI params are digits/;/? and the final byte is
+                    // 0x40..=0x7E; bounding the scan keeps a malformed
+                    // escape from swallowing the rest of the wire.
+                    let mut final_byte = '\0';
+                    for c in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&c) {
+                            final_byte = c;
+                            break;
+                        }
+                        params.push(c);
+                        if params.len() > 32 {
+                            break;
+                        }
+                    }
+                    let param = |index: usize, default: usize| {
+                        params
+                            .split(';')
+                            .nth(index)
+                            .and_then(|value| value.parse::<usize>().ok())
+                            .unwrap_or(default)
+                    };
+                    match final_byte {
+                        'H' | 'f' => {
+                            row = (param(0, 1).saturating_sub(1)).min(rows - 1);
+                            col = (param(1, 1).saturating_sub(1)).min(cols - 1);
+                        }
+                        'A' => row = row.saturating_sub(param(0, 1).max(1)),
+                        'B' => row = (row + param(0, 1).max(1)).min(rows - 1),
+                        'C' => col = (col + param(0, 1).max(1)).min(cols - 1),
+                        'D' => col = col.saturating_sub(param(0, 1).max(1)),
+                        // Alt-screen switches wipe what the user sees.
+                        'h' | 'l' if params.contains("1049") => {
+                            for line in grid.iter_mut() {
+                                line.fill(' ');
+                            }
+                            row = 0;
+                            col = 0;
+                        }
+                        'J' => match param(0, 0) {
+                            0 => {
+                                if row < rows && col < cols {
+                                    grid[row][col..].fill(' ');
+                                }
+                                for line in grid.iter_mut().skip(row + 1) {
+                                    line.fill(' ');
+                                }
+                            }
+                            2 => {
+                                for line in grid.iter_mut() {
+                                    line.fill(' ');
+                                }
+                            }
+                            _ => {}
+                        },
+                        'K' => match param(0, 0) {
+                            0 => {
+                                if row < rows && col < cols {
+                                    grid[row][col..].fill(' ');
+                                }
+                            }
+                            2 => grid[row].fill(' '),
+                            _ => {}
+                        },
+                        _ => {} // SGR ('m'), modes ('h'/'l'), ... ignored
+                    }
+                }
+                Some(']') => {
+                    // OSC (window title): skip to BEL or ST.
+                    chars.next();
+                    for c in chars.by_ref() {
+                        if c == '\u{7}' {
+                            break;
+                        }
+                        if c == '\u{1b}' {
+                            let _ = chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {} // lone ESC: dropped
+            },
+            '\r' => col = 0,
+            '\n' => row = (row + 1).min(rows - 1),
+            c if c.is_control() => {}
+            c => {
+                if row < rows && col < cols {
+                    grid[row][col] = c;
+                }
+                col = (col + 1).min(cols);
+            }
+        }
+    }
+    grid.into_iter()
+        .map(|line| line.into_iter().collect())
+        .collect()
+}
+
+/// True when the reconstructed screen shows `needle` on any row.
+fn screen_shows(
+    log: &std::sync::Arc<std::sync::Mutex<String>>,
+    rows: usize,
+    cols: usize,
+    needle: &str,
+) -> bool {
+    let Ok(wire) = log.lock() else {
+        return false;
+    };
+    render_screen(&wire, rows, cols)
+        .iter()
+        .any(|line| line.contains(needle))
+}
+
+/// `wait_for`, but against the reconstructed screen: use it for text
+/// the diff renderer repaints as several cursor-jumped runs (or only
+/// partially repaints), where the raw wire never shows the needle
+/// contiguously. On timeout it prints the whole screen, not the wire.
+fn wait_for_screen(
+    log: &std::sync::Arc<std::sync::Mutex<String>>,
+    rows: usize,
+    cols: usize,
+    needle: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        {
+            let Ok(wire) = log.lock() else {
+                break;
+            };
+            let screen = render_screen(&wire, rows, cols);
+            if screen.iter().any(|line| line.contains(needle)) {
+                return;
+            }
+            if Instant::now() > deadline {
+                panic!(
+                    "TUI did not show {needle:?} on screen in time; screen:\n{}",
+                    screen.join("\n")
+                );
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Panic-safe cleanup for the spawned TUI: if a wait_for assertion
 /// fails, the child would otherwise stay alive holding the PTY and
 /// the fake backend thread would spin forever. RAII keeps the happy
@@ -239,9 +400,12 @@ fn tui_binary_interactive_loop_pty() {
     let pty_out = pair.master.try_clone_reader().unwrap();
     let log = pump(pty_out);
 
-    // The PTY is 80 cols wide, so the footer swaps to the compact hint:
-    // it keeps `q quit` and the discovery tail, but drops `Ctrl+B prefix`.
-    wait_for(&log, "q quit");
+    // The PTY is 80 cols wide, so the footer swaps to the compact hint.
+    // The terminal screen starts with the MAIN region focused (the
+    // focus-walker default), so the footer names pane actions: the
+    // compact TerminalMain hint keeps `Enter attach` and the discovery
+    // tail but drops the list keys that are dead while main owns focus.
+    wait_for(&log, "Enter attach");
     assert!(
         log.lock().unwrap().contains("Ctrl+B ? help"),
         "footer should show the help discovery hint"
@@ -389,7 +553,7 @@ fn tui_binary_worktree_browser_and_picker_pty() {
     let pty_out = pair.master.try_clone_reader().unwrap();
     let log = pump(pty_out);
 
-    wait_for(&log, "q quit");
+    wait_for(&log, "Enter attach");
 
     // Ctrl+B w opens the browser: the "this folder" row shows the
     // browse root and both real subdirectories render as rows.
@@ -555,4 +719,263 @@ fn child_guard_kills_a_live_child_on_drop_and_spares_a_disarmed_guard() {
     drop(guard);
     let status = child.wait().unwrap();
     assert!(status.success(), "disarmed guard must not kill the child");
+}
+
+/// Per-method request counts the assertions can inspect.
+type RequestCounts = std::collections::BTreeMap<String, u32>;
+
+/// Rich fake backend with the full session shape the focus and panel
+/// walkers need: two workspaces (Repo, Docs), two tabs in Repo (Build,
+/// Serve), two panes (pane_1 on Build, pane_2 on Serve), two agents
+/// (jcode, shell), a mutable `pane.read` answer, and a count of every
+/// request the TUI sends so assertions can prove polling behavior;
+/// the returned handle lets the test change what the pane tail reads,
+/// so the assertion "the detached poller picked up new output without
+/// any attach" is deterministic instead of timing-dependent.
+fn serve_fake_backend_rich(
+    path: &std::path::Path,
+) -> (
+    mpsc::Sender<()>,
+    std::sync::Arc<std::sync::Mutex<String>>,
+    std::sync::Arc<std::sync::Mutex<RequestCounts>>,
+) {
+    let name = path.to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let (tx, rx) = mpsc::channel::<()>();
+    let tail = std::sync::Arc::new(std::sync::Mutex::new("hello tail one".to_string()));
+    let tail_answer = tail.clone();
+    let counts: std::sync::Arc<std::sync::Mutex<RequestCounts>> =
+        std::sync::Arc::new(std::sync::Mutex::new(RequestCounts::new()));
+    let counts_seen = counts.clone();
+    std::thread::spawn(move || loop {
+        if rx.try_recv().is_ok() {
+            break;
+        }
+        let Ok(mut stream) = listener.accept() else {
+            break;
+        };
+        let mut line = String::new();
+        {
+            let mut reader = BufReader::new(&mut stream);
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                continue;
+            }
+        }
+        let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let method = request["method"].as_str().unwrap_or("").to_string();
+        {
+            let mut seen = counts_seen.lock().unwrap();
+            *seen.entry(method.clone()).or_insert(0) += 1;
+        }
+        let response = match method.as_str() {
+            "ping" => json!({"id": request["id"], "result": {"version": "pty", "protocol": 1}}),
+            "session.snapshot" => json!({"id": request["id"], "result": {"snapshot": {
+                "workspaces": [
+                    {"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":2,"active_tab_id":"tab_1"},
+                    {"workspace_id":"ws_2","label":"Docs","cwd":"/docs","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_9"}
+                ],
+                "tabs": [
+                    {"tab_id":"tab_1","workspace_id":"ws_1","label":"Build","focused":true,"pane_count":1},
+                    {"tab_id":"tab_2","workspace_id":"ws_1","label":"Serve","focused":false,"pane_count":1}
+                ],
+                "panes": [
+                    {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true},
+                    {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_2","agent":"shell","display_agent":"shell","agent_status":"idle","cwd":"/repo","focused":false}
+                ],
+                "agents": [
+                    {"pane_id":"pane_1","workspace_id":"ws_1","tab_id":"tab_1","terminal_id":"term_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","title":"build main","cwd":"/repo","focused":true},
+                    {"pane_id":"pane_2","workspace_id":"ws_1","tab_id":"tab_2","terminal_id":"term_2","agent":"shell","display_agent":"shell","agent_status":"idle","title":"serve web","cwd":"/repo","focused":false}
+                ]
+            }}}),
+            "pane.read" => {
+                let text = tail_answer.lock().unwrap().clone();
+                json!({"id": request["id"], "result": {"read": {"text": text}}})
+            }
+            _ => json!({"id": request["id"], "result": {}}),
+        };
+        let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
+        let _ = stream.write_all(b"\n");
+        let _ = stream.flush();
+    });
+    (tx, tail, counts)
+}
+
+#[test]
+fn tui_binary_focus_and_highlight_acceptance_pty() {
+    // Acceptance walk of the UX fixes through the real binary: the
+    // PTY drives the compiled binary against the rich fake backend,
+    // and the wire log proves each behavior end to end.
+    //  - selection highlight: the cursor row renders with the ▸ marker
+    //    (only the selected row gets it) and follows j/k in the sidebar
+    //  - panel identity: the tab bar marks the panel the TUI is
+    //    viewing (`▸ label`) and the pane header names
+    //    agent · tab · pane; both follow the Ctrl+B ] panel walk
+    //  - live preview: while detached in Navigate mode the pane tail
+    //    is re-read periodically (a second, different `pane.read`
+    //    answer renders without any attach)
+    //  - focus walker: j/k are dead while the main region owns focus
+    //    and come back after Ctrl+B . walks focus to the sidebar, and
+    //    the footer hint swaps between the two contexts.
+    // 160 columns so the full focus-aware footer hint fits (the
+    // TerminalMain hint is 130 columns wide; 120 would trim it), and
+    // --theme dark pins the SGR bytes on the wire.
+    let path = herdr_webui::backend_client::unique_test_path("herdr-tui-pty-acceptance");
+    let _ = std::fs::remove_file(&path);
+    let (stop, tail_answer, counts) = serve_fake_backend_rich(&path);
+
+    let pty_system = NativePtySystem::default();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 160,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr-webui-tui"));
+    cmd.args([
+        "--api-socket",
+        path.to_str().unwrap(),
+        "--terminal-socket",
+        path.to_str().unwrap(),
+        "--refresh-ms",
+        "50",
+        "--theme",
+        "dark",
+    ]);
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+    let mut child_guard = ChildGuard {
+        killer: Some(child.clone_killer()),
+    };
+    let pty_out = pair.master.try_clone_reader().unwrap();
+    let log = pump(pty_out);
+
+    // Selection highlight: the selected workspace row renders under the
+    // cursor symbol; the inverted SGR (accent background) is asserted
+    // below on the raw wire.
+    wait_for(&log, "▸ ○ › Repo");
+    assert!(
+        log.lock()
+            .unwrap()
+            .contains("\u{1b}[38;2;17;17;27;48;2;137;180;250m▸ ○ › Repo"),
+        "selected row must render with the accent-background inversion"
+    );
+
+    // Panel identity: the pane header names agent · tab · pane for the
+    // panel the TUI is viewing, and the tab bar marks it.
+    wait_for(&log, "jcode · Build · pane_1");
+    wait_for(&log, "▸ Build");
+
+    // Live preview: the initial tail renders while detached, then the
+    // backend answer changes and the detached poller picks it up on
+    // the next 200ms tail tick — no attach, no key press involved.
+    wait_for(&log, "hello tail one");
+    // The flip text shares no cell with the old text at any position,
+    // so the ratatui diff renderer re-emits the whole row as one
+    // contiguous changed run (any shared cell would split the run
+    // into two with a cursor jump between them and the needle would
+    // never appear contiguously on the wire).
+    *tail_answer.lock().unwrap() = "ZZZZ NEW TAIL!".to_string();
+    let flip_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let hit = {
+            let log = log.lock().unwrap();
+            log.contains("ZZZZ NEW TAIL!") || strip_sgr(&log).contains("ZZZZ NEW TAIL!")
+        };
+        if hit {
+            break;
+        }
+        if Instant::now() > flip_deadline {
+            let dump = log.lock().unwrap().clone();
+            let stripped = strip_sgr(&dump);
+            let pos = stripped
+                .rfind("hello tail one")
+                .map(|p| p.saturating_sub(200))
+                .unwrap_or(0);
+            panic!(
+                "detached tail never picked up the flip; requests seen: {:?}; stripped tail after flip: {:?}",
+                counts.lock().unwrap(),
+                &stripped[pos..]
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // Focus-aware footer: the terminal starts with the MAIN region
+    // focused, so the full hint names the pane actions, not the dead
+    // list keys.
+    wait_for(&log, "chat lens");
+
+    // Focus walker: while the main region owns focus, j must not move
+    // the workspace cursor. Press j and give the app several refresh
+    // ticks to (wrongly) move it.
+    let mut writer = pair.master.take_writer().unwrap();
+    let _ = writer.write_all(b"j");
+    let _ = writer.flush();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        !screen_shows(&log, 24, 160, "▸ ○   Docs"),
+        "j moved the workspace cursor while the main region owned focus"
+    );
+
+    // Panel identity follows the walk: Ctrl+B ] moves to the next
+    // panel; the tab bar marker and the pane header must follow it.
+    // (Docs has no tab, so walk while Repo is still selected.)
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"]");
+    let _ = writer.flush();
+    // The diff renderer repaints the tab bar and the pane header as
+    // cursor-jumped runs (the ▸ marker slides between tabs, the
+    // pane header rewrites agent/tab/pane), so these needles are
+    // asserted against the reconstructed screen — what the user
+    // actually sees — instead of the raw wire.
+    wait_for_screen(&log, 24, 160, "▸ Serve");
+    wait_for_screen(&log, 24, 160, "shell · Serve · pane_2");
+
+    // Focus walker acceptance: Ctrl+B . walks focus to the sidebar
+    // (workspaces region) and the footer swaps to the list hint.
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b".");
+    let _ = writer.flush();
+    // Same run-splitting story as the panel walk: the footer hint swap
+    // rewrites only the cells that changed, so the list hint is
+    // asserted on the reconstructed screen.
+    wait_for_screen(&log, 24, 160, "Tab lists");
+
+    // Now j moves the cursor and the highlight follows it.
+    let _ = writer.write_all(b"j");
+    let _ = writer.flush();
+    wait_for_screen(&log, 24, 160, "▸ ○   Docs");
+
+    // Quit through the confirmation overlay and reap a clean exit.
+    std::thread::sleep(Duration::from_millis(200));
+    let _ = writer.write_all(b"q");
+    let _ = writer.flush();
+    wait_for(&log, "Quit herdr-webui-tui?");
+    let _ = writer.write_all(b"y");
+    let _ = writer.flush();
+    drop(writer);
+
+    let (tx, rx) = mpsc::channel::<portable_pty::ExitStatus>();
+    let mut killer = child.clone_killer();
+    std::thread::spawn(move || {
+        if let Ok(status) = child.wait() {
+            let _ = tx.send(status);
+        }
+    });
+    let status = rx.recv_timeout(Duration::from_secs(120));
+    if status.is_err() {
+        let _ = killer.kill();
+    }
+    let status = status.expect("TUI did not exit after q + y confirm");
+    assert!(status.success());
+
+    child_guard.disarm();
+    let _ = std::fs::remove_file(&path);
+    let _ = stop.send(());
 }

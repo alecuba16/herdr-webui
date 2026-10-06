@@ -17,6 +17,11 @@
   const drafts = new Map();
   let sending = false;
   let lastSyncedPane = null;
+  // Session metadata (model / reasoning effort) published by the lens
+  // from each conversation poll. Rendered in the status line above the
+  // box, reference parity ("the composer status line displays the model
+  // and Reasoning <level>"). null = unknown: show nothing.
+  let sessionMeta = null;
   // Matches the server's MAX_COMPOSER_CHARS; the server re-checks, this is
   // just the early out so a fat draft never leaves the browser.
   const MAX_COMPOSER_CHARS = 20000;
@@ -39,6 +44,7 @@
       node.hidden = true;
       node.innerHTML =
         '<div class="terminal-composer-note" id="terminalComposerNote" role="status" hidden></div>' +
+        '<div class="terminal-composer-session" id="terminalComposerSession" hidden></div>' +
         '<div class="terminal-composer-row">' +
         '<textarea id="terminalComposerInput" rows="2" placeholder="Send a message" ' +
         'aria-label="Message to this panel"></textarea>' +
@@ -146,6 +152,39 @@
     }
   }
 
+  // The lens pushes {model, reasoning_effort} after every poll and null
+  // on pane change / failed poll. The status line is per-pane metadata:
+  // it renders ABOVE the note, muted, and never blocks the composer.
+  function setSessionMeta(meta) {
+    sessionMeta = meta || null;
+    renderSessionMeta();
+  }
+
+  function sessionMetaText(meta) {
+    // Optional argument so callers (and tests) can render arbitrary
+    // shapes; default reflects whatever the last poll published.
+    const source = meta === undefined ? sessionMeta : meta;
+    if (!source) return "";
+    const model = source.model || "";
+    const effort = source.reasoning_effort || "";
+    // The reference keeps a "Reasoning —" placeholder when effort is
+    // unknown; we drop the segment instead and only ever render known
+    // values, so the line never carries a dangling dash.
+    if (model && effort) return `${model} · Reasoning ${effort}`;
+    if (model) return model;
+    if (effort) return `Reasoning ${effort}`;
+    return "";
+  }
+
+  function renderSessionMeta() {
+    const line = el("#terminalComposerSession");
+    if (!line) return;
+    const text = sessionMetaText();
+    line.textContent = text;
+    line.title = text;
+    line.hidden = !text;
+  }
+
   function sync() {
     const node = overlay();
     if (!node) return;
@@ -173,5 +212,5 @@
     if (input.value !== (draft || "")) input.value = draft || "";
   }
 
-  globalThis.HerdrComposer = { sync, submit, note, overlay, drafts, forgetPanes };
+  globalThis.HerdrComposer = { sync, submit, note, overlay, drafts, forgetPanes, setSessionMeta, sessionMetaText };
 })();

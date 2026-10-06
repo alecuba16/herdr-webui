@@ -438,9 +438,99 @@ describe("lens structured chat mode", () => {
     const { ctx } = makeContext();
     for (const name of [
       "syncSwitchVisibility", "refreshConversation", "setPendingBubble",
+      "turnDurationHtml", "formatDuration",
     ]) {
       equal(typeof ctx.HerdrLens[name], "function", `${name} must be exported`);
     }
+  });
+
+  it("formats durations like the reference copy", () => {
+    const { ctx } = makeContext();
+    const f = ctx.HerdrLens.formatDuration;
+    equal(f(0), "0s");
+    equal(f(42), "42s");
+    equal(f(60), "1m");
+    equal(f(156), "2m 36s");
+    equal(f(3600), "1h");
+    equal(f(7380), "2h 3m");
+  });
+
+  it("renders a duration meta line only for valid assistant spans", () => {
+    const { ctx } = makeContext();
+    const t = ctx.HerdrLens.turnDurationHtml;
+    // Valid span: ts -> end_ts.
+    equal(
+      t({ role: "assistant", ts: "2026-10-05T10:00:00Z", end_ts: "2026-10-05T10:02:36Z" }),
+      '<div class="lens-turn-meta">Worked for 2m 36s</div>',
+    );
+    // Missing end: no meta (a turn still in flight has no duration).
+    equal(t({ role: "assistant", ts: "2026-10-05T10:00:00Z" }), "");
+    // Unparseable stamps: no meta, never a crash.
+    equal(t({ role: "assistant", ts: "t2", end_ts: "t3" }), "");
+    equal(t({ role: "assistant", ts: "", end_ts: "" }), "");
+    // Negative span (clock skew): no meta.
+    equal(t({ role: "assistant", ts: "2026-10-05T10:02:36Z", end_ts: "2026-10-05T10:00:00Z" }), "");
+    // Absurd span (>24h): data corruption, no meta.
+    equal(
+      t({ role: "assistant", ts: "2026-10-05T10:00:00Z", end_ts: "2026-11-05T10:00:00Z" }),
+      "",
+    );
+  });
+
+  it("publishes session model/effort to the composer on every poll", async () => {
+    const seen = [];
+    const { ctx } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+      extra: {
+        HerdrComposer: {
+          sync() {},
+          setSessionMeta(meta) { seen.push(meta); },
+        },
+      },
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    // Lens open publishes null FIRST (resetChatState clears stale meta
+    // before the first poll lands), then the poll result.
+    equal(seen.length, 2, "reset publishes null, then the poll result");
+    equal(seen[0], null, "lens open clears stale meta before the first poll");
+    equal(seen[1].model, "m", "model travels from the poll response");
+    equal(seen[1].reasoning_effort, null, "missing effort stays null");
+
+    // A failing poll clears the meta (never a stale label).
+    ctx.api = async () => { throw Error("boom"); };
+    fireTimers(ctx);
+    await settle();
+    equal(seen.length, 3);
+    equal(seen[2], null, "failed poll publishes null meta");
+
+    // Pane switch resets meta too (resetChatState clears it).
+    ctx.api = async () => conversationFixture();
+    ctx.state.pane = "pane_2";
+    ctx.HerdrLens.onPaneChanged();
+    const last = seen[seen.length - 1];
+    equal(last, null, "pane change resets the meta to null");
+  });
+
+  it("renders a duration meta line inside assistant turns", async () => {
+    const fixture = conversationFixture();
+    fixture.turns[1].ts = "2026-10-05T10:00:00Z";
+    fixture.turns[1].end_ts = "2026-10-05T10:02:36Z";
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => fixture,
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const content = registry.get("terminalLens").querySelector(".terminal-lens-content");
+    match(content.innerHTML, /lens-turn-meta/, "assistant turn carries the meta line");
+    ok(content.innerHTML.includes("Worked for 2m 36s"), "duration text renders");
+    // User turns never carry a duration.
+    const userTurn = content.querySelector('.lens-turn-user');
+    ok(!userTurn.innerHTML.includes("Worked for"), "user turn has no duration");
   });
 
   it("gates the Chat|Terminal switch on agent_session", () => {

@@ -5849,4 +5849,79 @@ describe("a11y audit contract", () => {
     match(tokensCss, /transition-duration: 0\.01ms !important;/);
     match(tokensCss, /scroll-behavior: auto !important;/);
   });
+
+  it("gives the sidebar panes a visible and keyboard scroll affordance", () => {
+    const chromeCss = read("./desktop/app_css/chrome.css");
+    // macOS overlay scrollbars render nothing on overflow:auto, so a
+    // clipped agents pane showed no scroll signal at all: the scroller
+    // needs a styled thin scrollbar plus a stable gutter.
+    match(chromeCss, /\.sidebar-scroll \{[\s\S]*?scrollbar-gutter: stable;/);
+    match(chromeCss, /\.sidebar-scroll \{[\s\S]*?scrollbar-width: thin;/);
+    match(chromeCss, /\.sidebar-scroll::-webkit-scrollbar \{[\s\S]*?width: 8px;/);
+    match(chromeCss, /\.sidebar-scroll::-webkit-scrollbar-thumb \{[\s\S]*?background: var\(--border2\);/);
+    // Wheel chaining stops at the pane instead of scrolling the page
+    // behind the sidebar.
+    match(chromeCss, /\.sidebar-scroll \{[\s\S]*?overscroll-behavior: contain;/);
+    // Keyboard: click-to-focus scrollers so arrows page the list once
+    // the pane is the active region (tabIndex stays -1 so Tab order keeps
+    // the rows first).
+    match(coreSource, /workspaceScroll\.tabIndex = -1;/);
+    match(coreSource, /agentsScroll\.tabIndex = -1;/);
+    match(coreSource, /workspaceScroll\.focus\(\)/);
+    match(coreSource, /agentsScroll\.focus\(\)/);
+    // Focus ring contract applies to the scroller too.
+    match(chromeCss, /\.sidebar-scroll:focus-visible \{[\s\S]*?outline: var\(--ring/);
+  });
+
+  it("gives the other overlay scroll surfaces a visible scrollbar too (audit fix)", () => {
+    const chromeCss = read("./desktop/app_css/chrome.css");
+    // Same glitch family as the sidebar panes, found by the app-wide
+    // overflow audit: the chat-lens transcript, the settings modal, and
+    // the search palette results all scroll with default macOS overlay
+    // scrollbars (invisible until dragged). One shared selector list in
+    // chrome.css gives each the slim visible thumb.
+    match(chromeCss, /\.terminal-lens-scroller,\n\.search-results,\n\.modal-backdrop:not\(\.search-palette\) \.modal \{[\s\S]*?scrollbar-width: thin;/);
+    match(chromeCss, /\.terminal-lens-scroller::-webkit-scrollbar-thumb,\n\.search-results::-webkit-scrollbar-thumb,/);
+    match(chromeCss, /\.search-results::-webkit-scrollbar-thumb,\n\.modal-backdrop:not\(\.search-palette\) \.modal::-webkit-scrollbar-thumb \{[\s\S]*?background: var\(--border2\);/);
+    // Lens transcript keeps its keyboard path (tabindex 0 + autofocus on
+    // open lives in lens.js) so the thumb is the only missing piece.
+    const lensSource = read("./desktop/app_js/lens.js");
+    match(lensSource, /lens-scroller" id="terminalLensScroller" tabindex="0"/);
+  });
+
+  it("covers the lazily-loaded feature bundles' scroll surfaces (audit pass 2)", () => {
+    const chromeCss = read("./desktop/app_css/chrome.css");
+    // The git UI, file browser, directory picker, and markdown preview
+    // bundles load lazily via HerdrLoadCss, but they land in the same
+    // document cascade, so their scrollbar rules live in chrome.css with
+    // the rest of the family. Pin each surface's presence in the shared
+    // thin/width groups so a rename cannot silently drop one.
+    const surfaces = [
+      ".git-ui-side",
+      ".git-ui-content",
+      ".git-ui-header-menu",
+      ".git-ui-branch-list-scroll",
+      ".git-ui-list",
+      ".git-ui-cleanup-confirm-list",
+      ".file-browser-side",
+      ".file-browser-pane-body",
+      ".directory-picker-tree",
+      ".herdr-markdown-body",
+      ".herdr-lsp-diagnostics",
+      ".herdr-content-search-preview",
+      ".panel-menu",
+      ".lens-tool-output",
+      ".worktree-open-list",
+    ];
+    for (const surface of surfaces) {
+      // String.raw: template literals eat \s/\{ escapes (unknown escapes
+      // drop the backslash), which would silently weaken the pins.
+      const escaped = surface.replace(".", "\\.");
+      match(chromeCss, new RegExp(String.raw`${escaped}(?:,| \{)\n`));
+      match(chromeCss, new RegExp(String.raw`${escaped}::-webkit-scrollbar(?:,| \{)`));
+      match(chromeCss, new RegExp(String.raw`${escaped}::-webkit-scrollbar-thumb(?:,| \{)[\s\S]*?background: var\(--border2\);`));
+      match(chromeCss, new RegExp(String.raw`${escaped}::-webkit-scrollbar-thumb:hover ?(?:,|\{)[\s\S]*?background: var\(--muted\);`));
+      match(chromeCss, new RegExp(String.raw`${escaped}::-webkit-scrollbar-track ?(?:,|\{)[\s\S]*?background: transparent;`));
+    }
+  });
 });

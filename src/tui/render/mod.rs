@@ -132,7 +132,16 @@ fn render_workspace_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pa
     let list = List::new(items)
         .block(panel(title, p))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
-        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        // Selected row highlight (ux fix: the bare "▸" symbol + accent
+        // foreground was easy to miss on dim terminals): the whole row
+        // gets the accent background like the webui `.selected` class,
+        // the same inversion the active tab already uses.
+        .highlight_style(
+            Style::default()
+                .fg(p.panel_bg)
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("▸ ");
     frame.render_stateful_widget(list, area, &mut state);
 }
@@ -173,7 +182,15 @@ fn render_agent_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palett
     let list = List::new(items)
         .block(panel(title, p))
         .style(Style::default().fg(p.text).bg(p.panel_bg))
-        .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
+        // Same full-row highlight as the workspace list (ux fix): the
+        // selected agent row inverts instead of only recoloring its
+        // symbol, so the cursor row is visible at a glance.
+        .highlight_style(
+            Style::default()
+                .fg(p.panel_bg)
+                .bg(p.accent)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("▸ ");
     frame.render_stateful_widget(list, area, &mut state);
 }
@@ -217,6 +234,13 @@ pub fn pane_viewport_size(width: u16, height: u16, sidebar_collapsed: bool) -> (
 fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let line = if let Some(workspace) = app.selected_workspace() {
         let tabs = app.snapshot.workspace_tabs(&workspace.id);
+        // The tab the TUI has actually selected (the pane whose tail the
+        // main pane shows, the one Enter attaches): the selection follows
+        // the agent cursor / move_panel, which does not always match the
+        // backend's active_tab_id. Marking only the backend-active tab
+        // left the user without any cue of which panel they were
+        // looking at after Ctrl+B ] / [ (ux fix).
+        let selected_tab_id = app.selected_pane().map(|pane| pane.tab_id.clone());
         if tabs.is_empty() {
             Line::from(vec![Span::styled(
                 format!(" {} ", workspace.label),
@@ -229,9 +253,14 @@ fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
             let spans = tabs
                 .iter()
                 .flat_map(|tab| {
-                    let active =
+                    let backend_active =
                         workspace.active_tab_id.as_deref() == Some(tab.id.as_str()) || tab.focused;
-                    let style = if active {
+                    // "▸ label" marks the panel the TUI is viewing; the
+                    // backend-active tab keeps its inverted style so the
+                    // two states stay distinguishable (selected vs the
+                    // tab the backend/webui has focused).
+                    let viewing = selected_tab_id.as_deref() == Some(tab.id.as_str());
+                    let style = if backend_active {
                         Style::default()
                             .fg(p.panel_bg)
                             .bg(p.accent)
@@ -239,8 +268,9 @@ fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
                     } else {
                         Style::default().fg(p.text).bg(p.panel_alt)
                     };
+                    let marker = if viewing { "▸ " } else { "" };
                     vec![
-                        Span::styled(format!(" {} ", truncate(&tab.label, 16)), style),
+                        Span::styled(format!(" {marker}{} ", truncate(&tab.label, 16)), style),
                         Span::raw(" "),
                     ]
                 })
@@ -402,14 +432,26 @@ fn render_prompt_card(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palet
 
 fn render_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let selected = app.selected_pane();
+    // Panel identity in the title (ux fix): the agent + pane id says who
+    // runs in the pane but not WHICH panel/tab it is; with several open
+    // panels the user had no cue which one the preview belongs to. The
+    // tab label rides between the agent and the pane id.
     let title = selected
         .map(|pane| {
+            let tab_label = app
+                .snapshot
+                .tabs
+                .iter()
+                .find(|tab| tab.id == pane.tab_id)
+                .map(|tab| tab.label.as_str())
+                .unwrap_or("panel");
             format!(
-                " {} · {} ",
+                " {} · {} · {} ",
                 pane.display_agent
                     .as_deref()
                     .or(pane.agent.as_deref())
                     .unwrap_or("shell"),
+                truncate(tab_label, 16),
                 pane.id
             )
         })

@@ -57,6 +57,11 @@ impl PromptKind {
 
 const TAIL_LINES: usize = 240;
 const TERMINAL_RAW_BUFFER_BYTES: usize = 512 * 1024;
+/// Tail poll cadence while the terminal screen is NOT attached: 1/5th
+/// of the default snapshot interval. The preview keeps flowing at a
+/// readable rate without hammering the backend with pane.read per event
+/// loop tick (the event loop polls keys every 50ms).
+pub(crate) const TAIL_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Max lines the Help overlay can scroll down: total rows minus whatever
 /// fits in the 50-line centered box (title + border included).
@@ -119,6 +124,11 @@ pub(crate) enum FooterContext {
     FilterBar,
     /// Content-search results view.
     ContentSearch,
+    /// Terminal screen, Navigate mode, MAIN region focused (the focus
+    /// walker's default): the pane owns the keys — list movement lives on
+    /// the sidebar regions, so the hint names pane actions instead of
+    /// the j/k list keys that are dead here.
+    TerminalMain,
     Terminal(TuiMode),
     Files(TuiMode),
     Git(TuiMode, GitView),
@@ -168,14 +178,17 @@ impl FooterContext {
             Self::ContentSearch => {
                 " j/k rows · Enter jump · A case · X regex · Esc exits · Ctrl+B ? help "
             }
+            Self::TerminalMain => {
+                " Enter attach · Shift+L chat lens · Shift+C compose · . / , focus sidebar · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
+            }
             Self::Terminal(TuiMode::Attach) => {
                 " Ctrl-G detach · type sends input · Ctrl+B ? help "
             }
             Self::Terminal(_) => {
-                " ↑/↓ j/k select · Enter attach · q quit · Ctrl+B ? help "
+                " ↑/↓ j/k select · Enter attach · Tab lists · q quit · Ctrl+B ? help "
             }
             Self::Files(_) => {
-                " j/k move · Enter open · e edit · a/A new file/dir · R rename · x delete · Ctrl+B ? help "
+                " j/k move · Enter open · e edit · a/A new file/dir · R rename · x delete · / search · L file log · Ctrl+B ? help "
             }
             Self::Git(_, GitView::Changes) => {
                 " Tab view · s stage · d discard · J/K hunk · H apply · / search · c commit · P push · Ctrl+B ? help "
@@ -223,6 +236,7 @@ impl FooterContext {
             Self::FileEdit => " Ctrl-S save · Esc stop · Ctrl+B ? help ",
             Self::FilterBar => " type · Enter keep · Esc close · Ctrl+B ? help ",
             Self::ContentSearch => " j/k · Enter jump · Esc exit · Ctrl+B ? help ",
+            Self::TerminalMain => " Enter attach · . , focus · Ctrl+B ? help ",
             Self::Terminal(TuiMode::Attach) => " Ctrl+B ? help · Ctrl-G detach ",
             Self::Lens => " j/k scroll · G bottom · Esc close · Ctrl+B ? help ",
             Self::PromptCard => " j/k · Enter · 1-9 · Esc · Ctrl+B ? help ",
@@ -296,6 +310,9 @@ pub struct TuiApp {
     pub status: String,
     pub error: Option<String>,
     pub last_refresh: Option<Instant>,
+    /// When the pane tail was last polled outside the snapshot refresh
+    /// (live preview loop, `TAIL_REFRESH_INTERVAL` cadence).
+    pub(crate) last_tail_refresh: Option<Instant>,
     pub refresh_interval: Duration,
     pub theme: TuiTheme,
     pub(crate) palette: Palette,
@@ -565,6 +582,7 @@ impl TuiApp {
             status: "connecting".to_string(),
             error: None,
             last_refresh: None,
+            last_tail_refresh: None,
             refresh_interval,
             theme,
             palette: Palette::for_theme(theme),
@@ -621,6 +639,7 @@ impl TuiApp {
         self.clamp_selection();
         if self.mode != TuiMode::Attach {
             self.refresh_tail();
+            self.last_tail_refresh = Some(Instant::now());
         }
         self.status = format!(
             "backend {} · protocol {} · {} workspaces · {} agents",
@@ -645,6 +664,22 @@ impl TuiApp {
             if let Err(err) = self.refresh() {
                 self.error = Some(err.to_string());
                 self.mark_dirty();
+            }
+        } else {
+            // Live preview while not attached (ux fix): the tail used to
+            // refresh only with the snapshot cadence (default 1s), so the
+            // pane preview looked frozen compared to the webui terminal.
+            // The tail read is a single pane.read round-trip, cheap enough
+            // to poll 5x faster than the snapshot; attach mode owns the
+            // screen through the live pty instead, and the tail is also
+            // skipped while a modal/prompt would fight the redraw.
+            let tail_due = self
+                .last_tail_refresh
+                .map(|loaded| loaded.elapsed() >= TAIL_REFRESH_INTERVAL)
+                .unwrap_or(true);
+            if tail_due && self.mode != TuiMode::Attach && self.screen == TuiScreen::Terminal {
+                self.refresh_tail();
+                self.last_tail_refresh = Some(Instant::now());
             }
         }
     }
@@ -704,7 +739,18 @@ impl TuiApp {
         }
         // Screens and sub-views.
         match self.screen {
-            TuiScreen::Terminal => FooterContext::Terminal(self.mode),
+            TuiScreen::Terminal => {
+                // Focus-aware hint (ux fix): with the MAIN region focused
+                // (the default), j/k are dead on the pane — the hint must
+                // not advertise list keys. Only the sidebar regions get
+                // the select/attach hint; attach mode owns the hint as
+                // before (the focus walker does not apply there).
+                if self.mode == TuiMode::Navigate && self.main_focused {
+                    FooterContext::TerminalMain
+                } else {
+                    FooterContext::Terminal(self.mode)
+                }
+            }
             TuiScreen::Files => FooterContext::Files(self.mode),
             TuiScreen::Git => FooterContext::Git(self.mode, self.git_panel.view),
         }
@@ -3117,6 +3163,28 @@ impl TuiApp {
             self.handle_panel_key(key);
             return;
         }
+        // Focus walker (Ctrl+B . / ,) regions: when the main screen
+        // owns focus, j/k and Enter stop moving the sidebar cursor and
+        // act on the pane instead (Enter attach, j/k pane scroll is not
+        // a pane feature so they stay inert there); the sidebar keys
+        // (Tab/a/w) still work so focus never traps the user. When the
+        // sidebar owns focus the old behavior applies (ux fix: the
+        // walker used to be a status-line message with no effect).
+        if self.main_focused {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => self.request_quit(),
+                KeyCode::Char('?') => {
+                    self.open_help_overlay();
+                }
+                KeyCode::Char('r') => self.refresh_active_screen(),
+                KeyCode::Tab | KeyCode::BackTab => self.toggle_sidebar_focus(),
+                KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
+                KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
+                KeyCode::Enter => self.attach_selected(),
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             // Only the Terminal screen reaches this handler; Files and Git
             // delegate to their panel handlers above.
@@ -3474,13 +3542,28 @@ impl TuiApp {
     }
 
     pub fn selected_pane(&self) -> Option<&TuiPane> {
-        if self.sidebar_focus == SidebarFocus::Agents {
-            if let Some(agent) = self.selected_agent() {
-                return self
+        // The agent cursor is authoritative when it points at a pane in
+        // the selected workspace: the panel walk (Ctrl+B ] / [) and the
+        // agent list both move `selected_agent`, and the viewed pane
+        // must follow them even while the workspace list owns the
+        // sidebar focus (otherwise the tab marker, pane header, tail,
+        // and Enter-attach would all target the backend-active tab
+        // instead of the panel the user walked to).
+        if let Some(agent) = self.selected_agent() {
+            if let Some(pane) = self
+                .snapshot
+                .panes
+                .iter()
+                .find(|pane| pane.id == agent.pane_id)
+            {
+                let workspace_id = self
                     .snapshot
-                    .panes
-                    .iter()
-                    .find(|pane| pane.id == agent.pane_id);
+                    .workspaces
+                    .get(self.selected_workspace)
+                    .map(|workspace| workspace.id.as_str());
+                if workspace_id == Some(pane.workspace_id.as_str()) {
+                    return Some(pane);
+                }
             }
         }
         let workspace_id = &self.selected_workspace()?.id;
