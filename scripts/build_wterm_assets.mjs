@@ -44,6 +44,16 @@ await writeFile(
     .replace(
       'this.textarea.setAttribute("aria-hidden","true")',
       'this.textarea.setAttribute("aria-hidden","false")',
+    )
+    // The hidden textarea must not trigger mobile keyboard autocorrect, grammar
+    // suggestions, or capitalization. Upstream ships autocapitalize="off" but
+    // Gboard ignores that on some layers and respects writingsuggestions, and
+    // the spec value for "no capitalization" is "none". Same patch pattern as
+    // the WASM URL and aria-hidden fixes above.
+    .replace(
+      'this.textarea.setAttribute("autocapitalize","off"),',
+      'this.textarea.setAttribute("autocapitalize","none");' +
+        'this.textarea.setAttribute("writingsuggestions","false"),',
     ),
 );
 
