@@ -32,10 +32,12 @@ ClientShell endpoint protocol.
 
 ## Real-browser e2e
 
-The in-repo CDP harness was removed (extension installs are not always
-available). Run real-browser acceptance with the external cdp-chrome skill
-and a self-contained headless Chrome for Testing; see
-`docs/e2e-external.md`.
+Live keyboard-guards audits run in-repo with `make test-e2e` (or
+`scripts/e2e/run-keyboard-guards-e2e.sh` directly): the runner builds,
+boots an isolated server plus its own headless Chrome over CDP, runs the
+mobile and desktop guard audits, and tears everything down. For
+ad-hoc real-browser probing beyond that, the external cdp-chrome skill
+and `docs/e2e-external.md` still apply.
 
 ## Utility scripts
 
