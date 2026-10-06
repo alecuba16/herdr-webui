@@ -179,7 +179,7 @@ impl FooterContext {
                 " j/k rows · Enter jump · A case · X regex · Esc exits · Ctrl+B ? help "
             }
             Self::TerminalMain => {
-                " Enter attach · Shift+L chat lens · Shift+C compose · . / , focus sidebar · r refresh · Ctrl+B ]/[ panel · Ctrl+B ? help "
+                " Enter attach · Shift+L chat lens · Shift+C compose · . / , focus sidebar · r refresh · q quit · Ctrl+B ]/[ panel · Ctrl+B ? help "
             }
             Self::Terminal(TuiMode::Attach) => {
                 " Ctrl-G detach · type sends input · Ctrl+B ? help "

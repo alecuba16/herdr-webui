@@ -284,11 +284,16 @@
    family): git UI lists and popovers, file browser panes, directory
    picker tree, markdown preview body, plus the small clamped lists
    (LSP diagnostics, content-search preview, cleanup confirm).
+   .git-ui-content joins after live-DOM verification: the diff view
+   stacks 15k+ px of hunks and its default overlay scrollbar gives
+   the same no-signal glitch as the lists (found on the real git UI,
+   not by enumeration alone).
    Editors, CodeMirror scrollers and horizontal-only scrollers
    (diff xscroll, pre/mermaid blocks) stay default: they draw their
    own edge affordances, and a styled track on top of code reads as
    noise, not signal. */
 .git-ui-side,
+.git-ui-content,
 .git-ui-header-menu,
 .git-ui-branch-list-scroll,
 .git-ui-list,
@@ -302,6 +307,7 @@
   scrollbar-width: thin;
 }
 .git-ui-side::-webkit-scrollbar,
+.git-ui-content::-webkit-scrollbar,
 .git-ui-header-menu::-webkit-scrollbar,
 .git-ui-branch-list-scroll::-webkit-scrollbar,
 .git-ui-list::-webkit-scrollbar,
@@ -315,6 +321,7 @@
   width: 8px;
 }
 .git-ui-side::-webkit-scrollbar-thumb,
+.git-ui-content::-webkit-scrollbar-thumb,
 .git-ui-header-menu::-webkit-scrollbar-thumb,
 .git-ui-branch-list-scroll::-webkit-scrollbar-thumb,
 .git-ui-list::-webkit-scrollbar-thumb,
@@ -329,6 +336,7 @@
   border-radius: 8px;
 }
 .git-ui-side::-webkit-scrollbar-thumb:hover,
+.git-ui-content::-webkit-scrollbar-thumb:hover,
 .git-ui-header-menu::-webkit-scrollbar-thumb:hover,
 .git-ui-branch-list-scroll::-webkit-scrollbar-thumb:hover,
 .git-ui-list::-webkit-scrollbar-thumb:hover,
@@ -342,6 +350,7 @@
   background: var(--muted);
 }
 .git-ui-side::-webkit-scrollbar-track,
+.git-ui-content::-webkit-scrollbar-track,
 .git-ui-header-menu::-webkit-scrollbar-track,
 .git-ui-branch-list-scroll::-webkit-scrollbar-track,
 .git-ui-list::-webkit-scrollbar-track,

@@ -8827,6 +8827,10 @@ fn footer_hint_follows_the_focus_region_on_the_terminal_screen() {
         "main hint names the lens shortcut"
     );
     assert!(
+        main.contains("q quit"),
+        "main hint keeps the quit key that still works here"
+    );
+    assert!(
         !main.contains("j/k select"),
         "main hint must not advertise dead list keys"
     );
