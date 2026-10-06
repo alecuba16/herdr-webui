@@ -24,7 +24,26 @@ const {
   terminalPasteInput,
   stripTerminalMouseReports,
   stripTerminalQueryReplies,
+  inputAttrs,
 } = require("./shared/core.js");
+
+describe("inputAttrs (shared helper)", () => {
+  it("emits the full keyboard guard set; adding/removing an attr fails here", () => {
+    // Deliberate pin: behavioral tests cover rendered markup incidentally,
+    // this pins the helper itself so a trimmed attr cannot land silently.
+    // Static scan checks call-site interpolation, not emitted content.
+    assert.match(inputAttrs(), /autocomplete="off"/);
+    assert.match(inputAttrs(), /autocorrect="off"/);
+    assert.match(inputAttrs(), /autocapitalize="none"/);
+    assert.match(inputAttrs(), /spellcheck="false"/);
+    assert.match(inputAttrs(), /writingsuggestions="false"/);
+    assert.match(inputAttrs(), /translate="no"/);
+    assert.ok(!inputAttrs().includes("enterkeyhint"), "no hint without argument");
+    assert.match(inputAttrs("search"), /enterkeyhint="search"/);
+    assert.ok(inputAttrs("search").includes(inputAttrs()));
+    assert.ok(!inputAttrs('"><img onerror=alert(1)>').includes('enterkeyhint="\"><img'), "hint must be escaped");
+  });
+});
 
 describe("createFaviconNotifier", () => {
   it("creates one icon link and only updates on state changes", () => {
