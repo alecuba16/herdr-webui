@@ -394,6 +394,27 @@ describe("mobile parity feature guards", () => {
     assert.match(worktreesSource, /removeRecentWorkspace\(\$\{jsArg\(item\.path\)\}\)/);
   });
 
+  it("worktrees screen exposes the folder picker for desktop parity", () => {
+    // Primary action: open any folder straight as a workspace.
+    assert.match(worktreesSource, /mobile-worktree-open-actions/);
+    assert.match(worktreesSource, /HerdrMobile\.openFolderAsWorkspace\(\)/);
+    assert.match(worktreesSource, /Browse and open folder/);
+    // Browse buttons next to the raw path inputs (discover + create checkout path).
+    assert.match(worktreesSource, /HerdrMobile\.browseDirectory\(\$\{jsArg\(field\)\}\)/);
+    assert.ok((worktreesSource.match(/pickFolder\("worktree(Disc\w+|Path)",/g) || []).length === 2, "both path inputs get a Browse button");
+    // openFolderAsWorkspace mirrors the recents open route and is exported.
+    assert.match(worktreesSource, /async function openFolderAsWorkspace\(pathArg\)/);
+    assert.match(worktreesSource, /openFolderAsWorkspace, openRecent/);
+  });
+
+  it("app wires the picker to worktrees and exports both entry points", () => {
+    const appSource2 = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
+    assert.match(appSource2, /openWorkspaceFn: \(folder\) => mobileWorktrees\.openFolderAsWorkspace\(folder\)/);
+    assert.match(appSource2, /browseDirectory/);
+    assert.match(appSource2, /openFolderAsWorkspace/);
+    assert.match(appSource2, /HerdrMobileDirectoryPicker/);
+  });
+
   it("terminal output clears dismissed working overrides", () => {
     const terminalSource = readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8");
     assert.match(terminalSource, /onTerminalOutput/);

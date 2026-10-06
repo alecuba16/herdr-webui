@@ -1,23 +1,20 @@
-// Mobile composer + prompt cards: the mobile half of the desktop chat
-// surfaces (composer.js + prompt_cards.js).
-//
-// Composer: a message bar under the terminal that submits to
-// POST /api/panes/{id}/submit — the same route the desktop composer and
-// the backend agent.prompt use. Per-pane drafts, refusal notes, and the
-// 20000-char client cap mirror the desktop contract.
-//
-// Prompt cards: when the selected pane's agent is blocked, parse the
-// terminal tail (wterm bridge grid reads) for a question dialog and
-// answer it by synthesizing keystrokes through the terminal input path.
-// Same parse shapes as desktop prompt_cards.js (frozen protocol 22 has
-// no structured prompt payload).
+// Mobile prompt cards: the mobile half of the desktop chat surfaces
+// (prompt_cards.js). The composer bar (input + Send) is gone by design:
+// mobile types straight into the terminal (wterm's textarea carries the full
+// keyboard guard set: autocapitalize=none, autocorrect off, no writing
+// suggestions), so a second input only fought the terminal for focus and
+// hid the terminal behind the keyboard. What remains here is the blocked
+// agent question card: parse the terminal tail (wterm bridge grid reads)
+// for a question dialog and answer it by synthesizing keystrokes through
+// the terminal input path. Same parse shapes as desktop prompt_cards.js
+// (frozen protocol 22 has no structured prompt payload).
 (function () {
-  const MAX_COMPOSER_CHARS = 20000;
   const PILL_STATUSES = ["blocked", "done", "idle", "working"];
 
-  function createMobileComposer({ state, api, render, escapeHtml, inputAttrs, statusClassFn, getTerminal }) {
+  function createMobileComposer({ state, render, escapeHtml, inputAttrs, statusClassFn, getTerminal }) {
+    // Drafts belonged to the removed composer bar; the map stays as a
+    // per-pane scratch pad for tests and future surfaces.
     const drafts = new Map();
-    let sending = false;
 
     // ---- Terminal tail reading (wterm bridge grid, same as desktop) ----
 
@@ -170,82 +167,39 @@
       render();
     }
 
-    // ---- Composer ----
+    // ---- Composer (removed) ----
+    // The old composer bar (textarea + Send) submitted to
+    // POST /api/panes/{id}/submit. Mobile now types directly into the
+    // terminal: wterm's hidden textarea carries the full keyboard guard
+    // set (autocapitalize=none, autocorrect off, no writing suggestions),
+    // and the terminal input path already strips mouse reports and query
+    // replies. The stubs below keep the HerdrMobileComposerDeps contract
+    // intact so panels.js syncComposer needs no branching.
 
     function composerVisible() {
       return !!(state.pane && state.screen === "terminal");
     }
 
-    function draftFor(paneId) {
-      return drafts.get(paneId) || "";
-    }
-
-    function setDraft(value) {
-      if (!state.pane) return;
-      drafts.set(state.pane, String(value || ""));
-    }
-
-    function note() {
-      return state.composerNote || "";
-    }
-
-    async function submit() {
-      const paneId = state.pane;
-      if (!paneId || sending) return;
-      const message = draftFor(paneId).replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
-      if (!message.trim()) return;
-      if (message.length > MAX_COMPOSER_CHARS) {
-        state.composerNote = "Not sent: message is too long (20000 characters max).";
-        render();
-        return;
-      }
-      sending = true;
-      state.composerNote = "";
-      render();
-      try {
-        await api(`/api/panes/${encodeURIComponent(paneId)}/submit`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text: message }),
-        });
-        drafts.delete(paneId);
-        state.composerNote = "";
-      } catch (error) {
-        const details = error && error.details;
-        const refusal = details && details.note;
-        state.composerNote = refusal || error.message || String(error);
-      } finally {
-        sending = false;
-        render();
-      }
-    }
-
-    // ---- Rendering ----
-
     function renderComposerBar() {
-      if (!composerVisible()) return "";
-      const disabled = sending || !state.pane;
-      const value = state.pane ? draftFor(state.pane) : "";
-      return `<div class="mobile-composer" id="mobileComposer"><textarea id="mobileComposerInput" rows="1"${inputAttrs("send")} placeholder="${disabled ? "Sending…" : "Message this panel"}" ${disabled ? "disabled" : ""} oninput="HerdrMobile.composerInput(this.value)" onkeydown="if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); HerdrMobile.composerSubmit(); }">${escapeHtml(value)}</textarea><button class="mobile-btn primary" id="mobileComposerSend" ${disabled ? "disabled" : ""} onclick="HerdrMobile.composerSubmit()">${sending ? "…" : "Send"}</button></div>`;
+      return "";
     }
 
     function renderComposerNote() {
-      if (!composerVisible() || !state.composerNote) return "";
-      return `<div class="mobile-composer-note" id="mobileComposerNote" role="status">${escapeHtml(state.composerNote)}</div>`;
-    }
-
-    function draftValue() {
-      return state.pane ? draftFor(state.pane) : "";
+      return "";
     }
 
     function renderPromptCard() {
       if (state.screen !== "terminal") return "";
       const prompt = evaluatePrompt();
       if (!prompt) return "";
+      // Bottom-sheet question surface: handle + title row with the dismiss
+      // (Cancel) button, then the options list or the free-text input. Same
+      // .mobile-sheet chrome the rename/confirm sheets use, so it reads as a
+      // native sheet instead of a floating card stuck to the composer bar.
       const body = prompt.kind === "options"
-        ? prompt.options.map((o) => `<button type="button" class="mobile-prompt-option" onclick="HerdrMobile.promptAnswer(${escapeHtml(JSON.stringify(prompt.title))}, '${escapeHtml(o.key)}')">${escapeHtml(o.label)}</button>`).join("")
+        ? prompt.options.map((o) => `<button type="button" class="mobile-sheet-action mobile-prompt-option" onclick="HerdrMobile.promptAnswer(${escapeHtml(JSON.stringify(prompt.title))}, '${escapeHtml(o.key)}')"><strong>${escapeHtml(o.key)}.</strong> ${escapeHtml(o.label)}</button>`).join("")
         : `<div class="mobile-prompt-text-row"><input id="mobilePromptInput" class="mobile-sheet-input" type="text"${inputAttrs("send")} placeholder="Type your response" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.promptAnswerText(${escapeHtml(JSON.stringify(prompt.title))}, this.value); }"></div>`;
-      return `<div class="mobile-prompt-card" id="mobilePromptCard" role="dialog" aria-label="${escapeHtml(prompt.title)}"><div class="mobile-prompt-head"><strong>${escapeHtml(prompt.title)}</strong><button type="button" class="mobile-btn mini" aria-label="Dismiss question" onclick="HerdrMobile.promptDismiss(${escapeHtml(JSON.stringify(prompt.title))})">✕</button></div><div class="mobile-prompt-body">${body}</div></div>`;
+      return `<div class="mobile-sheet-backdrop mobile-prompt-backdrop" onclick="HerdrMobile.promptDismiss(${escapeHtml(JSON.stringify(prompt.title))})"></div><div class="mobile-sheet mobile-prompt-card" id="mobilePromptCard" role="dialog" aria-modal="true" aria-label="${escapeHtml(prompt.title)}"><div class="mobile-sheet-handle"></div><div class="mobile-prompt-head"><strong class="mobile-prompt-title">${escapeHtml(prompt.title)}</strong><button type="button" class="mobile-btn mini" aria-label="Cancel and close question" onclick="HerdrMobile.promptDismiss(${escapeHtml(JSON.stringify(prompt.title))})">Cancel</button></div><div class="mobile-prompt-body">${body}</div></div>`;
     }
 
     // Prompt answers need the prompt object; resolve by title at call time
@@ -274,11 +228,7 @@
     }
 
     return {
-      // composer
-      submit,
-      setDraft,
-      draftFor,
-      draftValue,
+      // composer (removed: stubs keep the deps contract)
       renderComposerBar,
       renderComposerNote,
       composerVisible,

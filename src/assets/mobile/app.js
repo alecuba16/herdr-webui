@@ -114,7 +114,8 @@
     mobileWorkmeta,
     mobileTheme,
     mobileActions,
-    mobileBackend;
+    mobileBackend,
+    mobileDirectoryPicker;
 
   function el(id) {
     return document.getElementById(id);
@@ -904,6 +905,18 @@
     selectionPath,
     state,
   });
+  mobileDirectoryPicker = globalThis.HerdrMobileDirectoryPickerModule.create({
+    api,
+    escapeHtml,
+    inputAttrs,
+    jsArg,
+    state,
+    render,
+    defaultFolderFn: () => state.defaultFolder || "",
+    // Open-folder flows live in worktrees.js so the navigate logic stays in
+    // one place; the picker just hands over the confirmed path.
+    openWorkspaceFn: (folder) => mobileWorktrees.openFolderAsWorkspace(folder),
+  });
   mobileFileBrowser = globalThis.HerdrMobileFileBrowser.create({
     api,
     confirm: (...args) => mobileConfirm(...args),
@@ -946,7 +959,6 @@
 
   mobileComposer = globalThis.HerdrMobileComposerModule.create({
     state,
-    api,
     render,
     escapeHtml,
     inputAttrs,
@@ -959,7 +971,7 @@
     renderComposerBar: (...args) => mobileComposer.renderComposerBar(...args),
     renderComposerNote: (...args) => mobileComposer.renderComposerNote(...args),
     renderPromptCard: (...args) => mobileComposer.renderPromptCard(...args),
-    draftValue: (...args) => mobileComposer.draftValue(...args),
+    draftValue: () => "",
   };
 
   mobileEvents = globalThis.HerdrMobileEventsModule.create({
@@ -1067,8 +1079,8 @@
     setCommitField: (...args) => mobileGit.setCommitField(...args),
     submitCommit: (...args) => mobileGit.submitCommit(...args),
     dismissCommitDone: (...args) => mobileGit.dismissCommitDone(...args),
-    composerInput: (...args) => mobileComposer.setDraft(...args),
-    composerSubmit: (...args) => mobileComposer.submit(...args),
+    composerInput: () => {},
+    composerSubmit: () => {},
     renameWorkspace: (...args) => mobileScreens.startRenameWorkspace(...args),
     setRenameWorkspaceValue: (...args) => mobileScreens.setRenameWorkspaceValue(...args),
     submitRenameWorkspace: (...args) => mobileScreens.submitRenameWorkspace(...args),
@@ -1117,6 +1129,8 @@
     filesTypeToFilter: mobileFileBrowser.typeToFilter,
     loadWorktrees: mobileWorktrees.load,
     openWorktree: mobileWorktrees.open,
+    openFolderAsWorkspace: () => (mobileDirectoryPicker ? mobileDirectoryPicker.openForWorkspace() : Promise.resolve()),
+    browseDirectory: (field) => mobileDirectoryPicker && mobileDirectoryPicker.openForField(field),
     createWorktree: mobileWorktrees.create,
     loadRecentWorkspaces: mobileWorktrees.loadRecent,
     openRecentWorkspace: mobileWorktrees.openRecent,
@@ -1227,6 +1241,18 @@
   globalThis.HerdrMobileConfirm = (...args) => mobileConfirm(...args);
   globalThis.HerdrMobileJsArg = jsArg;
   globalThis.HerdrMobilePathBasename = pathBasename;
+  // The directory picker's onclick handlers live in sheet markup created by
+  // the module itself; point the namespace at the live instance.
+  globalThis.HerdrMobileDirectoryPicker = {
+    enter: (p) => mobileDirectoryPicker.enter(p),
+    up: () => mobileDirectoryPicker.up(),
+    home: () => mobileDirectoryPicker.home(),
+    defaultFolder: () => mobileDirectoryPicker.defaultFolder(),
+    close: () => mobileDirectoryPicker.close(),
+    filter: (v) => mobileDirectoryPicker.filter(v),
+    selectCurrent: () => mobileDirectoryPicker.selectCurrent(),
+    requestAccess: () => mobileDirectoryPicker.requestAccess(),
+  };
   globalThis.HerdrMobileAppDeps = {
     state,
     api,

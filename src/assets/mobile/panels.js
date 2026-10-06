@@ -101,52 +101,34 @@
       while (wrap.firstElementChild) shell.appendChild(wrap.firstElementChild);
     }
 
-    function replaceNode(existing, html) {
-      const wrap = document.createElement("div");
-      wrap.innerHTML = html;
-      const next = wrap.firstElementChild;
-      if (next && existing.parentNode) existing.parentNode.replaceChild(next, existing);
-      else removeNode(existing);
-    }
-
     function syncComposer(screen) {
       const deps = globalThis.HerdrMobileComposerDeps;
       if (!deps) return;
+      // Composer bar and note are removed (typing goes into the terminal);
+      // keep the removal so an upgrade from an old DOM clears leftovers.
       const existingBar = el("mobileComposer");
-      const wantedBar = deps.renderComposerBar();
-      if (existingBar) {
-        const next = document.createElement("div");
-        next.innerHTML = wantedBar;
-        const nextBar = next.firstElementChild;
-        if (nextBar && existingBar.innerHTML !== nextBar.innerHTML) {
-          const active = document.activeElement === existingBar.querySelector("#mobileComposerInput");
-          const value = deps.draftValue();
-          if (existingBar.parentNode) existingBar.parentNode.replaceChild(nextBar, existingBar);
-          else removeNode(existingBar);
-          const input = nextBar.querySelector("#mobileComposerInput");
-          if (input) {
-            input.value = value;
-            if (active) input.focus({ preventScroll: true });
-          }
-        }
-      } else {
-        mountAfterTerminal(el("terminalShell"), wantedBar);
-      }
+      if (existingBar) removeNode(existingBar);
       const existingNote = el("mobileComposerNote");
-      const wantedNote = deps.renderComposerNote();
-      if (!existingNote && wantedNote) {
-        mountAfterTerminal(el("terminalShell"), wantedNote);
-      } else if (existingNote && wantedNote) {
-        const text = wantedNote.replace(/<[^>]*>/g, "");
-        if (existingNote.textContent !== text) existingNote.textContent = text;
-      } else if (existingNote && !wantedNote) {
-        removeNode(existingNote);
-      }
+      if (existingNote) removeNode(existingNote);
       const existingCard = el("mobilePromptCard");
       const wantedCard = deps.renderPromptCard();
       if (existingCard) {
-        if (!wantedCard) removeNode(existingCard);
-        else if (existingCard.outerHTML !== wantedCard) replaceNode(existingCard, wantedCard);
+        const backdrop = existingCard.previousElementSibling;
+        const hadBackdrop = !!(backdrop && backdrop.classList && backdrop.classList.contains("mobile-prompt-backdrop"));
+        const currentPair = (hadBackdrop ? backdrop.outerHTML : "") + existingCard.outerHTML;
+        if (!wantedCard) {
+          if (hadBackdrop) removeNode(backdrop);
+          removeNode(existingCard);
+        } else if (currentPair !== wantedCard) {
+          // wantedCard is backdrop + sheet; replace both nodes together so
+          // they can never desync (stale backdrop over a fresh sheet).
+          const wrap = document.createElement("div");
+          wrap.innerHTML = wantedCard;
+          if (hadBackdrop) removeNode(backdrop);
+          const parent = existingCard.parentNode;
+          while (wrap.firstElementChild) parent.insertBefore(wrap.firstElementChild, existingCard);
+          removeNode(existingCard);
+        }
       } else if (wantedCard) {
         mountAfterTerminal(el("terminalShell"), wantedCard);
       }

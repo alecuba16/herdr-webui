@@ -509,6 +509,8 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./mobile/directory_picker.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8") +

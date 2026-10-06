@@ -113,6 +113,7 @@ const MOBILE_CORE_JS: &str = include_str!("assets/mobile/core.js");
 const MOBILE_SETTINGS_JS: &str = include_str!("assets/mobile/settings.js");
 const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile/terminal.js");
 const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile/worktrees.js");
+const MOBILE_DIRECTORY_PICKER_JS: &str = include_str!("assets/mobile/directory_picker.js");
 const MOBILE_FILE_BROWSER_JS: &str = include_str!("assets/mobile/file_browser.js");
 const MOBILE_SEARCH_JS: &str = include_str!("assets/mobile/search.js");
 const MOBILE_GIT_JS: &str = include_str!("assets/mobile/git.js");
@@ -498,6 +499,13 @@ pub(crate) async fn mobile_worktrees_js() -> Response {
     static_text(MOBILE_WORKTREES_JS, "application/javascript; charset=utf-8")
 }
 
+pub(crate) async fn mobile_directory_picker_js() -> Response {
+    static_text(
+        MOBILE_DIRECTORY_PICKER_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
 pub(crate) async fn mobile_file_browser_js() -> Response {
     static_text(
         MOBILE_FILE_BROWSER_JS,
@@ -724,6 +732,10 @@ mod tests {
             "application/wasm"
         );
         assert_eq!(content_type(&mobile_file_browser_js().await), javascript);
+        assert_eq!(
+            content_type(&mobile_directory_picker_js().await),
+            javascript
+        );
         assert_eq!(content_type(&login_js().await), javascript);
         assert_eq!(content_type(&shared_skeleton_js().await), javascript);
         assert_eq!(content_type(&shared_skeleton_css().await), css);

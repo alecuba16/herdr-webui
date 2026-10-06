@@ -67,98 +67,29 @@ function composerContext({ status = "blocked", term = null } = {}) {
 describe("mobile composer + prompt cards module", () => {
   it("loads and exposes its API", () => {
     const { module } = composerContext();
-    assert.equal(typeof module.submit, "function");
-    assert.equal(typeof module.setDraft, "function");
-    assert.equal(typeof module.parsePrompt, "function");
     assert.equal(typeof module.renderComposerBar, "function");
+    assert.equal(typeof module.parsePrompt, "function");
     assert.equal(typeof module.renderPromptCard, "function");
+    assert.equal(typeof module.promptAnswer, "function");
+    assert.equal(typeof module.promptDismiss, "function");
   });
 
-  it("composer bar renders only on the terminal screen with a pane", () => {
-    const { module, state } = composerContext();
-    assert.match(module.renderComposerBar(), /id="mobileComposerInput"/);
+  it("composer bar is removed: typing goes straight into the terminal", () => {
+    const { module, state, calls } = composerContext();
+    // The bar stub must stay empty everywhere so panels.js never mounts a
+    // second input fighting the terminal for focus.
+    assert.equal(module.renderComposerBar(), "");
+    assert.equal(module.renderComposerNote(), "");
     state.screen = "home";
     assert.equal(module.renderComposerBar(), "");
-    state.screen = "terminal";
-    state.pane = null;
-    assert.equal(module.renderComposerBar(), "");
+    assert.equal(calls.api.length, 0, "no pane submit calls without the bar");
   });
 
-  it("composer input carries the full mobile keyboard guard attribute set", () => {
-    const { module } = composerContext();
-    const html = module.renderComposerBar();
-    assert.match(html, /autocomplete="off"/);
-    assert.match(html, /autocorrect="off"/);
-    assert.match(html, /autocapitalize="none"/);
-    assert.match(html, /spellcheck="false"/);
-    assert.match(html, /writingsuggestions="false"/);
-    assert.match(html, /enterkeyhint="send"/);
-  });
-
-  it("drafts are per-pane and survive renders", () => {
-    const { module, state } = composerContext();
-    module.setDraft("hello one");
-    state.pane = "pane-2";
-    module.setDraft("hello two");
-    assert.equal(module.draftFor("pane-1"), "hello one");
-    assert.equal(module.draftFor("pane-2"), "hello two");
-    assert.equal(module.draftValue(), "hello two");
-  });
-
-  it("submit posts to /api/panes/{id}/submit and clears the draft", async () => {
-    const { module, calls } = composerContext();
-    module.setDraft("do the thing\n");
-    await module.submit();
-    assert.equal(calls.api.length, 1);
-    assert.equal(calls.api[0].url, "/api/panes/pane-1/submit");
-    assert.equal(calls.api[0].opts.method, "POST");
-    assert.deepEqual(JSON.parse(calls.api[0].opts.body), { text: "do the thing" });
-    assert.equal(module.draftFor("pane-1"), "");
-  });
-
-  it("submit is a no-op for empty/whitespace drafts", async () => {
-    const { module, calls } = composerContext();
-    module.setDraft("   \n  ");
-    await module.submit();
-    assert.equal(calls.api.length, 0);
-  });
-
-  it("oversized drafts are refused locally with a note", async () => {
-    const { module, state, calls } = composerContext();
-    module.setDraft("x".repeat(20001));
-    await module.submit();
-    assert.equal(calls.api.length, 0, "must not call the API");
-    assert.match(state.composerNote, /20000/);
-  });
-
-  it("api failures surface as composer notes", async () => {
-    const { module, state } = composerContext({ status: "working" });
-    // Re-create with a failing api.
-    const failing = composerContext({ status: "working" });
-    failing.module.setDraft("boom");
-    failing.state.__failApi = true;
-    // Patch by making a new module with failing api
-    const sandbox = {
-      console, setTimeout, clearTimeout, Date, JSON, Object, Array, Math,
-      Number, String, Error, Set, Map, Promise, RegExp, encodeURIComponent,
-    };
-    sandbox.globalThis = sandbox;
-    const ctx = vm.createContext(sandbox);
-    vm.runInContext(composerSource, ctx);
-    const mod = ctx.HerdrMobileComposerModule.create({
-      state: failing.state,
-      api: async () => {
-        throw Object.assign(new Error("panel has no agent"), { details: { note: "No agent attached to this panel." } });
-      },
-      render: () => {},
-      escapeHtml: (s) => String(s),
-      inputAttrs: () => "",
-      statusClassFn: () => "working",
-      getTerminal: () => null,
-    });
-    mod.setDraft("hello");
-    await mod.submit();
-    assert.equal(failing.state.composerNote, "No agent attached to this panel.");
+  it("wterm bundle ships the keyboard guard set for direct terminal typing", () => {
+    const bundle = read("./vendor/wterm.bundle.js");
+    for (const attr of ['"autocapitalize","none"', '"writingsuggestions","false"', '"autocomplete","off"', '"autocorrect","off"', '"spellcheck","false"']) {
+      assert.ok(bundle.includes(`this.textarea.setAttribute(${attr})`), `wterm missing textarea guard ${attr}`);
+    }
   });
 
   it("parsePrompt detects option dialogs", () => {
@@ -261,6 +192,43 @@ describe("mobile composer + prompt cards module", () => {
     assert.match(textCard, /spellcheck="false"/);
     assert.match(textCard, /writingsuggestions="false"/);
     assert.match(textCard, /enterkeyhint="send"/);
+  });
+
+  it("prompt card renders as a bottom sheet with backdrop and Cancel", () => {
+    const term = {
+      wterm: {
+        bridge: {
+          usingAltScreen: () => false,
+          getCols: () => 40,
+          getRows: () => 6,
+          getCell: (r, c) => {
+            const rows = [
+              "Allow network access to example.com? ",
+              "",
+              "1. Allow once",
+              "2. Allow always",
+              "3. Deny",
+              "",
+            ];
+            const line = rows[r] || "";
+            const ch = line[c] || " ";
+            return { width: 1, chars: ch };
+          },
+        },
+      },
+      sendPasteToTerminal: () => {},
+    };
+    const card = composerContext({ status: "blocked", term }).module.renderPromptCard();
+    // Sheet chrome: backdrop + sheet + handle, so it reads like the other
+    // mobile sheets instead of a floating card glued to the old composer bar.
+    assert.match(card, /mobile-sheet-backdrop mobile-prompt-backdrop/);
+    assert.match(card, /mobile-sheet mobile-prompt-card/);
+    assert.match(card, /mobile-sheet-handle/);
+    // Cancel button replaces the old bare ✕ glyph.
+    assert.match(card, /aria-label="Cancel and close question"/);
+    assert.ok(!/>✕<\/button>/.test(card), "no bare ✕ close button");
+    // Backdrop click also dismisses.
+    assert.match(card, /mobile-prompt-backdrop" onclick="HerdrMobile\.promptDismiss/);
   });
 
   it("answering an option sends the key through the terminal paste path", async () => {
