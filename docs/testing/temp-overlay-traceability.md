@@ -47,6 +47,9 @@ node:test / cargo test.
 | R34 | Mobile: `toggleGit` minimizes/restores; both overlays coexist with independent folders/instances; `pickerUp` climbs one level; `pickerFilter` narrows rows; `closeFiles`/`closeGit` parity exports | `toggleGit opens, minimizes, and restores...`, `both overlays open at once...`, `pickerUp climbs one level...`, `pickerFilter narrows the rendered rows` | pass |
 | R35 | Desktop picker exports the node-based `open(input)` entry the temp overlay host calls (shipped broken in 87ddc98: host called a missing export, Change-folder was dead in the browser) | picker suite `directory picker exposes the node-based open(input) entry the temp overlays use` | pass (fixed) |
 | R36 | End to end against served bundles + real backend: both overlays open at once on different folders, Change-folder drives the real picker module into a subfolder, picker close keeps the folder, closing one overlay leaves the sibling mounted, zero workspace/session API calls | `scripts/e2e/temp-overlays-acceptance.mjs` via `scripts/e2e/run-temp-overlays-e2e.sh` (isolated config, fixture folders, loopback login) | pass |
+| R37 | E2e suppression + lifecycle: while a surface is mounted the drawers' syncTerminalVisibility leaves the main shell style untouched; minimize/restore keeps the panel mounted in the overlay body with the folder intact (restore bar button wired); close detaches the panel (ephemeral cleanup) and reopen works; picker filter narrows through the real backend (`q=` search) and a filtered close keeps the folder | acceptance run sections 5-7 + 9 | pass |
+| R38 | E2e non-repo: the git overlay opens on a folder without a git repo, stays open (git_ui.open resolves, status API hit with that cwd), panel stays mounted, closes cleanly | acceptance run section 8 | pass |
+| R39 | Cross-module sweep: every member the hosts/drawers/render.js call on `HerdrTempOverlay`, `HerdrDirectoryPicker`, `HerdrFileBrowser`, `HerdrGitUi`, `HerdrTempOverlays`, `HerdrMobile*` resolves against a real export (audit after the picker `open` miss) | grep audit documented in the acceptance run's bundle-slice setup; no further missing exports found | pass |
 
 ## Verification runs
 
@@ -54,7 +57,7 @@ node:test / cargo test.
 - `node --test src/assets/*.test.mjs`: 818/818 pass (25 controller, 20 desktop host, 16 mobile host, 7 picker, plus app_load/app_core/git_ui_behavior guard and shell-toggle tests)
 - `cargo fmt --check`: clean
 - Runtime integration on debug binary (`127.0.0.1:18787 --session verify-temp`): login, asset 200s, dirs_only tree, bundle references all verified; served bundles byte-checked against the sources for the coexistence guard, timeout fix, F6 fix, and mobile close exports
-- E2E acceptance: `scripts/e2e/run-temp-overlays-e2e.sh` PASS (boots the real served bundle set in a vm, proxies fetch to the live backend with the login cookie; found and pinned the R35 picker export fix)
+- E2E acceptance: `scripts/e2e/run-temp-overlays-e2e.sh` PASS (boots the real served bundle set in a vm, proxies fetch to the live backend with the login cookie; found and pinned the R35 picker export fix; sections 1-10 cover coexistence, picker navigate/select/filter/close, suppression, minimize/restore, ephemeral cleanup + reopen, non-repo git overlay, and zero workspace/session calls)
 - Code review: Approve, no blocking findings
 
 ## Gaps / non-goals

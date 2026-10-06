@@ -429,7 +429,124 @@ assert(!dom.doc.getElementById("tempFilesOverlayModal") || overlays.files().isOp
 const gitPanelAfter = dom.doc.getElementById("gitUiPanel");
 assert(gitPanelAfter === gitPanel, "git panel untouched by the files overlay close");
 
-// 5. No workspace/session API was ever called by the overlay flows.
+// 5. Suppression contract: while a temp surface is mounted, the drawers'
+// syncTerminalVisibility must leave the main terminal shell alone.
+{
+  const shell = dom.doc.getElementById("terminalShell");
+  assert(shell, "terminal shell present");
+  // Reset the shell style so the assertion is meaningful even if an earlier
+  // drawer render already hid it: the suppressed syncTerminalVisibility must
+  // not touch it while the overlay surface is mounted.
+  shell.style.display = "";
+  const before = shell.style.display;
+  // The files overlay is closed now; reopen it to mount a panel again.
+  const reopen = overlays.openFiles(FILES_DIR);
+  await Promise.all([reopen, nextFrame()]);
+  await reopen;
+  await nextFrame();
+  assert(overlays.suppressingFiles(), "suppression flag set while the files surface is mounted");
+  assert(shell.style.display === before, `terminal shell display untouched while the overlay is open (before=${JSON.stringify(before)}, now=${JSON.stringify(shell.style.display)})`);
+}
+
+// 6. Minimize/restore through the real drawers: the panel stays mounted
+// inside the overlay body and the folder survives both transitions.
+{
+  const filesManager = overlays.files();
+  const modal = dom.doc.getElementById("tempFilesOverlayModal");
+  const panel = dom.doc.getElementById("fileBrowserPanel");
+  assert(modal && panel, "files overlay mounted before minimizing");
+  const btn = modal.querySelector(".temp-overlay-minimize");
+  btn.onclick();
+  assert(filesManager.isMinimized(), "minimize flag set");
+  assert(String(modal.style.display) === "none", "modal hidden while minimized");
+  const panelWhileMin = dom.doc.getElementById("fileBrowserPanel");
+  assert(panelWhileMin && panelWhileMin.parentNode && String(panelWhileMin.parentNode.className).indexOf("temp-overlay-body") !== -1,
+    "panel stays mounted inside the overlay body while minimized");
+  assert(overlays.currentFolder("files") === FILES_DIR, "folder survives minimize");
+  // Restore through the restore bar button the controller builds (a
+  // body-level div with class temp-overlay-restore-bar, no id).
+  const restoreBar = dom.doc.body.children.find((c) => String(c.className).indexOf("temp-overlay-restore-bar") !== -1);
+  const restoreClick = restoreBar && restoreBar.querySelector(".temp-overlay-restore");
+  assert(restoreClick, "restore bar rendered while minimized");
+  restoreClick.onclick();
+  assert(!filesManager.isMinimized(), "restore clears the minimized flag");
+  assert(String(modal.style.display) === "grid", "modal visible again after restore");
+  assert(overlays.currentFolder("files") === FILES_DIR, "folder survives restore");
+}
+
+// 7. Ephemeral cleanup: closing the files overlay detaches the drawer panel
+// from the overlay body (the drawer may re-create it on next open), and a
+// reopen mounts a fresh surface on the same folder.
+{
+  const modal = dom.doc.getElementById("tempFilesOverlayModal");
+  const bodyEl = modal && modal.querySelector(".temp-overlay-body");
+  const panel = dom.doc.getElementById("fileBrowserPanel");
+  assert(bodyEl && panel && panel.parentNode === bodyEl, "panel mounted in the overlay body before close");
+  overlays.closeFiles();
+  await nextFrame();
+  assert(overlays.files().isOpen() === false, "files overlay closed");
+  const panelAfter = dom.doc.getElementById("fileBrowserPanel");
+  assert(!panelAfter || !panelAfter.parentNode || panelAfter.parentNode !== bodyEl,
+    "close detaches the panel from the overlay body (ephemeral state discarded)");
+  assert(String(modal.style.display) === "none", "modal hidden after close");
+  const reopen = overlays.openFiles(FILES_DIR);
+  await Promise.all([reopen, nextFrame()]);
+  await reopen;
+  await nextFrame();
+  assert(overlays.files().isOpen(), "reopen works after a close");
+  assert(overlays.currentFolder("files") === FILES_DIR, "reopen keeps the folder");
+}
+
+// 8. Git overlay on a NON-REPO folder: git_ui.open() resolves (it never
+// rejects; refresh() renders the in-panel "No Git repository" view), so
+// the overlay must stay open, the panel must stay mounted, and the status
+// API must have been hit with the non-repo cwd.
+{
+  const openNonRepo = overlays.openGit(FILES_DIR);
+  await Promise.all([openNonRepo, nextFrame()]);
+  await openNonRepo;
+  await nextFrame();
+  assert(overlays.git().isOpen(), "git overlay opens on a non-repo folder");
+  assert(overlays.currentFolder("git") === FILES_DIR, "git overlay pins the non-repo folder");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const nonRepoModal = dom.doc.getElementById("tempGitOverlayModal");
+  const nonRepoBody = nonRepoModal && nonRepoModal.querySelector(".temp-overlay-body");
+  const nonRepoPanel = dom.doc.getElementById("gitUiPanel");
+  assert(nonRepoPanel && nonRepoPanel.parentNode === nonRepoBody,
+    "git panel stays mounted in the overlay body on a non-repo folder");
+  assert(apiCalls.some((c) => c.path.includes("/api/git-ui/status") && c.path.includes(encodeURIComponent(FILES_DIR).split("%2F").pop())),
+    "status API was called for the non-repo folder");
+  overlays.closeGit();
+  await nextFrame();
+  assert(overlays.git().isOpen() === false, "non-repo git overlay closes cleanly");
+}
+
+// 9. Picker filter narrows entries through the real backend search.
+{
+  const openPick = overlays.openFiles(FILES_DIR);
+  await Promise.all([openPick, nextFrame()]);
+  await openPick;
+  await nextFrame();
+  const modal = dom.doc.getElementById("tempFilesOverlayModal");
+  const changeBtn = modal.querySelector(".temp-overlay-folder-btn");
+  changeBtn.onclick();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const picker = ctx.window.HerdrDirectoryPicker;
+  // Type a term the real tree search must narrow: "sub" matches the
+  // fixture's subdir under the files fixture root.
+  picker.filter("sub");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert(apiCalls.some((c) => c.path.includes("q=sub")), "picker search hit the real backend with the filter");
+  ctx.window.HerdrDirectoryPicker.close();
+  ctx.flushRaf(5);
+  await nextFrame();
+  assert(!dom.doc.getElementById("directoryPickerModal"), "picker closed after filtering");
+  assert(overlays.currentFolder("files") === FILES_DIR, "folder untouched after a filtered picker close");
+  overlays.closeFiles();
+  await nextFrame();
+}
+
+// 10. No workspace/session API was ever called by the overlay flows.
 const workspaceCalls = apiCalls.filter((c) => c.path.indexOf("/api/workspaces") === 0 || c.path.indexOf("/api/sessions") === 0);
 assert(workspaceCalls.length === 0, `no workspace/session API calls from the overlays (got ${workspaceCalls.length})`);
 
