@@ -668,6 +668,29 @@ describe("mobile bundle load", () => {
     equal(gate(), false);
   });
 
+  it("emits the full keyboard guard set from the real inputAttrs helper", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const attrs = ctx.HerdrMobileCore.inputAttrs();
+    // Full guard set: Android autocorrect/grammar must never engage on any
+    // mobile text input. If someone trims a guard from mobile core.js this
+    // fails even though per-module tests stub inputAttrs and stay green.
+    match(attrs, /autocomplete="off"/);
+    match(attrs, /autocorrect="off"/);
+    match(attrs, /autocapitalize="none"/);
+    match(attrs, /spellcheck="false"/);
+    match(attrs, /writingsuggestions="false"/);
+    match(attrs, /translate="no"/);
+    // No enterkeyhint without an argument.
+    ok(!attrs.includes("enterkeyhint"));
+    // With one, it is escaped and appended.
+    const withHint = ctx.HerdrMobileCore.inputAttrs("send");
+    match(withHint, /enterkeyhint="send"/);
+    ok(withHint.includes(attrs));
+    const escaped = ctx.HerdrMobileCore.inputAttrs('"><img onerror=alert(1)>');
+    ok(!escaped.includes('enterkeyhint="\"><img'), "enterkeyhint must be escaped");
+  });
+
   it("renders mobile task hub and action search", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
