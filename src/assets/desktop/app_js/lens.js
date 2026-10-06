@@ -581,29 +581,24 @@
 
   // The working block's reference start time, best effort: the status
   // event's arrival (exact transition-to-working moment we observed)
-  // wins; the last assistant turn's ts is the fallback when the event
-  // is too old to trust or was never seen (e.g. lens opened mid-turn).
-  // Both are clamped sane: never negative, never older than 24h.
+  // wins. Fallback ONLY when the last turn is the OPEN assistant turn
+  // (mid-flight, its ts is when the first flush landed): the turn is
+  // the thing working, so time-since-start is honest. When the last
+  // turn is a user turn (fresh question, no assistant content yet) or
+  // the event was never seen, there is no honest reference — return
+  // null and the body renders the note line instead of an invented
+  // elapsed counter (the PREVIOUS turn's ts must never stand in).
   function workingStartedAt() {
     const paneId = typeof state !== "undefined" && state ? state.pane : null;
     const event = paneId && paneStatusEvents.get(paneId);
     if (event && event.status === "working" && event.at) return event.at;
-    const last = lastAssistantTurn();
-    if (last && last.ts) {
-      const parsed = Date.parse(String(last.ts));
-      if (Number.isFinite(parsed)) {
-        const now = Date.now();
-        if (now - parsed >= 0 && now - parsed < 24 * 60 * 60 * 1000) return parsed;
-      }
-    }
-    return null;
-  }
-
-  function lastAssistantTurn() {
     const turns = (conversation && conversation.turns) || [];
-    for (let i = turns.length - 1; i >= 0; i--) {
-      if (turns[i] && turns[i].role === "assistant") return turns[i];
-    }
+    const last = turns[turns.length - 1];
+    if (!last || last.role !== "assistant" || !last.ts) return null;
+    const parsed = Date.parse(String(last.ts));
+    if (!Number.isFinite(parsed)) return null;
+    const now = Date.now();
+    if (now - parsed >= 0 && now - parsed < 24 * 60 * 60 * 1000) return parsed;
     return null;
   }
 

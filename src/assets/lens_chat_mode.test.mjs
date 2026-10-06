@@ -1584,6 +1584,59 @@ describe("lens working indicator (thinking animation)", () => {
     equal(ctx._timers.size, 0, "no orphan tick re-armed after the block vanished");
   });
 
+  it("no elapsed line when the reference start is unknowable (last turn is the user's)", async () => {
+    // Lens opened mid-turn with NO working event seen (page refresh):
+    // the last turn is the fresh user question (jcode saves it at
+    // input). The PREVIOUS assistant turn's ts must not stand in as a
+    // fake reference — the body shows the note line instead.
+    const { ctx, registry } = await openWorking({
+      api: async () => ({
+        ...conversationFixture(),
+        turns: [
+          conversationFixture().turns[0],
+          conversationFixture().turns[1],
+          {
+            role: "user",
+            ts: new Date().toISOString(),
+            end_ts: new Date().toISOString(),
+            parts: [{ kind: "text", text: "what next?" }],
+          },
+        ],
+      }),
+    });
+    const { lens, content } = lensNodesWorking(registry);
+    for (const fn of lens.listeners.click || []) fn({ target: content.querySelector("[data-toggle-working]") });
+    ok(content.querySelector(".lens-working-body"), "expanded body renders");
+    ok(!content.querySelector(".lens-working-elapsed"), "no invented elapsed line");
+    ok(content.innerHTML.includes("Agent is processing"), "honest note line instead");
+  });
+
+  it("elapsed fallback works when the last turn is the open assistant turn", async () => {
+    // Working event unseen (refresh mid-turn) but the open assistant
+    // turn IS the last turn: its ts is an honest reference.
+    const { ctx, registry } = await openWorking({
+      api: async () => ({
+        ...conversationFixture(),
+        turns: [
+          conversationFixture().turns[0],
+          {
+            role: "assistant",
+            ts: new Date(Date.now() - 1000).toISOString(),
+            end_ts: new Date(Date.now() - 1000).toISOString(),
+            parts: [],
+          },
+        ],
+      }),
+    });
+    const { lens, content } = lensNodesWorking(registry);
+    for (const fn of lens.listeners.click || []) fn({ target: content.querySelector("[data-toggle-working]") });
+    match(
+      content.innerHTML,
+      /Working for (\d+s|\d+m \d+s|\d+m)/,
+      "elapsed line from the open turn's ts",
+    );
+  });
+
   it("blocked status wins over working (never both surfaces)", async () => {
     const { ctx, registry } = await openWorking();
     const { content } = lensNodesWorking(registry);
