@@ -309,7 +309,11 @@ describe("desktop temporary overlay host", () => {
     for (let i = 0; i < 8; i += 1) await Promise.resolve();
     const modal = ctx.document.getElementById("tempFilesOverlayModal");
     ok(modal, "modal exists");
-    ok(String(modal._innerHTML).length > 0 || modal.hintEl !== undefined || true);
+    // The drawer rejection propagates through the host into the controller
+    // hint: the user sees why the surface is empty.
+    const hint = modal.hintEl || modal.querySelector(".temp-overlay-hint");
+    ok(hint, "hint element present");
+    ok(String(hint.textContent).includes("boom from drawer"), "failure text lands in the hint");
     // Even after the failure the overlay must close without throwing and
     // clear the suppression flag.
     overlays.closeFiles();

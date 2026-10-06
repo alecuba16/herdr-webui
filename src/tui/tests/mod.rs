@@ -9008,6 +9008,49 @@ fn temp_files_prompt_validates_folder_and_retargets_explorer() {
 }
 
 #[test]
+fn temp_overlay_open_failure_keeps_status_line_clean() {
+    // open_files_screen_at/open_git_screen_at return Result, so the
+    // "temporary files/git: <folder>" status only lands on success. An
+    // API failure must surface as an error with no leftover status from
+    // the failed open.
+    //
+    // Failure source: a TCP port that accepts connections but closes
+    // them without a response. A never-bound port could be reused by an
+    // unrelated local service, so own a listener and drop every stream.
+    let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead_port = dead.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in dead.incoming() {
+            let Ok(mut stream) = stream else { break };
+            // Drop immediately: the client sees EOF before any status line.
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    });
+    let mut app = app_with_snapshot();
+    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", dead_port);
+    let temp = std::env::temp_dir().join("herdr-tui-temp-status-test");
+    std::fs::create_dir_all(&temp).expect("create temp dir");
+    let folder = temp.to_string_lossy().to_string();
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
+    for ch in folder.chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(
+        app.error.is_some(),
+        "failed refresh surfaces an error: {:?}",
+        app.error
+    );
+    assert!(
+        !app.status.contains("temporary files:"),
+        "status must not claim success on a failed open: {:?}",
+        app.status
+    );
+    let _ = std::fs::remove_dir(&temp);
+}
+
+#[test]
 fn temp_git_prompt_retargets_panel_without_workspace() {
     // Ctrl+B Shift+G + a real folder: the git panel cwd switches, the
     // Changes view loads from the fake server, and no workspace appears

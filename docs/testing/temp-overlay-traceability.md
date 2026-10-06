@@ -34,11 +34,11 @@ checks drive the real public interfaces inside node:test / cargo test.
 | R23 | TUI: help rows list both temporary overlays | `help_rows_list_temporary_overlays` | pass |
 | R24 | Server: tree API serves directories-only responses for the picker | Runtime: `GET /api/file-browser/tree?...&dirs_only=true` on the built binary returned directory-only entries | pass |
 | R25 | Server: new assets served with correct content | Runtime: `/assets/shared/temp-overlay.js`, `/assets/mobile/temp-overlays.js` → 200, refs present in `/assets/app-boot.js` and desktop bundle | pass |
-| R26 | Status only lands on successful open (`open_files_screen_at`/`open_git_screen_at` return Result) | Covered by R21 prompt-validation tests asserting no status change on failure paths | pass |
+| R26 | Status only lands on successful open (`open_files_screen_at`/`open_git_screen_at` return Result) | `temp_overlay_open_failure_keeps_status_line_clean` asserts an API failure sets `error` and never the `temporary files:` status | pass |
 
 ## Verification runs
 
-- `cargo test --lib`: 408/408 pass (includes 6 new TUI tests)
+- `cargo test --lib`: 409/409 pass (includes 7 new TUI tests)
 - `node --test src/assets/*.test.mjs`: 799/799 pass (25 controller, 11 desktop host, 12 mobile host, plus existing suites)
 - `cargo fmt --check`: clean
 - Runtime integration on debug binary (`127.0.0.1:18787 --session verify-temp`): login, asset 200s, dirs_only tree, bundle references all verified
