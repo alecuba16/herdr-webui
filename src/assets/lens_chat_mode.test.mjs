@@ -514,6 +514,83 @@ describe("lens structured chat mode", () => {
     equal(last, null, "pane change resets the meta to null");
   });
 
+  it("clears stale meta when the pane stops being chat-capable (workspace close)", async () => {
+    // Freeze bug: workspace close switched the active pane to one with
+    // no agent session. The poll guard returned before publishing, so
+    // the composer kept the dead pane's model label forever. The guard
+    // must publish null on the way out, same contract as a failed poll.
+    const seen = [];
+    const { ctx } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+      extra: {
+        HerdrComposer: {
+          sync() {},
+          setSessionMeta(meta) { seen.push(meta); },
+        },
+      },
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    equal(seen[seen.length - 1].model, "m", "poll landed first");
+    // Workspace close: the pane row loses its agent session (or the
+    // pane itself vanishes). Here the row drops agent_session entirely.
+    const row = ctx.state.agents.find((a) => a.pane_id === "pane_1");
+    row.agent_session = null;
+    fireTimers(ctx); // next poll tick hits the guard
+    await settle();
+    equal(seen[seen.length - 1], null, "unsupported pane publishes null meta");
+    // The cadence also stopped: no further publishes even if timers fire.
+    const before = seen.length;
+    fireTimers(ctx);
+    await settle();
+    equal(seen.length, before, "polling stopped after the clear");
+  });
+
+  it("clears stale meta with NO poll tick at all (pane switch to a shell pane)", async () => {
+    // The other freeze path: the workspace close switches the pane and
+    // connectTerminal fires onPaneChanged BEFORE any timer runs.
+    // ensurePolling/onPaneChanged must clear on the spot, or the label
+    // freezes because no tick ever fires for the unsupported pane.
+    const seen = [];
+    const { ctx } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+      extra: {
+        HerdrComposer: {
+          sync() {},
+          setSessionMeta(meta) { seen.push(meta); },
+        },
+      },
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    equal(seen[seen.length - 1].model, "m", "poll landed first");
+    // Workspace close: pane switches to one with no agent row, no timer.
+    ctx.state.pane = "pane_2";
+    ctx.state.agents = []; // closed workspace drops its rows
+    ctx.HerdrLens.onPaneChanged(); // connectTerminal path, no fireTimers
+    await settle();
+    equal(seen[seen.length - 1], null, "onPaneChanged clears without a tick");
+    // ensurePolling alone (setLens re-run path) also clears.
+    ctx.state.pane = "pane_1";
+    ctx.state.agents = [jcodeRow(resolvableSession)];
+    ctx.api = async () => conversationFixture();
+    ctx.HerdrLens.onPaneChanged();
+    fireTimers(ctx);
+    await settle();
+    equal(seen[seen.length - 1].model, "m", "meta republished for the chat pane");
+    ctx.state.agents = [];
+    // setLens re-entry only calls ensurePolling when the pane still
+    // supports chat (line above). The unsupported-pane re-entry that
+    // runs ensurePolling is onPaneChanged again (connectTerminal fires
+    // it on every switch, supported or not):
+    ctx.HerdrLens.onPaneChanged();
+    equal(seen[seen.length - 1], null, "ensurePolling guard clears too");
+  });
+
   it("renders a duration meta line inside assistant turns", async () => {
     const fixture = conversationFixture();
     fixture.turns[1].ts = "2026-10-05T10:00:00Z";
@@ -867,6 +944,54 @@ describe("lens structured chat mode", () => {
     await settle();
     ok(content.innerHTML.includes("lens-tool-open"), "tool stays open across polls");
   });
+
+  it("tool and thinking heads expand from the keyboard (Enter and Space)", async () => {
+    // a11y gap fix: the heads were click-only. The carriers carry
+    // tabindex+role=button and a delegated keydown maps Enter/Space to
+    // the same toggle path as the click.
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    const fireKey = (target, key) => {
+      let prevented = false;
+      for (const fn of lens.listeners.keydown || []) {
+        fn({ target, key, preventDefault() { prevented = true; } });
+      }
+      return prevented;
+    };
+    // Thinking head: focusable carrier + Enter opens.
+    const think = content.querySelector("[data-toggle-thinking]");
+    ok(think, "thinking toggle exists");
+    ok(think._attrs && think._attrs.tabindex === "0", "thinking head is focusable (tabindex=0)");
+    ok(think._attrs && think._attrs.role === "button", "thinking head announces as button");
+    ok(fireKey(think, "Enter"), "Enter is preventDefault-ed");
+    ok(content.innerHTML.includes("pondering"), "Enter expands thinking");
+    // Space collapses it again.
+    fireKey(think, " ");
+    ok(!content.innerHTML.includes("pondering"), "Space collapses thinking");
+    // Tool head: same contract.
+    const toolHead = content.querySelector("[data-toggle-tool]");
+    ok(toolHead, "tool toggle exists");
+    ok(toolHead._attrs && toolHead._attrs.tabindex === "0", "tool head is focusable (tabindex=0)");
+    ok(toolHead._attrs && toolHead._attrs.role === "button", "tool head announces as button");
+    fireKey(toolHead, "Enter");
+    ok(content.innerHTML.includes("lens-tool-open"), "Enter expands the tool");
+    // Inner span carriers never fire the handler (target !== toggle).
+    const inner = toolHead.querySelector(".lens-tool-name") || toolHead.children[0];
+    if (inner) {
+      const prevented = fireKey(inner, "Enter");
+      ok(!prevented, "Enter on an inner span is not hijacked");
+    }
+    // Unrelated keys pass through untouched.
+    ok(!fireKey(toolHead, "ArrowDown"), "ArrowDown is left to the scroller");
+  });
+
 
   it("fetched full output survives the next poll", async () => {
     // The fetch lands the whole output in the pre (DOM-only, not in the

@@ -495,6 +495,14 @@ input {
 .lens-thinking-toggle:hover {
   color: var(--fg);
 }
+.lens-thinking-toggle:focus-visible,
+.lens-tool-head:focus-visible {
+  /* Keyboard route for the expand toggles (tabindex carriers): a
+     visible ring so focus is never invisible here either. */
+  outline: 1px solid var(--border2, #585b70);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
 .lens-thinking-body {
   color: var(--fg-dim, #a6adc8);
   border-left: 2px solid var(--border);

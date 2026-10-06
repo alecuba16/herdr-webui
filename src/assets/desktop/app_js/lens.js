@@ -122,10 +122,26 @@
 
   // ---- structured mode: poll loop ----
 
+  // The composer must never keep a dead pane's model label. Every path
+  // that stops the structured poll (unsupported pane from a workspace
+  // close or pane switch, lens closing) funnels through here so the
+  // clear happens exactly once, even when no poll tick ever fires.
+  function clearStaleSessionMeta() {
+    if (!sessionMeta) return;
+    sessionMeta = null;
+    publishSessionMeta();
+  }
+
   function ensurePolling() {
     // Poll only when the lens is open, the pane is chat-capable, and
     // the poll belongs to the pane now in view.
-    if (!lensActive || !chatSupported()) return stopPolling();
+    if (!lensActive || !chatSupported()) {
+      // No tick will ever run for this pane: clear now or the composer
+      // freezes with the previous pane's label (workspace close often
+      // lands here, before any poll timer can fire).
+      clearStaleSessionMeta();
+      return stopPolling();
+    }
     const paneId = activePaneId();
     if (paneId !== chatPane) resetChatState(paneId);
     if (pollTimer !== null) return;
@@ -148,7 +164,13 @@
   }
 
   async function pollConversation() {
-    if (!lensActive || !chatSupported()) return stopPolling();
+    if (!lensActive || !chatSupported()) {
+      // The pane stopped being chat-capable between ticks (workspace
+      // closed, pane switched to a shell). Same clear as the failed
+      // poll: the composer must not keep the dead pane's model label.
+      clearStaleSessionMeta();
+      return stopPolling();
+    }
     const paneId = activePaneId();
     if (paneId !== chatPane) resetChatState(paneId);
     // Single-flight: a slow poll never overlaps the next tick; the
@@ -162,7 +184,15 @@
       const response = await api(
         `/api/panes/${encodeURIComponent(paneId)}/conversation`,
       );
-      if (paneId !== chatPane || !lensActive) return; // stale: pane moved on
+      if (paneId !== chatPane || !lensActive) {
+        // Stale in-flight poll (the pane moved while the request was
+        // out): the response belongs to a pane nobody is looking at.
+        // The new pane's tick will publish fresh meta, but if the new
+        // pane never supports chat (workspace close), no tick runs:
+        // clear now so the composer cannot freeze mid-transition.
+        clearStaleSessionMeta();
+        return;
+      }
       convError = null;
       loadingChat = false;
       conversation = response;
@@ -367,7 +397,11 @@
       const open = expandedThinking.has(key);
       // data-part-key on the thinking row too: the same-count sync
       // path updates it in place (expand/collapse without a rewrite).
-      const head = `<span class="lens-thinking-toggle" data-toggle-thinking="${escapeAttr(key)}">${open ? "▾" : "▸"} thinking</span>`;
+      // tabindex+role: the toggle must work from the keyboard alone
+      // (the lens is a keyboard-heavy surface). The delegated keydown
+      // handler below maps Enter/Space to the same toggle path as the
+      // click.
+      const head = `<span class="lens-thinking-toggle" data-toggle-thinking="${escapeAttr(key)}" tabindex="0" role="button" aria-expanded="${open}">${open ? "▾" : "▸"} thinking</span>`;
       const body = open
         ? `<div class="lens-thinking-body">${escapeHtml(part.text || "")}</div>`
         : "";
@@ -382,7 +416,7 @@
       const label = part.is_error ? "lens-tool-error" : "";
       // data-part-key sits on the OUTER row (not the head) so the
       // pending -> resolved swap finds and replaces the whole row.
-      const head = `<div class="lens-tool-head ${label}" data-toggle-tool="${escapeAttr(key)}">` +
+      const head = `<div class="lens-tool-head ${label}" data-toggle-tool="${escapeAttr(key)}" tabindex="0" role="button" aria-expanded="${open}">` +
         `<span class="lens-tool-name">${escapeHtml(part.name || "tool")}</span>` +
         `<span class="lens-tool-brief">${escapeHtml(part.brief || "")}</span>` +
         `<span class="lens-tool-caret">${open ? "▾" : "▸"}</span></div>`;
@@ -622,6 +656,28 @@
     }
   }
 
+  // Keyboard twin of onLensClick: Enter/Space on a focused tool or
+  // thinking head toggles the same way a click does. Delegated for the
+  // same leak reason as the click (the lens rewrites innerHTML). Native
+  // <button> elements (fetch-output) already handle their own keys, so
+  // this only serves the div/span carriers.
+  function onLensKeydown(event) {
+    const key = event && event.key;
+    if (key !== "Enter" && key !== " " && key !== "Spacebar") return;
+    const target = event && event.target;
+    if (!target || !target.closest) return;
+    const toggle =
+      target.closest("[data-toggle-tool]") ||
+      target.closest("[data-toggle-thinking]");
+    if (!toggle) return;
+    // Only act when the carrier itself has focus (not an inner span
+    // that happens to bubble): the carriers carry tabindex, inner
+    // spans do not, so target === toggle is the focused case.
+    if (target !== toggle) return;
+    event.preventDefault();
+    onLensClick({ target: toggle });
+  }
+
   async function expandToolFullOutput(button, reference) {
     const paneId = activePaneId();
     if (!paneId) return;
@@ -769,8 +825,9 @@
         };
       }
       // One delegated listener for tool/thinking toggles and full-output
-      // fetch buttons (structured mode).
+      // fetch buttons (structured mode), plus its keyboard twin.
       node.addEventListener("click", onLensClick);
+      node.addEventListener("keydown", onLensKeydown);
     }
     return node;
   }
@@ -925,6 +982,10 @@
     if (lensActive) {
       const paneId = activePaneId();
       if (chatSupported() && paneId !== chatPane) resetChatState(paneId);
+      // The lens stays open on non-chat panes when no agent row exists
+      // (setLens force-off needs positive evidence): make sure the
+      // previous pane's meta does not survive the switch.
+      if (!chatSupported()) clearStaleSessionMeta();
       contentDirty();
       render();
       ensurePolling();
