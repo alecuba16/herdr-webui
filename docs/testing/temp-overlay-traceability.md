@@ -12,7 +12,7 @@ node:test / cargo test.
 | # | Requirement | Check | Result |
 |---|-------------|-------|--------|
 | R1 | Desktop: opening a temp Files overlay uses a pseudo workspace `__temp_files__` and never calls any workspace/session API | `desktop_temp_overlays.test.mjs` `openFiles opens the drawer behind the temp pseudo workspace without any workspace API call` asserts `apiCalls.length === 0` and serialized workspace `{__temp_files__, "temp files", folder}` | pass |
-| R2 | Desktop: temp Git uses its own pseudo workspace `__temp_git__` and hides the other drawer first | `openGit uses its own pseudo workspace and hides the other drawer` | pass |
+| R2 | Desktop: temp Git uses its own pseudo workspace `__temp_git__` and cross-hides the main-shell files drawer (skipped while the files panel is temp-mounted — see R30) | `openGit uses its own pseudo workspace and cross-hides the other drawer only when it is not temp-mounted` | pass |
 | R3 | Desktop: close forgets the pseudo workspace, clears suppression | `closeFiles forgets the pseudo workspace and clears suppression` (`forgetWorkspace("__temp_files__")`, flag false after) | pass |
 | R4 | Desktop: reopen with a different folder tears down the old surface first | `reopen swaps the folder and forgets the old pseudo workspace first` | pass |
 | R5 | Desktop: minimize/restore reuses the open drawer (no second open) | `toggle minimizes a visible overlay and restores it without reopening the drawer` | pass |

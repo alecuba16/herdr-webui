@@ -329,7 +329,7 @@ describe("desktop temporary overlay host", () => {
     equal(ctx.apiCalls.length, 0, "no api calls at all");
   });
 
-  it("openGit uses its own pseudo workspace and hides the other drawer", async () => {
+  it("openGit uses its own pseudo workspace and cross-hides the other drawer only when it is not temp-mounted", async () => {
     const ctx = context();
     const overlays = loadHost(ctx);
     const p = overlays.openGit("/repo/site");
@@ -343,8 +343,9 @@ describe("desktop temporary overlay host", () => {
       cwd: "/repo/site",
     }));
     equal(open.opts.forceOpen, true);
-    // The files drawer was asked to hide first.
-    ok(ctx.drawerCalls.hide.includes("files"), "files drawer hidden");
+    // With no files overlay open, the files panel lives in the main shell,
+    // so the ordinary cross-hide still applies.
+    ok(ctx.drawerCalls.hide.includes("files"), "files drawer hidden while not temp-mounted");
   });
 
   it("toggle minimizes a visible overlay and restores it without reopening the drawer", async () => {
