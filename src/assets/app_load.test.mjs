@@ -5898,6 +5898,7 @@ describe("a11y audit contract", () => {
     // thin/width groups so a rename cannot silently drop one.
     const surfaces = [
       ".git-ui-side",
+      ".git-ui-content",
       ".git-ui-header-menu",
       ".git-ui-branch-list-scroll",
       ".git-ui-list",
