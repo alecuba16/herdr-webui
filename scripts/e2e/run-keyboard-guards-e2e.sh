@@ -41,7 +41,13 @@ for p in "$PORT" "$CDP"; do
 done
 
 chrome_bin() {
-  if [[ -n "${CHROME_BIN:-}" ]]; then echo "$CHROME_BIN"; return 0; fi
+  if [[ -n "${CHROME_BIN:-}" ]]; then
+    if [[ ! -x "$CHROME_BIN" ]]; then
+      echo "ERROR: CHROME_BIN='$CHROME_BIN' is not executable." >&2
+      return 1
+    fi
+    echo "$CHROME_BIN"; return 0
+  fi
   local shell="$HOME/.agents/chrome-headless-shell/chrome-headless-shell-mac-arm64/chrome-headless-shell"
   if [[ -x "$shell" ]]; then echo "$shell"; return 0; fi
   local app="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -120,9 +126,13 @@ echo "==> starting headless chrome on CDP port $CDP"
 "$CHROME" --headless=new --remote-debugging-port="$CDP" \
   --no-first-run --no-default-browser-check \
   --user-data-dir="$WORK/chrome-profile" --ignore-certificate-errors \
-  about:blank >/dev/null 2>&1 &
+  about:blank >"$WORK/chrome.log" 2>&1 &
 CHROME_PID=$!
-wait_for "chrome cdp" "http://127.0.0.1:$CDP/json" || exit 1
+if ! wait_for "chrome cdp" "http://127.0.0.1:$CDP/json"; then
+  echo "--- chrome stderr ---" >&2
+  cat "$WORK/chrome.log" >&2 || true
+  exit 1
+fi
 
 export E2E_ORIGIN="https://127.0.0.1:$PORT"
 export CDP_PORT="$CDP"
