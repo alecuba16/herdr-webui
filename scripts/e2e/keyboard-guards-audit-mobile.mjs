@@ -7,8 +7,27 @@ const CDP_PORT = process.env.CDP_PORT || "9223";
 const REPO = process.env.E2E_REPO || "";
 if (!REPO) { console.error("E2E_REPO must point at the fixture repo (see run-keyboard-guards-e2e.sh)"); process.exit(2); }
 
-const REQUIRED = ["autocomplete=off", "autocorrect=off", "autocapitalize=none", "spellcheck=false", "writingsuggestions=false"];
-const GUARD_ATTRS = ["autocomplete", "autocorrect", "autocapitalize", "spellcheck", "writingsuggestions"];
+const REQUIRED = ["autocomplete=off", "autocorrect=off", "autocapitalize=none", "spellcheck=false", "writingsuggestions=false", "translate=no"];
+const GUARD_ATTRS = ["autocomplete", "autocorrect", "autocapitalize", "spellcheck", "writingsuggestions", "translate"];
+// enterkeyhint values the platform spec defines; anything else is a typo.
+const VALID_HINTS = new Set(["enter", "done", "go", "next", "previous", "search", "send"]);
+// Exact enterkeyhint per checked surface (from the guarded call sites).
+// A wrong hint here is a UX bug the presence check cannot catch.
+const EXPECTED_HINTS = {
+  "composer textarea": "send",
+  "wterm core textarea": "send",
+  "search sheet input": "search",
+  "git commit title": "done",
+  "file rename sheet input": "done",
+  "file new-file sheet input": "done",
+  "workspace rename input": "done",
+  "settings filter": "search",
+  // hintless by design: git commit body, worktree flows, session name,
+  // settings text fields → expect NO enterkeyhint attribute.
+  "git commit body": null,
+  "worktrees discover path": null,
+  "session name input": null,
+};
 
 let ws; let seq = 0; const pending = new Map();
 function send(method, params = {}) {
@@ -54,8 +73,16 @@ function check(surface, selector, elExpr) {
     if (g.autocapitalize !== "none") missing.push("autocapitalize");
     if (g.spellcheck !== "false") missing.push("spellcheck");
     if (g.writingsuggestions !== "false") missing.push("writingsuggestions");
-    if (missing.length) { failures.push(`${surface}: missing ${missing.join(",")}`); console.log(`FAIL ${surface}: missing ${missing.join(",")}`); }
-    else console.log(`OK   ${surface}: all 5 guards${g.enterkeyhint ? ` + enterkeyhint=${g.enterkeyhint}` : ""}`);
+    if (g.translate !== "no") missing.push("translate");
+    if (missing.length) { failures.push(`${surface}: missing ${missing.join(",")}`); console.log(`FAIL ${surface}: missing ${missing.join(",")}`); return; }
+    const expected = EXPECTED_HINTS[surface];
+    if (expected === undefined) { console.log(`OK   ${surface}: all 6 guards${g.enterkeyhint ? ` + enterkeyhint=${g.enterkeyhint}` : ""} (hint not pinned)`); return; }
+    if (expected === null) {
+      if (g.enterkeyhint !== null) { failures.push(`${surface}: expected NO enterkeyhint, got ${g.enterkeyhint}`); console.log(`FAIL ${surface}: expected NO enterkeyhint, got ${g.enterkeyhint}`); return; }
+      console.log(`OK   ${surface}: all 6 guards + no enterkeyhint (pinned)`); return;
+    }
+    if (g.enterkeyhint !== expected) { failures.push(`${surface}: expected enterkeyhint=${expected}, got ${g.enterkeyhint}`); console.log(`FAIL ${surface}: expected enterkeyhint=${expected}, got ${g.enterkeyhint}`); return; }
+    console.log(`OK   ${surface}: all 6 guards + enterkeyhint=${g.enterkeyhint} (pinned)`);
   });
 }
 
@@ -214,14 +241,14 @@ async function main() {
   const settingsInputs = await evalJs(`(() => { const groups = [...document.querySelectorAll('.mobile-settings-group')]; const g = groups.find(x => /Workspaces/.test(x.textContent)); if (g) g.open = true; const t = groups.find(x => /Terminal/.test(x.textContent)); if (t) t.open = true; return true; })()`);
   await sleep(200);
   const wtDir = await guardsOf(`(() => { const g = [...document.querySelectorAll('.mobile-settings-group')].find(x => /Worktree default directory/.test(x.textContent || '')); if (!g) return null; const label = [...g.querySelectorAll('label')].find(l => /Worktree default directory/.test(l.textContent || '')); return label ? label.querySelector('input') : null; })()`);
-  console.log(wtDir && wtDir.writingsuggestions === "false" ? "OK   settings worktree dir input: all 5 guards" : `FAIL settings worktree dir: ${JSON.stringify(wtDir)}`);
-  if (!(wtDir && wtDir.writingsuggestions === "false")) failures.push("settings worktree dir input missing guards");
+  console.log(wtDir && wtDir.writingsuggestions === "false" && wtDir.translate === "no" ? "OK   settings worktree dir input: all 6 guards" : `FAIL settings worktree dir: ${JSON.stringify(wtDir)}`);
+  if (!(wtDir && wtDir.writingsuggestions === "false" && wtDir.translate === "no")) failures.push("settings worktree dir input missing guards");
   const explDir = await guardsOf(`(() => { const g = [...document.querySelectorAll('.mobile-settings-group')].find(x => /Exploration default directory/.test(x.textContent || '')); if (!g) return null; const label = [...g.querySelectorAll('label')].find(l => /Exploration default directory/.test(l.textContent || '')); return label ? label.querySelector('input') : null; })()`);
-  console.log(explDir && explDir.writingsuggestions === "false" ? "OK   settings exploration dir input: all 5 guards" : `FAIL settings exploration dir: ${JSON.stringify(explDir)}`);
-  if (!(explDir && explDir.writingsuggestions === "false")) failures.push("settings exploration dir input missing guards");
+  console.log(explDir && explDir.writingsuggestions === "false" && explDir.translate === "no" ? "OK   settings exploration dir input: all 6 guards" : `FAIL settings exploration dir: ${JSON.stringify(explDir)}`);
+  if (!(explDir && explDir.writingsuggestions === "false" && explDir.translate === "no")) failures.push("settings exploration dir input missing guards");
   const termFont = await guardsOf(`(() => { const g = [...document.querySelectorAll('.mobile-settings-group')].find(x => /Terminal font/.test(x.textContent || '')); if (!g) return null; const label = [...g.querySelectorAll('label')].find(l => /Terminal font/.test(l.textContent || '')); return label ? label.querySelector('input') : null; })()`);
-  console.log(termFont && termFont.writingsuggestions === "false" ? "OK   settings terminal font input: all 5 guards" : `FAIL settings terminal font: ${JSON.stringify(termFont)}`);
-  if (!(termFont && termFont.writingsuggestions === "false")) failures.push("settings terminal font input missing guards");
+  console.log(termFont && termFont.writingsuggestions === "false" && termFont.translate === "no" ? "OK   settings terminal font input: all 6 guards" : `FAIL settings terminal font: ${JSON.stringify(termFont)}`);
+  if (!(termFont && termFont.writingsuggestions === "false" && termFont.translate === "no")) failures.push("settings terminal font input missing guards");
 
   // 8. File browser rename sheet: open Files, tap a file row's action (⋯)
   // button, then Rename in the action sheet.
@@ -306,7 +333,8 @@ async function main() {
           autocapitalize: el.getAttribute('autocapitalize'),
           spellcheck: el.getAttribute('spellcheck'),
           writingsuggestions: el.getAttribute('writingsuggestions'),
-        }};
+          translate: el.getAttribute('translate'),
+        }, enterkeyhint: el.getAttribute('enterkeyhint') };
       });
     })()`);
     let screenCount = 0;
@@ -319,6 +347,8 @@ async function main() {
       if (g.autocapitalize !== "none") missing.push("autocapitalize");
       if (g.spellcheck !== "false") missing.push("spellcheck");
       if (g.writingsuggestions !== "false") missing.push("writingsuggestions");
+      if (g.translate !== "no") missing.push("translate");
+      if (item.enterkeyhint && !VALID_HINTS.has(item.enterkeyhint)) missing.push(`enterkeyhint=${item.enterkeyhint} (invalid value)`);
       if (missing.length) {
         failures.push(`SWEEP ${name}/${item.key} (${item.tag} type=${item.type}): missing ${missing.join(",")}`);
         console.log(`FAIL SWEEP ${name}/${item.key} (${item.tag} type=${item.type}): missing ${missing.join(",")}`);

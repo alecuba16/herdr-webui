@@ -63,6 +63,44 @@ const failures = [];
 // the server-settings username keeps autocomplete="username" so password
 // managers can fill it; its password twin is type=password (excluded).
 const LIVE_ALLOWLIST = new Set(["optServerUser"]);
+// enterkeyhint values the platform spec defines; anything else is a typo.
+const VALID_HINTS = new Set(["enter", "done", "go", "next", "previous", "search", "send"]);
+// Exact enterkeyhint per input key (from the guarded call sites). A wrong
+// hint is a UX bug the presence check cannot catch. null = deliberately
+// hintless (inputAttrs() with no argument).
+const EXPECTED_HINTS = {
+  terminalComposerInput: "send",
+  searchPaletteInput: "search",
+  settingsSearch: "search",
+  directoryPickerSearchInput: "search",
+  gitUiFileFilter: "search",
+  "git-log-filter-author": "search",
+  "git-log-filter-date": "search",
+  "git-log-filter-description": "search",
+  gitCommitTitle: "done",
+  gitCommitBody: "done",
+  gitUiCleanupRoot: "done",
+  gitUiBranchCwd: "done",
+  optEditorTabSize: "done", optFileBrowserSearchPageSize: "done",
+  optFileContentSearchMinChars: "done", optFileContentSearchPageSize: "done",
+  optFileContentSearchContextLines: "done", optFileContentSearchAutoCollapseFiles: "done",
+  optFileContentSearchMatchesPerFile: "done", optGlobalShortcutPrefix: "done",
+  optSearchShortcut: "done", optServerSessionExpiration: "done",
+  optSidebarWorkspacePercent: "done", optTempTerminalLabelMaxChars: "done",
+  optTreeIndentPx: "done", optWorkingDismissMinutes: "done",
+  optWorktreeAutoDiscover: "done", optNoSleepAutoCooldown: "done",
+  // Deliberately hintless (inputAttrs() with no argument):
+  optBuiltinShell: null, optDefaultFolder: null, optServerBind: null,
+  optTerminalFontFamily: null, optWorktreeDefaultDirectory: null,
+  optExplorationDefaultDirectory: null,
+  workspaceCreatePath: null, workspaceCreateLabel: null,
+  worktreeDiscoverPath: null, worktreeCreateSource: null, worktreeLabel: null,
+  worktreePath: null, worktreeBase: null, worktreeBranch: null,
+  worktreeNewLabel: null, worktreeNewPath: null, worktreeNewBase: null,
+  worktreeNewBranch: null, worktreeWorkspaceLabel: null,
+  // Find/Replace bar inputs (CodeMirror-generated, placeholder-keyed):
+  "Find|text": "search", "Replace|text": "done",
+};
 function assertGuards(surface, item) {
   if (LIVE_ALLOWLIST.has(item.key)) {
     console.log(`SKIP ${surface} (${item.key}): allowlisted (password manager username)`);
@@ -75,10 +113,28 @@ function assertGuards(surface, item) {
   if (g.autocapitalize !== "none") missing.push("autocapitalize");
   if (g.spellcheck !== "false") missing.push("spellcheck");
   if (g.writingsuggestions !== "false") missing.push("writingsuggestions");
+  if (g.translate !== "no") missing.push("translate");
+  if (item.enterkeyhint && !VALID_HINTS.has(item.enterkeyhint)) missing.push(`enterkeyhint=${item.enterkeyhint} (invalid)`);
   if (missing.length) {
     failures.push(`${surface} (${item.key}): missing ${missing.join(",")}`);
     console.log(`FAIL ${surface} (${item.key}): missing ${missing.join(",")}`);
     return false;
+  }
+  const expected = EXPECTED_HINTS[item.key];
+  if (expected !== undefined) {
+    if (expected === null) {
+      if (item.enterkeyhint !== null) {
+        failures.push(`${surface} (${item.key}): expected NO enterkeyhint, got ${item.enterkeyhint}`);
+        console.log(`FAIL ${surface} (${item.key}): expected NO enterkeyhint, ${item.enterkeyhint}`);
+        return false;
+      }
+    } else if (item.enterkeyhint !== expected) {
+      failures.push(`${surface} (${item.key}): expected enterkeyhint=${expected}, got ${item.enterkeyhint}`);
+      console.log(`FAIL ${surface} (${item.key}): expected enterkeyhint=${expected}, got ${item.enterkeyhint}`);
+      return false;
+    }
+    console.log(`OK   ${surface} (${item.key}): all 6 guards + enterkeyhint=${item.enterkeyhint} (pinned)`);
+    return true;
   }
   const attrNames = [...item.outer.matchAll(/\s([a-zA-Z-]+)=/g)].map((m) => m[1]);
   const dupes = attrNames.filter((a, i) => attrNames.indexOf(a) !== i);
@@ -87,7 +143,7 @@ function assertGuards(surface, item) {
     console.log(`FAIL ${surface} (${item.key}): duplicate attributes ${[...new Set(dupes)].join(",")}`);
     return false;
   }
-  console.log(`OK   ${surface} (${item.key}): all 5 guards${item.enterkeyhint ? ` + enterkeyhint=${item.enterkeyhint}` : ""}`);
+  console.log(`OK   ${surface} (${item.key}): all 6 guards${item.enterkeyhint ? ` + enterkeyhint=${item.enterkeyhint}` : ""}`);
   return true;
 }
 
@@ -110,6 +166,7 @@ const ENUM_JS = `(sel) => {
         autocapitalize: el.getAttribute('autocapitalize'),
         spellcheck: el.getAttribute('spellcheck'),
         writingsuggestions: el.getAttribute('writingsuggestions'),
+        translate: el.getAttribute('translate'),
       } };
   });
 }`;

@@ -49,11 +49,14 @@ await writeFile(
     // suggestions, or capitalization. Upstream ships autocapitalize="off" but
     // Gboard ignores that on some layers and respects writingsuggestions, and
     // the spec value for "no capitalization" is "none". Same patch pattern as
-    // the WASM URL and aria-hidden fixes above.
+    // the WASM URL and aria-hidden fixes above. translate="no" keeps the OS
+    // translate gesture from popping over the terminal and completes the full
+    // herdr guard set on this input.
     .replace(
       'this.textarea.setAttribute("autocapitalize","off"),',
       'this.textarea.setAttribute("autocapitalize","none");' +
-        'this.textarea.setAttribute("writingsuggestions","false"),',
+        'this.textarea.setAttribute("writingsuggestions","false");' +
+        'this.textarea.setAttribute("translate","no"),',
     ),
 );
 
