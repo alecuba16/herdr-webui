@@ -3,6 +3,7 @@
     state,
     render,
     escapeHtml,
+    inputAttrs,
     jsArg,
     MORE_SCREENS,
     currentWorkspace,
@@ -12,6 +13,9 @@
     sessionBackendLabel,
     currentSessionBackend,
     mobileAttention,
+    api,
+    refresh,
+    confirmFn,
     getWorkingDismissals,
     getMobileTempTerminal,
     workspacesById,
@@ -22,7 +26,7 @@
     agentTabLabel,
   }) {
     function renderHome() {
-      return `${renderTaskHub()}<section class="mobile-section"><h2>Workspaces</h2>${renderWorkspaces()}</section><section class="mobile-section"><h2>Agents needing attention</h2>${renderAttentionAgents()}</section>`;
+      return `${renderTaskHub()}<section class="mobile-section"><h2>Workspaces</h2>${renderWorkspaces()}</section><section class="mobile-section"><h2>Agents needing attention</h2>${renderAttentionAgents()}</section>${renderRenameSheet()}`;
     }
 
     function renderTaskHub() {
@@ -91,9 +95,68 @@
       return state.workspaces
         .map((workspace) => {
           const active = workspace.workspace_id === state.ws ? " active" : "";
-          return `<button class="mobile-row${active}" onclick="HerdrMobile.selectWorkspace(${jsArg(workspace.workspace_id)})"><strong>${escapeHtml(workspaceTitle(workspace))}</strong><span>${escapeHtml(workspaceMeta(workspace))}</span></button>`;
+          return `<div class="mobile-workspace-row"><button class="mobile-row${active}" onclick="HerdrMobile.selectWorkspace(${jsArg(workspace.workspace_id)})"><strong>${escapeHtml(workspaceTitle(workspace))}</strong><span>${escapeHtml(workspaceMeta(workspace))}</span></button><span class="mobile-row-actions"><button class="mobile-btn mini" aria-label="Rename workspace" onclick="HerdrMobile.renameWorkspace(${jsArg(workspace.workspace_id)}, ${jsArg(workspaceTitle(workspace))})">✎</button><button class="mobile-btn mini danger" aria-label="Close workspace" onclick="HerdrMobile.closeWorkspace(${jsArg(workspace.workspace_id)})">✕</button></span></div>`;
         })
         .join("");
+    }
+
+    function renderRenameSheet() {
+      if (!state.renameWorkspaceId) return "";
+      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.cancelRenameWorkspace()"></div><div class="mobile-sheet" role="dialog" aria-label="Rename workspace"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Rename workspace</div><input id="mobileRenameInput" class="mobile-sheet-input" type="text"${inputAttrs("done")} value="${escapeHtml(state.renameWorkspaceValue)}" placeholder="Workspace name" oninput="HerdrMobile.setRenameWorkspaceValue(this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.submitRenameWorkspace(); }">${state.renameWorkspaceError ? `<div class="mobile-error">${escapeHtml(state.renameWorkspaceError)}</div>` : ""}<div class="mobile-sheet-actions"><button class="mobile-btn" onclick="HerdrMobile.cancelRenameWorkspace()">Cancel</button><button class="mobile-btn primary" onclick="HerdrMobile.submitRenameWorkspace()">Save</button></div></div>`;
+    }
+
+    function startRenameWorkspace(workspaceId, currentTitle) {
+      state.renameWorkspaceId = workspaceId;
+      state.renameWorkspaceValue = currentTitle || "";
+      state.renameWorkspaceError = "";
+      render();
+    }
+
+    function setRenameWorkspaceValue(value) {
+      state.renameWorkspaceValue = String(value || "");
+    }
+
+    async function submitRenameWorkspace() {
+      const workspaceId = state.renameWorkspaceId;
+      if (!workspaceId) return;
+      const label = String(state.renameWorkspaceValue || "").trim();
+      if (!label) {
+        state.renameWorkspaceError = "Name cannot be empty.";
+        render();
+        return;
+      }
+      try {
+        await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/rename`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ label }),
+        });
+        state.renameWorkspaceId = null;
+        state.renameWorkspaceError = "";
+        await refresh();
+      } catch (error) {
+        state.renameWorkspaceError = error.message || String(error);
+        render();
+      }
+    }
+
+    function cancelRenameWorkspace() {
+      state.renameWorkspaceId = null;
+      state.renameWorkspaceError = "";
+      render();
+    }
+
+    async function closeWorkspaceById(workspaceId) {
+      if (!(await confirmFn(`Close workspace ${workspaceId}? Unsaved work in its agents may be lost.`))) return;
+      try {
+        await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/close`, {
+          method: "POST",
+        });
+        await refresh();
+      } catch (error) {
+        state.renameWorkspaceError = error.message || String(error);
+        render();
+      }
     }
 
     function renderAgents() {
@@ -161,8 +224,13 @@
       if (screen === "search") return "Search";
       if (screen === "terminal") return "Terminal";
       if (screen !== "more") return screen;
+      // Only surface attention pills for statuses the CSS styles; an unknown
+      // agent status would render an unstyled "unknown" pill permanently.
       const status = mobileAttention.topStatus();
-      return `More${status ? ` <span class="mobile-nav-status ${escapeHtml(status)}">${escapeHtml(status)}</span>` : ""}`;
+      const pill = ["blocked", "done", "idle", "working"].includes(status)
+        ? ` <span class="mobile-nav-status ${escapeHtml(status)}">${escapeHtml(status)}</span>`
+        : "";
+      return `More${pill}`;
     }
 
     function mobileNavActive(screen) {
@@ -229,6 +297,12 @@
       renderDrawerItems,
       renderAgents,
       renderWorkspaces,
+      startRenameWorkspace,
+      setRenameWorkspaceValue,
+      submitRenameWorkspace,
+      cancelRenameWorkspace,
+      closeWorkspaceById,
+      renderRenameSheet,
       renderAgentsRows,
       mobileNavLabel,
       mobileNavActive,

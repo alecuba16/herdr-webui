@@ -2373,7 +2373,7 @@ impl TuiApp {
         &mut self,
         folder: &str,
     ) -> Result<(), crate::tui::web_api::WebApiError> {
-        let previous_screen = self.screen.clone();
+        let previous_screen = self.screen;
         let previous_explorer = self.file_explorer.clone();
         self.screen = TuiScreen::Files;
         self.file_explorer = FileExplorer::new(folder);
@@ -2407,7 +2407,7 @@ impl TuiApp {
     /// A failed refresh rolls the switch back, same contract as the
     /// temporary Files open.
     fn open_git_screen_at(&mut self, folder: &str) -> Result<(), crate::tui::web_api::WebApiError> {
-        let previous_screen = self.screen.clone();
+        let previous_screen = self.screen;
         let previous_cwd = self.git_panel.cwd.clone();
         self.screen = TuiScreen::Git;
         self.git_panel.set_cwd(folder);

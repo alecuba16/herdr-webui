@@ -105,6 +105,7 @@ const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/temp_overlays.js"),
     include_str!("assets/desktop/app_js/workspace_create.js"),
     include_str!("assets/desktop/lsp_settings.js"),
+    include_str!("assets/desktop/layout_settings.js"),
     include_str!("assets/desktop/app_js/bindings.js"),
 );
 const MOBILE_ATTENTION_JS: &str = include_str!("assets/mobile/attention.js");
@@ -116,6 +117,7 @@ const MOBILE_FILE_BROWSER_JS: &str = include_str!("assets/mobile/file_browser.js
 const MOBILE_SEARCH_JS: &str = include_str!("assets/mobile/search.js");
 const MOBILE_GIT_JS: &str = include_str!("assets/mobile/git.js");
 const MOBILE_TEMP_OVERLAYS_JS: &str = include_str!("assets/mobile/temp_overlays.js");
+const MOBILE_COMPOSER_JS: &str = include_str!("assets/mobile/composer.js");
 const MOBILE_SESSIONS_JS: &str = include_str!("assets/mobile/sessions.js");
 const MOBILE_EVENTS_JS: &str = include_str!("assets/mobile/events.js");
 const MOBILE_SCREENS_JS: &str = include_str!("assets/mobile/screens.js");
@@ -450,6 +452,10 @@ pub(crate) async fn mobile_temp_overlays_js() -> Response {
         MOBILE_TEMP_OVERLAYS_JS,
         "application/javascript; charset=utf-8",
     )
+}
+
+pub(crate) async fn mobile_composer_js() -> Response {
+    static_text(MOBILE_COMPOSER_JS, "application/javascript; charset=utf-8")
 }
 
 pub(crate) async fn mobile_sessions_js() -> Response {

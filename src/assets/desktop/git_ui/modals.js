@@ -8,8 +8,8 @@
         let draft = { title: "", body: "" };
         try { draft = Object.assign(draft, JSON.parse(localStorage.getItem(key) || "{}")); } catch (_) {}
         const includeBody = !!modal.includeBody;
-        const body = includeBody ? `<label>Details<textarea id="gitCommitBody" class="git-ui-textarea" placeholder="Optional body">${esc(draft.body)}</textarea></label>` : "";
-        return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal git-ui-commit-modal"><div class="git-ui-modal-head"><strong>Commit staged changes</strong></div><label>Summary<input id="gitCommitTitle" class="git-ui-input" value="${esc(draft.title)}" placeholder="Short imperative summary"></label><label class="git-ui-check-row"><input id="gitCommitIncludeBody" type="checkbox" ${includeBody ? "checked" : ""} onchange="HerdrGitUi.toggleCommitBody(this.checked)"><span>Add commit body</span></label>${body}<label class="git-ui-check-row"><input id="gitCommitAmend" type="checkbox"><span>Amend previous commit</span></label><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeCommitModal()">Cancel</button><button class="git-ui-btn" onclick="HerdrGitUi.saveDraft()">Save draft</button><button class="git-ui-btn active" onclick="HerdrGitUi.commitFromModal(false)">Commit</button><button class="git-ui-btn primary" onclick="HerdrGitUi.commitFromModal(true)">Commit & Push</button></div></div></div>`;
+        const body = includeBody ? `<label>Details<textarea id="gitCommitBody" class="git-ui-textarea" placeholder="Optional body"${inputAttrs("done")}>${esc(draft.body)}</textarea></label>` : "";
+        return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal git-ui-commit-modal"><div class="git-ui-modal-head"><strong>Commit staged changes</strong></div><label>Summary<input id="gitCommitTitle" class="git-ui-input" value="${esc(draft.title)}" placeholder="Short imperative summary"${inputAttrs("done")}></label><label class="git-ui-check-row"><input id="gitCommitIncludeBody" type="checkbox" ${includeBody ? "checked" : ""} onchange="HerdrGitUi.toggleCommitBody(this.checked)"><span>Add commit body</span></label>${body}<label class="git-ui-check-row"><input id="gitCommitAmend" type="checkbox"><span>Amend previous commit</span></label><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeCommitModal()">Cancel</button><button class="git-ui-btn" onclick="HerdrGitUi.saveDraft()">Save draft</button><button class="git-ui-btn active" onclick="HerdrGitUi.commitFromModal(false)">Commit</button><button class="git-ui-btn primary" onclick="HerdrGitUi.commitFromModal(true)">Commit & Push</button></div></div></div>`;
       }
 
       function renderResetSelectedModal() {
@@ -30,7 +30,7 @@
         const modal = state.tagSelectedModal;
         if (!modal) return "";
         const label = esc((modal.ref || "").slice(0, 12));
-        return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Tag selected commit</strong></div><p class="git-ui-muted">Create a lightweight tag at <strong>${label}</strong>.</p><label>Tag name<input id="gitTagName" class="git-ui-input" value="${esc(modal.tag || "")}" placeholder="v1.2.3"></label><div class="git-ui-modal-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.createSelectedTag()">Create tag</button><button class="git-ui-btn" onclick="HerdrGitUi.closeSelectedTagModal()">Cancel</button></div></div></div>`;
+        return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Tag selected commit</strong></div><p class="git-ui-muted">Create a lightweight tag at <strong>${label}</strong>.</p><label>Tag name<input id="gitTagName" class="git-ui-input" value="${esc(modal.tag || "")}" placeholder="v1.2.3"${inputAttrs("done")}></label><div class="git-ui-modal-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.createSelectedTag()">Create tag</button><button class="git-ui-btn" onclick="HerdrGitUi.closeSelectedTagModal()">Cancel</button></div></div></div>`;
       }
 
       function renderBranchModal() {
@@ -42,7 +42,7 @@
           : modal.error
             ? `<div class="git-ui-error">${esc(modal.error)}</div>`
             : `<label class="git-ui-branch-field"><span>Branch</span><select id="gitUiBranchSelect">${branchOptions("Local branches", modal.local || [])}${branchOptions("Remote branches", modal.remote || [])}</select></label>`;
-        const dir = `<label class="git-ui-branch-field"><span>Git directory</span><div class="git-ui-inline-field"><input id="gitUiBranchCwd" value="${cwd}" placeholder="/path/to/repo" data-directory-picker-after-select="HerdrGitUi.applyBranchModalCwd"><button type="button" class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker.openInput('gitUiBranchCwd')">Browse</button></div></label>`;
+        const dir = `<label class="git-ui-branch-field"><span>Git directory</span><div class="git-ui-inline-field"><input id="gitUiBranchCwd" value="${cwd}" placeholder="/path/to/repo" data-directory-picker-after-select="HerdrGitUi.applyBranchModalCwd"${inputAttrs("done")}><button type="button" class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker.openInput('gitUiBranchCwd')">Browse</button></div></label>`;
         return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Switch branch</strong></div>${dir}${body}<div class="git-ui-muted">Choosing a folder moves the Git panel to that directory immediately. Use Switch branch only to checkout another branch in the current Git directory.</div><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Cancel</button><button class="git-ui-btn primary" onclick="HerdrGitUi.switchBranchFromModal()" ${modal.loading || modal.error ? "disabled" : ""}>Switch branch</button></div></div></div>`;
       }
 
@@ -81,7 +81,7 @@
           return renderGitOpModalShell("Push to branch", `${common}${pushTags}<div class="git-ui-muted">Pushes the current branch to the selected remote branch.</div>${error}`, "Push", "primary", "runPushToFromModal");
         }
         if (modal.type === "rebase") {
-          const body = `${common}<label class="git-ui-branch-field"><span>Rebase commits after</span><input id="gitUiRebaseUpstream" value="HEAD" placeholder="HEAD"></label><label class="git-ui-check-row"><input id="gitUiRebasePullFirst" type="checkbox" checked><span>Fetch selected branch (and main/master) before rebasing onto origin</span></label>${error}`;
+          const body = `${common}<label class="git-ui-branch-field"><span>Rebase commits after</span><input id="gitUiRebaseUpstream" value="HEAD" placeholder="HEAD"${inputAttrs("done")}></label><label class="git-ui-check-row"><input id="gitUiRebasePullFirst" type="checkbox" checked><span>Fetch selected branch (and main/master) before rebasing onto origin</span></label>${error}`;
           return renderGitOpModalShell("Rebase branch", body, "Rebase", "primary", "runRebaseFromModal");
         }
         return "";

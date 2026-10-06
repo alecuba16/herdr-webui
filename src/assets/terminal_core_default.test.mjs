@@ -229,7 +229,7 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
     vm.runInContext(readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8"), ctx);
 
     const mobileSettings = vm.runInContext(
-      "HerdrMobileSettings.create({ api: () => Promise.resolve({}), applyTheme: () => {}, escapeHtml: (v) => String(v), localStorage: { getItem: () => null, setItem: () => {} }, state: {} })",
+      "HerdrMobileSettings.create({ api: () => Promise.resolve({}), applyTheme: () => {}, escapeHtml: (v) => String(v), inputAttrs: () => \"\", localStorage: { getItem: () => null, setItem: () => {} }, state: {} })",
       ctx,
     );
     // Settings dropdown reflects the migrated default for a legacy wterm blob.

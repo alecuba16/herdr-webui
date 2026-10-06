@@ -294,6 +294,9 @@ const SHARED_BUNDLES = [
 ];
 const sources = [];
 for (const path of SHARED_BUNDLES) sources.push(await loadText(path));
+// git-ui modules render inputs with inputAttrs(...) from the shared
+// HerdrAppHelpers; expose it as a bare binding like the real bundle does.
+sources.push('\ninputAttrs = globalThis.HerdrAppHelpers.inputAttrs;\n');
 // Desktop search.js comes before the lazy modules in app_boot order; the
 // drawers do not depend on it, but keeping the served order avoids drift.
 sources.push(await loadText("/assets/desktop/search.js"));

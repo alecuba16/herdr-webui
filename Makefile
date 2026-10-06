@@ -37,6 +37,12 @@ test: test-js
 test-js:
 	node --test src/assets/*.test.mjs
 
+test-e2e:
+	bash scripts/e2e/run-keyboard-guards-e2e.sh
+
+test-all: test-js test-e2e
+	$(CARGO) test --target-dir $(TARGET_DIR)
+
 build-markdown:
 	node scripts/build_markdown_assets.mjs
 

@@ -83,6 +83,13 @@
       .replace(/'/g, "&#39;");
   }
 
+  // Keyboard-guard attrs for template text inputs (shared/core.js owns the
+  // same helper; this module renders before the app helpers may be present
+  // in unit contexts, so keep a local copy with the same rules).
+  function inputAttrs() {
+    return ' autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" writingsuggestions="false" translate="no" enterkeyhint="search"';
+  }
+
   function titleFor(tool, folder) {
     const last = overlayManager().lastPathLevel(folder);
     const label = overlayManager().toolLabel(tool);
@@ -194,7 +201,7 @@
       `<button class="mobile-btn primary" onclick="HerdrMobileTempOverlays.pickerSelect()">Use this folder</button>` +
       "</div>" +
       error +
-      '<div class="temp-overlay-picker-search"><input type="text" placeholder="Filter folders..." value="' + escapeHtml(picker.filter) + '" oninput="HerdrMobileTempOverlays.pickerFilter(this.value)"></div>' +
+      '<div class="temp-overlay-picker-search"><input type="text" placeholder="Filter folders..."' + inputAttrs() + ' value="' + escapeHtml(picker.filter) + '" oninput="HerdrMobileTempOverlays.pickerFilter(this.value)"></div>' +
       `<div class="temp-overlay-picker-tree">${loading}${rows}${empty}</div>` +
       "</div>";
   }

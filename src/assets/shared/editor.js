@@ -85,8 +85,8 @@
     const matchCase = stored.matchCase === true;
     const regex = stored.regex === true;
     return `<div class="herdr-editor-find" data-readonly="${readonly ? "true" : "false"}" hidden>
-      <input class="herdr-editor-find-query" placeholder="Find" autocomplete="off" spellcheck="false">
-      <input class="herdr-editor-replace-query" placeholder="Replace" autocomplete="off" spellcheck="false" ${readonly ? "disabled" : ""}>
+      <input class="herdr-editor-find-query" placeholder="Find"${globalThis.HerdrAppHelpers ? globalThis.HerdrAppHelpers.inputAttrs("search") : " autocomplete=\"off\" spellcheck=\"false\""}>
+      <input class="herdr-editor-replace-query" placeholder="Replace"${globalThis.HerdrAppHelpers ? globalThis.HerdrAppHelpers.inputAttrs("done") : " autocomplete=\"off\" spellcheck=\"false\""} ${readonly ? "disabled" : ""}>
       <button type="button" class="herdr-editor-find-prev" title="Previous match">↑</button>
       <button type="button" class="herdr-editor-find-next" title="Next match">↓</button>
       <button type="button" class="herdr-editor-replace-one" ${readonly ? "disabled" : ""}>Replace</button>
@@ -563,7 +563,7 @@
 
   function editHtml(opts) {
     const head = editorHeaderHtml(opts, opts.path || "Editor");
-    return `<div class="herdr-editor">${head}${findToggleHtml(opts)}${findToolbarHtml(opts)}<textarea spellcheck="false">${esc(opts.content || "")}</textarea></div>`;
+    return `<div class="herdr-editor">${head}${findToggleHtml(opts)}${findToolbarHtml(opts)}<textarea${globalThis.HerdrAppHelpers ? globalThis.HerdrAppHelpers.inputAttrs("done") : " spellcheck=\"false\""}>${esc(opts.content || "")}</textarea></div>`;
   }
 
   function ensureCodeMirror() {

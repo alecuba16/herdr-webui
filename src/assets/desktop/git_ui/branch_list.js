@@ -143,7 +143,7 @@
         const loadMore = !list.remoteLoading && !list.remoteLoaded && remoteAll.length > remote.length
           ? `<button class="git-ui-branch-load-more" onclick="HerdrGitUi.loadMoreBranches()">Load more branches (${remoteAll.length - remote.length} more)</button>`
           : "";
-        return `<div class="git-ui-branch-list" onclick="event.stopPropagation()"><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${loadMore}${empty}</div><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${esc(list.filter || "")}" placeholder="Type to filter" oninput="HerdrGitUi.branchListFilter(this.value)"></label></div>`;
+        return `<div class="git-ui-branch-list" onclick="event.stopPropagation()"><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${loadMore}${empty}</div><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${esc(list.filter || "")}" placeholder="Type to filter"${inputAttrs("search")} oninput="HerdrGitUi.branchListFilter(this.value)"></label></div>`;
       }
 
       function refocusBranchFilter(value) {

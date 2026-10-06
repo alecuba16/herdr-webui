@@ -24,7 +24,26 @@ const {
   terminalPasteInput,
   stripTerminalMouseReports,
   stripTerminalQueryReplies,
+  inputAttrs,
 } = require("./shared/core.js");
+
+describe("inputAttrs (shared helper)", () => {
+  it("emits the full keyboard guard set; adding/removing an attr fails here", () => {
+    // Deliberate pin: behavioral tests cover rendered markup incidentally,
+    // this pins the helper itself so a trimmed attr cannot land silently.
+    // Static scan checks call-site interpolation, not emitted content.
+    assert.match(inputAttrs(), /autocomplete="off"/);
+    assert.match(inputAttrs(), /autocorrect="off"/);
+    assert.match(inputAttrs(), /autocapitalize="none"/);
+    assert.match(inputAttrs(), /spellcheck="false"/);
+    assert.match(inputAttrs(), /writingsuggestions="false"/);
+    assert.match(inputAttrs(), /translate="no"/);
+    assert.ok(!inputAttrs().includes("enterkeyhint"), "no hint without argument");
+    assert.match(inputAttrs("search"), /enterkeyhint="search"/);
+    assert.ok(inputAttrs("search").includes(inputAttrs()));
+    assert.ok(!inputAttrs('"><img onerror=alert(1)>').includes('enterkeyhint="\"><img'), "hint must be escaped");
+  });
+});
 
 describe("createFaviconNotifier", () => {
   it("creates one icon link and only updates on state changes", () => {
@@ -188,6 +207,8 @@ describe("Git log rendering", () => {
       document: { querySelectorAll() { return []; } },
     };
     context.window.window = context.window;
+    // log.js renders filter inputs with inputAttrs(...) from the shared helpers.
+    vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
     vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
 
     const hash = "0123456789abcdef0123456789abcdef01234567";
@@ -213,6 +234,8 @@ describe("Git log rendering", () => {
       document: { querySelectorAll() { return []; } },
     };
     context.window.window = context.window;
+    // log.js renders filter inputs with inputAttrs(...) from the shared helpers.
+    vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
     vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
     const laneColor = context.window.HerdrGitLog.laneColor;
 

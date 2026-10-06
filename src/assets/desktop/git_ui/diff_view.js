@@ -91,7 +91,7 @@
       const error = view.error && !cleanupOnly ? `<div class="git-ui-error">${esc(view.error)}</div>` : "";
       const actions = cleanupOnly ? "" : renderWorktreeActions({ s, esc, commitHint, commitDisabled, cwd: view.cwd, workspaceCwd: view.workspaceCwd, worktreeName: view.title });
       const filterInput = sideFileCount(view)
-        ? `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" id="gitUiFileFilter" name="git-ui-file-filter" autocomplete="off" placeholder="Filter files" oninput="HerdrGitUi.filterFiles(this.value)"></label>`
+        ? `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" id="gitUiFileFilter" name="git-ui-file-filter" placeholder="Filter files"${inputAttrs("search")} oninput="HerdrGitUi.filterFiles(this.value)"></label>`
         : "";
       const fileList = cleanupOnly ? "" : `${filterInput}${fileSections}`;
       const sideBottom = cleanupOnly ? "" : renderDiffLayoutSideToggle(view);
@@ -143,7 +143,7 @@
       if (!view.diffSearchOpen && !query) return `<button class="git-ui-btn" title="Search compared text (Ctrl+F)" onclick="HerdrGitUi.openDiffSearch()">Search</button>`;
       const count = query.trim() ? diffSearchMatchCount(view, query) : 0;
       const countText = query.trim() ? `${count} match${count === 1 ? "" : "es"}` : "";
-      return `<label class="git-ui-diff-search" title="Search compared text"><span>Search</span><input id="gitUiDiffSearch" value="${esc(query)}" autocomplete="off" spellcheck="false" placeholder="Search compared text" oninput="HerdrGitUi.setDiffSearch(this.value)"></label><span class="git-ui-diff-search-count">${esc(countText)}</span><button class="git-ui-btn" title="Clear diff search" onclick="HerdrGitUi.clearDiffSearch()">×</button>`;
+      return `<label class="git-ui-diff-search" title="Search compared text"><span>Search</span><input id="gitUiDiffSearch" value="${esc(query)}" placeholder="Search compared text"${inputAttrs("search")} oninput="HerdrGitUi.setDiffSearch(this.value)"></label><span class="git-ui-diff-search-count">${esc(countText)}</span><button class="git-ui-btn" title="Clear diff search" onclick="HerdrGitUi.clearDiffSearch()">×</button>`;
     }
 
     function canEditCurrentFile(view) {

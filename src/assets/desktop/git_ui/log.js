@@ -60,7 +60,7 @@
   }
 
   function renderFilterRow(filters, esc, scopeButton) {
-    const input = (field, label) => `<label class="git-ui-log-filter" title="Filter ${label}"><span class="sr-only">Filter ${label}</span><input name="git-log-filter-${field}" autocomplete="off" aria-label="Filter ${label}" value="${esc(filters[field] || "")}" placeholder="Filter" oninput="HerdrGitUi.setLogFilter('${field}',this.value)"></label>`;
+    const input = (field, label) => `<label class="git-ui-log-filter" title="Filter ${label}"><span class="sr-only">Filter ${label}</span><input name="git-log-filter-${field}" aria-label="Filter ${label}" value="${esc(filters[field] || "")}" placeholder="Filter"${inputAttrs("search")} oninput="HerdrGitUi.setLogFilter('${field}',this.value)"></label>`;
     return `<div class="git-ui-log-filter-row"><span class="git-ui-log-filter-spacer">${scopeButton || ""}</span>${input("description", "Description")}${input("date", "Date")}${input("author", "Author")}</div>`;
   }
 

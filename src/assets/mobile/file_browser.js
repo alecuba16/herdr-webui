@@ -258,7 +258,8 @@
     // A4 (desktop parity): partial read of an oversized text file. The
     // backend clamps the budget; the view stays read-only (canEditFile
     // checks truncated) and the empty hash keeps saves impossible.
-    async function loadPartial(path) {
+    async function loadPartial(encodedPath) {
+      const path = decodeURIComponent(encodedPath);
       const root = cwd();
       if (!root) return;
       local.loading = true;
@@ -307,9 +308,9 @@
       return !!(file && !file.binary && !file.truncated);
     }
 
-    function confirmDiscardDraft() {
+    async function confirmDiscardDraft() {
       if (!local.editing || !local.dirty) return true;
-      const ok = deps.confirm(`Discard unsaved changes to ${local.file ? local.file.path : "this file"}?`);
+      const ok = await deps.confirm(`Discard unsaved changes to ${local.file ? local.file.path : "this file"}?`);
       if (!ok) return false;
       local.draft = local.file ? local.file.content || "" : "";
       local.dirty = false;
@@ -327,9 +328,9 @@
       deps.render();
     }
 
-    function cancelEdit() {
+    async function cancelEdit() {
       if (!local.editing) return;
-      if (!confirmDiscardDraft()) return;
+      if (!(await confirmDiscardDraft())) return;
       local.editing = false;
       local.saveError = "";
       deps.render();
@@ -361,8 +362,8 @@
 
     // ---- Row actions: rename / delete / new file (IDE-review B2) ----
 
-    function openActionSheet(encodedPath, kind) {
-      if (local.editing && !confirmDiscardDraft()) return;
+    async function openActionSheet(encodedPath, kind) {
+      if (local.editing && !(await confirmDiscardDraft())) return;
       const path = decodeURIComponent(encodedPath);
       local.actionSheet = { path, kind: kind === "dir" ? "dir" : "file" };
       deps.render();
@@ -420,7 +421,7 @@
     async function deletePath(encodedPath) {
       const path = decodeURIComponent(encodedPath);
       local.actionSheet = null;
-      if (!deps.confirm(`Delete ${path}? This cannot be undone.`)) return;
+      if (!(await deps.confirm(`Delete ${path}? This cannot be undone.`))) return;
       local.mutating = true;
       deps.render();
       try {
@@ -504,19 +505,19 @@
       if (!sheet) return "";
       const isDir = sheet.kind === "dir";
       const name = Tree.basename(sheet.path) || sheet.path;
-      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.filesCloseActionSheet()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Actions for ${deps.escapeHtml(name)}"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">${deps.escapeHtml(name)}</p><button class="mobile-sheet-action" onclick="HerdrMobile.filesOpenRename(${JSON.stringify(encodeURIComponent(sheet.path))})">Rename</button><button class="mobile-sheet-action danger" onclick="HerdrMobile.filesDeletePath(${JSON.stringify(encodeURIComponent(sheet.path))})">Delete</button>${isDir ? `<button class="mobile-sheet-action" onclick="HerdrMobile.filesOpenNewFile()">New file here</button>` : ""}<button class="mobile-sheet-action" onclick="HerdrMobile.filesCloseActionSheet()">Cancel</button></div>`;
+      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.filesCloseActionSheet()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Actions for ${deps.escapeHtml(name)}"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">${deps.escapeHtml(name)}</p><button class="mobile-sheet-action" onclick="HerdrMobile.filesOpenRename('${encodeURIComponent(sheet.path).replace(/'/g, "%27")}')">Rename</button><button class="mobile-sheet-action danger" onclick="HerdrMobile.filesDeletePath('${encodeURIComponent(sheet.path).replace(/'/g, "%27")}')">Delete</button>${isDir ? `<button class="mobile-sheet-action" onclick="HerdrMobile.filesOpenNewFile()">New file here</button>` : ""}<button class="mobile-sheet-action" onclick="HerdrMobile.filesCloseActionSheet()">Cancel</button></div>`;
     }
 
     function renderRenameModal() {
       const rename = local.rename;
       if (!rename) return "";
-      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.filesCancelRename()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Rename ${deps.escapeHtml(rename.name)}"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">Rename ${deps.escapeHtml(rename.name)}</p><input id="mobileFileRenameInput" class="mobile-sheet-input" type="text" value="${deps.escapeHtml(rename.value)}" oninput="HerdrMobile.filesSetRenameValue(this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.filesSubmitRename(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.filesCancelRename(); }" autocomplete="off" spellcheck="false" />${rename.error ? `<div class="mobile-error">${deps.escapeHtml(rename.error)}</div>` : ""}<div class="mobile-sheet-actions"><button class="mobile-btn" onclick="HerdrMobile.filesCancelRename()">Cancel</button><button class="mobile-btn primary" id="mobileFileRenameSubmit" ${local.mutating ? "disabled" : ""} onclick="HerdrMobile.filesSubmitRename()">${local.mutating ? "Renaming…" : "Rename"}</button></div></div>`;
+      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.filesCancelRename()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Rename ${deps.escapeHtml(rename.name)}"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">Rename ${deps.escapeHtml(rename.name)}</p><input id="mobileFileRenameInput" class="mobile-sheet-input" type="text"${(deps.inputAttrs ? deps.inputAttrs("done") : " autocomplete=\"off\" spellcheck=\"false\"")} value="${deps.escapeHtml(rename.value)}" oninput="HerdrMobile.filesSetRenameValue(this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.filesSubmitRename(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.filesCancelRename(); }" />${rename.error ? `<div class="mobile-error">${deps.escapeHtml(rename.error)}</div>` : ""}<div class="mobile-sheet-actions"><button class="mobile-btn" onclick="HerdrMobile.filesCancelRename()">Cancel</button><button class="mobile-btn primary" id="mobileFileRenameSubmit" ${local.mutating ? "disabled" : ""} onclick="HerdrMobile.filesSubmitRename()">${local.mutating ? "Renaming…" : "Rename"}</button></div></div>`;
     }
 
     function renderNewFileModal() {
       const draft = local.newFile;
       if (!draft) return "";
-      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.filesCancelNewFile()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="New file"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">New file in ${deps.escapeHtml(local.path || Tree.basename(cwd()) || "workspace")}</p><input id="mobileFileNewInput" class="mobile-sheet-input" type="text" placeholder="file name (e.g. notes.md)" value="${deps.escapeHtml(draft.value)}" oninput="HerdrMobile.filesSetNewFileValue(this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.filesSubmitNewFile(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.filesCancelNewFile(); }" autocomplete="off" spellcheck="false" />${draft.error ? `<div class="mobile-error">${deps.escapeHtml(draft.error)}</div>` : ""}<div class="mobile-sheet-actions"><button class="mobile-btn" onclick="HerdrMobile.filesCancelNewFile()">Cancel</button><button class="mobile-btn primary" id="mobileFileNewSubmit" ${local.mutating || !draft.value.trim() ? "disabled" : ""} onclick="HerdrMobile.filesSubmitNewFile()">${local.mutating ? "Creating…" : "Create"}</button></div></div>`;
+      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.filesCancelNewFile()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="New file"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">New file in ${deps.escapeHtml(local.path || Tree.basename(cwd()) || "workspace")}</p><input id="mobileFileNewInput" class="mobile-sheet-input" type="text"${(deps.inputAttrs ? deps.inputAttrs("done") : " autocomplete=\"off\" spellcheck=\"false\"")} placeholder="file name (e.g. notes.md)" value="${deps.escapeHtml(draft.value)}" oninput="HerdrMobile.filesSetNewFileValue(this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.filesSubmitNewFile(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.filesCancelNewFile(); }" />${draft.error ? `<div class="mobile-error">${deps.escapeHtml(draft.error)}</div>` : ""}<div class="mobile-sheet-actions"><button class="mobile-btn" onclick="HerdrMobile.filesCancelNewFile()">Cancel</button><button class="mobile-btn primary" id="mobileFileNewSubmit" ${local.mutating || !draft.value.trim() ? "disabled" : ""} onclick="HerdrMobile.filesSubmitNewFile()">${local.mutating ? "Creating…" : "Create"}</button></div></div>`;
     }
 
     function syncContentSearchOptions() {
@@ -765,7 +766,7 @@
       const file = local.file;
       let body = '<div class="mobile-loading">No preview</div>';
       if (file.binary) body = '<div class="mobile-loading">Binary file preview unavailable</div>';
-      else if (file.truncated && !file.partialPreview) body = `<div class="mobile-loading">File too large to preview (${Tree.formatBytes(file.size)})<button class="mobile-btn" onclick="HerdrMobile.filesLoadPartial(${JSON.stringify(encodeURIComponent(file.path))})">Load first 256 KB</button></div>`;
+      else if (file.truncated && !file.partialPreview) body = `<div class="mobile-loading">File too large to preview (${Tree.formatBytes(file.size)})<button class="mobile-btn" onclick="HerdrMobile.filesLoadPartial('${encodeURIComponent(file.path).replace(/'/g, "%27")}')">Load first 256 KB</button></div>`;
       else if (file.truncated && file.partialPreview) body = `<div class="mobile-loading">Previewing the first ${Tree.formatBytes(file.preview_bytes || 262144)} of ${Tree.formatBytes(file.size)}. Editing is disabled for partial views.</div><div id="mobileFilePreview"></div>`;
       else body = `<div id="mobileFilePreview"></div>`;
       const editing = local.editing;
@@ -787,7 +788,7 @@
           lspDidOpen(local.file);
         }
       }, 0);
-      return `<section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesBackToTree()">Back</button><button class="mobile-btn" onclick="HerdrMobile.filesRefreshFile()">Refresh</button>${editActions}<button class="mobile-btn" onclick="HerdrMobile.filesOpenActionSheet(${JSON.stringify(encodeURIComponent(file.path))}, 'file')">⋯</button></div><p class="mobile-help">${deps.escapeHtml(file.path || "")}${editing && local.dirty ? " — unsaved changes" : ""}</p>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${local.saveError ? `<div class="mobile-error">${deps.escapeHtml(local.saveError)}</div>` : ""}${body}${renderActionSheet()}${renderRenameModal()}${renderNewFileModal()}</section>`;
+      return `<section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesBackToTree()">Back</button><button class="mobile-btn" onclick="HerdrMobile.filesRefreshFile()">Refresh</button>${editActions}<button class="mobile-btn" onclick="HerdrMobile.filesOpenActionSheet('${encodeURIComponent(file.path).replace(/'/g, "%27")}', 'file')">⋯</button></div><p class="mobile-help">${deps.escapeHtml(file.path || "")}${editing && local.dirty ? " — unsaved changes" : ""}</p>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${local.saveError ? `<div class="mobile-error">${deps.escapeHtml(local.saveError)}</div>` : ""}${body}${renderActionSheet()}${renderRenameModal()}${renderNewFileModal()}</section>`;
     }
 
     function syncPreviewDirtyState() {
@@ -821,13 +822,13 @@
         local.mutating = false;
         local.contentSearch = createContentSearchState();
       },
-      toggle(encodedPath) {
-        if (!confirmDiscardDraft()) return;
+      async toggle(encodedPath) {
+        if (!(await confirmDiscardDraft())) return;
         load(decodeURIComponent(encodedPath));
       },
       async select(encodedPath) {
         if (local.file && local.file.path === decodeURIComponent(encodedPath)) return;
-        if (!confirmDiscardDraft()) return;
+        if (!(await confirmDiscardDraft())) return;
         await openFile(decodeURIComponent(encodedPath));
       },
         setFilterKind(kind) {
@@ -948,8 +949,8 @@
         }
         if (path) await openFile(path, options.highlight || null);
       },
-      backToTree() {
-        if (!confirmDiscardDraft()) return;
+      async backToTree() {
+        if (!(await confirmDiscardDraft())) return;
         if (local.file && local.file.path) lspDidClose(local.file.path);
         local.file = null;
         local.editing = false;

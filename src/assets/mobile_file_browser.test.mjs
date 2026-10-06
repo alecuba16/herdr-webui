@@ -134,6 +134,7 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
     confirm: () => confirmAnswer,
     currentWorkspaceCwd: () => "/tmp/repo",
     escapeHtml: (v) => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"),
+    inputAttrs: () => "",
     render: () => {},
     state: { screen: "files" },
   };
@@ -183,9 +184,9 @@ describe("mobile file browser edit mode", () => {
     module.startEdit();
     module.renderScreen();
     editors.at(-1).onChange("print('dirty')");
-    module.cancelEdit();
+    await module.cancelEdit();
     assert.match(module.renderScreen(), /filesSaveFile/, "declined discard stays in edit mode");
-    module.backToTree();
+    await module.backToTree();
     assert.match(module.renderScreen(), /filesSaveFile/, "declined discard keeps the preview open");
   });
 
@@ -197,7 +198,7 @@ describe("mobile file browser edit mode", () => {
     module.startEdit();
     module.renderScreen();
     editors.at(-1).onChange("print('dirty')");
-    module.cancelEdit();
+    await module.cancelEdit();
     assert.match(module.renderScreen(), /filesStartEdit/);
     assert.doesNotMatch(module.renderScreen(), /filesSaveFile/);
   });
@@ -353,7 +354,7 @@ describe("mobile file browser edit mode", () => {
     const editor = editors.at(-1);
     editor.onChange("print('oops')");
     assert.ok(lspCalls.some((call) => call.method === "didChange" && call.path === "src/demo.py" && call.content === "print('oops')"), "didChange fired on edit");
-    module.backToTree();
+    await module.backToTree();
     assert.ok(lspCalls.some((call) => call.method === "didClose" && call.path === "src/demo.py"), "didClose fired on back");
   });
 
@@ -387,5 +388,26 @@ describe("mobile file browser edit mode", () => {
     const html = module.renderScreen();
     assert.match(html, /hash mismatch/);
     assert.match(html, /filesSaveFile/, "still editable after a failed save");
+  });
+});
+describe("mobile file browser action sheet", () => {
+  it("emits well-formed onclick handlers for rename and delete", async () => {
+    const { module } = createModule({ });
+    await module.load("");
+    await module.rowActions(encodeURIComponent("src/demo.py"), "file");
+    const html = module.renderScreen();
+    // The old markup interpolated JSON.stringify output inside a
+    // double-quoted attribute, so the attribute broke at the first inner
+    // quote and neither button ever fired. The fixed markup keeps the
+    // attribute intact: single-quoted encoded path, no raw double quotes.
+    const renameMatch = html.match(/onclick="HerdrMobile\.filesOpenRename\(([^)]*)\)"/);
+    const deleteMatch = html.match(/onclick="HerdrMobile\.filesDeletePath\(([^)]*)\)"/);
+    assert.ok(renameMatch, "rename handler present");
+    assert.ok(deleteMatch, "delete handler present");
+    assert.match(renameMatch[1], /^'[^']*'$/, "rename arg is a single-quoted string");
+    assert.match(deleteMatch[1], /^'[^']*'$/, "delete arg is a single-quoted string");
+    // And the encoded arg decodes back to the real path.
+    assert.equal(decodeURIComponent(renameMatch[1].slice(1, -1)), "src/demo.py");
+    assert.equal(decodeURIComponent(deleteMatch[1].slice(1, -1)), "src/demo.py");
   });
 });

@@ -4,6 +4,7 @@
     api,
     render,
     escapeHtml,
+    inputAttrs,
     jsArg,
     localStorage,
     confirmFn,
@@ -51,7 +52,7 @@
         (row) => row.backend !== "external-herdr" && !row.running && row.name !== "default",
       );
       const staleCount = staleBuiltin.length;
-      return `<section class="mobile-section mobile-form"><h2>Sessions</h2><p class="mobile-help">Current target: ${escapeHtml(current)}. Tap a session to switch, or create a new one.</p><div class="mobile-settings-group"><h3>Known sessions</h3>${rows ? rows : '<div class="mobile-loading">No sessions found yet</div>'}${loading}${error}</div><details class="mobile-settings-group mobile-disclosure" ${state.sessionCreateExpanded ? "open" : ""} onchange="HerdrMobile.setSessionCreateExpanded(this.open)"><summary>Create new session</summary><label><span>Session name</span><input value="${escapeHtml(state.sessionNameInput)}" oninput="HerdrMobile.updateSessionField('sessionNameInput', this.value)" placeholder="revolut"></label><div class="mobile-session-actions"><button class="mobile-btn primary" ${busy ? "disabled" : ""} onclick="HerdrMobile.newSession('builtin')">New built-in</button>${herdrUsable ? `<button class="mobile-btn" ${busy ? "disabled" : ""} onclick="HerdrMobile.newSession('external-herdr')">New Herdr</button>` : ""}</div></details><details class="mobile-settings-group mobile-disclosure" ${state.sessionCleanupExpanded ? "open" : ""} onchange="HerdrMobile.setSessionCleanupExpanded(this.open)"><summary>Clean up closed sessions${staleCount ? ` (${staleCount})` : ""}</summary><p class="mobile-help">Remove stale built-in sessions left behind by crashes or closes. Running sessions and the default slot are kept.</p><div class="mobile-session-actions"><button class="mobile-btn" ${busy || !staleCount ? "disabled" : ""} onclick="HerdrMobile.cleanupSessions()">Clean up closed sessions</button></div></details></section>`;
+      return `<section class="mobile-section mobile-form"><h2>Sessions</h2><p class="mobile-help">Current target: ${escapeHtml(current)}. Tap a session to switch, or create a new one.</p><div class="mobile-settings-group"><h3>Known sessions</h3>${rows ? rows : '<div class="mobile-loading">No sessions found yet</div>'}${loading}${error}</div><details class="mobile-settings-group mobile-disclosure" ${state.sessionCreateExpanded ? "open" : ""} onchange="HerdrMobile.setSessionCreateExpanded(this.open)"><summary>Create new session</summary><label><span>Session name</span><input value="${escapeHtml(state.sessionNameInput)}"${inputAttrs()} oninput="HerdrMobile.updateSessionField('sessionNameInput', this.value)" placeholder="revolut"></label><div class="mobile-session-actions"><button class="mobile-btn primary" ${busy ? "disabled" : ""} onclick="HerdrMobile.newSession('builtin')">New built-in</button>${herdrUsable ? `<button class="mobile-btn" ${busy ? "disabled" : ""} onclick="HerdrMobile.newSession('external-herdr')">New Herdr</button>` : ""}</div></details><details class="mobile-settings-group mobile-disclosure" ${state.sessionCleanupExpanded ? "open" : ""} onchange="HerdrMobile.setSessionCleanupExpanded(this.open)"><summary>Clean up closed sessions${staleCount ? ` (${staleCount})` : ""}</summary><p class="mobile-help">Remove stale built-in sessions left behind by crashes or closes. Running sessions and the default slot are kept.</p><div class="mobile-session-actions"><button class="mobile-btn" ${busy || !staleCount ? "disabled" : ""} onclick="HerdrMobile.cleanupSessions()">Clean up closed sessions</button></div></details></section>`;
     }
 
     async function refreshSessions() {
@@ -87,7 +88,7 @@
     // offline rows.
     async function cleanupSessions() {
       if (state.sessionBusy) return;
-      if (!confirmFn("Remove stale closed built-in sessions?")) return;
+      if (!(await confirmFn("Remove stale closed built-in sessions?"))) return;
       state.sessionBusy = true;
       state.sessionBusyLabel = "Cleaning up sessions...";
       render();
@@ -216,7 +217,7 @@
     // to the server's default backend so the refresh lands on a live target.
     async function closeSession() {
       if (state.sessionBusy) return;
-      if (!confirmFn(`Close current ${sessionBackendLabel(currentSessionBackend())} session?`)) return;
+      if (!(await confirmFn(`Close current ${sessionBackendLabel(currentSessionBackend())} session?`))) return;
       const session = state.session || "default";
       const backend = currentSessionBackend();
       state.sessionBusy = true;
@@ -297,7 +298,7 @@
         await closeSession();
         return;
       }
-      if (!confirmFn(`Close ${sessionBackendLabel(rowBackend)} session ${session}?`)) return;
+      if (!(await confirmFn(`Close ${sessionBackendLabel(rowBackend)} session ${session}?`))) return;
       state.sessionBusy = true;
       state.sessionBusyLabel = "Closing session...";
       render();

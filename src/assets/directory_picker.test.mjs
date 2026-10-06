@@ -8,6 +8,12 @@ import { equal, match } from "node:assert/strict";
 const pickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
 const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
 
+// The real inputAttrs guard helper from shared/core.js (module.exports).
+// The picker renders inputs with inputAttrs(...), so the vm sandbox needs it.
+const { createRequire } = await import("node:module");
+const require = createRequire(import.meta.url);
+const { inputAttrs } = require("./shared/core.js");
+
 // Minimal DOM good enough for the picker: createElement/getElementById,
 // innerHTML assignment (captured for assertions), appendChild, remove,
 // querySelector for the tree, activeElement, focus and selection.
@@ -49,6 +55,7 @@ function context({ fetchImpl } = {}) {
     console,
     TextEncoder,
     URLSearchParams,
+    inputAttrs,
     clearTimeout() {},
     setTimeout(fn) { if (typeof fn === "function") fn(); return 1; },
     document: {
