@@ -272,3 +272,27 @@ test("directory picker search paging resets when the filter changes", async () =
   match(lastCall, /offset=0/);
   equal(vm.runInContext("__pickerDebug.state.entries.length", ctx), 1, "entries reset for the new term");
 });
+
+// The temporary overlay host drives the picker through a detached hidden
+// input node (window.HerdrDirectoryPicker.open(input)), not through an id.
+// This pins the node-based export that shipped broken in 87ddc98 (the host
+// called picker.open but the picker never exported it) and was only caught
+// by the e2e acceptance run against the served bundles.
+test("directory picker exposes the node-based open(input) entry the temp overlays use", async () => {
+  const calls = [];
+  const { ctx } = loadPicker({
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      return { ok: true, status: 200, json: async () => ({ path: "", entries: [], truncated: false }) };
+    },
+  });
+  const picker = vm.runInContext("HerdrDirectoryPicker", ctx);
+  equal(typeof picker.open, "function", "open(inputNode) is exported");
+
+  const input = vm.runInContext("({ value: '/fixture/folder' })", ctx);
+  picker.open(input);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  equal(vm.runInContext("__pickerDebug.state.root", ctx), "/", "node value drives the picker root");
+  equal(vm.runInContext("__pickerDebug.state.input", ctx), input, "open keeps the driving input node");
+  match(calls[0], /cwd=%2F/);
+});

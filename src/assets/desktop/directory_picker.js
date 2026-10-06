@@ -288,6 +288,9 @@
   }
 
   window.HerdrDirectoryPicker = {
+    // open(inputNode) is the node-based entry the temporary overlays use
+    // (the host passes a detached hidden input carrying the current folder).
+    open,
     attach,
     openInput,
     close,
