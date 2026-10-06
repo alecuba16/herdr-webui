@@ -243,9 +243,9 @@
       const prompt = evaluatePrompt();
       if (!prompt) return "";
       const body = prompt.kind === "options"
-        ? prompt.options.map((o) => `<button type="button" class="mobile-prompt-option" onclick="HerdrMobile.promptAnswer(${JSON.stringify(prompt.title.replace(/"/g, '\\"'))}, '${escapeHtml(o.key)}')">${escapeHtml(o.label)}</button>`).join("")
-        : `<div class="mobile-prompt-text-row"><input id="mobilePromptInput" class="mobile-sheet-input" type="text"${inputAttrs("send")} placeholder="Type your response" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.promptAnswerText(${JSON.stringify(prompt.title.replace(/"/g, '\\"'))}, this.value); }"></div>`;
-      return `<div class="mobile-prompt-card" id="mobilePromptCard" role="dialog" aria-label="${escapeHtml(prompt.title)}"><div class="mobile-prompt-head"><strong>${escapeHtml(prompt.title)}</strong><button type="button" class="mobile-btn mini" aria-label="Dismiss question" onclick="HerdrMobile.promptDismiss(${JSON.stringify(prompt.title.replace(/"/g, '\\"'))})">✕</button></div><div class="mobile-prompt-body">${body}</div></div>`;
+        ? prompt.options.map((o) => `<button type="button" class="mobile-prompt-option" onclick="HerdrMobile.promptAnswer(${escapeHtml(JSON.stringify(prompt.title))}, '${escapeHtml(o.key)}')">${escapeHtml(o.label)}</button>`).join("")
+        : `<div class="mobile-prompt-text-row"><input id="mobilePromptInput" class="mobile-sheet-input" type="text"${inputAttrs("send")} placeholder="Type your response" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.promptAnswerText(${escapeHtml(JSON.stringify(prompt.title))}, this.value); }"></div>`;
+      return `<div class="mobile-prompt-card" id="mobilePromptCard" role="dialog" aria-label="${escapeHtml(prompt.title)}"><div class="mobile-prompt-head"><strong>${escapeHtml(prompt.title)}</strong><button type="button" class="mobile-btn mini" aria-label="Dismiss question" onclick="HerdrMobile.promptDismiss(${escapeHtml(JSON.stringify(prompt.title))})">✕</button></div><div class="mobile-prompt-body">${body}</div></div>`;
     }
 
     // Prompt answers need the prompt object; resolve by title at call time

@@ -258,7 +258,8 @@
     // A4 (desktop parity): partial read of an oversized text file. The
     // backend clamps the budget; the view stays read-only (canEditFile
     // checks truncated) and the empty hash keeps saves impossible.
-    async function loadPartial(path) {
+    async function loadPartial(encodedPath) {
+      const path = decodeURIComponent(encodedPath);
       const root = cwd();
       if (!root) return;
       local.loading = true;
@@ -504,7 +505,7 @@
       if (!sheet) return "";
       const isDir = sheet.kind === "dir";
       const name = Tree.basename(sheet.path) || sheet.path;
-      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.filesCloseActionSheet()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Actions for ${deps.escapeHtml(name)}"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">${deps.escapeHtml(name)}</p><button class="mobile-sheet-action" onclick="HerdrMobile.filesOpenRename(${JSON.stringify(encodeURIComponent(sheet.path))})">Rename</button><button class="mobile-sheet-action danger" onclick="HerdrMobile.filesDeletePath(${JSON.stringify(encodeURIComponent(sheet.path))})">Delete</button>${isDir ? `<button class="mobile-sheet-action" onclick="HerdrMobile.filesOpenNewFile()">New file here</button>` : ""}<button class="mobile-sheet-action" onclick="HerdrMobile.filesCloseActionSheet()">Cancel</button></div>`;
+      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.filesCloseActionSheet()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Actions for ${deps.escapeHtml(name)}"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">${deps.escapeHtml(name)}</p><button class="mobile-sheet-action" onclick="HerdrMobile.filesOpenRename('${encodeURIComponent(sheet.path).replace(/'/g, "%27")}')">Rename</button><button class="mobile-sheet-action danger" onclick="HerdrMobile.filesDeletePath('${encodeURIComponent(sheet.path).replace(/'/g, "%27")}')">Delete</button>${isDir ? `<button class="mobile-sheet-action" onclick="HerdrMobile.filesOpenNewFile()">New file here</button>` : ""}<button class="mobile-sheet-action" onclick="HerdrMobile.filesCloseActionSheet()">Cancel</button></div>`;
     }
 
     function renderRenameModal() {
@@ -765,7 +766,7 @@
       const file = local.file;
       let body = '<div class="mobile-loading">No preview</div>';
       if (file.binary) body = '<div class="mobile-loading">Binary file preview unavailable</div>';
-      else if (file.truncated && !file.partialPreview) body = `<div class="mobile-loading">File too large to preview (${Tree.formatBytes(file.size)})<button class="mobile-btn" onclick="HerdrMobile.filesLoadPartial(${JSON.stringify(encodeURIComponent(file.path))})">Load first 256 KB</button></div>`;
+      else if (file.truncated && !file.partialPreview) body = `<div class="mobile-loading">File too large to preview (${Tree.formatBytes(file.size)})<button class="mobile-btn" onclick="HerdrMobile.filesLoadPartial('${encodeURIComponent(file.path).replace(/'/g, "%27")}')">Load first 256 KB</button></div>`;
       else if (file.truncated && file.partialPreview) body = `<div class="mobile-loading">Previewing the first ${Tree.formatBytes(file.preview_bytes || 262144)} of ${Tree.formatBytes(file.size)}. Editing is disabled for partial views.</div><div id="mobileFilePreview"></div>`;
       else body = `<div id="mobileFilePreview"></div>`;
       const editing = local.editing;
@@ -787,7 +788,7 @@
           lspDidOpen(local.file);
         }
       }, 0);
-      return `<section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesBackToTree()">Back</button><button class="mobile-btn" onclick="HerdrMobile.filesRefreshFile()">Refresh</button>${editActions}<button class="mobile-btn" onclick="HerdrMobile.filesOpenActionSheet(${JSON.stringify(encodeURIComponent(file.path))}, 'file')">⋯</button></div><p class="mobile-help">${deps.escapeHtml(file.path || "")}${editing && local.dirty ? " — unsaved changes" : ""}</p>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${local.saveError ? `<div class="mobile-error">${deps.escapeHtml(local.saveError)}</div>` : ""}${body}${renderActionSheet()}${renderRenameModal()}${renderNewFileModal()}</section>`;
+      return `<section class="mobile-section mobile-files"><h2>Files</h2><div class="mobile-actions"><button class="mobile-btn" onclick="HerdrMobile.filesBackToTree()">Back</button><button class="mobile-btn" onclick="HerdrMobile.filesRefreshFile()">Refresh</button>${editActions}<button class="mobile-btn" onclick="HerdrMobile.filesOpenActionSheet('${encodeURIComponent(file.path).replace(/'/g, "%27")}', 'file')">⋯</button></div><p class="mobile-help">${deps.escapeHtml(file.path || "")}${editing && local.dirty ? " — unsaved changes" : ""}</p>${local.error ? `<div class="mobile-error">${deps.escapeHtml(local.error)}</div>` : ""}${local.saveError ? `<div class="mobile-error">${deps.escapeHtml(local.saveError)}</div>` : ""}${body}${renderActionSheet()}${renderRenameModal()}${renderNewFileModal()}</section>`;
     }
 
     function syncPreviewDirtyState() {

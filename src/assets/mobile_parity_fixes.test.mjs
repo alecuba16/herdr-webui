@@ -226,7 +226,7 @@ describe("mobile composer + prompt cards module", () => {
     assert.match(card, /mobile-prompt-card/);
     // panels.js syncComposer tracks the card by id (el("mobilePromptCard"))
     // to replace/remove it across renders; a missing id would stack duplicates.
-    assert.match(card, /id="mobilePromptCard"/);
+    assert.match(card, /id="mobilePromptCard"/, "prompt card keeps the tracked id");
     assert.match(card, /Allow network access/);
 
     const working = composerContext({ status: "working", term });
@@ -234,6 +234,33 @@ describe("mobile composer + prompt cards module", () => {
 
     const noTerm = composerContext({ status: "blocked", term: null });
     assert.equal(noTerm.module.renderPromptCard(), "", "no card without a terminal");
+
+    // Free-text prompt branch: the answer input must carry the full guard
+    // set so Android autocorrect/grammar never mangles a typed answer.
+    const textTerm = {
+      wterm: {
+        bridge: {
+          usingAltScreen: () => false,
+          getCols: () => 40,
+          getRows: () => 6,
+          getCell: (r, c) => {
+            const rows = ["What is the API token?", "", "Enter your response:"];
+            const line = rows[r] || "";
+            const ch = line[c] || " ";
+            return { width: 1, chars: ch };
+          },
+        },
+      },
+      sendPasteToTerminal: () => {},
+    };
+    const textCard = composerContext({ status: "blocked", term: textTerm }).module.renderPromptCard();
+    assert.match(textCard, /id="mobilePromptInput"/, "free-text prompt renders the answer input");
+    assert.match(textCard, /autocomplete="off"/);
+    assert.match(textCard, /autocorrect="off"/);
+    assert.match(textCard, /autocapitalize="none"/);
+    assert.match(textCard, /spellcheck="false"/);
+    assert.match(textCard, /writingsuggestions="false"/);
+    assert.match(textCard, /enterkeyhint="send"/);
   });
 
   it("answering an option sends the key through the terminal paste path", async () => {
