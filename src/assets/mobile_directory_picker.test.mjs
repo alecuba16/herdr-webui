@@ -10,14 +10,18 @@ const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const pickerSource = read("./mobile/directory_picker.js");
 
 // Minimal DOM: enough nodes for the picker to create/look up its backdrop,
-// sheet, and rows, and for tests to read the rendered innerHTML.
+// sheet, and rows, and for tests to read the rendered innerHTML. Focus
+// tracking mirrors the real DOM closely enough to pin the keyboard-keep
+// behavior: document.activeElement is whatever the last focus() targeted.
 function makeNode(id) {
-  return {
+  const node = {
     id,
     innerHTML: "",
     className: "",
     children: [],
     attrs: {},
+    selectionStart: 0,
+    focused: false,
     setAttribute(k, v) {
       this.attrs[k] = v;
     },
@@ -26,9 +30,21 @@ function makeNode(id) {
       return child;
     },
     remove() {},
+    focus() {
+      node.focused = true;
+      activeElementRef.current = node;
+    },
+    setSelectionRange(start) {
+      node.selectionStart = start;
+    },
     onclick: null,
   };
+  return node;
 }
+
+// Shared mutable ref so makeNode.focus() can update document.activeElement;
+// the vm sandbox sees the same object the tests assert against.
+const activeElementRef = { current: null };
 
 function pickerContext({
   entries = [
@@ -43,9 +59,11 @@ function pickerContext({
   openWorkspaceFn = undefined,
   defaultFolder = "",
   fieldPath = "",
+  treeGate = null,
 } = {}) {
   const calls = { api: [], opens: [], renders: 0 };
   let treeFailedOnce = false;
+  let filterNode = null;
   const allNodes = [];
   const sandbox = {
     console,
@@ -69,7 +87,19 @@ function pickerContext({
     document: {
       // Nodes get their id assigned after creation (like the real DOM), so
       // lookups must read the current .id instead of a creation-time map key.
-      getElementById: (id) => allNodes.find((n) => n.id === id) || null,
+      // innerHTML children are not real nodes in this stub; the picker's
+      // focus-restore only ever targets the filter input, so synthesize a
+      // node for it when the rendered markup contains it.
+      getElementById: (id) => {
+        const node = allNodes.find((n) => n.id === id);
+        if (node) return node;
+        const sheet = allNodes.find((n) => n.id === "mobileDirectoryPickerSheet");
+        if (sheet && id === "mobileDirectoryPickerFilter" && sheet.innerHTML.includes('id="mobileDirectoryPickerFilter"')) {
+          if (!filterNode) filterNode = makeNode(id);
+          return filterNode;
+        }
+        return null;
+      },
       createElement: (tag) => {
         const node = makeNode();
         node.tag = tag;
@@ -77,6 +107,9 @@ function pickerContext({
         return node;
       },
       body: { appendChild: () => {} },
+      get activeElement() {
+        return activeElementRef.current;
+      },
     },
     _allNodes: allNodes,
   };
@@ -95,6 +128,14 @@ function pickerContext({
     api: async (url, opts) => {
       calls.api.push({ url, opts });
       if (url.includes("/api/file-browser/tree")) {
+        if (treeGate && url.includes(treeGate.match)) {
+          // Hold this reply at the gate so the test controls landing order.
+          return new Promise((resolve) => {
+            treeGate.gate.pending.push({
+              resolve: (data) => resolve(data || { entries: [] }),
+            });
+          });
+        }
         if (failTreeWith) throw failTreeWith;
         if (failTreeOnceWith && !treeFailedOnce) {
           treeFailedOnce = true;
@@ -125,8 +166,9 @@ function pickerContext({
     openWorkspaceFn,
   });
   const findNode = (id) => allNodes.find((n) => n.id === id) || null;
-  const sheetHTML = () => (findNode("mobileDirectoryPickerSheet") || { innerHTML: "" }).innerHTML;
-  return { module, state, calls, allNodes, findNode, sheetHTML };
+  const getFilterNode = () => (allNodes.find((n) => n.id === "mobileDirectoryPickerSheet") || { innerHTML: "" }).innerHTML.includes('id="mobileDirectoryPickerFilter"') ? filterNode : null;
+  const sheetHTML = () => (allNodes.find((n) => n.id === "mobileDirectoryPickerSheet") || { innerHTML: "" }).innerHTML;
+  return { module, state, calls, allNodes, findNode, getFilterNode, sheetHTML };
 }
 
 describe("mobile directory picker module", () => {
@@ -311,5 +353,53 @@ describe("mobile directory picker module", () => {
     assert.equal(state.worktreeError, "workspace exploded");
     assert.equal(state.screen, "worktrees", "stays on the worktree screen so the error is visible");
     assert.ok(calls.api.some((c) => c.url.includes("/api/recent-workspaces")));
+  });
+
+  it("stale tree responses never overwrite a newer navigation", async () => {
+    // Enter alpha, whose reply is held at the gate; tap Up (fast, immediate
+    // reply); only then let alpha's slow reply land. The listing must stay
+    // on the parent (beta), not flip back to alpha's rows.
+    const gate = { pending: [] };
+    const { module, sheetHTML } = pickerContext({
+      entries: [{ name: "beta", path: "Projects/beta", is_dir: true }],
+      treeGate: { match: "alpha", gate },
+    });
+    module.openForField("worktreePath");
+    await new Promise((r) => setTimeout(r, 0));
+    assert.match(sheetHTML(), /beta/, "parent listing loaded");
+
+    module.enter(encodeURIComponent("Projects/alpha"));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(gate.pending.length, 1, "alpha request is held at the gate");
+    assert.equal(module._picker.loading, true, "alpha load pending");
+
+    module.up();
+    await new Promise((r) => setTimeout(r, 0));
+    assert.match(sheetHTML(), /beta/, "Up's immediate reply wins while alpha is still in flight");
+    assert.equal(module._picker.loading, false);
+
+    // Alpha's stale reply finally lands; it must be discarded.
+    gate.pending[0].resolve({ entries: [{ name: "alpha-child", path: "Projects/alpha/alpha-child", is_dir: true }] });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(!sheetHTML().includes("alpha-child"), "stale reply dropped, listing still the parent");
+    assert.equal(module.currentPath(), "~/Projects", "path tracks the newest navigation");
+  });
+
+  it("filter keeps focus and caret across re-renders", async () => {
+    const { module, getFilterNode } = pickerContext();
+    module.openForField("worktreePath");
+    await new Promise((r) => setTimeout(r, 0));
+    const filter = getFilterNode();
+    assert.ok(filter, "filter input exists after open");
+    // Simulate the user focusing the filter and typing (focus + caret move).
+    filter.focus();
+    filter.selectionStart = 3;
+    module.filter("alp");
+    await new Promise((r) => setTimeout(r, 250));
+    const after = getFilterNode();
+    assert.ok(after, "filter still rendered after re-render");
+    assert.equal(after.focused, true, "focus restored to the filter input");
+    assert.equal(after.selectionStart, 3, "caret position restored");
   });
 });

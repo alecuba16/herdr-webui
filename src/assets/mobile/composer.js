@@ -12,10 +12,6 @@
   const PILL_STATUSES = ["blocked", "done", "idle", "working"];
 
   function createMobileComposer({ state, render, escapeHtml, inputAttrs, statusClassFn, getTerminal }) {
-    // Drafts belonged to the removed composer bar; the map stays as a
-    // per-pane scratch pad for tests and future surfaces.
-    const drafts = new Map();
-
     // ---- Terminal tail reading (wterm bridge grid, same as desktop) ----
 
     function bridge() {
@@ -242,7 +238,7 @@
       parsePrompt,
       tailLines,
       currentAgentStatus,
-      _reset() { drafts.clear(); dismissedFor = null; lastCardKey = ""; state.composerNote = ""; },
+      _reset() { dismissedFor = null; lastCardKey = ""; state.composerNote = ""; },
     };
   }
 

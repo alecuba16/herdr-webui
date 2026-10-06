@@ -35,6 +35,9 @@
       filter: "",
       filterTimer: null,
     };
+    // Guards the tree fetch against out-of-order responses: tapping folder A
+    // then B quickly must never let A's slow reply overwrite B's listing.
+    let loadSeq = 0;
 
     // ---- Path helpers (mirrors of the desktop split/join rules) ----
 
@@ -113,13 +116,16 @@
       picker.error = "";
       picker.permissionRequired = false;
       picker.loading = true;
+      const seq = ++loadSeq;
       pickerRender();
       try {
         const data = await api(
           `/api/file-browser/tree?cwd=${encodeURIComponent(picker.root)}&path=${encodeURIComponent(picker.path)}&dirs_only=true`,
         );
+        if (seq !== loadSeq) return; // a newer navigation already landed
         picker.entries = data.entries || [];
       } catch (error) {
+        if (seq !== loadSeq) return; // a newer navigation already landed
         picker.entries = [];
         picker.error = (error && error.message) || String(error);
         picker.permissionRequired = !!(error && error.details && error.details.permission_required);
@@ -313,6 +319,12 @@
         : "";
       const confirmLabel = picker.mode === "workspace" ? "Open folder as workspace" : "Use this folder";
       const title = picker.mode === "workspace" ? "Open folder" : `Choose folder for ${picker.field}`;
+      // The rebuild below replaces the filter input node; remember focus and
+      // caret so a re-render mid-typing (filter debounce, load finishing)
+      // does not drop the mobile keyboard.
+      const priorFilter = document.getElementById("mobileDirectoryPickerFilter");
+      const hadFilterFocus = !!(priorFilter && document.activeElement === priorFilter);
+      const priorCaret = hadFilterFocus && typeof priorFilter.selectionStart === "number" ? priorFilter.selectionStart : null;
       sheet.innerHTML =
         `<div class="mobile-sheet-handle"></div>` +
         `<div class="mobile-sheet-title">${escapeHtml(title)}</div>` +
@@ -327,6 +339,17 @@
         errorBlock +
         `<input id="mobileDirectoryPickerFilter" class="mobile-sheet-input" type="text" placeholder="Filter folders..." value="${escapeHtml(picker.filter)}"${inputAttrs("search")} oninput="HerdrMobileDirectoryPicker.filter(this.value)">` +
         `<div class="mobile-directory-picker-tree">${loading}${rows}${empty}</div>`;
+      if (hadFilterFocus) {
+        const nextFilter = document.getElementById("mobileDirectoryPickerFilter");
+        if (nextFilter && typeof nextFilter.focus === "function") {
+          nextFilter.focus({ preventScroll: true });
+          if (priorCaret != null && typeof nextFilter.setSelectionRange === "function") {
+            try {
+              nextFilter.setSelectionRange(priorCaret, priorCaret);
+            } catch (_) {}
+          }
+        }
+      }
     }
 
     return {
