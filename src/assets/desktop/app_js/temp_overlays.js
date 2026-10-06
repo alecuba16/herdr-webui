@@ -98,29 +98,32 @@
       picker.open(input);
       // The picker has no close callback; poll for the modal disappearing
       // without a select so the promise always resolves.
-      pollPickerGone("directoryPickerModal", onRemoved, 0);
+      pollPickerGone("directoryPickerModal", onRemoved, 0, () => {
+        // Timeout (~10s of rAF ticks): stop polling but keep the change/
+        // closed listeners armed so a late Select still resolves the pick.
+        // Just detach the hidden input; a change event fires on a detached
+        // node the same way, so nothing else has to change.
+        if (input.parentNode) input.parentNode.removeChild(input);
+      });
     });
   }
 
-  function pollPickerGone(id, onGone, attempt) {
+  function pollPickerGone(id, onGone, attempt, onTimeout) {
     const modal = document.getElementById(id);
     if (!modal) {
-      onRemovedResolved();
-      return;
-    }
-    if (attempt > 600) {
-      // Stop polling after ~10s of rAF ticks, but do NOT resolve: the
-      // change/closed events above stay authoritative, so a slow picker
-      // session can still deliver its selection. Resolving "" here
-      // would silently drop a late Select click.
-      return;
-    }
-    requestAnimationFrame(() => pollPickerGone(id, onGone, attempt + 1));
-    function onRemovedResolved() {
       // Defer a tick: selectCurrent() dispatches change before close(), so
       // the change path must win; only a removal without change resolves "".
       setTimeout(onGone, 0);
+      return;
     }
+    if (attempt > 600) {
+      // Stop polling, but do NOT resolve: the change/closed events above
+      // stay authoritative, so a slow picker session can still deliver its
+      // selection. Resolving "" here would silently drop a late Select.
+      if (onTimeout) onTimeout();
+      return;
+    }
+    requestAnimationFrame(() => pollPickerGone(id, onGone, attempt + 1, onTimeout));
   }
 
   function tempOverlayPickerClosed() {

@@ -568,6 +568,11 @@ describe("desktop temporary overlay host: folder picker", () => {
     ctx.flushRaf(605);
     const settled = await Promise.race([pick.then(() => "resolved"), Promise.resolve("pending")]);
     equal(settled, "pending", "timeout must not resolve the pick");
+    // Timeout cleanup detached the hidden input, but the change listener
+    // stays armed: no leak, and a late select still lands.
+    const hiddenInputs = ctx.created.filter((el) => el.tag === "input" && el.style.display === "none");
+    const leaked = hiddenInputs.filter((el) => el.parentNode === ctx.document.body);
+    equal(leaked.length, 0, "timeout detached the hidden picker input from the body");
 
     // A late Select still lands: the promise was never discarded.
     ctx.HerdrDirectoryPicker.selectCurrent("/late/pick");
