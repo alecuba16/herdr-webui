@@ -1371,3 +1371,173 @@ describe("lens decision chooser (ask_user)", () => {
     match(content.innerHTML, /data-decision="answered"/, "same-key question stays collapsed");
   });
 });
+
+// ---- working (thinking) indicator ----
+
+describe("lens working indicator (thinking animation)", () => {
+  function workingContext(overrides = {}) {
+    const { ctx, registry } = makeContext({
+      state: {
+        pane: "pane_1",
+        agents: [jcodeRow(resolvableSession)],
+      },
+      api: async () => conversationFixture(),
+      ...overrides,
+    });
+    ctx.state.agents[0].agent_status = "working";
+    return { ctx, registry };
+  }
+
+  async function openWorking(overrides = {}) {
+    const harness = workingContext(overrides);
+    harness.ctx.HerdrLens.setLens(true);
+    fireTimers(harness.ctx);
+    await settle();
+    return harness;
+  }
+
+  function lensNodesWorking(registry) {
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    return { lens, content };
+  }
+
+  it("renders the animated collapsed block while the pane works", async () => {
+    const { ctx, registry } = await openWorking();
+    const { content } = lensNodesWorking(registry);
+    const block = content.querySelector(".lens-working");
+    ok(block, "working block renders at the tail");
+    ok(content.innerHTML.includes("lens-working-dots"), "animated dots render");
+    ok(content.innerHTML.includes("Thinking"), "collapsed label reads Thinking");
+    ok(!content.querySelector(".lens-working-body"), "collapsed: no body");
+    equal(typeof ctx.HerdrLens.paneWorkingNow(), "boolean");
+    equal(ctx.HerdrLens.paneWorkingNow(), true);
+    // The block sits last: after every turn and after the pending
+    // bubble when one exists.
+    const last = content.children[content.children.length - 1];
+    ok(last && last.className.includes("lens-working"), "working block is the tail element");
+  });
+
+  it("absent when the pane is idle and when blocked (chooser owns blocked)", async () => {
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const { content } = lensNodesWorking(registry);
+    ok(!content.querySelector(".lens-working"), "idle: no working block");
+    // Blocked status: the decision chooser owns that surface; the
+    // working block must NOT render alongside it.
+    ctx.state.agents[0].agent_status = "blocked";
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "blocked" });
+    await settle();
+    ok(!content.querySelector(".lens-working"), "blocked: no working block");
+  });
+
+  it("status event arms and disarms instantly (working -> idle)", async () => {
+    const { ctx, registry } = await openWorking();
+    const { content } = lensNodesWorking(registry);
+    ok(content.querySelector(".lens-working"), "armed while working");
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "idle" });
+    await settle();
+    ok(!content.querySelector(".lens-working"), "disarmed on idle event");
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "working" });
+    await settle();
+    ok(content.querySelector(".lens-working"), "re-armed on working event");
+  });
+
+  it("expand shows the live elapsed timer and running tools", async () => {
+    const { ctx, registry } = await openWorking({
+      api: async () => ({
+        ...conversationFixture(),
+        turns: [
+          conversationFixture().turns[0],
+          {
+            role: "assistant",
+            ts: new Date(Date.now() - 65000).toISOString(),
+            end_ts: new Date(Date.now() - 65000).toISOString(),
+            parts: [
+              { kind: "thinking", text: "pondering" },
+              { kind: "tool_pending", name: "bash" },
+            ],
+          },
+        ],
+      }),
+    });
+    const { lens, content } = lensNodesWorking(registry);
+    const toggle = content.querySelector("[data-toggle-working]");
+    ok(toggle, "toggle renders");
+    for (const fn of lens.listeners.click || []) fn({ target: toggle });
+    const body = content.querySelector(".lens-working-body");
+    ok(body, "expanded body renders");
+    match(content.innerHTML, /Working for (\d+s|\d+m \d+s|\d+m)/, "live elapsed line renders");
+    ok(content.innerHTML.includes("bash"), "running tool of the open turn listed");
+    // Toggle back: collapsed again, tick stopped.
+    for (const fn of lens.listeners.click || []) fn({ target: content.querySelector("[data-toggle-working]") });
+    ok(!content.querySelector(".lens-working-body"), "collapsed again");
+    equal(ctx.HerdrLens._workingExpanded(), false);
+  });
+
+  it("another pane's working status never arms this pane's block", async () => {
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const { content } = lensNodesWorking(registry);
+    ok(!content.querySelector(".lens-working"), "own pane idle: no block");
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_2", agent_status: "working" });
+    await settle();
+    ok(!content.querySelector(".lens-working"), "other pane working does not arm this pane");
+  });
+
+  it("pane switch resets the expansion (no cross-pane carryover)", async () => {
+    const { ctx, registry } = await openWorking();
+    const { lens, content } = lensNodesWorking(registry);
+    const toggle = content.querySelector("[data-toggle-working]");
+    for (const fn of lens.listeners.click || []) fn({ target: toggle });
+    equal(ctx.HerdrLens._workingExpanded(), true);
+    ctx.state.pane = "pane_2";
+    ctx.state.agents = [{ pane_id: "pane_2", name: "jcode", agent_session: resolvableSession, agent_status: "working" }];
+    ctx.HerdrLens.onPaneChanged();
+    equal(ctx.HerdrLens._workingExpanded(), false, "expansion reset on pane switch");
+  });
+
+  it("stale toggle click after the turn ended finds no carrier", async () => {
+    const { ctx, registry } = await openWorking();
+    const { lens, content } = lensNodesWorking(registry);
+    const toggle = content.querySelector("[data-toggle-working]");
+    ok(toggle, "armed while working");
+    // Turn ends: the event disarms the block and a re-render removed
+    // the carrier from the DOM.
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "idle" });
+    await settle();
+    const stale = toggle; // kept node, detached by the re-render
+    for (const fn of lens.listeners.click || []) fn({ target: stale });
+    equal(ctx.HerdrLens._workingExpanded(), false, "stale click does not expand");
+    ok(!content.querySelector(".lens-working"), "block stays away after stale click");
+  });
+
+  it("lens close drops the expansion (next open starts collapsed)", async () => {
+    const { ctx, registry } = await openWorking();
+    const { lens, content } = lensNodesWorking(registry);
+    const toggle = content.querySelector("[data-toggle-working]");
+    for (const fn of lens.listeners.click || []) fn({ target: toggle });
+    equal(ctx.HerdrLens._workingExpanded(), true);
+    ctx.HerdrLens.setLens(false);
+    equal(ctx.HerdrLens._workingExpanded(), false, "expansion dropped on lens close");
+  });
+
+  it("blocked status wins over working (never both surfaces)", async () => {
+    const { ctx, registry } = await openWorking();
+    const { content } = lensNodesWorking(registry);
+    ok(content.querySelector(".lens-working"), "armed while working");
+    ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "blocked" });
+    await settle();
+    ok(!content.querySelector(".lens-working"), "blocked replaces the working block");
+  });
+});

@@ -267,6 +267,12 @@
     // text).
     decisionAnsweredKey = null;
     decisionCollapsedKey = null;
+    // Working block state belongs to the pane it was expanded on: a
+    // pane switch must not carry the expansion into the next pane's
+    // turn, and any live tick timer must stop (it would keep firing on
+    // the new pane's data otherwise).
+    workingExpanded = false;
+    stopWorkingTick();
     stopPolling();
   }
 
@@ -540,6 +546,176 @@
     }
   }
 
+  // Working indicator: mirrors paneBlockedNow's three-source, freshest-
+  // first gate but for the `working` status. While the ACTIVE pane's
+  // agent works, the chat tail carries a collapsed animated block the
+  // user can expand into a live elapsed timer. Pure presentation — no
+  // keystrokes are synthesized, so there is no stale-interaction risk
+  // to fail closed; the gate itself is per-pane and fails closed too
+  // (another pane's worker must never animate this pane's tail).
+  function paneWorkingNow() {
+    try {
+      if (typeof state === "undefined" || !state) return false;
+      const paneId = state.pane;
+      const event = paneId && paneStatusEvents.get(paneId);
+      if (event && Date.now() - event.at < STATUS_EVENT_TTL_MS) {
+        return event.status === "working";
+      }
+      const row = paneId && (state.agents || []).find((a) => a && a.pane_id === paneId);
+      if (row && row.agent_status) {
+        return (
+          typeof statusClass === "function" ? statusClass(row.agent_status) : row.agent_status
+        ) === "working";
+      }
+      const ws = (state.workspaces || []).find(
+        (w) => w && w.workspace_id === state.ws,
+      );
+      if (!ws) return false;
+      const status =
+        typeof statusClass === "function" ? statusClass(ws.agent_status) : ws.agent_status;
+      return status === "working";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // The working block's reference start time, best effort: the status
+  // event's arrival (exact transition-to-working moment we observed)
+  // wins; the last assistant turn's ts is the fallback when the event
+  // is too old to trust or was never seen (e.g. lens opened mid-turn).
+  // Both are clamped sane: never negative, never older than 24h.
+  function workingStartedAt() {
+    const paneId = typeof state !== "undefined" && state ? state.pane : null;
+    const event = paneId && paneStatusEvents.get(paneId);
+    if (event && event.status === "working" && event.at) return event.at;
+    const last = lastAssistantTurn();
+    if (last && last.ts) {
+      const parsed = Date.parse(String(last.ts));
+      if (Number.isFinite(parsed)) {
+        const now = Date.now();
+        if (now - parsed >= 0 && now - parsed < 24 * 60 * 60 * 1000) return parsed;
+      }
+    }
+    return null;
+  }
+
+  function lastAssistantTurn() {
+    const turns = (conversation && conversation.turns) || [];
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (turns[i] && turns[i].role === "assistant") return turns[i];
+    }
+    return null;
+  }
+
+  // User preference for the working block: expanded state survives
+  // polls (renders re-run syncWorkingDom every cycle) but resets on
+  // pane switch (it belongs to this pane's turn, not the next pane's).
+  let workingExpanded = false;
+  const WORKING_TICK_MS = 1000;
+  let workingTickTimer = null;
+
+  function workingBlockHtml() {
+    const startedAt = workingStartedAt();
+    const elapsed = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
+    // Collapsed: a quiet animated row (dots do the movement; CSS owns
+    // the animation). Expanded: the live counter plus what we know
+    // from the transcript (in-flight tools of the open turn).
+    const head =
+      `<div class="lens-working-toggle" data-toggle-working="1" tabindex="0" role="button" aria-expanded="${workingExpanded}">` +
+      `<span class="lens-working-dots" aria-hidden="true"><i></i><i></i><i></i></span>` +
+      `<span class="lens-working-label">${workingExpanded ? "Working" : "Thinking"}…</span>` +
+      `<span class="lens-working-caret">${workingExpanded ? "▾" : "▸"}</span></div>`;
+    let body = "";
+    if (workingExpanded) {
+      const lines = [];
+      if (elapsed !== null)
+        lines.push(`<div class="lens-working-elapsed">Working for ${formatDuration(elapsed)}</div>`);
+      const running = runningToolsOfOpenTurn();
+      if (running.length)
+        lines.push(
+          `<div class="lens-working-tools">${running
+            .map((name) => `<span class="lens-working-tool">${escapeHtml(name)}</span>`)
+            .join("")}</div>`,
+        );
+      if (!lines.length)
+        lines.push('<div class="lens-working-note">Agent is processing — output appears when the turn completes</div>');
+      body = `<div class="lens-working-body">${lines.join("")}</div>`;
+    }
+    return `${head}${body}`;
+  }
+
+  function runningToolsOfOpenTurn() {
+    // The open assistant turn streams parts as it goes; a tool_pending
+    // row there is a tool running RIGHT NOW. Older turns' pending rows
+    // are stale data, not live activity.
+    const turns = (conversation && conversation.turns) || [];
+    for (let i = turns.length - 1; i >= 0; i--) {
+      const turn = turns[i];
+      if (!turn) continue;
+      if (turn.role !== "assistant") break; // user turn reached: turn over
+      const names = (turn.parts || [])
+        .filter((p) => p && p.kind === "tool_pending")
+        .map((p) => p.name || "tool");
+      return names;
+    }
+    return [];
+  }
+
+  // DOM sync for the working block: same shape as syncPendingBubbleDom.
+  // Full re-render paths recreate the node; append/same-count paths
+  // call this directly. The block must sit LAST (after the pending
+  // bubble: the user's optimistic bubble is the true tail anchor) but
+  // only while the pane actually works — status flips (idle, blocked)
+  // remove it on the same tick that arming adds it.
+  function syncWorkingDom(content) {
+    if (!content) return;
+    const show = paneWorkingNow() && !paneBlockedNow();
+    let existing = content.querySelector(".lens-working");
+    if (!show) {
+      if (existing) existing.remove();
+      stopWorkingTick();
+      return;
+    }
+    if (!existing) {
+      existing = document.createElement("div");
+      existing.className = "lens-working";
+      existing.setAttribute("data-working", "1");
+      content.appendChild(existing);
+    }
+    existing.innerHTML = workingBlockHtml();
+    // Keep the working block last: appends during the working turn
+    // (new parts streaming into open turns) can leave it above the
+    // pending bubble or below a newly landed turn. A re-order costs
+    // nothing; a wrong order misleads (bubble looks resolved).
+    const last = content.lastElementChild;
+    if (last && last !== existing) content.appendChild(existing);
+    if (workingExpanded) ensureWorkingTick();
+  }
+
+  // 1s in-place timer tick while expanded: rewrites only the block's
+  // own innerHTML (the rest of the lens is untouched), stops when the
+  // status flips away from working or the user collapses.
+  function ensureWorkingTick() {
+    if (workingTickTimer !== null) return;
+    workingTickTimer = setTimeout(function onWorkingTick() {
+      workingTickTimer = null;
+      if (!lensActive || !workingExpanded || !paneWorkingNow()) return;
+      const node = overlay();
+      if (!node) return;
+      const content = node.querySelector(".terminal-lens-content");
+      const block = content && content.querySelector(".lens-working");
+      if (block) block.innerHTML = workingBlockHtml();
+      ensureWorkingTick();
+    }, WORKING_TICK_MS);
+  }
+
+  function stopWorkingTick() {
+    if (workingTickTimer !== null) {
+      clearTimeout(workingTickTimer);
+      workingTickTimer = null;
+    }
+  }
+
   function decisionHtml(part, turnIndex, partIndex) {
     const key = partKey(turnIndex, partIndex, part);
     const options = Array.isArray(part.options) ? part.options : [];
@@ -720,6 +896,7 @@
       // of conversationHtml's turn output (empty turns short-circuit
       // before the bubble row): the DOM sync covers it.
       syncPendingBubbleDom(content);
+      syncWorkingDom(content);
     } else if (turns.length !== prevTurns) {
       // Append-only: rendered turn bodies are immutable, so only the
       // new turns are inserted at the tail (before the pending bubble,
@@ -741,11 +918,13 @@
       // (running -> full row) at constant prefix; sync them in place.
       syncMutableParts(content, turns);
       syncPendingBubbleDom(content);
+      syncWorkingDom(content);
     } else {
       // Same turn count: only in-flight tool rows and the pending
       // bubble can move; refresh both without touching the rest.
       syncMutableParts(content, turns);
       syncPendingBubbleDom(content);
+      syncWorkingDom(content);
     }
     const scroller = node.querySelector("#terminalLensScroller");
     if (follow && scroller) scroller.scrollTop = scroller.scrollHeight;
@@ -875,6 +1054,18 @@
       render();
       return;
     }
+    // Working block toggle: pure local state, no keystrokes. Gated on
+    // paneWorkingNow() so a stale click (turn just ended, the kept node
+    // is detached) cannot flip expansion state that no block renders.
+    const workingToggle = target.closest("[data-toggle-working]");
+    if (workingToggle) {
+      if (paneWorkingNow() && !paneBlockedNow()) {
+        workingExpanded = !workingExpanded;
+        if (!workingExpanded) stopWorkingTick();
+      }
+      render();
+      return;
+    }
     const fetchButton = target.closest("[data-fetch-output]");
     if (fetchButton) {
       expandToolFullOutput(
@@ -896,7 +1087,8 @@
     if (!target || !target.closest) return;
     const toggle =
       target.closest("[data-toggle-tool]") ||
-      target.closest("[data-toggle-thinking]");
+      target.closest("[data-toggle-thinking]") ||
+      target.closest("[data-toggle-working]");
     if (!toggle) return;
     // Only act when the carrier itself has focus (not an inner span
     // that happens to bubble): the carriers carry tabindex, inner
@@ -1196,6 +1388,11 @@
       // terminal element stays at its geometry (the lens overlays it).
     } else {
       stopPolling();
+      // The lens closed: the working tick has no DOM to update — stop
+      // it here too, and drop the expansion (the turn it described is
+      // ambiguous by the next open; the next working turn starts fresh).
+      stopWorkingTick();
+      workingExpanded = false;
       // Case (c) of the pending-bubble lifecycle: the lens closed — the
       // optimistic bubble drops silently (never resurface a stale submit
       // on the next open).
@@ -1346,8 +1543,17 @@
     // Test/diagnostic surface: the decision chooser internals.
     decisionHtml,
     paneBlockedNow,
+    paneWorkingNow,
     onAgentStatusChanged,
     _decisionAnsweredKey: () => decisionAnsweredKey,
     _resetDecisionState: () => { decisionAnsweredKey = null; },
+    // Test/diagnostic surface: the working (thinking) block internals.
+    workingBlockHtml,
+    syncWorkingDom,
+    _workingExpanded: () => workingExpanded,
+    _resetWorkingState: () => {
+      workingExpanded = false;
+      stopWorkingTick();
+    },
   };
 })();
