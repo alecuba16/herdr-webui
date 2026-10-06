@@ -275,7 +275,7 @@ function tabHoverInfo(t, panesByTab) {
 }
 function renderTabButton(t, panesByTab) {
   if (state.editingTab === t.tab_id)
-    return `<span class="tab ${t.tab_id === state.tab ? "active" : ""}"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${t.tab_id}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${t.tab_id}')"></span>`;
+    return `<span class="tab ${t.tab_id === state.tab ? "active" : ""}"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${t.tab_id}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${t.tab_id}')"></span>`;
   const activity = tabActivity[tabActivityKey(t.workspace_id, t.tab_id)],
     activityLabel =
       options.showTabActivity && activity
@@ -496,7 +496,7 @@ function renderWorkspaceCard(w, extraClass) {
   const editing = state.editingWorkspace === w.workspace_id;
   const title = workspaceDisplayTitle(w);
   const label = editing
-    ? `<input class="workspace-rename-input" value="${escapeAttr(state.editingWorkspaceValue)}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitWorkspaceRename('${w.workspace_id}')" oninput="state.editingWorkspaceValue=this.value" onkeydown="workspaceRenameKey(event,'${w.workspace_id}')">`
+    ? `<input class="workspace-rename-input" value="${escapeAttr(state.editingWorkspaceValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitWorkspaceRename('${w.workspace_id}')" oninput="state.editingWorkspaceValue=this.value" onkeydown="workspaceRenameKey(event,'${w.workspace_id}')">`
     : `<span class="label">${escapeHtml(title)}</span>`;
   const drag =
     options.workspaceSort === "drag"

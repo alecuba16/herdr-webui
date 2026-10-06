@@ -135,7 +135,7 @@
     const truncationNote = state.truncated ? " (search stopped at the file limit)" : "";
     const summary = query ? `${Number(state.total_matches || 0)} matches in ${Number(state.total_files || files.length || 0)} files${visitedNote}${truncationNote}` : "Type a content query";
     const head = opts.hideInput ? "" : `<div class="herdr-content-search-head">
-        <label class="file-browser-filter"><span class="file-browser-search-icon ${state.loading ? "searching" : ""}" aria-hidden="true"></span><input id="${esc(opts.inputId || "fileContentSearchInput")}" value="${esc(query)}" placeholder="Search file contents" oninput="${callback}.setQuery(this.value)" onkeydown="${callback}.inputKeydown(event)"></label>
+        <label class="file-browser-filter"><span class="file-browser-search-icon ${state.loading ? "searching" : ""}" aria-hidden="true"></span><input id="${esc(opts.inputId || "fileContentSearchInput")}" value="${esc(query)}" placeholder="Search file contents"${globalThis.HerdrAppHelpers ? globalThis.HerdrAppHelpers.inputAttrs("search") : ""} oninput="${callback}.setQuery(this.value)" onkeydown="${callback}.inputKeydown(event)"></label>
         <button class="git-ui-btn primary" onclick="${callback}.run()">Search</button>
         <button class="git-ui-btn" onclick="${callback}.clear()">Clear</button>
       </div>`;

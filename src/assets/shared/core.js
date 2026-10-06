@@ -333,6 +333,21 @@
       .replace(/"/g, "&quot;");
   }
 
+  // Keyboard guard set for text-like inputs. Some Android keyboards attach
+  // autocorrect, grammar suggestions, autocomplete, or capitalization to any
+  // text field, so every input the user can type into carries the full set.
+  // `writingsuggestions="false"` is the one Gboard reliably respects;
+  // `autocorrect="off"` is the iOS spell-replace switch; `spellcheck="false"`
+  // kills desktop squiggles and browser replace; `autocomplete="off"` stops
+  // browser dictionary suggestions. enterkeyhint labels the Enter key.
+  function inputAttrs(enterkeyhint) {
+    const attrs =
+      ' autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" writingsuggestions="false" translate="no"';
+    return enterkeyhint
+      ? attrs + ` enterkeyhint="${escapeHtml(enterkeyhint)}"`
+      : attrs;
+  }
+
   function hashId(value) {
     let hash = 0;
     for (const ch of String(value || "")) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
@@ -429,6 +444,7 @@
     stripTerminalQueryReplies,
     tabActivityLabel,
     escapeHtml,
+    inputAttrs,
     pathBasename,
     hashId,
     readTerminalThemeTokens,

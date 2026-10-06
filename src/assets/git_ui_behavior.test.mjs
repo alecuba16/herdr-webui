@@ -47,6 +47,7 @@ function context(fetchImpl) {
     console,
     setTimeout,
     clearTimeout,
+    inputAttrs: null, // filled after SHARED_SOURCES boots HerdrAppHelpers
     requestAnimationFrame: (fn) => setTimeout(fn, 0),
     cancelAnimationFrame: clearTimeout,
     Date,
@@ -162,6 +163,9 @@ async function bootGitUi(responses) {
   const ctx = context(fetchImpl);
   vm.runInContext(SHARED_SOURCES, ctx);
   vm.runInContext(APP_STUBS, ctx);
+  // git_ui modules render inputs with inputAttrs(...) from the shared
+  // HerdrAppHelpers (same binding the real concat bundle gets).
+  vm.runInContext("inputAttrs = globalThis.HerdrAppHelpers.inputAttrs", ctx);
   vm.runInContext(GIT_UI_SOURCE, ctx);
   const ui = ctx.window.HerdrGitUi;
   return { ui, ctx, calls };
@@ -704,6 +708,8 @@ test("conflict resolution buttons render per mode and conflicted path", () => {
 test("side editor renders editable hunks with conflict block controls", () => {
   const conflictsSource = readFileSync(new URL("./desktop/git_ui/conflicts.js", import.meta.url), "utf8");
   const ctx = context(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+  // conflicts.js renders textareas with inputAttrs(...) from the shared helpers.
+  vm.runInContext("if (typeof inputAttrs !== 'function') inputAttrs = globalThis.HerdrAppHelpers ? globalThis.HerdrAppHelpers.inputAttrs : ((hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`)", ctx);
   vm.runInContext(conflictsSource, ctx);
   const create = ctx.globalThis.HerdrGitUiConflictsModule.create;
   let layout = "side-by-side";
@@ -1195,6 +1201,8 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
   const diffViewSource = readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8");
   const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Map, encodeURIComponent, Error, document: { querySelectorAll: () => [] } });
   ctx.globalThis = ctx;
+  // diff_view.js renders filter/search inputs with inputAttrs(...).
+  vm.runInContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", ctx);
   vm.runInContext(diffViewSource, ctx);
   const calls = [];
   const state = { contextMenu: { kind: "M", x: 10, y: 20, path: "a.js" }, logContextMenu: null };

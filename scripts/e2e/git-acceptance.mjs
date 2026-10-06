@@ -167,6 +167,9 @@ const sources = [];
 for (const path of SHARED_BUNDLES) sources.push(await loadText(path));
 // appRefreshIconButton comes from the desktop app bundle (app_js/core.js).
 sources.push('\nfunction appRefreshIconButton(){ return ""; }\n');
+// git-ui modules render inputs with inputAttrs(...) from the shared
+// HerdrAppHelpers; expose it as a bare binding like the real bundle does.
+sources.push('\ninputAttrs = globalThis.HerdrAppHelpers.inputAttrs;\n');
 sources.push(await loadText("/assets/desktop/git-ui.js"));
 const ctx = context();
 vm.runInContext(sources.join("\n;\n"), ctx);

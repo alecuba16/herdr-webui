@@ -188,6 +188,8 @@ describe("Git log rendering", () => {
       document: { querySelectorAll() { return []; } },
     };
     context.window.window = context.window;
+    // log.js renders filter inputs with inputAttrs(...) from the shared helpers.
+    vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
     vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
 
     const hash = "0123456789abcdef0123456789abcdef01234567";
@@ -213,6 +215,8 @@ describe("Git log rendering", () => {
       document: { querySelectorAll() { return []; } },
     };
     context.window.window = context.window;
+    // log.js renders filter inputs with inputAttrs(...) from the shared helpers.
+    vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
     vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
     const laneColor = context.window.HerdrGitLog.laneColor;
 
