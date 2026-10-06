@@ -58,7 +58,7 @@ chrome_bin() {
 CHROME="$(chrome_bin)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/herdr-guards-e2e.XXXXXX")"
-SERVER_PID="" CHROME_PID=""
+SERVER_PID="" CHROME_PID="" AUDIT_PID=""
 
 stop_pid() {
   local pid="$1"
@@ -73,6 +73,7 @@ stop_pid() {
 
 cleanup() {
   if [[ $KEEP -eq 1 ]]; then echo "--keep set: leaving $WORK running"; return; fi
+  stop_pid "$AUDIT_PID"
   stop_pid "$CHROME_PID"
   stop_pid "$SERVER_PID"
   rm -rf "$WORK" 2>/dev/null || true
@@ -154,9 +155,9 @@ run_audit() {
   local name="$1" script="$2"
   echo "==> $name keyboard-guards audit"
   node "$ROOT/scripts/e2e/$script" &
-  local pid=$!
+  AUDIT_PID=$!
   # wait is interrupted by the trapped signal (the handler exits the shell).
-  if ! wait "$pid" 2>/dev/null; then status=1; fi
+  if ! wait "$AUDIT_PID" 2>/dev/null; then status=1; fi
 }
 run_audit mobile keyboard-guards-audit-mobile.mjs
 run_audit desktop keyboard-guards-audit-desktop.mjs
