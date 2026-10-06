@@ -609,34 +609,51 @@
   const WORKING_TICK_MS = 1000;
   let workingTickTimer = null;
 
-  function workingBlockHtml() {
-    const startedAt = workingStartedAt();
-    const elapsed = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
-    // Collapsed: a quiet animated row (dots do the movement; CSS owns
-    // the animation). Expanded: the live counter plus what we know
-    // from the transcript (in-flight tools of the open turn).
-    const head =
+  // The working block is split head/body so the head can keep node
+  // identity: the head is built ONCE per block and never rewritten
+  // afterwards (syncs mutate attributes/text in place), while the
+  // body is a plain innerHTML region. Rewriting the head would drop
+  // keyboard focus from the toggle on every poll/tick.
+  function workingHeadLabel() {
+    if (workingExpanded) return "Working";
+    const running = runningToolsOfOpenTurn();
+    return running.length ? String(running[0]) : "Thinking";
+  }
+
+  function workingHeadHtml() {
+    return (
       `<div class="lens-working-toggle" data-toggle-working="1" tabindex="0" role="button" aria-expanded="${workingExpanded}">` +
       `<span class="lens-working-dots" aria-hidden="true"><i></i><i></i><i></i></span>` +
-      `<span class="lens-working-label">${workingExpanded ? "Working" : "Thinking"}…</span>` +
-      `<span class="lens-working-caret">${workingExpanded ? "▾" : "▸"}</span></div>`;
-    let body = "";
-    if (workingExpanded) {
-      const lines = [];
-      if (elapsed !== null)
-        lines.push(`<div class="lens-working-elapsed">Working for ${formatDuration(elapsed)}</div>`);
-      const running = runningToolsOfOpenTurn();
-      if (running.length)
-        lines.push(
-          `<div class="lens-working-tools">${running
-            .map((name) => `<span class="lens-working-tool">${escapeHtml(name)}</span>`)
-            .join("")}</div>`,
-        );
-      if (!lines.length)
-        lines.push('<div class="lens-working-note">Agent is processing — output appears when the turn completes</div>');
-      body = `<div class="lens-working-body">${lines.join("")}</div>`;
-    }
-    return `${head}${body}`;
+      `<span class="lens-working-label">${escapeHtml(workingHeadLabel())}…</span>` +
+      `<span class="lens-working-caret">${workingExpanded ? "▾" : "▸"}</span></div>`
+    );
+  }
+
+  function workingBodyLines() {
+    const startedAt = workingStartedAt();
+    const elapsed = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
+    const lines = [];
+    if (elapsed !== null)
+      lines.push(`<div class="lens-working-elapsed">Working for ${formatDuration(elapsed)}</div>`);
+    const running = runningToolsOfOpenTurn();
+    if (running.length)
+      lines.push(
+        `<div class="lens-working-tools">${running
+          .map((name) => `<span class="lens-working-tool">${escapeHtml(name)}</span>`)
+          .join("")}</div>`,
+      );
+    if (!lines.length)
+      lines.push('<div class="lens-working-note">Agent is processing — output appears when the turn completes</div>');
+    return lines.join("");
+  }
+
+  function workingBodyHtml() {
+    return `<div class="lens-working-body">${workingBodyLines()}</div>`;
+  }
+
+  // Diagnostic surface: the full block markup in one string.
+  function workingBlockHtml() {
+    return `${workingHeadHtml()}${workingExpanded ? workingBodyHtml() : ""}`;
   }
 
   function runningToolsOfOpenTurn() {
@@ -676,8 +693,14 @@
       existing.className = "lens-working";
       existing.setAttribute("data-working", "1");
       content.appendChild(existing);
+      // Seed once per block: head + (expanded ? body). Every later
+      // sync mutates the head in place and only rewrites the body
+      // region, so the toggle/dots/label/caret nodes never change.
+      existing.innerHTML = workingBlockHtml();
+    } else {
+      syncWorkingHead(existing);
+      syncWorkingBody(existing);
     }
-    existing.innerHTML = workingBlockHtml();
     // Keep the working block last: appends during the working turn
     // (new parts streaming into open turns) can leave it above the
     // pending bubble or below a newly landed turn. A re-order costs
@@ -687,9 +710,38 @@
     if (workingExpanded) ensureWorkingTick();
   }
 
-  // 1s in-place timer tick while expanded: rewrites only the block's
-  // own innerHTML (the rest of the lens is untouched), stops when the
-  // status flips away from working or the user collapses.
+  // In-place head sync: attribute/text writes only, never a rewrite
+  // (a rewritten head drops keyboard focus from the toggle).
+  function syncWorkingHead(block) {
+    const toggle = block.querySelector("[data-toggle-working]");
+    if (!toggle) return; // no head: the next full render re-seeds
+    toggle.setAttribute("aria-expanded", workingExpanded ? "true" : "false");
+    const label = toggle.querySelector(".lens-working-label");
+    if (label) label.textContent = `${workingHeadLabel()}…`;
+    const caret = toggle.querySelector(".lens-working-caret");
+    if (caret) caret.textContent = workingExpanded ? "▾" : "▸";
+  }
+
+  // The body is a plain region: rewrite its innerHTML, create or drop
+  // the wrapper as expansion demands. The head stays untouched.
+  function syncWorkingBody(block) {
+    let body = block.querySelector(".lens-working-body");
+    if (!workingExpanded) {
+      if (body) body.remove();
+      return;
+    }
+    if (!body) {
+      body = document.createElement("div");
+      body.className = "lens-working-body";
+      block.appendChild(body);
+    }
+    body.innerHTML = workingBodyLines();
+  }
+
+  // 1s in-place timer tick while expanded: touches only the elapsed
+  // line inside the block (head nodes keep their identity, so focus
+  // on the toggle survives every second), stops when the status
+  // flips away from working or the user collapses.
   function ensureWorkingTick() {
     if (workingTickTimer !== null) return;
     workingTickTimer = setTimeout(function onWorkingTick() {
@@ -703,7 +755,14 @@
       // instead of re-arming forever — the next render that owns a
       // block re-arms through syncWorkingDom.
       if (!block) return;
-      block.innerHTML = workingBlockHtml();
+      // Touch ONLY the elapsed line: the head keeps node identity
+      // (and keyboard focus) across every tick.
+      const elapsedLine = block.querySelector(".lens-working-elapsed");
+      if (elapsedLine) {
+        const startedAt = workingStartedAt();
+        const elapsed = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : null;
+        elapsedLine.textContent = elapsed === null ? "" : `Working for ${formatDuration(elapsed)}`;
+      }
       ensureWorkingTick();
     }, WORKING_TICK_MS);
   }

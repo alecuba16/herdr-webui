@@ -1553,10 +1553,10 @@ describe("lens working indicator (thinking animation)", () => {
     match(elapsedNode.textContent, /Working for/, "elapsed line renders");
     // The harness fires timers with zero wall-clock delay, so the
     // rounded second cannot advance by itself; instead prove the tick
-    // RECOMPUTES the block: plant a sentinel in the elapsed node and
-    // require the tick to overwrite it with a fresh workingBlockHtml()
+    // REWRITES the elapsed line: plant a sentinel in the elapsed node
+    // and require the tick to overwrite it with fresh state
     // (the production effect: the elapsed line refreshes every 1s
-    // without any poll).
+    // without any poll, and the head nodes are never rewritten).
     elapsedNode.textContent = "SENTINEL";
     fireTimers(ctx);
     const after = content.querySelector(".lens-working-elapsed");
@@ -1565,6 +1565,100 @@ describe("lens working indicator (thinking animation)", () => {
     ok(!after.textContent.includes("SENTINEL"), "sentinel gone: the block was recomputed");
     // The tick re-arms itself while still working + expanded.
     ok(ctx._timers.size >= 1, "tick re-armed for the next second");
+  });
+
+  it("head keeps node identity across syncs and ticks (focus stays on the toggle)", async () => {
+    // A rewritten head drops keyboard focus in a real browser; the
+    // fix is to build the head once per block and never rewrite it.
+    // The harness has no activeElement, so node identity is the
+    // focus proxy: the same toggle/dots/label nodes must survive
+    // every sync path (expand, poll, tick, collapse).
+    const { ctx, registry } = await openWorking();
+    const { lens, content } = lensNodesWorking(registry);
+    const toggle = content.querySelector("[data-toggle-working]");
+    const dots = toggle.querySelector(".lens-working-dots");
+    const label = toggle.querySelector(".lens-working-label");
+    ok(toggle && dots && label, "head nodes exist");
+    // Expand: the sync mutates in place instead of rebuilding.
+    for (const fn of lens.listeners.click || []) fn({ target: toggle });
+    ok(content.querySelector("[data-toggle-working]") === toggle, "toggle survives the expansion sync");
+    ok(toggle.querySelector(".lens-working-dots") === dots, "dots survive the expansion sync");
+    ok(toggle.querySelector(".lens-working-label") === label, "label survives the expansion sync");
+    equal(toggle.getAttribute("aria-expanded"), "true", "aria-expanded flips in place");
+    ok(content.querySelector(".lens-working-body"), "body renders on expansion");
+    // Poll cycle while expanded: same head nodes, body synced apart.
+    fireTimers(ctx);
+    await settle();
+    ok(content.querySelector("[data-toggle-working]") === toggle, "toggle survives a poll");
+    ok(content.querySelector(".lens-working-dots") === dots, "dots survive a poll");
+    // 1s tick: only the elapsed line is touched, head nodes stay.
+    fireTimers(ctx);
+    await settle();
+    ok(content.querySelector("[data-toggle-working]") === toggle, "toggle survives a tick");
+    ok(toggle.querySelector(".lens-working-dots") === dots, "dots survive a tick");
+    // Collapse: same head node, state flips back, body drops.
+    for (const fn of lens.listeners.click || []) fn({ target: toggle });
+    ok(content.querySelector("[data-toggle-working]") === toggle, "toggle survives the collapse sync");
+    equal(toggle.getAttribute("aria-expanded"), "false", "aria-expanded flips back in place");
+    ok(!content.querySelector(".lens-working-body"), "body removed on collapse");
+    equal(label.textContent, "Thinking…", "label back to the collapsed fallback");
+  });
+
+  it("collapsed label names the live tool, Thinking is the fallback", async () => {
+    const { ctx, registry } = await openWorking({
+      api: async () => ({
+        ...conversationFixture(),
+        turns: [
+          conversationFixture().turns[0],
+          {
+            role: "assistant",
+            ts: new Date(Date.now() - 1000).toISOString(),
+            end_ts: new Date(Date.now() - 1000).toISOString(),
+            parts: [{ kind: "tool_pending", name: "bash" }],
+          },
+        ],
+      }),
+    });
+    const { content } = lensNodesWorking(registry);
+    const label = content.querySelector(".lens-working-label");
+    ok(label, "label node exists");
+    equal(label.textContent, "bash…", "collapsed label names the running tool");
+    // The turn ends: the pending row is gone, the label syncs back
+    // to the fallback on the next poll (label reads conversation
+    // state, not the DOM).
+    ctx.api = async () => ({
+      ...conversationFixture(),
+      turns: [conversationFixture().turns[0], conversationFixture().turns[1]],
+    });
+    fireTimers(ctx);
+    await settle();
+    const labelAfter = content.querySelector(".lens-working-label");
+    equal(labelAfter && labelAfter.textContent, "Thinking…", "fallback when no tool is running");
+    // Escaping: a hostile tool name renders as text, never markup.
+    const hostile = await openWorking({
+      api: async () => ({
+        ...conversationFixture(),
+        turns: [
+          conversationFixture().turns[0],
+          {
+            role: "assistant",
+            ts: new Date().toISOString(),
+            end_ts: new Date().toISOString(),
+            parts: [{ kind: "tool_pending", name: "<img src=x>" }],
+          },
+        ],
+      }),
+    });
+    const { content: hostileContent } = lensNodesWorking(hostile.registry);
+    const hostileLabel = hostileContent.querySelector(".lens-working-label");
+    ok(hostileLabel, "label node exists for the hostile name");
+    // Escaping: a hostile tool name renders as text, never markup.
+    // The harness keeps source text undecoded, so the assert targets
+    // the emitted HTML: the name must arrive escaped and no element
+    // may be injected through it (a real browser also decodes it to
+    // plain text in textContent).
+    ok(hostileContent.innerHTML.includes("&lt;img src=x&gt;"), "hostile name is escaped in the emitted HTML");
+    ok(!hostileContent.querySelector("img"), "no injected element from the tool name");
   });
 
   it("tick dies when the block disappears (error copy takes the content)", async () => {
