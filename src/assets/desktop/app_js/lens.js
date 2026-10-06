@@ -122,10 +122,26 @@
 
   // ---- structured mode: poll loop ----
 
+  // The composer must never keep a dead pane's model label. Every path
+  // that stops the structured poll (unsupported pane from a workspace
+  // close or pane switch, lens closing) funnels through here so the
+  // clear happens exactly once, even when no poll tick ever fires.
+  function clearStaleSessionMeta() {
+    if (!sessionMeta) return;
+    sessionMeta = null;
+    publishSessionMeta();
+  }
+
   function ensurePolling() {
     // Poll only when the lens is open, the pane is chat-capable, and
     // the poll belongs to the pane now in view.
-    if (!lensActive || !chatSupported()) return stopPolling();
+    if (!lensActive || !chatSupported()) {
+      // No tick will ever run for this pane: clear now or the composer
+      // freezes with the previous pane's label (workspace close often
+      // lands here, before any poll timer can fire).
+      clearStaleSessionMeta();
+      return stopPolling();
+    }
     const paneId = activePaneId();
     if (paneId !== chatPane) resetChatState(paneId);
     if (pollTimer !== null) return;
@@ -148,7 +164,13 @@
   }
 
   async function pollConversation() {
-    if (!lensActive || !chatSupported()) return stopPolling();
+    if (!lensActive || !chatSupported()) {
+      // The pane stopped being chat-capable between ticks (workspace
+      // closed, pane switched to a shell). Same clear as the failed
+      // poll: the composer must not keep the dead pane's model label.
+      clearStaleSessionMeta();
+      return stopPolling();
+    }
     const paneId = activePaneId();
     if (paneId !== chatPane) resetChatState(paneId);
     // Single-flight: a slow poll never overlaps the next tick; the
@@ -162,7 +184,15 @@
       const response = await api(
         `/api/panes/${encodeURIComponent(paneId)}/conversation`,
       );
-      if (paneId !== chatPane || !lensActive) return; // stale: pane moved on
+      if (paneId !== chatPane || !lensActive) {
+        // Stale in-flight poll (the pane moved while the request was
+        // out): the response belongs to a pane nobody is looking at.
+        // The new pane's tick will publish fresh meta, but if the new
+        // pane never supports chat (workspace close), no tick runs:
+        // clear now so the composer cannot freeze mid-transition.
+        clearStaleSessionMeta();
+        return;
+      }
       convError = null;
       loadingChat = false;
       conversation = response;
@@ -925,6 +955,10 @@
     if (lensActive) {
       const paneId = activePaneId();
       if (chatSupported() && paneId !== chatPane) resetChatState(paneId);
+      // The lens stays open on non-chat panes when no agent row exists
+      // (setLens force-off needs positive evidence): make sure the
+      // previous pane's meta does not survive the switch.
+      if (!chatSupported()) clearStaleSessionMeta();
       contentDirty();
       render();
       ensurePolling();
