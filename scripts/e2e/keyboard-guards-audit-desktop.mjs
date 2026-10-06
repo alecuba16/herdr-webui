@@ -100,6 +100,10 @@ const EXPECTED_HINTS = {
   worktreeNewBranch: null, worktreeWorkspaceLabel: null,
   // Find/Replace bar inputs (CodeMirror-generated, placeholder-keyed):
   "Find|text": "search", "Replace|text": "done",
+  // Rename inputs have no id/name/placeholder, so their derived key is
+  // "|text" (empty placeholder + type). Both surfaces (tab rename via panel
+  // switcher dblclick, workspace rename) pin the same hint.
+  "|text": "done",
 };
 function assertGuards(surface, item) {
   if (LIVE_ALLOWLIST.has(item.key)) {

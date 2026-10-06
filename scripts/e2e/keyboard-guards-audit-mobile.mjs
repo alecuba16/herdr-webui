@@ -27,6 +27,15 @@ const EXPECTED_HINTS = {
   "git commit body": null,
   "worktrees discover path": null,
   "session name input": null,
+  // Worktree create fields are hintless by design (inputAttrs() with no arg).
+  "worktrees create field #1": null,
+  "worktrees create field #2": null,
+  "worktrees create field #3": null,
+  "worktrees create field #4": null,
+  // Settings text inputs (hintless by design):
+  "settings worktree dir input": null,
+  "settings exploration dir input": null,
+  "settings terminal font input": null,
 };
 
 let ws; let seq = 0; const pending = new Map();
@@ -213,9 +222,11 @@ async function main() {
   await sleep(600);
   await check("worktrees discover path", "flow input", `document.querySelector('.mobile-worktree-flow .mobile-settings-group input')`);
   const createOpen = await evalJs(`(() => { const d = document.querySelector('.mobile-worktree-flow details.mobile-disclosure'); if (d) d.open = true; return !!d; })()`);
-  if (createOpen) {
+  if (!createOpen) { failures.push("worktrees create: disclosure with create fields not found"); console.log("FAIL worktrees create: disclosure with create fields not found"); }
+  else {
     await sleep(200);
     const createInputs = await evalJs(`(() => { const d = document.querySelector('.mobile-worktree-flow details.mobile-disclosure'); return d ? [...d.querySelectorAll('input')].length : 0; })()`);
+    if (createInputs !== 4) { failures.push(`worktrees create: expected 4 create inputs, found ${createInputs}`); console.log(`FAIL worktrees create: expected 4 create inputs, found ${createInputs}`); }
     for (let i = 0; i < createInputs; i++) {
       await check(`worktrees create field #${i + 1}`, `create input ${i + 1}`, `document.querySelectorAll('.mobile-worktree-flow details.mobile-disclosure input')[${i}]`);
     }
@@ -240,15 +251,9 @@ async function main() {
   await check("settings filter", "filter input", `document.querySelector('.mobile-settings-filter input')`);
   const settingsInputs = await evalJs(`(() => { const groups = [...document.querySelectorAll('.mobile-settings-group')]; const g = groups.find(x => /Workspaces/.test(x.textContent)); if (g) g.open = true; const t = groups.find(x => /Terminal/.test(x.textContent)); if (t) t.open = true; return true; })()`);
   await sleep(200);
-  const wtDir = await guardsOf(`(() => { const g = [...document.querySelectorAll('.mobile-settings-group')].find(x => /Worktree default directory/.test(x.textContent || '')); if (!g) return null; const label = [...g.querySelectorAll('label')].find(l => /Worktree default directory/.test(l.textContent || '')); return label ? label.querySelector('input') : null; })()`);
-  console.log(wtDir && wtDir.writingsuggestions === "false" && wtDir.translate === "no" ? "OK   settings worktree dir input: all 6 guards" : `FAIL settings worktree dir: ${JSON.stringify(wtDir)}`);
-  if (!(wtDir && wtDir.writingsuggestions === "false" && wtDir.translate === "no")) failures.push("settings worktree dir input missing guards");
-  const explDir = await guardsOf(`(() => { const g = [...document.querySelectorAll('.mobile-settings-group')].find(x => /Exploration default directory/.test(x.textContent || '')); if (!g) return null; const label = [...g.querySelectorAll('label')].find(l => /Exploration default directory/.test(l.textContent || '')); return label ? label.querySelector('input') : null; })()`);
-  console.log(explDir && explDir.writingsuggestions === "false" && explDir.translate === "no" ? "OK   settings exploration dir input: all 6 guards" : `FAIL settings exploration dir: ${JSON.stringify(explDir)}`);
-  if (!(explDir && explDir.writingsuggestions === "false" && explDir.translate === "no")) failures.push("settings exploration dir input missing guards");
-  const termFont = await guardsOf(`(() => { const g = [...document.querySelectorAll('.mobile-settings-group')].find(x => /Terminal font/.test(x.textContent || '')); if (!g) return null; const label = [...g.querySelectorAll('label')].find(l => /Terminal font/.test(l.textContent || '')); return label ? label.querySelector('input') : null; })()`);
-  console.log(termFont && termFont.writingsuggestions === "false" && termFont.translate === "no" ? "OK   settings terminal font input: all 6 guards" : `FAIL settings terminal font: ${JSON.stringify(termFont)}`);
-  if (!(termFont && termFont.writingsuggestions === "false" && termFont.translate === "no")) failures.push("settings terminal font input missing guards");
+  await check("settings worktree dir input", "worktree dir input", `(() => { const g = [...document.querySelectorAll('.mobile-settings-group')].find(x => /Worktree default directory/.test(x.textContent || '')); if (!g) return null; const label = [...g.querySelectorAll('label')].find(l => /Worktree default directory/.test(l.textContent || '')); return label ? label.querySelector('input') : null; })()`);
+  await check("settings exploration dir input", "exploration dir input", `(() => { const g = [...document.querySelectorAll('.mobile-settings-group')].find(x => /Exploration default directory/.test(x.textContent || '')); if (!g) return null; const label = [...g.querySelectorAll('label')].find(l => /Exploration default directory/.test(l.textContent || '')); return label ? label.querySelector('input') : null; })()`);
+  await check("settings terminal font input", "terminal font input", `(() => { const g = [...document.querySelectorAll('.mobile-settings-group')].find(x => /Terminal font/.test(x.textContent || '')); if (!g) return null; const label = [...g.querySelectorAll('label')].find(l => /Terminal font/.test(l.textContent || '')); return label ? label.querySelector('input') : null; })()`);
 
   // 8. File browser rename sheet: open Files, tap a file row's action (⋯)
   // button, then Rename in the action sheet.
