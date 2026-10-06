@@ -239,9 +239,12 @@ fn tui_binary_interactive_loop_pty() {
     let pty_out = pair.master.try_clone_reader().unwrap();
     let log = pump(pty_out);
 
-    // The PTY is 80 cols wide, so the footer swaps to the compact hint:
-    // it keeps `q quit` and the discovery tail, but drops `Ctrl+B prefix`.
-    wait_for(&log, "q quit");
+    // The PTY is 80 cols wide, so the footer swaps to the compact hint.
+    // The terminal screen starts with the MAIN region focused (the
+    // focus-walker default), so the footer names pane actions: the
+    // compact TerminalMain hint keeps `Enter attach` and the discovery
+    // tail but drops the list keys that are dead while main owns focus.
+    wait_for(&log, "Enter attach");
     assert!(
         log.lock().unwrap().contains("Ctrl+B ? help"),
         "footer should show the help discovery hint"
@@ -389,7 +392,7 @@ fn tui_binary_worktree_browser_and_picker_pty() {
     let pty_out = pair.master.try_clone_reader().unwrap();
     let log = pump(pty_out);
 
-    wait_for(&log, "q quit");
+    wait_for(&log, "Enter attach");
 
     // Ctrl+B w opens the browser: the "this folder" row shows the
     // browse root and both real subdirectories render as rows.

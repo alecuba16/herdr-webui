@@ -124,6 +124,11 @@ pub(crate) enum FooterContext {
     FilterBar,
     /// Content-search results view.
     ContentSearch,
+    /// Terminal screen, Navigate mode, MAIN region focused (the focus
+    /// walker's default): the pane owns the keys — list movement lives on
+    /// the sidebar regions, so the hint names pane actions instead of
+    /// the j/k list keys that are dead here.
+    TerminalMain,
     Terminal(TuiMode),
     Files(TuiMode),
     Git(TuiMode, GitView),
@@ -173,14 +178,17 @@ impl FooterContext {
             Self::ContentSearch => {
                 " j/k rows · Enter jump · A case · X regex · Esc exits · Ctrl+B ? help "
             }
+            Self::TerminalMain => {
+                " Enter attach · Shift+L chat lens · Shift+C compose · . / , focus sidebar · r refresh · Ctrl+B ]/[ panel · Ctrl+B ? help "
+            }
             Self::Terminal(TuiMode::Attach) => {
                 " Ctrl-G detach · type sends input · Ctrl+B ? help "
             }
             Self::Terminal(_) => {
-                " ↑/↓ j/k select · Enter attach · q quit · Ctrl+B ? help "
+                " ↑/↓ j/k select · Enter attach · Tab lists · q quit · Ctrl+B ? help "
             }
             Self::Files(_) => {
-                " j/k move · Enter open · e edit · a/A new file/dir · R rename · x delete · Ctrl+B ? help "
+                " j/k move · Enter open · e edit · a/A new file/dir · R rename · x delete · / search · L file log · Ctrl+B ? help "
             }
             Self::Git(_, GitView::Changes) => {
                 " Tab view · s stage · d discard · J/K hunk · H apply · / search · c commit · P push · Ctrl+B ? help "
@@ -228,6 +236,7 @@ impl FooterContext {
             Self::FileEdit => " Ctrl-S save · Esc stop · Ctrl+B ? help ",
             Self::FilterBar => " type · Enter keep · Esc close · Ctrl+B ? help ",
             Self::ContentSearch => " j/k · Enter jump · Esc exit · Ctrl+B ? help ",
+            Self::TerminalMain => " Enter attach · . , focus · Ctrl+B ? help ",
             Self::Terminal(TuiMode::Attach) => " Ctrl+B ? help · Ctrl-G detach ",
             Self::Lens => " j/k scroll · G bottom · Esc close · Ctrl+B ? help ",
             Self::PromptCard => " j/k · Enter · 1-9 · Esc · Ctrl+B ? help ",
@@ -730,7 +739,18 @@ impl TuiApp {
         }
         // Screens and sub-views.
         match self.screen {
-            TuiScreen::Terminal => FooterContext::Terminal(self.mode),
+            TuiScreen::Terminal => {
+                // Focus-aware hint (ux fix): with the MAIN region focused
+                // (the default), j/k are dead on the pane — the hint must
+                // not advertise list keys. Only the sidebar regions get
+                // the select/attach hint; attach mode owns the hint as
+                // before (the focus walker does not apply there).
+                if self.mode == TuiMode::Navigate && self.main_focused {
+                    FooterContext::TerminalMain
+                } else {
+                    FooterContext::Terminal(self.mode)
+                }
+            }
             TuiScreen::Files => FooterContext::Files(self.mode),
             TuiScreen::Git => FooterContext::Git(self.mode, self.git_panel.view),
         }

@@ -8799,3 +8799,76 @@ fn main_focus_gates_sidebar_navigation_keys() {
         "sidebar focus restores list navigation"
     );
 }
+
+#[test]
+fn footer_hint_follows_the_focus_region_on_the_terminal_screen() {
+    // Context-aware statusbar (ux fix): with the main region focused
+    // (the default), j/k are dead on the pane so the hint names pane
+    // actions instead; walking focus to a sidebar region brings back
+    // the select/attach hint naming Tab too.
+    let mut app = app_with_snapshot();
+    app.mode = TuiMode::Navigate;
+    app.screen = TuiScreen::Terminal;
+
+    // Main focus (default): pane keys, no stale "j/k select". 120 cols
+    // fits the full hint (compact fallback checked on the narrow draw).
+    assert!(matches!(
+        app.footer_context(),
+        crate::tui::FooterContext::TerminalMain
+    ));
+    let main = draw(&app, 160, 24);
+    assert!(main.contains("Enter attach"), "main hint keeps attach");
+    assert!(
+        main.contains("focus sidebar"),
+        "main hint tells how to reach the lists"
+    );
+    assert!(
+        main.contains("chat lens"),
+        "main hint names the lens shortcut"
+    );
+    assert!(
+        !main.contains("j/k select"),
+        "main hint must not advertise dead list keys"
+    );
+
+    // Sidebar region: the list hint returns.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('.')));
+    assert!(!app.main_focused);
+    assert!(matches!(
+        app.footer_context(),
+        crate::tui::FooterContext::Terminal(TuiMode::Navigate)
+    ));
+    let sidebar = draw(&app, 120, 24);
+    assert!(
+        sidebar.contains("j/k select"),
+        "sidebar hint names the list keys"
+    );
+    assert!(
+        sidebar.contains("Tab lists"),
+        "sidebar hint names the Tab toggle"
+    );
+
+    // Narrow terminal: the compact main hint keeps the help tail.
+    app.main_focused = true;
+    let narrow = draw(&app, 60, 24);
+    assert!(
+        narrow.contains("Ctrl+B ? help"),
+        "main hint keeps the help tail at 60 cols"
+    );
+}
+
+#[test]
+fn footer_hint_names_common_files_actions() {
+    // Files hint enrichment: / search and L file log ride with the
+    // browse actions on wide terminals.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Files;
+    let rendered = draw(&app, 140, 24);
+    assert!(rendered.contains("/ search"), "files hint names search");
+    assert!(rendered.contains("L file log"), "files hint names file log");
+    assert!(
+        rendered.contains("Ctrl+B ? help"),
+        "files hint keeps the help tail"
+    );
+}
