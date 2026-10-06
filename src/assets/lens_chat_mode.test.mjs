@@ -1532,6 +1532,58 @@ describe("lens working indicator (thinking animation)", () => {
     equal(ctx.HerdrLens._workingExpanded(), false, "expansion dropped on lens close");
   });
 
+  it("expanded block ticks the elapsed line in place every second", async () => {
+    const { ctx, registry } = await openWorking({
+      api: async () => ({
+        ...conversationFixture(),
+        turns: [
+          conversationFixture().turns[0],
+          {
+            role: "assistant",
+            ts: new Date(Date.now() - 1000).toISOString(),
+            end_ts: new Date(Date.now() - 1000).toISOString(),
+            parts: [],
+          },
+        ],
+      }),
+    });
+    const { lens, content } = lensNodesWorking(registry);
+    for (const fn of lens.listeners.click || []) fn({ target: content.querySelector("[data-toggle-working]") });
+    const elapsedNode = content.querySelector(".lens-working-elapsed");
+    match(elapsedNode.textContent, /Working for/, "elapsed line renders");
+    // The harness fires timers with zero wall-clock delay, so the
+    // rounded second cannot advance by itself; instead prove the tick
+    // RECOMPUTES the block: plant a sentinel in the elapsed node and
+    // require the tick to overwrite it with a fresh workingBlockHtml()
+    // (the production effect: the elapsed line refreshes every 1s
+    // without any poll).
+    elapsedNode.textContent = "SENTINEL";
+    fireTimers(ctx);
+    const after = content.querySelector(".lens-working-elapsed");
+    ok(after, "elapsed node still exists after the tick");
+    match(after.textContent, /Working for/, "tick rewrote the elapsed line from fresh state");
+    ok(!after.textContent.includes("SENTINEL"), "sentinel gone: the block was recomputed");
+    // The tick re-arms itself while still working + expanded.
+    ok(ctx._timers.size >= 1, "tick re-armed for the next second");
+  });
+
+  it("tick dies when the block disappears (error copy takes the content)", async () => {
+    const { ctx, registry } = await openWorking();
+    const { lens, content } = lensNodesWorking(registry);
+    for (const fn of lens.listeners.click || []) fn({ target: content.querySelector("[data-toggle-working]") });
+    ok(content.querySelector(".lens-working-body"), "expanded");
+    // A failed poll replaces the turns with the error copy; the tick
+    // must not survive against a block that no longer exists.
+    ctx.api = async () => { throw { details: { code: "error" } }; };
+    fireTimers(ctx);
+    await settle();
+    ok(!content.querySelector(".lens-working"), "block gone under the error copy");
+    // The next tick finds no block and dies; a further timer pass
+    // must contain no pending working tick (no orphan re-arm).
+    fireTimers(ctx);
+    equal(ctx._timers.size, 0, "no orphan tick re-armed after the block vanished");
+  });
+
   it("blocked status wins over working (never both surfaces)", async () => {
     const { ctx, registry } = await openWorking();
     const { content } = lensNodesWorking(registry);

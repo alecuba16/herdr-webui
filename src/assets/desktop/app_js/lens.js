@@ -704,7 +704,11 @@
       if (!node) return;
       const content = node.querySelector(".terminal-lens-content");
       const block = content && content.querySelector(".lens-working");
-      if (block) block.innerHTML = workingBlockHtml();
+      // No block (error/refusal copy took the content over): die here
+      // instead of re-arming forever — the next render that owns a
+      // block re-arms through syncWorkingDom.
+      if (!block) return;
+      block.innerHTML = workingBlockHtml();
       ensureWorkingTick();
     }, WORKING_TICK_MS);
   }

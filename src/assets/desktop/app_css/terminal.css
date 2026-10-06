@@ -813,6 +813,9 @@ input {
     transform: scale(1.1);
   }
 }
+.lens-working-label {
+  white-space: nowrap;
+}
 .lens-working-caret {
   color: var(--fg-dim, #a6adc8);
   font-size: 10px;
