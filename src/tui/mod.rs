@@ -57,6 +57,11 @@ impl PromptKind {
 
 const TAIL_LINES: usize = 240;
 const TERMINAL_RAW_BUFFER_BYTES: usize = 512 * 1024;
+/// Tail poll cadence while the terminal screen is NOT attached: 1/5th
+/// of the default snapshot interval. The preview keeps flowing at a
+/// readable rate without hammering the backend with pane.read per event
+/// loop tick (the event loop polls keys every 50ms).
+pub(crate) const TAIL_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Max lines the Help overlay can scroll down: total rows minus whatever
 /// fits in the 50-line centered box (title + border included).
@@ -296,6 +301,9 @@ pub struct TuiApp {
     pub status: String,
     pub error: Option<String>,
     pub last_refresh: Option<Instant>,
+    /// When the pane tail was last polled outside the snapshot refresh
+    /// (live preview loop, `TAIL_REFRESH_INTERVAL` cadence).
+    pub(crate) last_tail_refresh: Option<Instant>,
     pub refresh_interval: Duration,
     pub theme: TuiTheme,
     pub(crate) palette: Palette,
@@ -565,6 +573,7 @@ impl TuiApp {
             status: "connecting".to_string(),
             error: None,
             last_refresh: None,
+            last_tail_refresh: None,
             refresh_interval,
             theme,
             palette: Palette::for_theme(theme),
@@ -621,6 +630,7 @@ impl TuiApp {
         self.clamp_selection();
         if self.mode != TuiMode::Attach {
             self.refresh_tail();
+            self.last_tail_refresh = Some(Instant::now());
         }
         self.status = format!(
             "backend {} · protocol {} · {} workspaces · {} agents",
@@ -645,6 +655,22 @@ impl TuiApp {
             if let Err(err) = self.refresh() {
                 self.error = Some(err.to_string());
                 self.mark_dirty();
+            }
+        } else {
+            // Live preview while not attached (ux fix): the tail used to
+            // refresh only with the snapshot cadence (default 1s), so the
+            // pane preview looked frozen compared to the webui terminal.
+            // The tail read is a single pane.read round-trip, cheap enough
+            // to poll 5x faster than the snapshot; attach mode owns the
+            // screen through the live pty instead, and the tail is also
+            // skipped while a modal/prompt would fight the redraw.
+            let tail_due = self
+                .last_tail_refresh
+                .map(|loaded| loaded.elapsed() >= TAIL_REFRESH_INTERVAL)
+                .unwrap_or(true);
+            if tail_due && self.mode != TuiMode::Attach && self.screen == TuiScreen::Terminal {
+                self.refresh_tail();
+                self.last_tail_refresh = Some(Instant::now());
             }
         }
     }
@@ -3115,6 +3141,28 @@ impl TuiApp {
         // only the Terminal screen keeps the workspace/agent list keys.
         if self.screen != TuiScreen::Terminal {
             self.handle_panel_key(key);
+            return;
+        }
+        // Focus walker (Ctrl+B . / ,) regions: when the main screen
+        // owns focus, j/k and Enter stop moving the sidebar cursor and
+        // act on the pane instead (Enter attach, j/k pane scroll is not
+        // a pane feature so they stay inert there); the sidebar keys
+        // (Tab/a/w) still work so focus never traps the user. When the
+        // sidebar owns focus the old behavior applies (ux fix: the
+        // walker used to be a status-line message with no effect).
+        if self.main_focused {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => self.request_quit(),
+                KeyCode::Char('?') => {
+                    self.open_help_overlay();
+                }
+                KeyCode::Char('r') => self.refresh_active_screen(),
+                KeyCode::Tab | KeyCode::BackTab => self.toggle_sidebar_focus(),
+                KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
+                KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
+                KeyCode::Enter => self.attach_selected(),
+                _ => {}
+            }
             return;
         }
         match key.code {

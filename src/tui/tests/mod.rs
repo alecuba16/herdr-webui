@@ -8559,3 +8559,243 @@ fn prompt_card_text_answer_via_composer_when_unblocked() {
     // which is normal dead-backend noise, not an answer-path error.
     assert_eq!(app.status, "message sent");
 }
+
+// ---------------------------------------------------------------------------
+// UX fixes: selection highlight, panel identity, live preview
+// ---------------------------------------------------------------------------
+
+#[test]
+fn selected_workspace_row_uses_the_inverted_highlight_style() {
+    // Two workspaces, second selected: the selected row must carry the
+    // accent BACKGROUND (full-row inversion, webui `.selected` class),
+    // not only the "▸" symbol + accent foreground that was easy to
+    // miss on dim terminals.
+    let mut app = app_with_snapshot();
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({
+        "snapshot": {
+            "workspaces": [
+                {"workspace_id":"ws_1","label":"Alpha","cwd":"/a","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"},
+                {"workspace_id":"ws_2","label":"Beta","cwd":"/b","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":null}
+            ],
+            "tabs": [],
+            "panes": [],
+            "agents": []
+        }
+    }));
+    app.sidebar_focus = SidebarFocus::Workspaces;
+    app.selected_workspace = 1;
+
+    let buffer = draw_buffer(&app, 120, 30);
+    // "Beta 1p 1t" pins the sidebar row (the empty-tab tab bar also
+    // prints the workspace label alone on an earlier row).
+    let selected = rendered_row(&buffer, "Beta 1p 1t");
+    let unselected = rendered_row(&buffer, "Alpha 1p 1t");
+    let accent = Color::Rgb(137, 180, 250);
+    // The highlight paints the whole row: at least one cell on the
+    // selected row carries the accent bg.
+    let has_accent_bg =
+        (0..buffer.area.width as usize).any(|x| buffer[(x as u16, selected.y as u16)].bg == accent);
+    assert!(
+        has_accent_bg,
+        "selected workspace row must have the accent background"
+    );
+    let unselected_has_accent_bg = (0..buffer.area.width as usize)
+        .any(|x| buffer[(x as u16, unselected.y as u16)].bg == accent);
+    assert!(
+        !unselected_has_accent_bg,
+        "unselected workspace row must stay on the panel background"
+    );
+}
+
+#[test]
+fn selected_agent_row_uses_the_inverted_highlight_style() {
+    let mut app = app_with_snapshot();
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({
+        "snapshot": {
+            "workspaces": [
+                {"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":2,"active_tab_id":"tab_1"}
+            ],
+            "tabs": [],
+            "panes": [],
+            "agents": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":false},
+                {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_2","agent":"bot","display_agent":"bot","agent_status":"idle","cwd":"/repo","focused":false}
+            ]
+        }
+    }));
+    app.sidebar_focus = SidebarFocus::Agents;
+    app.selected_agent = 1;
+
+    let buffer = draw_buffer(&app, 120, 30);
+    let selected = rendered_row(&buffer, "bot");
+    let unselected = rendered_row(&buffer, "jcode");
+    let accent = Color::Rgb(137, 180, 250);
+    let has_accent_bg =
+        (0..buffer.area.width as usize).any(|x| buffer[(x as u16, selected.y as u16)].bg == accent);
+    assert!(
+        has_accent_bg,
+        "selected agent row must have the accent background"
+    );
+    let unselected_has_accent_bg = (0..buffer.area.width as usize)
+        .any(|x| buffer[(x as u16, unselected.y as u16)].bg == accent);
+    assert!(
+        !unselected_has_accent_bg,
+        "unselected agent row must stay on the panel background"
+    );
+}
+
+#[test]
+fn tab_bar_marks_the_viewing_panel_and_pane_title_names_it() {
+    // The backend-active tab (tab_1 "Shell") is NOT the tab the TUI
+    // selected (pane_2 lives in tab_2 "Server"): the tab strip must
+    // mark the VIEWING tab with "▸", and the pane title must name the
+    // panel label so the user knows which panel the preview belongs to.
+    let mut app = app_with_snapshot();
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({
+        "snapshot": {
+            "workspaces": [{"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":2,"tab_count":2,"active_tab_id":"tab_1"}],
+            "tabs": [
+                {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"},
+                {"tab_id":"tab_2","workspace_id":"ws_1","label":"Server","focused":false,"pane_count":1,"agent_status":"idle"}
+            ],
+            "panes": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true},
+                {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_2","agent":"bot","display_agent":"bot","agent_status":"idle","cwd":"/srv","focused":false}
+            ],
+            "agents": [
+                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true},
+                {"pane_id":"pane_2","terminal_id":"term_2","workspace_id":"ws_1","tab_id":"tab_2","agent":"bot","display_agent":"bot","agent_status":"idle","cwd":"/srv","focused":false}
+            ]
+        }
+    }));
+    app.sidebar_focus = SidebarFocus::Agents;
+    app.selected_agent = 1;
+    assert_eq!(
+        app.selected_pane().map(|pane| pane.id.as_str()),
+        Some("pane_2")
+    );
+
+    let rendered = draw(&app, 120, 30);
+    // The viewing marker sits on the selected tab, not the backend one.
+    assert!(
+        rendered.contains("▸ Server"),
+        "the tab bar must mark the panel the TUI is viewing"
+    );
+    assert!(
+        !rendered.contains("▸ Shell"),
+        "the backend-active tab is not necessarily the viewed one"
+    );
+    // The pane title names agent, panel label, and pane id.
+    assert!(
+        rendered.contains("bot · Server · pane_2"),
+        "the pane header must name which panel the preview belongs to"
+    );
+}
+
+#[test]
+fn tail_refreshes_between_snapshot_ticks_while_not_attached() {
+    // Live preview (ux fix): the tail must poll at the fast cadence
+    // even when the snapshot interval has NOT elapsed yet. The event
+    // loop calls refresh_if_due every 50ms; the snapshot refresh is
+    // 1s here. A fake backend answers ping/snapshot (the pane.read
+    // arm errors, which is fine: the observable is that the fast tail
+    // path fires and stamps last_tail_refresh between snapshot ticks).
+    let (api_socket, _stop) = fake_backend_socket();
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.refresh_interval = Duration::from_secs(1);
+    // First refresh_if_due fires the full refresh (last_refresh None).
+    app.refresh_if_due();
+    assert!(app.last_refresh.is_some(), "first tick does the snapshot");
+    let first_tail = app.last_tail_refresh;
+    assert!(
+        first_tail.is_some(),
+        "the snapshot refresh records the tail poll too"
+    );
+
+    // Immediately after, the snapshot is not due again — but the tail
+    // poll interval (200ms) also has not elapsed, so nothing fires.
+    app.refresh_if_due();
+    assert_eq!(
+        app.last_tail_refresh, first_tail,
+        "tail poll respects its own cadence"
+    );
+
+    // After the tail interval elapses (but NOT the snapshot interval),
+    // the fast path fires and stamps a newer tail refresh.
+    std::thread::sleep(Duration::from_millis(250));
+    let snapshot_refresh = app.last_refresh;
+    app.refresh_if_due();
+    assert_eq!(
+        app.last_refresh, snapshot_refresh,
+        "snapshot keeps its own slower cadence"
+    );
+    assert!(
+        app.last_tail_refresh.unwrap() > first_tail.unwrap(),
+        "tail must poll between snapshot ticks while not attached"
+    );
+}
+
+#[test]
+fn tail_fast_poll_skips_attach_mode_and_other_screens() {
+    // The fast tail poll only owns the Navigate terminal screen: in
+    // attach mode the live pty streams the screen, and on Files/Git
+    // screens the pane is not visible at all.
+    let (api_socket, _stop) = fake_backend_socket();
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = fixture_snapshot();
+
+    app.mode = TuiMode::Attach;
+    std::thread::sleep(Duration::from_millis(250));
+    app.refresh_if_due();
+    assert!(
+        app.last_tail_refresh.is_none(),
+        "attach mode never stamps the tail poll"
+    );
+
+    app.mode = TuiMode::Navigate;
+    app.screen = TuiScreen::Git;
+    std::thread::sleep(Duration::from_millis(250));
+    app.refresh_if_due();
+    assert!(
+        app.last_tail_refresh.is_none(),
+        "the git screen never stamps the tail poll"
+    );
+}
+
+#[test]
+fn main_focus_gates_sidebar_navigation_keys() {
+    // Focus walker effect (ux fix): with the main screen focused
+    // (the default), j/k must NOT move the sidebar cursor — the pane
+    // owns the keys. Walking focus to the sidebar restores list
+    // navigation.
+    let mut app = app_with_snapshot();
+    app.snapshot = TuiSnapshot::from_backend_response(&json!({
+        "snapshot": {
+            "workspaces": [
+                {"workspace_id":"ws_1","label":"Alpha","cwd":"/a","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"},
+                {"workspace_id":"ws_2","label":"Beta","cwd":"/b","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":null}
+            ],
+            "tabs": [],
+            "panes": [],
+            "agents": []
+        }
+    }));
+    app.main_focused = true;
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(
+        app.selected_workspace, 0,
+        "main focus must swallow j so the sidebar cursor stays"
+    );
+
+    // Walk focus to the workspaces region: j moves the cursor again.
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('.')));
+    assert!(!app.main_focused);
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(
+        app.selected_workspace, 1,
+        "sidebar focus restores list navigation"
+    );
+}
