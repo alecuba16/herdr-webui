@@ -213,7 +213,7 @@
     }
 
     function mobileNavActive(screen) {
-      if (screen === "more") return state.screen === "more" || MORE_SCREENS.includes(state.screen);
+      if (screen === "more") return MORE_SCREENS.includes(state.screen);
       return screen === state.screen;
     }
 

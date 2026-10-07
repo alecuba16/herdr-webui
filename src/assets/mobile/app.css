@@ -585,6 +585,12 @@ body.light {
   scrollbar-width: none;
   white-space: nowrap;
 }
+/* Header-search-off hides the Search tab; a display:none child in a grid
+   still leaves an empty track, so collapse the template to four columns
+   instead of leaving a dead gap between Home and Terminal. */
+.mobile-nav:has(> button[hidden]) {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
 .mobile-nav::-webkit-scrollbar {
   display: none;
 }
