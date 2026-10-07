@@ -30,11 +30,13 @@
 
     function renderTaskHub() {
       const active = currentWorkspace();
-      const searchAction = globalThis.HerdrActionRegistry.action("search");
+      // Single primary card: the old second card opened the search sheet,
+      // which duplicated the persistent nav Search tab (reviewer-audited
+      // duplicate flow). Search stays reachable from the nav bar.
       const activeAction = active
         ? `<button class="mobile-task-card primary" onclick="HerdrMobile.showScreen('terminal')"><strong>Continue ${escapeHtml(workspaceTitle(active))}</strong><span>${escapeHtml(contextMeta(active))}</span></button>`
         : `<button class="mobile-task-card primary" onclick="HerdrMobile.runAction('open-workspace')"><strong>Open workspace or worktree</strong><span>Pick a folder, discover worktrees, or create a checkout.</span></button>`;
-      return `<section class="mobile-section mobile-task-hub"><h2>Start</h2><div class="mobile-task-grid">${activeAction}<button class="mobile-task-card" onclick="HerdrMobile.runAction('search')"><strong>${escapeHtml(searchAction.title)}</strong><span>${escapeHtml(searchAction.subtitle)}</span></button></div></section>`;
+      return `<section class="mobile-section mobile-task-hub"><h2>Start</h2><div class="mobile-task-grid">${activeAction}</div></section>`;
     }
 
     function renderAttentionAgents() {

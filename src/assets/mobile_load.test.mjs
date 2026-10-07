@@ -752,7 +752,10 @@ describe("mobile bundle load", () => {
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(html.includes("mobile-task-hub"));
     ok(html.includes("Open workspace or worktree"));
-    ok(html.includes("Search and actions"));
+    // The task-hub search card was removed: it duplicated the nav Search
+    // tab (both opened the search sheet). The nav tab stays the only path
+    // from Home.
+    ok(!html.includes("mobile-task-card\" onclick=\"HerdrMobile.runAction('search')"), "task hub must not duplicate nav Search");
     ok(!html.includes("Temporary terminal"));
     ok(source.includes("function mobileActionCandidates(query)"));
     ok(source.includes("HerdrActionRegistry.candidates"));
