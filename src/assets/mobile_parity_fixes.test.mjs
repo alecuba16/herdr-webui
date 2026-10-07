@@ -231,6 +231,25 @@ describe("mobile composer + prompt cards module", () => {
     assert.match(card, /mobile-prompt-backdrop" onclick="HerdrMobile\.promptDismiss/);
   });
 
+  it("document Escape handler closes prompt card between confirm and tabs sheet", () => {
+    // The document-level Escape chain must cover the composer prompt card:
+    // after the confirm sheet, before the tabs sheet, the handler clicks
+    // the card's Cancel button so the composer cleanup path runs
+    // (promptDismiss) instead of just hiding the node. Static shape check on
+    // the real app.js source: the prompt-card branch must exist, must call
+    // preventDefault, must click .mobile-prompt-head button, and must sit
+    // between the confirm branch and the tabs-sheet branch.
+    const confirmIdx = appSource.indexOf('const confirmSheet = el("mobileConfirmSheet")');
+    const promptIdx = appSource.indexOf('const promptCard = el("mobilePromptCard")');
+    const tabsIdx = appSource.indexOf("if (state.tabsSheetOpen) {");
+    assert.ok(confirmIdx > 0, "confirm branch present");
+    assert.ok(promptIdx > confirmIdx, "prompt-card branch after confirm branch");
+    assert.ok(tabsIdx > promptIdx, "prompt-card branch before tabs-sheet branch");
+    const branch = appSource.slice(promptIdx - 20, promptIdx + 260);
+    assert.match(branch, /event\.preventDefault\(\)/);
+    assert.match(branch, /\.mobile-prompt-head button"\)\?\.click\(\)/);
+  });
+
   it("answering an option sends the key through the terminal paste path", async () => {
     const pasted = [];
     const term = {
