@@ -127,6 +127,11 @@ body.light {
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
+/* The keybar renders inside the toolbar; only one of the two should draw
+   the bottom hairline or the toolbar/nav stack doubles the border. */
+.mobile-toolbar .mobile-keybar {
+  border-bottom: 0;
+}
 .mobile-toolbar[hidden] {
   display: none;
 }
@@ -134,7 +139,9 @@ body.light {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 4px 14px 14px;
+  /* The sheet already pads 14px horizontally; an inner inset here doubled
+     the gutter to 28px versus the confirm/rename sheets. */
+  padding: 4px 0 12px;
   max-height: 50vh;
   overflow-y: auto;
 }
@@ -430,10 +437,11 @@ body.light {
   display: none;
 }
 .mobile-keybar-key {
-  flex: 0 0 auto;
+  flex: 1 1 0;
   min-height: 44px;
-  min-width: 48px;
-  padding: 0 14px;
+  min-width: 40px;
+  max-width: 64px;
+  padding: 0 6px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--panel2);
@@ -441,6 +449,8 @@ body.light {
   font-family: var(--term-font-family, ui-monospace, monospace);
   font-weight: 700;
   font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .mobile-keybar-key:active {
   filter: brightness(1.2);
@@ -560,15 +570,18 @@ body.light {
   background: #3b2028;
 }
 .mobile-nav {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
   padding: 8px max(8px, env(safe-area-inset-right))
     max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   border-top: 1px solid var(--border);
   background: var(--panel);
+  /* Equal-width buttons keep all five tabs visible on 360-390px screens;
+     overflow-x stays as a safety net for ultra-narrow viewports. */
+  overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
   white-space: nowrap;
 }
@@ -576,17 +589,19 @@ body.light {
   display: none;
 }
 .mobile-nav button {
-  flex: 0 0 auto;
+  min-width: 0;
   min-height: 44px;
-  min-width: 74px;
-  padding: 0 10px;
+  padding: 0 4px;
   border: 0;
   border-radius: 12px;
   background: transparent;
   color: var(--muted);
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.mobile-nav button.active {
+.mobile-nav button.active,
+.mobile-nav button[aria-pressed="true"] {
   background: var(--panel2);
   color: var(--fg);
 }
@@ -612,6 +627,10 @@ body.light {
   overflow-y: auto;
   transform: translateX(-102%);
   transition: transform 0.22s var(--ease-out, ease-out);
+}
+.mobile-drawer:focus-visible {
+  outline: 2px solid var(--accent, #89b4fa);
+  outline-offset: -2px;
 }
 .mobile-drawer[hidden] {
   display: none;
@@ -668,46 +687,9 @@ body.mobile-drawer-open .mobile-drawer {
     transition: none;
   }
 }
-.mobile-more-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 12px;
-}
-.mobile-more-card {
-  display: grid;
-  gap: 6px;
-  min-height: 118px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--panel);
-  color: var(--fg);
-  font: inherit;
-  text-align: left;
-}
-.mobile-more-card:active,
-.mobile-more-card:focus-visible {
-  border-color: var(--accent);
-  outline: none;
-}
-.mobile-more-card strong {
-  font-size: 15px;
-}
-.mobile-more-card small {
-  color: var(--muted);
-  line-height: 1.35;
-}
-.mobile-more-icon {
-  display: inline-grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 12px;
-  background: var(--panel2);
-  color: var(--accent);
-  font-weight: 800;
-}
+/* The old More-grid screen was unreachable: the nav More button opens the
+   drawer and drawer items navigate straight to target screens, so the
+   grid renderer and its mobile-more-* styles are gone. */
 body.mobile-keyboard-open .mobile-app {
   grid-template-rows: minmax(0, 1fr);
 }
@@ -782,6 +764,13 @@ body.mobile-keyboard-open .mobile-toolbar {
   max-height: 70vh;
   overflow-y: auto;
 }
+/* Focus lands on the sheet container itself while open (see
+   openModalFocus); without a visible outline a keyboard user cannot tell
+   where focus went. */
+.mobile-sheet:focus-visible {
+  outline: 2px solid var(--accent, #89b4fa);
+  outline-offset: -2px;
+}
 .mobile-sheet-handle {
   width: 40px;
   height: 4px;
@@ -808,8 +797,8 @@ body.mobile-keyboard-open .mobile-toolbar {
   cursor: pointer;
 }
 .mobile-sheet-action.danger {
-  color: #f38ba8;
-  border-color: #f38ba8;
+  color: var(--danger, #f38ba8);
+  border-color: var(--danger, #f38ba8);
 }
 .mobile-sheet-action:active {
   filter: brightness(1.15);
@@ -891,8 +880,8 @@ body.mobile-keyboard-open .mobile-toolbar {
   flex-shrink: 0;
 }
 .mobile-row-actions .mobile-btn.mini {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   display: inline-flex;
   align-items: center;
@@ -1546,9 +1535,11 @@ body.mobile-keyboard-open .mobile-toolbar {
   align-items: center;
 }
 .mobile-btn.mini {
-  min-width: 34px;
-  min-height: 34px;
-  padding: 2px 8px;
+  /* Visual chrome stays compact, but the hit box must clear the 44px
+     coarse-pointer bar: pad the box, not the glyph. */
+  min-width: 44px;
+  min-height: 44px;
+  padding: 2px 10px;
   font-size: 12px;
   border-radius: 10px;
 }
@@ -1568,18 +1559,23 @@ body.mobile-keyboard-open .mobile-toolbar {
   pointer-events: none;
 }
 @media (min-width: 600px) and (max-width: 900px) {
+  /* Tablet band stays single-column: the mobile shell has no persistent
+     sidebar DOM, so a two-column grid here would push the terminal screen
+     into the 300px column (or drop the in-flow toolbar into the 1fr
+     column, swallowing the pane). Keep the phone rows and only loosen the
+     screen padding. */
   .mobile-app {
-    grid-template-columns: 300px minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
   }
   .mobile-header {
-    grid-column: 1 / -1;
+    grid-column: auto;
   }
   .mobile-screen {
     padding: 16px;
   }
   .mobile-nav {
-    grid-column: 1 / -1;
+    grid-column: auto;
   }
 }
 

@@ -597,17 +597,15 @@ describe("mobile bundle load", () => {
     // Mobile must pass themeFn so the terminal matches the user's theme.
     match(mobileSource, /themeFn:/);
     // Mobile must pass currentWorkspaceCwd() so the temp terminal opens in the
-    // right folder. The header button is gone; the More grid card triggers it
-    // through the shared runAction('temp-terminal') path.
+    // right folder. The temp screens are reached through the shared
+    // runAction('temp-terminal') path from actions.js.
     match(mobileSource, /getMobileTempTerminal: \(\) => mobileTempTerminal/);
-    const mobileScreensSource = readFileSync(new URL("./mobile/screens.js", import.meta.url), "utf8");
-    // The More grid drives every action tool through the same runAction
-    // path (temp-terminal, temp-files, temp-git), keyed by tool.screen.
-    match(mobileScreensSource, /runAction\('\$\{tool\.screen\}'\)/);
-    ok(mobileScreensSource.includes("temp-terminal"), "temp-terminal card present");
-    ok(mobileScreensSource.includes("temp-files"), "temp-files card present");
-    ok(mobileScreensSource.includes("temp-git"), "temp-git card present");
-    match(mobileScreensSource, /getMobileTempTerminal/);
+    const mobileActionsSource = readFileSync(new URL("./mobile/actions.js", import.meta.url), "utf8");
+    // Every action tool (temp-terminal, temp-files, temp-git) funnels through
+    // the same runAction path, keyed by action name.
+    ok(mobileActionsSource.includes('action === "temp-terminal"'), "temp-terminal action present");
+    ok(mobileActionsSource.includes('action === "temp-files"'), "temp-files action present");
+    ok(mobileActionsSource.includes('action === "temp-git"'), "temp-git action present");
     // Mobile must wire handlePaneExited for server-side pane exit events
     // (now in the events module, reached via the getTempTerminal dep).
     const mobileEventsSource = readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8");
@@ -1016,9 +1014,9 @@ describe("mobile bundle load", () => {
     ctx.document.getElementById("mobileDrawerBackdrop").onclick();
     equal(ctx.document.getElementById("mobileDrawer").hidden, true);
     // Drawer targets route through showScreen and close the drawer first.
-    doesNotThrow(() => ctx.HerdrMobile.openDrawerTarget("more"));
+    doesNotThrow(() => ctx.HerdrMobile.openDrawerTarget("worktrees"));
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
-    ok(html.includes("More tools"));
+    ok(html.includes("Worktrees"), "drawer target renders the worktrees screen");
     ctx.HerdrMobile.showScreen("search");
     equal(ctx.document.getElementById("mobileSearchSheet").hidden, false);
   });
@@ -1067,14 +1065,19 @@ describe("mobile bundle load", () => {
     ok(ctx.terminalStats.opened >= openedBefore);
   });
 
-  it("renders all secondary tools in More while keeping direct routes available", () => {
+  it("renders all secondary tools in the drawer while keeping direct routes available", () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
 
-    ctx.HerdrMobile.showScreen("more");
-    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    // More is a drawer, not a screen: opening it lists every secondary tool
+    // and each item routes through openDrawerTarget (showScreen under the
+    // hood). Direct showScreen routes must stay available too.
+    const moreButton = ctx.navButtons.find((button) => button.dataset.screen === "more");
+    moreButton.onclick();
+    const items = ctx.document.getElementById("mobileDrawerItems").innerHTML;
     for (const screen of ["agents", "panels", "worktrees", "files", "git", "settings"])
-      ok(html.includes(`HerdrMobile.showScreen('${screen}')`));
+      ok(items.includes(`HerdrMobile.openDrawerTarget('${screen}')`), `${screen} drawer item present`);
+    ctx.HerdrMobile.openDrawerTarget("worktrees");
     for (const screen of ["agents", "panels", "worktrees", "files", "git", "settings"])
       doesNotThrow(() => ctx.HerdrMobile.showScreen(screen));
   });

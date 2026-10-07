@@ -353,6 +353,7 @@
     if (message) message.textContent = next.message;
     sheet.hidden = false;
     backdrop.hidden = false;
+    openModalFocus(sheet);
   }
 
   function resolveConfirm(value) {
@@ -360,6 +361,7 @@
     const backdrop = el("mobileConfirmBackdrop");
     if (sheet) sheet.hidden = true;
     if (backdrop) backdrop.hidden = true;
+    closeModalFocus();
     const resolve = pendingConfirmResolve;
     pendingConfirmResolve = null;
     if (resolve) resolve(!!value);
@@ -445,6 +447,34 @@
     toolbar.hidden = !(state.toolbarOpen && html);
   }
 
+  // Modal focus management: aria-modal surfaces (tabs sheet, drawer,
+  // confirm) must move focus in on open and hand it back on close, or
+  // keyboard users land on the page behind the backdrop. The opener's
+  // active element is remembered per surface so nested overlays restore
+  // in LIFO order.
+  const modalFocusStack = [];
+
+  function focusModalSurface(surface) {
+    if (!surface || typeof surface.focus !== "function") return;
+    try { surface.focus(); } catch (_) {}
+  }
+
+  function openModalFocus(surface) {
+    if (typeof document === "undefined" || !document.activeElement) return;
+    modalFocusStack.push(document.activeElement);
+    if (surface && surface.setAttribute) {
+      surface.setAttribute("tabindex", "-1");
+      focusModalSurface(surface);
+    }
+  }
+
+  function closeModalFocus() {
+    const prior = modalFocusStack.pop();
+    if (prior && typeof prior.focus === "function") {
+      try { prior.focus(); } catch (_) {}
+    }
+  }
+
   // Terminal tabs dropdown: opened from the header tabs button, lists the
   // panels with add/close actions. Backdrop tap closes; selecting a tab
   // closes the sheet and switches.
@@ -457,14 +487,17 @@
     sheet.hidden = false;
     backdrop.hidden = false;
     renderTabsSheet();
+    openModalFocus(sheet);
   }
 
   function closeTabsSheet() {
+    if (!state.tabsSheetOpen && !el("mobileTabsSheet")) return;
     state.tabsSheetOpen = false;
     const sheet = el("mobileTabsSheet");
     const backdrop = el("mobileTabsBackdrop");
     if (sheet) sheet.hidden = true;
     if (backdrop) backdrop.hidden = true;
+    closeModalFocus();
   }
 
   function renderTabsSheet() {
@@ -490,14 +523,17 @@
     drawer.hidden = false;
     backdrop.hidden = false;
     document.body.classList.add("mobile-drawer-open");
+    openModalFocus(drawer);
   }
 
   function closeDrawer() {
     const drawer = el("mobileDrawer");
     const backdrop = el("mobileDrawerBackdrop");
+    if (!drawer && !backdrop) return;
     if (drawer) drawer.hidden = true;
     if (backdrop) backdrop.hidden = true;
     document.body.classList.remove("mobile-drawer-open");
+    closeModalFocus();
   }
 
   function openDrawerTarget(screen) {
@@ -633,7 +669,9 @@
     else if (state.screen === "settings") html = mobileSettings.render();
     else if (state.screen === "sessions") html = mobileSessions.renderSessions();
     else if (state.screen === "terminal") renderTerminalScreen(screen);
-    else if (state.screen === "more") html = mobileScreens.renderMore();
+    // "more" is not a screen: the nav More button opens the drawer, and
+    // drawer items navigate straight to the target screens. No path sets
+    // state.screen = "more" anymore, so the old grid renderer is gone.
     else html = mobileScreens.renderHome();
     if (state.screen !== screen.__lastScreenName) {
       screen.__lastScreenHtml = undefined;
@@ -690,14 +728,6 @@
       state.defaultFolder ||
       ""
     );
-  }
-
-  function renderTerminalTabsWithAdd() {
-    return mobilePanels.renderTerminalTabsWithAdd();
-  }
-
-  function renderTerminalTabs() {
-    return mobilePanels.renderTerminalTabs();
   }
 
   function renderTerminalScreen(screen) {
@@ -1185,7 +1215,6 @@
     refresh,
     confirmFn: (...args) => mobileConfirm(...args),
     getWorkingDismissals: () => workingDismissals,
-    getMobileTempTerminal: () => mobileTempTerminal,
     workspacesById,
     tabsById,
     tabCountsByWorkspace,
@@ -1485,5 +1514,28 @@
   });
   document.addEventListener("keydown", mobileAttention.unlockAudio, {
     once: true,
+  });
+  // Escape closes the top modal surface (confirm wins over tabs sheet over
+  // drawer). Input fields inside sheets handle their own Escape first; this
+  // listener runs after theirs and only acts when the key is still bubbling
+  // through the document with a surface still open.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const confirmSheet = el("mobileConfirmSheet");
+    if (confirmSheet && !confirmSheet.hidden) {
+      event.preventDefault();
+      resolveConfirm(false);
+      return;
+    }
+    if (state.tabsSheetOpen) {
+      event.preventDefault();
+      closeTabsSheet();
+      return;
+    }
+    const drawer = el("mobileDrawer");
+    if (drawer && !drawer.hidden) {
+      event.preventDefault();
+      closeDrawer();
+    }
   });
 })();
