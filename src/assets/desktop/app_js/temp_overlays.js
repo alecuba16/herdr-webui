@@ -268,6 +268,13 @@
       const manager = tool === "git" ? managers.git : managers.files;
       return manager ? manager.currentFolder() : "";
     },
+    // Drawer-side folder change (the Git path title picker inside a temporary
+    // Git overlay): sync the overlay chrome so title/restore pill match the
+    // surface the drawer already reset. No-op outside a temporary overlay.
+    applyGitFolder(folder) {
+      const manager = managers.git;
+      if (manager && typeof manager.applyFolder === "function") manager.applyFolder(folder);
+    },
     pickFolder,
     suppressing: tempOverlaySuppressing,
     suppressingFiles: tempFilesSuppressing,

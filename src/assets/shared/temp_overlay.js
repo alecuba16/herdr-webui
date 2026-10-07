@@ -509,6 +509,19 @@
       isOpen: isOpen,
       isMinimized: isMinimized,
       chooseFolder: chooseFolder,
+      // Drawer-side folder change (the Git path title picker): the overlay
+      // chrome must follow the surface it hosts, without re-rendering the
+      // surface itself (the drawer already reset its own view).
+      applyFolder: function (folder) {
+        var text = String(folder || "").trim();
+        if (!text) return;
+        var target = normalizeFolder(text);
+        if (!active || !active.open || active.folder === target) return;
+        active.folder = target;
+        active.error = "";
+        syncHead();
+        refreshRestoreBar();
+      },
       currentFolder: function () { return active ? active.folder : ""; },
     };
   }

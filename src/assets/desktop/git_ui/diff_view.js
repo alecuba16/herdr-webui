@@ -94,7 +94,7 @@
         ? `<label class="git-ui-file-filter"><span class="git-ui-file-filter-icon" aria-hidden="true"></span><input value="${esc(view.fileFilter || "")}" id="gitUiFileFilter" name="git-ui-file-filter" placeholder="Filter files"${inputAttrs("search")} oninput="HerdrGitUi.filterFiles(this.value)"></label>`
         : "";
       const fileList = cleanupOnly ? "" : `${filterInput}${fileSections}`;
-      const sideBottom = cleanupOnly ? "" : renderDiffLayoutSideToggle(view);
+      const sideBottom = renderDiffLayoutSideToggle(view);
       const returnToWorkspace = !cleanupOnly && !gitCwdMatchesWorkspace(view)
         ? `<button class="git-ui-refresh-icon git-ui-return-cwd-icon" title="Return Git to current workspace folder" aria-label="Return Git to current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()"><span></span></button>`
         : "";
@@ -110,9 +110,17 @@
 
     function renderDiffLayoutSideToggle(view) {
       const layout = diffLayoutMode();
+      const cleanupOnly = isNoGitRepositoryView(view);
       const label = view && view.file ? "File view" : "Diff view";
       const cwd = String((view && view.cwd) || "");
-      return `<div class="git-ui-side-bottom"><div class="git-ui-path-title" title="${esc(cwd)}">${esc(compactPath(cwd))}</div><div class="git-ui-toolbar-title">${esc(label)}</div><div class="git-ui-view-toggle-group git-ui-diff-layout-toggle" role="group" aria-label="Diff layout"><button class="git-ui-view-toggle ${layout === "side-by-side" ? "active" : ""}" title="Show side-by-side diff" onclick="HerdrGitUi.setDiffLayout('side-by-side')">Side</button><button class="git-ui-view-toggle ${layout === "unified" ? "active" : ""}" title="Show unified diff" onclick="HerdrGitUi.setDiffLayout('unified')">Unified</button></div></div>`;
+      const titleHint = "Change Git folder";
+      const pathTitle = `<button class="git-ui-path-title" type="button" title="${esc(titleHint)}\n${esc(cwd)}" aria-label="${esc(titleHint)}" onclick="HerdrGitUi.openCwdPicker()">${esc(compactPath(cwd))}</button>`;
+      const returnToWorkspace = !gitCwdMatchesWorkspace(view)
+        ? `<button class="git-ui-refresh-icon git-ui-return-cwd-icon" type="button" title="Return Git to workspace folder" aria-label="Return Git to workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()"><span></span></button>`
+        : "";
+      const head = `<div class="git-ui-side-bottom-head">${pathTitle}${returnToWorkspace}</div>`;
+      if (cleanupOnly) return `<div class="git-ui-side-bottom">${head}</div>`;
+      return `<div class="git-ui-side-bottom">${head}<div class="git-ui-toolbar-title">${esc(label)}</div><div class="git-ui-view-toggle-group git-ui-diff-layout-toggle" role="group" aria-label="Diff layout"><button class="git-ui-view-toggle ${layout === "side-by-side" ? "active" : ""}" title="Show side-by-side diff" onclick="HerdrGitUi.setDiffLayout('side-by-side')">Side</button><button class="git-ui-view-toggle ${layout === "unified" ? "active" : ""}" title="Show unified diff" onclick="HerdrGitUi.setDiffLayout('unified')">Unified</button></div></div>`;
     }
 
     function renderFileToolbar(activeTab) {

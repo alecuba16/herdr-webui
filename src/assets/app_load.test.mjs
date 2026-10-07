@@ -1259,6 +1259,10 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = sideFileCount\(view\)/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /disabledReason = "Open a Git repository to use this view"/);
+    // Cleanup-only (not a git repo) views keep the path title so the user can
+    // pick a different folder, but hide the diff layout toggle there.
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const sideBottom = renderDiffLayoutSideToggle\(view\);/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /if \(cleanupOnly\) return `<div class="git-ui-side-bottom">\$\{head\}<\/div>`;/);
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
     const controlsCss = readFileSync(new URL("./desktop/app_css/controls.css", import.meta.url), "utf8");
     match(controlsCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
@@ -4822,6 +4826,11 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function gitCwdMatchesWorkspace\(view\)/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /HerdrGitUi\.returnToWorkspaceCwd\(\)/);
     match(gitUiSource, /returnToWorkspaceCwd\(\) \{/);
+    // The side path title opens the folder picker and offers return to the workspace folder.
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /class="git-ui-path-title"[^`]*onclick="HerdrGitUi\.openCwdPicker\(\)"/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /Change Git folder/);
+    match(gitUiSource, /openCwdPicker\(\) \{/);
+    match(readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8"), /\.git-ui-side-bottom-head \{[\s\S]*?\.git-ui-side-bottom-head \.git-ui-return-cwd-icon span/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /git-ui-current-changes-icon/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /title="Return to current changes"/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /returnToCurrentChanges\}\$\{returnToWorkspace\}/);
@@ -4832,6 +4841,8 @@ describe("app bundle load", () => {
     match(gitShortcutsSource, /Folder picker: selected folder becomes the Git panel directory immediately/);
     match(gitShortcutsSource, /Load more changes fetches older commits/);
     match(source, /Choosing a folder in the Git directory picker immediately moves the Git panel/);
+    match(source, /clicking the folder path title in the Git side panel opens the same picker/);
+    match(source, /the ↩ button beside Refresh and the ↩ button next to the path title/);
     match(source, /WebUI no longer opens a workspace automatically on startup/);
     match(source, /In Git UI, open Git directory\/branch dialog/);
     match(featuresDoc, /The Git directory picker has a single meaning/);

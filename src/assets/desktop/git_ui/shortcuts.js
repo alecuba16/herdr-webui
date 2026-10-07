@@ -47,6 +47,15 @@
     function handleKeydown(event) {
       if (!state.visible || !event) return;
       if (tempTerminalModalVisible()) return;
+      // A stacked foreign modal (the directory picker opened from the path
+      // title or the temp overlay "Change folder") owns every key: git's
+      // capture handler runs before the picker's own handlers, so without
+      // this guard Esc would pop the navigation stack underneath it.
+      if (
+        globalThis.HerdrTempOverlay &&
+        globalThis.HerdrTempOverlay.isForeignModalVisible &&
+        globalThis.HerdrTempOverlay.isForeignModalVisible()
+      ) return;
       // While this drawer is mounted inside a minimized temporary Git
       // overlay the overlay is hidden (display:none), so the drawer must
       // not own the keyboard: the terminal parity contract releases all

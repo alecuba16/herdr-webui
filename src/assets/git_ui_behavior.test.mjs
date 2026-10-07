@@ -1306,6 +1306,65 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
   const side = mod.renderSide();
   assert.match(side, /TABS\[changes\|log\|stash\|cleanup:changes\]/);
   assert.match(side, /SECTION\[Staged:a\.js:S\]/);
+  // renderDiffLayoutSideToggle renders the cwd as a clickable path title that
+  // opens the folder picker, and the return-to-workspace button appears only
+  // when the Git cwd left the workspace folder.
+  const matchesWorkspace = (v) => !!(v && v.cwd === v.workspaceCwd);
+  const toggleMod = ctx.globalThis.HerdrGitUiDiffViewModule.create({
+    state,
+    active: () => stableView,
+    currentMode: () => "changes",
+    compareRefLabel: (ref) => `ref:${ref || "none"}`,
+    isNoGitRepositoryView: (v) => !!(((v && v.status) || {}).not_git_repository),
+    diffFile: (path) => ({ path, status: "modified", diff_kind: "M" }),
+    diffFileKey: (file) => `${file.diff_kind}:${file.path}`,
+    diffFileLineCount: () => 0,
+    diffLineCount: () => 0,
+    largeDiffLineLimit: () => 2000,
+    loadedLargeDiffPreviewLimit: () => 1200,
+    previewDiffFile: (file) => file,
+    diffLayoutMode: () => "unified",
+    hashText: (v) => "h" + String(v).length,
+    esc: (v) => String(v == null ? "" : v).replace(/</g, "&lt;"),
+    arg: (v) => encodeURIComponent(String(v == null ? "" : v)).replace(/'/g, "%27"),
+    canSearchDiff: () => false,
+    diffSearchMatchCount: () => 0,
+    LARGE_FILE_DIFF_LINE_LIMIT: 500,
+    titleWithGitShortcut: (title) => title,
+    renderDiffConflictResolutionButtons: () => "",
+    renderSideEditor: () => "",
+    ensureBlame: () => {},
+    renderChunk: () => "",
+    stashCount: () => 0,
+    canOpenStashView: () => true,
+    section: () => "",
+    commitPreviewSection: () => "",
+    stashListHtml: () => "",
+    stashFileSection: () => "",
+    renderGitViewTabs: () => "",
+    hasStagedChanges: () => false,
+    filterFiles: (paths) => paths,
+    sideFileCount: () => 0,
+    renderWorktreeActions: () => "",
+    renderGitLocationSelector: () => "",
+    renderDirContextMenu: () => "",
+    gitCwdMatchesWorkspace: matchesWorkspace,
+    compactPath: (p) => p,
+    appRefreshIconButton: () => "",
+  });
+  const matched = toggleMod.renderDiffLayoutSideToggle({ cwd: "/repo/a", workspaceCwd: "/repo/a" });
+  assert.match(matched, /class="git-ui-path-title"[^>]*onclick="HerdrGitUi\.openCwdPicker\(\)"/);
+  assert.match(matched, /Change Git folder/);
+  assert.doesNotMatch(matched, /returnToWorkspaceCwd/);
+  const diverged = toggleMod.renderDiffLayoutSideToggle({ cwd: "/repo/b", workspaceCwd: "/repo/a" });
+  assert.match(diverged, /returnToWorkspaceCwd/);
+  assert.match(diverged, /Return Git to workspace folder/);
+  // Cleanup-only (not a git repo) view keeps the clickable path title so the
+  // user can move to a real repository, but hides the diff layout toggle.
+  const noRepo = toggleMod.renderDiffLayoutSideToggle({ cwd: "/repo/b", workspaceCwd: "/repo/b", status: { not_git_repository: true } });
+  assert.match(noRepo, /openCwdPicker/);
+  assert.doesNotMatch(noRepo, /git-ui-diff-layout-toggle/, "cleanup-only view hides the layout toggle");
+  assert.doesNotMatch(noRepo, /returnToWorkspaceCwd/, "no return button in a no-repo view");
 });
 
 test("log_render module is registered and wired before git_ui.js consumes it", () => {
@@ -1518,6 +1577,143 @@ test("openFileHistory reuses the existing Git view for the same cwd", async () =
   const after = ui.activeWorkspaceId();
   assert.equal(after, before, "no synthetic git-file-history workspace view is created");
   assert.match(ctxHtml(booted), /History/, "history tab renders in the reused view");
+});
+
+test("path title picker moves the Git view and the return button restores the workspace folder", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/workspace-repo", title: "demo" }, { forceOpen: true });
+  let html = ctxHtml(booted);
+  // Side bottom: the cwd renders as a clickable path title that opens the
+  // folder picker, and no return button exists while cwd == workspaceCwd.
+  assert.match(html, /class="git-ui-path-title"[\s\S]*?onclick="HerdrGitUi\.openCwdPicker\(\)"/);
+  const bottomChunk = html.split("git-ui-side-bottom-head")[1] || "";
+  assert.ok(!bottomChunk.includes("returnToWorkspaceCwd"), "no return button while the Git cwd matches the workspace");
+  // Stub picker: records the hidden input seed and simulates a select by
+  // setting its value and dispatching the change event git_ui listens for.
+  const inputs = [];
+  const makeInput = () => {
+    const listeners = {};
+    const node = {
+      type: "",
+      style: {},
+      value: "",
+      parentNode: { removeChild() {} },
+      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+      removeEventListener(type, fn) { if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn); },
+      dispatch(type) { (listeners[type] || []).slice().forEach((fn) => fn({ target: node })); },
+    };
+    return node;
+  };
+  const rawCreateElement = ctx.document.createElement;
+  ctx.document.createElement = (tag) => {
+    const node = tag === "input" ? makeInput() : rawCreateElement(tag);
+    if (node && node.type === "") node.__tag = tag;
+    if (tag === "input") inputs.push(node);
+    return node;
+  };
+  let pickerInput = null;
+  ctx.window.HerdrDirectoryPicker = {
+    open(input) { pickerInput = input; },
+  };
+  ctx.window.addEventListener = () => {};
+  ctx.window.removeEventListener = () => {};
+  ui.openCwdPicker();
+  assert.ok(pickerInput, "picker receives the hidden input");
+  assert.equal(pickerInput.value, "/tmp/workspace-repo", "picker input seeds the current Git cwd");
+  pickerInput.value = "/tmp/other-repo";
+  pickerInput.dispatch("change");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // The selected folder becomes the Git cwd immediately: status reloads for it.
+  const statusCall = booted.calls.filter((call) => call.path === "/api/git-ui/status").pop();
+  assert.equal(statusCall.params.get("cwd"), "/tmp/other-repo", "status refetches with the picked cwd");
+  html = ctxHtml(booted);
+  const diverged = html.split("git-ui-side-bottom-head")[1] || "";
+  assert.ok(diverged.includes("returnToWorkspaceCwd"), "return button appears once the cwd left the workspace folder");
+  // Return restores the workspace folder and drops the button again.
+  ui.returnToWorkspaceCwd();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const lastStatus = booted.calls.filter((call) => call.path === "/api/git-ui/status").pop();
+  assert.equal(lastStatus.params.get("cwd"), "/tmp/workspace-repo", "return restores the workspace cwd");
+  html = ctxHtml(booted);
+  const restored = html.split("git-ui-side-bottom-head")[1] || "";
+  assert.ok(!restored.includes("returnToWorkspaceCwd"), "return button disappears after restoring");
+});
+
+test("path title picker inside a temporary Git overlay moves the overlay chrome and keeps workspaceCwd in sync", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/overlay-repo", title: "demo" }, { forceOpen: true });
+  // Simulate the temp overlay mounting: panelInTempOverlay walks to the
+  // tempGitOverlayModal, applyGitFolder records the chrome sync.
+  const panel = element();
+  panel.id = "gitUiPanel";
+  const body = element();
+  const modal = element();
+  modal.id = "tempGitOverlayModal";
+  panel.parentNode = body;
+  body.parentNode = modal;
+  ctx.document.getElementById = (id) => (id === "gitUiPanel" ? panel : element());
+  const appliedFolders = [];
+  ctx.HerdrTempOverlays = {
+    panelInTempOverlay(id) {
+      if (id !== "gitUiPanel") return false;
+      let node = ctx.document.getElementById(id);
+      while (node) {
+        if (node.id === "tempGitOverlayModal" || node.id === "tempFilesOverlayModal") return true;
+        node = node.parentNode || null;
+      }
+      return false;
+    },
+    applyGitFolder(folder) { appliedFolders.push(folder); },
+  };
+  // Stub picker like the main behavior test.
+  const makeInput = () => {
+    const listeners = {};
+    return {
+      type: "",
+      style: {},
+      value: "",
+      parentNode: { removeChild() {} },
+      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+      removeEventListener(type, fn) { if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn); },
+      dispatch(type) { (listeners[type] || []).slice().forEach((fn) => fn({ target: this })); },
+    };
+  };
+  const rawCreateElement = ctx.document.createElement;
+  let pickerInput = null;
+  ctx.document.createElement = (tag) => {
+    if (tag !== "input") return rawCreateElement(tag);
+    const node = makeInput();
+    pickerInput = node;
+    return node;
+  };
+  ctx.window.HerdrDirectoryPicker = { open(input) { pickerInput = input; } };
+  ctx.window.addEventListener = () => {};
+  ctx.window.removeEventListener = () => {};
+  ui.openCwdPicker();
+  assert.equal(pickerInput.value, "/tmp/overlay-repo", "picker seeds the overlay cwd");
+  pickerInput.value = "/tmp/moved-repo";
+  pickerInput.dispatch("change");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(appliedFolders, ["/tmp/moved-repo"], "overlay chrome follows the picked folder");
+  const statusCall = booted.calls.filter((call) => call.path === "/api/git-ui/status").pop();
+  assert.equal(statusCall.params.get("cwd"), "/tmp/moved-repo", "status refetches with the picked cwd");
+  // The pseudo workspace folder must follow, so no return button appears
+  // inside the temporary overlay.
+  const html = ctxHtml(booted);
+  const head = html.split("git-ui-side-bottom-head")[1] || "";
+  assert.ok(!head.includes("returnToWorkspaceCwd"), "no return button inside a temporary Git overlay");
 });
 
 test("Esc pops one navigation level and only hides at the changes root", async () => {
