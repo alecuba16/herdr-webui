@@ -1521,6 +1521,11 @@
   // is still bubbling through the document with a surface still open.
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    // Input fields inside sheets handle their own Escape first (file
+    // rename, new file, git commit, workspace rename) and call
+    // preventDefault. If they already handled it, the chain must not
+    // cascade and close the surface underneath in the same keypress.
+    if (event.defaultPrevented) return;
     const confirmSheet = el("mobileConfirmSheet");
     if (confirmSheet && !confirmSheet.hidden) {
       event.preventDefault();
