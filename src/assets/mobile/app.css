@@ -404,7 +404,12 @@ body.light {
 }
 .mobile-terminal-screen {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  /* Single row: the keybar moved to the toolbar above the nav bar and the
+     tabs to the header dropdown, so the shell is the only child. Keeping
+     the old auto-auto-1fr rows stranded the shell in the first auto row
+     (content-sized, ~186px) and left the 1fr row empty below as a blank
+     strip. */
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   min-width: 0;
