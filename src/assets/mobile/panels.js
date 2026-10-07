@@ -32,7 +32,39 @@
       // One-shot Ctrl: the state lives on the button itself (aria-pressed),
       // so the next control-key tap sends Ctrl+<key> and resets. onmousedown
       // preventDefault keeps wterm's textarea focused: no focus steal.
-      return `<div class="mobile-keybar" id="mobileKeyBar" aria-label="Terminal keys" role="toolbar"><button class="mobile-keybar-key" type="button" data-key="esc" aria-label="Esc key" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">Esc</button><button class="mobile-keybar-key" type="button" data-key="tab" aria-label="Tab key" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">Tab</button><button class="mobile-keybar-key" type="button" data-key="ctrl" aria-pressed="false" aria-label="Ctrl modifier, one-shot" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">Ctrl</button><button class="mobile-keybar-key" type="button" data-key="up" aria-label="Up arrow" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">↑</button><button class="mobile-keybar-key" type="button" data-key="down" aria-label="Down arrow" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">↓</button><button class="mobile-keybar-key" type="button" data-key="left" aria-label="Left arrow" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">←</button><button class="mobile-keybar-key" type="button" data-key="right" aria-label="Right arrow" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">→</button><button class="mobile-keybar-key mobile-keybar-danger" type="button" data-key="ctrl-c" aria-label="Ctrl C, interrupt" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">^C</button></div>`;
+      //
+      // Two rows: the first carries the classic set (Esc/Tab/Ctrl/arrows/^C),
+      // the second the combos Android keyboards cannot type but shells and
+      // pagers need constantly (EOF, suspend, clear, line edits, reverse
+      // search, pager scroll). Rows scroll horizontally so narrow screens
+      // keep every key reachable.
+      const key = (name, label, aria, extra = "", pressed) =>
+        `<button class="mobile-keybar-key${extra}" type="button" data-key="${name}"${pressed ? ' aria-pressed="false"' : ""} aria-label="${aria}" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">${label}</button>`;
+      const row1 = [
+        key("esc", "Esc", "Esc key"),
+        key("tab", "Tab", "Tab key"),
+        key("ctrl", "Ctrl", "Ctrl modifier, one-shot", "", true),
+        key("up", "↑", "Up arrow"),
+        key("down", "↓", "Down arrow"),
+        key("left", "←", "Left arrow"),
+        key("right", "→", "Right arrow"),
+        key("ctrl-c", "^C", "Ctrl C, interrupt", " mobile-keybar-danger"),
+      ].join("");
+      const row2 = [
+        key("ctrl-d", "^D", "Ctrl D, end of file", " mobile-keybar-danger"),
+        key("ctrl-z", "^Z", "Ctrl Z, suspend job"),
+        key("ctrl-l", "^L", "Ctrl L, clear screen"),
+        key("ctrl-a", "^A", "Ctrl A, start of line"),
+        key("ctrl-e", "^E", "Ctrl E, end of line"),
+        key("ctrl-u", "^U", "Ctrl U, kill line"),
+        key("ctrl-w", "^W", "Ctrl W, kill word"),
+        key("ctrl-r", "^R", "Ctrl R, reverse search"),
+        key("pgup", "PgUp", "Page up"),
+        key("pgdn", "PgDn", "Page down"),
+        key("home", "Home", "Home"),
+        key("end", "End", "End"),
+      ].join("");
+      return `<div class="mobile-keybar" id="mobileKeyBar" aria-label="Terminal keys" role="toolbar"><div class="mobile-keybar-row">${row1}</div><div class="mobile-keybar-row">${row2}</div></div>`;
     }
 
     function renderTerminal() {

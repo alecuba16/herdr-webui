@@ -548,15 +548,23 @@ body.light {
 }
 .mobile-keybar {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+}
+/* Each key row scrolls horizontally; keys keep a fixed floor so tall
+   labels (^C, PgUp) never reflow the rows. */
+.mobile-keybar-row {
+  display: flex;
   gap: 6px;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
   -webkit-overflow-scrolling: touch;
 }
-.mobile-keybar::-webkit-scrollbar {
+.mobile-keybar-row::-webkit-scrollbar {
   display: none;
 }
 .mobile-keybar-key {
@@ -583,14 +591,14 @@ body.light {
   background: var(--accent);
   color: var(--accent-fg);
 }
-/* 320-360px viewports: the default row (8 keys × 40px min + 6px gaps +
-   padding) needs ~378px and pushes ^C offscreen. Shrink the gap and the
-   key floor so all eight keys, including the ^C interrupt, stay reachable
-   without a horizontal swipe. */
+/* 320-360px viewports: shrink gaps and key floors so the first row (Esc
+   Tab Ctrl ↑↓←→ ^C) fits without a swipe; the combo row scrolls. */
 @media (max-width: 360px) {
   .mobile-keybar {
-    gap: 4px;
     padding: 6px 6px;
+  }
+  .mobile-keybar-row {
+    gap: 4px;
   }
   .mobile-keybar-key {
     min-width: 32px;

@@ -453,13 +453,16 @@
 
   // Terminal key toolbar: rendered by panels.js into #mobileToolbar above
   // the nav bar. The floating Keys button (in the terminal view) toggles
-  // it; the choice persists.
+  // it; the choice persists. Folding the toolbar changes the terminal
+  // shell height, so every toggle re-fits the grid (debounced) instead of
+  // leaving the terminal sized for the old layout.
   function toggleToolbar() {
     state.toolbarOpen = !state.toolbarOpen;
     try {
       localStorage.setItem("herdr-mobile-toolbar", state.toolbarOpen ? "open" : "closed");
     } catch (_) {}
     syncToolbar();
+    scheduleTerminalResize();
   }
 
   function syncToolbar() {
@@ -1515,8 +1518,33 @@
     keyBarKey(_event, button) {
       const key = button && button.dataset ? button.dataset.key : null;
       if (!key || !mobileTerminal || !mobileTerminal.sendControlKey) return;
-      const PLAIN = { esc: "\x1b", tab: "\t", up: "\x1b[A", down: "\x1b[B", right: "\x1b[C", left: "\x1b[D" };
-      const CTRL = { up: "\x1b[1;5A", down: "\x1b[1;5B", right: "\x1b[1;5C", left: "\x1b[1;5D" };
+      const PLAIN = {
+        esc: "\x1b",
+        tab: "\t",
+        up: "\x1b[A",
+        down: "\x1b[B",
+        right: "\x1b[C",
+        left: "\x1b[D",
+        pgup: "\x1b[5~",
+        pgdn: "\x1b[6~",
+        home: "\x1b[H",
+        end: "\x1b[F",
+      };
+      // Ctrl+letter combos the on-screen Android keyboard cannot type but
+      // shells, pagers and readline use constantly. Home/End send the
+      // application-friendly H/F forms (readline accepts both).
+      const CTRL_LETTER = {
+        c: "\x03",
+        d: "\x04",
+        z: "\x1a",
+        l: "\x0c",
+        a: "\x01",
+        e: "\x05",
+        u: "\x15",
+        w: "\x17",
+        r: "\x12",
+      };
+      const CTRL_ARROW = { up: "\x1b[1;5A", down: "\x1b[1;5B", right: "\x1b[1;5C", left: "\x1b[1;5D" };
       // Mirror the armed state onto the button for CSS (aria-pressed); the
       // source of truth is the module-level flag so DOM stubs can't desync.
       const setArmed = (armed) => {
@@ -1527,12 +1555,20 @@
         setArmed(!keyBarCtrlArmed);
         return;
       }
+      const ctrlCombo = /^ctrl-([a-z])$/.exec(key);
+      if (ctrlCombo) {
+        // With Ctrl armed, the explicit combo keys still send their literal
+        // bytes; arming then tapping a combo would otherwise double-apply.
+        mobileTerminal.sendControlKey(CTRL_LETTER[ctrlCombo[1]] || "");
+        setArmed(false);
+        return;
+      }
       if (key === "ctrl-c") {
         mobileTerminal.sendControlKey("\x03");
         setArmed(false);
         return;
       }
-      mobileTerminal.sendControlKey(keyBarCtrlArmed && CTRL[key] ? CTRL[key] : PLAIN[key]);
+      mobileTerminal.sendControlKey(keyBarCtrlArmed && CTRL_ARROW[key] ? CTRL_ARROW[key] : PLAIN[key]);
       setArmed(false);
     },
     currentScreen,

@@ -1956,11 +1956,19 @@ describe("mobile bundle load", () => {
     // The screen render memo keeps the first terminal HTML in place, so
     // assert on the markup builder in the bundle source.
     match(source, /<div class="mobile-keybar" id="mobileKeyBar"/);
-    for (const key of ["esc", "tab", "ctrl", "up", "down", "left", "right", "ctrl-c"])
-      ok(source.includes(`data-key="${key}"`));
-    // No focus steal: every key bar button prevents default on mousedown.
+    // Two rows: classic keys first, then combos Android keyboards cannot
+    // type (EOF, suspend, clear, line edits, reverse search, pager scroll).
+    equal((source.match(/class="mobile-keybar-row"/g) || []).length, 2, "keybar renders two rows");
     const keybarSource = source.match(/function renderKeyBar\(\) \{[\s\S]*?\n    \}\n/)[0];
-    equal((keybarSource.match(/onmousedown="event\.preventDefault\(\)"/g) || []).length, 8);
+    for (const key of [
+      "esc", "tab", "ctrl", "up", "down", "left", "right", "ctrl-c",
+      "ctrl-d", "ctrl-z", "ctrl-l", "ctrl-a", "ctrl-e", "ctrl-u", "ctrl-w", "ctrl-r",
+      "pgup", "pgdn", "home", "end",
+    ])
+      ok(keybarSource.includes(`key("${key}"`), `${key} key present`);
+    // No focus steal: every key bar button prevents default on mousedown.
+    equal((keybarSource.match(/onmousedown="event\.preventDefault\(\)"/g) || []).length, 1, "mousedown guard on the shared key builder");
+    equal((keybarSource.match(/\bkey\("|\bkey\("|key\("/g) || []).length, 20, "twenty keys across the two rows");
     // Keyboard-open hides the key bar along with header/nav.
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     match(mobileCss, /body\.mobile-keyboard-open \.mobile-keybar/);
@@ -1995,6 +2003,31 @@ describe("mobile bundle load", () => {
     );
     ctx.HerdrMobile.toggleToolbar();
     equal(ctx.document.getElementById("mobileToolbar").hidden, before, "toggle back restores");
+    // Folding the toolbar changes the terminal shell height, so the toggle
+    // schedules a terminal re-fit: after the debounce the input WS carries
+    // a resize frame with the recomputed grid (smaller when the toolbar
+    // opens, taller when it folds).
+    const resizeFrames = [];
+    const originalSend = ctx.lastSocket.send.bind(ctx.lastSocket);
+    ctx.lastSocket.send = (data) => { originalSend(data); try { resizeFrames.push(JSON.parse(String(data))); } catch (_) {} };
+    const shell = ctx.document.getElementById("terminalShell");
+    ctx.HerdrMobile.toggleToolbar();
+    // Simulate what the browser does: the toolbar row takes shell height
+    // (the stub has no layout, so drive the measured box by hand).
+    shell.clientHeight -= 104;
+    await ctx.settle();
+    await ctx.flushTimers();
+    await ctx.settle();
+    const resize = resizeFrames.filter((f) => f && f.type === "resize");
+    ok(resize.length > 0, "toggle sends a terminal resize frame");
+    if (resize.length) {
+      ok(Number.isInteger(resize[resize.length - 1].cols) && Number.isInteger(resize[resize.length - 1].rows), "resize frame carries an integer grid");
+    }
+    ctx.HerdrMobile.toggleToolbar();
+    // Fold: shell height goes back to the toolbar-less size.
+    shell.clientHeight += 104;
+    await ctx.settle();
+    await ctx.flushTimers();
     // CSS: keyboard-open hides the toolbar row and the fab too.
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     match(mobileCss, /body\.mobile-keyboard-open \.mobile-toolbar/);
@@ -2097,6 +2130,28 @@ describe("mobile bundle load", () => {
     equal(sent[0], "\x1b");
     equal(sent[1], "\t");
     equal(sent[2], "\x03");
+    // The Android-hostile combo keys send their literal control bytes.
+    const combos = { "ctrl-d": "\x04", "ctrl-z": "\x1a", "ctrl-l": "\x0c", "ctrl-a": "\x01", "ctrl-e": "\x05", "ctrl-u": "\x15", "ctrl-w": "\x17", "ctrl-r": "\x12" };
+    let i = 3;
+    for (const [k, bytes] of Object.entries(combos)) {
+      ctx.HerdrMobile.keyBarKey(null, { dataset: { key: k }, setAttribute() {} });
+      equal(sent[i], bytes, `${k} sends ${JSON.stringify(bytes)}`);
+      i += 1;
+    }
+    // Pager keys: PgUp/PgDn/Home/End escape sequences.
+    const pager = { pgup: "\x1b[5~", pgdn: "\x1b[6~", home: "\x1b[H", end: "\x1b[F" };
+    for (const [k, bytes] of Object.entries(pager)) {
+      ctx.HerdrMobile.keyBarKey(null, { dataset: { key: k }, setAttribute() {} });
+      equal(sent[i], bytes, `${k} sends ${JSON.stringify(bytes)}`);
+      i += 1;
+    }
+    // Arming Ctrl then tapping a combo still sends the literal combo (no
+    // double-apply), and disarms afterwards.
+    const armed = { dataset: { key: "ctrl" }, ariaPressed: null, setAttribute(_n, v) { this.ariaPressed = v; } };
+    ctx.HerdrMobile.keyBarKey(null, armed);
+    equal(armed.ariaPressed, "true");
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "ctrl-l" }, setAttribute() {} });
+    equal(sent[i], "\x0c", "armed Ctrl then combo sends the literal combo");
   });
 
   it("applies one-shot Ctrl to the next arrow key", async () => {
