@@ -267,8 +267,7 @@ body.light {
   border-color: var(--accent);
   color: var(--accent-fg);
 }
-.mobile-btn.danger,
-.mobile-tab-close {
+.mobile-btn.danger {
   border-color: var(--danger, #f38ba8);
   color: var(--danger, #f38ba8);
 }
@@ -458,39 +457,9 @@ body.light {
 .mobile-terminal-screen > .mobile-keybar:empty {
   display: none;
 }
-.mobile-tabs {
-  display: flex;
-  gap: 8px;
-  overflow: auto;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-}
-.mobile-tab {
-  flex: 0 0 auto;
-  min-height: 40px;
-  max-width: 180px;
-  padding: 9px 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--panel2);
-  color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mobile-tab.active {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--accent-fg);
-}
-.mobile-tab-add {
-  min-width: 44px;
-  font-weight: 900;
-}
-.mobile-tab-close {
-  min-width: 44px;
-  font-weight: 900;
-}
+/* Old in-terminal tabs strip removed: the tabs moved to the header dropdown
+   (mobileTabsSheet / mobile-tabs-sheet-list). The mobile-tabs/mobile-tab
+   styles are kept out of the sheet path; strip classes are deleted. */
 .mobile-terminal-shell {
   contain: layout paint style;
   position: relative;
@@ -745,8 +714,7 @@ body.mobile-keyboard-open .mobile-app {
 body.mobile-keyboard-open .mobile-header,
 body.mobile-keyboard-open .mobile-nav,
 body.mobile-keyboard-open .mobile-keybar,
-body.mobile-keyboard-open .mobile-toolbar,
-body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
+body.mobile-keyboard-open .mobile-toolbar {
   display: none;
 }
 .mobile-actions {
