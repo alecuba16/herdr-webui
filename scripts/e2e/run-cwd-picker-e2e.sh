@@ -13,6 +13,9 @@
 # Environment overrides:
 #   E2E_PORT     server port (default 8897)
 #   CDP_PORT     headless Chrome CDP port (default 9224)
+#   CHROME_BIN   browser path (default: first of
+#                              ~/.agents/chrome-headless-shell/.../chrome-headless-shell,
+#                              /Applications/Google Chrome.app/...)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -21,8 +24,22 @@ CDP="${CDP_PORT:-9224}"
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
 
-CHROME="$HOME/.agents/chrome-headless-shell/chrome-headless-shell-mac-arm64/chrome-headless-shell"
-[[ -x "$CHROME" ]] || { echo "ERROR: Chrome for Testing not found at $CHROME (see cdp-chrome skill)" >&2; exit 1; }
+chrome_bin() {
+  if [[ -n "${CHROME_BIN:-}" ]]; then
+    if [[ ! -x "$CHROME_BIN" ]]; then
+      echo "ERROR: CHROME_BIN='$CHROME_BIN' is not executable." >&2
+      return 1
+    fi
+    echo "$CHROME_BIN"; return 0
+  fi
+  local shell="$HOME/.agents/chrome-headless-shell/chrome-headless-shell-mac-arm64/chrome-headless-shell"
+  if [[ -x "$shell" ]]; then echo "$shell"; return 0; fi
+  local app="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  if [[ -x "$app" ]]; then echo "$app"; return 0; fi
+  echo "ERROR: no chrome-headless-shell or Google Chrome found; set CHROME_BIN." >&2
+  return 1
+}
+CHROME="$(chrome_bin)"
 
 for p in "$PORT" "$CDP"; do
   if lsof -nP -iTCP:"$p" -sTCP:LISTEN 2>/dev/null | grep -q .; then
@@ -55,6 +72,15 @@ cleanup() {
   rm -rf "$WORK" "$CHROME_PROFILE" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# An EXIT trap alone does not fire on SIGTERM/SIGINT: `timeout` or Ctrl+C
+# would leave the server and Chrome behind. Route these signals to the
+# EXIT trap (same as run-keyboard-guards-e2e.sh).
+on_signal() {
+  echo "run-cwd-picker-e2e.sh: interrupted, tearing down" >&2
+  exit 130
+}
+trap on_signal INT TERM
 
 echo "==> workdir: $WORK"
 
@@ -100,19 +126,23 @@ wait_for "server" "http://127.0.0.1:$PORT/" || exit 1
 echo "==> starting headless Chrome (Chrome for Testing) on CDP $CDP"
 "$CHROME" --headless=new --remote-debugging-port="$CDP" --no-first-run \
   --no-default-browser-check --user-data-dir="$CHROME_PROFILE" \
-  "http://127.0.0.1:$PORT/" &
+  "http://127.0.0.1:$PORT/" >"$WORK/chrome.log" 2>&1 &
 CHROME_PID=$!
-wait_for "chrome CDP" "http://127.0.0.1:$CDP/json/version" || exit 1
+if ! wait_for "chrome CDP" "http://127.0.0.1:$CDP/json/version"; then
+  echo "--- chrome stderr ---" >&2
+  cat "$WORK/chrome.log" >&2 || true
+  exit 1
+fi
 
 echo "==> running cwd-picker acceptance checks"
+status=0
 CDP_HTTP="http://127.0.0.1:$CDP" APP_URL="http://127.0.0.1:$PORT/" \
   REPO_A="$REPO_A" REPO_B="$REPO_B" PLAIN_DIR="$PLAIN" \
-  node "$ROOT/scripts/e2e/cwd-picker-acceptance.mjs"
-status=$?
+  node "$ROOT/scripts/e2e/cwd-picker-acceptance.mjs" || status=$?
 
 if [[ $status -eq 0 ]]; then
   echo "==> cwd-picker acceptance: PASSED"
 else
-  echo "==> cwd-picker acceptance: FAILED (exit $status)"
+  echo "==> cwd-picker acceptance: FAILED (exit $status)" >&2
 fi
 exit $status

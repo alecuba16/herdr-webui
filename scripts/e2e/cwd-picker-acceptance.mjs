@@ -232,9 +232,10 @@ async function main() {
   record("return button restores the workspace folder and disappears", step4.clicked && !step4.timeout, JSON.stringify(step4));
 
   // 5. Cleanup-only view (plain folder): keep the clickable title.
+  // Same real flow as step 3 (title click -> picker -> Select), then assert
+  // the no-repo view keeps the title and hides the diff layout toggle.
+  await evalExpr(`document.querySelector("#gitUiPanel .git-ui-path-title").click()`);
   const step5 = await evalExpr(`(async () => {
-    HerdrGitUi.openCwdPicker();
-    await new Promise((r) => setTimeout(r, 400));
     const modal = document.getElementById("directoryPickerModal");
     if (!modal) return { reopened: false };
     HerdrDirectoryPicker.toggle(${JSON.stringify(encodeURIComponent(PLAIN))});
@@ -249,10 +250,12 @@ async function main() {
       reopened: true, selected: true,
       titleIsButton: !!(title && title.tagName === "BUTTON"),
       layoutToggleGone: !document.querySelector("#gitUiPanel .git-ui-diff-layout-toggle"),
+      noRepoBanner: !!document.querySelector("#gitUiPanel .git-ui-status-cleanup-only"),
     };
   })()`);
   record("cleanup-only view keeps the clickable path title", step5.reopened && step5.selected && step5.titleIsButton, JSON.stringify(step5));
   record("cleanup-only view hides the diff layout toggle", step5.layoutToggleGone === true, "");
+  record("cleanup-only view really entered the no-repo state", step5.noRepoBanner === true, JSON.stringify(step5.noRepoBanner));
 
   const screenshot = await cdp.send("Page.captureScreenshot", { format: "png" });
   mkdirSync(outPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
