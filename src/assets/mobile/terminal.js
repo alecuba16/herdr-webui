@@ -66,7 +66,11 @@
       if (!shell) return { cols: 80, rows: 24 };
       return HerdrTerminalFit.gridSize(shell, term, {
         fallbackCell: { width: 9, height: 18 },
-        minCols: 40,
+        // 320px-class viewports leave ~304px of shell content width; the
+        // shared default floor of 40 cols needs ~336px and would force the
+        // grid wider than the shell. Fit the real width instead of the
+        // floor so narrow phones scroll inside the shell, never the app.
+        minCols: 20,
         minRows: 10,
       });
     }

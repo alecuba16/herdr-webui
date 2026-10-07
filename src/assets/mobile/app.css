@@ -112,6 +112,13 @@ body.light {
 }
 .mobile-app {
   display: grid;
+  /* Explicit minmax(0,1fr) column: an implicit single column is sized
+     "auto" (max-content), so the terminal's term-grid (min-width:
+     max-content) could inflate the whole app track past the viewport
+     (observed 386px at 320) and pushed the nav/keybar offscreen.
+     minmax(0,1fr) clamps the track to the viewport; terminal content
+     scrolls inside its own shell instead. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto auto;
   height: var(--herdr-mobile-viewport-height);
   max-height: var(--herdr-mobile-viewport-height);
@@ -459,6 +466,19 @@ body.light {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--accent-fg);
+}
+/* 320-360px viewports: the default row (8 keys × 40px min + 6px gaps +
+   padding) needs ~378px and pushes ^C offscreen. Shrink the gap and the
+   key floor so all eight keys, including the ^C interrupt, stay reachable
+   without a horizontal swipe. */
+@media (max-width: 360px) {
+  .mobile-keybar {
+    gap: 4px;
+    padding: 6px 6px;
+  }
+  .mobile-keybar-key {
+    min-width: 32px;
+  }
 }
 .mobile-keybar-danger {
   color: var(--danger, #f38ba8);

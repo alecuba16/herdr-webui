@@ -572,6 +572,39 @@ describe("mobile bundle load", () => {
     match(mobileCss, /\.mobile-sheet\[hidden\],[\s\S]*?\.mobile-sheet-backdrop\[hidden\] \{[\s\S]*?display: none;/);
   });
 
+  it("clamps the mobile app grid column so wide terminal content cannot stretch the shell", () => {
+    // Regression (observed live at a 320px viewport): .mobile-app declared
+    // only grid-template-rows, so its single implicit column was sized
+    // "auto" (max-content). The terminal's .term-grid carries
+    // min-width: max-content, and once a terminal grid was wider than the
+    // viewport the implicit auto track (and with it the header/nav/keybar)
+    // stretched to the grid width, pushing the nav offscreen. The explicit
+    // minmax(0, 1fr) column clamps the track to the viewport so the
+    // terminal scrolls inside its own shell instead.
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    match(
+      mobileCss,
+      /\.mobile-app \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\) auto auto;/,
+    );
+  });
+
+  it("fits the mobile terminal to the real shell width on narrow viewports", () => {
+    // Regression (observed live at 320px): the shared gridSize default floor
+    // of 40 cols needs ~336px, wider than the ~304px of shell content at a
+    // 320px viewport, so the terminal rendered wider than its shell and
+    // forced horizontal overflow. The mobile size() passes a lower floor so
+    // the fit uses the real available width.
+    const terminalSource = readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8");
+    match(terminalSource, /minCols: 20,/);
+    // Guard against the 40-col floor sneaking back into the mobile fit.
+    const sizeBody = terminalSource.slice(
+      terminalSource.indexOf("function size()"),
+      terminalSource.indexOf("async function connect()"),
+    );
+    ok(sizeBody.length > 0, "mobile size() body found");
+    ok(!/minCols: 40/.test(sizeBody), "mobile terminal must not clamp cols to 40");
+  });
+
   it("has mobile CSS parity for CodeMirror Zed-like editor enhancements", () => {
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     match(mobileCss, /\.cm-foldGutter/);
