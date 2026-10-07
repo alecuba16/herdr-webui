@@ -670,6 +670,192 @@ input {
   margin: 2px 0;
   user-select: none;
 }
+/* ---- ask_user decision chooser (blocked pane) ----
+ * Renders live controls only while the pane is blocked and the question
+ * was not answered/dismissed from the webui; otherwise a quiet answered
+ * hint. Answers synthesize keystrokes into the pane (prompt_cards
+ * pattern), so the buttons must be unmistakably clickable. */
+.lens-decision {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent, #89b4fa);
+  border-radius: var(--radius-md, 8px);
+  margin: 10px 0;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lens-decision-question {
+  color: var(--fg);
+  font-weight: 600;
+}
+.lens-decision-context {
+  color: var(--fg-dim, #a6adc8);
+  font-size: var(--fs-2xs, 11px);
+}
+.lens-decision-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: 6px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+.lens-decision-option[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.6;
+}
+.lens-decision-option:hover:not([aria-disabled="true"]) {
+  border-color: var(--accent, #89b4fa);
+}
+.lens-decision-label {
+  font-weight: 500;
+}
+.lens-decision-detail {
+  color: var(--fg-dim, #a6adc8);
+  font-size: var(--fs-2xs, 11px);
+}
+.lens-decision-form {
+  display: flex;
+  gap: 6px;
+}
+.lens-decision-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: 6px 10px;
+  font: inherit;
+}
+.lens-decision-input:focus-visible,
+.lens-decision-option:focus-visible,
+.lens-decision-dismiss:focus-visible,
+.lens-decision-expand:focus-visible,
+.lens-decision-send:focus-visible {
+  outline: var(--ring, 2px solid var(--accent, #89b4fa));
+  outline-offset: var(--ring-offset, 2px);
+}
+.lens-decision-send,
+.lens-decision-dismiss,
+.lens-decision-expand {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: 6px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+.lens-decision-hint {
+  color: var(--fg-dim, #a6adc8);
+  font-size: var(--fs-2xs, 11px);
+  user-select: none;
+}
+/* ---- working (thinking) indicator ----
+ * Animated collapsed block at the chat tail while the pane's agent
+ * works. Collapsed: pulsing dots + "Thinking…". Expanded: live
+ * elapsed timer and the open turn's running tools. The pane must be
+ * working (not blocked — the chooser owns blocked) for this to exist. */
+.lens-working {
+  margin: 6px 0;
+}
+.lens-working-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-dim, #a6adc8);
+  cursor: pointer;
+  font-size: var(--fs-2xs, 11px);
+  user-select: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.lens-working-toggle:hover {
+  color: var(--fg);
+}
+.lens-working-toggle:focus-visible {
+  outline: 1px solid var(--border2, #585b70);
+  outline-offset: 2px;
+}
+.lens-working-dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.lens-working-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+  animation: lens-working-pulse 1.2s ease-in-out infinite;
+}
+.lens-working-dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.lens-working-dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes lens-working-pulse {
+  0%, 60%, 100% {
+    opacity: 0.25;
+    transform: scale(0.85);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+.lens-working-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lens-working-caret {
+  color: var(--fg-dim, #a6adc8);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.lens-working-body {
+  color: var(--fg-dim, #a6adc8);
+  border-left: 2px solid var(--accent, #89b4fa);
+  margin: 4px 0 4px 2px;
+  padding: 2px 0 2px 10px;
+  font-size: var(--fs-2xs, 11px);
+}
+.lens-working-elapsed {
+  font-variant-numeric: tabular-nums;
+}
+.lens-working-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+.lens-working-tool {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill, 999px);
+  padding: 1px 8px;
+  font-size: var(--fs-2xs, 11px);
+}
+.lens-working-note {
+  color: var(--fg-dim, #a6adc8);
+}
+@media (prefers-reduced-motion: reduce) {
+  .lens-working-dots i {
+    animation: none;
+    opacity: 0.6;
+  }
+}
 .terminal-composer-row {
   display: flex;
   gap: 8px;
