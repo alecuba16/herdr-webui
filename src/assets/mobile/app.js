@@ -1516,15 +1516,21 @@
     once: true,
   });
   // Escape closes the top modal surface (confirm wins over tabs sheet over
-  // drawer). Input fields inside sheets handle their own Escape first; this
-  // listener runs after theirs and only acts when the key is still bubbling
-  // through the document with a surface still open.
+  // drawer over prompt card). Input fields inside sheets handle their own
+  // Escape first; this listener runs after theirs and only acts when the key
+  // is still bubbling through the document with a surface still open.
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     const confirmSheet = el("mobileConfirmSheet");
     if (confirmSheet && !confirmSheet.hidden) {
       event.preventDefault();
       resolveConfirm(false);
+      return;
+    }
+    const promptCard = el("mobilePromptCard");
+    if (promptCard) {
+      event.preventDefault();
+      promptCard.querySelector(".mobile-prompt-head button")?.click();
       return;
     }
     if (state.tabsSheetOpen) {
