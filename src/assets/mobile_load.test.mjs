@@ -557,6 +557,16 @@ describe("mobile bundle load", () => {
     match(mobileCss, /\.temp-terminal-body \.wterm \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
   });
 
+  it("keeps hidden sheets off screen despite their display rules", () => {
+    // The confirm sheet stays mounted in the shell with [hidden]; without a
+    // specificity guard the .mobile-sheet { display: flex } rule would beat
+    // the browser default [hidden] { display: none } and the idle sheet
+    // (handle + mobile-sheet-actions Cancel/Confirm row) would render pinned
+    // to the bottom of every screen.
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    match(mobileCss, /\.mobile-sheet\[hidden\],[\s\S]*?\.mobile-sheet-backdrop\[hidden\] \{[\s\S]*?display: none;/);
+  });
+
   it("has mobile CSS parity for CodeMirror Zed-like editor enhancements", () => {
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     match(mobileCss, /\.cm-foldGutter/);

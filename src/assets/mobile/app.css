@@ -764,6 +764,14 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   z-index: 90;
   background: rgba(0, 0, 0, 0.45);
 }
+/* The shell keeps the confirm sheet mounted with [hidden]; without this
+   guard the .mobile-sheet/.mobile-sheet-backdrop display rules above would
+   override the browser's default [hidden] { display: none } and the idle
+   sheet would render pinned to the bottom of every screen. */
+.mobile-sheet[hidden],
+.mobile-sheet-backdrop[hidden] {
+  display: none;
+}
 .mobile-sheet {
   position: fixed;
   left: 0;
