@@ -21,6 +21,10 @@
     // "workspace" mode and the user confirmed. Default implementation posts
     // the open-workspace request itself.
     openWorkspaceFn,
+    // Optional: called with (field, folder) after a field-mode confirm;
+    // lets the app chain a follow-up action (worktree discovery) so the
+    // merged Choose-folder flow needs no second tap.
+    onFieldPickFn,
   }) {
     const picker = {
       active: false,
@@ -104,9 +108,12 @@
     function close() {
       picker.active = false;
       clearTimeout(picker.filterTimer);
-      const backdrop = document.getElementById("mobileDirectoryPickerBackdrop");
-      if (backdrop && backdrop.remove) backdrop.remove();
-      else if (backdrop && backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+      // The sheet is a body sibling of the backdrop, so remove both.
+      for (const id of ["mobileDirectoryPickerBackdrop", "mobileDirectoryPickerSheet"]) {
+        const node = document.getElementById(id);
+        if (node && node.remove) node.remove();
+        else if (node && node.parentNode) node.parentNode.removeChild(node);
+      }
     }
 
     // ---- Data ----
@@ -206,6 +213,7 @@
       if (!field) return;
       state[field] = folder;
       render();
+      if (typeof onFieldPickFn === "function") onFieldPickFn(field, folder);
     }
 
     async function defaultOpenWorkspace(folder) {
@@ -300,7 +308,10 @@
         sheet.setAttribute("role", "dialog");
         sheet.setAttribute("aria-modal", "true");
         sheet.setAttribute("aria-label", "Choose folder");
-        backdrop.appendChild(sheet);
+        // Sibling of the backdrop, NOT its child: clicks inside the sheet
+        // must not bubble into backdrop.onclick = close, or every row tap
+        // would dismiss the picker before enter/selectCurrent can run.
+        document.body.appendChild(sheet);
       }
       const canGoUp = !!picker.path || picker.root !== "/";
       const entries = (picker.entries || []).filter(filterMatches);

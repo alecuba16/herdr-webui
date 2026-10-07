@@ -916,6 +916,11 @@
     // Open-folder flows live in worktrees.js so the navigate logic stays in
     // one place; the picker just hands over the confirmed path.
     openWorkspaceFn: (folder) => mobileWorktrees.openFolderAsWorkspace(folder),
+    // Choose-folder confirm for the discovery path: fill the field, then
+    // auto-run discovery so the merged flow needs no second tap.
+    onFieldPickFn: (field, folder) => {
+      if (field === "worktreeDiscoverPath") mobileWorktrees.load();
+    },
   });
   mobileFileBrowser = globalThis.HerdrMobileFileBrowser.create({
     api,
@@ -1129,7 +1134,10 @@
     filesTypeToFilter: mobileFileBrowser.typeToFilter,
     loadWorktrees: mobileWorktrees.load,
     openWorktree: mobileWorktrees.open,
-    openFolderAsWorkspace: () => (mobileDirectoryPicker ? mobileDirectoryPicker.openForWorkspace() : Promise.resolve()),
+    // With a path argument: open that folder as a workspace directly (the
+    // merged Results card). Without one: open the directory picker sheet
+    // (task-hub card and discover flows).
+    openFolderAsWorkspace: (path) => (path ? mobileWorktrees.openFolderAsWorkspace(path) : mobileDirectoryPicker ? mobileDirectoryPicker.openForWorkspace() : Promise.resolve()),
     browseDirectory: (field) => mobileDirectoryPicker && mobileDirectoryPicker.openForField(field),
     createWorktree: mobileWorktrees.create,
     loadRecentWorkspaces: mobileWorktrees.loadRecent,

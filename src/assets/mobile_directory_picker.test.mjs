@@ -57,6 +57,7 @@ function pickerContext({
   failWorkspaceWith = null,
   accessResponse = {},
   openWorkspaceFn = undefined,
+  onFieldPickFn = undefined,
   defaultFolder = "",
   fieldPath = "",
   treeGate = null,
@@ -106,7 +107,16 @@ function pickerContext({
         allNodes.push(node);
         return node;
       },
-      body: { appendChild: () => {} },
+      body: {
+        // Track body children so tests can assert the picker sheet mounts as a
+        // backdrop SIBLING (never inside the backdrop, where tap events would
+        // bubble into backdrop.onclick = close).
+        children: [],
+        appendChild(child) {
+          this.children.push(child);
+          return child;
+        },
+      },
       get activeElement() {
         return activeElementRef.current;
       },
@@ -164,11 +174,13 @@ function pickerContext({
     },
     defaultFolderFn: () => defaultFolder,
     openWorkspaceFn,
+    onFieldPickFn,
   });
   const findNode = (id) => allNodes.find((n) => n.id === id) || null;
   const getFilterNode = () => (allNodes.find((n) => n.id === "mobileDirectoryPickerSheet") || { innerHTML: "" }).innerHTML.includes('id="mobileDirectoryPickerFilter"') ? filterNode : null;
   const sheetHTML = () => (allNodes.find((n) => n.id === "mobileDirectoryPickerSheet") || { innerHTML: "" }).innerHTML;
-  return { module, state, calls, allNodes, findNode, getFilterNode, sheetHTML };
+  const bodyChildren = () => sandbox.document.body.children;
+  return { module, state, calls, allNodes, findNode, getFilterNode, sheetHTML, bodyChildren };
 }
 
 describe("mobile directory picker module", () => {
@@ -219,6 +231,37 @@ describe("mobile directory picker module", () => {
     assert.equal(state.worktreeDiscoverPath, "~/Documents");
     assert.equal(module._picker.active, false);
     assert.ok(calls.renders > 0, "confirm triggers a render so the input shows the new value");
+  });
+
+  it("mounts the sheet as a backdrop sibling so taps cannot bubble to close", async () => {
+    // Regression: the sheet used to append INTO the backdrop, whose onclick
+    // closes the picker. Every real tap inside the sheet (folder rows, Up,
+    // Use this folder) bubbled up and dismissed the picker before its own
+    // handler finished. In a real DOM the backdrop covers the screen, so a
+    // bubbled tap always meant an instant close.
+    const { module, bodyChildren } = pickerContext({ fieldPath: "~/Documents" });
+    module.openForField("worktreeDiscoverPath");
+    await new Promise((r) => setTimeout(r, 0));
+    const ids = bodyChildren().map((n) => n.id);
+    assert.ok(ids.includes("mobileDirectoryPickerBackdrop"), "backdrop is a body child");
+    assert.ok(ids.includes("mobileDirectoryPickerSheet"), "sheet is a body child too");
+    const backdrop = bodyChildren().find((n) => n.id === "mobileDirectoryPickerBackdrop");
+    const sheet = bodyChildren().find((n) => n.id === "mobileDirectoryPickerSheet");
+    assert.ok(!backdrop.children.includes(sheet), "sheet must not live inside the backdrop");
+  });
+
+  it("field-mode confirm chains onFieldPickFn so discovery can auto-run", async () => {
+    const picks = [];
+    const { module, state } = pickerContext({
+      fieldPath: "~/Documents",
+      onFieldPickFn: (field, folder) => picks.push({ field, folder }),
+    });
+    module.openForField("worktreeDiscoverPath");
+    await new Promise((r) => setTimeout(r, 0));
+    await module.selectCurrent();
+    assert.equal(state.worktreeDiscoverPath, "~/Documents");
+    assert.deepEqual(picks, [{ field: "worktreeDiscoverPath", folder: "~/Documents" }], "pick hook fires with field and confirmed folder");
+    assert.equal(module._picker.active, false, "hook runs after the sheet is closed so app rendering owns the screen");
   });
 
   it("entering a row loads its path and Up walks back out", async () => {

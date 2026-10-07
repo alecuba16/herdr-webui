@@ -1503,6 +1503,9 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   border-radius: 14px;
   background: var(--panel);
 }
+.mobile-worktree-source .mobile-btn.primary {
+  margin-top: 8px;
+}
 .mobile-worktree-source span {
   color: var(--muted);
   font-size: 12px;
@@ -2362,8 +2365,5 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   font-size: 13px;
   padding: 7px 14px;
 }
-.mobile-worktree-open-actions {
-  display: grid;
-  gap: 8px;
-  padding-bottom: 4px;
-}
+/* .mobile-worktree-open-actions retired: the merged Choose-folder flow
+   renders results inline, no separate open-existing action group. */

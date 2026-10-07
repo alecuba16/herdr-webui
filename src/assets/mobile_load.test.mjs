@@ -1040,6 +1040,13 @@ describe("mobile bundle load", () => {
     ctx.HerdrMobile.runAction("discover-worktrees");
     equal(ctx.HerdrMobile.currentScreen(), "worktrees");
     ok(ctx.requests.some((request) => String(request.url).startsWith("/api/worktrees")));
+    {
+      const html = ctx.document.getElementById("mobileScreen").innerHTML;
+      ok(html.includes("Results"), "merged flow shows results after discovery");
+      ok(html.includes("Open as workspace"), "results card offers opening the picked folder");
+      ok(html.includes("mobile-worktree"), "discovered worktree row is listed");
+      ok(!html.includes("Choose folder for "), "picker sheet is not open");
+    }
 
     ctx.HerdrMobile.runAction("create-worktree");
     equal(ctx.HerdrMobile.currentScreen(), "worktrees");
@@ -1149,7 +1156,11 @@ describe("mobile bundle load", () => {
     doesNotThrow(() => ctx.HerdrMobile.setTerminalMouseReporting(true));
     doesNotThrow(() => ctx.HerdrMobile.showScreen("worktrees"));
     let html = ctx.document.getElementById("mobileScreen").innerHTML;
-    ok(html.includes("Discover worktrees"));
+    ok(html.includes("Choose folder"));
+    ok(html.includes("Find worktrees"));
+    ok(!html.includes("Discover worktrees"), "old standalone discover group is gone");
+    ok(!html.includes("Open existing"), "old open-existing group is gone");
+    ok(!html.includes("Results"), "no results before discovery ran");
     doesNotThrow(() =>
       ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/mobile"),
     );
