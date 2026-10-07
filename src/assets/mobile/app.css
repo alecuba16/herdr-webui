@@ -153,37 +153,49 @@ body.light {
   overflow-y: auto;
 }
 .mobile-header {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  gap: 10px;
+  display: flex;
   align-items: center;
-  min-height: 58px;
-  padding: max(8px, env(safe-area-inset-top))
-    max(12px, env(safe-area-inset-right)) 8px
+  gap: 10px;
+  min-height: 44px;
+  padding: max(6px, env(safe-area-inset-top))
+    max(12px, env(safe-area-inset-right)) 6px
     max(12px, env(safe-area-inset-left));
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
+/* Single thin line: title, meta, connection dot and session badge all sit
+   inline with ellipsis truncation. The header no longer carries icon
+   buttons (home/search moved to the nav bar), so the context takes the
+   full row. */
 .mobile-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.mobile-context strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;
   min-width: 0;
 }
-.mobile-context strong,
 .mobile-context span {
-  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .mobile-context span {
   color: var(--muted);
-  font-size: 12px;
-  margin-top: 2px;
+  font-size: 13px;
 }
 .mobile-context-meta {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 .mobile-context-meta #mobileMeta {
   display: block;
@@ -192,14 +204,17 @@ body.light {
   white-space: nowrap;
   min-width: 0;
 }
-/* Label shedding at narrow widths: keep the status dot, drop the text. */
+/* Single-line layout: at narrow widths the meta text clips behind the
+   badge instead of hiding the whole line, so title, dot and session
+   badge stay inline at every viewport. */
 @media (max-width: 480px) {
-  .mobile-context-meta #mobileMeta {
-    display: none;
-  }
   .mobile-context .mobile-backend-badge {
     font-size: 9px;
     padding: 3px 6px;
+  }
+  /* Keep title + dot + badge on one line even when meta is clipped. */
+  .mobile-context-meta {
+    flex: 0 1 auto;
   }
 }
 .mobile-connection-dot {
@@ -227,7 +242,6 @@ body.light {
   }
 }
 .mobile-context .mobile-backend-badge {
-  align-self: flex-start;
   -webkit-appearance: none;
   appearance: none;
   background: none;
@@ -239,7 +253,7 @@ body.light {
   font-size: 10px;
   font-weight: 800;
   line-height: 1;
-  margin-top: 4px;
+  margin-top: 0;
   overflow: visible;
   padding: 3px 7px;
   text-overflow: clip;
@@ -591,24 +605,27 @@ body.light {
 }
 .mobile-nav {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 6px;
   min-width: 0;
   padding: 8px max(8px, env(safe-area-inset-right))
     max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   border-top: 1px solid var(--border);
   background: var(--panel);
-  /* Equal-width buttons keep all five tabs visible on 360-390px screens;
+  /* Equal-width buttons keep all tabs visible on 360-390px screens;
      overflow-x stays as a safety net for ultra-narrow viewports. */
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
   white-space: nowrap;
 }
-/* Header-search-off hides the Search tab; a display:none child in a grid
-   still leaves an empty track, so collapse the template to four columns
-   instead of leaving a dead gap between Home and Terminal. */
+/* Header-search-off hides the Search tab and a closed workspace hides the
+   Panels tab; a display:none child in a grid still leaves an empty track,
+   so collapse the template to the real button count. */
 .mobile-nav:has(> button[hidden]) {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.mobile-nav:has(> button[hidden]):has(> button[hidden] ~ button[hidden]) {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 .mobile-nav::-webkit-scrollbar {

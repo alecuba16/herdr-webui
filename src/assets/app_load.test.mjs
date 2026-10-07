@@ -5948,10 +5948,11 @@ describe("a11y audit contract", () => {
   });
 
   it("labels mobile header icon buttons and the connection state", () => {
-    for (const id of ["mobileBack", "mobileSearch"]) {
-      const re = new RegExp(`id="${id}"[^>]*aria-label=`);
-      match(mobileSource, re, `${id} needs aria-label`);
-    }
+    // The header no longer carries icon buttons: back and search moved to
+    // the nav bar (home/search tabs), panels moved to the nav bar too.
+    doesNotMatch(mobileSource, /id="mobileBack"/);
+    doesNotMatch(mobileSource, /id="mobileSearch"["\s]/);
+    doesNotMatch(mobileSource, /id="mobileTabsBtn"/);
     // Settings and the temporary terminal moved off the header into the
     // More grid; the header must not render either button anymore.
     doesNotMatch(mobileSource, /id="mobileSettings"/);

@@ -56,9 +56,9 @@ function context(pathname = "/", options = {}) {
   const timers = [];
   const listeners = {};
   let timerSeq = 0;
-  const navButtons = ["home", "search", "terminal", "toolbar", "more"].map(
+  const navButtons = ["home", "search", "toolbar", "panels", "terminal", "more"].map(
     (screen) =>
-      Object.assign(element(), screen === "toolbar" ? { dataset: { toggle: screen } } : { dataset: { screen } }),
+      Object.assign(element(), screen === "toolbar" ? { dataset: { toggle: screen } } : screen === "panels" ? { dataset: { panels: screen } } : { dataset: { screen } }),
   );
   const getElement = (id) => {
     if (!elements.has(id)) elements.set(id, element(id));
@@ -114,7 +114,9 @@ function context(pathname = "/", options = {}) {
       querySelector: (selector) =>
         selector === '.mobile-nav button[data-toggle="toolbar"]'
           ? navButtons.find((button) => button.dataset.toggle === "toolbar") || null
-          : null,
+          : selector === '.mobile-nav button[data-panels]'
+            ? navButtons.find((button) => button.dataset.panels) || null
+            : null,
       querySelectorAll: (selector) =>
         selector === ".mobile-nav button" ? navButtons : [],
       hidden: false,
@@ -1960,19 +1962,16 @@ describe("mobile bundle load", () => {
     match(mobileCss, /\.mobile-toolbar\[hidden\] \{\n\s*display: none;\n\s*\}/);
   });
 
-  it("renders terminal tabs as a header dropdown left of search", async () => {
+  it("renders terminal panels as a nav-bar tab opening the dropdown", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
-    // The tabs button sits immediately before the search button in the
-    // header markup (its left on screen), shown only with a workspace.
-    const tabsIdx = source.indexOf('<button class="mobile-btn" id="mobileTabsBtn"');
-    const searchIdx = source.indexOf('<button class="mobile-btn" id="mobileSearch"');
-    ok(tabsIdx > -1 && tabsIdx < searchIdx, "tabs button renders left of search");
-    // With a workspace the button is enabled; the dropdown lists tabs + actions.
-    const tabsBtn = ctx.document.getElementById("mobileTabsBtn");
-    equal(tabsBtn.hidden, false, "tabs button visible with workspace");
+    // The panels trigger lives in the nav bar (moved off the header),
+    // shown only with a workspace.
+    const panelsBtn = ctx.document.querySelector('.mobile-nav button[data-panels]');
+    ok(panelsBtn, "nav panels button present");
+    equal(panelsBtn.hidden, false, "panels button visible with workspace");
     ctx.HerdrMobile.openTabsSheet();
     const listHtml = ctx.document.getElementById("mobileTabsSheetList").innerHTML;
     ok(listHtml.includes("New panel"), "sheet lists New panel");
@@ -1983,14 +1982,15 @@ describe("mobile bundle load", () => {
     ctx.HerdrMobile.closeTabsSheet();
     equal(ctx.document.getElementById("mobileTabsSheet").hidden, true, "sheet closed");
     equal(ctx.document.getElementById("mobileTabsBackdrop").hidden, true, "backdrop closed");
-    // Empty workspace list: the button hides (refresh() auto-selects the
-    // first workspace when one exists, so an empty list is the only way
-    // state.ws stays null after a refresh).
+    // Empty workspace list: the nav panels button hides (refresh()
+    // auto-selects the first workspace when one exists, so an empty list is
+    // the only way state.ws stays null after a refresh).
     const ctx2 = context("/session/default", { workspaces: [] });
     vm.runInContext(source, ctx2);
     await ctx2.HerdrMobile.refresh();
     await ctx2.settle();
-    equal(ctx2.document.getElementById("mobileTabsBtn").hidden, true, "tabs button hidden without workspace");
+    const panelsBtn2 = ctx2.document.querySelector('.mobile-nav button[data-panels]');
+    equal(panelsBtn2.hidden, true, "panels button hidden without workspace");
   });
 
   it("sends key bar control bytes through the terminal input path", async () => {

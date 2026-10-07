@@ -375,10 +375,7 @@
     document.body.innerHTML = `
       <div id="mobileApp" class="mobile-app">
         <header class="mobile-header">
-          <button class="mobile-btn" id="mobileBack" title="Home" aria-label="Back to home">←</button>
           <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span class="mobile-context-meta" role="status" aria-live="polite"><span id="mobileMeta">Loading</span><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button></span></div>
-          <button class="mobile-btn" id="mobileTabsBtn" title="Panels" aria-label="Open panels list" aria-haspopup="dialog" hidden>▤</button>
-          <button class="mobile-btn" id="mobileSearch" title="Search" aria-label="Search">⌕</button>
         </header>
         <main class="mobile-screen" id="mobileScreen"></main>
         <div class="mobile-search-sheet" id="mobileSearchSheet" hidden>
@@ -392,8 +389,9 @@
         <nav class="mobile-nav">
           <button data-screen="home">Home</button>
           <button data-screen="search">Search</button>
-          <button data-screen="terminal">Terminal</button>
           <button data-toggle="toolbar" aria-pressed="true">Keys</button>
+          <button data-panels="panels" aria-haspopup="dialog" hidden>Panels</button>
+          <button data-screen="terminal">Terminal</button>
           <button data-screen="more" aria-haspopup="dialog">More</button>
         </nav>
         <div class="mobile-sheet-backdrop" id="mobileTabsBackdrop" hidden onclick="HerdrMobile.closeTabsSheet()"></div>
@@ -404,13 +402,14 @@
         <div class="mobile-sheet mobile-confirm-sheet" id="mobileConfirmSheet" hidden role="alertdialog" aria-modal="true" aria-label="Confirm"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title" id="mobileConfirmMessage"></div><div class="mobile-sheet-actions"><button class="mobile-btn" id="mobileConfirmCancel" onclick="HerdrMobile.resolveConfirm(false)">Cancel</button><button class="mobile-btn primary" id="mobileConfirmOk" onclick="HerdrMobile.resolveConfirm(true)">Confirm</button></div></div>
       </div>
       </div>`;
-    el("mobileBack").onclick = () => showScreen("home");
-    el("mobileSearch").onclick = () => mobileSearch && mobileSearch.open();
-    el("mobileTabsBtn").onclick = () => openTabsSheet();
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
       button.onclick = () => {
         if (button.dataset.screen === "more") {
           openDrawer();
+          return;
+        }
+        if (button.dataset.panels) {
+          openTabsSheet();
           return;
         }
         if (button.dataset.toggle === "toolbar") {
@@ -600,20 +599,15 @@
     el("mobileTitle").textContent = workspaceTitle(workspace);
     el("mobileMeta").textContent = contextMeta(workspace);
     syncBackendBadge();
-    const searchButton = el("mobileSearch");
-    if (searchButton) {
-      const disabled = headerSearchDisabled();
-      searchButton.hidden = disabled;
-      searchButton.disabled = disabled;
-    }
-    // Header panels dropdown: visible whenever a workspace is open, so the
-    // tabs are reachable from every screen (they used to live only on the
-    // terminal screen as a horizontal strip).
-    const tabsButton = el("mobileTabsBtn");
-    if (tabsButton) {
-      const tabsDisabled = !state.ws;
-      tabsButton.hidden = tabsDisabled;
-      tabsButton.disabled = tabsDisabled;
+    // Header panels dropdown moved into the nav bar: visible whenever a
+    // workspace is open, so the tabs are reachable from every screen (they
+    // used to live in the header, and before that only on the terminal
+    // screen as a horizontal strip).
+    const panelsButton = document.querySelector('.mobile-nav button[data-panels]');
+    if (panelsButton) {
+      const panelsDisabled = !state.ws;
+      panelsButton.hidden = panelsDisabled;
+      panelsButton.disabled = panelsDisabled;
     }
     // Toolbar above the nav: content depends on screen and terminal, and
     // refreshes every render (WS refresh included) via syncToolbar.
@@ -629,8 +623,14 @@
     }
     for (const button of navButtons) {
       const searchNavDisabled = button.dataset.screen === "search" && headerSearchDisabled();
-      button.hidden = searchNavDisabled;
-      button.disabled = searchNavDisabled;
+      // Panels visibility is owned by the workspace check above; the Search
+      // toggle must not clobber it (button.hidden is a plain overwrite).
+      if (button.dataset.panels) {
+        button.disabled = !state.ws;
+      } else {
+        button.hidden = searchNavDisabled;
+        button.disabled = searchNavDisabled;
+      }
       button.classList.toggle("active", mobileScreens.mobileNavActive(button.dataset.screen));
       // Only rewrite the label when it actually changed; innerHTML writes
       // invalidate the whole nav bar on every refresh otherwise.
