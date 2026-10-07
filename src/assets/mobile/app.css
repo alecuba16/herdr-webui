@@ -142,6 +142,52 @@ body.light {
 .mobile-toolbar[hidden] {
   display: none;
 }
+/* Floating Keys button: draggable pill inside the terminal view. A tap
+   toggles the keybar toolbar (aria-pressed mirrors that state), a drag
+   moves the pill and the position persists. Fixed-positioned against the
+   viewport so it survives screen re-renders; default sits bottom-right
+   above the nav bar. */
+.mobile-keys-fab {
+  position: fixed;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.mobile-keys-fab[hidden] {
+  display: none;
+}
+.mobile-keys-fab.dragging {
+  cursor: grabbing;
+  opacity: 0.85;
+}
+.mobile-keys-fab:active {
+  background: var(--panel2);
+}
+.mobile-keys-fab[aria-pressed="true"] {
+  border-color: var(--accent, currentColor);
+  color: var(--accent, inherit);
+}
+.mobile-keys-fab:focus-visible {
+  outline: var(--ring);
+  outline-offset: 1px;
+}
 .mobile-tabs-sheet-list {
   display: flex;
   flex-direction: column;
@@ -163,10 +209,11 @@ body.light {
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
-/* Single thin line: title, meta, connection dot and session badge all sit
-   inline with ellipsis truncation. The header no longer carries icon
-   buttons (home/search moved to the nav bar), so the context takes the
-   full row. */
+/* Single thin line: connection dot, session badge, workspace title,
+   panels chip, then the meta text, all inline with ellipsis truncation.
+   The header carries no icon buttons, so the context takes the full
+   row. Fixed pills (dot, badge, chip) never shrink; title and meta text
+   truncate so nothing pushes the header into two lines. */
 .mobile-context {
   display: flex;
   align-items: center;
@@ -216,6 +263,12 @@ body.light {
   color: var(--muted);
   font-size: 13px;
 }
+/* Meta text takes whatever space is left after the fixed pills and the
+   title; it clips with ellipsis instead of hiding the dot/badge/chip. */
+.mobile-context #mobileMeta {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 /* Panels chip sits where the nav-bar Panels tab was: pressing it opens
    the panels dialog. Mirrors the session backend badge pill so the two
    interactive meta pills read as a pair. */
@@ -246,31 +299,13 @@ body.light {
   outline: var(--ring);
   outline-offset: 1px;
 }
-.mobile-context-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-.mobile-context-meta #mobileMeta {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
 /* Single-line layout: at narrow widths the meta text clips behind the
-   badge instead of hiding the whole line, so title, dot and session
-   badge stay inline at every viewport. */
+   badge instead of hiding the whole line, so dot, badge, title and chip
+   stay inline at every viewport. */
 @media (max-width: 480px) {
   .mobile-context .mobile-backend-badge {
     font-size: 9px;
     padding: 3px 6px;
-  }
-  /* Keep title + dot + badge on one line even when meta is clipped. */
-  .mobile-context-meta {
-    flex: 0 1 auto;
   }
 }
 .mobile-connection-dot {
@@ -672,7 +707,7 @@ body.light {
 }
 .mobile-nav {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 6px;
   min-width: 0;
   padding: 8px max(8px, env(safe-area-inset-right))
@@ -690,7 +725,7 @@ body.light {
    still leaves an empty track, so collapse the template to the real
    button count. */
 .mobile-nav:has(> button[hidden]) {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 .mobile-nav::-webkit-scrollbar {
   display: none;
@@ -803,7 +838,8 @@ body.mobile-keyboard-open .mobile-app {
 body.mobile-keyboard-open .mobile-header,
 body.mobile-keyboard-open .mobile-nav,
 body.mobile-keyboard-open .mobile-keybar,
-body.mobile-keyboard-open .mobile-toolbar {
+body.mobile-keyboard-open .mobile-toolbar,
+body.mobile-keyboard-open .mobile-keys-fab {
   display: none;
 }
 .mobile-actions {

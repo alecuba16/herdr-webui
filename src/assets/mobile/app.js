@@ -17,7 +17,7 @@
     writeSessionBackend,
   } = globalThis.HerdrMobileCore;
   const { createFaviconNotifier } = globalThis.HerdrAppHelpers;
-  const MORE_SCREENS = ["agents", "panels", "worktrees", "files", "git", "settings", "sessions"];
+  const MORE_SCREENS = ["agents", "panels", "worktrees", "settings", "sessions"];
 
   // Terminal key toolbar visibility is a per-browser preference: the
   // toolbar sits above the nav bar on every screen, and the nav toggler
@@ -408,7 +408,7 @@
     document.body.innerHTML = `
       <div id="mobileApp" class="mobile-app">
         <header class="mobile-header">
-          <div class="mobile-context"><button type="button" id="mobileTitle" class="mobile-title-btn" aria-haspopup="dialog" title="Switch workspace">Herdr</button><span class="mobile-context-meta" role="status" aria-live="polite"><span id="mobileMeta" class="mobile-meta-text">Loading</span><button type="button" id="mobilePanelsChip" class="mobile-panels-chip" aria-haspopup="dialog" title="Panels" hidden onclick="HerdrMobile.openTabsSheet()">0 panes</button><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button></span></div>
+          <div class="mobile-context"><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button><button type="button" id="mobileTitle" class="mobile-title-btn" aria-haspopup="dialog" title="Switch workspace">Herdr</button><button type="button" id="mobilePanelsChip" class="mobile-panels-chip" aria-haspopup="dialog" title="Panels" hidden onclick="HerdrMobile.openTabsSheet()">0 panes</button><span id="mobileMeta" class="mobile-meta-text" role="status" aria-live="polite">Loading</span></div>
         </header>
         <main class="mobile-screen" id="mobileScreen"></main>
         <div class="mobile-search-sheet" id="mobileSearchSheet" hidden>
@@ -419,11 +419,13 @@
           </div>
         </div>
         <div class="mobile-toolbar" id="mobileToolbar" hidden></div>
+        <button type="button" id="mobileKeysFab" class="mobile-keys-fab" hidden aria-label="Toggle terminal keys, drag to move" aria-pressed="false" onmousedown="HerdrMobile.keysFabDragStart(event)" ontouchstart="HerdrMobile.keysFabDragStart(event)"><span aria-hidden="true">⌨</span>Keys</button>
         <nav class="mobile-nav">
           <button data-screen="home">Home</button>
           <button data-screen="search">Search</button>
-          <button data-toggle="toolbar" aria-pressed="true">Keys</button>
           <button data-screen="terminal">Terminal</button>
+          <button data-screen="git">Git</button>
+          <button data-screen="files">Files</button>
           <button data-screen="more" aria-haspopup="dialog">More</button>
         </nav>
         <div class="mobile-sheet-backdrop" id="mobileTabsBackdrop" hidden onclick="HerdrMobile.closeTabsSheet()"></div>
@@ -442,14 +444,6 @@
           openDrawer();
           return;
         }
-        if (button.dataset.panels) {
-          openTabsSheet();
-          return;
-        }
-        if (button.dataset.toggle === "toolbar") {
-          toggleToolbar();
-          return;
-        }
         showScreen(button.dataset.screen);
       };
     });
@@ -458,7 +452,8 @@
   }
 
   // Terminal key toolbar: rendered by panels.js into #mobileToolbar above
-  // the nav bar. The nav "Keys" button toggles it; the choice persists.
+  // the nav bar. The floating Keys button (in the terminal view) toggles
+  // it; the choice persists.
   function toggleToolbar() {
     state.toolbarOpen = !state.toolbarOpen;
     try {
@@ -468,8 +463,6 @@
   }
 
   function syncToolbar() {
-    const toggle = document.querySelector('.mobile-nav button[data-toggle="toolbar"]');
-    if (toggle && toggle.setAttribute) toggle.setAttribute("aria-pressed", state.toolbarOpen ? "true" : "false");
     const toolbar = el("mobileToolbar");
     if (!toolbar) return;
     const html = state.screen === "terminal" && state.terminalId && mobilePanels ? mobilePanels.renderKeyBar() : "";
@@ -478,6 +471,99 @@
       toolbar.__lastToolbarHtml = html;
     }
     toolbar.hidden = !(state.toolbarOpen && html);
+    syncKeysFab();
+  }
+
+  // Floating Keys button: draggable pill inside the terminal view. A tap
+  // toggles the keybar toolbar; dragging moves the button (position
+  // persists via localStorage, clamped to the viewport so it never ends
+  // up unreachable). Rendered once in the shell (not the screen div) so
+  // terminal re-renders never recreate it mid-drag.
+  function keysFabDragStart(event) {
+    const fab = el("mobileKeysFab");
+    if (!fab) return;
+    const point = event.touches && event.touches[0] ? event.touches[0] : event;
+    const startX = point.clientX;
+    const startY = point.clientY;
+    const rect = fab.getBoundingClientRect();
+    let moved = false;
+    const move = (moveEvent) => {
+      const p = moveEvent.touches && moveEvent.touches[0] ? moveEvent.touches[0] : moveEvent;
+      const dx = p.clientX - startX;
+      const dy = p.clientY - startY;
+      if (!moved && Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      moved = true;
+      fab.classList.add("dragging");
+      const maxX = window.innerWidth - rect.width;
+      const maxY = window.innerHeight - rect.height;
+      const x = Math.max(0, Math.min(maxX, rect.left + dx));
+      const y = Math.max(0, Math.min(maxY, rect.top + dy));
+      fab.style.left = `${x}px`;
+      fab.style.top = `${y}px`;
+      fab.style.right = "auto";
+      fab.style.bottom = "auto";
+      moveEvent.preventDefault();
+    };
+    const end = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", end);
+      document.removeEventListener("touchmove", move);
+      document.removeEventListener("touchend", end);
+      fab.classList.remove("dragging");
+      if (moved) saveKeysFabPosition(fab);
+      // Tap (no movement): toggle the keybar.
+      else toggleToolbar();
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", end);
+    document.addEventListener("touchmove", move, { passive: false });
+    document.addEventListener("touchend", end);
+    event.preventDefault();
+  }
+
+  function saveKeysFabPosition(fab) {
+    const rect = fab.getBoundingClientRect();
+    try {
+      localStorage.setItem(
+        "herdr-mobile-keys-fab",
+        JSON.stringify({ x: Math.round(rect.left), y: Math.round(rect.top) }),
+      );
+    } catch (_) {}
+  }
+
+  function applyKeysFabPosition(fab) {
+    let pos = null;
+    try {
+      const raw = localStorage.getItem("herdr-mobile-keys-fab");
+      if (raw) pos = JSON.parse(raw);
+    } catch (_) {}
+    if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return;
+    const maxX = window.innerWidth - rectWidth(fab);
+    const maxY = window.innerHeight - rectHeight(fab);
+    fab.style.left = `${Math.max(0, Math.min(maxX, pos.x))}px`;
+    fab.style.top = `${Math.max(0, Math.min(maxY, pos.y))}px`;
+    fab.style.right = "auto";
+    fab.style.bottom = "auto";
+  }
+
+  function rectWidth(fab) {
+    return fab.getBoundingClientRect().width;
+  }
+
+  function rectHeight(fab) {
+    return fab.getBoundingClientRect().height;
+  }
+
+  function syncKeysFab() {
+    const fab = el("mobileKeysFab");
+    if (!fab) return;
+    const visible = state.screen === "terminal" && !!state.terminalId;
+    fab.hidden = !visible;
+    fab.setAttribute("aria-pressed", state.toolbarOpen ? "true" : "false");
+    if (visible && !fab.__positioned) {
+      applyKeysFabPosition(fab);
+      fab.__positioned = true;
+    }
   }
 
   // Modal focus management: aria-modal surfaces (tabs sheet, drawer,
@@ -1298,6 +1384,7 @@
     closeWorkspacesSheet,
     selectWorkspaceFromSheet,
     toggleToolbar,
+    keysFabDragStart,
     currentSessionBackend,
     dismissWorkingAgent: (...args) => mobileScreens.dismissWorkingAgent(...args),
     restoreWorkingAgent: (...args) => mobileScreens.restoreWorkingAgent(...args),
@@ -1562,7 +1649,13 @@
     refresh();
   }
   window.addEventListener("popstate", handleSessionPopState);
-  window.addEventListener("resize", scheduleTerminalResize);
+  // Window resize = rotation/devtools resize, never the soft keyboard; drop
+  // the keyboard heuristic's height latch there so a smaller window is not
+  // misread as an open keyboard on the terminal screen.
+  window.addEventListener("resize", () => {
+    mobileTheme.resetViewportLatch();
+    scheduleTerminalResize();
+  });
   if (window.visualViewport)
     window.visualViewport.addEventListener("resize", scheduleTerminalResize);
   document.addEventListener("visibilitychange", () => {

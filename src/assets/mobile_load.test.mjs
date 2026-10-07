@@ -20,6 +20,16 @@ function element(id = "") {
     },
     dataset: {},
     style: { setProperty() {} },
+    rect: { left: 300, top: 700, width: 80, height: 40 },
+    getBoundingClientRect() {
+      return this.rect;
+    },
+    setAttribute(name, value) {
+      (this.attributes || (this.attributes = {}))[name] = value;
+    },
+    getAttribute(name) {
+      return (this.attributes || {})[name] ?? null;
+    },
     disabled: false,
     hidden: false,
     innerHTML: "",
@@ -33,7 +43,11 @@ function element(id = "") {
     addEventListener(event, listener) {
       (this.listeners[event] || (this.listeners[event] = [])).push(listener);
     },
-    setAttribute() {},
+    removeEventListener(event, listener) {
+      const list = this.listeners[event] || [];
+      const idx = list.indexOf(listener);
+      if (idx > -1) list.splice(idx, 1);
+    },
     querySelector() {
       return null;
     },
@@ -56,9 +70,8 @@ function context(pathname = "/", options = {}) {
   const timers = [];
   const listeners = {};
   let timerSeq = 0;
-  const navButtons = ["home", "search", "toolbar", "terminal", "more"].map(
-    (screen) =>
-      Object.assign(element(), screen === "toolbar" ? { dataset: { toggle: screen } } : { dataset: { screen } }),
+  const navButtons = ["home", "search", "terminal", "git", "files", "more"].map(
+    (screen) => Object.assign(element(), { dataset: { screen } }),
   );
   const getElement = (id) => {
     if (!elements.has(id)) elements.set(id, element(id));
@@ -111,15 +124,17 @@ function context(pathname = "/", options = {}) {
       documentElement: element("html"),
       createElement: () => element(),
       getElementById: getElement,
-      querySelector: (selector) =>
-        selector === '.mobile-nav button[data-toggle="toolbar"]'
-          ? navButtons.find((button) => button.dataset.toggle === "toolbar") || null
-          : null,
+      querySelector: () => null,
       querySelectorAll: (selector) =>
         selector === ".mobile-nav button" ? navButtons : [],
       hidden: false,
       addEventListener(event, listener) {
         (listeners[event] || (listeners[event] = [])).push(listener);
+      },
+      removeEventListener(event, listener) {
+        const list = listeners[event] || [];
+        const idx = list.indexOf(listener);
+        if (idx > -1) list.splice(idx, 1);
       },
     },
     history: {
@@ -466,10 +481,17 @@ function context(pathname = "/", options = {}) {
   ctx.dispatchDocumentEvent = (event) => {
     for (const listener of listeners[event] || []) listener();
   };
+  ctx.dispatchDocumentPointerEvent = (event, pointerEvent) => {
+    for (const listener of listeners[event] || []) listener(pointerEvent);
+  };
+  ctx.documentListeners = () => listeners;
   // window.addEventListener is how app.js registers popstate/resize; record
-  // those listeners so tests can drive history navigation.
+  // those listeners so tests can drive history navigation. innerWidth/
+  // innerHeight back the Keys fab drag clamp math.
   ctx.window = Object.assign(ctx, {
     matchMedia: () => ({ matches: false }),
+    innerWidth: 390,
+    innerHeight: 844,
     addEventListener(event, listener) {
       (listeners[event] || (listeners[event] = [])).push(listener);
     },
@@ -1034,8 +1056,14 @@ describe("mobile bundle load", () => {
     match(source, /<button data-screen="home">Home<\/button>/);
     match(source, /<button data-screen="search">Search<\/button>/);
     match(source, /<button data-screen="terminal">Terminal<\/button>/);
+    match(source, /<button data-screen="git">Git<\/button>/);
+    match(source, /<button data-screen="files">Files<\/button>/);
     match(source, /<button data-screen="more" aria-haspopup="dialog">More<\/button>/);
     ok(!source.includes('data-screen="agents">Agents</button>'));
+    // Keys left the nav: the floating Keys fab lives in the shell and is
+    // only visible in the terminal view.
+    ok(!source.includes('data-toggle="toolbar"'), "no toolbar toggler in the nav");
+    match(source, /id="mobileKeysFab" class="mobile-keys-fab" hidden/);
     // Drawer shell, items, and edge-swipe wiring.
     match(source, /id="mobileDrawer" hidden role="dialog"/);
     match(source, /function renderDrawerItems\(\) \{/);
@@ -1105,14 +1133,18 @@ describe("mobile bundle load", () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
 
-    // More is a drawer, not a screen: opening it lists every secondary tool
-    // and each item routes through openDrawerTarget (showScreen under the
-    // hood). Direct showScreen routes must stay available too.
+    // More is a drawer, not a screen: opening it lists every secondary
+    // tool and each item routes through openDrawerTarget (showScreen
+    // under the hood). Git and Files were promoted to the primary nav, so
+    // the drawer no longer lists them. Direct showScreen routes must
+    // stay available too.
     const moreButton = ctx.navButtons.find((button) => button.dataset.screen === "more");
     moreButton.onclick();
     const items = ctx.document.getElementById("mobileDrawerItems").innerHTML;
-    for (const screen of ["agents", "panels", "worktrees", "files", "git", "settings"])
+    for (const screen of ["agents", "panels", "worktrees", "settings", "sessions"])
       ok(items.includes(`HerdrMobile.openDrawerTarget('${screen}')`), `${screen} drawer item present`);
+    ok(!items.includes("HerdrMobile.openDrawerTarget('files')"), "files left the drawer for the nav");
+    ok(!items.includes("HerdrMobile.openDrawerTarget('git')"), "git left the drawer for the nav");
     ctx.HerdrMobile.openDrawerTarget("worktrees");
     for (const screen of ["agents", "panels", "worktrees", "files", "git", "settings"])
       doesNotThrow(() => ctx.HerdrMobile.showScreen(screen));
@@ -1934,33 +1966,72 @@ describe("mobile bundle load", () => {
     match(mobileCss, /body\.mobile-keyboard-open \.mobile-keybar/);
   });
 
-  it("renders the key toolbar above the nav bar with a nav toggler", async () => {
+  it("renders the key toolbar above the nav bar with the floating Keys fab", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     await ctx.settle();
     // The toolbar div sits in the shell right before the nav (grid
-    // auto-placement puts it visually ABOVE the nav bar), and the nav
-    // carries the toggler.
+    // auto-placement puts it visually ABOVE the nav bar); the Keys fab is
+    // a fixed-position shell button, terminal-only.
     const shellIdx = source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden></div>');
     const navIdx = source.indexOf('<nav class="mobile-nav">');
     ok(shellIdx > -1 && shellIdx < navIdx, "toolbar markup comes before the nav markup (renders above it)");
-    match(source, /<button data-toggle="toolbar" aria-pressed="true">Keys<\/button>/);
+    match(source, /id="mobileKeysFab" class="mobile-keys-fab" hidden aria-label="Toggle terminal keys, drag to move" aria-pressed="false"/);
     ok(source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden></div>') < source.indexOf('<div class="mobile-sheet-backdrop" id="mobileTabsBackdrop"'), "toolbar sits between screen and overlays");
     // Toolbar content mirrors the keybar builder, and syncs per render.
     match(source, /function syncToolbar\(\) \{[\s\S]*?mobilePanels\.renderKeyBar\(\)/);
-    // Toggle flips visibility, persists, and updates aria-pressed.
+    // Toggle flips visibility, persists, and updates the fab aria-pressed.
     const before = ctx.document.getElementById("mobileToolbar").hidden;
+    const fabBefore = ctx.document.getElementById("mobileKeysFab").getAttribute("aria-pressed");
     ctx.HerdrMobile.toggleToolbar();
     const after = ctx.document.getElementById("mobileToolbar").hidden;
     equal(after, !before, "toggle flips toolbar hidden");
+    equal(
+      ctx.document.getElementById("mobileKeysFab").getAttribute("aria-pressed"),
+      fabBefore === "true" ? "false" : "true",
+      "fab aria-pressed flips with the toolbar",
+    );
     ctx.HerdrMobile.toggleToolbar();
     equal(ctx.document.getElementById("mobileToolbar").hidden, before, "toggle back restores");
-    // CSS: keyboard-open hides the toolbar row too.
+    // CSS: keyboard-open hides the toolbar row and the fab too.
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     match(mobileCss, /body\.mobile-keyboard-open \.mobile-toolbar/);
+    match(mobileCss, /body\.mobile-keyboard-open \.mobile-keys-fab/);
     match(mobileCss, /\.mobile-toolbar\[hidden\] \{\n\s*display: none;\n\s*\}/);
+  });
+
+  it("drags the Keys fab to move it and taps it to toggle the toolbar", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    const fab = ctx.document.getElementById("mobileKeysFab");
+    equal(fab.hidden, false, "fab visible in the terminal view");
+    // Leaving the terminal hides the fab; coming back shows it.
+    ctx.HerdrMobile.showScreen("home");
+    equal(fab.hidden, true, "fab hidden outside the terminal");
+    ctx.HerdrMobile.showScreen("terminal");
+    equal(fab.hidden, false, "fab visible again on terminal");
+    // Tap: no movement past the threshold, so it toggles the toolbar.
+    const before = ctx.document.getElementById("mobileToolbar").hidden;
+    ctx.HerdrMobile.keysFabDragStart({ clientX: 340, clientY: 720, preventDefault() {} });
+    // No move beyond 6px: end immediately as a tap.
+    ctx.dispatchDocumentEvent("mouseup");
+    equal(ctx.document.getElementById("mobileToolbar").hidden, !before, "tap toggles the toolbar");
+    // Drag: pointer moves past the threshold, position persists.
+    equal(ctx.localStorage.getItem("herdr-mobile-keys-fab"), null, "no position stored before a drag");
+    ctx.HerdrMobile.keysFabDragStart({ clientX: 340, clientY: 720, preventDefault() {} });
+    ctx.dispatchDocumentPointerEvent("mousemove", { clientX: 300, clientY: 660, preventDefault() {} });
+    ctx.dispatchDocumentEvent("mouseup");
+    const saved = ctx.localStorage.getItem("herdr-mobile-keys-fab");
+    ok(saved, "drag persists the fab position");
+    // Clamped inside the viewport: x within [0, innerWidth - width].
+    const pos = JSON.parse(saved);
+    ok(pos.x >= 0 && pos.x <= 390 - 80, "x clamped to the viewport");
+    ok(pos.y >= 0 && pos.y <= 844 - 40, "y clamped to the viewport");
   });
 
   it("opens the panels dialog from the header meta chip and the workspace switcher from the title", async () => {
@@ -1972,6 +2043,13 @@ describe("mobile bundle load", () => {
     // the nav has no Panels tab anymore, and the chip is visible with a
     // workspace open.
     ok(!ctx.document.querySelector('.mobile-nav button[data-panels]'), "no nav panels button");
+    // Header order: connection dot, backend badge, title, panels chip,
+    // then the meta text as the trailing flexible element.
+    const order = ["mobileConnectionDot", "mobileBackendBadge", "mobileTitle", "mobilePanelsChip", "mobileMeta"]
+      .map((id) => source.indexOf(`id="${id}"`))
+      .filter((idx) => idx > -1);
+    equal(order.length, 5, "all five header elements present");
+    ok(order.every((idx, i) => i === 0 || idx > order[i - 1]), "header order dot, badge, title, chip, meta");
     const chip = ctx.document.getElementById("mobilePanelsChip");
     ok(chip, "header panels chip present");
     equal(chip.hidden, false, "panels chip visible with workspace");

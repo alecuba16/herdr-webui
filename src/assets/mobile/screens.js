@@ -218,6 +218,8 @@
       if (screen === "home") return "Home";
       if (screen === "search") return "Search";
       if (screen === "terminal") return "Terminal";
+      if (screen === "git") return "Git";
+      if (screen === "files") return "Files";
       if (screen !== "more") return screen;
       // Only surface attention pills for statuses the CSS styles; an unknown
       // agent status would render an unstyled "unknown" pill permanently.
@@ -242,8 +244,6 @@
         { screen: "agents", title: "Agents", meta: attention ? `${attention} need attention` : `${state.agents.length} active`, icon: "●" },
         { screen: "panels", title: "Panels", meta: workspace ? `${state.tabs.length} terminal tabs` : "Select workspace first", icon: "▦" },
         { screen: "worktrees", title: "Worktrees", meta: "Discover, open, or create Git worktrees", icon: "wt" },
-        { screen: "files", title: "Files", meta: workspace ? "Browse current workspace" : "Select workspace first", icon: "fi" },
-        { screen: "git", title: "Git", meta: workspace ? "Status, diff, branches, history" : "Select workspace first", icon: "git" },
         { screen: "sessions", title: "Sessions", meta: `${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`, icon: "se" },
         { screen: "settings", title: "Settings", meta: "Appearance, search, alerts, terminal", icon: "⚙" },
       ];
