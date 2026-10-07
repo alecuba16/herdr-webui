@@ -19,6 +19,18 @@
   const { createFaviconNotifier } = globalThis.HerdrAppHelpers;
   const MORE_SCREENS = ["agents", "panels", "worktrees", "files", "git", "settings", "sessions"];
 
+  // Terminal key toolbar visibility is a per-browser preference: the
+  // toolbar sits above the nav bar on every screen, and the nav toggler
+  // flips it. localStorage may throw (private mode, stubbed harnesses),
+  // so default to open and never let storage break the shell.
+  function readToolbarPreference() {
+    try {
+      const value = localStorage.getItem("herdr-mobile-toolbar");
+      if (value === "closed") return false;
+    } catch (_) {}
+    return true;
+  }
+
   const state = {
     session: "default",
     backendMode: "",
@@ -59,6 +71,11 @@
     pane: null,
     terminalId: null,
     screen: "home",
+    // Terminal key toolbar visibility (toggled from the nav bar). Persisted
+    // per browser so a reload keeps the user's preference.
+    toolbarOpen: readToolbarPreference(),
+    // Terminal tabs dropdown state (opened from the header tabs button).
+    tabsSheetOpen: false,
     terminalConnecting: false,
     error: "",
     worktreeError: "",
@@ -358,6 +375,7 @@
         <header class="mobile-header">
           <button class="mobile-btn" id="mobileBack" title="Home" aria-label="Back to home">←</button>
           <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span class="mobile-context-meta" role="status" aria-live="polite"><span id="mobileMeta">Loading</span><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button></span></div>
+          <button class="mobile-btn" id="mobileTabsBtn" title="Panels" aria-label="Open panels list" aria-haspopup="dialog" hidden>▤</button>
           <button class="mobile-btn" id="mobileSearch" title="Search" aria-label="Search">⌕</button>
         </header>
         <main class="mobile-screen" id="mobileScreen"></main>
@@ -372,8 +390,12 @@
           <button data-screen="home">Home</button>
           <button data-screen="search">Search</button>
           <button data-screen="terminal">Terminal</button>
+          <button data-toggle="toolbar" aria-pressed="true">Keys</button>
           <button data-screen="more" aria-haspopup="dialog">More</button>
         </nav>
+        <div class="mobile-toolbar" id="mobileToolbar" hidden></div>
+        <div class="mobile-sheet-backdrop" id="mobileTabsBackdrop" hidden onclick="HerdrMobile.closeTabsSheet()"></div>
+        <div class="mobile-sheet" id="mobileTabsSheet" hidden role="dialog" aria-modal="true" aria-label="Panels"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Panels</div><div class="mobile-tabs-sheet-list" id="mobileTabsSheetList"></div></div>
         <div class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" hidden onclick="HerdrMobile.closeDrawer()"></div>
         <aside class="mobile-drawer" id="mobileDrawer" hidden role="dialog" aria-modal="true" aria-label="Tools menu"><div class="mobile-drawer-items" id="mobileDrawerItems"></div></aside>
         <div class="mobile-sheet-backdrop" id="mobileConfirmBackdrop" hidden onclick="HerdrMobile.resolveConfirm(false)"></div>
@@ -382,10 +404,15 @@
       </div>`;
     el("mobileBack").onclick = () => showScreen("home");
     el("mobileSearch").onclick = () => mobileSearch && mobileSearch.open();
+    el("mobileTabsBtn").onclick = () => openTabsSheet();
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
       button.onclick = () => {
         if (button.dataset.screen === "more") {
           openDrawer();
+          return;
+        }
+        if (button.dataset.toggle === "toolbar") {
+          toggleToolbar();
           return;
         }
         showScreen(button.dataset.screen);
@@ -393,6 +420,62 @@
     });
     el("mobileDrawerBackdrop").onclick = () => closeDrawer();
     bindDrawerEdgeSwipe();
+  }
+
+  // Terminal key toolbar: rendered by panels.js into #mobileToolbar above
+  // the nav bar. The nav "Keys" button toggles it; the choice persists.
+  function toggleToolbar() {
+    state.toolbarOpen = !state.toolbarOpen;
+    try {
+      localStorage.setItem("herdr-mobile-toolbar", state.toolbarOpen ? "open" : "closed");
+    } catch (_) {}
+    syncToolbar();
+  }
+
+  function syncToolbar() {
+    const toggle = document.querySelector('.mobile-nav button[data-toggle="toolbar"]');
+    if (toggle && toggle.setAttribute) toggle.setAttribute("aria-pressed", state.toolbarOpen ? "true" : "false");
+    const toolbar = el("mobileToolbar");
+    if (!toolbar) return;
+    const html = state.screen === "terminal" && state.terminalId && mobilePanels ? mobilePanels.renderKeyBar() : "";
+    if (toolbar.__lastToolbarHtml !== html) {
+      toolbar.innerHTML = html;
+      toolbar.__lastToolbarHtml = html;
+    }
+    toolbar.hidden = !(state.toolbarOpen && html);
+  }
+
+  // Terminal tabs dropdown: opened from the header tabs button, lists the
+  // panels with add/close actions. Backdrop tap closes; selecting a tab
+  // closes the sheet and switches.
+  function openTabsSheet() {
+    if (!state.ws) return;
+    state.tabsSheetOpen = true;
+    const sheet = el("mobileTabsSheet");
+    const backdrop = el("mobileTabsBackdrop");
+    if (!sheet || !backdrop) return;
+    sheet.hidden = false;
+    backdrop.hidden = false;
+    renderTabsSheet();
+  }
+
+  function closeTabsSheet() {
+    state.tabsSheetOpen = false;
+    const sheet = el("mobileTabsSheet");
+    const backdrop = el("mobileTabsBackdrop");
+    if (sheet) sheet.hidden = true;
+    if (backdrop) backdrop.hidden = true;
+  }
+
+  function renderTabsSheet() {
+    if (!state.tabsSheetOpen) return;
+    const list = el("mobileTabsSheetList");
+    if (!list || !mobilePanels) return;
+    const html = mobilePanels.renderTabsSheetList();
+    if (list.__lastTabsHtml !== html) {
+      list.innerHTML = html;
+      list.__lastTabsHtml = html;
+    }
   }
 
   function drawerItemsEl() {
@@ -487,6 +570,20 @@
       searchButton.hidden = disabled;
       searchButton.disabled = disabled;
     }
+    // Header panels dropdown: visible whenever a workspace is open, so the
+    // tabs are reachable from every screen (they used to live only on the
+    // terminal screen as a horizontal strip).
+    const tabsButton = el("mobileTabsBtn");
+    if (tabsButton) {
+      const tabsDisabled = !state.ws;
+      tabsButton.hidden = tabsDisabled;
+      tabsButton.disabled = tabsDisabled;
+    }
+    // Toolbar above the nav: content depends on screen and terminal, and
+    // refreshes every render (WS refresh included) via syncToolbar.
+    syncToolbar();
+    // Tabs dropdown follows live tab data while open.
+    renderTabsSheet();
     // Cache the nav button list once: querySelectorAll ran on every render,
     // and each render is triggered by every events-WS refresh.
     if (!navButtons) {
@@ -707,6 +804,39 @@
   function selectTab(tab) {
     mobileActions.selectTab(tab);
   }
+
+  // Tabs-dropdown wrappers: run the action, then close the sheet. Closing
+  // first would drop the sheet DOM before the async action lands; closing
+  // after keeps the sheet responsive to the result of the action.
+  function selectTabFromSheet(tab) {
+    closeTabsSheet();
+    mobileActions.selectTab(tab);
+  }
+
+  async function createPanelFromSheet() {
+    closeTabsSheet();
+    await mobileActions.createPanel();
+  }
+
+  async function closePanelFromSheet(tab) {
+    closeTabsSheet();
+    if (sameScopedId(state.ws, tab, state.tab)) {
+      await mobileActions.closeCurrentPanel();
+      return;
+    }
+    // Non-current tab: close it directly without switching. The confirm
+    // guard matters here too, same as closeCurrentPanel.
+    const label = tabTitle(state.tabs.find((item) => sameScopedId(state.ws, item.tab_id, tab)) || { tab_id: tab, workspace_id: state.ws });
+    if (!(await mobileConfirm(`Close panel "${label}"?`))) return;
+    try {
+      await api(`/api/tabs/${encodeURIComponent(tab)}/close`, { method: "POST" });
+      await refresh();
+    } catch (error) {
+      state.error = error.message || String(error);
+      render();
+    }
+  }
+
 
   async function createPanel() {
     await mobileActions.createPanel();
@@ -1070,6 +1200,12 @@
     selectTab,
     createPanel,
     closeCurrentPanel,
+    selectTabFromSheet,
+    createPanelFromSheet,
+    closePanelFromSheet,
+    openTabsSheet,
+    closeTabsSheet,
+    toggleToolbar,
     currentSessionBackend,
     dismissWorkingAgent: (...args) => mobileScreens.dismissWorkingAgent(...args),
     restoreWorkingAgent: (...args) => mobileScreens.restoreWorkingAgent(...args),

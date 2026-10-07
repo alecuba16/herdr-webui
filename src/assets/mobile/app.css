@@ -112,16 +112,34 @@ body.light {
 }
 .mobile-app {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   height: var(--herdr-mobile-viewport-height);
   max-height: var(--herdr-mobile-viewport-height);
   min-width: 0;
   overflow: hidden;
   background: var(--bg);
 }
+/* Key toolbar sits between the screen and the nav bar; the toolbar div is
+   always present in the DOM and toggled via [hidden], so an empty/closed
+   toolbar never leaves a stray grid row (auto row collapses to 0). */
+.mobile-toolbar {
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.mobile-toolbar[hidden] {
+  display: none;
+}
+.mobile-tabs-sheet-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 14px 14px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
 .mobile-header {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   gap: 10px;
   align-items: center;
   min-height: 58px;
@@ -721,6 +739,7 @@ body.mobile-keyboard-open .mobile-app {
 body.mobile-keyboard-open .mobile-header,
 body.mobile-keyboard-open .mobile-nav,
 body.mobile-keyboard-open .mobile-keybar,
+body.mobile-keyboard-open .mobile-toolbar,
 body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   display: none;
 }

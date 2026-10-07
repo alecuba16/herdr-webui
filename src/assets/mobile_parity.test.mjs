@@ -277,7 +277,7 @@ describe("mobile parity feature guards", () => {
     const panelsSource = readFileSync(new URL("./mobile/panels.js", import.meta.url), "utf8");
     assert.match(panelsSource, /globalThis\.HerdrMobilePanelsModule = \{ create: createMobilePanels \}/);
     assert.match(panelsSource, /getMobileTerminal\(\)\.destroy\(true\)/);
-    assert.match(panelsSource, /renderTerminalTabsWithAdd/);
+    assert.match(panelsSource, /renderTabsSheetList/);
     assert.match(appSource, /mobilePanels\.renderPanels\(\)/);
     assert.match(appSource, /mobilePanels\.renderTerminalScreen\(screen\)/);
     const panelsIndex = bootSource.indexOf("/assets/mobile/panels.js");

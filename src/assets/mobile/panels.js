@@ -38,21 +38,27 @@
     function renderTerminal() {
       if (!state.terminalId)
         return '<div class="mobile-loading">No terminal selected</div>';
-      return `<div class="mobile-terminal-screen">${renderKeyBar()}<div class="mobile-tabs" id="mobileTerminalTabs">${renderTerminalTabsWithAdd()}</div><div class="mobile-terminal-shell" id="terminalShell"><div class="mobile-terminal-loading" id="mobileTerminalLoading"${state.terminalConnecting ? "" : " hidden"}><span>Loading panel</span></div><button class="mobile-terminal-follow-button" id="mobileTerminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow" onclick="HerdrMobile.scrollTerminalToBottom(false)">↓ Tail</button><div class="mobile-terminal" id="terminal"></div></div></div>`;
+      // Key toolbar and tabs strip no longer live inside the terminal
+      // screen: the toolbar renders into #mobileToolbar above the nav bar
+      // (app.js syncToolbar) and the tabs moved to the header dropdown
+      // (app.js openTabsSheet / renderTabsSheet).
+      return `<div class="mobile-terminal-screen"><div class="mobile-terminal-shell" id="terminalShell"><div class="mobile-terminal-loading" id="mobileTerminalLoading"${state.terminalConnecting ? "" : " hidden"}><span>Loading panel</span></div><button class="mobile-terminal-follow-button" id="mobileTerminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow" onclick="HerdrMobile.scrollTerminalToBottom(false)">↓ Tail</button><div class="mobile-terminal" id="terminal"></div></div></div>`;
     }
 
-    function renderTerminalTabsWithAdd() {
-      const close = state.tab ? `<button class="mobile-tab mobile-tab-close" title="Close current panel" onclick="HerdrMobile.closeCurrentPanel()">✕</button>` : "";
-      return `${renderTerminalTabs()}<button class="mobile-tab mobile-tab-add" title="New panel" onclick="HerdrMobile.createPanel()">+</button>${close}`;
-    }
-
-    function renderTerminalTabs() {
-      return state.tabs
-        .map(
-          (tab) =>
-            `<button class="mobile-tab${tab.tab_id === state.tab ? " active" : ""}" onclick="HerdrMobile.selectTab(${jsArg(tab.tab_id)})">${escapeHtml(tabTitle(tab))}</button>`,
-        )
-        .join("");
+    // Dropdown list for the header panels button: every tab as a row plus
+    // new/close actions. Same markup shape as the panels screen rows so the
+    // existing row CSS applies.
+    function renderTabsSheetList() {
+      const rows = state.tabs.length
+        ? state.tabs
+            .map(
+              (tab) =>
+                `<button class="mobile-row${tab.tab_id === state.tab ? " active" : ""}" onclick="HerdrMobile.selectTabFromSheet(${jsArg(tab.tab_id)})"><strong>${escapeHtml(tabTitle(tab))}${tab.tab_id === state.tab ? " · current" : ""}</strong><span>${escapeHtml((state.panes || []).filter((pane) => pane.tab_id === tab.tab_id).length)} panes</span></button>`,
+            )
+            .join("")
+        : '<div class="mobile-loading">No panels</div>';
+      const close = state.tab ? `<button class="mobile-btn danger mobile-wide" onclick="HerdrMobile.closePanelFromSheet(${jsArg(state.tab)})">Close current panel</button>` : "";
+      return `<button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.createPanelFromSheet()">New panel</button>${close}${rows}`;
     }
 
     function renderTerminalScreen(screen) {
@@ -68,17 +74,6 @@
         // refresh, and a quiet pane may not produce one for a long time.
         syncComposer(screen);
         return;
-      }
-      const tabs = el("mobileTerminalTabs");
-      if (tabs) {
-        // Skip the tab-bar innerHTML rewrite when nothing changed: every
-        // events-WS refresh lands here, and rewriting drops scroll state on
-        // wide tab lists.
-        const html = renderTerminalTabsWithAdd();
-        if (tabs.__lastTabsHtml !== html) {
-          tabs.innerHTML = html;
-          tabs.__lastTabsHtml = html;
-        }
       }
       syncComposer(screen);
     }
@@ -138,8 +133,7 @@
       renderPanels,
       renderTerminal,
       renderKeyBar,
-      renderTerminalTabsWithAdd,
-      renderTerminalTabs,
+      renderTabsSheetList,
       renderTerminalScreen,
       syncComposer,
       setBrowserFaviconError,

@@ -56,8 +56,9 @@ function context(pathname = "/", options = {}) {
   const timers = [];
   const listeners = {};
   let timerSeq = 0;
-  const navButtons = ["home", "search", "terminal", "more"].map(
-    (screen) => Object.assign(element(), { dataset: { screen } }),
+  const navButtons = ["home", "search", "terminal", "toolbar", "more"].map(
+    (screen) =>
+      Object.assign(element(), screen === "toolbar" ? { dataset: { toggle: screen } } : { dataset: { screen } }),
   );
   const getElement = (id) => {
     if (!elements.has(id)) elements.set(id, element(id));
@@ -110,6 +111,10 @@ function context(pathname = "/", options = {}) {
       documentElement: element("html"),
       createElement: () => element(),
       getElementById: getElement,
+      querySelector: (selector) =>
+        selector === '.mobile-nav button[data-toggle="toolbar"]'
+          ? navButtons.find((button) => button.dataset.toggle === "toolbar") || null
+          : null,
       querySelectorAll: (selector) =>
         selector === ".mobile-nav button" ? navButtons : [],
       hidden: false,
@@ -1708,8 +1713,11 @@ describe("mobile bundle load", () => {
     ctx.HerdrMobile.showScreen("panels");
     let html = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(html.includes("Close current panel"));
-    ok(source.includes("mobile-tab-close"));
+    // Tabs moved to the header dropdown: the close action renders from the
+    // tabs sheet list builder, not the old in-screen tab strip.
+    ok(source.includes("closePanelFromSheet"));
     equal(typeof ctx.HerdrMobile.closeCurrentPanel, "function");
+    equal(typeof ctx.HerdrMobile.closePanelFromSheet, "function");
   });
 
   it("closes current mobile panel and selects the focused fallback panel", async () => {
@@ -1885,6 +1893,67 @@ describe("mobile bundle load", () => {
     // Keyboard-open hides the key bar along with header/nav.
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     match(mobileCss, /body\.mobile-keyboard-open \.mobile-keybar/);
+  });
+
+  it("renders the key toolbar above the nav bar with a nav toggler", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    // The toolbar div sits in the shell right after the nav (before the
+    // drawer/confirm overlays), and the nav carries the toggler.
+    const shellIdx = source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden></div>');
+    const navIdx = source.indexOf('<nav class="mobile-nav">');
+    ok(shellIdx > navIdx, "toolbar markup comes after the nav markup");
+    match(source, /<button data-toggle="toolbar" aria-pressed="true">Keys<\/button>/);
+    ok(source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden></div>') < source.indexOf('<div class="mobile-drawer-backdrop"'), "toolbar sits between nav and overlays");
+    // Toolbar content mirrors the keybar builder, and syncs per render.
+    match(source, /function syncToolbar\(\) \{[\s\S]*?mobilePanels\.renderKeyBar\(\)/);
+    // Toggle flips visibility, persists, and updates aria-pressed.
+    const before = ctx.document.getElementById("mobileToolbar").hidden;
+    ctx.HerdrMobile.toggleToolbar();
+    const after = ctx.document.getElementById("mobileToolbar").hidden;
+    equal(after, !before, "toggle flips toolbar hidden");
+    ctx.HerdrMobile.toggleToolbar();
+    equal(ctx.document.getElementById("mobileToolbar").hidden, before, "toggle back restores");
+    // CSS: keyboard-open hides the toolbar row too.
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    match(mobileCss, /body\.mobile-keyboard-open \.mobile-toolbar/);
+    match(mobileCss, /\.mobile-toolbar\[hidden\] \{\n\s*display: none;\n\s*\}/);
+  });
+
+  it("renders terminal tabs as a header dropdown left of search", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    // The tabs button sits immediately before the search button in the
+    // header markup (its left on screen), shown only with a workspace.
+    const tabsIdx = source.indexOf('<button class="mobile-btn" id="mobileTabsBtn"');
+    const searchIdx = source.indexOf('<button class="mobile-btn" id="mobileSearch"');
+    ok(tabsIdx > -1 && tabsIdx < searchIdx, "tabs button renders left of search");
+    // With a workspace the button is enabled; the dropdown lists tabs + actions.
+    const tabsBtn = ctx.document.getElementById("mobileTabsBtn");
+    equal(tabsBtn.hidden, false, "tabs button visible with workspace");
+    ctx.HerdrMobile.openTabsSheet();
+    const listHtml = ctx.document.getElementById("mobileTabsSheetList").innerHTML;
+    ok(listHtml.includes("New panel"), "sheet lists New panel");
+    ok(listHtml.includes("Close current panel"), "sheet lists Close current panel");
+    ok(listHtml.includes("selectTabFromSheet"), "rows switch via sheet");
+    equal(ctx.document.getElementById("mobileTabsSheet").hidden, false, "sheet open");
+    // Close hides both sheet and backdrop.
+    ctx.HerdrMobile.closeTabsSheet();
+    equal(ctx.document.getElementById("mobileTabsSheet").hidden, true, "sheet closed");
+    equal(ctx.document.getElementById("mobileTabsBackdrop").hidden, true, "backdrop closed");
+    // Empty workspace list: the button hides (refresh() auto-selects the
+    // first workspace when one exists, so an empty list is the only way
+    // state.ws stays null after a refresh).
+    const ctx2 = context("/session/default", { workspaces: [] });
+    vm.runInContext(source, ctx2);
+    await ctx2.HerdrMobile.refresh();
+    await ctx2.settle();
+    equal(ctx2.document.getElementById("mobileTabsBtn").hidden, true, "tabs button hidden without workspace");
   });
 
   it("sends key bar control bytes through the terminal input path", async () => {
