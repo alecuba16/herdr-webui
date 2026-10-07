@@ -5949,7 +5949,8 @@ describe("a11y audit contract", () => {
 
   it("labels mobile header icon buttons and the connection state", () => {
     // The header no longer carries icon buttons: back and search moved to
-    // the nav bar (home/search tabs), panels moved to the nav bar too.
+    // the nav bar (home/search tabs), panels moved to the header meta chip
+    // (pressing the pane-count/panel-name pill opens the panels dialog).
     doesNotMatch(mobileSource, /id="mobileBack"/);
     doesNotMatch(mobileSource, /id="mobileSearch"["\s]/);
     doesNotMatch(mobileSource, /id="mobileTabsBtn"/);

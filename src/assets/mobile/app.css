@@ -174,12 +174,38 @@ body.light {
   min-width: 0;
   flex: 1 1 auto;
 }
-.mobile-context strong {
+.mobile-context strong,
+.mobile-context .mobile-title-btn {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 0 1 auto;
   min-width: 0;
+}
+/* Title is a button opening the workspace switcher sheet; styled to read
+   as the plain strong title it replaced (no chrome), with a pressed state
+   so the tap target gives feedback. */
+.mobile-title-btn {
+  -webkit-appearance: none;
+  appearance: none;
+  background: none;
+  border: 0;
+  border-radius: 10px;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.2;
+  margin: 0;
+  padding: 4px 6px;
+  text-align: left;
+}
+.mobile-title-btn:active {
+  background: var(--panel2);
+}
+.mobile-title-btn:focus-visible {
+  outline: var(--ring);
+  outline-offset: 1px;
 }
 .mobile-context span {
   overflow: hidden;
@@ -189,6 +215,36 @@ body.light {
 .mobile-context span {
   color: var(--muted);
   font-size: 13px;
+}
+/* Panels chip sits where the nav-bar Panels tab was: pressing it opens
+   the panels dialog. Mirrors the session backend badge pill so the two
+   interactive meta pills read as a pair. */
+.mobile-panels-chip {
+  -webkit-appearance: none;
+  appearance: none;
+  background: none;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-block;
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  margin-top: 0;
+  max-width: 40vw;
+  overflow: hidden;
+  padding: 3px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-panels-chip:active {
+  background: var(--panel2);
+}
+.mobile-panels-chip:focus-visible {
+  outline: var(--ring);
+  outline-offset: 1px;
 }
 .mobile-context-meta {
   display: flex;
@@ -264,6 +320,17 @@ body.light {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+/* Row controls must wrap, not clip: .mobile-row span forces
+   overflow:hidden + nowrap, which cut off the Close button once pill,
+   status and actions no longer fit one line. */
+.mobile-row .mobile-session-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  overflow: visible;
+  white-space: normal;
 }
 .mobile-session-actions .mobile-btn {
   flex: 1 1 auto;
@@ -605,7 +672,7 @@ body.light {
 }
 .mobile-nav {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
   min-width: 0;
   padding: 8px max(8px, env(safe-area-inset-right))
@@ -619,13 +686,10 @@ body.light {
   scrollbar-width: none;
   white-space: nowrap;
 }
-/* Header-search-off hides the Search tab and a closed workspace hides the
-   Panels tab; a display:none child in a grid still leaves an empty track,
-   so collapse the template to the real button count. */
+/* Header-search-off hides the Search tab; a display:none child in a grid
+   still leaves an empty track, so collapse the template to the real
+   button count. */
 .mobile-nav:has(> button[hidden]) {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-}
-.mobile-nav:has(> button[hidden]):has(> button[hidden] ~ button[hidden]) {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 .mobile-nav::-webkit-scrollbar {

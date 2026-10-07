@@ -81,6 +81,20 @@
         .join("");
     }
 
+    // Workspace switcher rows (header title sheet): same data as the Home
+    // list, minus rename/close actions. Selecting switches and the sheet
+    // closes (app.js owns that part).
+    function renderWorkspacesSheetList() {
+      if (!state.workspaces.length)
+        return '<div class="mobile-loading">No workspaces</div>';
+      return state.workspaces
+        .map((workspace) => {
+          const active = workspace.workspace_id === state.ws;
+          return `<button class="mobile-row${active ? " active" : ""}" onclick="HerdrMobile.selectWorkspaceFromSheet(${jsArg(workspace.workspace_id)})"><strong>${escapeHtml(workspaceTitle(workspace))}${active ? " · current" : ""}</strong><span>${escapeHtml(workspaceMeta(workspace))}</span></button>`;
+        })
+        .join("");
+    }
+
     function renderRenameSheet() {
       if (!state.renameWorkspaceId) return "";
       return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.cancelRenameWorkspace()"></div><div class="mobile-sheet" role="dialog" aria-label="Rename workspace"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Rename workspace</div><input id="mobileRenameInput" class="mobile-sheet-input" type="text"${inputAttrs("done")} value="${escapeHtml(state.renameWorkspaceValue)}" placeholder="Workspace name" oninput="HerdrMobile.setRenameWorkspaceValue(this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.submitRenameWorkspace(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.cancelRenameWorkspace(); }">${state.renameWorkspaceError ? `<div class="mobile-error">${escapeHtml(state.renameWorkspaceError)}</div>` : ""}<div class="mobile-sheet-actions"><button class="mobile-btn" onclick="HerdrMobile.cancelRenameWorkspace()">Cancel</button><button class="mobile-btn primary" onclick="HerdrMobile.submitRenameWorkspace()">Save</button></div></div>`;
@@ -277,6 +291,7 @@
       renderDrawerItems,
       renderAgents,
       renderWorkspaces,
+      renderWorkspacesSheetList,
       startRenameWorkspace,
       setRenameWorkspaceValue,
       submitRenameWorkspace,

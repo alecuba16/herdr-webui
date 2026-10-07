@@ -56,9 +56,9 @@ function context(pathname = "/", options = {}) {
   const timers = [];
   const listeners = {};
   let timerSeq = 0;
-  const navButtons = ["home", "search", "toolbar", "panels", "terminal", "more"].map(
+  const navButtons = ["home", "search", "toolbar", "terminal", "more"].map(
     (screen) =>
-      Object.assign(element(), screen === "toolbar" ? { dataset: { toggle: screen } } : screen === "panels" ? { dataset: { panels: screen } } : { dataset: { screen } }),
+      Object.assign(element(), screen === "toolbar" ? { dataset: { toggle: screen } } : { dataset: { screen } }),
   );
   const getElement = (id) => {
     if (!elements.has(id)) elements.set(id, element(id));
@@ -114,9 +114,7 @@ function context(pathname = "/", options = {}) {
       querySelector: (selector) =>
         selector === '.mobile-nav button[data-toggle="toolbar"]'
           ? navButtons.find((button) => button.dataset.toggle === "toolbar") || null
-          : selector === '.mobile-nav button[data-panels]'
-            ? navButtons.find((button) => button.dataset.panels) || null
-            : null,
+          : null,
       querySelectorAll: (selector) =>
         selector === ".mobile-nav button" ? navButtons : [],
       hidden: false,
@@ -1965,16 +1963,19 @@ describe("mobile bundle load", () => {
     match(mobileCss, /\.mobile-toolbar\[hidden\] \{\n\s*display: none;\n\s*\}/);
   });
 
-  it("renders terminal panels as a nav-bar tab opening the dropdown", async () => {
+  it("opens the panels dialog from the header meta chip and the workspace switcher from the title", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
-    // The panels trigger lives in the nav bar (moved off the header),
-    // shown only with a workspace.
-    const panelsBtn = ctx.document.querySelector('.mobile-nav button[data-panels]');
-    ok(panelsBtn, "nav panels button present");
-    equal(panelsBtn.hidden, false, "panels button visible with workspace");
+    // The panels trigger moved off the nav bar into the header meta line:
+    // the nav has no Panels tab anymore, and the chip is visible with a
+    // workspace open.
+    ok(!ctx.document.querySelector('.mobile-nav button[data-panels]'), "no nav panels button");
+    const chip = ctx.document.getElementById("mobilePanelsChip");
+    ok(chip, "header panels chip present");
+    equal(chip.hidden, false, "panels chip visible with workspace");
+    ok(chip.textContent.length > 0, "chip carries a label (pane count or panel name)");
     ctx.HerdrMobile.openTabsSheet();
     const listHtml = ctx.document.getElementById("mobileTabsSheetList").innerHTML;
     ok(listHtml.includes("New panel"), "sheet lists New panel");
@@ -1985,15 +1986,23 @@ describe("mobile bundle load", () => {
     ctx.HerdrMobile.closeTabsSheet();
     equal(ctx.document.getElementById("mobileTabsSheet").hidden, true, "sheet closed");
     equal(ctx.document.getElementById("mobileTabsBackdrop").hidden, true, "backdrop closed");
-    // Empty workspace list: the nav panels button hides (refresh()
-    // auto-selects the first workspace when one exists, so an empty list is
-    // the only way state.ws stays null after a refresh).
+    // Title press opens the workspace switcher sheet with the same rows
+    // as the Home list; selecting switches and closes.
+    ctx.HerdrMobile.openWorkspacesSheet();
+    const wsHtml = ctx.document.getElementById("mobileWorkspacesSheetList").innerHTML;
+    ok(wsHtml.includes("selectWorkspaceFromSheet"), "switcher rows select via sheet");
+    equal(ctx.document.getElementById("mobileWorkspacesSheet").hidden, false, "workspaces sheet open");
+    ctx.HerdrMobile.closeWorkspacesSheet();
+    equal(ctx.document.getElementById("mobileWorkspacesSheet").hidden, true, "workspaces sheet closed");
+    equal(ctx.document.getElementById("mobileWorkspacesBackdrop").hidden, true, "workspaces backdrop closed");
+    // Without a workspace the chip hides (refresh() auto-selects the first
+    // workspace when one exists, so an empty list is the only way state.ws
+    // stays null after a refresh).
     const ctx2 = context("/session/default", { workspaces: [] });
     vm.runInContext(source, ctx2);
     await ctx2.HerdrMobile.refresh();
     await ctx2.settle();
-    const panelsBtn2 = ctx2.document.querySelector('.mobile-nav button[data-panels]');
-    equal(panelsBtn2.hidden, true, "panels button hidden without workspace");
+    equal(ctx2.document.getElementById("mobilePanelsChip").hidden, true, "panels chip hidden without workspace");
   });
 
   it("sends key bar control bytes through the terminal input path", async () => {

@@ -308,6 +308,35 @@
 
   // Backend badge: Herdr sessions get a distinct mauve hue; built-in keeps
   // the accent family. Rendered next to the header meta line.
+  // Header meta is split in two: the leading context (repo parent · branch)
+  // stays plain text; the panel segment renders as a chip that opens the
+  // panels dialog (it replaced the nav-bar Panels tab). With a custom
+  // panel name the chip shows the name, otherwise the pane count.
+  function renderContextMeta(workspace) {
+    const metaText = el("mobileMeta");
+    const chip = el("mobilePanelsChip");
+    const parts = workspace ? mobileWorkmeta.contextMetaParts(workspace) : null;
+    // No leading context (no repo parent/branch) with a workspace open: the
+    // title and chip already carry the identity, so the text stays empty.
+    // The guidance line only belongs to the no-workspace state.
+    const fallback = parts ? "" : "Select workspace or agent";
+    const leading = parts ? parts.leading.join(" · ") : "";
+    const text = parts ? leading : fallback;
+    if (metaText && metaText.textContent !== text) metaText.textContent = text;
+    if (!chip) return;
+    if (!parts) {
+      chip.hidden = true;
+      return;
+    }
+    const label = parts.panelLabel || `${parts.paneCount} panes`;
+    if (chip.textContent !== label) chip.textContent = label;
+    chip.hidden = false;
+    chip.title = parts.panelLabel
+      ? `Panels · ${parts.panelLabel}`
+      : `Panels · ${parts.paneCount}`;
+    chip.setAttribute("aria-label", chip.title);
+  }
+
   function syncBackendBadge() {
     const badge = el("mobileBackendBadge");
     if (!badge) return;
@@ -316,6 +345,10 @@
     badge.textContent = `${sessionBackendLabel(backend)} · ${state.session || "default"}`;
     badge.title = "Sessions";
     badge.onclick = () => showScreen("sessions");
+    // Title press opens the workspace switcher sheet: same list as the
+    // Home screen rows, without leaving the current screen.
+    const title = el("mobileTitle");
+    if (title) title.onclick = () => openWorkspacesSheet();
   }
 
   // Styled in-app confirm sheet. Replaces raw window.confirm in the mobile
@@ -375,7 +408,7 @@
     document.body.innerHTML = `
       <div id="mobileApp" class="mobile-app">
         <header class="mobile-header">
-          <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span class="mobile-context-meta" role="status" aria-live="polite"><span id="mobileMeta">Loading</span><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button></span></div>
+          <div class="mobile-context"><button type="button" id="mobileTitle" class="mobile-title-btn" aria-haspopup="dialog" title="Switch workspace">Herdr</button><span class="mobile-context-meta" role="status" aria-live="polite"><span id="mobileMeta" class="mobile-meta-text">Loading</span><button type="button" id="mobilePanelsChip" class="mobile-panels-chip" aria-haspopup="dialog" title="Panels" hidden onclick="HerdrMobile.openTabsSheet()">0 panes</button><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button></span></div>
         </header>
         <main class="mobile-screen" id="mobileScreen"></main>
         <div class="mobile-search-sheet" id="mobileSearchSheet" hidden>
@@ -390,12 +423,13 @@
           <button data-screen="home">Home</button>
           <button data-screen="search">Search</button>
           <button data-toggle="toolbar" aria-pressed="true">Keys</button>
-          <button data-panels="panels" aria-haspopup="dialog" hidden>Panels</button>
           <button data-screen="terminal">Terminal</button>
           <button data-screen="more" aria-haspopup="dialog">More</button>
         </nav>
         <div class="mobile-sheet-backdrop" id="mobileTabsBackdrop" hidden onclick="HerdrMobile.closeTabsSheet()"></div>
         <div class="mobile-sheet" id="mobileTabsSheet" hidden role="dialog" aria-modal="true" aria-label="Panels"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Panels</div><div class="mobile-tabs-sheet-list" id="mobileTabsSheetList"></div></div>
+        <div class="mobile-sheet-backdrop" id="mobileWorkspacesBackdrop" hidden onclick="HerdrMobile.closeWorkspacesSheet()"></div>
+        <div class="mobile-sheet" id="mobileWorkspacesSheet" hidden role="dialog" aria-modal="true" aria-label="Workspaces"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Workspaces</div><div class="mobile-tabs-sheet-list" id="mobileWorkspacesSheetList"></div></div>
         <div class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" hidden onclick="HerdrMobile.closeDrawer()"></div>
         <aside class="mobile-drawer" id="mobileDrawer" hidden role="dialog" aria-modal="true" aria-label="Tools menu"><div class="mobile-drawer-items" id="mobileDrawerItems"></div></aside>
         <div class="mobile-sheet-backdrop" id="mobileConfirmBackdrop" hidden onclick="HerdrMobile.resolveConfirm(false)"></div>
@@ -499,6 +533,46 @@
     closeModalFocus();
   }
 
+  // Workspace switcher sheet, opened by pressing the header title. Same
+  // rows as the Home screen workspaces list, minus the rename/close
+  // actions (Home keeps those); selecting switches and closes.
+  function openWorkspacesSheet() {
+    const sheet = el("mobileWorkspacesSheet");
+    const backdrop = el("mobileWorkspacesBackdrop");
+    if (!sheet || !backdrop) return;
+    state.workspacesSheetOpen = true;
+    sheet.hidden = false;
+    backdrop.hidden = false;
+    renderWorkspacesSheet();
+    openModalFocus(sheet);
+  }
+
+  function closeWorkspacesSheet() {
+    if (!state.workspacesSheetOpen && !el("mobileWorkspacesSheet")) return;
+    state.workspacesSheetOpen = false;
+    const sheet = el("mobileWorkspacesSheet");
+    const backdrop = el("mobileWorkspacesBackdrop");
+    if (sheet) sheet.hidden = true;
+    if (backdrop) backdrop.hidden = true;
+    closeModalFocus();
+  }
+
+  function renderWorkspacesSheet() {
+    if (!state.workspacesSheetOpen) return;
+    const list = el("mobileWorkspacesSheetList");
+    if (!list) return;
+    const html = mobileScreens.renderWorkspacesSheetList();
+    if (list.__lastWorkspacesHtml !== html) {
+      list.innerHTML = html;
+      list.__lastWorkspacesHtml = html;
+    }
+  }
+
+  function selectWorkspaceFromSheet(id) {
+    closeWorkspacesSheet();
+    selectWorkspace(id);
+  }
+
   function renderTabsSheet() {
     if (!state.tabsSheetOpen) return;
     const list = el("mobileTabsSheetList");
@@ -597,23 +671,15 @@
     applyTreeIndent();
     const workspace = currentWorkspace();
     el("mobileTitle").textContent = workspaceTitle(workspace);
-    el("mobileMeta").textContent = contextMeta(workspace);
+    renderContextMeta(workspace);
     syncBackendBadge();
-    // Header panels dropdown moved into the nav bar: visible whenever a
-    // workspace is open, so the tabs are reachable from every screen (they
-    // used to live in the header, and before that only on the terminal
-    // screen as a horizontal strip).
-    const panelsButton = document.querySelector('.mobile-nav button[data-panels]');
-    if (panelsButton) {
-      const panelsDisabled = !state.ws;
-      panelsButton.hidden = panelsDisabled;
-      panelsButton.disabled = panelsDisabled;
-    }
     // Toolbar above the nav: content depends on screen and terminal, and
     // refreshes every render (WS refresh included) via syncToolbar.
     syncToolbar();
     // Tabs dropdown follows live tab data while open.
     renderTabsSheet();
+    // Workspace switcher follows live workspace data while open.
+    renderWorkspacesSheet();
     // Cache the nav button list once: querySelectorAll ran on every render,
     // and each render is triggered by every events-WS refresh.
     if (!navButtons) {
@@ -623,14 +689,8 @@
     }
     for (const button of navButtons) {
       const searchNavDisabled = button.dataset.screen === "search" && headerSearchDisabled();
-      // Panels visibility is owned by the workspace check above; the Search
-      // toggle must not clobber it (button.hidden is a plain overwrite).
-      if (button.dataset.panels) {
-        button.disabled = !state.ws;
-      } else {
-        button.hidden = searchNavDisabled;
-        button.disabled = searchNavDisabled;
-      }
+      button.hidden = searchNavDisabled;
+      button.disabled = searchNavDisabled;
       button.classList.toggle("active", mobileScreens.mobileNavActive(button.dataset.screen));
       // Only rewrite the label when it actually changed; innerHTML writes
       // invalidate the whole nav bar on every refresh otherwise.
@@ -1234,6 +1294,9 @@
     closePanelFromSheet,
     openTabsSheet,
     closeTabsSheet,
+    openWorkspacesSheet,
+    closeWorkspacesSheet,
+    selectWorkspaceFromSheet,
     toggleToolbar,
     currentSessionBackend,
     dismissWorkingAgent: (...args) => mobileScreens.dismissWorkingAgent(...args),
@@ -1541,6 +1604,11 @@
     if (state.tabsSheetOpen) {
       event.preventDefault();
       closeTabsSheet();
+      return;
+    }
+    if (state.workspacesSheetOpen) {
+      event.preventDefault();
+      closeWorkspacesSheet();
       return;
     }
     const drawer = el("mobileDrawer");
