@@ -74,8 +74,19 @@
       height: opts.fallbackHeight || 420,
     }) || { width: 0, height: 0 };
     var cell = cellSize(term, container, opts.fallbackCell || { width: 9, height: 17 });
-    var width = Math.max(0, box.width - (opts.paddingX || 0));
-    var height = Math.max(0, box.height - (opts.paddingY || 0));
+    // clientWidth/clientHeight include the container's own padding, but the
+    // terminal surface renders inside it. Callers that pad the shell (the
+    // mobile shell has 8px) pass paddingX/paddingY so cols/rows use the
+    // content box, not the border box.
+    var padX = opts.paddingX || 0;
+    var padY = opts.paddingY || 0;
+    if (typeof getComputedStyle === "function") {
+      var style = getComputedStyle(container);
+      if (opts.paddingX == null) padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      if (opts.paddingY == null) padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+    }
+    var width = Math.max(0, box.width - padX);
+    var height = Math.max(0, box.height - padY);
     return {
       cols: Math.max(opts.minCols || 40, Math.floor(width / Math.max(1, cell.width))),
       rows: Math.max(opts.minRows || 8, Math.floor(height / Math.max(1, cell.height)) - (opts.rowReserve || 0)),

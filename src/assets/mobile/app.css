@@ -112,58 +112,197 @@ body.light {
 }
 .mobile-app {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  /* Explicit minmax(0,1fr) column: an implicit single column is sized
+     "auto" (max-content), so the terminal's term-grid (min-width:
+     max-content) could inflate the whole app track past the viewport
+     (observed 386px at 320) and pushed the nav/keybar offscreen.
+     minmax(0,1fr) clamps the track to the viewport; terminal content
+     scrolls inside its own shell instead. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   height: var(--herdr-mobile-viewport-height);
   max-height: var(--herdr-mobile-viewport-height);
   min-width: 0;
   overflow: hidden;
   background: var(--bg);
 }
-.mobile-header {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 10px;
+/* Key toolbar sits between the screen and the nav bar (above it); the
+   toolbar div is always present in the DOM and toggled via [hidden], so an
+   empty/closed toolbar never leaves a stray grid row (auto row collapses
+   to 0). */
+.mobile-toolbar {
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+/* The keybar renders inside the toolbar; only one of the two should draw
+   the bottom hairline or the toolbar/nav stack doubles the border. */
+.mobile-toolbar .mobile-keybar {
+  border-bottom: 0;
+}
+.mobile-toolbar[hidden] {
+  display: none;
+}
+/* Floating Keys button: draggable pill inside the terminal view. A tap
+   toggles the keybar toolbar (aria-pressed mirrors that state), a drag
+   moves the pill and the position persists. Fixed-positioned against the
+   viewport so it survives screen re-renders; default sits bottom-right
+   above the nav bar. */
+.mobile-keys-fab {
+  position: fixed;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  z-index: 60;
+  display: inline-flex;
   align-items: center;
-  min-height: 58px;
-  padding: max(8px, env(safe-area-inset-top))
-    max(12px, env(safe-area-inset-right)) 8px
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.mobile-keys-fab[hidden] {
+  display: none;
+}
+.mobile-keys-fab.dragging {
+  cursor: grabbing;
+  opacity: 0.85;
+}
+.mobile-keys-fab:active {
+  background: var(--panel2);
+}
+.mobile-keys-fab[aria-pressed="true"] {
+  border-color: var(--accent, currentColor);
+  color: var(--accent, inherit);
+}
+.mobile-keys-fab:focus-visible {
+  outline: var(--ring);
+  outline-offset: 1px;
+}
+.mobile-tabs-sheet-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* The sheet already pads 14px horizontally; an inner inset here doubled
+     the gutter to 28px versus the confirm/rename sheets. */
+  padding: 4px 0 12px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.mobile-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: max(6px, env(safe-area-inset-top))
+    max(12px, env(safe-area-inset-right)) 6px
     max(12px, env(safe-area-inset-left));
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
+/* Single thin line: connection dot, session badge, workspace title,
+   panels chip, then the meta text, all inline with ellipsis truncation.
+   The header carries no icon buttons, so the context takes the full
+   row. Fixed pills (dot, badge, chip) never shrink; title and meta text
+   truncate so nothing pushes the header into two lines. */
 .mobile-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 .mobile-context strong,
+.mobile-context .mobile-title-btn {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* Title is a button opening the workspace switcher sheet; styled to read
+   as the plain strong title it replaced (no chrome), with a pressed state
+   so the tap target gives feedback. */
+.mobile-title-btn {
+  -webkit-appearance: none;
+  appearance: none;
+  background: none;
+  border: 0;
+  border-radius: 10px;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.2;
+  margin: 0;
+  padding: 4px 6px;
+  text-align: left;
+}
+.mobile-title-btn:active {
+  background: var(--panel2);
+}
+.mobile-title-btn:focus-visible {
+  outline: var(--ring);
+  outline-offset: 1px;
+}
 .mobile-context span {
-  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .mobile-context span {
   color: var(--muted);
-  font-size: 12px;
-  margin-top: 2px;
+  font-size: 13px;
 }
-.mobile-context-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+/* Meta text takes whatever space is left after the fixed pills and the
+   title; it clips with ellipsis instead of hiding the dot/badge/chip. */
+.mobile-context #mobileMeta {
+  flex: 1 1 auto;
   min-width: 0;
 }
-.mobile-context-meta #mobileMeta {
-  display: block;
+/* Panels chip sits where the nav-bar Panels tab was: pressing it opens
+   the panels dialog. Mirrors the session backend badge pill so the two
+   interactive meta pills read as a pair. */
+.mobile-panels-chip {
+  -webkit-appearance: none;
+  appearance: none;
+  background: none;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-block;
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  margin-top: 0;
+  max-width: 40vw;
   overflow: hidden;
+  padding: 3px 7px;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0;
 }
-/* Label shedding at narrow widths: keep the status dot, drop the text. */
+.mobile-panels-chip:active {
+  background: var(--panel2);
+}
+.mobile-panels-chip:focus-visible {
+  outline: var(--ring);
+  outline-offset: 1px;
+}
+/* Single-line layout: at narrow widths the meta text clips behind the
+   badge instead of hiding the whole line, so dot, badge, title and chip
+   stay inline at every viewport. */
 @media (max-width: 480px) {
-  .mobile-context-meta #mobileMeta {
-    display: none;
-  }
   .mobile-context .mobile-backend-badge {
     font-size: 9px;
     padding: 3px 6px;
@@ -194,7 +333,6 @@ body.light {
   }
 }
 .mobile-context .mobile-backend-badge {
-  align-self: flex-start;
   -webkit-appearance: none;
   appearance: none;
   background: none;
@@ -206,7 +344,7 @@ body.light {
   font-size: 10px;
   font-weight: 800;
   line-height: 1;
-  margin-top: 4px;
+  margin-top: 0;
   overflow: visible;
   padding: 3px 7px;
   text-overflow: clip;
@@ -217,6 +355,17 @@ body.light {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+/* Row controls must wrap, not clip: .mobile-row span forces
+   overflow:hidden + nowrap, which cut off the Close button once pill,
+   status and actions no longer fit one line. */
+.mobile-row .mobile-session-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  overflow: visible;
+  white-space: normal;
 }
 .mobile-session-actions .mobile-btn {
   flex: 1 1 auto;
@@ -248,8 +397,7 @@ body.light {
   border-color: var(--accent);
   color: var(--accent-fg);
 }
-.mobile-btn.danger,
-.mobile-tab-close {
+.mobile-btn.danger {
   border-color: var(--danger, #f38ba8);
   color: var(--danger, #f38ba8);
 }
@@ -385,7 +533,12 @@ body.light {
 }
 .mobile-terminal-screen {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  /* Single row: the keybar moved to the toolbar above the nav bar and the
+     tabs to the header dropdown, so the shell is the only child. Keeping
+     the old auto-auto-1fr rows stranded the shell in the first auto row
+     (content-sized, ~186px) and left the 1fr row empty below as a blank
+     strip. */
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   min-width: 0;
@@ -395,22 +548,31 @@ body.light {
 }
 .mobile-keybar {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+}
+/* Each key row scrolls horizontally; keys keep a fixed floor so tall
+   labels (^C, PgUp) never reflow the rows. */
+.mobile-keybar-row {
+  display: flex;
   gap: 6px;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
   -webkit-overflow-scrolling: touch;
 }
-.mobile-keybar::-webkit-scrollbar {
+.mobile-keybar-row::-webkit-scrollbar {
   display: none;
 }
 .mobile-keybar-key {
-  flex: 0 0 auto;
+  flex: 1 1 0;
   min-height: 44px;
-  min-width: 48px;
-  padding: 0 14px;
+  min-width: 40px;
+  max-width: 64px;
+  padding: 0 6px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--panel2);
@@ -418,6 +580,8 @@ body.light {
   font-family: var(--term-font-family, ui-monospace, monospace);
   font-weight: 700;
   font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .mobile-keybar-key:active {
   filter: brightness(1.2);
@@ -427,6 +591,19 @@ body.light {
   background: var(--accent);
   color: var(--accent-fg);
 }
+/* 320-360px viewports: shrink gaps and key floors so the first row (Esc
+   Tab Ctrl ↑↓←→ ^C) fits without a swipe; the combo row scrolls. */
+@media (max-width: 360px) {
+  .mobile-keybar {
+    padding: 6px 6px;
+  }
+  .mobile-keybar-row {
+    gap: 4px;
+  }
+  .mobile-keybar-key {
+    min-width: 32px;
+  }
+}
 .mobile-keybar-danger {
   color: var(--danger, #f38ba8);
   border-color: currentColor;
@@ -434,39 +611,9 @@ body.light {
 .mobile-terminal-screen > .mobile-keybar:empty {
   display: none;
 }
-.mobile-tabs {
-  display: flex;
-  gap: 8px;
-  overflow: auto;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-}
-.mobile-tab {
-  flex: 0 0 auto;
-  min-height: 40px;
-  max-width: 180px;
-  padding: 9px 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--panel2);
-  color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mobile-tab.active {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--accent-fg);
-}
-.mobile-tab-add {
-  min-width: 44px;
-  font-weight: 900;
-}
-.mobile-tab-close {
-  min-width: 44px;
-  font-weight: 900;
-}
+/* Old in-terminal tabs strip removed: the tabs moved to the header dropdown
+   (mobileTabsSheet / mobile-tabs-sheet-list). The mobile-tabs/mobile-tab
+   styles are kept out of the sheet path; strip classes are deleted. */
 .mobile-terminal-shell {
   contain: layout paint style;
   position: relative;
@@ -567,33 +714,44 @@ body.light {
   background: #3b2028;
 }
 .mobile-nav {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 6px;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
   padding: 8px max(8px, env(safe-area-inset-right))
     max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
   border-top: 1px solid var(--border);
   background: var(--panel);
+  /* Equal-width buttons keep all tabs visible on 360-390px screens;
+     overflow-x stays as a safety net for ultra-narrow viewports. */
+  overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
   white-space: nowrap;
+}
+/* Header-search-off hides the Search tab; a display:none child in a grid
+   still leaves an empty track, so collapse the template to the real
+   button count. */
+.mobile-nav:has(> button[hidden]) {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 .mobile-nav::-webkit-scrollbar {
   display: none;
 }
 .mobile-nav button {
-  flex: 0 0 auto;
+  min-width: 0;
   min-height: 44px;
-  min-width: 74px;
-  padding: 0 10px;
+  padding: 0 4px;
   border: 0;
   border-radius: 12px;
   background: transparent;
   color: var(--muted);
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.mobile-nav button.active {
+.mobile-nav button.active,
+.mobile-nav button[aria-pressed="true"] {
   background: var(--panel2);
   color: var(--fg);
 }
@@ -619,6 +777,10 @@ body.light {
   overflow-y: auto;
   transform: translateX(-102%);
   transition: transform 0.22s var(--ease-out, ease-out);
+}
+.mobile-drawer:focus-visible {
+  outline: 2px solid var(--accent, #89b4fa);
+  outline-offset: -2px;
 }
 .mobile-drawer[hidden] {
   display: none;
@@ -675,53 +837,17 @@ body.mobile-drawer-open .mobile-drawer {
     transition: none;
   }
 }
-.mobile-more-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 12px;
-}
-.mobile-more-card {
-  display: grid;
-  gap: 6px;
-  min-height: 118px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--panel);
-  color: var(--fg);
-  font: inherit;
-  text-align: left;
-}
-.mobile-more-card:active,
-.mobile-more-card:focus-visible {
-  border-color: var(--accent);
-  outline: none;
-}
-.mobile-more-card strong {
-  font-size: 15px;
-}
-.mobile-more-card small {
-  color: var(--muted);
-  line-height: 1.35;
-}
-.mobile-more-icon {
-  display: inline-grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 12px;
-  background: var(--panel2);
-  color: var(--accent);
-  font-weight: 800;
-}
+/* The old More-grid screen was unreachable: the nav More button opens the
+   drawer and drawer items navigate straight to target screens, so the
+   grid renderer and its mobile-more-* styles are gone. */
 body.mobile-keyboard-open .mobile-app {
   grid-template-rows: minmax(0, 1fr);
 }
 body.mobile-keyboard-open .mobile-header,
 body.mobile-keyboard-open .mobile-nav,
 body.mobile-keyboard-open .mobile-keybar,
-body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
+body.mobile-keyboard-open .mobile-toolbar,
+body.mobile-keyboard-open .mobile-keys-fab {
   display: none;
 }
 .mobile-actions {
@@ -764,6 +890,14 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   z-index: 90;
   background: rgba(0, 0, 0, 0.45);
 }
+/* The shell keeps the confirm sheet mounted with [hidden]; without this
+   guard the .mobile-sheet/.mobile-sheet-backdrop display rules above would
+   override the browser's default [hidden] { display: none } and the idle
+   sheet would render pinned to the bottom of every screen. */
+.mobile-sheet[hidden],
+.mobile-sheet-backdrop[hidden] {
+  display: none;
+}
 .mobile-sheet {
   position: fixed;
   left: 0;
@@ -780,6 +914,13 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
   max-height: 70vh;
   overflow-y: auto;
+}
+/* Focus lands on the sheet container itself while open (see
+   openModalFocus); without a visible outline a keyboard user cannot tell
+   where focus went. */
+.mobile-sheet:focus-visible {
+  outline: 2px solid var(--accent, #89b4fa);
+  outline-offset: -2px;
 }
 .mobile-sheet-handle {
   width: 40px;
@@ -807,8 +948,8 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   cursor: pointer;
 }
 .mobile-sheet-action.danger {
-  color: #f38ba8;
-  border-color: #f38ba8;
+  color: var(--danger, #f38ba8);
+  border-color: var(--danger, #f38ba8);
 }
 .mobile-sheet-action:active {
   filter: brightness(1.15);
@@ -838,42 +979,16 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   color: var(--status-done, #89b4fa);
   font-size: 14px;
 }
-.mobile-composer {
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-  padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
-  border-top: 1px solid var(--border);
-  background: var(--bg, #1e1e2e);
-}
-.mobile-composer textarea {
-  flex: 1;
-  min-height: 38px;
-  max-height: 120px;
-  resize: none;
-  padding: 9px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-soft, rgba(255, 255, 255, 0.04));
-  color: inherit;
-  font: inherit;
-  font-size: 15px;
-  line-height: 1.3;
-}
-.mobile-composer-note {
-  padding: 8px 12px;
-  color: var(--muted);
-  font-size: 13px;
-  border-top: 1px solid var(--border);
-  background: var(--bg, #1e1e2e);
-}
+/* Prompt card is a bottom sheet now (same .mobile-sheet chrome as the
+   confirm/rename sheets). These rules only tune the question specifics.
+   The old .mobile-composer bar is gone: typing goes straight into the
+   terminal, whose wterm textarea carries the full keyboard guard set. */
 .mobile-prompt-card {
-  margin: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
-  padding: 12px;
+  z-index: 91;
   border: 1px solid var(--status-blocked, #f38ba8);
-  border-radius: 12px;
-  background: var(--bg, #1e1e2e);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+.mobile-prompt-backdrop {
+  z-index: 90;
 }
 .mobile-prompt-head {
   display: flex;
@@ -882,6 +997,10 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   gap: 8px;
   margin-bottom: 10px;
 }
+.mobile-prompt-title {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
 .mobile-prompt-body {
   display: grid;
   gap: 8px;
@@ -889,17 +1008,13 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
 .mobile-prompt-option {
   display: block;
   width: 100%;
-  padding: 11px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-soft, rgba(255, 255, 255, 0.04));
-  color: inherit;
   font-size: 15px;
-  text-align: left;
-  cursor: pointer;
 }
 .mobile-prompt-option:active {
   filter: brightness(1.15);
+}
+.mobile-prompt-option strong {
+  color: var(--status-blocked, #f38ba8);
 }
 .mobile-workspace-row {
   display: flex;
@@ -916,8 +1031,8 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   flex-shrink: 0;
 }
 .mobile-row-actions .mobile-btn.mini {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   display: inline-flex;
   align-items: center;
@@ -1521,6 +1636,9 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   border-radius: 14px;
   background: var(--panel);
 }
+.mobile-worktree-source .mobile-btn.primary {
+  margin-top: 8px;
+}
 .mobile-worktree-source span {
   color: var(--muted);
   font-size: 12px;
@@ -1568,9 +1686,11 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   align-items: center;
 }
 .mobile-btn.mini {
-  min-width: 34px;
-  min-height: 34px;
-  padding: 2px 8px;
+  /* Visual chrome stays compact, but the hit box must clear the 44px
+     coarse-pointer bar: pad the box, not the glyph. */
+  min-width: 44px;
+  min-height: 44px;
+  padding: 2px 10px;
   font-size: 12px;
   border-radius: 10px;
 }
@@ -1590,18 +1710,23 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   pointer-events: none;
 }
 @media (min-width: 600px) and (max-width: 900px) {
+  /* Tablet band stays single-column: the mobile shell has no persistent
+     sidebar DOM, so a two-column grid here would push the terminal screen
+     into the 300px column (or drop the in-flow toolbar into the 1fr
+     column, swallowing the pane). Keep the phone rows and only loosen the
+     screen padding. */
   .mobile-app {
-    grid-template-columns: 300px minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
   }
   .mobile-header {
-    grid-column: 1 / -1;
+    grid-column: auto;
   }
   .mobile-screen {
     padding: 16px;
   }
   .mobile-nav {
-    grid-column: 1 / -1;
+    grid-column: auto;
   }
 }
 
@@ -2332,3 +2457,53 @@ body.mobile-keyboard-open .mobile-screen.terminal-active .mobile-tabs {
   font-size: 11px;
   overflow-wrap: anywhere;
 }
+
+/* Directory picker (open project by browsing): bottom sheet over the shared
+   tree API. Reuses .mobile-sheet chrome; these rules add the path strip,
+   action row, and folder list specifics. */
+.mobile-directory-picker {
+  max-height: 82vh;
+}
+.mobile-directory-picker-path {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  padding: 4px 2px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.mobile-directory-picker-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mobile-directory-picker-actions .mobile-btn.primary {
+  margin-left: auto;
+}
+.mobile-directory-picker-tree {
+  flex: 1;
+  min-height: 120px;
+  max-height: 46vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  -webkit-overflow-scrolling: touch;
+}
+.mobile-directory-row {
+  padding: 9px 10px;
+}
+.mobile-directory-row span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+/* Browse buttons sit under the path input inside the form label grid. */
+.mobile-browse-btn {
+  justify-self: end;
+  margin-top: -2px;
+  font-size: 13px;
+  padding: 7px 14px;
+}
+/* .mobile-worktree-open-actions retired: the merged Choose-folder flow
+   renders results inline, no separate open-existing action group. */

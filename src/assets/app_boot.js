@@ -99,6 +99,7 @@
         "/assets/mobile/attention.js",
         "/assets/mobile/terminal.js",
         "/assets/mobile/worktrees.js",
+        "/assets/mobile/directory-picker.js",
         "/assets/mobile/file-browser.js",
         "/assets/mobile/settings.js",
         "/assets/mobile/search.js",

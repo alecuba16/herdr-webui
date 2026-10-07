@@ -17,7 +17,6 @@
     refresh,
     confirmFn,
     getWorkingDismissals,
-    getMobileTempTerminal,
     workspacesById,
     tabsById,
     tabCountsByWorkspace,
@@ -31,11 +30,13 @@
 
     function renderTaskHub() {
       const active = currentWorkspace();
-      const searchAction = globalThis.HerdrActionRegistry.action("search");
+      // Single primary card: the old second card opened the search sheet,
+      // which duplicated the persistent nav Search tab (reviewer-audited
+      // duplicate flow). Search stays reachable from the nav bar.
       const activeAction = active
         ? `<button class="mobile-task-card primary" onclick="HerdrMobile.showScreen('terminal')"><strong>Continue ${escapeHtml(workspaceTitle(active))}</strong><span>${escapeHtml(contextMeta(active))}</span></button>`
         : `<button class="mobile-task-card primary" onclick="HerdrMobile.runAction('open-workspace')"><strong>Open workspace or worktree</strong><span>Pick a folder, discover worktrees, or create a checkout.</span></button>`;
-      return `<section class="mobile-section mobile-task-hub"><h2>Start</h2><div class="mobile-task-grid">${activeAction}<button class="mobile-task-card" onclick="HerdrMobile.runAction('search')"><strong>${escapeHtml(searchAction.title)}</strong><span>${escapeHtml(searchAction.subtitle)}</span></button></div></section>`;
+      return `<section class="mobile-section mobile-task-hub"><h2>Start</h2><div class="mobile-task-grid">${activeAction}</div></section>`;
     }
 
     function renderAttentionAgents() {
@@ -56,26 +57,6 @@
       } finally {
         state.agents = previousAgents;
       }
-    }
-
-    function renderMore() {
-      const attention = state.agents.filter((agent) => ["blocked", "done"].includes(mobileAttention.statusClass(agent.agent_status))).length;
-      const workspace = currentWorkspace();
-      const tempTerminal = getMobileTempTerminal();
-      const tempMeta = tempTerminal && tempTerminal.hasAnyOpen ? (tempTerminal.hasAnyOpen() ? "Restore the live temporary terminal" : "Ephemeral shell, no workspace needed") : "Ephemeral shell, no workspace needed";
-      const tools = [
-        { screen: "agents", title: "Agents", meta: attention ? `${attention} need attention` : `${state.agents.length} active`, icon: "●" },
-        { screen: "panels", title: "Panels", meta: workspace ? `${state.tabs.length} terminal tabs` : "Select workspace first", icon: "▦" },
-        { screen: "worktrees", title: "Worktrees", meta: "Discover, open, or create Git worktrees", icon: "wt" },
-        { screen: "files", title: "Files", meta: workspace ? "Browse current workspace" : "Select workspace first", icon: "fi" },
-        { screen: "git", title: "Git", meta: workspace ? "Status, diff, branches, history" : "Select workspace first", icon: "git" },
-        { screen: "temp-terminal", title: "Temporary terminal", meta: tempMeta, icon: "T", action: true },
-        { screen: "temp-files", title: "Temporary Files", meta: "Browse any folder, no workspace", icon: "▤", action: true },
-        { screen: "temp-git", title: "Temporary Git", meta: "Review any repository, no workspace", icon: "⑂", action: true },
-        { screen: "settings", title: "Settings", meta: "Appearance, search, alerts, terminal", icon: "⚙" },
-        { screen: "sessions", title: "Sessions", meta: `${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`, icon: "se" },
-      ];
-      return `<section class="mobile-section mobile-more"><h2>More tools</h2><p class="mobile-help">Less-used tools stay here so Home, Search, and Terminal remain fast.</p><div class="mobile-more-grid">${tools.map((tool) => tool.action ? `<button class="mobile-more-card" onclick="HerdrMobile.runAction('${tool.screen}')"><span class="mobile-more-icon">${escapeHtml(tool.icon)}</span><strong>${escapeHtml(tool.title)}</strong><small>${escapeHtml(tool.meta)}</small></button>` : `<button class="mobile-more-card" onclick="HerdrMobile.showScreen('${tool.screen}')"><span class="mobile-more-icon">${escapeHtml(tool.icon)}</span><strong>${escapeHtml(tool.title)}</strong><small>${escapeHtml(tool.meta)}</small></button>`).join("")}</div></section>`;
     }
 
     // Workspace rows (mobile parity with the desktop workspace list).
@@ -100,9 +81,23 @@
         .join("");
     }
 
+    // Workspace switcher rows (header title sheet): same data as the Home
+    // list, minus rename/close actions. Selecting switches and the sheet
+    // closes (app.js owns that part).
+    function renderWorkspacesSheetList() {
+      if (!state.workspaces.length)
+        return '<div class="mobile-loading">No workspaces</div>';
+      return state.workspaces
+        .map((workspace) => {
+          const active = workspace.workspace_id === state.ws;
+          return `<button class="mobile-row${active ? " active" : ""}" onclick="HerdrMobile.selectWorkspaceFromSheet(${jsArg(workspace.workspace_id)})"><strong>${escapeHtml(workspaceTitle(workspace))}${active ? " · current" : ""}</strong><span>${escapeHtml(workspaceMeta(workspace))}</span></button>`;
+        })
+        .join("");
+    }
+
     function renderRenameSheet() {
       if (!state.renameWorkspaceId) return "";
-      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.cancelRenameWorkspace()"></div><div class="mobile-sheet" role="dialog" aria-label="Rename workspace"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Rename workspace</div><input id="mobileRenameInput" class="mobile-sheet-input" type="text"${inputAttrs("done")} value="${escapeHtml(state.renameWorkspaceValue)}" placeholder="Workspace name" oninput="HerdrMobile.setRenameWorkspaceValue(this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.submitRenameWorkspace(); }">${state.renameWorkspaceError ? `<div class="mobile-error">${escapeHtml(state.renameWorkspaceError)}</div>` : ""}<div class="mobile-sheet-actions"><button class="mobile-btn" onclick="HerdrMobile.cancelRenameWorkspace()">Cancel</button><button class="mobile-btn primary" onclick="HerdrMobile.submitRenameWorkspace()">Save</button></div></div>`;
+      return `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.cancelRenameWorkspace()"></div><div class="mobile-sheet" role="dialog" aria-label="Rename workspace"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Rename workspace</div><input id="mobileRenameInput" class="mobile-sheet-input" type="text"${inputAttrs("done")} value="${escapeHtml(state.renameWorkspaceValue)}" placeholder="Workspace name" oninput="HerdrMobile.setRenameWorkspaceValue(this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.submitRenameWorkspace(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.cancelRenameWorkspace(); }">${state.renameWorkspaceError ? `<div class="mobile-error">${escapeHtml(state.renameWorkspaceError)}</div>` : ""}<div class="mobile-sheet-actions"><button class="mobile-btn" onclick="HerdrMobile.cancelRenameWorkspace()">Cancel</button><button class="mobile-btn primary" onclick="HerdrMobile.submitRenameWorkspace()">Save</button></div></div>`;
     }
 
     function startRenameWorkspace(workspaceId, currentTitle) {
@@ -223,6 +218,8 @@
       if (screen === "home") return "Home";
       if (screen === "search") return "Search";
       if (screen === "terminal") return "Terminal";
+      if (screen === "git") return "Git";
+      if (screen === "files") return "Files";
       if (screen !== "more") return screen;
       // Only surface attention pills for statuses the CSS styles; an unknown
       // agent status would render an unstyled "unknown" pill permanently.
@@ -234,7 +231,7 @@
     }
 
     function mobileNavActive(screen) {
-      if (screen === "more") return state.screen === "more" || MORE_SCREENS.includes(state.screen);
+      if (screen === "more") return MORE_SCREENS.includes(state.screen);
       return screen === state.screen;
     }
 
@@ -247,8 +244,6 @@
         { screen: "agents", title: "Agents", meta: attention ? `${attention} need attention` : `${state.agents.length} active`, icon: "●" },
         { screen: "panels", title: "Panels", meta: workspace ? `${state.tabs.length} terminal tabs` : "Select workspace first", icon: "▦" },
         { screen: "worktrees", title: "Worktrees", meta: "Discover, open, or create Git worktrees", icon: "wt" },
-        { screen: "files", title: "Files", meta: workspace ? "Browse current workspace" : "Select workspace first", icon: "fi" },
-        { screen: "git", title: "Git", meta: workspace ? "Status, diff, branches, history" : "Select workspace first", icon: "git" },
         { screen: "sessions", title: "Sessions", meta: `${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`, icon: "se" },
         { screen: "settings", title: "Settings", meta: "Appearance, search, alerts, terminal", icon: "⚙" },
       ];
@@ -293,10 +288,10 @@
 
     return {
       renderHome,
-      renderMore,
       renderDrawerItems,
       renderAgents,
       renderWorkspaces,
+      renderWorkspacesSheetList,
       startRenameWorkspace,
       setRenameWorkspaceValue,
       submitRenameWorkspace,

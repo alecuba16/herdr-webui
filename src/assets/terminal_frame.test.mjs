@@ -104,6 +104,45 @@ describe("desktop terminal visible height fitting", () => {
     assert.equal(container.style.overflowY, "auto");
   });
 
+  it("gridSize subtracts the container's own padding when the caller does not pass paddingX/Y", () => {
+    // Regression: the mobile terminal shell has 8px padding; clientWidth
+    // includes it, so cols/rows were overestimated and the terminal grid
+    // overflowed the shell. With getComputedStyle available (browsers, and
+    // this harness), gridSize must measure the padding itself.
+    const shell = {
+      clientWidth: 416,
+      clientHeight: 656,
+      getClientRects() { return [{}]; },
+      getBoundingClientRect() { return { width: 416, height: 656 }; },
+      querySelector() { return null; },
+    };
+    const realGetComputedStyle = globalThis.getComputedStyle;
+    globalThis.getComputedStyle = () => ({ paddingLeft: "8px", paddingRight: "8px", paddingTop: "8px", paddingBottom: "8px" });
+    try {
+      const size = HerdrTerminalFit.gridSize(shell, null, {
+        fallbackCell: { width: 9, height: 18 },
+        minCols: 40,
+        minRows: 10,
+      });
+      // 416 - 16 = 400 => 44 cols, not 46; 656 - 16 = 640 => 35 rows, not 36.
+      assert.equal(size.cols, 44);
+      assert.equal(size.rows, 35);
+      // Explicit paddingX/Y still win over the computed padding.
+      const explicit = HerdrTerminalFit.gridSize(shell, null, {
+        paddingX: 0,
+        paddingY: 0,
+        fallbackCell: { width: 9, height: 18 },
+        minCols: 40,
+        minRows: 10,
+      });
+      assert.equal(explicit.cols, 46);
+      assert.equal(explicit.rows, 36);
+    } finally {
+      if (realGetComputedStyle === undefined) delete globalThis.getComputedStyle;
+      else globalThis.getComputedStyle = realGetComputedStyle;
+    }
+  });
+
   it("uses 20px fallback cell height so a 1080px shell fits 53 rows, not 62", () => {
     const shell = {
       clientWidth: 1141,

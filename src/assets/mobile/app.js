@@ -17,7 +17,19 @@
     writeSessionBackend,
   } = globalThis.HerdrMobileCore;
   const { createFaviconNotifier } = globalThis.HerdrAppHelpers;
-  const MORE_SCREENS = ["agents", "panels", "worktrees", "files", "git", "settings", "sessions"];
+  const MORE_SCREENS = ["agents", "panels", "worktrees", "settings", "sessions"];
+
+  // Terminal key toolbar visibility is a per-browser preference: the
+  // toolbar sits above the nav bar on every screen, and the nav toggler
+  // flips it. localStorage may throw (private mode, stubbed harnesses),
+  // so default to open and never let storage break the shell.
+  function readToolbarPreference() {
+    try {
+      const value = localStorage.getItem("herdr-mobile-toolbar");
+      if (value === "closed") return false;
+    } catch (_) {}
+    return true;
+  }
 
   const state = {
     session: "default",
@@ -59,6 +71,11 @@
     pane: null,
     terminalId: null,
     screen: "home",
+    // Terminal key toolbar visibility (toggled from the nav bar). Persisted
+    // per browser so a reload keeps the user's preference.
+    toolbarOpen: readToolbarPreference(),
+    // Terminal tabs dropdown state (opened from the header tabs button).
+    tabsSheetOpen: false,
     terminalConnecting: false,
     error: "",
     worktreeError: "",
@@ -114,7 +131,8 @@
     mobileWorkmeta,
     mobileTheme,
     mobileActions,
-    mobileBackend;
+    mobileBackend,
+    mobileDirectoryPicker;
 
   function el(id) {
     return document.getElementById(id);
@@ -290,6 +308,35 @@
 
   // Backend badge: Herdr sessions get a distinct mauve hue; built-in keeps
   // the accent family. Rendered next to the header meta line.
+  // Header meta is split in two: the leading context (repo parent · branch)
+  // stays plain text; the panel segment renders as a chip that opens the
+  // panels dialog (it replaced the nav-bar Panels tab). With a custom
+  // panel name the chip shows the name, otherwise the pane count.
+  function renderContextMeta(workspace) {
+    const metaText = el("mobileMeta");
+    const chip = el("mobilePanelsChip");
+    const parts = workspace ? mobileWorkmeta.contextMetaParts(workspace) : null;
+    // No leading context (no repo parent/branch) with a workspace open: the
+    // title and chip already carry the identity, so the text stays empty.
+    // The guidance line only belongs to the no-workspace state.
+    const fallback = parts ? "" : "Select workspace or agent";
+    const leading = parts ? parts.leading.join(" · ") : "";
+    const text = parts ? leading : fallback;
+    if (metaText && metaText.textContent !== text) metaText.textContent = text;
+    if (!chip) return;
+    if (!parts) {
+      chip.hidden = true;
+      return;
+    }
+    const label = parts.panelLabel || `${parts.paneCount} panes`;
+    if (chip.textContent !== label) chip.textContent = label;
+    chip.hidden = false;
+    chip.title = parts.panelLabel
+      ? `Panels · ${parts.panelLabel}`
+      : `Panels · ${parts.paneCount}`;
+    chip.setAttribute("aria-label", chip.title);
+  }
+
   function syncBackendBadge() {
     const badge = el("mobileBackendBadge");
     if (!badge) return;
@@ -298,6 +345,10 @@
     badge.textContent = `${sessionBackendLabel(backend)} · ${state.session || "default"}`;
     badge.title = "Sessions";
     badge.onclick = () => showScreen("sessions");
+    // Title press opens the workspace switcher sheet: same list as the
+    // Home screen rows, without leaving the current screen.
+    const title = el("mobileTitle");
+    if (title) title.onclick = () => openWorkspacesSheet();
   }
 
   // Styled in-app confirm sheet. Replaces raw window.confirm in the mobile
@@ -335,6 +386,7 @@
     if (message) message.textContent = next.message;
     sheet.hidden = false;
     backdrop.hidden = false;
+    openModalFocus(sheet);
   }
 
   function resolveConfirm(value) {
@@ -342,6 +394,7 @@
     const backdrop = el("mobileConfirmBackdrop");
     if (sheet) sheet.hidden = true;
     if (backdrop) backdrop.hidden = true;
+    closeModalFocus();
     const resolve = pendingConfirmResolve;
     pendingConfirmResolve = null;
     if (resolve) resolve(!!value);
@@ -355,9 +408,7 @@
     document.body.innerHTML = `
       <div id="mobileApp" class="mobile-app">
         <header class="mobile-header">
-          <button class="mobile-btn" id="mobileBack" title="Home" aria-label="Back to home">←</button>
-          <div class="mobile-context"><strong id="mobileTitle">Herdr</strong><span class="mobile-context-meta" role="status" aria-live="polite"><span id="mobileMeta">Loading</span><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button></span></div>
-          <button class="mobile-btn" id="mobileSearch" title="Search" aria-label="Search">⌕</button>
+          <div class="mobile-context"><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button><button type="button" id="mobileTitle" class="mobile-title-btn" aria-haspopup="dialog" title="Switch workspace">Herdr</button><button type="button" id="mobilePanelsChip" class="mobile-panels-chip" aria-haspopup="dialog" title="Panels" hidden onclick="HerdrMobile.openTabsSheet()">0 panes</button><span id="mobileMeta" class="mobile-meta-text" role="status" aria-live="polite">Loading</span></div>
         </header>
         <main class="mobile-screen" id="mobileScreen"></main>
         <div class="mobile-search-sheet" id="mobileSearchSheet" hidden>
@@ -367,20 +418,26 @@
             <div class="mobile-help">Enter opens · Alt+F files · Alt+D folders · Esc closes</div>
           </div>
         </div>
+        <div class="mobile-toolbar" id="mobileToolbar" hidden></div>
+        <button type="button" id="mobileKeysFab" class="mobile-keys-fab" hidden aria-label="Toggle terminal keys, drag to move" aria-pressed="false" onmousedown="HerdrMobile.keysFabDragStart(event)" ontouchstart="HerdrMobile.keysFabDragStart(event)"><span aria-hidden="true">⌨</span>Keys</button>
         <nav class="mobile-nav">
           <button data-screen="home">Home</button>
           <button data-screen="search">Search</button>
           <button data-screen="terminal">Terminal</button>
+          <button data-screen="git">Git</button>
+          <button data-screen="files">Files</button>
           <button data-screen="more" aria-haspopup="dialog">More</button>
         </nav>
+        <div class="mobile-sheet-backdrop" id="mobileTabsBackdrop" hidden onclick="HerdrMobile.closeTabsSheet()"></div>
+        <div class="mobile-sheet" id="mobileTabsSheet" hidden role="dialog" aria-modal="true" aria-label="Panels"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Panels</div><div class="mobile-tabs-sheet-list" id="mobileTabsSheetList"></div></div>
+        <div class="mobile-sheet-backdrop" id="mobileWorkspacesBackdrop" hidden onclick="HerdrMobile.closeWorkspacesSheet()"></div>
+        <div class="mobile-sheet" id="mobileWorkspacesSheet" hidden role="dialog" aria-modal="true" aria-label="Workspaces"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Workspaces</div><div class="mobile-tabs-sheet-list" id="mobileWorkspacesSheetList"></div></div>
         <div class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" hidden onclick="HerdrMobile.closeDrawer()"></div>
         <aside class="mobile-drawer" id="mobileDrawer" hidden role="dialog" aria-modal="true" aria-label="Tools menu"><div class="mobile-drawer-items" id="mobileDrawerItems"></div></aside>
         <div class="mobile-sheet-backdrop" id="mobileConfirmBackdrop" hidden onclick="HerdrMobile.resolveConfirm(false)"></div>
         <div class="mobile-sheet mobile-confirm-sheet" id="mobileConfirmSheet" hidden role="alertdialog" aria-modal="true" aria-label="Confirm"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title" id="mobileConfirmMessage"></div><div class="mobile-sheet-actions"><button class="mobile-btn" id="mobileConfirmCancel" onclick="HerdrMobile.resolveConfirm(false)">Cancel</button><button class="mobile-btn primary" id="mobileConfirmOk" onclick="HerdrMobile.resolveConfirm(true)">Confirm</button></div></div>
       </div>
       </div>`;
-    el("mobileBack").onclick = () => showScreen("home");
-    el("mobileSearch").onclick = () => mobileSearch && mobileSearch.open();
     document.querySelectorAll(".mobile-nav button").forEach((button) => {
       button.onclick = () => {
         if (button.dataset.screen === "more") {
@@ -392,6 +449,228 @@
     });
     el("mobileDrawerBackdrop").onclick = () => closeDrawer();
     bindDrawerEdgeSwipe();
+  }
+
+  // Terminal key toolbar: rendered by panels.js into #mobileToolbar above
+  // the nav bar. The floating Keys button (in the terminal view) toggles
+  // it; the choice persists. Folding the toolbar changes the terminal
+  // shell height, so every toggle re-fits the grid (debounced) instead of
+  // leaving the terminal sized for the old layout.
+  function toggleToolbar() {
+    state.toolbarOpen = !state.toolbarOpen;
+    try {
+      localStorage.setItem("herdr-mobile-toolbar", state.toolbarOpen ? "open" : "closed");
+    } catch (_) {}
+    syncToolbar();
+    scheduleTerminalResize();
+  }
+
+  function syncToolbar() {
+    const toolbar = el("mobileToolbar");
+    if (!toolbar) return;
+    const html = state.screen === "terminal" && state.terminalId && mobilePanels ? mobilePanels.renderKeyBar() : "";
+    if (toolbar.__lastToolbarHtml !== html) {
+      toolbar.innerHTML = html;
+      toolbar.__lastToolbarHtml = html;
+    }
+    toolbar.hidden = !(state.toolbarOpen && html);
+    syncKeysFab();
+  }
+
+  // Floating Keys button: draggable pill inside the terminal view. A tap
+  // toggles the keybar toolbar; dragging moves the button (position
+  // persists via localStorage, clamped to the viewport so it never ends
+  // up unreachable). Rendered once in the shell (not the screen div) so
+  // terminal re-renders never recreate it mid-drag.
+  function keysFabDragStart(event) {
+    const fab = el("mobileKeysFab");
+    if (!fab) return;
+    const point = event.touches && event.touches[0] ? event.touches[0] : event;
+    const startX = point.clientX;
+    const startY = point.clientY;
+    const rect = fab.getBoundingClientRect();
+    let moved = false;
+    const move = (moveEvent) => {
+      const p = moveEvent.touches && moveEvent.touches[0] ? moveEvent.touches[0] : moveEvent;
+      const dx = p.clientX - startX;
+      const dy = p.clientY - startY;
+      if (!moved && Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      moved = true;
+      fab.classList.add("dragging");
+      const maxX = window.innerWidth - rect.width;
+      const maxY = window.innerHeight - rect.height;
+      const x = Math.max(0, Math.min(maxX, rect.left + dx));
+      const y = Math.max(0, Math.min(maxY, rect.top + dy));
+      fab.style.left = `${x}px`;
+      fab.style.top = `${y}px`;
+      fab.style.right = "auto";
+      fab.style.bottom = "auto";
+      moveEvent.preventDefault();
+    };
+    const end = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", end);
+      document.removeEventListener("touchmove", move);
+      document.removeEventListener("touchend", end);
+      fab.classList.remove("dragging");
+      if (moved) saveKeysFabPosition(fab);
+      // Tap (no movement): toggle the keybar.
+      else toggleToolbar();
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", end);
+    document.addEventListener("touchmove", move, { passive: false });
+    document.addEventListener("touchend", end);
+    event.preventDefault();
+  }
+
+  function saveKeysFabPosition(fab) {
+    const rect = fab.getBoundingClientRect();
+    try {
+      localStorage.setItem(
+        "herdr-mobile-keys-fab",
+        JSON.stringify({ x: Math.round(rect.left), y: Math.round(rect.top) }),
+      );
+    } catch (_) {}
+  }
+
+  function applyKeysFabPosition(fab) {
+    let pos = null;
+    try {
+      const raw = localStorage.getItem("herdr-mobile-keys-fab");
+      if (raw) pos = JSON.parse(raw);
+    } catch (_) {}
+    if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return;
+    const maxX = window.innerWidth - rectWidth(fab);
+    const maxY = window.innerHeight - rectHeight(fab);
+    fab.style.left = `${Math.max(0, Math.min(maxX, pos.x))}px`;
+    fab.style.top = `${Math.max(0, Math.min(maxY, pos.y))}px`;
+    fab.style.right = "auto";
+    fab.style.bottom = "auto";
+  }
+
+  function rectWidth(fab) {
+    return fab.getBoundingClientRect().width;
+  }
+
+  function rectHeight(fab) {
+    return fab.getBoundingClientRect().height;
+  }
+
+  function syncKeysFab() {
+    const fab = el("mobileKeysFab");
+    if (!fab) return;
+    const visible = state.screen === "terminal" && !!state.terminalId;
+    fab.hidden = !visible;
+    fab.setAttribute("aria-pressed", state.toolbarOpen ? "true" : "false");
+    if (visible && !fab.__positioned) {
+      applyKeysFabPosition(fab);
+      fab.__positioned = true;
+    }
+  }
+
+  // Modal focus management: aria-modal surfaces (tabs sheet, drawer,
+  // confirm) must move focus in on open and hand it back on close, or
+  // keyboard users land on the page behind the backdrop. The opener's
+  // active element is remembered per surface so nested overlays restore
+  // in LIFO order.
+  const modalFocusStack = [];
+
+  function focusModalSurface(surface) {
+    if (!surface || typeof surface.focus !== "function") return;
+    try { surface.focus(); } catch (_) {}
+  }
+
+  function openModalFocus(surface) {
+    if (typeof document === "undefined" || !document.activeElement) return;
+    modalFocusStack.push(document.activeElement);
+    if (surface && surface.setAttribute) {
+      surface.setAttribute("tabindex", "-1");
+      focusModalSurface(surface);
+    }
+  }
+
+  function closeModalFocus() {
+    const prior = modalFocusStack.pop();
+    if (prior && typeof prior.focus === "function") {
+      try { prior.focus(); } catch (_) {}
+    }
+  }
+
+  // Terminal tabs dropdown: opened from the header tabs button, lists the
+  // panels with add/close actions. Backdrop tap closes; selecting a tab
+  // closes the sheet and switches.
+  function openTabsSheet() {
+    if (!state.ws) return;
+    state.tabsSheetOpen = true;
+    const sheet = el("mobileTabsSheet");
+    const backdrop = el("mobileTabsBackdrop");
+    if (!sheet || !backdrop) return;
+    sheet.hidden = false;
+    backdrop.hidden = false;
+    renderTabsSheet();
+    openModalFocus(sheet);
+  }
+
+  function closeTabsSheet() {
+    if (!state.tabsSheetOpen && !el("mobileTabsSheet")) return;
+    state.tabsSheetOpen = false;
+    const sheet = el("mobileTabsSheet");
+    const backdrop = el("mobileTabsBackdrop");
+    if (sheet) sheet.hidden = true;
+    if (backdrop) backdrop.hidden = true;
+    closeModalFocus();
+  }
+
+  // Workspace switcher sheet, opened by pressing the header title. Same
+  // rows as the Home screen workspaces list, minus the rename/close
+  // actions (Home keeps those); selecting switches and closes.
+  function openWorkspacesSheet() {
+    const sheet = el("mobileWorkspacesSheet");
+    const backdrop = el("mobileWorkspacesBackdrop");
+    if (!sheet || !backdrop) return;
+    state.workspacesSheetOpen = true;
+    sheet.hidden = false;
+    backdrop.hidden = false;
+    renderWorkspacesSheet();
+    openModalFocus(sheet);
+  }
+
+  function closeWorkspacesSheet() {
+    if (!state.workspacesSheetOpen && !el("mobileWorkspacesSheet")) return;
+    state.workspacesSheetOpen = false;
+    const sheet = el("mobileWorkspacesSheet");
+    const backdrop = el("mobileWorkspacesBackdrop");
+    if (sheet) sheet.hidden = true;
+    if (backdrop) backdrop.hidden = true;
+    closeModalFocus();
+  }
+
+  function renderWorkspacesSheet() {
+    if (!state.workspacesSheetOpen) return;
+    const list = el("mobileWorkspacesSheetList");
+    if (!list) return;
+    const html = mobileScreens.renderWorkspacesSheetList();
+    if (list.__lastWorkspacesHtml !== html) {
+      list.innerHTML = html;
+      list.__lastWorkspacesHtml = html;
+    }
+  }
+
+  function selectWorkspaceFromSheet(id) {
+    closeWorkspacesSheet();
+    selectWorkspace(id);
+  }
+
+  function renderTabsSheet() {
+    if (!state.tabsSheetOpen) return;
+    const list = el("mobileTabsSheetList");
+    if (!list || !mobilePanels) return;
+    const html = mobilePanels.renderTabsSheetList();
+    if (list.__lastTabsHtml !== html) {
+      list.innerHTML = html;
+      list.__lastTabsHtml = html;
+    }
   }
 
   function drawerItemsEl() {
@@ -406,14 +685,17 @@
     drawer.hidden = false;
     backdrop.hidden = false;
     document.body.classList.add("mobile-drawer-open");
+    openModalFocus(drawer);
   }
 
   function closeDrawer() {
     const drawer = el("mobileDrawer");
     const backdrop = el("mobileDrawerBackdrop");
+    if (!drawer && !backdrop) return;
     if (drawer) drawer.hidden = true;
     if (backdrop) backdrop.hidden = true;
     document.body.classList.remove("mobile-drawer-open");
+    closeModalFocus();
   }
 
   function openDrawerTarget(screen) {
@@ -478,14 +760,15 @@
     applyTreeIndent();
     const workspace = currentWorkspace();
     el("mobileTitle").textContent = workspaceTitle(workspace);
-    el("mobileMeta").textContent = contextMeta(workspace);
+    renderContextMeta(workspace);
     syncBackendBadge();
-    const searchButton = el("mobileSearch");
-    if (searchButton) {
-      const disabled = headerSearchDisabled();
-      searchButton.hidden = disabled;
-      searchButton.disabled = disabled;
-    }
+    // Toolbar above the nav: content depends on screen and terminal, and
+    // refreshes every render (WS refresh included) via syncToolbar.
+    syncToolbar();
+    // Tabs dropdown follows live tab data while open.
+    renderTabsSheet();
+    // Workspace switcher follows live workspace data while open.
+    renderWorkspacesSheet();
     // Cache the nav button list once: querySelectorAll ran on every render,
     // and each render is triggered by every events-WS refresh.
     if (!navButtons) {
@@ -535,7 +818,9 @@
     else if (state.screen === "settings") html = mobileSettings.render();
     else if (state.screen === "sessions") html = mobileSessions.renderSessions();
     else if (state.screen === "terminal") renderTerminalScreen(screen);
-    else if (state.screen === "more") html = mobileScreens.renderMore();
+    // "more" is not a screen: the nav More button opens the drawer, and
+    // drawer items navigate straight to the target screens. No path sets
+    // state.screen = "more" anymore, so the old grid renderer is gone.
     else html = mobileScreens.renderHome();
     if (state.screen !== screen.__lastScreenName) {
       screen.__lastScreenHtml = undefined;
@@ -592,14 +877,6 @@
       state.defaultFolder ||
       ""
     );
-  }
-
-  function renderTerminalTabsWithAdd() {
-    return mobilePanels.renderTerminalTabsWithAdd();
-  }
-
-  function renderTerminalTabs() {
-    return mobilePanels.renderTerminalTabs();
   }
 
   function renderTerminalScreen(screen) {
@@ -706,6 +983,39 @@
   function selectTab(tab) {
     mobileActions.selectTab(tab);
   }
+
+  // Tabs-dropdown wrappers: run the action, then close the sheet. Closing
+  // first would drop the sheet DOM before the async action lands; closing
+  // after keeps the sheet responsive to the result of the action.
+  function selectTabFromSheet(tab) {
+    closeTabsSheet();
+    mobileActions.selectTab(tab);
+  }
+
+  async function createPanelFromSheet() {
+    closeTabsSheet();
+    await mobileActions.createPanel();
+  }
+
+  async function closePanelFromSheet(tab) {
+    closeTabsSheet();
+    if (sameScopedId(state.ws, tab, state.tab)) {
+      await mobileActions.closeCurrentPanel();
+      return;
+    }
+    // Non-current tab: close it directly without switching. The confirm
+    // guard matters here too, same as closeCurrentPanel.
+    const label = tabTitle(state.tabs.find((item) => sameScopedId(state.ws, item.tab_id, tab)) || { tab_id: tab, workspace_id: state.ws });
+    if (!(await mobileConfirm(`Close panel "${label}"?`))) return;
+    try {
+      await api(`/api/tabs/${encodeURIComponent(tab)}/close`, { method: "POST" });
+      await refresh();
+    } catch (error) {
+      state.error = error.message || String(error);
+      render();
+    }
+  }
+
 
   async function createPanel() {
     await mobileActions.createPanel();
@@ -904,6 +1214,23 @@
     selectionPath,
     state,
   });
+  mobileDirectoryPicker = globalThis.HerdrMobileDirectoryPickerModule.create({
+    api,
+    escapeHtml,
+    inputAttrs,
+    jsArg,
+    state,
+    render,
+    defaultFolderFn: () => state.defaultFolder || "",
+    // Open-folder flows live in worktrees.js so the navigate logic stays in
+    // one place; the picker just hands over the confirmed path.
+    openWorkspaceFn: (folder) => mobileWorktrees.openFolderAsWorkspace(folder),
+    // Choose-folder confirm for the discovery path: fill the field, then
+    // auto-run discovery so the merged flow needs no second tap.
+    onFieldPickFn: (field, folder) => {
+      if (field === "worktreeDiscoverPath") mobileWorktrees.load();
+    },
+  });
   mobileFileBrowser = globalThis.HerdrMobileFileBrowser.create({
     api,
     confirm: (...args) => mobileConfirm(...args),
@@ -946,7 +1273,6 @@
 
   mobileComposer = globalThis.HerdrMobileComposerModule.create({
     state,
-    api,
     render,
     escapeHtml,
     inputAttrs,
@@ -959,7 +1285,7 @@
     renderComposerBar: (...args) => mobileComposer.renderComposerBar(...args),
     renderComposerNote: (...args) => mobileComposer.renderComposerNote(...args),
     renderPromptCard: (...args) => mobileComposer.renderPromptCard(...args),
-    draftValue: (...args) => mobileComposer.draftValue(...args),
+    draftValue: () => "",
   };
 
   mobileEvents = globalThis.HerdrMobileEventsModule.create({
@@ -1038,7 +1364,6 @@
     refresh,
     confirmFn: (...args) => mobileConfirm(...args),
     getWorkingDismissals: () => workingDismissals,
-    getMobileTempTerminal: () => mobileTempTerminal,
     workspacesById,
     tabsById,
     tabCountsByWorkspace,
@@ -1053,6 +1378,16 @@
     selectTab,
     createPanel,
     closeCurrentPanel,
+    selectTabFromSheet,
+    createPanelFromSheet,
+    closePanelFromSheet,
+    openTabsSheet,
+    closeTabsSheet,
+    openWorkspacesSheet,
+    closeWorkspacesSheet,
+    selectWorkspaceFromSheet,
+    toggleToolbar,
+    keysFabDragStart,
     currentSessionBackend,
     dismissWorkingAgent: (...args) => mobileScreens.dismissWorkingAgent(...args),
     restoreWorkingAgent: (...args) => mobileScreens.restoreWorkingAgent(...args),
@@ -1067,8 +1402,8 @@
     setCommitField: (...args) => mobileGit.setCommitField(...args),
     submitCommit: (...args) => mobileGit.submitCommit(...args),
     dismissCommitDone: (...args) => mobileGit.dismissCommitDone(...args),
-    composerInput: (...args) => mobileComposer.setDraft(...args),
-    composerSubmit: (...args) => mobileComposer.submit(...args),
+    composerInput: () => {},
+    composerSubmit: () => {},
     renameWorkspace: (...args) => mobileScreens.startRenameWorkspace(...args),
     setRenameWorkspaceValue: (...args) => mobileScreens.setRenameWorkspaceValue(...args),
     submitRenameWorkspace: (...args) => mobileScreens.submitRenameWorkspace(...args),
@@ -1117,6 +1452,11 @@
     filesTypeToFilter: mobileFileBrowser.typeToFilter,
     loadWorktrees: mobileWorktrees.load,
     openWorktree: mobileWorktrees.open,
+    // With a path argument: open that folder as a workspace directly (the
+    // merged Results card). Without one: open the directory picker sheet
+    // (task-hub card and discover flows).
+    openFolderAsWorkspace: (path) => (path ? mobileWorktrees.openFolderAsWorkspace(path) : mobileDirectoryPicker ? mobileDirectoryPicker.openForWorkspace() : Promise.resolve()),
+    browseDirectory: (field) => mobileDirectoryPicker && mobileDirectoryPicker.openForField(field),
     createWorktree: mobileWorktrees.create,
     loadRecentWorkspaces: mobileWorktrees.loadRecent,
     openRecentWorkspace: mobileWorktrees.openRecent,
@@ -1178,8 +1518,33 @@
     keyBarKey(_event, button) {
       const key = button && button.dataset ? button.dataset.key : null;
       if (!key || !mobileTerminal || !mobileTerminal.sendControlKey) return;
-      const PLAIN = { esc: "\x1b", tab: "\t", up: "\x1b[A", down: "\x1b[B", right: "\x1b[C", left: "\x1b[D" };
-      const CTRL = { up: "\x1b[1;5A", down: "\x1b[1;5B", right: "\x1b[1;5C", left: "\x1b[1;5D" };
+      const PLAIN = {
+        esc: "\x1b",
+        tab: "\t",
+        up: "\x1b[A",
+        down: "\x1b[B",
+        right: "\x1b[C",
+        left: "\x1b[D",
+        pgup: "\x1b[5~",
+        pgdn: "\x1b[6~",
+        home: "\x1b[H",
+        end: "\x1b[F",
+      };
+      // Ctrl+letter combos the on-screen Android keyboard cannot type but
+      // shells, pagers and readline use constantly. Home/End send the
+      // application-friendly H/F forms (readline accepts both).
+      const CTRL_LETTER = {
+        c: "\x03",
+        d: "\x04",
+        z: "\x1a",
+        l: "\x0c",
+        a: "\x01",
+        e: "\x05",
+        u: "\x15",
+        w: "\x17",
+        r: "\x12",
+      };
+      const CTRL_ARROW = { up: "\x1b[1;5A", down: "\x1b[1;5B", right: "\x1b[1;5C", left: "\x1b[1;5D" };
       // Mirror the armed state onto the button for CSS (aria-pressed); the
       // source of truth is the module-level flag so DOM stubs can't desync.
       const setArmed = (armed) => {
@@ -1190,12 +1555,20 @@
         setArmed(!keyBarCtrlArmed);
         return;
       }
+      const ctrlCombo = /^ctrl-([a-z])$/.exec(key);
+      if (ctrlCombo) {
+        // With Ctrl armed, the explicit combo keys still send their literal
+        // bytes; arming then tapping a combo would otherwise double-apply.
+        mobileTerminal.sendControlKey(CTRL_LETTER[ctrlCombo[1]] || "");
+        setArmed(false);
+        return;
+      }
       if (key === "ctrl-c") {
         mobileTerminal.sendControlKey("\x03");
         setArmed(false);
         return;
       }
-      mobileTerminal.sendControlKey(keyBarCtrlArmed && CTRL[key] ? CTRL[key] : PLAIN[key]);
+      mobileTerminal.sendControlKey(keyBarCtrlArmed && CTRL_ARROW[key] ? CTRL_ARROW[key] : PLAIN[key]);
       setArmed(false);
     },
     currentScreen,
@@ -1227,6 +1600,18 @@
   globalThis.HerdrMobileConfirm = (...args) => mobileConfirm(...args);
   globalThis.HerdrMobileJsArg = jsArg;
   globalThis.HerdrMobilePathBasename = pathBasename;
+  // The directory picker's onclick handlers live in sheet markup created by
+  // the module itself; point the namespace at the live instance.
+  globalThis.HerdrMobileDirectoryPicker = {
+    enter: (p) => mobileDirectoryPicker.enter(p),
+    up: () => mobileDirectoryPicker.up(),
+    home: () => mobileDirectoryPicker.home(),
+    defaultFolder: () => mobileDirectoryPicker.defaultFolder(),
+    close: () => mobileDirectoryPicker.close(),
+    filter: (v) => mobileDirectoryPicker.filter(v),
+    selectCurrent: () => mobileDirectoryPicker.selectCurrent(),
+    requestAccess: () => mobileDirectoryPicker.requestAccess(),
+  };
   globalThis.HerdrMobileAppDeps = {
     state,
     api,
@@ -1300,7 +1685,13 @@
     refresh();
   }
   window.addEventListener("popstate", handleSessionPopState);
-  window.addEventListener("resize", scheduleTerminalResize);
+  // Window resize = rotation/devtools resize, never the soft keyboard; drop
+  // the keyboard heuristic's height latch there so a smaller window is not
+  // misread as an open keyboard on the terminal screen.
+  window.addEventListener("resize", () => {
+    mobileTheme.resetViewportLatch();
+    scheduleTerminalResize();
+  });
   if (window.visualViewport)
     window.visualViewport.addEventListener("resize", scheduleTerminalResize);
   document.addEventListener("visibilitychange", () => {
@@ -1315,5 +1706,44 @@
   });
   document.addEventListener("keydown", mobileAttention.unlockAudio, {
     once: true,
+  });
+  // Escape closes the top modal surface (confirm wins over tabs sheet over
+  // drawer over prompt card). Input fields inside sheets handle their own
+  // Escape first; this listener runs after theirs and only acts when the key
+  // is still bubbling through the document with a surface still open.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    // Input fields inside sheets handle their own Escape first (file
+    // rename, new file, git commit, workspace rename) and call
+    // preventDefault. If they already handled it, the chain must not
+    // cascade and close the surface underneath in the same keypress.
+    if (event.defaultPrevented) return;
+    const confirmSheet = el("mobileConfirmSheet");
+    if (confirmSheet && !confirmSheet.hidden) {
+      event.preventDefault();
+      resolveConfirm(false);
+      return;
+    }
+    const promptCard = el("mobilePromptCard");
+    if (promptCard) {
+      event.preventDefault();
+      promptCard.querySelector(".mobile-prompt-head button")?.click();
+      return;
+    }
+    if (state.tabsSheetOpen) {
+      event.preventDefault();
+      closeTabsSheet();
+      return;
+    }
+    if (state.workspacesSheetOpen) {
+      event.preventDefault();
+      closeWorkspacesSheet();
+      return;
+    }
+    const drawer = el("mobileDrawer");
+    if (drawer && !drawer.hidden) {
+      event.preventDefault();
+      closeDrawer();
+    }
   });
 })();

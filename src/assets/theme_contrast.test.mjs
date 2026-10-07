@@ -238,6 +238,21 @@ describe("theme contrast", () => {
     ok(ratio >= 4.5, `light mobile idle chip on bg is ${ratio.toFixed(2)} < 4.5`);
   });
 
+  it("keeps the mobile sheet danger action readable in both themes", () => {
+    // Sheets sit on var(--bg): dark #1e1e2e, light #eff1f5. The rule must
+    // resolve var(--danger) (never a hardcoded dark-theme pink) so the
+    // shared light token (#a61b1b) restores contrast on light sheets.
+    const rule = /\.mobile-sheet-action\.danger \{\s*color: var\(--danger, (#[0-9a-fA-F]{6})\);\s*border-color: var\(--danger, #[0-9a-fA-F]{6}\);/.exec(mobileCss);
+    ok(rule, "missing .mobile-sheet-action.danger rule using var(--danger)");
+    const lightBg = parseThemeVars(mobileCss).bg;
+    const lightRatio = contrastRatio(lightTokens.danger, lightBg);
+    ok(lightRatio >= 4.5, `light sheet danger on bg is ${lightRatio.toFixed(2)} < 4.5`);
+    // Dark default: the fallback hue on the dark bg.
+    const bodyVars = parseBodyVars(mobileCss);
+    const darkRatio = contrastRatio(rule[1], bodyVars.bg);
+    ok(darkRatio >= 4.5, `dark sheet danger on bg is ${darkRatio.toFixed(2)} < 4.5`);
+  });
+
   it("ships accessible dracula, monokai, and apple profiles", () => {
     const profiles = loadProfiles();
     for (const name of ["dracula", "monokai", "apple"]) {

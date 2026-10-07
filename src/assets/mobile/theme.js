@@ -24,7 +24,11 @@
             0,
         ),
       );
-      largestVisualViewportHeight = Math.max(largestVisualViewportHeight, height);
+      // A viewport taller than the latched maximum means the window grew
+      // (rotation back, or CDP/devtools resize), not a keyboard opening.
+      // Rebase the latch so a shrink from a larger size cannot stick the
+      // terminal in keyboard-open mode forever.
+      if (height > largestVisualViewportHeight) largestVisualViewportHeight = height;
       // Runs on every render; skip the style/class writes when unchanged so
       // steady-state refreshes stop dirtying body style.
       const vh = `${height}px`;
@@ -41,6 +45,14 @@
           : true
       )
         documentRef.body.classList.toggle("mobile-keyboard-open", keyboardOpen);
+    }
+
+    function resetViewportLatch() {
+      // Window-level resize = rotation or devtools resize, never the soft
+      // keyboard (that only fires visualViewport resize). Drop the latch so
+      // the next updateMobileViewport re-learns the real max height instead
+      // of misreading the new smaller window as an open keyboard.
+      largestVisualViewportHeight = 0;
     }
 
     function scheduleTerminalResize() {
@@ -92,6 +104,7 @@
 
     return {
       updateMobileViewport,
+      resetViewportLatch,
       scheduleTerminalResize,
       applyTreeIndent,
       syncBrowserFavicon,

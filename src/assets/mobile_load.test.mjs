@@ -20,6 +20,16 @@ function element(id = "") {
     },
     dataset: {},
     style: { setProperty() {} },
+    rect: { left: 300, top: 700, width: 80, height: 40 },
+    getBoundingClientRect() {
+      return this.rect;
+    },
+    setAttribute(name, value) {
+      (this.attributes || (this.attributes = {}))[name] = value;
+    },
+    getAttribute(name) {
+      return (this.attributes || {})[name] ?? null;
+    },
     disabled: false,
     hidden: false,
     innerHTML: "",
@@ -33,7 +43,11 @@ function element(id = "") {
     addEventListener(event, listener) {
       (this.listeners[event] || (this.listeners[event] = [])).push(listener);
     },
-    setAttribute() {},
+    removeEventListener(event, listener) {
+      const list = this.listeners[event] || [];
+      const idx = list.indexOf(listener);
+      if (idx > -1) list.splice(idx, 1);
+    },
     querySelector() {
       return null;
     },
@@ -56,7 +70,7 @@ function context(pathname = "/", options = {}) {
   const timers = [];
   const listeners = {};
   let timerSeq = 0;
-  const navButtons = ["home", "search", "terminal", "more"].map(
+  const navButtons = ["home", "search", "terminal", "git", "files", "more"].map(
     (screen) => Object.assign(element(), { dataset: { screen } }),
   );
   const getElement = (id) => {
@@ -110,11 +124,17 @@ function context(pathname = "/", options = {}) {
       documentElement: element("html"),
       createElement: () => element(),
       getElementById: getElement,
+      querySelector: () => null,
       querySelectorAll: (selector) =>
         selector === ".mobile-nav button" ? navButtons : [],
       hidden: false,
       addEventListener(event, listener) {
         (listeners[event] || (listeners[event] = [])).push(listener);
+      },
+      removeEventListener(event, listener) {
+        const list = listeners[event] || [];
+        const idx = list.indexOf(listener);
+        if (idx > -1) list.splice(idx, 1);
       },
     },
     history: {
@@ -461,10 +481,17 @@ function context(pathname = "/", options = {}) {
   ctx.dispatchDocumentEvent = (event) => {
     for (const listener of listeners[event] || []) listener();
   };
+  ctx.dispatchDocumentPointerEvent = (event, pointerEvent) => {
+    for (const listener of listeners[event] || []) listener(pointerEvent);
+  };
+  ctx.documentListeners = () => listeners;
   // window.addEventListener is how app.js registers popstate/resize; record
-  // those listeners so tests can drive history navigation.
+  // those listeners so tests can drive history navigation. innerWidth/
+  // innerHeight back the Keys fab drag clamp math.
   ctx.window = Object.assign(ctx, {
     matchMedia: () => ({ matches: false }),
+    innerWidth: 390,
+    innerHeight: 844,
     addEventListener(event, listener) {
       (listeners[event] || (listeners[event] = [])).push(listener);
     },
@@ -508,6 +535,8 @@ describe("mobile bundle load", () => {
     readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8") +
+    "\n" +
+    readFileSync(new URL("./mobile/directory_picker.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8") +
     "\n" +
@@ -555,6 +584,49 @@ describe("mobile bundle load", () => {
     match(mobileCss, /\.temp-terminal-body \.wterm \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
   });
 
+  it("keeps hidden sheets off screen despite their display rules", () => {
+    // The confirm sheet stays mounted in the shell with [hidden]; without a
+    // specificity guard the .mobile-sheet { display: flex } rule would beat
+    // the browser default [hidden] { display: none } and the idle sheet
+    // (handle + mobile-sheet-actions Cancel/Confirm row) would render pinned
+    // to the bottom of every screen.
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    match(mobileCss, /\.mobile-sheet\[hidden\],[\s\S]*?\.mobile-sheet-backdrop\[hidden\] \{[\s\S]*?display: none;/);
+  });
+
+  it("clamps the mobile app grid column so wide terminal content cannot stretch the shell", () => {
+    // Regression (observed live at a 320px viewport): .mobile-app declared
+    // only grid-template-rows, so its single implicit column was sized
+    // "auto" (max-content). The terminal's .term-grid carries
+    // min-width: max-content, and once a terminal grid was wider than the
+    // viewport the implicit auto track (and with it the header/nav/keybar)
+    // stretched to the grid width, pushing the nav offscreen. The explicit
+    // minmax(0, 1fr) column clamps the track to the viewport so the
+    // terminal scrolls inside its own shell instead.
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    match(
+      mobileCss,
+      /\.mobile-app \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\) auto auto;/,
+    );
+  });
+
+  it("fits the mobile terminal to the real shell width on narrow viewports", () => {
+    // Regression (observed live at 320px): the shared gridSize default floor
+    // of 40 cols needs ~336px, wider than the ~304px of shell content at a
+    // 320px viewport, so the terminal rendered wider than its shell and
+    // forced horizontal overflow. The mobile size() passes a lower floor so
+    // the fit uses the real available width.
+    const terminalSource = readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8");
+    match(terminalSource, /minCols: 20,/);
+    // Guard against the 40-col floor sneaking back into the mobile fit.
+    const sizeBody = terminalSource.slice(
+      terminalSource.indexOf("function size()"),
+      terminalSource.indexOf("async function connect()"),
+    );
+    ok(sizeBody.length > 0, "mobile size() body found");
+    ok(!/minCols: 40/.test(sizeBody), "mobile terminal must not clamp cols to 40");
+  });
+
   it("has mobile CSS parity for CodeMirror Zed-like editor enhancements", () => {
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     match(mobileCss, /\.cm-foldGutter/);
@@ -580,17 +652,15 @@ describe("mobile bundle load", () => {
     // Mobile must pass themeFn so the terminal matches the user's theme.
     match(mobileSource, /themeFn:/);
     // Mobile must pass currentWorkspaceCwd() so the temp terminal opens in the
-    // right folder. The header button is gone; the More grid card triggers it
-    // through the shared runAction('temp-terminal') path.
+    // right folder. The temp screens are reached through the shared
+    // runAction('temp-terminal') path from actions.js.
     match(mobileSource, /getMobileTempTerminal: \(\) => mobileTempTerminal/);
-    const mobileScreensSource = readFileSync(new URL("./mobile/screens.js", import.meta.url), "utf8");
-    // The More grid drives every action tool through the same runAction
-    // path (temp-terminal, temp-files, temp-git), keyed by tool.screen.
-    match(mobileScreensSource, /runAction\('\$\{tool\.screen\}'\)/);
-    ok(mobileScreensSource.includes("temp-terminal"), "temp-terminal card present");
-    ok(mobileScreensSource.includes("temp-files"), "temp-files card present");
-    ok(mobileScreensSource.includes("temp-git"), "temp-git card present");
-    match(mobileScreensSource, /getMobileTempTerminal/);
+    const mobileActionsSource = readFileSync(new URL("./mobile/actions.js", import.meta.url), "utf8");
+    // Every action tool (temp-terminal, temp-files, temp-git) funnels through
+    // the same runAction path, keyed by action name.
+    ok(mobileActionsSource.includes('action === "temp-terminal"'), "temp-terminal action present");
+    ok(mobileActionsSource.includes('action === "temp-files"'), "temp-files action present");
+    ok(mobileActionsSource.includes('action === "temp-git"'), "temp-git action present");
     // Mobile must wire handlePaneExited for server-side pane exit events
     // (now in the events module, reached via the getTempTerminal dep).
     const mobileEventsSource = readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8");
@@ -702,7 +772,10 @@ describe("mobile bundle load", () => {
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(html.includes("mobile-task-hub"));
     ok(html.includes("Open workspace or worktree"));
-    ok(html.includes("Search and actions"));
+    // The task-hub search card was removed: it duplicated the nav Search
+    // tab (both opened the search sheet). The nav tab stays the only path
+    // from Home.
+    ok(!html.includes("mobile-task-card\" onclick=\"HerdrMobile.runAction('search')"), "task hub must not duplicate nav Search");
     ok(!html.includes("Temporary terminal"));
     ok(source.includes("function mobileActionCandidates(query)"));
     ok(source.includes("HerdrActionRegistry.candidates"));
@@ -983,8 +1056,14 @@ describe("mobile bundle load", () => {
     match(source, /<button data-screen="home">Home<\/button>/);
     match(source, /<button data-screen="search">Search<\/button>/);
     match(source, /<button data-screen="terminal">Terminal<\/button>/);
+    match(source, /<button data-screen="git">Git<\/button>/);
+    match(source, /<button data-screen="files">Files<\/button>/);
     match(source, /<button data-screen="more" aria-haspopup="dialog">More<\/button>/);
     ok(!source.includes('data-screen="agents">Agents</button>'));
+    // Keys left the nav: the floating Keys fab lives in the shell and is
+    // only visible in the terminal view.
+    ok(!source.includes('data-toggle="toolbar"'), "no toolbar toggler in the nav");
+    match(source, /id="mobileKeysFab" class="mobile-keys-fab" hidden/);
     // Drawer shell, items, and edge-swipe wiring.
     match(source, /id="mobileDrawer" hidden role="dialog"/);
     match(source, /function renderDrawerItems\(\) \{/);
@@ -999,9 +1078,9 @@ describe("mobile bundle load", () => {
     ctx.document.getElementById("mobileDrawerBackdrop").onclick();
     equal(ctx.document.getElementById("mobileDrawer").hidden, true);
     // Drawer targets route through showScreen and close the drawer first.
-    doesNotThrow(() => ctx.HerdrMobile.openDrawerTarget("more"));
+    doesNotThrow(() => ctx.HerdrMobile.openDrawerTarget("worktrees"));
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
-    ok(html.includes("More tools"));
+    ok(html.includes("Worktrees"), "drawer target renders the worktrees screen");
     ctx.HerdrMobile.showScreen("search");
     equal(ctx.document.getElementById("mobileSearchSheet").hidden, false);
   });
@@ -1028,6 +1107,13 @@ describe("mobile bundle load", () => {
     ctx.HerdrMobile.runAction("discover-worktrees");
     equal(ctx.HerdrMobile.currentScreen(), "worktrees");
     ok(ctx.requests.some((request) => String(request.url).startsWith("/api/worktrees")));
+    {
+      const html = ctx.document.getElementById("mobileScreen").innerHTML;
+      ok(html.includes("Results"), "merged flow shows results after discovery");
+      ok(html.includes("Open as workspace"), "results card offers opening the picked folder");
+      ok(html.includes("mobile-worktree"), "discovered worktree row is listed");
+      ok(!html.includes("Choose folder for "), "picker sheet is not open");
+    }
 
     ctx.HerdrMobile.runAction("create-worktree");
     equal(ctx.HerdrMobile.currentScreen(), "worktrees");
@@ -1043,14 +1129,23 @@ describe("mobile bundle load", () => {
     ok(ctx.terminalStats.opened >= openedBefore);
   });
 
-  it("renders all secondary tools in More while keeping direct routes available", () => {
+  it("renders all secondary tools in the drawer while keeping direct routes available", () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
 
-    ctx.HerdrMobile.showScreen("more");
-    const html = ctx.document.getElementById("mobileScreen").innerHTML;
-    for (const screen of ["agents", "panels", "worktrees", "files", "git", "settings"])
-      ok(html.includes(`HerdrMobile.showScreen('${screen}')`));
+    // More is a drawer, not a screen: opening it lists every secondary
+    // tool and each item routes through openDrawerTarget (showScreen
+    // under the hood). Git and Files were promoted to the primary nav, so
+    // the drawer no longer lists them. Direct showScreen routes must
+    // stay available too.
+    const moreButton = ctx.navButtons.find((button) => button.dataset.screen === "more");
+    moreButton.onclick();
+    const items = ctx.document.getElementById("mobileDrawerItems").innerHTML;
+    for (const screen of ["agents", "panels", "worktrees", "settings", "sessions"])
+      ok(items.includes(`HerdrMobile.openDrawerTarget('${screen}')`), `${screen} drawer item present`);
+    ok(!items.includes("HerdrMobile.openDrawerTarget('files')"), "files left the drawer for the nav");
+    ok(!items.includes("HerdrMobile.openDrawerTarget('git')"), "git left the drawer for the nav");
+    ctx.HerdrMobile.openDrawerTarget("worktrees");
     for (const screen of ["agents", "panels", "worktrees", "files", "git", "settings"])
       doesNotThrow(() => ctx.HerdrMobile.showScreen(screen));
   });
@@ -1137,7 +1232,11 @@ describe("mobile bundle load", () => {
     doesNotThrow(() => ctx.HerdrMobile.setTerminalMouseReporting(true));
     doesNotThrow(() => ctx.HerdrMobile.showScreen("worktrees"));
     let html = ctx.document.getElementById("mobileScreen").innerHTML;
-    ok(html.includes("Discover worktrees"));
+    ok(html.includes("Choose folder"));
+    ok(html.includes("Find worktrees"));
+    ok(!html.includes("Discover worktrees"), "old standalone discover group is gone");
+    ok(!html.includes("Open existing"), "old open-existing group is gone");
+    ok(!html.includes("Results"), "no results before discovery ran");
     doesNotThrow(() =>
       ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/mobile"),
     );
@@ -1685,8 +1784,11 @@ describe("mobile bundle load", () => {
     ctx.HerdrMobile.showScreen("panels");
     let html = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(html.includes("Close current panel"));
-    ok(source.includes("mobile-tab-close"));
+    // Tabs moved to the header dropdown: the close action renders from the
+    // tabs sheet list builder, not the old in-screen tab strip.
+    ok(source.includes("closePanelFromSheet"));
     equal(typeof ctx.HerdrMobile.closeCurrentPanel, "function");
+    equal(typeof ctx.HerdrMobile.closePanelFromSheet, "function");
   });
 
   it("closes current mobile panel and selects the focused fallback panel", async () => {
@@ -1854,14 +1956,164 @@ describe("mobile bundle load", () => {
     // The screen render memo keeps the first terminal HTML in place, so
     // assert on the markup builder in the bundle source.
     match(source, /<div class="mobile-keybar" id="mobileKeyBar"/);
-    for (const key of ["esc", "tab", "ctrl", "up", "down", "left", "right", "ctrl-c"])
-      ok(source.includes(`data-key="${key}"`));
-    // No focus steal: every key bar button prevents default on mousedown.
+    // Two rows: classic keys first, then combos Android keyboards cannot
+    // type (EOF, suspend, clear, line edits, reverse search, pager scroll).
+    equal((source.match(/class="mobile-keybar-row"/g) || []).length, 2, "keybar renders two rows");
     const keybarSource = source.match(/function renderKeyBar\(\) \{[\s\S]*?\n    \}\n/)[0];
-    equal((keybarSource.match(/onmousedown="event\.preventDefault\(\)"/g) || []).length, 8);
+    for (const key of [
+      "esc", "tab", "ctrl", "up", "down", "left", "right", "ctrl-c",
+      "ctrl-d", "ctrl-z", "ctrl-l", "ctrl-a", "ctrl-e", "ctrl-u", "ctrl-w", "ctrl-r",
+      "pgup", "pgdn", "home", "end",
+    ])
+      ok(keybarSource.includes(`key("${key}"`), `${key} key present`);
+    // No focus steal: every key bar button prevents default on mousedown.
+    equal((keybarSource.match(/onmousedown="event\.preventDefault\(\)"/g) || []).length, 1, "mousedown guard on the shared key builder");
+    equal((keybarSource.match(/\bkey\("|\bkey\("|key\("/g) || []).length, 20, "twenty keys across the two rows");
     // Keyboard-open hides the key bar along with header/nav.
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     match(mobileCss, /body\.mobile-keyboard-open \.mobile-keybar/);
+  });
+
+  it("renders the key toolbar above the nav bar with the floating Keys fab", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    // The toolbar div sits in the shell right before the nav (grid
+    // auto-placement puts it visually ABOVE the nav bar); the Keys fab is
+    // a fixed-position shell button, terminal-only.
+    const shellIdx = source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden></div>');
+    const navIdx = source.indexOf('<nav class="mobile-nav">');
+    ok(shellIdx > -1 && shellIdx < navIdx, "toolbar markup comes before the nav markup (renders above it)");
+    match(source, /id="mobileKeysFab" class="mobile-keys-fab" hidden aria-label="Toggle terminal keys, drag to move" aria-pressed="false"/);
+    ok(source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden></div>') < source.indexOf('<div class="mobile-sheet-backdrop" id="mobileTabsBackdrop"'), "toolbar sits between screen and overlays");
+    // Toolbar content mirrors the keybar builder, and syncs per render.
+    match(source, /function syncToolbar\(\) \{[\s\S]*?mobilePanels\.renderKeyBar\(\)/);
+    // Toggle flips visibility, persists, and updates the fab aria-pressed.
+    const before = ctx.document.getElementById("mobileToolbar").hidden;
+    const fabBefore = ctx.document.getElementById("mobileKeysFab").getAttribute("aria-pressed");
+    ctx.HerdrMobile.toggleToolbar();
+    const after = ctx.document.getElementById("mobileToolbar").hidden;
+    equal(after, !before, "toggle flips toolbar hidden");
+    equal(
+      ctx.document.getElementById("mobileKeysFab").getAttribute("aria-pressed"),
+      fabBefore === "true" ? "false" : "true",
+      "fab aria-pressed flips with the toolbar",
+    );
+    ctx.HerdrMobile.toggleToolbar();
+    equal(ctx.document.getElementById("mobileToolbar").hidden, before, "toggle back restores");
+    // Folding the toolbar changes the terminal shell height, so the toggle
+    // schedules a terminal re-fit: after the debounce the input WS carries
+    // a resize frame with the recomputed grid (smaller when the toolbar
+    // opens, taller when it folds).
+    const resizeFrames = [];
+    const originalSend = ctx.lastSocket.send.bind(ctx.lastSocket);
+    ctx.lastSocket.send = (data) => { originalSend(data); try { resizeFrames.push(JSON.parse(String(data))); } catch (_) {} };
+    const shell = ctx.document.getElementById("terminalShell");
+    ctx.HerdrMobile.toggleToolbar();
+    // Simulate what the browser does: the toolbar row takes shell height
+    // (the stub has no layout, so drive the measured box by hand).
+    shell.clientHeight -= 104;
+    await ctx.settle();
+    await ctx.flushTimers();
+    await ctx.settle();
+    const resize = resizeFrames.filter((f) => f && f.type === "resize");
+    ok(resize.length > 0, "toggle sends a terminal resize frame");
+    if (resize.length) {
+      ok(Number.isInteger(resize[resize.length - 1].cols) && Number.isInteger(resize[resize.length - 1].rows), "resize frame carries an integer grid");
+    }
+    ctx.HerdrMobile.toggleToolbar();
+    // Fold: shell height goes back to the toolbar-less size.
+    shell.clientHeight += 104;
+    await ctx.settle();
+    await ctx.flushTimers();
+    // CSS: keyboard-open hides the toolbar row and the fab too.
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    match(mobileCss, /body\.mobile-keyboard-open \.mobile-toolbar/);
+    match(mobileCss, /body\.mobile-keyboard-open \.mobile-keys-fab/);
+    match(mobileCss, /\.mobile-toolbar\[hidden\] \{\n\s*display: none;\n\s*\}/);
+  });
+
+  it("drags the Keys fab to move it and taps it to toggle the toolbar", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    const fab = ctx.document.getElementById("mobileKeysFab");
+    equal(fab.hidden, false, "fab visible in the terminal view");
+    // Leaving the terminal hides the fab; coming back shows it.
+    ctx.HerdrMobile.showScreen("home");
+    equal(fab.hidden, true, "fab hidden outside the terminal");
+    ctx.HerdrMobile.showScreen("terminal");
+    equal(fab.hidden, false, "fab visible again on terminal");
+    // Tap: no movement past the threshold, so it toggles the toolbar.
+    const before = ctx.document.getElementById("mobileToolbar").hidden;
+    ctx.HerdrMobile.keysFabDragStart({ clientX: 340, clientY: 720, preventDefault() {} });
+    // No move beyond 6px: end immediately as a tap.
+    ctx.dispatchDocumentEvent("mouseup");
+    equal(ctx.document.getElementById("mobileToolbar").hidden, !before, "tap toggles the toolbar");
+    // Drag: pointer moves past the threshold, position persists.
+    equal(ctx.localStorage.getItem("herdr-mobile-keys-fab"), null, "no position stored before a drag");
+    ctx.HerdrMobile.keysFabDragStart({ clientX: 340, clientY: 720, preventDefault() {} });
+    ctx.dispatchDocumentPointerEvent("mousemove", { clientX: 300, clientY: 660, preventDefault() {} });
+    ctx.dispatchDocumentEvent("mouseup");
+    const saved = ctx.localStorage.getItem("herdr-mobile-keys-fab");
+    ok(saved, "drag persists the fab position");
+    // Clamped inside the viewport: x within [0, innerWidth - width].
+    const pos = JSON.parse(saved);
+    ok(pos.x >= 0 && pos.x <= 390 - 80, "x clamped to the viewport");
+    ok(pos.y >= 0 && pos.y <= 844 - 40, "y clamped to the viewport");
+  });
+
+  it("opens the panels dialog from the header meta chip and the workspace switcher from the title", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    // The panels trigger moved off the nav bar into the header meta line:
+    // the nav has no Panels tab anymore, and the chip is visible with a
+    // workspace open.
+    ok(!ctx.document.querySelector('.mobile-nav button[data-panels]'), "no nav panels button");
+    // Header order: connection dot, backend badge, title, panels chip,
+    // then the meta text as the trailing flexible element.
+    const order = ["mobileConnectionDot", "mobileBackendBadge", "mobileTitle", "mobilePanelsChip", "mobileMeta"]
+      .map((id) => source.indexOf(`id="${id}"`))
+      .filter((idx) => idx > -1);
+    equal(order.length, 5, "all five header elements present");
+    ok(order.every((idx, i) => i === 0 || idx > order[i - 1]), "header order dot, badge, title, chip, meta");
+    const chip = ctx.document.getElementById("mobilePanelsChip");
+    ok(chip, "header panels chip present");
+    equal(chip.hidden, false, "panels chip visible with workspace");
+    ok(chip.textContent.length > 0, "chip carries a label (pane count or panel name)");
+    ctx.HerdrMobile.openTabsSheet();
+    const listHtml = ctx.document.getElementById("mobileTabsSheetList").innerHTML;
+    ok(listHtml.includes("New panel"), "sheet lists New panel");
+    ok(listHtml.includes("Close current panel"), "sheet lists Close current panel");
+    ok(listHtml.includes("selectTabFromSheet"), "rows switch via sheet");
+    equal(ctx.document.getElementById("mobileTabsSheet").hidden, false, "sheet open");
+    // Close hides both sheet and backdrop.
+    ctx.HerdrMobile.closeTabsSheet();
+    equal(ctx.document.getElementById("mobileTabsSheet").hidden, true, "sheet closed");
+    equal(ctx.document.getElementById("mobileTabsBackdrop").hidden, true, "backdrop closed");
+    // Title press opens the workspace switcher sheet with the same rows
+    // as the Home list; selecting switches and closes.
+    ctx.HerdrMobile.openWorkspacesSheet();
+    const wsHtml = ctx.document.getElementById("mobileWorkspacesSheetList").innerHTML;
+    ok(wsHtml.includes("selectWorkspaceFromSheet"), "switcher rows select via sheet");
+    equal(ctx.document.getElementById("mobileWorkspacesSheet").hidden, false, "workspaces sheet open");
+    ctx.HerdrMobile.closeWorkspacesSheet();
+    equal(ctx.document.getElementById("mobileWorkspacesSheet").hidden, true, "workspaces sheet closed");
+    equal(ctx.document.getElementById("mobileWorkspacesBackdrop").hidden, true, "workspaces backdrop closed");
+    // Without a workspace the chip hides (refresh() auto-selects the first
+    // workspace when one exists, so an empty list is the only way state.ws
+    // stays null after a refresh).
+    const ctx2 = context("/session/default", { workspaces: [] });
+    vm.runInContext(source, ctx2);
+    await ctx2.HerdrMobile.refresh();
+    await ctx2.settle();
+    equal(ctx2.document.getElementById("mobilePanelsChip").hidden, true, "panels chip hidden without workspace");
   });
 
   it("sends key bar control bytes through the terminal input path", async () => {
@@ -1878,6 +2130,28 @@ describe("mobile bundle load", () => {
     equal(sent[0], "\x1b");
     equal(sent[1], "\t");
     equal(sent[2], "\x03");
+    // The Android-hostile combo keys send their literal control bytes.
+    const combos = { "ctrl-d": "\x04", "ctrl-z": "\x1a", "ctrl-l": "\x0c", "ctrl-a": "\x01", "ctrl-e": "\x05", "ctrl-u": "\x15", "ctrl-w": "\x17", "ctrl-r": "\x12" };
+    let i = 3;
+    for (const [k, bytes] of Object.entries(combos)) {
+      ctx.HerdrMobile.keyBarKey(null, { dataset: { key: k }, setAttribute() {} });
+      equal(sent[i], bytes, `${k} sends ${JSON.stringify(bytes)}`);
+      i += 1;
+    }
+    // Pager keys: PgUp/PgDn/Home/End escape sequences.
+    const pager = { pgup: "\x1b[5~", pgdn: "\x1b[6~", home: "\x1b[H", end: "\x1b[F" };
+    for (const [k, bytes] of Object.entries(pager)) {
+      ctx.HerdrMobile.keyBarKey(null, { dataset: { key: k }, setAttribute() {} });
+      equal(sent[i], bytes, `${k} sends ${JSON.stringify(bytes)}`);
+      i += 1;
+    }
+    // Arming Ctrl then tapping a combo still sends the literal combo (no
+    // double-apply), and disarms afterwards.
+    const armed = { dataset: { key: "ctrl" }, ariaPressed: null, setAttribute(_n, v) { this.ariaPressed = v; } };
+    ctx.HerdrMobile.keyBarKey(null, armed);
+    equal(armed.ariaPressed, "true");
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "ctrl-l" }, setAttribute() {} });
+    equal(sent[i], "\x0c", "armed Ctrl then combo sends the literal combo");
   });
 
   it("applies one-shot Ctrl to the next arrow key", async () => {

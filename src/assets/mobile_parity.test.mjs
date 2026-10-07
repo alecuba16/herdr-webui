@@ -277,7 +277,7 @@ describe("mobile parity feature guards", () => {
     const panelsSource = readFileSync(new URL("./mobile/panels.js", import.meta.url), "utf8");
     assert.match(panelsSource, /globalThis\.HerdrMobilePanelsModule = \{ create: createMobilePanels \}/);
     assert.match(panelsSource, /getMobileTerminal\(\)\.destroy\(true\)/);
-    assert.match(panelsSource, /renderTerminalTabsWithAdd/);
+    assert.match(panelsSource, /renderTabsSheetList/);
     assert.match(appSource, /mobilePanels\.renderPanels\(\)/);
     assert.match(appSource, /mobilePanels\.renderTerminalScreen\(screen\)/);
     const panelsIndex = bootSource.indexOf("/assets/mobile/panels.js");
@@ -392,6 +392,34 @@ describe("mobile parity feature guards", () => {
     assert.ok(!worktreesSource.includes("removeRecentWorkspace('${"), "recent remove must not use quoted encodeURIComponent");
     assert.match(worktreesSource, /openRecentWorkspace\(\$\{jsArg\(item\.path\)\}\)/);
     assert.match(worktreesSource, /removeRecentWorkspace\(\$\{jsArg\(item\.path\)\}\)/);
+  });
+
+  it("worktrees screen merges open-existing and discovery into one flow", () => {
+    // One Choose-folder step: path input + Browse, then Find worktrees.
+    assert.match(worktreesSource, /<h3>Choose folder<\/h3>/);
+    assert.ok(!worktreesSource.includes("<h3>Open existing</h3>"), "old open-existing group is gone");
+    assert.ok(!worktreesSource.includes("<h3>Discover worktrees</h3>"), "old discover group is gone");
+    assert.match(worktreesSource, /Find worktrees/);
+    // Browse buttons next to the raw path inputs (discover + create checkout path).
+    assert.match(worktreesSource, /HerdrMobile\.browseDirectory\(\$\{jsArg\(field\)\}\)/);
+    assert.ok((worktreesSource.match(/pickFolder\("worktree(Disc\w+|Path)",/g) || []).length === 2, "both path inputs get a Browse button");
+    // Results card: source info, open-as-workspace on the picked path, rows.
+    assert.match(worktreesSource, /<h3>Results<\/h3>/);
+    assert.match(worktreesSource, /HerdrMobile\.openFolderAsWorkspace\(\$\{jsArg\(state\.worktreeDiscoverPath\)\}\)/);
+    assert.match(worktreesSource, /Open as workspace/);
+    // openFolderAsWorkspace mirrors the recents open route and is exported.
+    assert.match(worktreesSource, /async function openFolderAsWorkspace\(pathArg\)/);
+    assert.match(worktreesSource, /openFolderAsWorkspace, openRecent/);
+  });
+
+  it("app wires the picker to worktrees and chains discovery on pick", () => {
+    const appSource2 = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
+    assert.match(appSource2, /openWorkspaceFn: \(folder\) => mobileWorktrees\.openFolderAsWorkspace\(folder\)/);
+    // Field-mode confirm on the discovery path auto-runs worktree discovery.
+    assert.match(appSource2, /onFieldPickFn: \(field, folder\) => \{[\s\S]*?worktreeDiscoverPath[\s\S]*?mobileWorktrees\.load\(\)/);
+    assert.match(appSource2, /browseDirectory/);
+    assert.match(appSource2, /openFolderAsWorkspace: \(path\) =>/);
+    assert.match(appSource2, /HerdrMobileDirectoryPicker/);
   });
 
   it("terminal output clears dismissed working overrides", () => {

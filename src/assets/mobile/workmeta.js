@@ -119,17 +119,37 @@
       return parts.join(" · ");
     }
 
-    function contextMeta(workspace) {
-      if (!workspace) return "Select workspace or agent";
-      const tab = currentTab();
-      const parts = [];
+    // Structured header meta. The leading context (repo parent, branch) is
+    // plain text; the panel segment is interactive in the header. It shows
+    // the custom panel name when one exists, otherwise just the pane
+    // count, and the caller renders it as a chip opening the panels dialog.
+    function contextMetaParts(workspace) {
+      if (!workspace) return null;
+      const leading = [];
       if (workspace.worktree) {
         const parent = parentWorkspaceName(workspace, workspacesById());
-        if (parent) parts.push(parent);
+        if (parent) leading.push(parent);
       }
-      parts.push(workspaceMeta(workspace));
-      if (tab) parts.push(tabTitle(tab));
-      return parts.filter(Boolean).join(" · ");
+      const worktree = worktreeForWorkspace(workspace);
+      const branch =
+        (worktree &&
+          (worktree.branch || (worktree.is_detached ? "detached" : ""))) ||
+        (workspace.worktree && workspace.worktree.branch);
+      if (branch) leading.push(branch);
+      const tab = currentTab();
+      const label = tab ? String(tab.label || "").trim() : "";
+      return {
+        leading,
+        panelLabel: label && !isDefaultTabTitle(label) ? label : "",
+        paneCount: workspace.pane_count || 0,
+      };
+    }
+
+    function contextMeta(workspace) {
+      const parts = contextMetaParts(workspace);
+      if (!parts) return "Select workspace or agent";
+      const panel = parts.panelLabel || `${parts.paneCount} panes`;
+      return [...parts.leading, panel].filter(Boolean).join(" · ");
     }
 
     return {
@@ -146,6 +166,7 @@
       worktreeDisplayName,
       parentWorkspaceName,
       workspaceMeta,
+      contextMetaParts,
       contextMeta,
     };
   }
