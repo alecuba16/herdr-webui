@@ -1901,13 +1901,14 @@ describe("mobile bundle load", () => {
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     await ctx.settle();
-    // The toolbar div sits in the shell right after the nav (before the
-    // drawer/confirm overlays), and the nav carries the toggler.
+    // The toolbar div sits in the shell right before the nav (grid
+    // auto-placement puts it visually ABOVE the nav bar), and the nav
+    // carries the toggler.
     const shellIdx = source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden></div>');
     const navIdx = source.indexOf('<nav class="mobile-nav">');
-    ok(shellIdx > navIdx, "toolbar markup comes after the nav markup");
+    ok(shellIdx > -1 && shellIdx < navIdx, "toolbar markup comes before the nav markup (renders above it)");
     match(source, /<button data-toggle="toolbar" aria-pressed="true">Keys<\/button>/);
-    ok(source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden></div>') < source.indexOf('<div class="mobile-drawer-backdrop"'), "toolbar sits between nav and overlays");
+    ok(source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden></div>') < source.indexOf('<div class="mobile-sheet-backdrop" id="mobileTabsBackdrop"'), "toolbar sits between screen and overlays");
     // Toolbar content mirrors the keybar builder, and syncs per render.
     match(source, /function syncToolbar\(\) \{[\s\S]*?mobilePanels\.renderKeyBar\(\)/);
     // Toggle flips visibility, persists, and updates aria-pressed.

@@ -119,11 +119,12 @@ body.light {
   overflow: hidden;
   background: var(--bg);
 }
-/* Key toolbar sits between the screen and the nav bar; the toolbar div is
-   always present in the DOM and toggled via [hidden], so an empty/closed
-   toolbar never leaves a stray grid row (auto row collapses to 0). */
+/* Key toolbar sits between the screen and the nav bar (above it); the
+   toolbar div is always present in the DOM and toggled via [hidden], so an
+   empty/closed toolbar never leaves a stray grid row (auto row collapses
+   to 0). */
 .mobile-toolbar {
-  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
 .mobile-toolbar[hidden] {

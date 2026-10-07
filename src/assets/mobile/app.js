@@ -386,6 +386,7 @@
             <div class="mobile-help">Enter opens · Alt+F files · Alt+D folders · Esc closes</div>
           </div>
         </div>
+        <div class="mobile-toolbar" id="mobileToolbar" hidden></div>
         <nav class="mobile-nav">
           <button data-screen="home">Home</button>
           <button data-screen="search">Search</button>
@@ -393,7 +394,6 @@
           <button data-toggle="toolbar" aria-pressed="true">Keys</button>
           <button data-screen="more" aria-haspopup="dialog">More</button>
         </nav>
-        <div class="mobile-toolbar" id="mobileToolbar" hidden></div>
         <div class="mobile-sheet-backdrop" id="mobileTabsBackdrop" hidden onclick="HerdrMobile.closeTabsSheet()"></div>
         <div class="mobile-sheet" id="mobileTabsSheet" hidden role="dialog" aria-modal="true" aria-label="Panels"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Panels</div><div class="mobile-tabs-sheet-list" id="mobileTabsSheetList"></div></div>
         <div class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" hidden onclick="HerdrMobile.closeDrawer()"></div>
