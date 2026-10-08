@@ -133,7 +133,28 @@ export CDP_PORT="$CDP"
 DRIVER_PID=""
 node "$ROOT/scripts/e2e/theme-propagation-acceptance.mjs" &
 DRIVER_PID=$!
-if ! wait "$DRIVER_PID"; then
+# The driver talks a raw CDP WebSocket; a stuck browser (renderer hung,
+# eval never resolving) would hang the run forever while server and chrome
+# keep running. Bound it: normal runs finish in ~50s, so 300s leaves plenty
+# of headroom for slow machines. BSD tail has no --pid, so poll the pid
+# instead; on expiry kill the driver so the wait below and the cleanup trap
+# can proceed.
+DRIVER_EXIT=0
+GUARD_EXPIRED=0
+GUARD_DEADLINE=$(( $(date +%s) + 300 ))
+while kill -0 "$DRIVER_PID" 2>/dev/null; do
+  if [[ $(date +%s) -ge $GUARD_DEADLINE ]]; then
+    GUARD_EXPIRED=1
+    break
+  fi
+  sleep 1
+done
+if [[ $GUARD_EXPIRED -eq 1 ]]; then
+  echo "driver still running after 300s, killing it" >&2
+  kill "$DRIVER_PID" 2>/dev/null || true
+fi
+wait "$DRIVER_PID" || DRIVER_EXIT=$?
+if [[ $DRIVER_EXIT -ne 0 ]]; then
   echo "FAIL - theme propagation e2e" >&2
   exit 1
 fi

@@ -642,6 +642,51 @@ async function runPass(layout, cdp) {
       reopened === "clicked" && bootRows.rows > 0 && bootVars.bg === "#1a1b26",
       `open=${reopened} rows=${bootRows.rows} bg=${bootVars.bg}`);
 
+    // 9d. Renderer core switch: settings select -> live reconnect with the
+    // other core -> propagation must still work on the re-created adapter.
+    // Both cores share the WTerm renderer class in the bundle, but the
+    // adapter is recreated by resetTerminalConnection, so the fan-in
+    // (applyTheme -> term.setTheme) must bind to the new instance.
+    const coreSwitch = await evalExpr(`new Promise((resolve) => {
+      const btn = document.getElementById("footerSettingsButton");
+      if (btn && document.getElementById("settingsModal").style.display === "none") btn.click();
+      const t0 = Date.now();
+      const waitSelect = () => {
+        const select = document.getElementById("optTerminalCore");
+        if (!select) {
+          if (Date.now() - t0 > 8000) { resolve("no core select"); return; }
+          setTimeout(waitSelect, 250);
+          return;
+        }
+        select.value = "wterm";
+        select.dispatchEvent(new Event("change"));
+        resolve("switched");
+      };
+      waitSelect();
+    })`);
+    // The change handler resets and reconnects the terminal; wait for rows.
+    // Light still uses the persisted tokyo profile here (9c reloaded with
+    // it), so expect its light background, not the default palette.
+    const TOKYO_LIGHT_BG = "#d5d6db";
+    const coreRows = await evalExpr(rowsPromise(null, `document.getElementById("terminal")`));
+    await setMode("light");
+    await sleep(400);
+    const coreVars = await evalExpr(mainVarsExpr);
+    record(layout, "theme propagates after renderer core switch to wterm",
+      coreSwitch === "switched" && coreRows.rows > 0 && coreVars.bg === TOKYO_LIGHT_BG,
+      `switch=${coreSwitch} rows=${coreRows.rows} bg=${coreVars.bg}`);
+
+    // Switch back to the default core so later passes and other layouts see
+    // the stock configuration.
+    await evalExpr(`(() => {
+      const select = document.getElementById("optTerminalCore");
+      if (!select) return "no select";
+      select.value = "ghostty";
+      select.dispatchEvent(new Event("change"));
+      return "switched";
+    })()`);
+    await evalExpr(rowsPromise(null, `document.getElementById("terminal")`));
+
     // Reset back to defaults so the settings modal state is clean for the
     // teardown below (the modal survives the reload in server-rendered HTML,
     // the customizer inputs exist only after the modal is opened).
@@ -669,6 +714,34 @@ async function runPass(layout, cdp) {
       if (modal) modal.style.display = "none";
       return true;
     })()`);
+  }
+
+  // 10. Mobile-only boot path: the persisted mode must apply to the
+  // renderer on a cold load, not only through live switching. The current
+  // mode is dark (set by the action-row cycle earlier); reload and reopen a
+  // workspace, then the booted terminal must paint dark without any
+  // additional switch.
+  if (layout === "mobile") {
+    await setMode("dark");
+    await sleep(400);
+    await cdp.send("Page.navigate", { url: `${ORIGIN}/` });
+    await sleep(2500);
+    const reopened = await evalExpr(`new Promise((resolve) => {
+      let n = 0;
+      const tries = () => {
+        const mobileRow = document.querySelector(".mobile-workspace-row .mobile-row");
+        if (mobileRow) { mobileRow.click(); resolve("clicked"); return; }
+        if (n >= 40) { resolve("no workspace item"); return; }
+        n += 1;
+        setTimeout(tries, 250);
+      };
+      tries();
+    })`);
+    const bootRows = await evalExpr(rowsPromise(null, `document.getElementById("terminal")`));
+    const bootVars = await evalExpr(mainVarsExpr);
+    record(layout, "reload boots mobile terminal with persisted dark mode",
+      reopened === "clicked" && bootRows.rows > 0 && bootVars.bg === DARK_BG,
+      `open=${reopened} rows=${bootRows.rows} bg=${bootVars.bg}`);
   }
 
   // Teardown: close the temp terminal through its close confirmation flow.
