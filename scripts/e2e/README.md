@@ -54,6 +54,10 @@ ids, IME textarea id/name).
 
 ## Utility scripts
 
+- `cdp-driver-helpers.mjs` - shared CDP plumbing for the real-browser drivers
+  (WebSocket client, result recorder, JSON report writer)
+- `e2e-runner-lib.sh` - shared runner boilerplate (Chrome lookup, teardown,
+  health polling, port guard) sourced by the runner scripts
 - `probe-submit-route.sh` - route probe for submit endpoints
 - `pty_capture.py` - PTY capture helper for terminal work
 - `smoke-jcode-kitty-emit.sh` - kitty-graphics emit smoke test

@@ -6,6 +6,9 @@
 // Author / Date), one copy command per field, one per tag chip, and the copy
 // toast actually appearing after a click. Server + Chrome are started by
 // scripts/e2e/run-log-hover-e2e.sh.
+import { writeFileSync } from "node:fs";
+import { fetchJson, attach, sleep, makeRecorder, writeReport, writeCrashReport } from "./cdp-driver-helpers.mjs";
+
 const CDP_HTTP = process.env.CDP_HTTP || "http://127.0.0.1:9224";
 const APP_URL = process.env.APP_URL || "http://127.0.0.1:8899/";
 const REPO = process.env.REPO;
@@ -16,48 +19,8 @@ if (!REPO) {
   process.exit(2);
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
-  return res.json();
-}
-
-function attach(wsUrl) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl);
-    let id = 0;
-    const pending = new Map();
-    ws.onopen = () => resolve({
-      send(method, params) {
-        return new Promise((res2, rej2) => {
-          const msgId = ++id;
-          pending.set(msgId, { res2, rej2 });
-          ws.send(JSON.stringify({ id: msgId, method, params }));
-        });
-      },
-    });
-    ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && pending.has(msg.id)) {
-        const { res2, rej2 } = pending.get(msg.id);
-        pending.delete(msg.id);
-        if (msg.error) rej2(new Error(`${msg.error.message}: ${JSON.stringify(msg.error.data || "")}`));
-        else res2(msg.result);
-      }
-    };
-    ws.onerror = () => reject(new Error("ws error"));
-  });
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-const results = [];
-let failed = 0;
-function record(name, pass, detail) {
-  results.push({ name, pass, detail: String(detail || "") });
-  if (!pass) failed += 1;
-  console.log(`${pass ? "PASS" : "FAIL"} ${name}${detail ? ` :: ${detail}` : ""}`);
-}
+const recorder = makeRecorder();
+const record = recorder.record.bind(recorder);
 
 async function main() {
   const targets = await fetchJson(`${CDP_HTTP}/json`);
@@ -307,7 +270,6 @@ async function main() {
   try {
     await evalExpr(`(() => { const row = document.querySelector(".git-ui-log-row[data-log-hash]"); if (row) row.scrollIntoView({block: "center"}); return "ok"; })()`);
     const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
-    const { writeFileSync } = await import("node:fs");
     const dir = process.env.JCODE_SCRATCH_DIR || ".";
     writeFileSync(`${dir}/log_hover_e2e.png`, Buffer.from(shot.data, "base64"));
     record("screenshot captured", true, `${dir}/log_hover_e2e.png`);
@@ -363,18 +325,13 @@ async function main() {
   try { imeInfo = JSON.parse(ime); } catch { imeInfo = null; }
   record("terminal IME textarea has an id/name pair", !!imeInfo && !!imeInfo.id && !!imeInfo.name, ime.slice(0, 120));
 
-  const passed = results.length - failed;
-  console.log(`\n${passed}/${results.length} checks passed`);
-  const { writeFileSync: wf } = await import("node:fs");
-  wf(outPath, JSON.stringify({ passed, failed, results }, null, 2));
-  process.exit(failed ? 1 : 0);
+  console.log(`\n${recorder.passed}/${recorder.results.length} checks passed`);
+  writeReport(outPath, recorder);
+  process.exit(recorder.failed ? 1 : 0);
 }
 
 main().catch((e) => {
   console.error("driver crashed:", e);
-  const { writeFileSync: wf } = (globalThis.process && (() => ({})))() || {};
-  import("node:fs").then(({ writeFileSync }) => {
-    writeFileSync(outPath, JSON.stringify({ passed: 0, failed: 1, error: String(e), results }, null, 2));
-    process.exit(1);
-  }).catch(() => process.exit(1));
+  writeCrashReport(outPath, recorder, e);
+  process.exit(1);
 });

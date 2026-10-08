@@ -4833,7 +4833,8 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8"), /\.git-ui-side-bottom-head \{[\s\S]*?\.git-ui-side-bottom-head \.git-ui-return-cwd-icon span/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /git-ui-current-changes-icon/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /title="Return to current changes"/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /returnToCurrentChanges\}\$\{returnToWorkspace\}/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /\$\{returnToCurrentChanges\}\$\{refreshButton\}/);
+    ok(!readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8").includes("${returnToCurrentChanges}${returnToWorkspace}"), "no second return button in the title actions");
     ok(!gitUiSource.includes('${compareButton}<button'));
     match(gitLayoutCss, /\.git-ui-return-cwd-icon span/);
     match(gitLayoutCss, /folder-up\.svg/);
@@ -4842,7 +4843,7 @@ describe("app bundle load", () => {
     match(gitShortcutsSource, /Load more changes fetches older commits/);
     match(source, /Choosing a folder in the Git directory picker immediately moves the Git panel/);
     match(source, /clicking the folder path title in the Git side panel opens the same picker/);
-    match(source, /the ↩ button beside Refresh and the ↩ button next to the path title/);
+    match(source, /the ↩ button next to the path title returns Git to the current workspace\/worktree folder/);
     match(source, /WebUI no longer opens a workspace automatically on startup/);
     match(source, /In Git UI, open Git directory\/branch dialog/);
     match(featuresDoc, /The Git directory picker has a single meaning/);

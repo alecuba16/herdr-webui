@@ -15,7 +15,8 @@
 //     return button (git-ui-return-cwd-icon) appears next to the title.
 //  4. Clicking the return button restores REPO_A and the button disappears.
 //  5. The cleanup-only view (plain folder) keeps a clickable path title.
-import { mkdirSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { fetchJson, attach, sleep, makeRecorder, writeReport, writeCrashReport } from "./cdp-driver-helpers.mjs";
 
 const CDP_HTTP = process.env.CDP_HTTP || "http://127.0.0.1:9224";
 const APP_URL = process.env.APP_URL || "http://127.0.0.1:8897/";
@@ -29,48 +30,8 @@ if (!REPO_A || !REPO_B || !PLAIN) {
   process.exit(2);
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
-  return res.json();
-}
-
-function attach(wsUrl) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl);
-    let id = 0;
-    const pending = new Map();
-    ws.onopen = () => resolve({
-      send(method, params) {
-        return new Promise((res2, rej2) => {
-          const msgId = ++id;
-          pending.set(msgId, { res2, rej2 });
-          ws.send(JSON.stringify({ id: msgId, method, params }));
-        });
-      },
-    });
-    ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && pending.has(msg.id)) {
-        const { res2, rej2 } = pending.get(msg.id);
-        pending.delete(msg.id);
-        if (msg.error) rej2(new Error(`${msg.error.message}: ${JSON.stringify(msg.error.data || "")}`));
-        else res2(msg.result);
-      }
-    };
-    ws.onerror = () => reject(new Error("ws error"));
-  });
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-const results = [];
-let failed = 0;
-function record(name, pass, detail) {
-  results.push({ name, pass, detail: String(detail || "") });
-  if (!pass) failed += 1;
-  console.log(`${pass ? "PASS" : "FAIL"} ${name}${detail ? ` :: ${detail}` : ""}`);
-}
+const recorder = makeRecorder();
+const record = recorder.record.bind(recorder);
 
 async function main() {
   const targets = await fetchJson(`${CDP_HTTP}/json`);
@@ -258,18 +219,16 @@ async function main() {
   record("cleanup-only view really entered the no-repo state", step5.noRepoBanner === true, JSON.stringify(step5.noRepoBanner));
 
   const screenshot = await cdp.send("Page.captureScreenshot", { format: "png" });
-  mkdirSync(outPath.split("/").slice(0, -1).join("/") || ".", { recursive: true });
   writeFileSync(outPath.replace(/\.json$/, "") + ".final.png", Buffer.from(screenshot.data, "base64"));
 
-  const report = { passed: results.length - failed, failed, results };
-  writeFileSync(outPath, JSON.stringify(report, null, 2));
-  console.log(failed === 0 ? "CWD PICKER E2E ACCEPTANCE PASSED" : `CWD PICKER E2E ACCEPTANCE FAILED (${failed} failures)`);
-  process.exit(failed === 0 ? 0 : 1);
+  writeReport(outPath, recorder);
+  console.log(recorder.failed === 0 ? "CWD PICKER E2E ACCEPTANCE PASSED" : `CWD PICKER E2E ACCEPTANCE FAILED (${recorder.failed} failures)`);
+  process.exit(recorder.failed === 0 ? 0 : 1);
 }
 
 main().catch((err) => {
   console.error("E2E driver error:", err);
-  results.push({ name: "driver", pass: false, detail: String(err) });
-  try { writeFileSync(outPath, JSON.stringify({ passed: 0, failed: 1, results }, null, 2)); } catch {}
+  record("driver", false, String(err));
+  writeCrashReport(outPath, recorder, err);
   process.exit(1);
 });

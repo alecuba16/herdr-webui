@@ -95,9 +95,8 @@
         : "";
       const fileList = cleanupOnly ? "" : `${filterInput}${fileSections}`;
       const sideBottom = renderDiffLayoutSideToggle(view);
-      const returnToWorkspace = !cleanupOnly && !gitCwdMatchesWorkspace(view)
-        ? `<button class="git-ui-refresh-icon git-ui-return-cwd-icon" title="Return Git to current workspace folder" aria-label="Return Git to current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()"><span></span></button>`
-        : "";
+      // The return-to-workspace action lives next to the path title in the
+      // side bottom head (same condition there), not in the title actions.
       const returnToCurrentChanges = !cleanupOnly && currentMode() !== "changes"
         ? `<button class="git-ui-refresh-icon git-ui-current-changes-icon" title="Return to current changes" aria-label="Return to current changes" onclick="HerdrGitUi.latestChanges()"><span></span></button>`
         : "";
@@ -105,7 +104,7 @@
       const busy = view.mutating ? `<span class="git-ui-busy"><span class="git-ui-busy-spinner"></span>${esc(view.mutatingLabel || "Working...")}</span>` : "";
       const statusIcon = `<span class="git-ui-status-icon git-ui-status-${esc(String(s.state || "closed").replace(/[^a-z0-9_-]/gi, "-"))}" title="${esc(s.state || "closed")}" aria-label="${esc(s.state || "closed")}"></span>`;
       const location = cleanupOnly ? "" : renderGitLocationSelector({ s, esc, cwd: view.cwd, workspaceCwd: view.workspaceCwd, worktreeName: view.title });
-      return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git ${statusIcon}</div><div class="git-ui-title-actions">${busy}${returnToCurrentChanges}${returnToWorkspace}${refreshButton}</div></div><div class="git-ui-subtitle">${location}</div></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
+      return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git ${statusIcon}</div><div class="git-ui-title-actions">${busy}${returnToCurrentChanges}${refreshButton}</div></div><div class="git-ui-subtitle">${location}</div></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
     }
 
     function renderDiffLayoutSideToggle(view) {
