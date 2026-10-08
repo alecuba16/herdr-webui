@@ -566,4 +566,49 @@ describe("terminal adapter wheel-to-SGR forwarding", () => {
 
     equal(container.listeners.get("pointermove"), undefined);
   });
+
+  it("delegates a full palette to wterm setThemeColors for a repaint", async () => {
+    const { adapter, ctx } = await createAdapter();
+    const wterm = adapter.wterm;
+    wterm.themeColorsCalls = [];
+    wterm.setThemeColors = (colors) => { wterm.themeColorsCalls.push(colors); };
+
+    const theme = {
+      foreground: "#cdd6f4",
+      background: "#11111b",
+      cursor: "#89b4fa",
+      selectionBackground: "#89b4fa",
+      black: "#6c7086", red: "#f38ba8", green: "#a6e3a1", yellow: "#f9e2af",
+      blue: "#89b4fa", magenta: "#cba6f7", cyan: "#94e2d5", white: "#cdd6f4",
+      brightBlack: "#9399b2", brightRed: "#f38ba8", brightGreen: "#a6e3a1", brightYellow: "#f9e2af",
+      brightBlue: "#89b4fa", brightMagenta: "#cba6f7", brightCyan: "#94e2d5", brightWhite: "#ffffff",
+    };
+    adapter.setTheme(theme);
+
+    equal(wterm.themeColorsCalls.length, 1, "wterm.setThemeColors called once");
+    const colors = wterm.themeColorsCalls[0];
+    equal(colors.foreground, 0xcdd6f4, "foreground converted to 24-bit int");
+    equal(colors.background, 0x11111b, "background converted to 24-bit int");
+    equal(colors.palette.length, 16, "exactly 16 palette entries");
+    equal(colors.palette[0], 0x6c7086, "palette order starts at black");
+  });
+
+  it("falls back to CSS vars when the palette is incomplete", async () => {
+    const { adapter, container } = await createAdapter();
+    const wterm = adapter.wterm;
+    wterm.themeColorsCalls = [];
+    wterm.setThemeColors = (colors) => { wterm.themeColorsCalls.push(colors); };
+
+    adapter.setTheme({ foreground: "#cdd6f4", background: "#11111b" });
+
+    equal(wterm.themeColorsCalls.length, 0, "no native call without cursor and palette");
+    equal(container.style["--term-fg"], "#cdd6f4", "CSS var mirror applied");
+    equal(container.style["--term-bg"], "#11111b", "CSS var mirror applied");
+  });
+
+  it("writes the selection background as --term-selection-bg", async () => {
+    const { adapter, container } = await createAdapter();
+    adapter.setTheme({ foreground: "#cdd6f4", selectionBackground: "#89b4fa" });
+    equal(container.style["--term-selection-bg"], "#89b4fa", "selection var matches wterm.css contract");
+  });
 });

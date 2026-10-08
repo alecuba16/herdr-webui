@@ -300,10 +300,34 @@
     if (theme.background) style.setProperty("--term-bg", theme.background);
     if (theme.cursor) style.setProperty("--term-cursor", theme.cursor);
     if (theme.selectionBackground)
-      style.setProperty("--term-selection", theme.selectionBackground);
+      style.setProperty("--term-selection-bg", theme.selectionBackground);
     COLOR_KEYS.forEach((key, index) => {
       if (theme[key]) style.setProperty(`--term-color-${index}`, theme[key]);
     });
+  }
+
+  // wterm.setThemeColors needs 24-bit RGB ints with exactly 16 palette
+  // entries. A full set lets the renderer repaint already-painted rows
+  // (CSS var swaps alone leave them stale until something dirties the grid)
+  // and keeps the wasm bridge's cursor/ghost-color state in sync.
+  function wtermThemeColors(theme) {
+    if (!theme) return null;
+    const toInt = (value) => {
+      if (typeof value !== "string") return null;
+      const match = /^#([0-9a-f]{6})$/i.exec(value.trim());
+      return match ? parseInt(match[1], 16) : null;
+    };
+    const foreground = toInt(theme.foreground);
+    const background = toInt(theme.background);
+    const cursor = toInt(theme.cursor);
+    if (foreground === null || background === null || cursor === null) return null;
+    const palette = [];
+    for (const key of COLOR_KEYS) {
+      const value = toInt(theme[key]);
+      if (value === null) return null;
+      palette.push(value);
+    }
+    return { foreground, background, cursor, palette };
   }
 
   function applyFontVar(element, family) {
@@ -501,6 +525,21 @@
 
     setTheme(theme) {
       this.theme = theme || {};
+      // Native setThemeColors repaints painted rows and syncs the wasm
+      // bridge; fall back to the CSS var mirror when the palette is
+      // incomplete or the bundle predates the method.
+      const colors = wtermThemeColors(this.theme);
+      if (colors && this.wterm && typeof this.wterm.setThemeColors === "function") {
+        try {
+          this.wterm.setThemeColors(colors);
+          // selectionBackground has no slot in setThemeColors.
+          if (this.theme.selectionBackground && this.element)
+            this.element.style.setProperty("--term-selection-bg", this.theme.selectionBackground);
+          return;
+        } catch (_) {
+          // fall through to the var mirror
+        }
+      }
       applyThemeVars(this.element, this.theme);
     }
 

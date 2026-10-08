@@ -49,6 +49,36 @@
       if (term && term.setFontFamily) term.setFontFamily(terminalFontFamily());
     }
 
+    // Theme tokens (shared --term-* + body.light overrides) resolve fresh on
+    // every call, so pushing the theme again is enough to recolor an open
+    // terminal after a manual switch or a prefers-color-scheme change.
+    function terminalTheme() {
+      const light = document.body.classList.contains("light");
+      const helpers = globalThis.HerdrAppHelpers || {};
+      const colors = helpers.terminalThemeColors
+        ? helpers.terminalThemeColors()
+        : {};
+      const theme = light ? colors.light || {} : colors.dark || {};
+      // Merge the shared --term-* token palette so ANSI colors follow the
+      // CSS palette (same helper the desktop uses).
+      const tokenPalette = helpers.readTerminalThemeTokens
+        ? helpers.readTerminalThemeTokens()
+        : null;
+      return {
+        background: theme.background || (light ? "#ffffff" : "#1e1e2e"),
+        foreground: theme.foreground || (light ? "#4c4f69" : "#cdd6f4"),
+        cursor: theme.cursor || (light ? "#4c4f69" : "#cdd6f4"),
+        selectionBackground: theme.selectionBackground || (light ? "#dce0f8" : "#45475a"),
+        ...(tokenPalette || {}),
+      };
+    }
+
+    function applyTheme() {
+      if (term && term.setTheme) {
+        try { term.setTheme(terminalTheme()); } catch (_) {}
+      }
+    }
+
     function terminalLinksEnabled() {
       return options().terminalLinks !== false;
     }
@@ -108,6 +138,8 @@
           rows: nextSize.rows,
           core: terminalCore(),
           fontFamily: terminalFontFamily(),
+          fontSize: options().terminalFontSize || 14,
+          theme: terminalTheme(),
           links: terminalLinksEnabled(),
           scrollback: 10000,
           onData: sendInputData,
@@ -348,6 +380,7 @@
       disconnect,
       applyFontFamily,
       applyLinks,
+      applyTheme,
       scrollToBottom,
       sendControlKey,
       // Composer/prompt-card support: the wterm adapter exposes .wterm

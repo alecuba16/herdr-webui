@@ -87,8 +87,19 @@ them via `getComputedStyle` (normalizing `rgb()` to `#rrggbb`) and desktop
 `terminalTheme()` plus the mobile temp-terminal `themeFn` merge the result
 over the legacy JS tables, which remain as fallback where computed styles
 are unavailable (tests). Background/foreground/cursor/selection still come
-from the user-customizable `options.themeColors`, so per-user theme picking
+from the user-customizable `options.themeColors` (mobile reads them through
+`HerdrAppHelpers.terminalThemeColors()`), so per-user theme picking
 keeps working on top of the shared ANSI palette.
+
+Propagation: every theme change (manual toggle, settings select, or a
+`prefers-color-scheme` switch in auto mode) re-pushes the resolved theme
+into every open renderer surface. Desktop `applyTheme()` re-themes the
+main terminal and fans out to all temporary-terminal sessions through the
+shared manager; mobile routes the same through the theme module's
+`applyThemeToBody` hook. The wterm adapter delegates full palettes to the
+bundle's `setThemeColors` (24-bit ints) so painted rows repaint instead of
+keeping stale colors, and mirrors `selectionBackground` as
+`--term-selection-bg` (the variable wterm.css actually reads).
 
 ## Motion
 

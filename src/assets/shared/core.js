@@ -381,6 +381,34 @@
     return "#" + (toHex(1) + toHex(2) + toHex(3));
   }
 
+  // Base terminal chrome colors (background/foreground/cursor/selection) for
+  // layouts that do not carry the desktop's themeColorDefaults tables. The
+  // user-customizable options.themeColors override these when present.
+  const TERMINAL_THEME_COLORS = {
+    dark: {
+      background: "#11111b",
+      foreground: "#cdd6f4",
+      cursor: "#89b4fa",
+      selectionBackground: "#89b4fa",
+    },
+    light: {
+      background: "#eff1f5",
+      foreground: "#4c4f69",
+      cursor: "#1957d2",
+      selectionBackground: "#1957d2",
+    },
+  };
+
+  function terminalThemeColors() {
+    const options =
+      root.HerdrOptions && typeof root.HerdrOptions.read === "function"
+        ? root.HerdrOptions.read()
+        : null;
+    const stored = options && options.themeColors;
+    const merged = normalizeThemeColors(stored, TERMINAL_THEME_COLORS);
+    return merged;
+  }
+
   function readTerminalThemeTokens(element, keys) {
     const root = typeof globalThis !== "undefined" ? globalThis : null;
     if (!root || !root.getComputedStyle || !root.document) return null;
@@ -449,6 +477,7 @@
     hashId,
     readTerminalThemeTokens,
     TERMINAL_TOKEN_KEYS,
+    terminalThemeColors,
     gitApi,
   };
   root.HerdrAppHelpers = helpers;
