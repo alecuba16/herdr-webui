@@ -215,6 +215,77 @@ async function runPass(layout, cdp) {
   record(layout, "manual light overrides system dark",
     after.bodyLight === true && after.bg === LIGHT_BG, `bg=${after.bg}`);
 
+  // 2b. Desktop-only: the real header toggle button cycles
+  // auto->dark->light->auto and every click propagates. Mobile has no
+  // header toggle (its cycle control is the search-sheet action row,
+  // covered by the setMode path plus the action-registry open below).
+  if (layout === "desktop") {
+    // Known starting point: mode auto, system dark.
+    await setMode("auto");
+    await sleep(300);
+    await evalExpr(`document.getElementById("themeToggle").click()`);
+    await sleep(400);
+    let toggleMode = await evalExpr(`document.getElementById("themeToggle").dataset.themeMode`);
+    after = await evalExpr(mainVarsExpr);
+    record(layout, "header toggle cycles to dark", toggleMode === "dark" && after.bg === DARK_BG,
+      `mode=${toggleMode} bg=${after.bg}`);
+
+    await evalExpr(`document.getElementById("themeToggle").click()`);
+    await sleep(400);
+    toggleMode = await evalExpr(`document.getElementById("themeToggle").dataset.themeMode`);
+    after = await evalExpr(mainVarsExpr);
+    record(layout, "header toggle cycles to light", toggleMode === "light" && after.bg === LIGHT_BG,
+      `mode=${toggleMode} bg=${after.bg}`);
+
+    // Third click returns to auto; system is dark so dark wins again.
+    await evalExpr(`document.getElementById("themeToggle").click()`);
+    await sleep(400);
+    toggleMode = await evalExpr(`document.getElementById("themeToggle").dataset.themeMode`);
+    after = await evalExpr(mainVarsExpr);
+    record(layout, "header toggle cycles back to auto (system dark)",
+      toggleMode === "auto" && after.bg === DARK_BG,
+      `mode=${toggleMode} bg=${after.bg}`);
+  }
+
+  // 2c. Mobile-only: the real search-sheet "Toggle theme" action row cycles
+  // the mode through the shared action registry (the control a phone user
+  // actually presses).
+  if (layout === "mobile") {
+    await setMode("auto");
+    await sleep(300);
+    const cycle = await evalExpr(`new Promise((resolve) => {
+      const navBtn = document.querySelector('nav.mobile-nav button[data-screen="search"]');
+      if (!navBtn) { resolve("no search nav button"); return; }
+      navBtn.click();
+      const t0 = Date.now();
+      const findRow = () => {
+        const rows = Array.from(document.querySelectorAll(".mobile-row"));
+        const row = rows.find((r) => r.textContent.indexOf("Toggle theme") !== -1);
+        if (!row) {
+          if (Date.now() - t0 > 8000) { resolve("no toggle-theme row"); return; }
+          setTimeout(findRow, 300);
+          return;
+        }
+        row.click();
+        resolve("clicked");
+      };
+      findRow();
+    })`);
+    await sleep(500);
+    const modeNow = await evalExpr(`localStorage.getItem("herdr-web-theme") || "auto"`);
+    after = await evalExpr(mainVarsExpr);
+    record(layout, "toggle-theme action row cycles to dark",
+      cycle === "clicked" && modeNow === "dark" && after.bg === DARK_BG,
+      `cycle=${cycle} mode=${modeNow} bg=${after.bg}`);
+  }
+
+  // Restore the shared manual-light state for the temp terminal pass below
+  // (it opens on light and asserts a dark flip).
+  await setMode("light");
+  await sleep(400);
+  after = await evalExpr(mainVarsExpr);
+  if (after.bg !== LIGHT_BG) throw new Error(`expected light theme before temp terminal pass, bg=${after.bg}`);
+
   // 3. Temporary terminal through the real user path.
   let tempOpen;
   if (layout === "desktop") {
@@ -328,6 +399,90 @@ async function runPass(layout, cdp) {
   })`);
   record(layout, "restored minimized temp terminal shows current theme",
     restored && restored.bg === DARK_BG, `bg=${restored && restored.bg}`);
+
+  // 7. The dead-var contract live: the selection background must sit on
+  // --term-selection-bg (the name wterm.css reads), not --term-selection.
+  const selectionVars = await evalExpr(`(() => {
+    const host = document.getElementById("terminal");
+    return {
+      good: host.style.getPropertyValue("--term-selection-bg"),
+      dead: host.style.getPropertyValue("--term-selection"),
+    };
+  })()`);
+  record(layout, "selection var written to --term-selection-bg",
+    !!selectionVars.good && !selectionVars.dead,
+    `good=${selectionVars.good} dead=${selectionVars.dead}`);
+
+  // 8. Computed paint check: the wterm host must actually paint the theme
+  // background (inline var alone could lie if the CSS chain broke).
+  // Compare the resolved rgb triple against --term-bg so a transparent
+  // rgba(0,0,0,0) or a stale background cannot pass.
+  const painted = await evalExpr(`(() => {
+    const host = document.getElementById("terminal");
+    const bg = host.style.getPropertyValue("--term-bg").trim();
+    const m = bg.match(/^#([0-9a-f]{6})$/i);
+    if (!m) return { match: false, bg, computed: "unparsable:" + bg };
+    const r = parseInt(m[1].slice(0, 2), 16), g = parseInt(m[1].slice(2, 4), 16), b = parseInt(m[1].slice(4, 6), 16);
+    const computed = getComputedStyle(host).backgroundColor;
+    return { match: computed === \`rgb(\${r}, \${g}, \${b})\`, bg, computed };
+  })()`);
+  record(layout, "terminal computes the theme background",
+    !!painted.match, `--term-bg=${painted.bg} computed=${painted.computed}`);
+
+  // 9. Desktop-only: custom theme colors through the real settings controls.
+  // The customizer writes options.themeColors, applyTheme pushes them through
+  // the adapter (wtermThemeColors int conversion -> setThemeColors). A custom
+  // dark background must land on the open main terminal and survive the
+  // customizer reset.
+  if (layout === "desktop") {
+    await setMode("dark");
+    await sleep(300);
+    const CUSTOM_BG = "#1a2b3c";
+    const custom = await evalExpr(`new Promise((resolve) => {
+      // Open the real settings modal the way the footer button does.
+      const btn = document.getElementById("footerSettingsButton");
+      if (!btn) { resolve("no settings button"); return; }
+      btn.click();
+      const t0 = Date.now();
+      const waitInput = () => {
+        const input = document.getElementById("optThemeColor-dark-background");
+        if (!input) {
+          if (Date.now() - t0 > 8000) { resolve("no customizer input"); return; }
+          setTimeout(waitInput, 250);
+          return;
+        }
+        input.value = "${CUSTOM_BG}";
+        const apply = document.getElementById("themeColorsApply");
+        if (!apply) { resolve("no apply button"); return; }
+        apply.click();
+        setTimeout(() => resolve("applied"), 600);
+      };
+      waitInput();
+    })`);
+    const customVars = await evalExpr(mainVarsExpr);
+    record(layout, "custom theme color repaints open terminal",
+      custom === "applied" && customVars.bg === CUSTOM_BG,
+      `custom=${custom} bg=${customVars.bg}`);
+
+    // Reset restores the defaults on the live surface.
+    const reset = await evalExpr(`new Promise((resolve) => {
+      const resetBtn = document.getElementById("themeColorsReset");
+      if (!resetBtn) { resolve("no reset button"); return; }
+      resetBtn.click();
+      setTimeout(() => resolve("reset"), 600);
+    })`);
+    const resetVars = await evalExpr(mainVarsExpr);
+    record(layout, "customizer reset restores default terminal colors",
+      reset === "reset" && resetVars.bg === DARK_BG,
+      `reset=${reset} bg=${resetVars.bg}`);
+
+    // Close the settings modal for the teardown below.
+    await evalExpr(`(() => {
+      const modal = document.getElementById("settingsModal");
+      if (modal) modal.style.display = "none";
+      return true;
+    })()`);
+  }
 
   // Teardown: close the temp terminal through its close confirmation flow.
   await evalExpr(`(document.querySelector(".temp-terminal-backdrop .temp-terminal-close") || {}).click?.()`);
