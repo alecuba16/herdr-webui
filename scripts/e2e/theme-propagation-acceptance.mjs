@@ -400,6 +400,134 @@ async function runPass(layout, cdp) {
   record(layout, "restored minimized temp terminal shows current theme",
     restored && restored.bg === DARK_BG, `bg=${restored && restored.bg}`);
 
+  // 6b. Desktop-only, multi-session fan-out: a second Ctrl+B Shift+M creates
+  // a NEW session (the first gets minimized, both stay live). A theme flip
+  // must repaint BOTH renderer surfaces through the manager loop; the
+  // minimized one must come back with the new colors on restore, no stale
+  // flash. This is the actual for-over-sessions code path, not a single
+  // session re-used.
+  if (layout === "desktop") {
+    await setMode("dark");
+    await sleep(300);
+    const secondOpen = await evalExpr(`new Promise((resolve) => {
+      const fire = (opts) => {
+        const ev = new KeyboardEvent("keydown", Object.assign({ bubbles: true, cancelable: true }, opts));
+        document.dispatchEvent(ev);
+      };
+      // Press 1: a visible session exists, so the toggle MINIMIZES it.
+      fire({ code: "KeyB", key: "b", ctrlKey: true });
+      setTimeout(() => {
+        fire({ code: "KeyM", key: "M", shiftKey: true });
+        setTimeout(() => {
+          // Press 2: nothing visible now, so the toggle creates a NEW session.
+          fire({ code: "KeyB", key: "b", ctrlKey: true });
+          setTimeout(() => {
+            fire({ code: "KeyM", key: "M", shiftKey: true });
+            const t0 = Date.now();
+            const check = () => {
+              const modals = document.querySelectorAll(".temp-terminal-backdrop");
+              // Two distinct session modals: the manager created a second one.
+              if (modals.length >= 2) { resolve({ count: modals.length }); return; }
+              if (Date.now() - t0 > 15000) { resolve({ count: modals.length, timeout: true }); return; }
+              setTimeout(check, 250);
+            };
+            check();
+          }, 150);
+        }, 400);
+      }, 150);
+    })`);
+    record(layout, "second temp session created (first minimized)",
+      secondOpen.count >= 2, `modals=${secondOpen.count}${secondOpen.timeout ? " timeout" : ""}`);
+
+    // Flip to light: the visible second session must repaint inline.
+    await setMode("light");
+    await sleep(400);
+    const visibleBg = await evalExpr(`(() => {
+      const modals = Array.from(document.querySelectorAll(".temp-terminal-backdrop"));
+      for (const m of modals) {
+        if (m.style.display === "none") continue;
+        const host = m.querySelector(".terminal");
+        return host ? host.style.getPropertyValue("--term-bg") : null;
+      }
+      return null;
+    })()`);
+    record(layout, "theme flip repaints second (visible) session", visibleBg === LIGHT_BG,
+      `bg=${visibleBg}`);
+
+    // The minimized first session was themed by the fan-out: its host var
+    // must already show the new theme (restore must not flash stale colors).
+    const minimizedBg = await evalExpr(`(() => {
+      const modals = Array.from(document.querySelectorAll(".temp-terminal-backdrop"));
+      for (const m of modals) {
+        if (m.style.display !== "none") continue;
+        const host = m.querySelector(".terminal");
+        return host ? host.style.getPropertyValue("--term-bg") : null;
+      }
+      return null;
+    })()`);
+    record(layout, "fan-out themed the minimized first session too",
+      minimizedBg === LIGHT_BG, `bg=${minimizedBg}`);
+
+    // Restore the first session through the real restore bar: the oldest
+    // minimized session button. It must show the current theme immediately.
+    const restoredFirst = await evalExpr(`new Promise((resolve) => {
+      const bar = document.querySelector(".temp-terminal-restore-bar");
+      const btns = bar ? bar.querySelectorAll(".temp-terminal-restore") : [];
+      if (!btns.length) { resolve("no restore buttons"); return; }
+      btns[0].click();
+      const t0 = Date.now();
+      const check = () => {
+        const modals = Array.from(document.querySelectorAll(".temp-terminal-backdrop"));
+        const visible = modals.find((m) => m.style.display !== "none");
+        const host = visible && visible.querySelector(".terminal");
+        if (visible && host && host.querySelectorAll(".term-row").length > 0) {
+          resolve({ bg: host.style.getPropertyValue("--term-bg") });
+          return;
+        }
+        if (Date.now() - t0 > 8000) { resolve("no visible session"); return; }
+        setTimeout(check, 200);
+      };
+      check();
+    })`);
+    record(layout, "restored first session shows current theme (no stale flash)",
+      restoredFirst && restoredFirst.bg === LIGHT_BG,
+      `bg=${restoredFirst && restoredFirst.bg}`);
+
+    // Close the now-visible first session through the real close-confirm
+    // flow, leaving the minimized second session for the teardown below.
+    // The confirm's destructive button is .temp-terminal-confirm-close (the
+    // generic button selector would hit Cancel, the first button in the
+    // dialog).
+    const closedFirst = await evalExpr(`new Promise((resolve) => {
+      const modals = Array.from(document.querySelectorAll(".temp-terminal-backdrop"));
+      const visible = modals.find((m) => m.style.display !== "none");
+      if (!visible) { resolve("no visible session"); return; }
+      const closeBtn = visible.querySelector(".temp-terminal-close");
+      if (!closeBtn) { resolve("no close button"); return; }
+      closeBtn.click();
+      setTimeout(() => {
+        const confirmBtn = visible.querySelector(".temp-terminal-confirm-close");
+        if (!confirmBtn) { resolve("no confirm close"); return; }
+        confirmBtn.click();
+        resolve("closed");
+      }, 300);
+    })`);
+    await sleep(700);
+    const remaining = await evalExpr(`new Promise((resolve) => {
+      const t0 = Date.now();
+      const check = () => {
+        const modals = document.querySelectorAll(".temp-terminal-backdrop").length;
+        if (modals <= 1) { resolve(modals); return; }
+        if (Date.now() - t0 > 3000) { resolve(modals); return; }
+        setTimeout(check, 200);
+      };
+      check();
+    })`);
+    record(layout, "first session closed, minimized second remains",
+      closedFirst === "closed" && remaining === 1,
+      `close=${closedFirst} remaining=${remaining}`);
+  }
+
   // 7. The dead-var contract live: the selection background must sit on
   // --term-selection-bg (the name wterm.css reads), not --term-selection.
   const selectionVars = await evalExpr(`(() => {
@@ -476,6 +604,65 @@ async function runPass(layout, cdp) {
       reset === "reset" && resetVars.bg === DARK_BG,
       `reset=${reset} bg=${resetVars.bg}`);
 
+    // 9b. Profile apply through the real controls: a preset profile with a
+    // distinct background (tokyo dark #1a1b26) must land on the live terminal.
+    const profile = await evalExpr(`new Promise((resolve) => {
+      const select = document.getElementById("themeColorProfile");
+      if (!select) { resolve("no profile select"); return; }
+      select.value = "tokyo";
+      const apply = document.getElementById("themeColorsApplyProfile");
+      if (!apply) { resolve("no apply profile button"); return; }
+      apply.click();
+      setTimeout(() => resolve("applied"), 600);
+    })`);
+    const profileVars = await evalExpr(mainVarsExpr);
+    record(layout, "profile apply repaints terminal (tokyo dark)",
+      profile === "applied" && profileVars.bg === "#1a1b26",
+      `profile=${profile} bg=${profileVars.bg}`);
+
+    // 9c. Boot path: the tokyo profile was persisted to localStorage; a full
+    // reload must boot the renderer already themed with it (no default-color
+    // flash waiting for a later applyTheme call).
+    await cdp.send("Page.navigate", { url: `${ORIGIN}/` });
+    await sleep(2500);
+    const reopened = await evalExpr(`new Promise((resolve) => {
+      let n = 0;
+      const tries = () => {
+        const link = document.querySelector("a.item[data-workspace-id]");
+        if (link) { link.click(); resolve("clicked"); return; }
+        if (n >= 40) { resolve("no workspace item"); return; }
+        n += 1;
+        setTimeout(tries, 250);
+      };
+      tries();
+    })`);
+    const bootRows = await evalExpr(rowsPromise(null, `document.getElementById("terminal")`));
+    const bootVars = await evalExpr(mainVarsExpr);
+    record(layout, "reload boots terminal with persisted profile colors",
+      reopened === "clicked" && bootRows.rows > 0 && bootVars.bg === "#1a1b26",
+      `open=${reopened} rows=${bootRows.rows} bg=${bootVars.bg}`);
+
+    // Reset back to defaults so the settings modal state is clean for the
+    // teardown below (the modal survives the reload in server-rendered HTML,
+    // the customizer inputs exist only after the modal is opened).
+    await evalExpr(`new Promise((resolve) => {
+      const btn = document.getElementById("footerSettingsButton");
+      if (!btn) { resolve("no settings button"); return; }
+      btn.click();
+      const t0 = Date.now();
+      const wait = () => {
+        const resetBtn = document.getElementById("themeColorsReset");
+        if (!resetBtn) {
+          if (Date.now() - t0 > 8000) { resolve("no reset button"); return; }
+          setTimeout(wait, 250);
+          return;
+        }
+        resetBtn.click();
+        setTimeout(() => resolve("reset"), 600);
+      };
+      wait();
+    })`);
+
     // Close the settings modal for the teardown below.
     await evalExpr(`(() => {
       const modal = document.getElementById("settingsModal");
@@ -488,7 +675,9 @@ async function runPass(layout, cdp) {
   await evalExpr(`(document.querySelector(".temp-terminal-backdrop .temp-terminal-close") || {}).click?.()`);
   await sleep(400);
   await evalExpr(`(() => {
-    const confirm = document.querySelector(".temp-terminal-confirm .btn-danger, .temp-terminal-confirm button");
+    // The destructive button; a generic button selector would hit Cancel,
+    // the first button in the confirm card.
+    const confirm = document.querySelector(".temp-terminal-confirm-close");
     if (confirm) confirm.click();
     return !!confirm;
   })()`);
