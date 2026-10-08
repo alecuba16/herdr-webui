@@ -199,7 +199,7 @@
   background: var(--panel2);
 }
 .git-ui-log-row.selected {
-  background: var(--panel2);
+  background: var(--accent-2, rgba(56, 139, 253, 0.14));
   outline: 1px solid var(--accent);
 }
 .git-ui-log-row.graph-only:hover {
@@ -333,10 +333,43 @@
 .git-ui-log-hover-card:focus-within .git-ui-log-copy-hash {
   display: inline-block;
 }
-.git-ui-log-hover-hash {
+.git-ui-log-hover-field {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+}
+.git-ui-log-hover-field-label {
+  color: var(--muted);
+  flex: 0 0 64px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.git-ui-log-hover-field-value {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.git-ui-log-hover-field-value strong {
+  font-family: var(--mono-font, monospace);
+  font-weight: 700;
+}
+.git-ui-log-hover-tag {
+  align-items: center;
+  background: color-mix(in srgb, var(--accent-1, var(--accent)) 12%, var(--panel2));
+  border: 1px solid var(--accent-2-border, var(--accent));
+  border-radius: 999px;
+  color: var(--fg);
+  display: inline-flex;
+  gap: 3px;
+  padding: 1px 7px;
+}
+.git-ui-log-hover-empty {
+  color: var(--muted);
+  font-style: italic;
 }
 .git-ui-log-copy-hash:hover,
 .git-ui-log-copy-hash:focus-visible {
@@ -521,8 +554,10 @@
 }
 
 /* Skip layout/paint for offscreen log rows; long logs render visibly faster
-   and scroll without full-list relayouts. */
-.git-ui-log-row {
+   and scroll without full-list relayouts. Only apply when the row is not
+   hovered: paint containment clips descendants to the row box, which would
+   cut off the hover card that overflows below the row. */
+.git-ui-log-row:not(:hover) {
   content-visibility: auto;
   contain-intrinsic-size: auto 30px;
 }

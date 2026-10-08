@@ -26,6 +26,11 @@ test: test-js
 git-e2e:
     scripts/e2e/run-git-e2e.sh
 
+# Real-browser acceptance for the Git-log hover card rework. See
+# scripts/e2e/README.md.
+log-hover-e2e:
+    scripts/e2e/run-log-hover-e2e.sh
+
 # No-browser acceptance run for backend-built content-search chunks. See scripts/e2e/README.md.
 content-search-e2e:
     scripts/e2e/run-content-search-e2e.sh

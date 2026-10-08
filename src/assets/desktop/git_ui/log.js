@@ -142,10 +142,25 @@
   function renderHover(row, color, esc, baseBranch) {
     if (!row.hash) return "";
     const labels = row.labels || [];
-    const copyHash = `<button class="git-ui-log-copy-hash" title="Copy commit id" onclick="HerdrGitUi.copyScopeValue(event,'${encodeURIComponent(row.hash || "")}','Commit id')">⧉</button>`;
     const message = row.title || row.message || "";
-    const copyMessage = message ? `<button class="git-ui-log-copy-hash" title="Copy commit message" onclick="HerdrGitUi.copyScopeValue(event,'${encodeURIComponent(message)}','Commit message')">⧉</button>` : "";
-    return `<div class="git-ui-log-hover-card" style="--lane:${color}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()"><div class="git-ui-log-hover-labels">${labels.map((label) => renderLabel(label, row.current, esc, baseBranch)).join("")}</div><div class="git-ui-log-hover-hash"><strong>${esc(row.hash || "")}</strong>${copyHash}</div><div class="git-ui-log-hover-message">${esc(message)}${copyMessage}</div><div>${esc(row.exact_date || row.date || "")}</div><div>${esc(row.author || "")}</div></div>`;
+    const date = row.exact_date || row.date || "";
+    const author = row.author || "";
+    // encodeURIComponent leaves ' unescaped, and these strings land inside
+    // single-quoted JS strings in onclick attributes. %27 keeps the JS
+    // string intact and decodeURIComponent still yields the original char.
+    const jsArg = (value) => encodeURIComponent(String(value ?? "")).replace(/'/g, "%27");
+    const copyButton = (value, kind) => `<button class="git-ui-log-copy-hash" title="Copy ${esc(kind)}" aria-label="Copy ${esc(kind)}" onclick="HerdrGitUi.copyScopeValue(event,'${jsArg(value)}','${jsArg(kind)}')">⧉</button>`;
+    // Labeled field rows: every value (commit id, each tag, author, date)
+    // carries its own copy command. Tags are the "tag: x" decorations git
+    // puts in %D; other labels (branches, remotes) stay in the chip row
+    // where they already copy per chip.
+    const field = (label, valueHtml, copy) => `<div class="git-ui-log-hover-field"><span class="git-ui-log-hover-field-label">${label}</span><span class="git-ui-log-hover-field-value">${valueHtml}${copy || ""}</span></div>`;
+    const tags = labels.map((label) => String(label || "").trim()).filter((label) => /^tag:\s*/i.test(label)).map((label) => label.replace(/^tag:\s*/i, ""));
+    const tagChips = tags.map((tag) => `<span class="git-ui-log-hover-tag">${esc(tag)}${copyButton(tag, "Tag " + tag)}</span>`).join("");
+    // Tags now live in their own labeled row, so drop them from the chip
+    // row to avoid showing each tag twice.
+    const chipLabels = labels.filter((label) => !/^tag:\s*/i.test(String(label || "").trim()));
+    return `<div class="git-ui-log-hover-card" style="--lane:${color}" onmousedown="event.stopPropagation()" onclick="event.stopPropagation()">${chipLabels.length ? `<div class="git-ui-log-hover-labels">${chipLabels.map((label) => renderLabel(label, row.current, esc, baseBranch)).join("")}</div>` : ""}<div class="git-ui-log-hover-message">${esc(message)}${message ? copyButton(message, "Commit message") : ""}</div>${field("Commit id", `<strong>${esc(row.hash)}</strong>`, copyButton(row.hash, "Commit id"))}${field("Tags", tagChips || "<span class=\"git-ui-log-hover-empty\">None</span>", "")}${field("Author", esc(author) || "<span class=\"git-ui-log-hover-empty\">Unknown</span>", author ? copyButton(author, "Author") : "")}${field("Date", esc(date) || "<span class=\"git-ui-log-hover-empty\">Unknown</span>", date ? copyButton(date, "Date") : "")}</div>`;
   }
 
   function hoverText(row) {
@@ -195,7 +210,9 @@
   function renderLabel(label, current, esc, baseBranch) {
     const normalized = normalizeLabel(label);
     const kind = labelKind(normalized, current, baseBranch);
-    const copy = `<button class="git-ui-log-copy-label" title="Copy ${kind}" onclick="HerdrGitUi.copyScopeValue(event,'${encodeURIComponent(normalized)}','${kind}')">⧉</button>`;
+    // Same apostrophe-safe encoding as the hover-card copy buttons: branch
+    // names may contain ' (git refnames allow it).
+    const copy = `<button class="git-ui-log-copy-label" title="Copy ${esc(kind)}" onclick="HerdrGitUi.copyScopeValue(event,'${encodeURIComponent(normalized).replace(/'/g, "%27")}','${kind}')">⧉</button>`;
     return `<span class="git-ui-log-ref ${kind}" title="${esc(normalized)}">${esc(normalized)}${copy}</span>`;
   }
 

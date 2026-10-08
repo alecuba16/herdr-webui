@@ -223,9 +223,110 @@ describe("Git log rendering", () => {
 
     assert.match(html, new RegExp(`title="${longLabel}"`));
     assert.match(html, /class="git-ui-log-hover-card"/);
-    assert.ok(html.includes(`HerdrGitUi.copyScopeValue(event,'${encodeURIComponent(hash)}','Commit id')`));
-    assert.match(html, /Copy commit id/);
+    assert.ok(html.includes(`HerdrGitUi.copyScopeValue(event,'${encodeURIComponent(hash)}','Commit%20id')`));
+    assert.match(html, /Copy Commit id/);
     assert.ok(html.includes(`<strong>${hash}</strong>`), "hover card still shows the full hash");
+  });
+
+  it("hover card renders labeled field rows with one copy command per field and per tag", () => {
+    const context = {
+      window: {},
+      document: { querySelectorAll() { return []; } },
+    };
+    context.window.window = context.window;
+    vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
+
+    const hash = "1234567890abcdef1234567890abcdef12345678";
+    const html = context.window.HerdrGitLog.render({
+      esc(value) { return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;"); },
+      arg: encodeURIComponent,
+      data: { rows: [{ graph: "*", hash, labels: ["HEAD -> main", "tag: v1.2.3", "tag: release-4", "main"], title: "Tagged demo", date: "2 days ago", exact_date: "2026-10-05T10:00:00Z", author: "Jane Dev <jane@example.com>", lane: 0 }] },
+      selected: [],
+      filters: {},
+    });
+
+    // Labeled rows exist for every field.
+    for (const label of ["Commit id", "Tags", "Author", "Date"]) {
+      assert.ok(html.includes(`class="git-ui-log-hover-field-label">${label}</span>`), `field row for ${label}`);
+    }
+    // One copy command per field: commit id, author, date, message.
+    assert.ok(html.includes(`HerdrGitUi.copyScopeValue(event,'${encodeURIComponent(hash)}','Commit%20id')`));
+    assert.ok(html.includes(`HerdrGitUi.copyScopeValue(event,'${encodeURIComponent("Jane Dev <jane@example.com>")}','Author')`));
+    assert.ok(html.includes(`HerdrGitUi.copyScopeValue(event,'${encodeURIComponent("2026-10-05T10:00:00Z")}','Date')`));
+    assert.ok(html.includes(`HerdrGitUi.copyScopeValue(event,'${encodeURIComponent("Tagged demo")}','Commit%20message')`));
+    // Each tag renders as its own chip with its own copy command; the
+    // "tag: " prefix is stripped inside the hover card (the row tooltip
+    // still spells labels verbatim, by design).
+    const cardHtml = html.slice(html.indexOf("git-ui-log-hover-card"));
+    assert.ok(cardHtml.includes(`class="git-ui-log-hover-tag">v1.2.3`), "tag chip v1.2.3");
+    assert.ok(cardHtml.includes(`HerdrGitUi.copyScopeValue(event,'${encodeURIComponent("v1.2.3")}','Tag%20v1.2.3')`), "copy for tag v1.2.3");
+    assert.ok(cardHtml.includes(`HerdrGitUi.copyScopeValue(event,'${encodeURIComponent("release-4")}','Tag%20release-4')`), "copy for tag release-4");
+    assert.ok(!cardHtml.includes("tag: v1.2.3"), "tag prefix stripped from display");
+    // Branch/HEAD labels stay in the chip row, not in the Tags field.
+    assert.ok(cardHtml.includes("git-ui-log-hover-labels"));
+  });
+
+  it("hover card shows None for a tagless commit and hides copy buttons for empty fields", () => {
+    const context = {
+      window: {},
+      document: { querySelectorAll() { return []; } },
+    };
+    context.window.window = context.window;
+    vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
+
+    const html = context.window.HerdrGitLog.render({
+      esc(value) { return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;"); },
+      arg: encodeURIComponent,
+      data: { rows: [{ graph: "*", hash: "abcdefabcdef", labels: ["main"], title: "No tags here", date: "", author: "", lane: 0 }] },
+      selected: [],
+      filters: {},
+    });
+
+    assert.ok(html.includes("class=\"git-ui-log-hover-empty\">None</span>"), "Tags shows None");
+    assert.ok(html.includes("Unknown"), "empty author/date show Unknown");
+    assert.ok(!html.includes("'Author')"), "no Author copy button when the author is empty");
+    assert.ok(!html.includes("'Date')"), "no Date copy button when the date is empty");
+    assert.ok(html.includes("HerdrGitUi.copyScopeValue(event,'abcdefabcdef','Commit%20id')"), "hash copy always present");
+  });
+
+  it("copy commands survive tags and authors containing apostrophes or quotes", () => {
+    const context = {
+      window: {},
+      document: { querySelectorAll() { return []; } },
+    };
+    context.window.window = context.window;
+    vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
+
+    // Git refnames allow ' and "; commit authors are free text. Both land
+    // in onclick JS strings and title attributes, so the rendered markup
+    // must not break the JS string or the attribute.
+    const html = context.window.HerdrGitLog.render({
+      esc(value) { return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); },
+      arg: encodeURIComponent,
+      data: { rows: [{ graph: "*", hash: "feedfacefeedface", labels: ["tag: don't", "tag: say\"hi", "main"], title: "Apostrophes", date: "now", author: "O'Brien <o'b@example.com>", lane: 0 }] },
+      selected: [],
+      filters: {},
+    });
+
+    const cardHtml = html.slice(html.indexOf("git-ui-log-hover-card"));
+    // Apostrophes are percent-encoded in the onclick args: the JS string
+    // stays intact and decodes back to the original tag/author. Plain
+    // encodeURIComponent leaves ' unescaped, hence the explicit %27 pins.
+    const jsArg = (value) => encodeURIComponent(value).replace(/'/g, "%27");
+    assert.ok(cardHtml.includes("'Tag%20don%27t')"), "tag with apostrophe encodes %27 in the kind");
+    assert.ok(cardHtml.includes(`'${jsArg("don't")}','Tag%20don%27t')`), "tag with apostrophe encodes %27 in the value");
+    assert.ok(cardHtml.includes(`'${jsArg("O'Brien <o'b@example.com>")}','Author')`), "author with apostrophes encodes %27");
+    // No raw apostrophe may remain inside an onclick attribute: every
+    // remaining ' in onclick would close the JS string early.
+    for (const onclick of cardHtml.match(/onclick="[^"]*"/g) || []) {
+      assert.ok(!/onclick="[^"]*'"/.test(onclick), `raw apostrophe inside onclick: ${onclick}`);
+    }
+    // Quotes in a tag escape the title attribute so it cannot break out.
+    assert.ok(cardHtml.includes('title="Copy Tag say&quot;hi"'), "quote in tag is escaped in the title");
+    assert.ok(!cardHtml.includes('title="Copy Tag say"hi"'), "no unescaped quote in title attribute");
   });
 
   it("uses the backend-provided lane instead of recomputing it from the graph (C6)", () => {

@@ -4912,7 +4912,7 @@ describe("app bundle load", () => {
     match(gitLogSource, /class="git-ui-log-ref \$\{kind\}"/);
     match(gitLogSource, /title="\$\{esc\(normalized\)\}"/);
     match(gitLogSource, /class="git-ui-log-copy-hash"/);
-    match(gitLogSource, /HerdrGitUi\.copyScopeValue\(event,'\$\{encodeURIComponent\(row\.hash \|\| ""\)\}','Commit id'\)/);
+    match(gitLogSource, /copyButton\(row\.hash, "Commit id"\)/);
     match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /async function copyCommitId\(hash\)/);
     match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /Commit id copied/);
     match(gitUiSource, /async copyCommitId\(hash\)/);
@@ -4941,6 +4941,17 @@ describe("app bundle load", () => {
     ok(!gitLogSource.includes('setLogFilter(' + "\'graph"));
     match(gitLogSource, /function applyFilters/);
     match(gitLogSource, /git-ui-log-hover-card/);
+    // Hover card fields: labeled rows (Commit id / Tags / Author / Date) with
+    // one copy command per field and one per tag chip.
+    match(gitLogSource, /git-ui-log-hover-field-label/);
+    match(gitLogSource, /git-ui-log-hover-tag/);
+    match(gitLogSource, /"Tag " \+ tag\)/);
+    match(gitLogSource, /field\("Tags"/);
+    match(gitLogSource, /field\("Author"/);
+    match(gitLogSource, /field\("Date"/);
+    match(gitLogCss, /\.git-ui-log-hover-field-label/);
+    match(gitLogCss, /\.git-ui-log-hover-tag/);
+    match(gitLogCss, /\.git-ui-log-hover-empty/);
     match(gitLogSource, /if \(label === "HEAD" \|\| label.startsWith\("HEAD -> "\)\) return "current";/);
     match(gitLogSource, /return "main";/);
     match(gitUiSource, /logFilters: \{ description: "", date: "", author: "" \}/);

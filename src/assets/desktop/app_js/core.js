@@ -1225,10 +1225,17 @@ function injectSettingsModuleHtml() {
   if (!el("themeColorsApply"))
     settingsBody.insertAdjacentHTML("beforeend", themeCustomizerHtml());
   for (const module of settingsModules) {
-    if (module.html && !el(`moduleSettings-${module.id}`)) {
+    // The wrapper div is removed again right below (unwrap), so it cannot
+    // serve as the injection guard. Guard on the module's first control id
+    // instead — re-running injection (e.g. when a later module pushes after
+    // core.js) must not insert the section twice, or the DOM ends up with
+    // duplicate element ids like optLayoutMode.
+    const alreadyInjected = (module.ids || []).some((id) => el(id)) ||
+      (module.html && settingsBody.querySelector(`[data-settings-module="${module.id}"]`));
+    if (module.html && !alreadyInjected) {
       settingsBody.insertAdjacentHTML(
         "beforeend",
-        `<div id="moduleSettings-${module.id}">${module.html}</div>`,
+        `<div id="moduleSettings-${module.id}" data-settings-module="${module.id}">${module.html}</div>`,
       );
     }
     // Some modules ship a complete .settings-section in their html. Unwrap

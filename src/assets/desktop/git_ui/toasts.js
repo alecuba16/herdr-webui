@@ -113,7 +113,11 @@
         if (!text) return;
         await navigator.clipboard.writeText(text);
         const id = Date.now();
-        state.scopeCopyToast = { id, x: Number(event && event.clientX) || 16, y: Number(event && event.clientY) || 16, message: `${kind} copied` };
+        // The kind is rendered into onclick args percent-encoded next to
+        // user-controlled values (tag/branch names may contain '), so it
+        // round-trips the same encoding; decode for the toast text.
+        const kindText = decodeURIComponent(String(kind || ""));
+        state.scopeCopyToast = { id, x: Number(event && event.clientX) || 16, y: Number(event && event.clientY) || 16, message: `${kindText} copied` };
         const panel = ensurePanel();
         const existing = panel.querySelector(".git-ui-scope-copy-toast");
         if (existing) existing.remove();
