@@ -151,6 +151,7 @@ function context() {
       this.element.containsTarget = { insideTerm: true };
       this.focusCount = 0;
       this.resizeCalls = [];
+      this.themes = [];
       ctx.lastTerminal = this;
     }
     focus() {
@@ -164,6 +165,9 @@ function context() {
     }
     resize(cols, rows) {
       this.resizeCalls.push([cols, rows]);
+    }
+    setTheme(theme) {
+      this.themes.push(theme);
     }
     write() {}
     dispose() {
@@ -781,6 +785,42 @@ describe("temporary terminal", () => {
     const ws = ctx.lastWebSocket;
     if (ws.onclose) ws.onclose();
     // The second session is now closed. The first should still be minimized.
+    equal(tempTerminal.isVisible(), false);
+  });
+
+  it("applyTheme re-themes every open session, including minimized ones", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx, {
+      themeFn: () => ({ background: "#11111b", foreground: "#cdd6f4" }),
+    });
+    const firstTerm = ctx.lastTerminal;
+    const firstThemeCount = firstTerm.themes.length;
+    // Open a second session with a folder, then minimize it.
+    tempTerminal.open("/home/user/second-project");
+    for (let i = 0; i < 16; i += 1) await Promise.resolve();
+    const secondTerm = ctx.lastTerminal;
+    ok(secondTerm !== firstTerm, "second session owns its own renderer");
+    tempTerminal.minimize();
+    // Manager-level fan-out must reach both live renderers without throwing
+    // (the old manager applyTheme read an undeclared `term` and raised).
+    tempTerminal.applyTheme();
+    equal(firstTerm.themes.length, firstThemeCount + 1, "first session renderer re-themed");
+    equal(secondTerm.themes.length, 1, "second session renderer re-themed");
+    equal(firstTerm.themes[firstTerm.themes.length - 1].background, "#11111b", "theme payload delivered");
+    tempTerminal.applyTheme();
+    equal(firstTerm.themes.length, firstThemeCount + 2, "repeated applyTheme pushes again");
+    equal(secondTerm.themes.length, 2, "repeated applyTheme reaches the minimized session too");
+  });
+
+  it("applyTheme skips sessions without a live renderer surface", async () => {
+    const ctx = context();
+    const tempTerminal = await openTempTerminal(ctx, {
+      themeFn: () => ({ background: "#eff1f5" }),
+    });
+    // Close everything; the fan-out must not throw on the empty registry.
+    tempTerminal.close();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    tempTerminal.applyTheme();
     equal(tempTerminal.isVisible(), false);
   });
 

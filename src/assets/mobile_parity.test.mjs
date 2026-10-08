@@ -311,6 +311,25 @@ describe("mobile parity feature guards", () => {
     assert.ok(themeIndex > -1 && themeIndex < appIndex, "theme.js loads before app.js");
   });
 
+  it("theme switches propagate to open mobile terminal surfaces", () => {
+    const terminalSource = readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8");
+    // The mobile terminal module exposes applyTheme so an already-open
+    // renderer recolors on manual/auto switches instead of keeping its
+    // creation-time inline --term-* vars.
+    assert.match(terminalSource, /function applyTheme\(\)\s*\{[\s\S]*?term\.setTheme/);
+    assert.match(terminalSource, /applyTheme,/);
+    assert.match(terminalSource, /theme: terminalTheme\(\),/);
+    // app.js wires the body-class flip to push the theme into every open
+    // surface: the main terminal plus all temp sessions.
+    assert.match(appSource, /applyThemeToBody: \(\) => \{/);
+    assert.match(appSource, /mobileTerminal\.applyTheme\(\)/);
+    assert.match(appSource, /mobileTempTerminal\.applyTheme\(\)/);
+    // The shared helper exists now (app.js referenced it before it was real).
+    const sharedCoreSource = readFileSync(new URL("./shared/core.js", import.meta.url), "utf8");
+    assert.match(sharedCoreSource, /terminalThemeColors,/);
+    assert.match(sharedCoreSource, /function terminalThemeColors\(\)/);
+  });
+
   it("mobile workspace actions live in their own module loaded before app.js", () => {
     const actionsSource = readFileSync(new URL("./mobile/actions.js", import.meta.url), "utf8");
     assert.match(actionsSource, /globalThis\.HerdrMobileActionsModule = \{ create: createMobileActions \}/);

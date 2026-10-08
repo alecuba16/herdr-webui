@@ -1087,7 +1087,13 @@
     getMobileTerminal: () => mobileTerminal,
     browserFavicon,
     getBrowserFaviconError: () => browserFaviconError,
-    applyThemeToBody: null,
+    // Runs after the body class flip: push the fresh theme into every open
+    // terminal surface (main + temp sessions) so an already-open renderer
+    // recolors instead of keeping its inline creation-time vars.
+    applyThemeToBody: () => {
+      if (mobileTerminal && mobileTerminal.applyTheme) mobileTerminal.applyTheme();
+      if (mobileTempTerminal && mobileTempTerminal.applyTheme) mobileTempTerminal.applyTheme();
+    },
   });
   mobileActions = globalThis.HerdrMobileActionsModule.create({
     state,
@@ -1171,12 +1177,13 @@
     },
     themeFn: () => {
       const light = document.body.classList.contains("light");
-      const colors = (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.terminalThemeColors) || {};
+      const helpers = globalThis.HerdrAppHelpers || {};
+      const colors = helpers.terminalThemeColors ? helpers.terminalThemeColors() : {};
       const theme = light ? (colors.light || {}) : (colors.dark || {});
       // Merge the shared --term-* token palette so ANSI colors follow the
       // CSS palette on mobile too (same helper the desktop uses).
-      const tokenPalette = globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.readTerminalThemeTokens
-        ? globalThis.HerdrAppHelpers.readTerminalThemeTokens()
+      const tokenPalette = helpers.readTerminalThemeTokens
+        ? helpers.readTerminalThemeTokens()
         : null;
       return {
         background: theme.background || (light ? "#ffffff" : "#1e1e2e"),

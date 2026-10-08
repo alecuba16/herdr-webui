@@ -1139,6 +1139,13 @@
         HerdrTerminalFit.fitTerminalToContainer(termEl, { height: alignedHeight });
       }
 
+      function applyTheme() {
+        // term may not exist yet (still fitting) or the surface was torn
+        // down; the manager-level applyTheme fans out to every session.
+        if (!term || !term.setTheme) return;
+        try { term.setTheme(themeFn()); } catch (e) {}
+      }
+
       return sess = {
         id: id,
         createdAt: createdAt,
@@ -1153,6 +1160,7 @@
         isVisible: isVisible,
         handleResize: handleResize,
         handlePaneExited: handlePaneExited,
+        applyTheme: applyTheme,
         restoreLabel: restoreLabel,
         shortcutTitle: shortcutTitle,
       };
@@ -1235,8 +1243,12 @@
     }
 
     function applyTheme() {
-      if (!term || !term.setTheme) return;
-      try { term.setTheme(themeFn()); } catch (e) {}
+      // Every live session owns its own renderer surface, so re-theme them
+      // all; minimized sessions get themed on restore too, but doing it now
+      // avoids a stale-colored flash when they reappear.
+      for (var id in sessions) {
+        if (sessions[id] && sessions[id].applyTheme) sessions[id].applyTheme();
+      }
     }
 
     return {

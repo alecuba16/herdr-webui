@@ -2635,7 +2635,12 @@ function applyTheme() {
   if (themeSelect) themeSelect.value = themeMode;
   localStorage.setItem("herdr-web-theme", themeMode);
   if (term && term.setTheme) term.setTheme(terminalTheme());
-  if (tempTerminal && tempTerminal.applyTheme) tempTerminal.applyTheme();
+  // Every open temp session owns its own renderer surface; re-theme them all
+  // (fan-out lives in the shared manager). Guarded so a failure here can
+  // never abort the chrome updates or the fit below.
+  if (tempTerminal && tempTerminal.applyTheme) {
+    try { tempTerminal.applyTheme(); } catch (e) {}
+  }
   if (window.HerdrMarkdownPreview && window.HerdrMarkdownPreview.refreshTheme)
     window.HerdrMarkdownPreview.refreshTheme();
   fitTerminalShell();
