@@ -148,10 +148,12 @@ describe("git_ui shortcuts: Escape inside temporary overlays", () => {
     const event = keyEvent();
     shortcuts.handleKeydown(event);
     equal(calls.closeTopmost, 0, "picker owns Escape");
-    // Git's window-capture handler still marks Escape handled (it does so
-    // for every Escape before the overlay branch), but the overlay stays:
-    // the foreign modal check only guards closeTopmost.
-    equal(event.defaultPrevented, true, "git consumed the default action");
+    // The foreign modal check now guards the whole handler: git's
+    // window-capture handler releases every key while the directory
+    // picker (or any other foreign modal) is open, so the picker's own
+    // close paths receive them.
+    equal(event.defaultPrevented, false, "git did not consume the default action");
+    equal(event._stopped, undefined, "git did not stop propagation");
     equal(calls.hides, 0, "git's own hide never ran");
     equal(calls.confirms.length, 0, "no confirm while picker is open");
   });

@@ -986,6 +986,22 @@
     await post("/api/git-ui/apply-patch", Object.assign({ cwd: active().cwd, patch }, options || {}), options && options.reverse ? "Restoring hunk" : "Applying hunk");
   }
 
+  // A drawer-side cwd change (path title picker) inside a temporary Git
+  // overlay must move the overlay chrome with it: title, folder label, and
+  // restore pill all read the manager folder, not the drawer cwd. The
+  // overlay hosts the drawer through a pseudo workspace whose cwd is the
+  // overlay folder, so the drawer's workspaceCwd must follow too: otherwise
+  // the side return button would appear inside a temporary overlay and
+  // point at the stale overlay folder.
+  function syncTempOverlayFolder(cwd) {
+    const overlays = globalThis.HerdrTempOverlays;
+    if (!overlays || !overlays.panelInTempOverlay || !overlays.applyGitFolder) return;
+    if (!overlays.panelInTempOverlay("gitUiPanel")) return;
+    overlays.applyGitFolder(cwd);
+    const view = active();
+    if (view && view.workspaceCwd !== undefined) view.workspaceCwd = cwd;
+  }
+
   window.HerdrGitUi = {
     open,
     hide,
@@ -2014,6 +2030,42 @@
       resetGitViewForCwd(view, view.workspaceCwd);
       render();
       refresh();
+    },
+    // Path title entry: opens the directory picker on the current Git folder.
+    // The picker writes into a detached hidden input (the same node-based flow
+    // the temporary overlays use) and applies the selected folder immediately,
+    // so no extra modal input has to live in the panel.
+    openCwdPicker() {
+      const view = active();
+      if (!view) return;
+      const picker = window.HerdrDirectoryPicker;
+      if (!picker || typeof picker.open !== "function") return;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.style.display = "none";
+      input.value = String(view.cwd || "");
+      const onChange = () => {
+        cleanup();
+        const cwd = normalizePathForCompare(input.value || "");
+        if (!cwd) return;
+        if (samePath(cwd, view.cwd)) return;
+        resetGitViewForCwd(view, cwd);
+        syncTempOverlayFolder(cwd);
+        render();
+        refresh();
+      };
+      const onRemoved = () => cleanup();
+      function cleanup() {
+        input.removeEventListener("change", onChange);
+        window.removeEventListener("herdrTempOverlayPickerClosed", onRemoved);
+        if (input.parentNode) input.parentNode.removeChild(input);
+      }
+      input.addEventListener("change", onChange);
+      // The shared picker close path dispatches this event; it covers both the
+      // Close button and the Esc path so the hidden input never leaks.
+      window.addEventListener("herdrTempOverlayPickerClosed", onRemoved);
+      document.body.appendChild(input);
+      picker.open(input);
     },
     switchBranchFromModal() {
       const view = active();

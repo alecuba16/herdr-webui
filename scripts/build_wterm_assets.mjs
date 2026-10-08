@@ -65,13 +65,17 @@ patchedJs = applyPatch(
 // Gboard ignores that on some layers and respects writingsuggestions, and
 // the spec value for "no capitalization" is "none". translate="no" keeps the OS
 // translate gesture from popping over the terminal and completes the full
-// herdr guard set on this input.
+// herdr guard set on this input. The id/name pair also satisfies the Chrome
+// DevTools form-field audit ("A form field element should have an id or name
+// attribute"), which the live CDP audits track.
 patchedJs = applyPatch(
   patchedJs,
   'this.textarea.setAttribute("autocapitalize","off"),',
   'this.textarea.setAttribute("autocapitalize","none");' +
     'this.textarea.setAttribute("writingsuggestions","false");' +
-    'this.textarea.setAttribute("translate","no"),',
+    'this.textarea.setAttribute("translate","no");' +
+    'this.textarea.setAttribute("id","terminalImeInput");' +
+    'this.textarea.setAttribute("name","terminalImeInput"),',
   "IME textarea keyboard guards",
 );
 await writeFile(bundlePath, patchedJs);

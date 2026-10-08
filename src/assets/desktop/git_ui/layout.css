@@ -22,7 +22,40 @@
 .git-ui-side-bottom .git-ui-btn {
   width: 100%;
 }
-.git-ui-path-title { color: var(--muted); font-size: 11px; overflow: hidden; padding: 0 10px 6px; text-overflow: ellipsis; white-space: nowrap; }
+.git-ui-path-title {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  overflow: hidden;
+  padding: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-ui-path-title:hover { color: var(--accent); text-decoration: underline; }
+.git-ui-side-bottom-head {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  justify-content: flex-start;
+  margin: 0 0 6px;
+}
+.git-ui-side-bottom-head .git-ui-path-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  text-align: left;
+}
+.git-ui-side-bottom-head .git-ui-return-cwd-icon {
+  flex: none;
+  height: 20px;
+  width: 20px;
+}
+.git-ui-side-bottom-head .git-ui-return-cwd-icon span {
+  height: 12px;
+  width: 12px;
+}
 .git-ui-toolbar-title {
   color: var(--muted);
   font-size: 11px;

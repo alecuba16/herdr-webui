@@ -353,6 +353,27 @@ describe("temporary overlay controller (shared)", () => {
     equal(manager.currentFolder(), "/keep-me");
   });
 
+  it("applyFolder moves the chrome without re-rendering the surface (drawer-side change)", () => {
+    const { manager, calls, modal: ctxModal } = makeHost();
+    manager.open("/before");
+    equal(calls.opened.length, 1);
+    manager.applyFolder("/after/picked/");
+    equal(manager.currentFolder(), "/after/picked", "folder normalizes trailing slashes");
+    equal(calls.opened.length, 1, "the surface is not re-rendered: the drawer already reset itself");
+    equal(calls.closed.length, 0, "no teardown either");
+    const modal = ctxModal();
+    equal(modal.querySelector(".temp-overlay-folder").textContent, "/after/picked", "head folder follows");
+    equal(modal.querySelector(".temp-overlay-title").textContent.includes("/after/picked"), false, "title keeps its own shape");
+    // Same folder is a no-op, empty folder is ignored.
+    manager.applyFolder("/after/picked");
+    manager.applyFolder("");
+    equal(manager.currentFolder(), "/after/picked");
+    // Nothing open: no crash, no state.
+    manager.close();
+    manager.applyFolder("/somewhere");
+    equal(manager.currentFolder(), "");
+  });
+
   it("minimize hides the modal and restore brings it back", () => {
     const { manager, modal: ctxModal, bar: findBar } = makeHost();
     manager.open("/repo");

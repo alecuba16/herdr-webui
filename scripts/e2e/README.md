@@ -39,8 +39,25 @@ mobile and desktop guard audits, and tears everything down. For
 ad-hoc real-browser probing beyond that, the external cdp-chrome skill
 and `docs/e2e-external.md` still apply.
 
+## Git-log hover card (log-hover-e2e)
+
+```sh
+just log-hover-e2e  # or: scripts/e2e/run-log-hover-e2e.sh
+```
+
+Same real-browser setup (isolated server + headless Chrome over CDP, own
+XDG_CONFIG_HOME/session, nothing external). Covers the labeled hover rows
+(Commit id / Tags / Author / Date), per-field and per-tag copy commands
+including the copy toast via trusted input, the accent-2 selected-row
+tint, and the settings/terminal DOM hygiene audits (duplicate element
+ids, IME textarea id/name).
+
 ## Utility scripts
 
+- `cdp-driver-helpers.mjs` - shared CDP plumbing for the real-browser drivers
+  (WebSocket client, result recorder, JSON report writer)
+- `e2e-runner-lib.sh` - shared runner boilerplate (Chrome lookup, teardown,
+  health polling, port guard) sourced by the runner scripts
 - `probe-submit-route.sh` - route probe for submit endpoints
 - `pty_capture.py` - PTY capture helper for terminal work
 - `smoke-jcode-kitty-emit.sh` - kitty-graphics emit smoke test
