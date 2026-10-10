@@ -650,6 +650,34 @@ test("empty-leaf hide keeps dashboard strips hidden; dashboard hide keeps empty-
   assert.equal(strip().hidden, false, "dashboard hide does not clobber the empty-leaf's strips");
 });
 
+// The split + no-workspace case: the dashboard owns the whole pane area,
+// so a split layout left over from an earlier session must not keep
+// strips floating over dead sibling panes. Every strip hides while the
+// dashboard shows, and the hide pass restores them all.
+test("dashboard takeover hides every strip in a split layout", () => {
+  const { document, nodes } = buildDom();
+  const ctx = loadPanes(document, null);
+  const panes = ctx.HerdrWorkspacePanes;
+  const dashboard = document.getElementById("projectDashboard");
+  // Build a split: render once so p1 exists, then split it.
+  panes.renderWorkspacePanes();
+  assert.equal(panes.splitPaneRightFor("p1"), true, "split builds a second leaf");
+  assert.equal(document.querySelectorAll(".pane-tab-strip").length, 2, "two strips in the split");
+  // Full render order: panes first, then the dashboard show pass.
+  panes.renderWorkspacePanes();
+  dashboard.hidden = false;
+  panes.mountDashboardInPane(true);
+  const strips = document.querySelectorAll(".pane-tab-strip");
+  assert.equal(strips.length, 2, "split kept both strips");
+  assert.equal(strips[0].hidden, true, "owner leaf strip hidden");
+  assert.equal(strips[1].hidden, true, "sibling leaf strip hidden too");
+  // Hide pass restores every strip for the next render.
+  dashboard.hidden = true;
+  panes.mountDashboardInPane(false);
+  assert.equal(strips[0].hidden, false, "owner strip restored");
+  assert.equal(strips[1].hidden, false, "sibling strip restored");
+});
+
 // ---- theme fan-out --------------------------------------------------------
 
 test("applyThemeAll re-themes open aux surfaces on theme switch", async () => {

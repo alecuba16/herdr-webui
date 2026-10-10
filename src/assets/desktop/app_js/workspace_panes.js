@@ -2006,8 +2006,7 @@ function mountEmptyLeafInPane(shown) {
     // The dashboard may own the slot in the no-workspace state: its own
     // mount pass hides the strips, and restoring here would undo it in
     // the same render.
-    const dashboard = el("projectDashboard");
-    if (!surfaceMountedInPaneContent(dashboard)) unhidePaneStrips(container);
+    if (!dashboardOwnsPaneArea()) unhidePaneStrips(container);
     return;
   }
   const root = paneRootFor();
@@ -2179,6 +2178,17 @@ function surfaceMountedInPaneContent(surface) {
   return false;
 }
 
+// The dashboard decides its own strip hiding, not mount order: with no
+// workspace, syncProjectDashboard clears the hidden attr BEFORE it moves
+// the node into the pane, so a same-render surfaceMountedInPaneContent
+// check in mountEmptyLeafInPane can miss the takeover and restore the
+// strip over it. Ask the deciding function instead: strips hide exactly
+// when the dashboard is shown.
+function dashboardOwnsPaneArea() {
+  const dashboard = el("projectDashboard");
+  return !!(dashboard && !dashboard.hidden);
+}
+
 // The dashboard owns the whole pane area in the empty state, so the
 // terminal shell must not share the column: park it at the
 // #workspacePanes home, hidden, exactly like the non-owner branches of
@@ -2236,8 +2246,15 @@ function mountDashboardInPane(shown) {
     }
   }
   if (!pane) return;
-  const strip = pane.querySelector(".pane-tab-strip");
-  if (strip) strip.hidden = true;
+  // The dashboard owns the WHOLE pane area while no workspace is open,
+  // not just the active leaf's slot: a split layout from an earlier
+  // session keeps sibling panes alive, and their strips (with + and
+  // split controls) would float over dead empty panes beside the
+  // dashboard. Hide every strip; the hide pass restores them all.
+  const strips = container.querySelectorAll
+    ? container.querySelectorAll(".pane-tab-strip")
+    : [];
+  for (const strip of strips) strip.hidden = true;
   const content = pane.querySelector(".pane-content");
   if (content && dashboard.parentElement !== content) content.appendChild(dashboard);
   // The dashboard claims the slot: the shell parks home and hides so
