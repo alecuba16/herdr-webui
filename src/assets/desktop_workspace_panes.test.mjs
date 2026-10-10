@@ -1038,6 +1038,34 @@ test("newTabForPane parks the placement and the sync consumes it once", async ()
   assert.equal(homeAfter.active, "tab_9", "active pointer survives the second sync");
 });
 
+// The no-workspace state: the strip + must not disable, and the press
+// must route to the open-workspace/worktree modal instead of dying.
+// Standalone harness: the modal and the path resolver come from the rest
+// of the bundle, so inject them on the context the way the full app has
+// them hoisted.
+test("newTabForPane with no workspace opens the worktree modal instead of dying", async () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, null);
+  const panes = ctx.HerdrWorkspacePanes;
+
+  const html = ctx.paneNewTabControlHtml({ paneId: "p1" });
+  assert.ok(!html.includes(" disabled"), "the + control stays enabled without a workspace");
+
+  let newTabCalls = 0;
+  ctx.window.newTab = async () => {
+    newTabCalls++;
+  };
+  const opens = [];
+  ctx.openWorktreeOpenModal = (path, discover) => opens.push({ path, discover });
+  ctx.selectedWorkspaceRepoPath = () => "/seed/repo";
+
+  await panes.newTabForPane("p1");
+  assert.equal(newTabCalls, 0, "no backend panel is created without a workspace");
+  assert.equal(opens.length, 1, "the press opens the worktree modal");
+  assert.equal(opens[0].path, "/seed/repo", "modal seeds the current folder");
+  assert.equal(opens[0].discover, true, "modal starts discovery right away");
+});
+
 // Closing a terminal that lives in a non-sync-target leaf must prune it
 // there too: the sync target selection picks the leaf holding the first
 // live backend id, so a sibling's closed id would otherwise stay in its

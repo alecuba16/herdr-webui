@@ -2101,6 +2101,46 @@ describe("app bundle load", () => {
     ok(searched.some((s) => s.cwd === "/Users/alejandro.blanco" && s.kind === "content"), "palette content search used the default folder");
   });
 
+  it("prefix-P without a workspace opens the seeded worktree modal instead of dying", () => {
+    const ctx = context();
+    const requests = [];
+    ctx.fetch = async (url) => {
+      requests.push(String(url));
+      return { status: 200, json: async () => ({ result: { worktrees: [], source: {} } }) };
+    };
+    vm.runInContext(source, ctx);
+    // The strip + and prefix-P share one contract: with a workspace the
+    // press creates a panel, without one it routes to the open flow
+    // seeded with the current folder. selectedWorkspaceRepoPath() is
+    // "" in this state by design; the modal's own initializer falls
+    // back to the default folder, so pin that chain end to end.
+    vm.runInContext("state.workspaces = []; state.ws = null; state.defaultFolder = '/Users/alejandro.blanco';", ctx);
+    vm.runInContext(
+      "window.__opens = []; " +
+        "const __realOpen = openWorktreeOpenModal; " +
+        "openWorktreeOpenModal = (path, discover) => { window.__opens.push({ path, discover }); return __realOpen(path, discover); }; " +
+        "newTab = async () => { throw new Error('newTab must not run without a workspace'); };",
+      ctx,
+    );
+    const handled = vm.runInContext(
+      "runPrefixedShortcut({ code: 'KeyP', key: 'p', shiftKey: false })",
+      ctx,
+    );
+    equal(handled, true, "prefix-P is still a consumed shortcut");
+    const opens = vm.runInContext("window.__opens", ctx);
+    equal(opens.length, 1, "the press opens the worktree modal");
+    equal(opens[0].discover, true, "modal starts discovery right away");
+    equal(
+      vm.runInContext("document.getElementById('worktreeDiscoverPath').value", ctx),
+      "/Users/alejandro.blanco",
+      "modal seeds the default folder",
+    );
+    ok(
+      requests.some((url) => url.startsWith("/api/worktrees?cwd=")),
+      "discovery request fired for the seeded folder",
+    );
+  });
+
   it("uses shared search settings to skip disabled APIs and clamp query params", async () => {
     const ctx = context();
     const urls = [];

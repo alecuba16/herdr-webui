@@ -78,7 +78,14 @@
 
     let createPanelInFlight = false;
     async function createPanel() {
-      if (!state.ws) return;
+      if (!state.ws) {
+        // No workspace yet: a panel cannot exist. Route the tap to the
+        // worktree discovery flow seeded with the default folder, the
+        // mobile twin of the desktop + fallback.
+        state.worktreeDiscoverPath = state.defaultFolder || "";
+        runMobileAction("discover-worktrees");
+        return;
+      }
       // Guard: rapid re-taps must not POST one tab.create per event.
       if (createPanelInFlight) return;
       createPanelInFlight = true;

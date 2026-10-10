@@ -263,7 +263,10 @@ function runPrefixedShortcut(e) {
       return true;
     },
     newPanel: () => {
+      // With no workspace the panel cannot exist yet: route the press to
+      // the open flow instead, mirroring the strip + fallback.
       if (state.ws) newTab();
+      else openWorktreeOpenModal(selectedWorkspaceRepoPath(), true);
       return true;
     },
     openWorktrees: () => {

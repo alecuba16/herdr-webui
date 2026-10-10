@@ -13,8 +13,10 @@
       // Skeleton (same row shape) while the first refresh fetch is pending.
       if (globalThis.HerdrSkeleton && state.booting)
         return globalThis.HerdrSkeleton.sessions(2);
+      // No workspace yet: the button still routes somewhere useful (the
+      // worktree flow), and the body explains why the list cannot exist.
       if (!state.ws)
-        return '<div class="mobile-loading">Select workspace first</div>';
+        return '<div class="mobile-loading">No workspace open: opening a folder or worktree creates panels</div>';
       const close = state.tab ? `<button class="mobile-btn danger mobile-wide" onclick="HerdrMobile.closeCurrentPanel()">Close current panel</button>` : "";
       const rows = state.tabs.length
         ? state.tabs

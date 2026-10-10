@@ -2023,6 +2023,37 @@ describe("mobile bundle load", () => {
     );
   });
 
+  it("new panel without a workspace routes to worktree discovery instead of dying", async () => {
+    // Boot-clean phone: the snapshot reports zero workspaces, the same
+    // state a fresh server session starts in.
+    const ctx = context("/", { workspaces: [] });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    const state = () => ctx.HerdrMobileAppDeps.state;
+    ok(!state().ws, "the route carries no workspace");
+    await ctx.HerdrMobile.createPanel();
+    equal(ctx.HerdrMobile.currentScreen(), "worktrees", "the tap lands on the worktrees screen");
+    ok(
+      !ctx.requests.some(
+        (request) => request.url === "/api/tabs" && request.opt.method === "POST",
+      ),
+      "no panel POST happens without a workspace",
+    );
+    // The discover path seeds from the default folder, so the load call
+    // carries the folder the user already configured.
+    state().defaultFolder = "/tmp/seed";
+    await ctx.HerdrMobile.createPanel();
+    equal(ctx.HerdrMobile.currentScreen(), "worktrees");
+    ok(
+      ctx.requests.some(
+        (request) =>
+          String(request.url).startsWith("/api/worktrees?cwd=") &&
+          decodeURIComponent(String(request.url).split("cwd=")[1] || "") === "/tmp/seed",
+      ),
+      "discovery runs for the seeded default folder",
+    );
+  });
+
   it("renders mobile close current panel controls", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);

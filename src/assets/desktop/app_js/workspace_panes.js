@@ -1000,11 +1000,12 @@ function paneMenuControlHtml() {
 }
 
 function paneNewTabControlHtml(leaf) {
-  const hasPath = !!workspacePath(selectedOrDefaultWorkspace());
   // The + creates the backend panel and routes it into the pane whose
-  // strip was clicked, not the active one.
+  // strip was clicked, not the active one. With no workspace open it
+  // falls through to the workspace/worktree flow (the same family as
+  // the dashboard's primary action), so the button is never dead.
   const encoded = leaf && leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
-  return `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel" onclick="event.preventDefault();newTabForPane('${escapeAttr(encoded)}')"${hasPath ? "" : " disabled"}>+</button>`;
+  return `<button class="pane-strip-button" title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel" onclick="event.preventDefault();newTabForPane('${escapeAttr(encoded)}')">+</button>`;
 }
 
 // The split pair is view-aware: the button matching the leaf's current
@@ -1469,11 +1470,23 @@ function maximizePaneFor(encodedPaneId) {
 // Strip + button: create the backend panel, then place its tab in the pane
 // whose strip was pressed. The sync appends unknown terminal ids to the
 // terminal leaf, so park the id in the target leaf first and mark it as a
-// known placement so the sync keeps it there.
+// known placement so the sync keeps it there. Without a workspace there is
+// nothing to attach a panel to, so the press routes to the open flow
+// instead of dying: the same seeded discovery the dashboard's primary
+// action starts.
 async function newTabForPane(encodedPaneId) {
+  if (!state.ws) {
+    // Same typeof guard as the go() references: standalone harnesses
+    // load this file alone, without the worktree modal in scope.
+    if (typeof openWorktreeOpenModal === "function")
+      openWorktreeOpenModal(
+        typeof selectedWorkspaceRepoPath === "function" ? selectedWorkspaceRepoPath() : "",
+        true,
+      );
+    return;
+  }
   const root = paneRootFor();
   const leaf = paneTreeRenderable(root) ? leafForPaneId(root, encodedPaneId) : null;
-  if (!state.ws) return;
   if (typeof newTab === "function") {
     if (leaf) {
       // Terminal ids are the only backend kind; remember where this one
