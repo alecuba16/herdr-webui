@@ -81,7 +81,7 @@ gate (frontend `node --test`, `cargo fmt --check`, `cargo clippy --all-targets
 
 ### Landed
 
-**Rust backend (Phase 1 — deferred, not landed)**
+**Rust backend (Phase 1 : deferred, not landed)**
 
 - `src/main.rs` (13,675 lines) is still a god-module: CLI parsing, TLS, auth,
   settings, session registry, all HTTP handlers, terminal WS bridge, and
@@ -182,13 +182,13 @@ retarget (never weaken) existing assertions to the module sources.
 
 1. Rust `src/main.rs` (13,675 lines) split into a `web/` module tree
    (router, auth, settings, sessions/workspaces, TLS, install, routes,
-   WS handlers) — the largest deferred item.
+   WS handlers) : the largest deferred item.
 2. Rust `src/builtin_backend.rs` (6,966 lines): runtime state vs PTY vs
    dispatch split, plus table-driven agent status rules replacing the 30
    hand-written `detect_*_status` functions.
 3. Desktop `core.js` remainder (Phase 2b leftover where cohesion justified
    stopping).
-4. Full mobile Git parity (commit/log/stash/conflicts) — product call about
+4. Full mobile Git parity (commit/log/stash/conflicts) : product call about
    screen real estate, deliberately roadmap.
 
 ### Carried review suggestions (open items from the 2026-09-12 review pass)

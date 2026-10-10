@@ -356,11 +356,11 @@ tab. `releaseToCenter` and the whole rehost dance die here.
 ### Git tab identity
 
 Tab id namespace: `git:<view-key>` where view-key is one of
-- `changes` — working-tree diff (all files or per-file focus via `?file=`)
-- `log`, `stash`, `cleanup`, `conflicts` — the main views
-- `history@<path>` — file history
-- `diff@<path>` — a single file's focused diff
-- `compare@<base>..<target>` — commit/selection compares
+- `changes` : working-tree diff (all files or per-file focus via `?file=`)
+- `log`, `stash`, `cleanup`, `conflicts` : the main views
+- `history@<path>` : file history
+- `diff@<path>` : a single file's focused diff
+- `compare@<base>..<target>` : commit/selection compares
 
 One tab per view-key per workspace (pane tree is already per-workspace),
 so clicking another status file reuses the same `changes` tab and moves
@@ -468,7 +468,7 @@ Recon basis: 7f8365e tree (Phase 3c complete).
 Split commands (right/down), resize handles, close pane, move tab to
 next pane, shortcuts, persistence of the pane tree. Tab drag between
 panes was listed under this phase in the overview; it moves to Phase 5
-cleanup-and-polish territory only if it lands cleanly — the insertion
+cleanup-and-polish territory only if it lands cleanly : the insertion
 caret needs its own live probe battery. Decision: drag ships in 4 if
 timebox allows, otherwise the strip stays click-to-move via the move
 command.
@@ -559,7 +559,7 @@ unchanged.
 
 The tree persists in the existing `WORKSPACE_PANES_STORAGE_KEY`
 localStorage blob (it already holds the root object; split nodes are a
-superset of the leaf shape, so no migration is needed — old blobs are
+superset of the leaf shape, so no migration is needed : old blobs are
 valid trees). `activePaneId` persists; tab ids and per-leaf actives
 persist as today. The boot heal extends: if the stored active pane id
 is missing, the first leaf wins.
@@ -567,7 +567,7 @@ is missing, the first leaf wins.
 ### Interaction guardrails
 
 - The right sidebar host and git drawer keep reading the *active leaf*
-  (its active tab) for `paneNonTerminalTabActive()`-style checks — all
+  (its active tab) for `paneNonTerminalTabActive()`-style checks : all
   existing call sites keep semantics (they ask about the strip the
   user is looking at).
 - `syncPaneTabFromView` heals within the active leaf only.
