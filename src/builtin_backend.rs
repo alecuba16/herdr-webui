@@ -707,7 +707,10 @@ impl BuiltinState {
             "workspace.create" => {
                 let cwd = optional_string(&params, "cwd").map(PathBuf::from);
                 let label = optional_string(&params, "label");
-                let workspace = self.create_workspace(cwd, label, false)?;
+                // Absent open_terminal keeps the legacy one-tab mint, so
+                // non-web clients (Rust API client, TUI) see no change.
+                let open_terminal = optional_bool(&params, "open_terminal").unwrap_or(true);
+                let workspace = self.create_workspace(cwd, label, false, open_terminal)?;
                 let tab = self
                     .tabs_for_workspace(workspace["workspace_id"].as_str().unwrap_or_default())?
                     .into_iter()
@@ -921,6 +924,7 @@ impl BuiltinState {
         cwd: Option<PathBuf>,
         label: Option<String>,
         focus: bool,
+        open_terminal: bool,
     ) -> Result<Value, String> {
         let cwd =
             cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
@@ -929,60 +933,82 @@ impl BuiltinState {
             .lock()
             .map_err(|_| "state unavailable".to_string())?;
         let workspace_id = next_id(&mut data, "ws");
-        let tab_id = next_id(&mut data, "tab");
-        let pane_id = next_id(&mut data, "pane");
-        let terminal_id = next_id(&mut data, "term");
-        let terminal = TerminalRuntime::spawn(
-            terminal_id.clone(),
-            cwd.clone(),
-            vec![self.default_shell.clone()],
-            30,
-            100,
-            self.events.clone(),
-            PaneEventContext {
-                workspace_id: workspace_id.clone(),
-                tab_id: tab_id.clone(),
-                pane_id: pane_id.clone(),
-                terminal_id: terminal_id.clone(),
-            },
-            self.jcode_detection_variant,
-        )
-        .map_err(|err| err.to_string())?;
-        data.workspaces.insert(
-            workspace_id.clone(),
-            WorkspaceRecord {
-                workspace_id: workspace_id.clone(),
-                label: label.unwrap_or_else(|| workspace_label(&cwd)),
-                cwd: cwd.clone(),
-                tab_ids: vec![tab_id.clone()],
-            },
-        );
-        data.tabs.insert(
-            tab_id.clone(),
-            TabRecord {
-                tab_id: tab_id.clone(),
-                workspace_id: workspace_id.clone(),
-                label: "Shell".to_string(),
-                pane_ids: vec![pane_id.clone()],
-            },
-        );
-        data.panes.insert(
-            pane_id.clone(),
-            PaneRecord {
-                pane_id: pane_id.clone(),
-                terminal_id: terminal_id.clone(),
-                workspace_id: workspace_id.clone(),
-                tab_id: tab_id.clone(),
-                cwd,
-                label: None,
-                argv: vec![self.default_shell.clone()],
-            },
-        );
-        data.terminals.insert(terminal_id, terminal);
-        if focus || data.focused_workspace_id.is_none() {
-            data.focused_workspace_id = Some(workspace_id.clone());
-            data.focused_tab_id = Some(tab_id);
-            data.focused_pane_id = Some(pane_id);
+        let label = label.unwrap_or_else(|| workspace_label(&cwd));
+        if open_terminal {
+            let tab_id = next_id(&mut data, "tab");
+            let pane_id = next_id(&mut data, "pane");
+            let terminal_id = next_id(&mut data, "term");
+            let terminal = TerminalRuntime::spawn(
+                terminal_id.clone(),
+                cwd.clone(),
+                vec![self.default_shell.clone()],
+                30,
+                100,
+                self.events.clone(),
+                PaneEventContext {
+                    workspace_id: workspace_id.clone(),
+                    tab_id: tab_id.clone(),
+                    pane_id: pane_id.clone(),
+                    terminal_id: terminal_id.clone(),
+                },
+                self.jcode_detection_variant,
+            )
+            .map_err(|err| err.to_string())?;
+            data.workspaces.insert(
+                workspace_id.clone(),
+                WorkspaceRecord {
+                    workspace_id: workspace_id.clone(),
+                    label,
+                    cwd: cwd.clone(),
+                    tab_ids: vec![tab_id.clone()],
+                },
+            );
+            data.tabs.insert(
+                tab_id.clone(),
+                TabRecord {
+                    tab_id: tab_id.clone(),
+                    workspace_id: workspace_id.clone(),
+                    label: "Shell".to_string(),
+                    pane_ids: vec![pane_id.clone()],
+                },
+            );
+            data.panes.insert(
+                pane_id.clone(),
+                PaneRecord {
+                    pane_id: pane_id.clone(),
+                    terminal_id: terminal_id.clone(),
+                    workspace_id: workspace_id.clone(),
+                    tab_id: tab_id.clone(),
+                    cwd,
+                    label: None,
+                    argv: vec![self.default_shell.clone()],
+                },
+            );
+            data.terminals.insert(terminal_id, terminal);
+            if focus || data.focused_workspace_id.is_none() {
+                data.focused_workspace_id = Some(workspace_id.clone());
+                data.focused_tab_id = Some(tab_id);
+                data.focused_pane_id = Some(pane_id);
+            }
+        } else {
+            // Zero-tab workspace: open_terminal=false skips the Shell tab
+            // and root pane entirely. Focus lands on the workspace itself;
+            // normalize_focus resolves tab/pane to None until a terminal is
+            // spawned into it (POST /api/tabs reuses create_tab).
+            data.workspaces.insert(
+                workspace_id.clone(),
+                WorkspaceRecord {
+                    workspace_id: workspace_id.clone(),
+                    label,
+                    cwd,
+                    tab_ids: Vec::new(),
+                },
+            );
+            if focus || data.focused_workspace_id.is_none() {
+                data.focused_workspace_id = Some(workspace_id.clone());
+                data.focused_tab_id = None;
+                data.focused_pane_id = None;
+            }
         }
         let workspace = data
             .workspaces
@@ -1397,25 +1423,20 @@ impl BuiltinState {
             .data
             .lock()
             .map_err(|_| "state unavailable".to_string())?;
-        // Get the workspace_id before closing the tab
-        let workspace_id = data.tabs.get(tab_id).map(|t| t.workspace_id.clone());
-
-        close_tab_locked(&mut data, tab_id);
-        normalize_focus(&mut data);
-
-        // If the workspace now has no tabs, close it
-        if let Some(ws_id) = workspace_id {
-            if let Some(workspace) = data.workspaces.get(&ws_id) {
-                if workspace.tab_ids.is_empty() {
-                    // Remove workspace and emit event
-                    data.workspaces.remove(&ws_id);
-                    normalize_focus(&mut data);
-                    // Publish workspace.closed event
-                    self.publish_event("workspace.closed", json!({ "workspace_id": ws_id }));
-                }
-            }
+        // Explicit close on a missing tab is an error, not a silent no-op:
+        // the old remove-and-ignore returned ok while the tab stayed gone
+        // or was never there, which hid id-mismatch bugs (a scoped id the
+        // server never knew) behind a 200. Teardown paths that may race a
+        // close use close_tab_locked directly and stay best-effort.
+        if !data.tabs.contains_key(tab_id) {
+            return Err(format!("tab {tab_id} not found"));
         }
-
+        close_tab_locked(&mut data, tab_id);
+        // Closing the last tab keeps the workspace alive: terminals are
+        // decoupled from workspace lifecycle, and a zero-tab workspace
+        // stays open for file explorer, git, and agents until an explicit
+        // workspace close removes it.
+        normalize_focus(&mut data);
         Ok(())
     }
 
@@ -1603,12 +1624,20 @@ impl BuiltinState {
             .data
             .lock()
             .map_err(|_| "state unavailable".to_string())?;
+        // Same contract as close_tab: closing an unknown pane is an error,
+        // not a silent no-op. The pane→tab cascade below runs only after
+        // the pane is known to exist.
+        if !data.panes.contains_key(pane_id) {
+            return Err(format!("pane {pane_id} not found"));
+        }
         // Get the tab_id before closing the pane
         let tab_id = data.panes.get(pane_id).map(|p| p.tab_id.clone());
 
         close_pane_locked(&mut data, pane_id);
 
-        // If the tab now has no panes, close it (which will auto-close workspace if it's the last tab)
+        // Closing the last pane of a tab closes the tab (pane→tab cascade
+        // keeps pane sets coherent), but the workspace stays alive: zero-tab
+        // workspaces persist until an explicit workspace close.
         if let Some(tid) = tab_id {
             let should_close_tab = data
                 .tabs
@@ -1616,24 +1645,10 @@ impl BuiltinState {
                 .map(|tab| tab.pane_ids.is_empty())
                 .unwrap_or(true);
             if should_close_tab {
-                let ws_id = data.tabs.get(&tid).map(|t| t.workspace_id.clone());
                 close_tab_locked(&mut data, &tid);
                 normalize_focus(&mut data);
                 // Emit tab.closed event for the auto-closed tab
                 self.publish_event("tab.closed", json!({ "tab_id": tid }));
-                // If the workspace now has no tabs, close it
-                if let Some(ws_id) = ws_id {
-                    if let Some(workspace) = data.workspaces.get(&ws_id) {
-                        if workspace.tab_ids.is_empty() {
-                            data.workspaces.remove(&ws_id);
-                            normalize_focus(&mut data);
-                            self.publish_event(
-                                "workspace.closed",
-                                json!({ "workspace_id": ws_id }),
-                            );
-                        }
-                    }
-                }
             }
         }
 
@@ -1755,7 +1770,12 @@ impl BuiltinState {
         let (workspace, already_open) = match existing_workspace {
             Some(workspace) => (workspace, true),
             None => (
-                self.create_workspace(Some(PathBuf::from(&path)), label, true)?,
+                self.create_workspace(
+                    Some(PathBuf::from(&path)),
+                    label,
+                    true,
+                    optional_bool(&params, "open_terminal").unwrap_or(true),
+                )?,
                 false,
             ),
         };
@@ -1787,7 +1807,30 @@ impl BuiltinState {
     /// /api/worktrees/remove-path semantics: `repo_root` scopes the git
     /// invocation, `path` is the worktree directory to remove, `force`
     /// maps to `git worktree remove --force`. Emits `worktree.removed`.
+    /// A `workspace_id` in params resolves the path from the open
+    /// workspace's cwd and scopes the git invocation to that cwd (git
+    /// resolves the main repo from any checkout, including the worktree
+    /// itself), which is what the workspace-scoped WebUI route sends.
     fn worktree_remove(&self, params: Value) -> Result<Value, String> {
+        let workspace_id = optional_string(&params, "workspace_id");
+        let mut params = params;
+        if optional_string(&params, "path").is_none() {
+            if let Some(workspace_id) = workspace_id.as_deref() {
+                let data = self
+                    .data
+                    .lock()
+                    .map_err(|_| "state unavailable".to_string())?;
+                let workspace = data
+                    .workspaces
+                    .get(workspace_id)
+                    .ok_or_else(|| format!("workspace not found: {workspace_id}"))?;
+                let cwd = workspace.cwd.to_string_lossy().to_string();
+                if let Some(object) = params.as_object_mut() {
+                    object.insert("path".to_string(), json!(cwd));
+                    object.insert("repo_root".to_string(), json!(cwd));
+                }
+            }
+        }
         let repo_root = optional_string(&params, "repo_root")
             .or_else(|| optional_string(&params, "cwd"))
             .map(PathBuf::from)
@@ -1804,11 +1847,74 @@ impl BuiltinState {
             args.push("--force");
         }
         args.push(&path);
+        // Canonicalize while the directory still exists: after run_git
+        // removes it, canonicalize fails on both sides and each falls
+        // back to its raw spelling, so a workspace opened through a
+        // symlinked prefix (/tmp vs /private/tmp on macOS) removed via
+        // the other spelling would linger with a dead cwd. A relative
+        // `path` resolves against repo_root (same base git uses), not
+        // the server process cwd. Snapshot the match set now, tear
+        // down after git succeeds.
+        let mut removed_path = PathBuf::from(&path);
+        if removed_path.is_relative() {
+            removed_path = repo.join(&removed_path);
+        }
+        let canonical_removed = removed_path
+            .canonicalize()
+            .unwrap_or_else(|_| removed_path.clone());
+        let matching_workspaces: Vec<String> = {
+            let data = self
+                .data
+                .lock()
+                .map_err(|_| "state unavailable".to_string())?;
+            data.workspaces
+                .iter()
+                .filter(|(_, workspace)| {
+                    workspace
+                        .cwd
+                        .canonicalize()
+                        .unwrap_or_else(|_| workspace.cwd.clone())
+                        == canonical_removed
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
         run_git(repo, &args)?;
+
+        // The worktree directory is gone: every open workspace rooted
+        // there would keep a dead cwd, dead PTYs, and a snapshot entry no
+        // filesystem backs. Close those workspaces with the same teardown
+        // as workspace.close (tabs, panes, PTYs) so polls and snapshots
+        // stop listing the removed worktree.
+        let dropped_workspaces: Vec<String> = {
+            let mut data = self
+                .data
+                .lock()
+                .map_err(|_| "state unavailable".to_string())?;
+            let dropped = matching_workspaces
+                .into_iter()
+                .filter_map(|ws_id| {
+                    let workspace = data.workspaces.remove(&ws_id)?;
+                    for tab_id in workspace.tab_ids {
+                        close_tab_locked(&mut data, &tab_id);
+                    }
+                    Some(ws_id)
+                })
+                .collect();
+            normalize_focus(&mut data);
+            dropped
+        };
+        for ws_id in &dropped_workspaces {
+            self.publish_event("workspace.closed", json!({ "workspace_id": ws_id }));
+        }
         let result = json!({
             "type": "worktree_removed",
             "path": path,
             "repo_root": repo.to_string_lossy(),
+            // The id disambiguates the payload when two open workspaces
+            // share one folder path (path-only matching would drop both
+            // client-side or the wrong one).
+            "workspace_ids": dropped_workspaces,
         });
         self.publish_event("worktree.removed", result.clone());
         Ok(result)
@@ -2904,34 +3010,52 @@ fn close_pane_locked(data: &mut BuiltinData, pane_id: &str) {
 }
 
 fn normalize_focus(data: &mut BuiltinData) {
-    if data
+    // Keep the focused workspace whenever it still exists: zero-tab
+    // workspaces are valid surfaces now, so a missing tab/pane must not
+    // yank focus to an arbitrary other workspace.
+    let workspace = data
         .focused_workspace_id
         .as_ref()
-        .is_some_and(|id| data.workspaces.contains_key(id))
-        && data
-            .focused_tab_id
-            .as_ref()
-            .is_some_and(|id| data.tabs.contains_key(id))
-        && data
-            .focused_pane_id
-            .as_ref()
-            .is_some_and(|id| data.panes.contains_key(id))
-    {
-        return;
-    }
-    let Some(workspace) = data.workspaces.values().next() else {
+        .and_then(|id| data.workspaces.get(id).map(|ws| ws.workspace_id.clone()))
+        .or_else(|| data.workspaces.values().next().map(|ws| ws.workspace_id.clone()));
+    let Some(workspace) = workspace else {
         data.focused_workspace_id = None;
         data.focused_tab_id = None;
         data.focused_pane_id = None;
         return;
     };
-    data.focused_workspace_id = Some(workspace.workspace_id.clone());
-    data.focused_tab_id = workspace.tab_ids.first().cloned();
-    data.focused_pane_id = data
+    data.focused_workspace_id = Some(workspace.clone());
+    // A focused tab that no longer exists (or a workspace with zero
+    // tabs) resolves to no tab; the pane follows the resolved tab.
+    data.focused_tab_id = data
         .focused_tab_id
         .as_ref()
-        .and_then(|tab_id| data.tabs.get(tab_id))
-        .and_then(|tab| tab.pane_ids.first().cloned());
+        .filter(|tab_id| {
+            data.tabs
+                .get(*tab_id)
+                .is_some_and(|tab| tab.workspace_id == workspace)
+        })
+        .cloned()
+        .or_else(|| {
+            data.workspaces
+                .get(&workspace)
+                .and_then(|ws| ws.tab_ids.first().cloned())
+        });
+    data.focused_pane_id = data
+        .focused_pane_id
+        .as_ref()
+        .filter(|pane_id| {
+            data.panes
+                .get(*pane_id)
+                .is_some_and(|pane| pane.tab_id == data.focused_tab_id.clone().unwrap_or_default())
+        })
+        .cloned()
+        .or_else(|| {
+            data.focused_tab_id
+                .as_ref()
+                .and_then(|tab_id| data.tabs.get(tab_id))
+                .and_then(|tab| tab.pane_ids.first().cloned())
+        });
 }
 
 fn next_id(data: &mut BuiltinData, prefix: &str) -> String {
@@ -5631,6 +5755,75 @@ mod tests {
     }
 
     #[test]
+    fn builtin_close_unknown_tab_is_an_error() {
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        // A close on a missing tab must fail loudly, not return ok: the
+        // old silent no-op hid id-mismatch bugs (a scoped id the server
+        // never knew) behind a 200 while the tab stayed alive.
+        let closed = state.handle_request("close", "tab.close", json!({ "tab_id": "tab_missing" }));
+        assert!(closed["error"].is_object());
+        assert!(closed["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("tab tab_missing not found"));
+    }
+
+    #[test]
+    fn builtin_close_unknown_pane_is_an_error() {
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let closed =
+            state.handle_request("close", "pane.close", json!({ "pane_id": "pane_missing" }));
+        assert!(closed["error"].is_object());
+        assert!(closed["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("pane pane_missing not found"));
+    }
+
+    #[test]
+    fn builtin_close_known_tab_still_works() {
+        let temp = std::env::temp_dir().join(format!(
+            "herdr-close-known-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&temp).unwrap();
+        let state = BuiltinState::new(
+            temp.clone(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let workspace_id = promote_create_workspace(&state, "close", &temp);
+        let created = state.handle_request(
+            "create",
+            "tab.create",
+            json!({ "workspace_id": workspace_id, "label": "close", "focus": false }),
+        );
+        let tab_id = created["result"]["tab"]["tab_id"].as_str().unwrap();
+        let closed = state.handle_request("close", "tab.close", json!({ "tab_id": tab_id }));
+        assert!(closed["error"].is_null(), "closing a real tab must succeed");
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        let tabs = snapshot["result"]["snapshot"]["tabs"]
+            .as_array()
+            .unwrap();
+        assert!(tabs.iter().all(|tab| tab["tab_id"] != tab_id));
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
     fn builtin_promote_same_workspace_is_an_error() {
         let temp = std::env::temp_dir().join(format!(
             "herdr-promote-same-{}",
@@ -8316,14 +8509,273 @@ mod tests {
         )
         .unwrap();
 
+        // Unknown workspace_id: the resolver cannot fill path/repo_root, so
+        // the request must still fail instead of removing anything.
         let err = state
-            .handle_request_inner("worktree.remove", json!({ "workspace_id": "ws_1" }))
+            .handle_request_inner("worktree.remove", json!({ "workspace_id": "ws_missing" }))
             .unwrap_err();
 
         assert!(
-            err.contains("repo_root") || err.contains("path"),
+            err.contains("workspace not found"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn builtin_worktree_remove_resolves_workspace_id_to_path() {
+        let scratch = std::env::temp_dir().join(format!(
+            "herdr-wt-remove-ws-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo = scratch.join("repo");
+        let worktree = scratch.join("feature-y");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]).unwrap();
+        fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&repo, &["add", "."]).unwrap();
+        run_git(&repo, &["config", "user.email", "t@t"]).unwrap();
+        run_git(&repo, &["config", "user.name", "T"]).unwrap();
+        run_git(&repo, &["commit", "-q", "-m", "base"]).unwrap();
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature-y",
+                &worktree.to_string_lossy(),
+            ],
+        )
+        .unwrap();
+        assert!(worktree.is_dir());
+
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let opened = state
+            .handle_request_inner(
+                "worktree.open",
+                json!({ "path": worktree.to_string_lossy() }),
+            )
+            .unwrap();
+        let workspace_id = opened["workspace"]["workspace_id"].as_str().unwrap();
+
+        // The workspace-scoped WebUI route sends only workspace_id + force.
+        let result = state
+            .handle_request_inner(
+                "worktree.remove",
+                json!({ "workspace_id": workspace_id, "force": false }),
+            )
+            .unwrap();
+
+        assert_eq!(result["type"], "worktree_removed");
+        // The removed worktree's workspace must not linger in the state:
+        // a follow-up snapshot listing it again would resurrect the row
+        // with a dead cwd and a dead PTY (the live regression).
+        let ids = result["workspace_ids"].as_array().unwrap();
+        assert_eq!(
+            ids.iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(),
+            vec![workspace_id],
+            "the removed worktree's workspace id rides the event"
+        );
+        let snapshot = state
+            .handle_request_inner("session.snapshot", json!({}))
+            .unwrap();
+        let listed: Vec<&str> = snapshot["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["workspace_id"].as_str().unwrap())
+            .collect();
+        assert!(
+            !listed.contains(&workspace_id),
+            "the removed worktree stays out of the snapshot: {listed:?}"
+        );
+        assert!(!worktree.exists(), "worktree directory must be gone");
+        let listing = git_output(&repo, &["worktree", "list", "--porcelain"]).unwrap();
+        assert!(!listing.contains("feature-y"));
+        fs::remove_dir_all(&scratch).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn builtin_worktree_remove_tears_down_workspace_opened_via_symlink() {
+        // A workspace opened through a symlinked path (macOS /tmp hides
+        // /private/tmp) must still be torn down when the worktree is
+        // removed via the other spelling. The canonical comparison must
+        // run while the directory still exists: after git removes it,
+        // canonicalize fails and raw spellings would differ forever.
+        let scratch = std::env::temp_dir().join(format!(
+            "herdr-wt-remove-symlink-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo = scratch.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]).unwrap();
+        fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&repo, &["add", "."]).unwrap();
+        run_git(&repo, &["config", "user.email", "t@t"]).unwrap();
+        run_git(&repo, &["config", "user.name", "T"]).unwrap();
+        run_git(&repo, &["commit", "-q", "-m", "base"]).unwrap();
+        // Open the worktree through the symlinked view and remove it
+        // through the canonical spelling (a remove-path caller typing
+        // the resolved path).
+        let canonical_worktree = scratch.join("feature-z");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature-z",
+                &canonical_worktree.to_string_lossy(),
+            ],
+        )
+        .unwrap();
+        let symlink_view = scratch.join("link-to-scratch");
+        std::os::unix::fs::symlink(&scratch, &symlink_view).unwrap();
+        let opened_path = symlink_view.join("feature-z");
+        assert!(opened_path.is_dir());
+
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let opened = state
+            .handle_request_inner(
+                "worktree.open",
+                json!({ "path": opened_path.to_string_lossy() }),
+            )
+            .unwrap();
+        let workspace_id = opened["workspace"]["workspace_id"].as_str().unwrap();
+
+        // Remove via the canonical spelling: the opened workspace's cwd
+        // carries the symlinked spelling, so raw matching would miss it.
+        let result = state
+            .handle_request_inner(
+                "worktree.remove",
+                json!({
+                    "path": canonical_worktree.to_string_lossy(),
+                    "repo_root": repo.to_string_lossy(),
+                    "force": false
+                }),
+            )
+            .unwrap();
+        assert_eq!(result["type"], "worktree_removed");
+        let ids = result["workspace_ids"].as_array().unwrap();
+        assert_eq!(
+            ids.iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(),
+            vec![workspace_id],
+            "the symlink-opened workspace is torn down despite the spelling gap"
+        );
+        let snapshot = state
+            .handle_request_inner("session.snapshot", json!({}))
+            .unwrap();
+        let listed: Vec<&str> = snapshot["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["workspace_id"].as_str().unwrap())
+            .collect();
+        assert!(
+            !listed.contains(&workspace_id),
+            "the symlink-opened workspace stays out of the snapshot: {listed:?}"
+        );
+        fs::remove_file(&symlink_view).ok();
+        fs::remove_dir_all(&scratch).ok();
+    }
+
+    #[test]
+    fn builtin_worktree_remove_relative_path_joins_repo_root() {
+        // Raw socket callers may send a relative path (git-ui always
+        // sends absolute ones). The canonical comparison must join the
+        // repo_root first: resolving against the server cwd would
+        // canonicalize the wrong (or missing) directory and leave the
+        // opened workspace alive after removal.
+        let scratch = std::env::temp_dir().join(format!(
+            "herdr-wt-remove-relative-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let repo = scratch.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]).unwrap();
+        fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&repo, &["add", "."]).unwrap();
+        run_git(&repo, &["config", "user.email", "t@t"]).unwrap();
+        run_git(&repo, &["config", "user.name", "T"]).unwrap();
+        run_git(&repo, &["commit", "-q", "-m", "base"]).unwrap();
+        let worktree = scratch.join("feature-rel");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature-rel",
+                &worktree.to_string_lossy(),
+            ],
+        )
+        .unwrap();
+
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let opened = state
+            .handle_request_inner(
+                "worktree.open",
+                json!({ "path": worktree.to_string_lossy() }),
+            )
+            .unwrap();
+        let workspace_id = opened["workspace"]["workspace_id"].as_str().unwrap();
+
+        // Remove with a path relative to repo_root (the worktree is a
+        // sibling of repo, the normal `git worktree add ../name` layout),
+        // while the test process cwd points somewhere else entirely:
+        // resolving `../feature-rel` against the process cwd hits a
+        // directory that either does not exist or is the wrong one, so
+        // the opened workspace would survive removal.
+        let result = state
+            .handle_request_inner(
+                "worktree.remove",
+                json!({
+                    "path": "../feature-rel",
+                    "repo_root": repo.to_string_lossy(),
+                    "force": false
+                }),
+            )
+            .unwrap();
+        assert_eq!(result["type"], "worktree_removed");
+        let ids = result["workspace_ids"].as_array().unwrap();
+        assert_eq!(
+            ids.iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(),
+            vec![workspace_id],
+            "the relative path still tears down the opened workspace"
+        );
+        assert!(
+            !worktree.exists(),
+            "git removed the worktree resolved against repo_root"
+        );
+        fs::remove_dir_all(&scratch).ok();
     }
 
     #[test]
@@ -8845,7 +9297,7 @@ mod tests {
     }
 
     #[test]
-    fn closing_last_tab_auto_closes_workspace() {
+    fn closing_last_tab_keeps_workspace_alive() {
         let state = BuiltinState::new(
             std::env::current_dir().unwrap(),
             Some(default_shell()),
@@ -8872,24 +9324,53 @@ mod tests {
         // Close the only tab
         state.handle_request("close", "tab.close", json!({ "tab_id": tab_id }));
 
-        // Verify workspace is gone from the snapshot
+        // The workspace survives with zero tabs: terminals are decoupled
+        // from workspace lifecycle.
         let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
         let workspaces = snapshot["result"]["snapshot"]["workspaces"]
             .as_array()
             .unwrap();
-        assert!(
-            workspaces.is_empty(),
-            "workspace should be auto-closed when last tab closes"
+        assert_eq!(
+            workspaces.len(),
+            1,
+            "workspace must survive closing its last tab"
+        );
+        assert_eq!(
+            workspaces[0]["workspace_id"],
+            workspace_id.as_str(),
+            "the surviving workspace must be the one whose tab closed"
+        );
+        let tabs = snapshot["result"]["snapshot"]["tabs"].as_array().unwrap();
+        assert!(tabs.is_empty(), "the closed tab must be gone");
+        // Focus stays on the zero-tab workspace itself.
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_workspace_id"],
+            workspace_id.as_str()
+        );
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_tab_id"],
+            Value::Null,
+            "zero-tab workspace focuses no tab"
         );
 
-        // Verify workspace.closed event was emitted
-        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert_eq!(event["event"], "workspace.closed");
-        assert_eq!(event["data"]["workspace_id"], workspace_id);
+        // tab.closed fires; workspace.closed must NOT fire for this close.
+        let mut got_tab_closed = false;
+        while let Ok(event) = rx.recv_timeout(Duration::from_millis(500)) {
+            if event["event"] == "tab.closed" {
+                got_tab_closed = true;
+                assert_eq!(event["data"]["tab_id"], tab_id);
+            }
+            assert_ne!(
+                event["event"],
+                "workspace.closed",
+                "closing a terminal must never close the workspace"
+            );
+        }
+        assert!(got_tab_closed, "tab.closed event should be emitted");
     }
 
     #[test]
-    fn closing_last_pane_auto_closes_tab_and_workspace() {
+    fn closing_last_pane_closes_tab_but_keeps_workspace() {
         let state = BuiltinState::new(
             std::env::current_dir().unwrap(),
             Some(default_shell()),
@@ -8920,14 +9401,21 @@ mod tests {
         // Close the only pane
         state.handle_request("close", "pane.close", json!({ "pane_id": pane_id }));
 
-        // Verify workspace is gone from the snapshot
+        // Pane→tab cascade stays: the emptied tab closes. The workspace
+        // survives with zero tabs.
         let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
         let workspaces = snapshot["result"]["snapshot"]["workspaces"]
             .as_array()
             .unwrap();
-        assert!(
-            workspaces.is_empty(),
-            "workspace should be auto-closed when last pane closes"
+        assert_eq!(
+            workspaces.len(),
+            1,
+            "workspace must survive closing its last pane"
+        );
+        assert_eq!(
+            workspaces[0]["workspace_id"],
+            workspace_id.as_str(),
+            "the surviving workspace must be the one whose pane closed"
         );
         let tabs = snapshot["result"]["snapshot"]["tabs"].as_array().unwrap();
         assert!(
@@ -8935,23 +9423,228 @@ mod tests {
             "tab should be auto-closed when last pane closes"
         );
 
-        // Collect events - expect tab.closed and workspace.closed
+        // Collect events: tab.closed yes, workspace.closed no.
         let mut got_tab_closed = false;
-        let mut got_workspace_closed = false;
         while let Ok(event) = rx.recv_timeout(Duration::from_millis(500)) {
             if event["event"] == "tab.closed" {
                 got_tab_closed = true;
                 assert_eq!(event["data"]["tab_id"], tab_id);
             }
-            if event["event"] == "workspace.closed" {
-                got_workspace_closed = true;
-                assert_eq!(event["data"]["workspace_id"], workspace_id);
-            }
+            assert_ne!(
+                event["event"],
+                "workspace.closed",
+                "closing a terminal must never close the workspace"
+            );
         }
         assert!(got_tab_closed, "tab.closed event should be emitted");
-        assert!(
-            got_workspace_closed,
-            "workspace.closed event should be emitted"
+    }
+
+    #[test]
+    fn workspace_create_open_terminal_false_mints_no_tab() {
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let response = state.handle_request(
+            "seed",
+            "workspace.create",
+            json!({ "label": "NoTerminal", "open_terminal": false }),
         );
+        let workspace_id = response["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            response["result"]["tab"],
+            json!({}),
+            "open_terminal=false must not mint a Shell tab"
+        );
+        assert_eq!(
+            response["result"]["root_pane"],
+            json!({}),
+            "open_terminal=false must not mint a root pane"
+        );
+
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        let workspaces = snapshot["result"]["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap();
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0]["workspace_id"], workspace_id.as_str());
+        assert_eq!(workspaces[0]["tab_count"].as_i64().unwrap_or(0), 0);
+        let tabs = snapshot["result"]["snapshot"]["tabs"].as_array().unwrap();
+        assert!(tabs.is_empty());
+        let panes = snapshot["result"]["snapshot"]["panes"].as_array().unwrap();
+        assert!(panes.is_empty());
+
+        // Focus lands on the workspace itself with no tab/pane.
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_workspace_id"],
+            workspace_id.as_str()
+        );
+        assert_eq!(snapshot["result"]["snapshot"]["focused_tab_id"], Value::Null);
+        assert_eq!(snapshot["result"]["snapshot"]["focused_pane_id"], Value::Null);
+
+        // Spawning a terminal into the zero-tab workspace works: create_tab
+        // takes the cwd from the workspace record.
+        let tab = state.handle_request(
+            "spawn",
+            "tab.create",
+            json!({ "workspace_id": workspace_id, "label": "Shell" }),
+        );
+        assert_eq!(
+            tab["result"]["tab"]["workspace_id"],
+            workspace_id.as_str(),
+            "tab.create must attach to the zero-tab workspace"
+        );
+    }
+
+    #[test]
+    fn worktree_open_open_terminal_false_mints_no_tab() {
+        let temp = std::env::temp_dir().join(format!(
+            "herdr-webui-worktree-open-no-terminal-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let state = BuiltinState::new(
+            temp.clone(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let response = state.handle_request(
+            "open",
+            "worktree.open",
+            json!({ "path": temp.to_string_lossy(), "open_terminal": false }),
+        );
+        let workspace_id = response["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            response["result"]["tab"],
+            json!({}),
+            "worktree.open with open_terminal=false must not mint a tab"
+        );
+        assert_eq!(
+            response["result"]["root_pane"],
+            json!({}),
+            "worktree.open with open_terminal=false must not mint a pane"
+        );
+
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        let workspaces = snapshot["result"]["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap();
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0]["workspace_id"], workspace_id.as_str());
+        let tabs = snapshot["result"]["snapshot"]["tabs"].as_array().unwrap();
+        assert!(tabs.is_empty());
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_workspace_id"],
+            workspace_id.as_str()
+        );
+        assert_eq!(snapshot["result"]["snapshot"]["focused_tab_id"], Value::Null);
+        let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn workspace_create_absent_open_terminal_defaults_to_tab() {
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        // No open_terminal param: legacy one-tab mint for non-web clients.
+        let response = state.handle_request(
+            "seed",
+            "workspace.create",
+            json!({ "label": "Legacy" }),
+        );
+        assert_eq!(
+            response["result"]["tab"]["label"],
+            "Shell",
+            "absent open_terminal must keep the legacy Shell tab"
+        );
+        let pane_id = response["result"]["root_pane"]["pane_id"].as_str();
+        assert!(pane_id.is_some(), "legacy mint includes a root pane");
+    }
+
+    #[test]
+    fn normalize_focus_keeps_workspace_with_no_tabs() {
+        let temp_a = std::env::temp_dir().join(format!(
+            "herdr-webui-focus-a-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let temp_b = std::env::temp_dir().join(format!(
+            "herdr-webui-focus-b-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&temp_a).unwrap();
+        std::fs::create_dir_all(&temp_b).unwrap();
+        let state = BuiltinState::new(
+            temp_a.clone(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        // Workspace One exists in the background, never focused.
+        let first = state.handle_request(
+            "seed1",
+            "workspace.create",
+            json!({ "label": "One", "cwd": temp_a.to_string_lossy() }),
+        );
+        let first_id = first["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // worktree.open creates and focuses workspace Two with one Shell tab.
+        let second = state.handle_request(
+            "seed2",
+            "worktree.open",
+            json!({ "path": temp_b.to_string_lossy() }),
+        );
+        let second_id = second["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let second_tab = second["result"]["tab"]["tab_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let focused = state.handle_request("snap", "session.snapshot", json!({}));
+        assert_eq!(
+            focused["result"]["snapshot"]["focused_workspace_id"],
+            second_id.as_str(),
+            "sanity: workspace Two is focused before the close"
+        );
+
+        // Close Two's only tab: focus must stay on the zero-tab Two, not
+        // jump to One.
+        state.handle_request(
+            "close",
+            "tab.close",
+            json!({ "tab_id": second_tab }),
+        );
+        let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_workspace_id"],
+            second_id.as_str(),
+            "focus must stay on the zero-tab workspace, not jump to another"
+        );
+        assert_eq!(snapshot["result"]["snapshot"]["focused_tab_id"], Value::Null);
+        let workspaces = snapshot["result"]["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap();
+        assert_eq!(workspaces.len(), 2, "both workspaces survive");
+        let _ = first_id;
+        let _ = std::fs::remove_dir_all(temp_a);
+        let _ = std::fs::remove_dir_all(temp_b);
     }
 }

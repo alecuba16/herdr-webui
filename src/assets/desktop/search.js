@@ -1,5 +1,16 @@
 let searchPaletteState = createSearchPaletteState();
 
+// The embedded search panel reuses the palette section renderers, which read
+// the `searchPaletteState` lexical binding above. A window property swap
+// cannot reach that binding, so the panel swaps it through here: pass a new
+// state to install it for a render, pass nothing to read, and pass the
+// previous value to restore.
+window.resolveSearchPaletteState = function resolveSearchPaletteState(next) {
+  const previous = searchPaletteState;
+  if (next !== undefined) searchPaletteState = next;
+  return previous;
+};
+
 function createSearchPaletteState() {
   return {
     query: "",
@@ -320,7 +331,13 @@ async function runWorkspaceSearch(append = false) {
     renderSearchPalette();
     return;
   }
-  const workspace = currentSearchWorkspace();
+  // The search root mirrors panelSearchWorkspace and the palette's own
+  // open handlers: the selected workspace, else the default folder. The
+  // palette is reachable on the boot-clean desktop (header button,
+  // search shortcut), where currentSearchWorkspace alone is null and
+  // the search would silently no-op.
+  const workspace = currentSearchWorkspace()
+    || (typeof selectedOrDefaultWorkspace === "function" ? selectedOrDefaultWorkspace() : null);
   const cwd = helper.workspaceCwd(workspace);
   const opts = helper.settings();
   normalizePalettePathKind(opts);
@@ -514,7 +531,8 @@ function renderSearchPalette() {
   container.innerHTML = sections.actions + (actionsOnly ? searchActionHints(actions) : "") + (actionsOnly ? "" : renderRecentSection(recent)) + (actionsOnly ? "" : order.map((key) => sections[key] || "").join(""));
 }
 
-function renderRecentSection(recent) {
+function renderRecentSection(recent, callbacks = {}) {
+  const api = callbacks.panel || "HerdrSearchPalette";
   const expanded = searchPaletteState.sectionsExpanded.recent !== false;
   // While the recent-workspaces fetch (/api/recent-workspaces) is still in
   // flight (palette just opened), show a skeleton with the same row shape
@@ -522,29 +540,31 @@ function renderRecentSection(recent) {
   if (!recent.length && !searchPaletteState.recentLoaded && window.HerdrSkeleton)
     return `<section class="search-section"><div class="search-section-head"><strong><span class="herdr-tree-icon herdr-tree-icon-chevron-down" aria-hidden="true"></span>Recent workspaces</strong><span>…</span></div>${window.HerdrSkeleton.workspaces(2)}</section>`;
   if (!recent.length) return "";
-  const rows = recent.map((result) => renderRecentRowResult(result)).join("");
-  const clear = `<button class="git-ui-btn" onclick="HerdrSearchPalette.clearRecent(event)" title="Clear recent workspaces">Clear</button>`;
-  return `<section class="search-section"><div class="search-section-head"><button class="search-section-toggle search-section-head-toggle" onclick="HerdrSearchPalette.toggleSection('recent')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Recent workspaces</strong><span>${recent.length}</span></button>${clear}</div>${expanded ? rows : ""}</section>`;
+  const rows = recent.map((result) => renderRecentRowResult(result, undefined, callbacks)).join("");
+  const clear = `<button class="git-ui-btn" onclick="${api}.clearRecent(event)" title="Clear recent workspaces">Clear</button>`;
+  return `<section class="search-section"><div class="search-section-head"><button class="search-section-toggle search-section-head-toggle" onclick="${api}.toggleSection('recent')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Recent workspaces</strong><span>${recent.length}</span></button>${clear}</div>${expanded ? rows : ""}</section>`;
 }
 
-function renderActionSection(actions, opts = {}) {
+function renderActionSection(actions, opts = {}, callbacks = {}) {
+  const api = callbacks.panel || "HerdrSearchPalette";
   const expanded = searchPaletteState.sectionsExpanded.actions !== false;
   if (!actions.length && (searchPaletteState.query.trim() || opts.actionsOnly))
     return opts.actionsOnly
       ? '<section class="search-section"><div class="search-empty">No matching actions.</div></section>'
       : "";
   const body = actions.length
-    ? actions.map((result) => renderSearchRowResult(result)).join("")
+    ? actions.map((result) => renderSearchRowResult(result, callbacks)).join("")
     : '<div class="search-empty">No matching actions.</div>';
-  return `<section class="search-section"><button class="search-section-head search-section-toggle" onclick="HerdrSearchPalette.toggleSection('actions')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Actions</strong><span>${actions.length}</span></button>${expanded ? body : ""}</section>`;
+  return `<section class="search-section"><button class="search-section-head search-section-toggle" onclick="${api}.toggleSection('actions')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Actions</strong><span>${actions.length}</span></button>${expanded ? body : ""}</section>`;
 }
 
-function renderTargetSection(targets) {
+function renderTargetSection(targets, callbacks = {}) {
+  const api = callbacks.panel || "HerdrSearchPalette";
   const expanded = searchPaletteState.sectionsExpanded.workspaces !== false;
   const body = targets.length
-    ? targets.map((result) => renderSearchRowResult(result)).join("")
+    ? targets.map((result) => renderSearchRowResult(result, callbacks)).join("")
     : '<div class="search-empty">No matching workspace, worktree, panel, or agent.</div>';
-  return `<section class="search-section"><button class="search-section-head search-section-toggle" onclick="HerdrSearchPalette.toggleSection('workspaces')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Workspaces, worktrees, panels</strong><span>${targets.length}</span></button>${expanded ? body : ""}</section>`;
+  return `<section class="search-section"><button class="search-section-head search-section-toggle" onclick="${api}.toggleSection('workspaces')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Workspaces, worktrees, panels</strong><span>${targets.length}</span></button>${expanded ? body : ""}</section>`;
 }
 
 function searchResultKey(result) {
@@ -557,27 +577,30 @@ function searchResultKey(result) {
 }
 
 function renderSearchRowResult(result) {
+  const callbacks = arguments[1] || {};
   const key = searchResultKey(result);
   const index = searchPaletteState.results.findIndex((row) => row === result || searchResultKey(row) === key);
-  return renderTargetResult(result, index, result.type === "action" && window.HerdrActionRegistry && window.HerdrActionRegistry.kbdHint ? window.HerdrActionRegistry.kbdHint(result) : "");
+  return renderTargetResult(result, index, result.type === "action" && window.HerdrActionRegistry && window.HerdrActionRegistry.kbdHint ? window.HerdrActionRegistry.kbdHint(result) : "", callbacks);
 }
 
-function renderRecentRowResult(result, index) {
-  if (!result.path) return renderTargetResult(result, index);
+function renderRecentRowResult(result, index, callbacks = {}) {
+  if (!result.path) return renderTargetResult(result, index, "", callbacks);
   const key = searchResultKey(result);
   const absoluteIndex = searchPaletteState.results.findIndex((row) => row === result || searchResultKey(row) === key);
-  const remove = `<button class="search-result-remove" type="button" title="Remove this recent workspace" aria-label="Remove ${escapeAttr(result.title)} from recent workspaces" onclick="HerdrSearchPalette.removeRecent(event, '${escapeAttr(result.path)}')"><span class="app-icon app-icon-trash" aria-hidden="true"></span></button>`;
-  return renderTargetResult(result, Number.isInteger(index) ? index : absoluteIndex, remove);
+  const api = callbacks.panel || "HerdrSearchPalette";
+  const remove = `<button class="search-result-remove" type="button" title="Remove this recent workspace" aria-label="Remove ${escapeAttr(result.title)} from recent workspaces" onclick="${api}.removeRecent(event, '${escapeAttr(result.path)}')"><span class="app-icon app-icon-trash" aria-hidden="true"></span></button>`;
+  return renderTargetResult(result, Number.isInteger(index) ? index : absoluteIndex, remove, callbacks);
 }
 
-function renderTargetResult(result, index, trailingHtml = "") {
+function renderTargetResult(result, index, trailingHtml = "", callbacks = {}) {
   const disabled = result.type === "recent" && result.isOpen;
   const cls = `search-result${index === searchPaletteState.selectedIndex ? " active" : ""}${disabled ? " search-result-disabled" : ""}`;
   const title = disabled ? `${escapeHtml(result.title)} <span class="search-result-open-hint">(already open)</span>` : escapeHtml(result.title);
-  return `<div class="${cls}"${disabled ? ' aria-disabled="true"' : ""}${disabled ? "" : ` onclick="chooseSearchResult(${index})"`}><span class="search-result-icon">${escapeHtml(result.icon)}</span><div class="search-result-body"><div class="search-result-title">${title}</div><div class="search-result-subtitle">${escapeHtml(result.subtitle || result.kind)}</div></div>${trailingHtml}</div>`;
+  const choose = callbacks.choose || "chooseSearchResult";
+  return `<div class="${cls}"${disabled ? ' aria-disabled="true"' : ""}${disabled ? "" : ` onclick="${choose}(${index})"`}><span class="search-result-icon">${escapeHtml(result.icon)}</span><div class="search-result-body"><div class="search-result-title">${title}</div><div class="search-result-subtitle">${escapeHtml(result.subtitle || result.kind)}</div></div>${trailingHtml}</div>`;
 }
 
-function renderWorkspacePathSection(opts = searchSettings()) {
+function renderWorkspacePathSection(opts = searchSettings(), callbacks = {}) {
   const helper = window.HerdrWorkspaceSearch;
   if (!helper) return "";
   normalizePalettePathKind(opts);
@@ -589,25 +612,27 @@ function renderWorkspacePathSection(opts = searchSettings()) {
   const noun = kind === "dir" ? "folders" : "files";
   const tree = query
     ? searchPaletteState.pathEntries.length
-      ? helper.renderPathTree(searchPaletteState.pathEntries, { query, kind, gitStatus: searchPaletteState.pathGitStatus, selectedPath, callback: "HerdrSearchPaletteTree" })
+      ? helper.renderPathTree(searchPaletteState.pathEntries, { query, kind, gitStatus: searchPaletteState.pathGitStatus, selectedPath, callback: callbacks.tree || "HerdrSearchPaletteTree" })
       : `<div class="search-empty">${searchPaletteState.pathLoading ? "Searching..." : `No ${noun} found.`}</div>`
     : '<div class="search-empty">Type to search files or folders in current workspace.</div>';
-  const more = query && !searchPaletteState.pathDone ? `<button class="git-ui-btn search-more" onclick="HerdrSearchPalette.loadMorePaths()">Load more ${noun}</button>` : "";
-  return `<section class="search-section search-path-section"><button class="search-section-head search-section-toggle" onclick="HerdrSearchPalette.toggleSection('files')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Files and folders</strong><span>${escapeHtml(activeWorkspaceLabel())}</span></button>${expanded ? `<div class="search-scope-tabs"><button class="git-ui-btn ${kind === "file" ? "active" : ""}" ${opts.searchFilesEnabled === false ? "disabled" : ""} onclick="HerdrSearchPalette.setPathKind('file')">Files</button><button class="git-ui-btn ${kind === "dir" ? "active" : ""}" ${opts.searchFoldersEnabled === false ? "disabled" : ""} onclick="HerdrSearchPalette.setPathKind('dir')">Folders</button></div>${searchPaletteState.pathError ? `<div class="file-browser-error">${escapeHtml(searchPaletteState.pathError)}</div>` : ""}${tree}${searchPaletteState.pathLoading ? '<div class="file-browser-searching">Searching...</div>' : ""}${more}` : ""}</section>`;
+  const api = callbacks.panel || "HerdrSearchPalette";
+  const more = query && !searchPaletteState.pathDone ? `<button class="git-ui-btn search-more" onclick="${api}.loadMorePaths()">Load more ${noun}</button>` : "";
+  return `<section class="search-section search-path-section"><button class="search-section-head search-section-toggle" onclick="${api}.toggleSection('files')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Files and folders</strong><span>${escapeHtml(activeWorkspaceLabel())}</span></button>${expanded ? `<div class="search-scope-tabs"><button class="git-ui-btn ${kind === "file" ? "active" : ""}" ${opts.searchFilesEnabled === false ? "disabled" : ""} onclick="${api}.setPathKind('file')">Files</button><button class="git-ui-btn ${kind === "dir" ? "active" : ""}" ${opts.searchFoldersEnabled === false ? "disabled" : ""} onclick="${api}.setPathKind('dir')">Folders</button></div>${searchPaletteState.pathError ? `<div class="file-browser-error">${escapeHtml(searchPaletteState.pathError)}</div>` : ""}${tree}${searchPaletteState.pathLoading ? '<div class="file-browser-searching">Searching...</div>' : ""}${more}` : ""}</section>`;
 }
 
-function renderWorkspaceContentSection() {
+function renderWorkspaceContentSection(callbacks = {}) {
   const helper = window.HerdrWorkspaceSearch;
   if (!helper) return "";
   const opts = helper.settings();
   const query = String(searchPaletteState.query || "").trim();
   const expanded = searchPaletteState.sectionsExpanded.content !== false;
+  const api = callbacks.panel || "HerdrSearchPalette";
   const body = !opts.searchContentEnabled
     ? '<div class="search-empty">File content search is disabled in Settings.</div>'
     : query.length < opts.contentMinChars
       ? `<div class="search-empty">Type at least ${opts.contentMinChars} characters to search file contents.</div>`
-      : helper.renderContentPicker(searchPaletteState.content, { callback: "HerdrSearchPaletteContent", idPrefix: "searchPaletteContent", disableSnippetEditing: true });
-  return `<section class="search-section search-content-section"><button class="search-section-head search-section-toggle" onclick="HerdrSearchPalette.toggleSection('content')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>File content</strong><span>${Number(searchPaletteState.content.total_matches || 0)} matches</span></button>${expanded ? body : ""}</section>`;
+      : helper.renderContentPicker(searchPaletteState.content, { callback: callbacks.content || "HerdrSearchPaletteContent", idPrefix: callbacks.idPrefix || "searchPaletteContent", disableSnippetEditing: true });
+  return `<section class="search-section search-content-section"><button class="search-section-head search-section-toggle" onclick="${api}.toggleSection('content')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>File content</strong><span>${Number(searchPaletteState.content.total_matches || 0)} matches</span></button>${expanded ? body : ""}</section>`;
 }
 
 function selectableSearchResults() {
@@ -662,7 +687,7 @@ async function openRecentWorkspace(path, label) {
     const r = await api("/api/recent-workspaces", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path, label }),
+      body: JSON.stringify({ path, label, open_terminal: workspaceOpenTerminalFlag() }),
     });
     if (window.HerdrActionRegistry && window.HerdrActionRegistry.invalidateRecent) window.HerdrActionRegistry.invalidateRecent();
     const result = (r && r.result) || {};
@@ -687,24 +712,6 @@ function runSearchAction(action) {
   else if (action === "create-worktree") {
     if (state.ws) openWorktreeCreateModal(state.ws);
     else openWorktreeOpenModal(selectedWorkspaceRepoPath(), true);
-  } else if (action === "temp-terminal" && tempTerminal) {
-    const ws = currentSearchWorkspace();
-    const folder = ws ? (workspacePath(ws) || "") : "";
-    tempTerminal.open(folder);
-  } else if (action === "temp-files") {
-    const overlays = globalThis.HerdrTempOverlays;
-    if (overlays) {
-      const ws = currentSearchWorkspace();
-      const folder = ws ? (workspacePath(ws) || "") : "";
-      overlays.openFiles(folder);
-    }
-  } else if (action === "temp-git") {
-    const overlays = globalThis.HerdrTempOverlays;
-    if (overlays) {
-      const ws = currentSearchWorkspace();
-      const folder = ws ? (workspacePath(ws) || "") : "";
-      overlays.openGit(folder);
-    }
   } else if (action === "sessions") showSessionManager();
   else if (action === "files") openWorkspaceFileBrowser(state.ws);
   else if (action === "git") openWorkspaceGitUi(state.ws);
@@ -753,7 +760,12 @@ function searchPaletteKeydown(e) {
 }
 
 async function openWorkspaceSearchPath(path, kind) {
-  const workspace = currentSearchWorkspace();
+  // The search root mirrors panelSearchWorkspace: the selected
+  // workspace, else the default folder. currentSearchWorkspace alone is
+  // null on the boot-clean desktop (no selection after a restart),
+  // which silently dropped result clicks for a default-folder search.
+  const workspace = currentSearchWorkspace()
+    || (typeof selectedOrDefaultWorkspace === "function" ? selectedOrDefaultWorkspace() : null);
   closeSearchPalette();
   if (!workspace) return;
   try {
@@ -761,7 +773,7 @@ async function openWorkspaceSearchPath(path, kind) {
     if (!window.HerdrFileBrowser || !window.HerdrFileBrowser.openAt) return;
     const isFile = kind !== "dir";
     await window.HerdrFileBrowser.openAt(workspace, path, { kind, preserveContext: isFile, mode: isFile ? "append" : undefined });
-    if (typeof rememberWorkspaceShellMode === "function") rememberWorkspaceShellMode("files", workspace, { minimized: false });
+    if (typeof rememberWorkspaceShellMode === "function") rememberWorkspaceShellMode("files", workspace);
   } catch (error) {
     alert(error.message || String(error));
   }
@@ -769,14 +781,17 @@ async function openWorkspaceSearchPath(path, kind) {
 
 async function openWorkspaceSearchContent(file, match) {
   const helper = window.HerdrWorkspaceSearch;
-  const workspace = currentSearchWorkspace();
+  // Same default-folder fallback as openWorkspaceSearchPath: content
+  // matches from a default-folder search open in the default folder.
+  const workspace = currentSearchWorkspace()
+    || (typeof selectedOrDefaultWorkspace === "function" ? selectedOrDefaultWorkspace() : null);
   closeSearchPalette();
   if (!workspace || !file) return;
   try {
     if (typeof ensureFileBrowserLoaded === "function") await ensureFileBrowserLoaded();
     if (!window.HerdrFileBrowser || !window.HerdrFileBrowser.openAt) return;
     await window.HerdrFileBrowser.openAt(workspace, file.path, { kind: "file", preserveContext: true, mode: "append", highlight: helper.matchHighlight(match, searchPaletteState.query) });
-    if (typeof rememberWorkspaceShellMode === "function") rememberWorkspaceShellMode("files", workspace, { minimized: false });
+    if (typeof rememberWorkspaceShellMode === "function") rememberWorkspaceShellMode("files", workspace);
   } catch (error) {
     alert(error.message || String(error));
   }
@@ -867,7 +882,27 @@ const HerdrSearchPaletteContent = {
     renderSearchPalette();
   },
   loadMore() { HerdrSearchPalette.loadMoreContent(); },
-  loadFile(_encodedPath) {},
+  async loadFile(encodedPath) {
+    const helper = window.HerdrWorkspaceSearch;
+    const workspace = currentSearchWorkspace();
+    const path = decodeURIComponent(encodedPath || "");
+    const query = String(searchPaletteState.query || "").trim();
+    const cwd = helper && helper.workspaceCwd(workspace);
+    if (!helper || !path || !query || !cwd || !helper.searchContentFile) return;
+    const seq = ++searchPaletteState.requestSeq;
+    try {
+      const data = await helper.searchContentFile({ cwd, file: path, query, contextLines: searchPaletteState.content.contextLines, matchesPerFile: 500 });
+      if (seq !== searchPaletteState.requestSeq || !data.file) return;
+      const index = searchPaletteState.content.files.findIndex((file) => file.path === path);
+      if (index >= 0) searchPaletteState.content.files[index] = data.file;
+      searchPaletteState.content.expanded[path] = true;
+      renderSearchPalettePreservingScroll();
+    } catch (error) {
+      if (seq !== searchPaletteState.requestSeq) return;
+      searchPaletteState.content.error = error.message || String(error);
+      renderSearchPalettePreservingScroll();
+    }
+  },
   expandSnippet(_path, _match, _direction) {
     const helper = window.HerdrWorkspaceSearch;
     if (!helper) return;

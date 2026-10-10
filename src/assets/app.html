@@ -26,20 +26,30 @@
       </aside>
       <button class="sidebar-toggle" id="sidebarToggle" title="Hide sidebar" aria-label="Hide sidebar">‹</button>
       <main class="main">
-        <div class="tabs" id="tabs"></div>
-        <section class="project-dashboard" id="projectDashboard" hidden></section>
-        <div class="terminal-shell" id="terminalShell">
-          <div class="terminal-loading" id="terminalLoading">
-            <span>Connecting panel</span>
+        <div class="workspace-panes" id="workspacePanes">
+          <div class="tabs" id="tabs"></div>
+          <section class="project-dashboard" id="projectDashboard" hidden></section>
+          <section class="workspace-empty-leaf" id="workspaceEmptyLeaf" hidden></section>
+          <div class="terminal-shell" id="terminalShell">
+            <div class="terminal-loading" id="terminalLoading">
+              <span>Connecting panel</span>
+            </div>
+            <div class="terminal-paste-progress" id="terminalPasteProgress" hidden aria-live="polite">
+              <div class="terminal-paste-progress-label" id="terminalPasteProgressLabel">Pasting…</div>
+              <div class="terminal-paste-progress-track" aria-hidden="true"><i id="terminalPasteProgressBar"></i></div>
+            </div>
+            <button class="terminal-follow-button" id="terminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow">↓ Tail</button>
+            <div class="terminal" id="terminal"></div>
           </div>
-          <div class="terminal-paste-progress" id="terminalPasteProgress" hidden aria-live="polite">
-            <div class="terminal-paste-progress-label" id="terminalPasteProgressLabel">Pasting…</div>
-            <div class="terminal-paste-progress-track" aria-hidden="true"><i id="terminalPasteProgressBar"></i></div>
-          </div>
-          <button class="terminal-follow-button" id="terminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow">↓ Tail</button>
-          <div class="terminal" id="terminal"></div>
         </div>
       </main>
+      <button class="sidebar-toggle right-sidebar-toggle" id="rightSidebarToggle" title="Hide workspace views" aria-label="Hide workspace views">›</button>
+      <nav class="right-sidebar-rail" id="rightSidebarRail" aria-label="Workspace views">
+        <button class="right-sidebar-rail-button" id="rightRailFiles" title="Files" aria-label="Files" aria-pressed="false"></button>
+        <button class="right-sidebar-rail-button" id="rightRailGit" title="Git" aria-label="Git" aria-pressed="false"></button>
+        <button class="right-sidebar-rail-button" id="rightRailSearch" title="Search" aria-label="Search" aria-pressed="false"></button>
+      </nav>
+      <section class="right-sidebar-content" id="rightSidebarContent" aria-label="Workspace view" hidden></section>
     </div>
     <div class="context-menu" id="clipboardMenu">
       <button id="copyMenu">Copy</button><button id="pasteMenu">Paste</button>
@@ -124,13 +134,6 @@
             >Browser notifications<small
               >Ask this browser to show system notifications when an agent needs attention.</small
             ></span
-          ></label
-        ><label class="option"
-          ><span>Panel close button visibility<small
-            >Smart hides the per-panel ✕ close button when only one panel is open. Always shows it regardless of panel count.</small
-          ></span><select class="settings-select" id="optPanelCloseMode"
-            ><option value="smart">Smart (only when multiple panels)</option
-            ><option value="always">Always show</option></select
           ></label
         >
         <div class="modal-actions">

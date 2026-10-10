@@ -713,7 +713,7 @@ async function createWorkspaceFromSmartModal() {
     const r = await api("/api/workspaces", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ label, cwd }),
+      body: JSON.stringify({ label, cwd, open_terminal: workspaceOpenTerminalFlag() }),
     });
     try {
       await api("/api/recent-workspaces", {
@@ -748,6 +748,7 @@ async function openDiscoveredWorktree(index) {
         cwd: row.source_workspace_id ? null : row.source_cwd,
         path: row.path,
         label: null,
+        open_terminal: workspaceOpenTerminalFlag(),
       }),
     });
     closeWorktreeOpenModal();
@@ -778,6 +779,12 @@ async function removeDiscoveredWorktree(index) {
   err.textContent = "";
   setOpenWorktreeOperation("remove", index, "Removing worktree...");
   showBlocking("Removing worktree...");
+  const closingWorktree = row.open_workspace_id
+    ? state.workspaces.find((workspace) => workspace.workspace_id === row.open_workspace_id) || {
+        workspace_id: row.open_workspace_id,
+        cwd: row.path,
+      }
+    : null;
   try {
     if (row.open_workspace_id)
       await api(
@@ -794,6 +801,7 @@ async function removeDiscoveredWorktree(index) {
           force: false,
         }),
       });
+    if (closingWorktree) forgetWorkspaceClientState(closingWorktree);
     await discoverWorktrees();
     refresh();
   } catch (ex) {
@@ -802,6 +810,7 @@ async function removeDiscoveredWorktree(index) {
     if (await confirmForceWorktreeRemove(message)) {
       showBlocking("Removing worktree...");
       await forceRemoveDiscoveredWorktree(row);
+      if (closingWorktree) forgetWorkspaceClientState(closingWorktree);
       await discoverWorktrees();
       refresh();
       return;
@@ -949,7 +958,7 @@ async function closeWorkspace(id) {
             await api("/api/worktrees/open", {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ path: wt.path, label: wt.label }),
+              body: JSON.stringify({ path: wt.path, label: wt.label, open_terminal: true }),
             });
           } catch (e) {}
         }
@@ -1014,9 +1023,7 @@ async function closeWorkspaceById(id) {
     state.tab = null;
     state.pane = null;
   }
-  if (window.HerdrFileBrowser && window.HerdrFileBrowser.forgetWorkspace) window.HerdrFileBrowser.forgetWorkspace(closingWorkspace);
-  if (window.HerdrGitUi && window.HerdrGitUi.forgetWorkspace) window.HerdrGitUi.forgetWorkspace(closingWorkspace);
-  if (typeof forgetWorkspaceShell === "function") forgetWorkspaceShell(closingWorkspace);
+  forgetWorkspaceClientState(closingWorkspace);
 }
 async function removeWorktree(id) {
   if (!(await askQuestion({
@@ -1026,6 +1033,8 @@ async function removeWorktree(id) {
     danger: true,
   })))
     return;
+  const closingWorktree = state.workspaces.find((workspace) => workspace.workspace_id === id) || id;
+  const wasSelected = state.ws === id;
   showBlocking("Removing worktree...");
   try {
     try {
@@ -1043,11 +1052,12 @@ async function removeWorktree(id) {
         body: JSON.stringify({ force: true }),
       });
     }
-    if (state.ws === id) {
+    if (wasSelected) {
       state.ws = null;
       state.tab = null;
       state.pane = null;
     }
+    forgetWorkspaceClientState(closingWorktree);
     refresh();
   } finally {
     hideBlocking();
@@ -1147,22 +1157,18 @@ async function closeTab(id) {
   // (the second would close the next panel too).
   if (closeTabInFlight) return;
   if (!confirm(`Close panel "${panelCloseName(id)}"?`)) return;
-  const tab = state.allTabs.concat(state.tabs).find((t) => t.tab_id === id),
-    workspaceId = tab && tab.workspace_id,
-    workspaceTabs = workspaceId ? tabsForWorkspace(workspaceId) : [];
   closeTabInFlight = true;
   showBlocking("Closing panel...");
   try {
-    if (workspaceTabs.length > 1) {
+    // One close call, any tab count: the workspace survives a last-tab
+    // close on builtin backends, and external backends now keep the
+    // workspace too (terminal close never kills the workspace).
+    // A not-found race (pane.exited already closed it elsewhere) is the
+    // outcome we wanted: run the same post-close flow instead of failing.
+    try {
       await api(`/api/tabs/${encodeURIComponent(id)}/close`, { method: "POST" });
-    } else if (workspaceId) {
-      // Close the tab; built-in backend auto-closes the empty workspace.
-      // External backends may keep it, so also close the workspace explicitly.
-      await api(`/api/tabs/${encodeURIComponent(id)}/close`, { method: "POST" });
-      await closeWorkspaceById(workspaceId);
-    } else {
-      const panes = panesForTab(id);
-      if (panes.length) await closePaneById(panes[0].pane_id);
+    } catch (error) {
+      if (!String(error.message || error).includes("not found")) throw error;
     }
     if (typeof removeClosedTabFromState === "function") removeClosedTabFromState(id);
     if (state.tab === id && typeof selectFallbackTabAfterClosed === "function") {

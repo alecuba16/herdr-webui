@@ -75,7 +75,6 @@ let state = {
   fitDefault: false,
   editingTab: null,
   editingTabValue: "",
-  panelMenuOpen: false,
   editingWorkspace: null,
   editingWorkspaceValue: "",
   workspaceCreateSuggestedLabel: "",
@@ -86,12 +85,15 @@ let state = {
   openWorktreeSuggestionLocked: false,
   openWorktreeIncludeRemoteBranches: false,
   // Per-tab layout snapshots keyed by `${workspace_id}/${tab_id}`. Populated
-  // from session.snapshot and kept current by layout.updated events. Used to
-  // size the terminal without a per-pane pane.layout round trip.
+  // by layout.updated events. Used to size the terminal without a per-pane
+  // pane.layout round trip.
   layouts: {},
-  // True when the backend supports session.snapshot (protocol 16+). Set after
-  // the first successful snapshot; falls back to legacy polling when false.
-  supportsSessionSnapshot: false,
+  // Sticky-off switch for the single-request bootstrap (/api/session-snapshot).
+  // Starts true so the first refresh tries the one-call path; the first
+  // failure (older server without the endpoint, or a proxy hiccup) flips it
+  // false and every later refresh uses the legacy multi-call path without
+  // re-paying the failed request. Reset on reload.
+  snapshotBootstrap: true,
   backendMode: "builtin",
   // Per-session pin (see sessionBackendKey); the boot path calls
   // parseRoute() before this matters, so read the pin for the default
@@ -112,6 +114,7 @@ let state = {
   backendsEnabled: { builtin: null, "external-herdr": null },
   defaultFolder: "",
   workspaceShell: {},
+  workspacePanes: {},
 };
 let term,
   termWs,
@@ -138,7 +141,6 @@ let term,
   lastWorkspacesHtml = "",
   lastAgentsHtml = "",
   lastTabsHtml = "",
-  tabActivity = {},
   closeChordUntil = 0,
   inputQueue = [],
   terminalQueryReplyState = {},
@@ -154,9 +156,9 @@ let term,
   shortcutPrefixTimer = null,
   searchFramePending = false,
   searchResults = [],
-  searchSelectedIndex = 0,
-  tempTerminal = null;
+  searchSelectedIndex = 0;
 const SIDEBAR_COLLAPSED_KEY = "herdr-web-sidebar-collapsed";
+const RIGHT_SIDEBAR_COLLAPSED_KEY = "herdr-web-right-sidebar-collapsed";
 const DEFAULT_GLOBAL_SHORTCUT_PREFIX = "Ctrl+B";
 const DEFAULT_WEBUI_SHORTCUTS = {
   search: "Slash",
@@ -178,12 +180,14 @@ const DEFAULT_WEBUI_SHORTCUTS = {
   nextPanel: "BracketRight",
   prevPanel: "BracketLeft",
   focusTerminal: "KeyF",
-  tempTerminalToggle: "Shift+KeyM",
-  tempTerminalPromote: "Shift+KeyP",
-  tempFilesToggle: "Shift+KeyF",
-  tempGitToggle: "Shift+KeyG",
   focusNext: "Period",
   focusPrev: "Comma",
+  splitRight: "KeyD",
+  splitDown: "Shift+KeyD",
+  closePane: "KeyE",
+  moveTabNextPane: "KeyM",
+  maximizePane: "Shift+KeyM",
+  togglePaneMenu: "F10",
 };
 const DEFAULT_GIT_SHORTCUTS = {
   changes: "Digit1",
@@ -216,6 +220,17 @@ const FAST_REFRESH_EVENTS = new Set([
   "worktree.removed",
 ]);
 let sidebarCollapsed = storedFlag(SIDEBAR_COLLAPSED_KEY);
+let rightSidebarCollapsed = storedFlag(RIGHT_SIDEBAR_COLLAPSED_KEY);
+// The right_sidebar.js host module reads the collapse state through this
+// mirror (module init order differs from this let), so keep it in sync at
+// every mutation point.
+window.__herdrRightSidebarCollapsed = rightSidebarCollapsed;
+function setRightSidebarCollapsedFlag(value) {
+  rightSidebarCollapsed = !!value;
+  window.__herdrRightSidebarCollapsed = rightSidebarCollapsed;
+  storeFlag(RIGHT_SIDEBAR_COLLAPSED_KEY, rightSidebarCollapsed);
+  applyRightSidebarCollapsed();
+}
 let blockingOverlayDepth = 0;
 function showBlocking(message) {
   const overlay = document.getElementById("blockingOverlay");
@@ -271,7 +286,6 @@ const {
   buildWorktreeCreateBody,
   createFaviconNotifier,
   terminalPasteInput,
-  tabActivityLabel,
   inputAttrs,
 } = globalThis.HerdrAppHelpers;
 const browserFavicon = createFaviconNotifier(document);
@@ -295,6 +309,27 @@ if (sidebarToggle)
     if (typeof globalThis.HerdrScheduleTerminalResize === "function")
       globalThis.HerdrScheduleTerminalResize();
   };
+const rightSidebarToggle = el("rightSidebarToggle");
+if (rightSidebarToggle)
+  rightSidebarToggle.onclick = () => {
+    const expanding = rightSidebarCollapsed;
+    setRightSidebarCollapsedFlag(!rightSidebarCollapsed);
+    // The expanded column always hosts a view (Files/Git/Search).
+    // Expanding from terminal mode opens the workspace's last hosted
+    // view (resolveHostedShellMode) so the column never renders empty.
+    if (expanding && currentWorkspaceShellMode() === "terminal") {
+      const mode = typeof resolveHostedShellMode === "function" ? resolveHostedShellMode() : "files";
+      if (mode === "git") openWorkspaceGitUi(state.ws, { forceOpen: true });
+      else if (mode === "search") openWorkspaceSearchPanel(state.ws, { forceOpen: true });
+      else openWorkspaceFileBrowser(state.ws, { forceOpen: true });
+      if (typeof globalThis.HerdrScheduleTerminalResize === "function")
+        globalThis.HerdrScheduleTerminalResize();
+      return;
+    }
+    if (window.HerdrRightSidebar) window.HerdrRightSidebar.apply();
+    if (typeof globalThis.HerdrScheduleTerminalResize === "function")
+      globalThis.HerdrScheduleTerminalResize();
+  };
 function storedFlag(key) {
   try {
     return localStorage.getItem(key) === "1";
@@ -314,6 +349,17 @@ function applySidebarCollapsed() {
   if (button) {
     button.innerHTML = sidebarToggleHtml();
     button.title = sidebarCollapsed ? "Show sidebar" : "Hide sidebar";
+    button.setAttribute("aria-label", button.title);
+  }
+  applyRightSidebarCollapsed();
+}
+function applyRightSidebarCollapsed() {
+  const app = el("app"),
+    button = el("rightSidebarToggle");
+  if (app) app.classList.toggle("right-sidebar-collapsed", rightSidebarCollapsed);
+  if (button) {
+    button.innerHTML = `<span class="sidebar-toggle-arrow">${rightSidebarCollapsed ? "‹" : "›"}</span>`;
+    button.title = rightSidebarCollapsed ? "Show workspace views" : "Hide workspace views";
     button.setAttribute("aria-label", button.title);
   }
 }
@@ -347,31 +393,11 @@ function appIcon(name) {
   const iconName = String(name || "").replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
   return `<span class="app-icon app-icon-${iconName}" aria-hidden="true"></span>`;
 }
-function shellMode() {
-  return currentWorkspaceShellMode();
-}
 function syncShellModeButtons() {
-  const mode = shellMode();
-  const minimized = isWorkspaceShellMinimized();
-  const group = el("shellModeGroup");
-  if (group) group.classList.toggle("minimized", minimized);
-  for (const [id, value] of [
-    ["terminalWorkspaceToggle", "terminal"],
-    ["gitWorkspaceToggle", "git"],
-    ["fileWorkspaceToggle", "files"],
-  ]) {
-    const button = el(id);
-    if (!button) continue;
-    const active = mode === value;
-    button.classList.toggle("active", active);
-    button.classList.toggle("minimized", minimized && active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
-    button.setAttribute("aria-selected", active ? "true" : "false");
-  }
-  const minimize = el("workspaceShellMinimize");
-  if (minimize) minimize.disabled = minimized;
+  syncRightSidebarRail();
 }
 window.syncShellModeButtons = syncShellModeButtons;
+window.syncGitWorkspaceToggle = syncGitWorkspaceToggle;
 function workspacePath(workspace) {
   if (!workspace) return "";
   if (workspace.worktree && workspace.worktree.checkout_path)
@@ -405,19 +431,18 @@ function appRefreshIconButton({ className = "", title = "Refresh", label = "Refr
   return `<button class="${escapeAttr(classes)}" title="${escapeAttr(title)}" aria-label="${escapeAttr(label)}"${clickAttr}><span></span></button>`;
 }
 function showTerminalShellMode(options = {}) {
-  rememberWorkspaceShellMode("terminal", state.ws, { minimized: false });
+  rememberWorkspaceShellMode("terminal", state.ws);
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
+  if (window.HerdrSearchPanel) window.HerdrSearchPanel.close();
   const shell = el("terminalShell");
   if (shell) shell.style.display = "";
-  syncShellModeButtons();
   if (typeof render === "function") render();
   if (state.terminalId && !term && window.HerdrTerminalRenderer) connectTerminal();
   fitTerminalShell();
   if (typeof fitTerminalSurface === "function") fitTerminalSurface();
   if (typeof requestAnimationFrame === "function")
     requestAnimationFrame(() => {
-      syncShellModeButtons();
       fitTerminalShell();
       if (typeof fitTerminalSurface === "function") fitTerminalSurface();
     });
@@ -674,11 +699,12 @@ function shortcutsModalHtml() {
           <div class="help-grid">
             <div class="help-row"><strong>Sidebar</strong><span>Workspaces show open roots/worktrees; agents list status. Click to open; double-click names to rename. Drag the workspace/agents separator to resize by percent. Colored badges show blocked, done, working, and idle.</span></div>
             <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? opens this help; gear opens Settings; moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
-            <div class="help-row"><strong>Panels/Tabs</strong><span>Top panel switcher changes terminal panel; + creates panel; ✕ closes current panel; double-click panel label to rename.</span></div>
-            <div class="help-row"><strong>Terminal</strong><span>Desktop, mobile, and temporary terminals use the shared renderer adapter. Settings → Terminal → Renderer switches between the default Ghostty core and the lightweight wterm core and reconnects the current terminal; the Ghostty core renders Kitty graphics images inline, wterm shows a placeholder summary. Wheel, trackpad, touch, and PageUp/PageDown scroll normal scrollback; external Herdr sessions try backend scroll first, built-in sessions use local renderer scrollback, and alternate-screen apps keep their own scroll keys. Tail appears after scrolling up and jumps back to latest output. Links are enabled by default, mouse reporting is opt-in, paste uses bounded WebSocket chunks, and scroll speed is configurable in Settings → Terminal. Temporary terminal captures Tab/Backspace/navigation keys and normal input while open; Ctrl+G detaches it through close confirmation; ${escapeHtml(globalShortcutPrefixLabel())} then Shift+M opens, minimizes, or restores it.</span></div>
+            <div class="help-row"><strong>Panels/Tabs</strong><span>Each pane has a tab strip: click a tab to activate it, double-click a terminal tab to rename, ✕ closes the tab, + creates a terminal panel in that pane. Editor and git tabs open from the sidebar and can sit beside terminal tabs in any pane.</span></div>
+            <div class="help-row"><strong>Panes</strong><span>Split the active pane right or down from the strip ◫/⊟ buttons or shortcuts; drag the divider to resize; close a pane with ✕-promoting its sibling. Editor and git tabs drag between panes with a caret marking the drop slot, or move with a shortcut. The [⋮] menu offers split, maximize/restore, rename, move, and close for the pane's active tab. Maximize hides the layout and shows one pane; toggle again to restore, and the layout survives reloads.</span></div>
+            <div class="help-row"><strong>Terminal</strong><span>Desktop and mobile terminals use the shared renderer adapter. Settings → Terminal → Renderer switches between the default Ghostty core and the lightweight wterm core and reconnects the current terminal; the Ghostty core renders Kitty graphics images inline, wterm shows a placeholder summary. Wheel, trackpad, touch, and PageUp/PageDown scroll normal scrollback; external Herdr sessions try backend scroll first, built-in sessions use local renderer scrollback, and alternate-screen apps keep their own scroll keys. Tail appears after scrolling up and jumps back to latest output. Links are enabled by default, mouse reporting is opt-in, paste uses bounded WebSocket chunks, and scroll speed is configurable in Settings → Terminal.</span></div>
             <div class="help-row"><strong>Files</strong><span>Files selector opens browser/editor; the current folder row has an Up button; file rows use license-safe type glyphs while folders stay plain except for Git status colors. Header search (⌕, or prefix then /) is the single search entry point for workspaces/worktrees, file names, folder names, and file contents. File/folder and content search run in the backend for the focused workspace/worktree, lazy-load pages, preserve parent folders for path context, and use Settings to enable sections and sort their order. Content results show as grouped files with highlighted match text, match-case and regex options, colored matched-line context, configurable default expanded/collapsed file groups, per-file disclosure arrows, Git-style arrow controls for more context above/below with overlap merging, lazy per-file loading, opening at the matched line with editor highlight, and full-file open. Text files open editable by default with a lock toggle in the toolbar that flips the file to read-only and back; markdown files open read-only as a rendered preview with an eye toggle in the toolbar that flips between the preview and the source view; unsaved edits mark the tab dirty and save with Cmd/Ctrl+S (undo/redo stays free for CodeMirror history); right-click a file tab for context menu actions: Focus, Split, Find, Preview/Source (markdown), Lock, Save, Show history, Reload, Copy path, and Close; line numbers show by default, fold controls work for supported languages, editor find supports match case and regex, replace works while a file is editable (locked files keep replace disabled), and syntax/search colors use shared theme tokens. Search selections, selected files, split panes, and unsaved edit drafts stay attached to each open workspace/worktree while switching panels; closing the workspace/worktree forgets them. Git colors are computed server-side and propagate up directories with priority red deleted, yellow modified, green new.</span></div>
             <div class="help-row"><strong>Git</strong><span>Git selector opens repo tools for diff, stage/unstage, discard, commit modal, commit & push, pull, push with force fallback, tag push option, rebase, conflicts, stash, branches, cleanup, and worktree prune. Choosing a folder in the Git directory picker immediately moves the Git panel to that folder and refreshes it; clicking the folder path title in the Git side panel opens the same picker to change the Git folder without closing the panel; the branch modal's Switch branch button only checks out another branch in the selected Git directory. When the Git panel folder differs from the current workspace/worktree folder, the ↩ button next to the path title returns Git to the current workspace/worktree folder and refreshes. Changes, log, stash, and cleanup use one exclusive segmented toggle; the file filter sits below the action toolbar; cleanup uses the shared broom icon. Git log has sticky scope and column headers while scrolling; selected commits show compact actions for Compare, Tag, Worktree…, Reset, Rebase…, and Clear. Selecting one commit shows a Committed files side preview; choosing a file opens the commit-vs-parent diff.</span></div>
-            <div class="help-row"><strong>Worktrees</strong><span>Use the header ＋ button to open/create workspaces and linked worktrees. WebUI no longer opens a workspace automatically on startup; file browser, Git, temporary terminals, and workspace/worktree pickers start from the configured default folder when no workspace is selected. Selected workspace rows keep only close/remove actions so the sidebar stays simple.</span></div>
+            <div class="help-row"><strong>Worktrees</strong><span>Use the header ＋ button to open/create workspaces and linked worktrees. WebUI no longer opens a workspace automatically on startup; file browser, Git, and workspace/worktree pickers start from the configured default folder when no workspace is selected. Selected workspace rows keep only close/remove actions so the sidebar stays simple.</span></div>
             <div class="help-row"><strong>Search</strong><span>Prefix then / or the header magnifier opens one palette for workspaces, repos, worktrees, labels, agents, panels, file/folder results, and file-content matches. In search, arrows move, Enter opens, Esc closes, Alt+F selects files, Alt+D selects folders, Alt+1/2/3 toggles sections, and Alt+↑/↓ expands content context for the selected match. Content search can be match-case or regex from Settings. Editor find uses Enter/Shift+Enter for next/previous and enables replace controls while the file is editable (locked files keep replace disabled).</span></div>
             <div class="help-row"><strong>Settings</strong><span>Configure shortcuts, terminal font/links/scroll speed, themes, file browser, Git UI, worktree defaults, agent group order, sidebar split percent, and notification/no-sleep behavior.</span></div>
           </div>
@@ -704,18 +730,19 @@ function shortcutsModalHtml() {
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then J / K</kbd><span>Jump to next or previous workspace.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ] / [</kbd><span>Jump to next or previous panel.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then F</kbd><span>Focus the main terminal.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+M</kbd><span>Open, minimize to the restore pill, or restore the same live temporary terminal.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+F</kbd><span>Open, minimize, or restore a temporary Files overlay on any folder, without creating a workspace.</span></div>
-          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+G</kbd><span>Open, minimize, or restore a temporary Git overlay on any repository, without creating a workspace.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then V</kbd><span>In Git UI, open Git directory/branch dialog. Folder selection changes the Git panel cwd; Switch branch only changes branch in that cwd.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then . / ,</kbd><span>Focus next or previous visible UI control.</span></div>
-          <div class="shortcut-row"><kbd>Ctrl+G</kbd><span>Detach temporary terminal when its overlay is open. The close button uses the same confirmation.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then D</kbd><span>Split the active pane to the right.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+D</kbd><span>Split the active pane downward.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then E</kbd><span>Close the active pane and promote its sibling.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then M</kbd><span>Move the active editor or git tab to the next pane.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+M</kbd><span>Maximize the active pane, or restore the layout when already maximized.</span></div>
+          <div class="shortcut-row"><kbd>F10</kbd><span>Open the pane actions menu for the active pane.</span></div>
           <div class="shortcut-row"><kbd>Shift+Enter</kbd><span>Send the configured newline sequence to the main terminal when Shift+Enter newline is enabled.</span></div>
           <div class="shortcut-row"><kbd>PageUp/PageDown</kbd><span>Scroll terminal output by one visible page in normal scrollback.</span></div>
           <div class="shortcut-row"><kbd>Wheel/trackpad/touch drag</kbd><span>Scroll terminal output; trackpad deltas accumulate by row height and line-wheel events use the configured Scroll speed.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Ctrl+C</kbd><span>Copy selected terminal text.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Ctrl+V</kbd><span>Paste clipboard text into terminal through bounded WebSocket chunks.</span></div>
-          <div class="shortcut-row"><kbd>Tab / Backspace / navigation keys</kbd><span>Temporary terminal captures these keys before browser focus movement and sends them to the PTY.</span></div>
           <div class="shortcut-row"><kbd>Double-click</kbd><span>Rename workspaces and panels.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Middle-click</kbd><span>Open workspace, agent, or panel link using browser tab behavior.</span></div>
         </div>
@@ -748,12 +775,14 @@ const shortcutEditorGroups = [
       ["nextPanel", "Next panel"],
       ["prevPanel", "Previous panel"],
       ["focusTerminal", "Focus terminal"],
-      ["tempTerminalToggle", "Open/minimize/restore temporary terminal"],
-      ["tempTerminalPromote", "Promote temporary terminal to workspace"],
-      ["tempFilesToggle", "Open/minimize/restore temporary Files"],
-      ["tempGitToggle", "Open/minimize/restore temporary Git"],
       ["focusNext", "Focus next control"],
       ["focusPrev", "Focus previous control"],
+      ["splitRight", "Split pane right"],
+      ["splitDown", "Split pane down"],
+      ["closePane", "Close active pane"],
+      ["moveTabNextPane", "Move tab to next pane"],
+      ["maximizePane", "Maximize or restore active pane"],
+      ["togglePaneMenu", "Open pane actions menu"],
     ],
   },
   {
@@ -852,31 +881,8 @@ function syncShortcutTooltips() {
   setShortcutTooltip("footerSettingsButton", "Settings", "settings");
   setShortcutTooltip("headerActionsButton", "Search and actions", "search");
   setShortcutTooltip("sidebarToggle", sidebarCollapsed ? "Show sidebar" : "Hide sidebar", "sidebar");
-  setShortcutTooltip("terminalWorkspaceToggle", "Show terminal", "focusTerminal");
   const searchClose = el("searchPaletteClose");
   if (searchClose) searchClose.title = "Close (Esc)";
-  // Update tooltips on any dynamically created temp terminal modals.
-  const tempModals = document.querySelectorAll(".temp-terminal-backdrop");
-  tempModals.forEach((modal) => {
-    const tempClose = modal.querySelector(".temp-terminal-close");
-    if (tempClose) {
-      tempClose.title = "Detach temporary terminal (Ctrl+G)";
-      tempClose.setAttribute("aria-label", tempClose.title);
-    }
-    const tempMin = modal.querySelector(".temp-terminal-minimize");
-    if (tempMin) {
-      const text = titleWithWebuiShortcut("Minimize temporary terminal", "tempTerminalToggle");
-      tempMin.title = text;
-      tempMin.setAttribute("aria-label", text);
-    }
-  });
-  // Update tooltips on restore buttons (managed by temp terminal restore bar).
-  const tempRestores = document.querySelectorAll(".temp-terminal-restore");
-  tempRestores.forEach((btn) => {
-    const text = titleWithWebuiShortcut("Show temporary terminal", "tempTerminalToggle");
-    btn.title = text;
-    btn.setAttribute("aria-label", text);
-  });
 }
 
 function shortcutCollisionMap() {
@@ -969,7 +975,7 @@ function themeCustomizerHtml() {
   return `<div class="theme-customizer"><div><strong>Theme colors</strong><small>Saved in this browser. Uses current defaults as reset reference.</small></div><div class="theme-customizer-actions"><label><span>Profile</span><select class="settings-select" id="themeColorProfile"><option value="default">Default</option><option value="catppuccin">Catppuccin</option><option value="tokyo">Tokyo Night</option><option value="nord">Nord</option><option value="dracula">Dracula</option><option value="monokai">Monokai</option><option value="apple">Apple</option></select></label><button type="button" class="tab add" id="themeColorsApplyProfile">Apply profile</button><button type="button" class="tab add" id="themeColorsApply">Apply / reload UI</button><button type="button" class="tab add" id="themeColorsReset">Reset theme colors</button></div><div class="theme-customizer-grid"><section><h3>Dark</h3>${rows("dark")}</section><section><h3>Light</h3>${rows("light")}</section></div></div>`;
 }
 function serverSettingsHtml() {
-  return `<div class="server-settings"><section class="settings-section"><div class="settings-section-head"><h3>Network access</h3><p>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</p></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"${inputAttrs()}></label><label class="option"><span>Protocol<small>HTTP for LAN relays and local use; HTTPS uses a self-signed cert unless certificate files are configured. Changing the protocol restarts the listener and reloads this page.</small></span><select class="settings-select" id="optTlsMode"><option value="off">HTTP only</option><option value="both">HTTP + HTTPS (HTTPS on port+1)</option><option value="auto">HTTPS only (auto)</option><option value="self-signed">HTTPS only (self-signed)</option><option value="files">HTTPS only (certificate files)</option></select></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label><label class="option"><span>Session expiration<small>Minutes until authenticated sessions expire. 0 means sessions never expire; only Settings &gt; Logout or saving server settings invalidates them. Existing sessions are invalidated when settings are saved.</small></span><input id="optServerSessionExpiration" type="number" min="0" max="525600" step="1"${inputAttrs("done")}></label></section><section class="settings-section"><div class="settings-section-head"><h3>Backend</h3><p>Switch between external Herdr and the built-in terminal backend. Restart WebUI after changing backend mode.</p></div><label class="option"><span>Backend mode<small>Built-in is the default and starts local PTYs from this WebUI process. External Herdr uses Herdr sockets. Auto uses Herdr when available, otherwise built-in.</small></span><select class="settings-select" id="optBackendMode"><option value="builtin">Built-in terminal backend</option><option value="external-herdr">External Herdr</option><option value="auto">Auto</option></select></label><label class="option"><input type="checkbox" id="optBuiltinBackendEnabled"><span>Enable built-in backend<small>Allows local PTY sessions managed by this WebUI process.</small></span></label><label class="option"><input type="checkbox" id="optExternalHerdrBackendEnabled"><span>Enable external Herdr<small>Allows detecting and explicitly launching external Herdr sessions. Discovery stays passive until you create one.</small></span></label><label class="option"><span>Built-in shell<small>Optional shell or command path for new built-in panes. Leave empty for SHELL or /bin/zsh.</small></span><input id="optBuiltinShell" placeholder="/bin/zsh"${inputAttrs()}></label><label class="option"><span>Default folder<small>Used by Files, Git, and temporary terminals when no workspace is selected. The backend verifies access and falls back to home.</small></span><input id="optDefaultFolder" placeholder="~"${inputAttrs()}></label></section><section class="settings-section"><div class="settings-section-head"><h3>Power behavior</h3><p>Server-side sleep prevention defaults.</p></div><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"${inputAttrs("done")}></label></section><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button><button type="button" class="btn question-confirm" id="serverSettingsLogout" title="Log out from this server">Logout</button></div></div>`;
+  return `<div class="server-settings"><section class="settings-section"><div class="settings-section-head"><h3>Network access</h3><p>Saved in ~/.config/herdr-webui/webui-settings.json. Changing Bind restarts the WebUI listener.</p></div><label class="option"><span>Bind address<small>Use 127.0.0.1:8787 for local only or 0.0.0.0:8787 for LAN/public access.</small></span><input id="optServerBind" placeholder="127.0.0.1:8787"${inputAttrs()}></label><label class="option"><span>Protocol<small>HTTP for LAN relays and local use; HTTPS uses a self-signed cert unless certificate files are configured. Changing the protocol restarts the listener and reloads this page.</small></span><select class="settings-select" id="optTlsMode"><option value="off">HTTP only</option><option value="both">HTTP + HTTPS (HTTPS on port+1)</option><option value="auto">HTTPS only (auto)</option><option value="self-signed">HTTPS only (self-signed)</option><option value="files">HTTPS only (certificate files)</option></select></label><label class="option"><span>Username<small>Required when binding outside localhost.</small></span><input id="optServerUser" autocomplete="username"></label><label class="option"><span>Password<small>Required when binding outside localhost. Leave blank to keep current password.</small></span><input id="optServerPassword" type="password" autocomplete="new-password"></label><label class="option"><input type="checkbox" id="optServerLocalBypass"><span>Allow localhost without login<small>Only applies to loopback requests.</small></span></label><label class="option"><span>Session expiration<small>Minutes until authenticated sessions expire. 0 means sessions never expire; only Settings &gt; Logout or saving server settings invalidates them. Existing sessions are invalidated when settings are saved.</small></span><input id="optServerSessionExpiration" type="number" min="0" max="525600" step="1"${inputAttrs("done")}></label></section><section class="settings-section"><div class="settings-section-head"><h3>Backend</h3><p>Switch between external Herdr and the built-in terminal backend. Restart WebUI after changing backend mode.</p></div><label class="option"><span>Backend mode<small>Built-in is the default and starts local PTYs from this WebUI process. External Herdr uses Herdr sockets. Auto uses Herdr when available, otherwise built-in.</small></span><select class="settings-select" id="optBackendMode"><option value="builtin">Built-in terminal backend</option><option value="external-herdr">External Herdr</option><option value="auto">Auto</option></select></label><label class="option"><input type="checkbox" id="optBuiltinBackendEnabled"><span>Enable built-in backend<small>Allows local PTY sessions managed by this WebUI process.</small></span></label><label class="option"><input type="checkbox" id="optExternalHerdrBackendEnabled"><span>Enable external Herdr<small>Allows detecting and explicitly launching external Herdr sessions. Discovery stays passive until you create one.</small></span></label><label class="option"><span>Built-in shell<small>Optional shell or command path for new built-in panes. Leave empty for SHELL or /bin/zsh.</small></span><input id="optBuiltinShell" placeholder="/bin/zsh"${inputAttrs()}></label><label class="option"><span>Default folder<small>Used by Files and Git when no workspace is selected. The backend verifies access and falls back to home.</small></span><input id="optDefaultFolder" placeholder="~"${inputAttrs()}></label></section><section class="settings-section"><div class="settings-section-head"><h3>Power behavior</h3><p>Server-side sleep prevention defaults.</p></div><label class="option"><span>No-sleep Auto cooldown<small>Seconds to wait after agents stop working before releasing no-sleep.</small></span><input id="optNoSleepAutoCooldown" type="number" min="0" max="3600" step="1"${inputAttrs("done")}></label></section><div class="worktree-error" id="serverSettingsError"></div><div class="modal-actions"><button type="button" class="tab add" id="serverSettingsLoad">Reload server settings</button><button type="button" class="btn" id="serverSettingsApply">Apply server settings</button><button type="button" class="btn question-confirm" id="serverSettingsLogout" title="Log out from this server">Logout</button></div></div>`;
 }
 function themeColorInputId(mode, key) {
   return `optThemeColor-${mode}-${key}`;
@@ -1340,15 +1346,16 @@ const defaultOptions = {
   terminalCore: HerdrAppHelpers.resolveTerminalCore(""),
   terminalLinks: true,
   terminalMouseReporting: false,
-  tempTerminalLabelMaxChars: 20,
   agentSortMode: "off",
   agentStatusOrder: ["blocked", "idle", "done", "other", "working"],
   sidebarWorkspacePercent: 68,
   parentCloseMode: "panels",
+  workspaceOpenTerminal: false,
   stuckWorkingEnabled: true,
   workingDismissMinutes: 30,
   workspaceSort: "default",
   scrollLines: 3,
+  paneTabMaxChars: 20,
   terminalFontSize: 14,
   treeIndentPx: 14,
   fileBrowserAllowParent: true,
@@ -1378,8 +1385,6 @@ const defaultOptions = {
   fileContentSearchMatchCase: false,
   fileContentSearchRegex: false,
   editorFindShortcutEnabled: true,
-  showTabActivity: false,
-  panelCloseMode: "smart",
   worktreeAutoDiscoverSeconds: 3,
   generateWorktreeNames: false,
   worktreeDefaultDirectory: "",
@@ -1503,7 +1508,6 @@ function normalizeOptions(value) {
   );
   next.terminalCoreGhosttyMigrated = true;
   next.terminalMouseReporting = next.terminalMouseReporting === true;
-  next.tempTerminalLabelMaxChars = Math.max(4, Math.min(80, Number(next.tempTerminalLabelMaxChars) || 20));
   if (!["off", "attention", "attention_inverted"].includes(next.agentSortMode))
     next.agentSortMode = defaultOptions.agentSortMode;
   next.agentStatusOrder = normalizeAgentStatusOrder(next.agentStatusOrder);
@@ -1511,6 +1515,7 @@ function normalizeOptions(value) {
     next.agentStatusOrder = normalizeAgentStatusOrder(workingFirstAgentStatusOrder);
   if (!["panels", "close"].includes(next.parentCloseMode))
     next.parentCloseMode = defaultOptions.parentCloseMode;
+  next.workspaceOpenTerminal = next.workspaceOpenTerminal !== false;
   next.stuckWorkingEnabled = next.stuckWorkingEnabled !== false;
   if (next.sortAgentsByStatus === true) next.agentSortMode = "attention";
   delete next.sortAgentsByStatus;
@@ -1536,6 +1541,7 @@ function normalizeOptions(value) {
   if (!["default", "drag", "state"].includes(next.workspaceSort))
     next.workspaceSort = defaultOptions.workspaceSort;
   next.scrollLines = Math.max(1, Math.min(20, Number(next.scrollLines) || 3));
+  next.paneTabMaxChars = Math.max(4, Math.min(60, Math.round(Number(next.paneTabMaxChars) || 20)));
   next.terminalFontSize = Math.max(10, Math.min(22, Math.round(Number(next.terminalFontSize) || 14)));
   next.treeIndentPx = Math.max(0, Math.min(40, Number(next.treeIndentPx) || 14));
   next.fileBrowserAllowParent = next.fileBrowserAllowParent !== false;
@@ -1567,8 +1573,6 @@ function normalizeOptions(value) {
   next.fileContentSearchMatchCase = next.fileContentSearchMatchCase === true;
   next.fileContentSearchRegex = next.fileContentSearchRegex === true;
   next.editorFindShortcutEnabled = next.editorFindShortcutEnabled !== false;
-  next.showTabActivity = next.showTabActivity === true;
-  next.panelCloseMode = ["always", "smart"].includes(next.panelCloseMode) ? next.panelCloseMode : "smart";
   next.worktreeAutoDiscoverSeconds = Math.max(
     0,
     Math.min(
@@ -1588,6 +1592,15 @@ function normalizeOptions(value) {
   return next;
 }
 let options = normalizeOptions(loadOptions());
+// Single source for the open_terminal body flag the workspace-open endpoints
+// take: every frontend entry (create modal, worktree open, recents, file
+// browser, search) sends this value so a workspace opens with a terminal
+// only when the user asked for one. Options may be undefined in isolated
+// module harnesses (file browser tests run without the desktop bundle),
+// so a missing options object means "off", never a crash.
+function workspaceOpenTerminalFlag() {
+  return typeof options !== "undefined" && options.workspaceOpenTerminal === true;
+}
 localStorage.removeItem("herdr-web-shiftenter-migrated");
 let workingDismissals = loadWorkingDismissals();
 // Green "Applied" confirmation badge for settings rows. Every local option
@@ -1663,7 +1676,6 @@ const SETTINGS_CONFIRM_IDS = [
   "optShiftEnterNewline",
   "optSound",
   "optBrowserNotifications",
-  "optPanelCloseMode",
   "optGlobalShortcutsEnabled",
   "optGlobalShortcutPrefix",
   "optSearchShortcut",
@@ -1672,14 +1684,13 @@ const SETTINGS_CONFIRM_IDS = [
   "optTerminalFontSize",
   "optTerminalLinks",
   "optTerminalMouseReporting",
-  "optTempTerminalLabelMaxChars",
   "optCloseShortcut",
   "optAgentSortMode",
   "optSidebarWorkspacePercent",
   "optParentCloseMode",
+  "optWorkspaceOpenTerminal",
   "optStuckWorkingEnabled",
   "optWorkingDismissMinutes",
-  "optShowTabActivity",
   "optWorkspaceSort",
   "optSoundScope",
   "optNotificationVolume",
@@ -1687,6 +1698,7 @@ const SETTINGS_CONFIRM_IDS = [
   "optWorktreeDefaultDirectory",
   "optExplorationDefaultDirectory",
   "optScrollLines",
+  "optPaneTabMaxChars",
   "optWorktreeAutoDiscover",
   "optTreeIndentPx",
   "optFileBrowserAllowParent",
@@ -1990,11 +2002,11 @@ if (soundSetting && !el("optAgentSortMode"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      `<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly${inputAttrs("done")}><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly${inputAttrs("done")}><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal renderer<small>Ghostty is the default: it loads a larger WASM core for stronger VT compatibility and renders Kitty graphics inline. wterm is lightweight but shows an image placeholder. Stored wterm settings migrate to Ghostty once unless you re-choose wterm. Requires reload after switching.</small></span><select class="settings-select" id="optTerminalCore"><option value="ghostty">Ghostty VT core</option><option value="wterm">wterm VT core</option></select></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"${inputAttrs()}><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Terminal font size<small><span id="terminalFontSizeValue">14</span>px. Applied live; grid re-fits after the change.</small></span><input type="range" id="optTerminalFontSize" min="10" max="22" step="1"></label><label class="option"><input type="checkbox" id="optTerminalLinks"><span>Terminal links<small>Detect http/https URLs in terminal output and open them in a new tab when clicked.</small></span></label><label class="option"><input type="checkbox" id="optTerminalMouseReporting"><span>Terminal mouse reporting<small>Forward mouse clicks and movement to terminal apps. Disabled by default so pointer movement cannot type raw mouse codes into the shell; scrolling still works.</small></span></label><label class="option"><span>Temp terminal label length<small>Maximum characters for minimized temporary terminal restore labels (Temp.name).</small></span><input id="optTempTerminalLabelMaxChars" type="number" min="4" max="80" step="1"${inputAttrs("done")}></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Turn on status group sorting for the agents sidebar.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Custom group order</option><option value="attention_inverted">Working-first preset</option></select></label><div class="option agent-sort-order" id="optAgentStatusOrder"><div><strong>Agent group order</strong><small>Move status groups with arrows. Idle green, working yellow, blocked red, done blue, others gray. Saved in this browser.</small></div><div class="agent-sort-list" id="agentStatusOrderList"></div></div><label class="option"><span>Workspace panel size<small>Percent of sidebar height used by Workspaces. Drag separator or type a percent.</small></span><input id="optSidebarWorkspacePercent" type="number" min="20" max="80" step="1"${inputAttrs("done")}></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"${inputAttrs("done")}></label><label class="option"><input type="checkbox" id="optShowTabActivity"><span>Show panel last update<small>Display local last-change age on top panel tabs. Updates on refreshes, events, and selected terminal output; no timer polling.</small></span></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether alerts fire in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><span>Notification volume<small><span id="notificationVolumeValue">24</span>% for local attention tone.</small></span><input type="range" id="optNotificationVolume" min="0" max="100" step="1"></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Worktree default directory<small>Base directory for generated worktree checkout paths. Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"${inputAttrs()}></label><label class="option"><span>Exploration default directory<small>Prefills new/open workspace, worktree discovery, and Git cleanup scan paths.</small></span><input id="optExplorationDefaultDirectory" placeholder="~/Documents/code"${inputAttrs()}></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"${inputAttrs("done")}></label>`,
+      `<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly${inputAttrs("done")}><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly${inputAttrs("done")}><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal renderer<small>Ghostty is the default: it loads a larger WASM core for stronger VT compatibility and renders Kitty graphics inline. wterm is lightweight but shows an image placeholder. Stored wterm settings migrate to Ghostty once unless you re-choose wterm. Requires reload after switching.</small></span><select class="settings-select" id="optTerminalCore"><option value="ghostty">Ghostty VT core</option><option value="wterm">wterm VT core</option></select></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"${inputAttrs()}><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Terminal font size<small><span id="terminalFontSizeValue">14</span>px. Applied live; grid re-fits after the change.</small></span><input type="range" id="optTerminalFontSize" min="10" max="22" step="1"></label><label class="option"><input type="checkbox" id="optTerminalLinks"><span>Terminal links<small>Detect http/https URLs in terminal output and open them in a new tab when clicked.</small></span></label><label class="option"><input type="checkbox" id="optTerminalMouseReporting"><span>Terminal mouse reporting<small>Forward mouse clicks and movement to terminal apps. Disabled by default so pointer movement cannot type raw mouse codes into the shell; scrolling still works.</small></span></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Turn on status group sorting for the agents sidebar.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Custom group order</option><option value="attention_inverted">Working-first preset</option></select></label><div class="option agent-sort-order" id="optAgentStatusOrder"><div><strong>Agent group order</strong><small>Move status groups with arrows. Idle green, working yellow, blocked red, done blue, others gray. Saved in this browser.</small></div><div class="agent-sort-list" id="agentStatusOrderList"></div></div><label class="option"><span>Workspace panel size<small>Percent of sidebar height used by Workspaces. Drag separator or type a percent.</small></span><input id="optSidebarWorkspacePercent" type="number" min="20" max="80" step="1"${inputAttrs("done")}></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optWorkspaceOpenTerminal"><span>Open terminal with workspace<small>Start a terminal when a workspace opens. Off by default: the workspace opens empty and you add terminals from its surface.</small></span></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"${inputAttrs("done")}></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether alerts fire in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><span>Notification volume<small><span id="notificationVolumeValue">24</span>% for local attention tone.</small></span><input type="range" id="optNotificationVolume" min="0" max="100" step="1"></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Worktree default directory<small>Base directory for generated worktree checkout paths. Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"${inputAttrs()}></label><label class="option"><span>Exploration default directory<small>Prefills new/open workspace, worktree discovery, and Git cleanup scan paths.</small></span><input id="optExplorationDefaultDirectory" placeholder="~/Documents/code"${inputAttrs()}></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Panel tab width<small>Character budget before a tab label ellipsizes. Short labels stay their natural width.</small></span><input id="optPaneTabMaxChars" type="number" min="4" max="60" step="1"${inputAttrs("done")}></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"${inputAttrs("done")}></label>`,
     );
-const showTabActivitySetting = el("optShowTabActivity");
-if (showTabActivitySetting && !el("optTreeIndentPx"))
-  showTabActivitySetting
+const treeIndentSettingAnchor = el("optWorkingDismissMinutes");
+if (treeIndentSettingAnchor && !el("optTreeIndentPx"))
+  treeIndentSettingAnchor
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
@@ -2079,12 +2091,12 @@ function groupSettingsSections() {
         "optFit",
         "optShiftEnterNewline",
         "optScrollLines",
+        "optPaneTabMaxChars",
         "optTerminalCore",
         "optTerminalFontFamily",
         "optTerminalFontSize",
         "optTerminalLinks",
         "optTerminalMouseReporting",
-        "optTempTerminalLabelMaxChars",
       ],
     },
     {
@@ -2102,11 +2114,10 @@ function groupSettingsSections() {
         "optAgentStatusOrder",
         "optSidebarWorkspacePercent",
         "optParentCloseMode",
+        "optWorkspaceOpenTerminal",
         "optStuckWorkingEnabled",
         "optWorkingDismissMinutes",
         "optCloseShortcut",
-        "optShowTabActivity",
-        "optPanelCloseMode",
       ],
     },
     {
@@ -2257,12 +2268,12 @@ function applyOptions() {
     terminalCore = el("optTerminalCore"),
     terminalLinks = el("optTerminalLinks"),
     terminalMouseReporting = el("optTerminalMouseReporting"),
-    tempTerminalLabelMaxChars = el("optTempTerminalLabelMaxChars"),
     themeSelect = el("optTheme"),
     closeShortcut = el("optCloseShortcut"),
     sortAgents = el("optAgentSortMode"),
     sidebarWorkspacePercent = el("optSidebarWorkspacePercent"),
     parentCloseMode = el("optParentCloseMode"),
+    workspaceOpenTerminal = el("optWorkspaceOpenTerminal"),
     stuckWorkingEnabled = el("optStuckWorkingEnabled"),
     workingDismissMinutes = el("optWorkingDismissMinutes"),
     workspaceSort = el("optWorkspaceSort"),
@@ -2270,6 +2281,7 @@ function applyOptions() {
     notificationVolume = el("optNotificationVolume"),
     notificationVolumeValue = el("notificationVolumeValue"),
     scrollLines = el("optScrollLines"),
+    paneTabMaxChars = el("optPaneTabMaxChars"),
     treeIndentPx = el("optTreeIndentPx"),
     fileBrowserAllowParent = el("optFileBrowserAllowParent"),
     fileBrowserGitStatus = el("optFileBrowserGitStatus"),
@@ -2293,8 +2305,6 @@ function applyOptions() {
     fileContentSearchMatchCase = el("optFileContentSearchMatchCase"),
     fileContentSearchRegex = el("optFileContentSearchRegex"),
     scrollLinesValue = el("scrollLinesValue"),
-    showTabActivity = el("optShowTabActivity"),
-    panelCloseMode = el("optPanelCloseMode"),
     worktreeAutoDiscover = el("optWorktreeAutoDiscover"),
     generateWorktreeNames = el("optGenerateWorktreeNames"),
     worktreeDefaultDirectory = el("optWorktreeDefaultDirectory"),
@@ -2329,8 +2339,6 @@ function applyOptions() {
     terminalLinks.checked = options.terminalLinks !== false;
   if (terminalMouseReporting)
     terminalMouseReporting.checked = options.terminalMouseReporting === true;
-  if (tempTerminalLabelMaxChars)
-    tempTerminalLabelMaxChars.value = String(options.tempTerminalLabelMaxChars || 20);
   if (themeSelect) themeSelect.value = themeMode;
   const densitySelect = el("optDensity");
   if (densitySelect) densitySelect.value = normalizeDensity(options.density);
@@ -2343,6 +2351,8 @@ function applyOptions() {
   renderAgentStatusOrderSettings();
   if (parentCloseMode)
     parentCloseMode.value = options.parentCloseMode || "panels";
+  if (workspaceOpenTerminal)
+    workspaceOpenTerminal.checked = options.workspaceOpenTerminal === true;
   if (stuckWorkingEnabled)
     stuckWorkingEnabled.checked = options.stuckWorkingEnabled !== false;
   if (workingDismissMinutes)
@@ -2356,6 +2366,8 @@ function applyOptions() {
       Math.round((options.notificationVolume ?? 0.24) * 100),
     );
   if (scrollLines) scrollLines.value = String(options.scrollLines || 3);
+  if (paneTabMaxChars)
+    paneTabMaxChars.value = String(options.paneTabMaxChars || 20);
   if (treeIndentPx) treeIndentPx.value = String(options.treeIndentPx ?? 14);
   if (fileBrowserAllowParent)
     fileBrowserAllowParent.checked = !!options.fileBrowserAllowParent;
@@ -2394,10 +2406,9 @@ function applyOptions() {
   if (fileContentSearchRegex)
     fileContentSearchRegex.checked = options.fileContentSearchRegex === true;
   document.body.style.setProperty("--herdr-tree-indent", `${options.treeIndentPx ?? 14}px`);
+  document.body.style.setProperty("--pane-tab-max-chars", String(options.paneTabMaxChars || 20));
   if (scrollLinesValue)
     scrollLinesValue.textContent = String(options.scrollLines || 3);
-  if (showTabActivity) showTabActivity.checked = !!options.showTabActivity;
-  if (panelCloseMode) panelCloseMode.value = options.panelCloseMode || "smart";
   if (worktreeAutoDiscover)
     worktreeAutoDiscover.value = String(
       options.worktreeAutoDiscoverSeconds ?? 3,
@@ -2635,12 +2646,8 @@ function applyTheme() {
   if (themeSelect) themeSelect.value = themeMode;
   localStorage.setItem("herdr-web-theme", themeMode);
   if (term && term.setTheme) term.setTheme(terminalTheme());
-  // Every open temp session owns its own renderer surface; re-theme them all
-  // (fan-out lives in the shared manager). Guarded so a failure here can
-  // never abort the chrome updates or the fit below.
-  if (tempTerminal && tempTerminal.applyTheme) {
-    try { tempTerminal.applyTheme(); } catch (e) {}
-  }
+  if (window.HerdrPaneTerminals && typeof window.HerdrPaneTerminals.applyThemeAll === "function")
+    window.HerdrPaneTerminals.applyThemeAll();
   if (window.HerdrMarkdownPreview && window.HerdrMarkdownPreview.refreshTheme)
     window.HerdrMarkdownPreview.refreshTheme();
   fitTerminalShell();
@@ -2700,6 +2707,52 @@ function closeQuestion(answer) {
 function gitUiEnabled() {
   return options.gitUiEnabled !== false;
 }
+// Right sidebar rail: Files/Git/Search select the right sidebar column
+// view (clicking the active one toggles the column collapse), Search
+// hosts the embedded search panel there. The center-area terminal stays
+// available from pane tabs.
+function setupRightSidebarRail() {
+  const rail = el("rightSidebarRail");
+  if (!rail) return;
+  const files = el("rightRailFiles");
+  if (files && !files.innerHTML) files.innerHTML = appIcon("file");
+  const git = el("rightRailGit");
+  if (git && !git.innerHTML) git.innerHTML = appIcon("git");
+  const search = el("rightRailSearch");
+  if (search && !search.innerHTML) search.innerHTML = '<span aria-hidden="true">⌕</span>';
+  if (!rail.__herdrWired) {
+    rail.__herdrWired = true;
+    if (files) files.onclick = () => openWorkspaceFileBrowser(state.ws);
+    if (git) git.onclick = () => openWorkspaceGitUi(state.ws);
+    if (search) search.onclick = () => openWorkspaceSearchPanel(state.ws);
+  }
+  syncRightSidebarRail();
+}
+function syncRightSidebarRail() {
+  const files = el("rightRailFiles"),
+    git = el("rightRailGit"),
+    search = el("rightRailSearch");
+  if (!files && !git) return;
+  const mode = currentWorkspaceShellMode();
+  const collapsed = !!(window.HerdrRightSidebar && window.HerdrRightSidebar.collapsed && window.HerdrRightSidebar.collapsed());
+  // The remembered mode alone must not light a rail button: a fresh boot
+  // never auto-opens a panel (boot-clean rule), so the column can hold
+  // nothing while the persisted mode says files/git/search. Active reads
+  // the hosted panel instead, and the rail stays neutral until a drawer
+  // actually mounts its panel in the column.
+  const hosted = window.HerdrRightSidebar && window.HerdrRightSidebar.isHosted
+    ? (panelId) => window.HerdrRightSidebar.isHosted(panelId)
+    : () => false;
+  const set = (button, value, panelId) => {
+    if (!button) return;
+    const active = mode === value && !collapsed && hosted(panelId);
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  };
+  set(files, "files", "fileBrowserPanel");
+  set(git, "git", "gitUiPanel");
+  set(search, "search", "searchPanel");
+}
 function themeToggleIcon() {
   if (themeMode === "auto") return `${appIcon("themeAuto")}<sub>A</sub>`;
   return themeMode === "dark" ? '<span aria-hidden="true">☾</span>' : '<span aria-hidden="true">☀</span>';
@@ -2735,74 +2788,7 @@ function setupSessionChrome() {
     head.insertBefore(wrap.firstChild, headerActions);
     syncNoSleepControls();
   }
-  let shellModeGroup = el("shellModeGroup");
-  if (!shellModeGroup) {
-    shellModeGroup = document.createElement("span");
-    shellModeGroup.id = "shellModeGroup";
-    shellModeGroup.className = "shell-mode-group";
-    shellModeGroup.setAttribute("role", "tablist");
-    shellModeGroup.setAttribute("aria-label", "Workspace view");
-    if (headerActions) headerActions.insertAdjacentElement("afterend", shellModeGroup);
-    else head.appendChild(shellModeGroup);
-  }
-  if (!el("terminalWorkspaceToggle")) {
-    const t = document.createElement("button");
-    t.className = "btn worktree-open-trigger shell-action shell-icon-button";
-    t.id = "terminalWorkspaceToggle";
-    t.title = titleWithWebuiShortcut("Show terminal", "focusTerminal");
-    t.innerHTML = appIcon("terminal");
-    t.setAttribute("aria-label", "Show terminal");
-    t.setAttribute("role", "tab");
-    shellModeGroup.appendChild(t);
-    t.onclick = () => {
-      if (currentWorkspaceShellMode() === "terminal" && !isWorkspaceShellMinimized()) minimizeWorkspaceShell(state.ws);
-      else showTerminalShellMode({ forceOpen: isWorkspaceShellMinimized() });
-    };
-  } else if (el("terminalWorkspaceToggle").parentNode !== shellModeGroup) {
-    shellModeGroup.appendChild(el("terminalWorkspaceToggle"));
-  }
-  if (!gitUiEnabled()) {
-    const existingGitToggle = el("gitWorkspaceToggle");
-    if (existingGitToggle) existingGitToggle.remove();
-    if (window.HerdrGitUi) window.HerdrGitUi.hide();
-  } else if (!el("gitWorkspaceToggle")) {
-    const b = document.createElement("button");
-    b.className = "btn worktree-open-trigger shell-action shell-icon-button git-workspace-toggle unknown";
-    b.id = "gitWorkspaceToggle";
-    b.title = "Show Git drawer";
-    b.innerHTML = appIcon("git");
-    b.setAttribute("aria-label", "Show Git drawer");
-    b.setAttribute("role", "tab");
-    shellModeGroup.appendChild(b);
-    b.onclick = () => openWorkspaceGitUi(state.ws, { forceOpen: isWorkspaceShellMinimized() });
-  } else if (el("gitWorkspaceToggle").parentNode !== shellModeGroup) {
-    shellModeGroup.appendChild(el("gitWorkspaceToggle"));
-  }
-  if (!el("fileWorkspaceToggle")) {
-    const b = document.createElement("button");
-    b.className = "btn worktree-open-trigger shell-action shell-icon-button";
-    b.id = "fileWorkspaceToggle";
-    b.title = "Show file browser";
-    b.innerHTML = appIcon("file");
-    b.setAttribute("aria-label", "Show file browser");
-    b.setAttribute("role", "tab");
-    shellModeGroup.appendChild(b);
-    b.onclick = () => openWorkspaceFileBrowser(state.ws, { forceOpen: isWorkspaceShellMinimized() });
-  } else if (el("fileWorkspaceToggle").parentNode !== shellModeGroup) {
-    shellModeGroup.appendChild(el("fileWorkspaceToggle"));
-  }
-  if (!el("workspaceShellMinimize")) {
-    const b = document.createElement("button");
-    b.className = "btn worktree-open-trigger shell-action shell-icon-button workspace-shell-minimize";
-    b.id = "workspaceShellMinimize";
-    b.title = "Minimize workspace view";
-    b.textContent = "−";
-    b.setAttribute("aria-label", "Minimize workspace view");
-    shellModeGroup.appendChild(b);
-    b.onclick = () => minimizeWorkspaceShell(state.ws);
-  } else if (el("workspaceShellMinimize").parentNode !== shellModeGroup) {
-    shellModeGroup.appendChild(el("workspaceShellMinimize"));
-  }
+  setupRightSidebarRail();
   syncShellModeButtons();
   const side = document.querySelector(".side");
   const workspacePane = el("workspacePane");
@@ -2824,8 +2810,9 @@ function setupSessionChrome() {
     footer.className = "side-footer-bar";
     side.appendChild(footer);
   }
+  if (head && head.parentNode !== footer) footer.insertBefore(head, footer.firstChild);
   const brand = document.querySelector(".brand");
-  if (brand && brand.parentNode !== footer) footer.appendChild(brand);
+  if (brand && brand.parentNode !== head && brand.parentNode !== footer) footer.appendChild(brand);
   if (!el("footerSessionButton")) {
     const b = document.createElement("button");
     b.id = "footerSessionButton";
@@ -2856,7 +2843,7 @@ function setupSessionChrome() {
     const actions = document.createElement("span");
     actions.className = "footer-actions";
     actions.innerHTML = `<button class="mini footer-icon-button" id="footerShortcutsButton" title="${escapeAttr(titleWithWebuiShortcut("Shortcuts", "help"))}" aria-label="${escapeAttr(titleWithWebuiShortcut("Shortcuts", "help"))}">${appIcon("help")}</button><button class="mini footer-icon-button" id="footerSettingsButton" title="${escapeAttr(titleWithWebuiShortcut("Settings", "settings"))}" aria-label="${escapeAttr(titleWithWebuiShortcut("Settings", "settings"))}">${appIcon("settings")}</button>`;
-    footer.appendChild(actions);
+    (head || footer).appendChild(actions);
     el("footerShortcutsButton").onclick = () => { applyOptions(); el("shortcutsModal").style.display = "grid"; };
     el("footerSettingsButton").onclick = () => { el("settingsModal").style.display = "grid"; prepareSettingsModalOpen(); };
   }
@@ -3248,7 +3235,8 @@ async function closeCurrentSession() {
       state.pane = null;
       state.workspaceShell = {};
       lastShellWorkspace = null;
-      syncWorkspaceShellRestoreControl();
+      syncShellModeButtons();
+      if (window.HerdrRightSidebar) window.HerdrRightSidebar.apply();
       history.pushState(null, "", "/session/default");
     }
     // The retarget lands on the default session's own stored pin when the
@@ -3283,7 +3271,8 @@ async function closeCurrentSession() {
       state.pane = null;
       state.workspaceShell = {};
       lastShellWorkspace = null;
-      syncWorkspaceShellRestoreControl();
+      syncShellModeButtons();
+      if (window.HerdrRightSidebar) window.HerdrRightSidebar.apply();
       history.pushState(null, "", "/session/default");
     }
     state.sessionBackend = retargetBackend;
@@ -3428,7 +3417,15 @@ function apiOptions(opt) {
 function apiErrorMessage(body, statusText) {
   return globalThis.HerdrHttp
     ? globalThis.HerdrHttp.errorMessage(body, statusText)
-    : body && body.error ? String(body.error) : statusText;
+    : (() => {
+      const err = body && body.error;
+      if (!err) return statusText;
+      // Backend errors arrive as objects (code + message); the bare
+      // String() call collapsed them to [object Object], which broke
+      // every caller matching on the message text.
+      if (typeof err === "string") return err;
+      return err.message || err.code || statusText;
+    })();
 }
 async function api(url, opt) {
   if (globalThis.HerdrHttp) return globalThis.HerdrHttp.request(url, opt);
@@ -3915,7 +3912,8 @@ function goSession(name, backend = currentSessionBackend(), { closeManager = tru
   }
   state.workspaceShell = {};
   lastShellWorkspace = null;
-  syncWorkspaceShellRestoreControl();
+  syncShellModeButtons();
+  if (window.HerdrRightSidebar) window.HerdrRightSidebar.apply();
   resetTerminalConnection(true);
   setTerminalLoading(true);
   // Cycle the events socket through the shared helper so it re-subscribes
@@ -3959,7 +3957,8 @@ function handleSessionPopState() {
   if (sessionChanged) {
     state.workspaceShell = {};
     lastShellWorkspace = null;
-    syncWorkspaceShellRestoreControl();
+    syncShellModeButtons();
+    if (window.HerdrRightSidebar) window.HerdrRightSidebar.apply();
   }
   // Re-subscribe the events socket only when what it is bound to actually
   // changed; Back within one session keeps the live subscription, and the
@@ -3979,21 +3978,34 @@ async function refreshOnline(seq) {
   const routeWs = state.ws,
     routeTab = state.tab,
     routePane = state.pane;
+  // Single-request bootstrap: /api/session-snapshot returns workspaces,
+  // tabs, panes, agents, layouts, the drag order, and per-workspace
+  // worktree results in one round trip. On any failure fall through to
+  // the legacy multi-call path below; the sticky flag stops retrying the
+  // snapshot after the first failure so poll cost never exceeds the old
+  // count by more than the one failed request.
+  if (state.snapshotBootstrap) {
+    let snap = null;
+    try {
+      snap = await api("/api/session-snapshot");
+      if (seq !== refreshSeq) return;
+    } catch (e) {
+      state.snapshotBootstrap = false;
+      if (seq !== refreshSeq) return;
+    }
+    if (snap && applySessionSnapshot(snap)) {
+      await finishRefreshOnline(seq, routeWs, routeTab, routePane);
+      return;
+    }
+  }
+  // Legacy multi-call path: kept verbatim for servers without the
+  // snapshot bootstrap and for the first failed-snapshot refresh.
   const w = await api("/api/workspaces");
   if (seq !== refreshSeq) return;
   state.workspaces = w.result.workspaces || [];
   pruneWorkspaceShellStates();
   creatingDefaultWorkspace = false;
-  if (state.ws && !state.workspaces.some((w) => w.workspace_id === state.ws)) {
-    resetTerminalConnection(true);
-    setTerminalLoading(false);
-    state.ws = (state.workspaces[0] || {}).workspace_id || null;
-    state.tab = null;
-    state.pane = null;
-    state.terminalId = null;
-    if (state.ws) history.replaceState(null, "", selectionPath(state.ws));
-    else history.replaceState(null, "", sessionPrefix());
-  }
+  fixVanishedWorkspaceSelection();
   const worktreeSources = worktreeSourceWorkspaceIds();
   const worktreeResults = await Promise.all(
     worktreeSources.map((id) =>
@@ -4059,6 +4071,112 @@ async function refreshOnline(seq) {
     state.panes = p.result.panes || [];
     state.agents = a.result.agents || [];
     handleAttentionSound();
+  }
+  await finishRefreshOnline(seq, routeWs, routeTab, routePane);
+}
+
+// Drops the current selection when its workspace vanished server-side and
+// repoints to the first remaining workspace. Shared by both bootstrap
+// paths; runs right after state.workspaces is populated.
+function fixVanishedWorkspaceSelection() {
+  if (state.ws && !state.workspaces.some((w) => w.workspace_id === state.ws)) {
+    resetTerminalConnection(true);
+    setTerminalLoading(false);
+    state.ws = (state.workspaces[0] || {}).workspace_id || null;
+    state.tab = null;
+    state.pane = null;
+    state.terminalId = null;
+    if (state.ws) history.replaceState(null, "", selectionPath(state.ws));
+    else history.replaceState(null, "", sessionPrefix());
+  }
+}
+
+// Applies a /api/session-snapshot bootstrap response to state. Accepts both
+// envelopes the wrapper ever produced: flat result.* (older stubs and the
+// TUI-normalized shape) and result.snapshot.* (builtin and protocol 16+
+// external). Rows are the same builders the list endpoints use, so the
+// per-workspace filtering matches what the parallel tabs/panes/agents calls
+// returned. Returns true when a usable snapshot applied.
+function applySessionSnapshot(response) {
+  const result = (response && response.result) || {};
+  const snap = result.snapshot || result;
+  const workspaces = snap.workspaces;
+  if (!Array.isArray(workspaces)) return false;
+  state.workspaces = workspaces;
+  pruneWorkspaceShellStates();
+  creatingDefaultWorkspace = false;
+  fixVanishedWorkspaceSelection();
+  // Session-wide fields below apply regardless of the workspace selection;
+  // the legacy path set them before its own !state.ws block, and a cold
+  // boot at "/" must still restore the drag order and worktree rows.
+  // Seed the layout cache so refresh sizing skips the per-pane
+  // pane.layout round trip (builtin never fires layout.updated, so the
+  // cache is otherwise always cold).
+  if (Array.isArray(snap.layouts)) {
+    for (const layout of snap.layouts) {
+      if (layout && layout.workspace_id && layout.tab_id)
+        state.layouts[layout.workspace_id + "/" + layout.tab_id] = layout;
+    }
+  }
+  // Per-workspace worktree results: same envelope per entry as one
+  // /api/worktrees call, so the flatMap matches the legacy path verbatim.
+  const worktreeResults = Array.isArray(result.worktree_results)
+    ? result.worktree_results
+    : [];
+  state.worktrees = worktreeResults.flatMap((r) => {
+    const result = (r || {}).result || {},
+      source = result.source || {};
+    return (result.worktrees || []).map((wt) =>
+      Object.assign({}, wt, {
+        source_workspace_id: source.source_workspace_id,
+        source_repo_name: source.repo_name,
+        source_repo_key: source.repo_key,
+        source_repo_root: source.repo_root,
+        source_cwd: source.source_checkout_path,
+        default_worktree_directory: source.default_worktree_directory,
+      }),
+    );
+  });
+  state.workspaceBranches = {};
+  for (const r of worktreeResults) {
+    const result = (r || {}).result || {},
+      source = result.source || {},
+      sourceId = source.source_workspace_id,
+      sourcePath = source.source_checkout_path;
+    if (!sourceId || !sourcePath) continue;
+    const match = (result.worktrees || []).find((wt) => samePath(wt.path, sourcePath));
+    if (match && (match.branch || match.is_detached))
+      state.workspaceBranches[sourceId] =
+        match.branch || (match.is_detached ? "detached" : "");
+  }
+  state.workspaceOrder = Array.isArray(result.workspace_order)
+    ? result.workspace_order
+    : [];
+  if (!state.ws) {
+    state.allTabs = [];
+    state.tabs = [];
+    state.panes = [];
+    state.agents = [];
+    state.terminalId = null;
+    setTerminalLoading(false);
+    return true;
+  }
+  state.allTabs = snap.tabs || [];
+  state.tabs = state.allTabs.filter((t) => t.workspace_id === state.ws);
+  state.panes = (snap.panes || []).filter((p) => p.workspace_id === state.ws);
+  state.agents = snap.agents || [];
+  handleAttentionSound();
+  return true;
+}
+
+// Selection fixups, layout sizing, render, and terminal connect for both
+// bootstrap paths. Callers (refreshOnline and applySessionSnapshot) have
+// already populated state.{workspaces,tabs,panes,agents,worktrees,...} and
+// resolved the workspace selection; this tail only repairs tab/pane
+// selection, sizes the terminal from the layout cache (falling back to one
+// pane-layout request when cold), and finishes the render cycle.
+async function finishRefreshOnline(seq, routeWs, routeTab, routePane) {
+  if (state.ws) {
     if (!state.tabs.some((t) => t.tab_id === state.tab)) {
       const focused = state.tabs.find((t) => t.focused);
       state.tab = (focused || state.tabs[0] || {}).tab_id || null;
@@ -4098,10 +4216,9 @@ async function refreshOnline(seq) {
     state.layoutRows = null;
     state.layoutPaneCount = 0;
     if (state.pane) {
-      // Prefer the cached layout snapshot (populated by session.snapshot or
-      // layout.updated events) to avoid a per-pane pane.layout round trip on
-      // every refresh. Fall back to the legacy request only when no cache
-      // exists for the current tab.
+      // Prefer the cached layout snapshot (populated by layout.updated
+      // events) to avoid a per-pane pane.layout round trip on every refresh.
+      // Fall back to the request only when no cache exists for the current tab.
       let layout = currentTabLayout();
       if (!layout) {
         try {
@@ -4168,11 +4285,19 @@ async function refreshOnline(seq) {
   // ensures the correct surface is visible for the current workspace. We only
   // call applyWorkspaceShellForSelection when the workspace actually changed
   // since the last refresh to avoid redundant surface toggles on every poll.
-  if (state.ws && state.ws !== lastShellWorkspace) {
-    applyWorkspaceShellForSelection(state.ws);
-    lastShellWorkspace = state.ws;
+  if (state.ws) {
+    // Reuse the existing workspace-change guard (lastShellWorkspace, top of
+    // file) so polls stay cheap; only surface toggles on actual change.
+    if (state.ws !== lastShellWorkspace) {
+      applyWorkspaceShellForSelection(state.ws);
+      lastShellWorkspace = state.ws;
+    }
+    // Zero-tab workspace: no terminal to connect, the empty-leaf body
+    // owns the screen. Any workspace with panes connects as before.
+    if (state.pane) connectTerminal();
+    if (window.HerdrWorkspacePanes) window.HerdrWorkspacePanes.renderWorkspacePanes();
+    syncRightSidebarRail();
   }
-  if (state.ws) connectTerminal();
 }
 async function refresh() {
   const seq = ++refreshSeq;
@@ -4217,10 +4342,13 @@ function eventNeedsFastRefresh(kind) {
 }
 function forgetClosedSelection(kind, data) {
   if (kind === "pane.exited" && data && data.pane_id) {
-    if (tempTerminal && tempTerminal.handlePaneExited) tempTerminal.handlePaneExited(data.pane_id);
+    // A not-found race here is benign (the pane closed server-side
+    // already), but the refresh must run either way: the exited pane
+    // needs to leave state.panes even when the close call loses the
+    // race.
     closePaneById(data.pane_id)
       .then(() => scheduleRefresh(50))
-      .catch(() => {});
+      .catch(() => scheduleRefresh(50));
   }
   if (kind === "pane.closed" || kind === "pane.exited") {
     const closedPane = data && data.pane_id
@@ -4258,18 +4386,43 @@ function forgetClosedSelection(kind, data) {
       replaceSelectionHistory();
       if (window.HerdrTerminalRenderer) connectTerminal();
     }
-  } else if (kind === "workspace.closed") {
-    const closedWsId = data && data.workspace_id;
-    const wasSelected = closedWsId && closedWsId === state.ws;
-    if (closedWsId) removeClosedWorkspaceFromState(closedWsId);
+  } else if (kind === "workspace.closed" || kind === "worktree.removed") {
+    // worktree.removed carries the removed ids when the backend knows
+    // them (builtin): ids beat the path match, which is ambiguous when
+    // two open workspaces share one folder. The path fallback keeps
+    // external backends working.
+    const removedIds = kind === "worktree.removed" && data && Array.isArray(data.workspace_ids)
+      ? data.workspace_ids.filter((id) => typeof id === "string")
+      : [];
+    const removedWorkspaces = removedIds.length
+      ? removedIds.map((id) => (state.workspaces || []).find((workspace) => workspace.workspace_id === id) || { workspace_id: id })
+      : kind === "worktree.removed"
+        ? [(state.workspaces || []).find((workspace) => workspacePath(workspace) === (data && data.path)) || data]
+        : [data];
+    const removedIdsResolved = removedWorkspaces.filter(Boolean).map((workspace) => workspace.workspace_id);
+    const wasSelected = removedIdsResolved.includes(state.ws);
+    removedWorkspaces.filter(Boolean).forEach((workspace) => {
+      forgetWorkspaceClientState(workspace);
+      if (workspace.workspace_id) removeClosedWorkspaceFromState(workspace.workspace_id);
+    });
     if (wasSelected) {
       resetTerminalConnection(true);
-      selectFallbackWorkspaceAfterClosed(closedWsId);
+      selectFallbackWorkspaceAfterClosed(state.ws);
       render();
       replaceSelectionHistory();
       if (window.HerdrTerminalRenderer) connectTerminal();
     }
   }
+}
+
+function forgetWorkspaceClientState(workspace) {
+  if (window.HerdrFileBrowser && window.HerdrFileBrowser.forgetWorkspace)
+    window.HerdrFileBrowser.forgetWorkspace(workspace);
+  if (window.HerdrGitUi && window.HerdrGitUi.forgetWorkspace)
+    window.HerdrGitUi.forgetWorkspace(workspace);
+  if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.forgetWorkspacePanes)
+    window.HerdrWorkspacePanes.forgetWorkspacePanes(workspace);
+  if (typeof forgetWorkspaceShell === "function") forgetWorkspaceShell(workspace);
 }
 
 function removeClosedPaneFromState(paneId) {
@@ -4332,6 +4485,13 @@ function selectFallbackTabAfterClosed(closedTabId) {
     (state.tabs || []).find((tab) => tab.tab_id !== closedTabId) ||
     null;
   state.tab = nextTab && nextTab.tab_id;
+  if (!nextTab) {
+    // Zero-tab workspace: keep the focused workspace, drop tab and pane.
+    // The empty-leaf body renders a New terminal button for this state.
+    state.pane = null;
+    state.terminalId = null;
+    return;
+  }
   const nextPane =
     (state.panes || []).find((pane) => pane.tab_id === state.tab && pane.focused) ||
     (state.panes || []).find((pane) => pane.tab_id === state.tab) ||
@@ -4358,13 +4518,6 @@ function selectFallbackPaneAfterClosed(closedPaneId) {
   state.pane = nextPane.pane_id;
   state.terminalId = nextPane.terminal_id || null;
 }
-// Delegate to the legacy polling snapshot helper (see legacy_polling.js).
-// The events socket pushes this every 5s for backends that do not support
-// session.snapshot. Kept as the fallback path.
-function applySnapshot(msg) {
-  applyLegacyPollingSnapshot(msg);
-}
-
 // Applies a layout.updated event payload. Replaces the cached layout for the
 // matching workspace/tab so the next render uses fresh pane rects without a
 // pane.layout round trip. Only triggers a terminal resize when the layout for
@@ -4399,7 +4552,7 @@ function applyLayoutUpdated(layout) {
 }
 
 // Reads the cached layout snapshot for the current tab, if any. Returns null
-// when no layout.updated or session.snapshot has populated it yet.
+// when no layout.updated event has populated it yet.
 function currentTabLayout() {
   if (!state.ws || !state.tab) return null;
   return state.layouts[state.ws + "/" + state.tab] || null;

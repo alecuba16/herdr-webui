@@ -5,7 +5,6 @@
     wsUrl,
     refresh,
     handleServerSettingsChanged,
-    getTempTerminal,
   }) {
     let eventWs = null;
     let eventRefreshTimer = null;
@@ -84,12 +83,6 @@
           }
           const evt = msg && msg.event;
           kind = evt && (evt.event || evt.type);
-          const data = (evt && evt.data) || {};
-          if (kind === "pane.exited") {
-            const tempTerminal = getTempTerminal();
-            if (tempTerminal && tempTerminal.handlePaneExited)
-              tempTerminal.handlePaneExited(data.pane_id);
-          }
         } catch (_) {}
         scheduleEventRefresh(kind);
       };

@@ -44,3 +44,33 @@
   font-weight: 700;
   padding: 0 2px;
 }
+/* Inline loading row for content search results. Same visual language as
+ * the git-ui busy spinner: border ring, accent top edge. Rendered by the
+ * shared file_content_search renderer, shown on every surface hosting it
+ * (right rail panel, search palette, mobile, file browser). */
+.herdr-content-search-loading {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  padding: 8px 10px;
+}
+.herdr-content-search-spinner {
+  animation: herdr-content-search-spin 800ms linear infinite;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 50%;
+  border-top-color: var(--accent);
+  display: inline-block;
+  flex: none;
+  height: 12px;
+  width: 12px;
+}
+@keyframes herdr-content-search-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .herdr-content-search-spinner {
+    animation: none;
+  }
+}

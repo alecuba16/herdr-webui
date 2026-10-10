@@ -81,9 +81,9 @@ async function main() {
   })`);
   record("app loaded the workspace list", loaded === "loaded", `got ${loaded}`);
 
-  // Open the Git drawer via the real header toggle.
+  // Open the Git drawer via the right rail.
   const opened = await evalExpr(`new Promise((resolve) => {
-    const btn = document.getElementById("gitWorkspaceToggle");
+    const btn = document.getElementById("rightRailGit");
     if (!btn) { resolve("no toggle"); return; }
     btn.click();
     const started = Date.now();
@@ -196,6 +196,16 @@ async function main() {
   // Same real flow as step 3 (title click -> picker -> Select), then assert
   // the no-repo view keeps the title and hides the diff layout toggle.
   await evalExpr(`document.querySelector("#gitUiPanel .git-ui-path-title").click()`);
+  const modal5 = await evalExpr(`new Promise((resolve) => {
+    const started = Date.now();
+    const check = () => {
+      const modal = document.getElementById("directoryPickerModal");
+      if (modal) resolve("open");
+      else if (Date.now() - started > 10000) resolve("timeout");
+      else setTimeout(check, 200);
+    };
+    check();
+  })`);
   const step5 = await evalExpr(`(async () => {
     const modal = document.getElementById("directoryPickerModal");
     if (!modal) return { reopened: false };
@@ -204,19 +214,33 @@ async function main() {
     const select = Array.from(modal.querySelectorAll("button")).find((b) => /Select this folder/.test(b.textContent || ""));
     if (!select) return { reopened: true, selected: false };
     select.click();
-    await new Promise((r) => setTimeout(r, 2500));
+    // The no-repo status fetch for the plain folder is async; poll for the
+    // cleanup-only view instead of trusting a fixed sleep (it lost the race
+    // once under a busy server and failed the suite spuriously).
     const head = document.querySelector("#gitUiPanel .git-ui-side-bottom-head");
     const title = head && head.querySelector(".git-ui-path-title");
+    const started = Date.now();
+    let cleanup = !!document.querySelector("#gitUiPanel .git-ui-status-cleanup-only");
+    while (!cleanup && Date.now() - started < 10000) {
+      await new Promise((r) => setTimeout(r, 300));
+      cleanup = !!document.querySelector("#gitUiPanel .git-ui-status-cleanup-only");
+    }
     return {
       reopened: true, selected: true,
       titleIsButton: !!(title && title.tagName === "BUTTON"),
       layoutToggleGone: !document.querySelector("#gitUiPanel .git-ui-diff-layout-toggle"),
-      noRepoBanner: !!document.querySelector("#gitUiPanel .git-ui-status-cleanup-only"),
+      noRepoBanner: cleanup,
     };
   })()`);
-  record("cleanup-only view keeps the clickable path title", step5.reopened && step5.selected && step5.titleIsButton, JSON.stringify(step5));
-  record("cleanup-only view hides the diff layout toggle", step5.layoutToggleGone === true, "");
-  record("cleanup-only view really entered the no-repo state", step5.noRepoBanner === true, JSON.stringify(step5.noRepoBanner));
+  if (modal5 !== "open") {
+    // The title click must reopen the picker; fail loudly instead of running
+    // the cleanup-only assertions against whatever panel state remained.
+    record("step 5: title click reopens the picker", false, `got ${modal5}`);
+  } else {
+    record("cleanup-only view keeps the clickable path title", step5.reopened && step5.selected && step5.titleIsButton, JSON.stringify(step5));
+    record("cleanup-only view hides the diff layout toggle", step5.layoutToggleGone === true, "");
+    record("cleanup-only view really entered the no-repo state", step5.noRepoBanner === true, JSON.stringify(step5.noRepoBanner));
+  }
 
   const screenshot = await cdp.send("Page.captureScreenshot", { format: "png" });
   writeFileSync(outPath.replace(/\.json$/, "") + ".final.png", Buffer.from(screenshot.data, "base64"));

@@ -69,62 +69,11 @@
 .git-ui-diff-search-count {
   min-width: 54px;
 }
-.git-ui-location-bar {
-  align-items: center;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  flex-direction: row;
-  gap: 8px;
-  min-height: 34px;
-  padding: 4px 12px;
-}
-.git-ui-crumb-clear {
-  background: transparent;
-  border: 1px solid var(--border2);
-  border-radius: 999px;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-  padding: 2px 8px;
-}
-.git-ui-crumb-clear:hover {
-  color: var(--fg);
-}
-.git-ui-breadcrumbs {
-  align-items: center;
-  border: 1px solid var(--border2);
-  border-radius: 999px;
-  color: var(--muted);
-  display: inline-flex;
-  gap: 6px;
-  max-width: min(680px, 100%);
-  overflow: hidden;
-  padding: 3px 8px 3px 3px;
-  white-space: nowrap;
-}
-.git-ui-breadcrumbs .git-ui-btn {
-  padding: 2px 8px;
-}
-.git-ui-breadcrumb-step,
-.git-ui-breadcrumbs strong {
+.git-ui-log-file-clear {
+  max-width: 280px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.git-ui-breadcrumb-step {
-  max-width: 180px;
-}
-.git-ui-breadcrumbs strong {
-  color: var(--fg);
-  font-weight: 600;
-  max-width: 240px;
-}
-.git-ui-breadcrumb-sep {
-  color: var(--muted2);
-  font-size: 10px;
-  line-height: 1;
-}
-
 .git-ui-log-file-scope {
   border: 1px solid var(--border2);
   border-radius: 999px;

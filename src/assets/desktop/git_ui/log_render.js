@@ -1,5 +1,5 @@
 (function () {
-  function createGitUiLogRender({active, api, esc, arg, gitLogDefaultBranch, normalizeLogScope, GIT_LOG_PAGE_SIZE, GIT_LOG_MAX_LIMIT, isNoGitRepositoryView, renderFileToolbar, renderCleanup, renderStashDiff, renderConflictResolutionButtons, renderDiff, replaceContent, render, renderLocationBar}) {
+  function createGitUiLogRender({active, api, esc, arg, gitLogDefaultBranch, normalizeLogScope, GIT_LOG_PAGE_SIZE, GIT_LOG_MAX_LIMIT, isNoGitRepositoryView, renderFileToolbar, renderCleanup, renderStashDiff, renderConflictResolutionButtons, renderDiff, replaceContent, render}) {
     async function renderLog(version) {
       const view = active();
       const baseBranch = gitLogDefaultBranch();
@@ -73,9 +73,11 @@
 
     function renderMain() {
       const view = active() || {};
-      const locationBar = renderLocationBar(view);
-      if (view.loading) return `<main class="git-ui-main">${locationBar}<div class="git-ui-loading"><span></span><strong>Loading Git state</strong></div></main>`;
-      if (isNoGitRepositoryView(view)) return `<main class="git-ui-main">${locationBar}<div class="git-ui-content">${renderCleanup()}</div></main>`;
+      // Phase 4: the location bar is gone. The pane tab strip names the
+      // view (compare@ titles, history/diff files), so a second breadcrumb
+      // row would repeat it; Back lives in the side title actions.
+      if (view.loading) return `<main class="git-ui-main"><div class="git-ui-loading"><span></span><strong>Loading Git state</strong></div></main>`;
+      if (isNoGitRepositoryView(view)) return `<main class="git-ui-main"><div class="git-ui-content">${renderCleanup()}</div></main>`;
       let body = "";
       if (view.tab === "changes") body = renderDiff();
       if (view.tab === "conflicts") body = renderConflicts();
@@ -83,7 +85,7 @@
       if (view.tab === "stash") body = renderStashDiff();
       if (view.tab === "cleanup") body = renderCleanup();
       if (view.tab === "history") body = `<div class="git-ui-muted">Loading history...</div>`;
-      return `<main class="git-ui-main">${locationBar}<div class="git-ui-content">${body}</div></main>`;
+      return `<main class="git-ui-main"><div class="git-ui-content">${body}</div></main>`;
     }
     return {
       renderLog,

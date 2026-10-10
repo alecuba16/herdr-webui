@@ -142,9 +142,10 @@
     const body = !query
       ? `<div class="file-browser-empty">Search inside files from this workspace.</div>`
       : state.loading && !files.length
-        ? `<div class="file-browser-empty">Searching...</div>`
+        ? `<div class="file-browser-empty herdr-content-search-loading" role="status" aria-live="polite"><span class="herdr-content-search-spinner" aria-hidden="true"></span>Searching...</div>`
         : files.length
-          ? files.map((file) => renderFile(file, state, opts)).join("")
+          ? (state.loading ? `<div class="herdr-content-search-loading" role="status" aria-live="polite"><span class="herdr-content-search-spinner" aria-hidden="true"></span>Searching...</div>` : "") +
+            files.map((file) => renderFile(file, state, opts)).join("")
           : `<div class="file-browser-empty">No content matches.</div>`;
     return `<div class="herdr-content-search">
       ${head}

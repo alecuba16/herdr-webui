@@ -186,3 +186,34 @@ describe("HerdrContentSearch backend chunks", () => {
     ok(html.includes("tail"));
   });
 });
+describe("HerdrContentSearch loading indicator", () => {
+  it("shows the inline searching row while loading with no results", () => {
+    const mod = loadRenderer();
+    const html = mod.render({ query: "needle", files: [], loading: true, done: false }, { callback: "TestContent", hideInput: true });
+    match(html, /herdr-content-search-loading/);
+    match(html, /herdr-content-search-spinner/);
+    match(html, /Searching\.\.\./);
+    match(html, /role="status"/);
+  });
+
+  it("keeps stale results visible with the searching row above them during a refine", () => {
+    const mod = loadRenderer();
+    const html = mod.render({
+      query: "needle",
+      files: [backendFile()],
+      loading: true,
+      done: false,
+    }, { callback: "TestContent", hideInput: true });
+    const loadingAt = html.indexOf("herdr-content-search-loading");
+    const fileAt = html.indexOf("herdr-content-search-file-head");
+    ok(loadingAt !== -1, "searching row present during a refine");
+    ok(fileAt !== -1, "stale file results still rendered");
+    ok(loadingAt < fileAt, "searching row renders above the stale results");
+  });
+
+  it("renders no searching row once loading finishes", () => {
+    const mod = loadRenderer();
+    const html = mod.render({ query: "needle", files: [backendFile()], loading: false, done: true }, { callback: "TestContent", hideInput: true });
+    ok(!html.includes("herdr-content-search-loading"), "no loading row after search completes");
+  });
+});

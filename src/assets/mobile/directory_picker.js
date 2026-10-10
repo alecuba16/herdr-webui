@@ -227,7 +227,20 @@
         const response = await api("/api/recent-workspaces", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ path, label: null }),
+          body: JSON.stringify({
+            path,
+            label: null,
+            open_terminal: (() => {
+              try {
+                const parsed = globalThis.HerdrOptions
+                  ? globalThis.HerdrOptions.read()
+                  : {};
+                return parsed.workspaceOpenTerminal === true;
+              } catch (_) {
+                return false;
+              }
+            })(),
+          }),
         });
         state.worktreeLoading = false;
         state.worktreeLoadingLabel = "";

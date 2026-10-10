@@ -113,7 +113,7 @@
         const response = await api("/api/recent-workspaces", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ path, label: item.label || null }),
+          body: JSON.stringify({ path, label: item.label || null, open_terminal: workspaceOpenTerminalFlag() }),
         });
         recent = [];
         navigateToResult(response);
@@ -181,6 +181,20 @@
       }
     }
 
+    // Shared flag for every workspace-open call from this screen: the
+    // workspace opens with a terminal only when the desktop/mobile option
+    // says so (default off).
+    function workspaceOpenTerminalFlag() {
+      try {
+        const parsed = globalThis.HerdrOptions
+          ? globalThis.HerdrOptions.read()
+          : {};
+        return parsed.workspaceOpenTerminal === true;
+      } catch (_) {
+        return false;
+      }
+    }
+
     function applyResult(response) {
       const result = (response && response.result) || {};
       const source = result.source || {};
@@ -238,6 +252,7 @@
               : row.source_cwd || sourcePath || null,
             path: row.path,
             label: null,
+            open_terminal: workspaceOpenTerminalFlag(),
           }),
         });
         state.worktreeLoading = false;
@@ -322,7 +337,7 @@
         const response = await api("/api/recent-workspaces", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ path, label: null }),
+          body: JSON.stringify({ path, label: null, open_terminal: workspaceOpenTerminalFlag() }),
         });
         recent = [];
         setLoading(false);

@@ -35,20 +35,30 @@
   letter-spacing: 0.12em;
 }
 .side-footer-bar {
-  align-items: center;
+  align-items: stretch;
   background: color-mix(in srgb, var(--panel), var(--bg) 12%);
   border-top: 1px solid var(--border);
-  display: grid;
+  display: flex;
+  flex-direction: column;
   flex: none;
-  gap: 4px 6px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px;
   margin-top: auto;
   padding: 6px 8px;
+}
+.side-footer-bar > .head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+}
+.side-footer-bar > .head .brand {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .side-footer-bar .brand {
   gap: 8px;
   min-width: 0;
-  justify-self: start;
 }
 .side-footer-bar .brand img {
   border-radius: 8px;
@@ -97,8 +107,6 @@
 .side-footer {
   color: var(--muted);
   font-size: 8.5px;
-  grid-column: 1 / -1;
-  grid-row: 2;
   line-height: 1.2;
   max-height: 11px;
   opacity: 0.46;
@@ -112,11 +120,10 @@
   white-space: normal;
 }
 .footer-actions {
+  align-items: center;
   display: flex;
   gap: 4px;
-  grid-column: 2;
-  grid-row: 1;
-  justify-self: end;
+  margin-left: 0;
 }
 .footer-actions .mini {
   margin-left: 0;
@@ -158,13 +165,6 @@
   /* Keep at least the header plus one full row clear of the split handle;
      20% alone is shorter than that below ~450px viewports. */
   min-height: max(20%, 90px);
-}
-.sidebar-pane.workspaces-pane.panel-menu-open {
-  min-height: max(20%, 90px, var(--workspace-panel-menu-min-height, 0px));
-  z-index: 2;
-}
-.sidebar-pane.workspaces-pane.panel-menu-open .sidebar-scroll {
-  overflow: visible;
 }
 .sidebar-pane.agents-pane {
   flex: 1 1 auto;
@@ -393,26 +393,12 @@
   flex: none;
 }
 .head #headerActionsButton,
-.head #terminalWorkspaceToggle,
-.head #gitWorkspaceToggle,
-.head #fileWorkspaceToggle,
 .head .shell-action {
   width: 34px;
   height: 34px;
   padding: 0;
   display: grid;
   place-items: center;
-}
-.shell-mode-group {
-  align-items: center;
-  background: transparent;
-  border: 1px solid var(--accent-2-border);
-  border-radius: 11px;
-  display: inline-flex;
-  gap: 0;
-  height: 34px;
-  overflow: hidden;
-  padding: 0;
 }
 .head #headerActionsButton,
 .head .no-sleep-control.active {
@@ -424,29 +410,6 @@
   background: var(--accent-2);
   color: var(--accent-1);
   border: 1px solid var(--accent-2-border);
-}
-.head .shell-mode-group .shell-action,
-.head .shell-mode-group .git-workspace-toggle,
-.head .shell-mode-group .git-workspace-toggle.closed,
-.head .shell-mode-group .git-workspace-toggle.nogit,
-.head .shell-mode-group .git-workspace-toggle.unknown {
-  background: var(--accent-2);
-  border: 0;
-  border-radius: 0;
-  color: var(--accent-1);
-  height: 34px;
-  width: 30px;
-}
-.head .shell-mode-group .shell-action + .shell-action {
-  border-left: 1px solid var(--accent-2-border);
-}
-.head .shell-mode-group .shell-action:first-child {
-  border-bottom-left-radius: 10px;
-  border-top-left-radius: 10px;
-}
-.head .shell-mode-group .shell-action:last-child {
-  border-bottom-right-radius: 10px;
-  border-top-right-radius: 10px;
 }
 .head > .shell-action,
 .head .no-sleep-control {
@@ -461,70 +424,11 @@
   padding: 0 10px;
   width: auto;
 }
-.head .shell-mode-group .shell-action.active,
-.head .shell-mode-group .git-workspace-toggle.active,
-.head .shell-mode-group .git-workspace-toggle.open {
-  background: var(--accent-1);
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent-1), transparent 74%);
-  color: var(--accent-fg);
-}
-.head .shell-mode-group.minimized .shell-action.active {
-  opacity: 0.72;
-}
-.head .shell-mode-group .workspace-shell-minimize {
-  font-size: 18px;
-  font-weight: 800;
-}
-.head .shell-mode-group .workspace-shell-minimize:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-.workspace-shell-restore {
-  align-items: center;
-  background: var(--accent-1);
-  border: 1px solid var(--accent-2-border);
-  border-radius: 999px;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
-  box-shadow: 0 14px 38px color-mix(in srgb, var(--accent-1), transparent 72%);
-  color: var(--accent-fg);
-  cursor: pointer;
-  display: inline-flex;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 800;
-  gap: 8px;
-  padding: 9px 14px;
-  position: fixed;
-  right: calc(env(safe-area-inset-right, 0px) + 18px);
-  z-index: 70;
-}
-.workspace-shell-restore:hover,
-.workspace-shell-restore:focus {
-  filter: brightness(1.05);
-  outline: 0;
-}
 .head > .shell-action.active,
 .head .no-sleep-control.active {
   background: var(--accent-1);
   color: var(--accent-fg);
   border: 1px solid var(--accent-1);
-}
-.head .shell-mode-group .shell-action:hover,
-.head .shell-mode-group .shell-action:focus,
-.head .shell-mode-group .git-workspace-toggle:hover,
-.head .shell-mode-group .git-workspace-toggle:focus {
-  background: var(--control-hover);
-  border-color: var(--accent);
-  color: var(--accent-1);
-}
-.head .shell-mode-group .shell-action.active:hover,
-.head .shell-mode-group .shell-action.active:focus,
-.head .shell-mode-group .git-workspace-toggle.active:hover,
-.head .shell-mode-group .git-workspace-toggle.active:focus,
-.head .shell-mode-group .git-workspace-toggle.open:hover,
-.head .shell-mode-group .git-workspace-toggle.open:focus {
-  background: var(--accent-1);
-  color: var(--accent-fg);
 }
 .head > .shell-action:hover,
 .head .no-sleep-control:hover,

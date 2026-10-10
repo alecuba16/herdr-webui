@@ -1,5 +1,5 @@
 (function () {
-  function createGitUiWorkspaceNav({ state, currentMode, normalizeLogScope, preserveContentScroll, loadDiff, loadSelectedCommitPreview, render, esc, GIT_LOG_PAGE_SIZE }) {
+  function createGitUiWorkspaceNav({ state, currentMode, normalizeLogScope, preserveContentScroll, loadDiff, loadSelectedCommitPreview, render, syncPaneTabFromView, esc, GIT_LOG_PAGE_SIZE }) {
     function workspaceCwd(workspace) {
       if (!workspace) return "";
       if (window.HerdrWorkspacePath) return window.HerdrWorkspacePath(workspace);
@@ -55,6 +55,11 @@
       view.navigationStack = [];
       view.mode = "changes";
       view.tab = "changes";
+      // Phase 3c heal: switching the Git folder resets every focused
+      // view back to changes; the pane tree may still sit on a git tab
+      // for the old folder's view. Sync the strip so the active tab names
+      // what renders. Standalone harnesses have no pane tree: no-op.
+      if (typeof syncPaneTabFromView === "function") syncPaneTabFromView();
     }
 
     function clonePlain(value, fallback) {
@@ -62,8 +67,8 @@
       catch (_) { return fallback; }
     }
 
-    // Breadcrumbs are derived from the current view state, never from the
-    // navigation stack, so the location bar always answers "where am I".
+    // Breadcrumbs feed the navigation-stack labels (captureNavigationSnapshot):
+    // the pane tab strip names the live view now, so no location bar renders.
     function viewCrumbs(view) {
       if (!view) return ["Git"];
       const file = String(view.file || "");
@@ -80,18 +85,6 @@
       }
       if (file) return currentMode() === "changes" ? ["Changes", file] : ["Compare", file];
       return currentMode() === "changes" ? ["Changes"] : ["Compare"];
-    }
-
-    function renderLocationBar(view) {
-      const crumbs = viewCrumbs(view);
-      const title = crumbs.join(" › ");
-      const parts = crumbs.map((label, index) => index === crumbs.length - 1
-        ? `<strong title="${esc(label)}">${esc(label)}</strong>`
-        : `<span class="git-ui-breadcrumb-step" title="${esc(label)}">${esc(label)}</span>`).join(`<span class="git-ui-breadcrumb-sep">›</span>`);
-      const clearScope = view && view.tab === "log" && view.logFilePath
-        ? `<button class="git-ui-crumb-clear" title="Show log for the whole repository" onclick="HerdrGitUi.clearLogFileHistory()">×</button>`
-        : "";
-      return `<div class="git-ui-location-bar"><button class="git-ui-btn" title="Go back to previous Git view" onclick="HerdrGitUi.goBack()">← Back</button><span class="git-ui-breadcrumbs" title="${esc(title)}">${parts}</span>${clearScope}</div>`;
     }
 
     function captureNavigationSnapshot(view, label) {
@@ -168,8 +161,25 @@
     function workspaceStatus(key, workspace) {
       if (!workspace || !workspaceCwd(workspace)) return "nogit";
       const view = state.cache[key || workspaceKey(workspace)];
-      if (view && view.error) return "nogit";
+      if (!view) return "unknown";
+      if (view.error) return "nogit";
+      const status = view.status || {};
+      // The rail button tints by the cached repo state: yellow while there
+      // are changes to apply (staged/unstaged/untracked), red on conflicts.
+      // The tint outranks "open": a commit made with the drawer visible
+      // must recolor the rail immediately, not wait for the next hide.
+      const stateName = status.state;
+      if (stateName === "dirty" || stateName === "conflicts") return stateName;
+      if (stateName === "clean") return "clean";
+      // An open drawer keeps the rail clickable so the same click closes it,
+      // whatever the folder is (nogit disables the button, so an open
+      // drawer on a non-git folder must read "open", not "nogit").
       if (state.visible && state.activeKey === (key || workspaceKey(workspace))) return "open";
+      // markNoGitRepository parks not_git_repository in the status (it
+      // clears view.error): a hidden drawer on a non-git folder reads it
+      // here instead of relying on a probe refetch per render.
+      if (status.not_git_repository) return "nogit";
+      // Views without a status yet stay neutral ("closed" tint = none).
       return "closed";
     }
 
@@ -188,7 +198,6 @@
       resetGitViewForCwd,
       clonePlain,
       viewCrumbs,
-      renderLocationBar,
       captureNavigationSnapshot,
       pushNavigationSnapshot,
       restoreNavigationSnapshot,

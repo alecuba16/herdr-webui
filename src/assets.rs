@@ -37,8 +37,6 @@ const SHARED_TERMINAL_SCROLL_JS: &str = include_str!("assets/shared/terminal_scr
 const SHARED_TERMINAL_FIT_JS: &str = include_str!("assets/shared/terminal_fit.js");
 const SHARED_TERMINAL_ADAPTER_JS: &str = include_str!("assets/shared/terminal_adapter.js");
 const SHARED_GRAPHICS_BRIDGE_JS: &str = include_str!("assets/shared/graphics_bridge.js");
-const SHARED_TEMP_TERMINAL_JS: &str = include_str!("assets/shared/temp_terminal.js");
-const SHARED_TEMP_OVERLAY_JS: &str = include_str!("assets/shared/temp_overlay.js");
 const VENDOR_CODEMIRROR_JS: &str = include_str!("assets/vendor/codemirror.bundle.js");
 const VENDOR_MARKED_JS: &str = include_str!("assets/vendor/marked.bundle.js");
 const VENDOR_DOMPURIFY_JS: &str = include_str!("assets/vendor/dompurify.bundle.js");
@@ -49,6 +47,7 @@ const VENDOR_GHOSTTY_WASM: &[u8] = include_bytes!("assets/vendor/ghostty-vt.wasm
 const APP_BOOT_JS: &str = include_str!("assets/app_boot.js");
 const DESKTOP_CSS: &str = concat!(
     include_str!("assets/desktop/app_css/base.css"),
+    include_str!("assets/desktop/app_css/panes.css"),
     include_str!("assets/desktop/app_css/modals.css"),
     include_str!("assets/desktop/app_css/terminal.css"),
     include_str!("assets/desktop/app_css/chrome.css"),
@@ -93,8 +92,10 @@ const DESKTOP_DIRECTORY_PICKER_JS: &str = include_str!("assets/desktop/directory
 const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/core.js"),
     include_str!("assets/desktop/app_js/workspace_shell.js"),
-    include_str!("assets/desktop/app_js/legacy_polling.js"),
-    include_str!("assets/desktop/app_js/panel_switcher.js"),
+    include_str!("assets/desktop/app_js/right_sidebar.js"),
+    include_str!("assets/desktop/app_js/search_panel.js"),
+    include_str!("assets/desktop/app_js/workspace_panes.js"),
+    include_str!("assets/desktop/app_js/pane_terminals.js"),
     include_str!("assets/desktop/app_js/render.js"),
     include_str!("assets/desktop/app_js/terminal.js"),
     include_str!("assets/desktop/app_js/lens.js"),
@@ -102,10 +103,10 @@ const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/composer.js"),
     include_str!("assets/desktop/app_js/worktrees.js"),
     include_str!("assets/desktop/app_js/shortcuts.js"),
-    include_str!("assets/desktop/app_js/temp_overlays.js"),
     include_str!("assets/desktop/app_js/workspace_create.js"),
     include_str!("assets/desktop/lsp_settings.js"),
     include_str!("assets/desktop/layout_settings.js"),
+    include_str!("assets/desktop/window_layout_settings.js"),
     include_str!("assets/desktop/app_js/bindings.js"),
 );
 const MOBILE_ATTENTION_JS: &str = include_str!("assets/mobile/attention.js");
@@ -117,7 +118,6 @@ const MOBILE_DIRECTORY_PICKER_JS: &str = include_str!("assets/mobile/directory_p
 const MOBILE_FILE_BROWSER_JS: &str = include_str!("assets/mobile/file_browser.js");
 const MOBILE_SEARCH_JS: &str = include_str!("assets/mobile/search.js");
 const MOBILE_GIT_JS: &str = include_str!("assets/mobile/git.js");
-const MOBILE_TEMP_OVERLAYS_JS: &str = include_str!("assets/mobile/temp_overlays.js");
 const MOBILE_COMPOSER_JS: &str = include_str!("assets/mobile/composer.js");
 const MOBILE_SESSIONS_JS: &str = include_str!("assets/mobile/sessions.js");
 const MOBILE_EVENTS_JS: &str = include_str!("assets/mobile/events.js");
@@ -349,20 +349,6 @@ pub(crate) async fn shared_graphics_bridge_js() -> Response {
     )
 }
 
-pub(crate) async fn shared_temp_terminal_js() -> Response {
-    static_text(
-        SHARED_TEMP_TERMINAL_JS,
-        "application/javascript; charset=utf-8",
-    )
-}
-
-pub(crate) async fn shared_temp_overlay_js() -> Response {
-    static_text(
-        SHARED_TEMP_OVERLAY_JS,
-        "application/javascript; charset=utf-8",
-    )
-}
-
 pub(crate) async fn vendor_codemirror_js() -> Response {
     static_text(
         VENDOR_CODEMIRROR_JS,
@@ -446,13 +432,6 @@ pub(crate) async fn mobile_search_js() -> Response {
 
 pub(crate) async fn mobile_git_js() -> Response {
     static_text(MOBILE_GIT_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_temp_overlays_js() -> Response {
-    static_text(
-        MOBILE_TEMP_OVERLAYS_JS,
-        "application/javascript; charset=utf-8",
-    )
 }
 
 pub(crate) async fn mobile_composer_js() -> Response {

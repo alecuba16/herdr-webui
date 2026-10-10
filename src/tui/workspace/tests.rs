@@ -346,55 +346,6 @@ fn walk_focus_cycles_regions_and_wraps() {
     assert_eq!(app.status, "focus: main");
 }
 
-#[test]
-fn temp_terminal_promote_without_temp_tab_reports_error() {
-    // Webui promote guard: no visible temporary terminal means promote
-    // is refused, and nothing hits the backend.
-    let mut app = app_with_snapshot(workspace_snapshot());
-    let result = app.temp_terminal_promote();
-    assert_eq!(result.unwrap_err(), "no temporary terminal open");
-}
-
-#[test]
-fn temp_terminal_toggle_reuses_existing_temp_tab_without_backend_calls() {
-    // With a temp workspace + temp tab already in the snapshot, toggle
-    // must reuse them (no create, no refresh) and move the selection so
-    // Enter attaches to the temporary shell. The builtin session client
-    // has no live socket, so any backend call would fail the test.
-    let mut app = app_with_snapshot(json!({
-        "type": "session_snapshot",
-        "snapshot": {
-            "workspaces": [
-                {"workspace_id":"ws_1","label":"Repo","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_1"},
-                {"workspace_id":"ws_t","label":"temp","cwd":"/repo","focused":false,"agent_status":"idle","pane_count":1,"tab_count":1,"active_tab_id":"tab_t"}
-            ],
-            "tabs": [
-                {"tab_id":"tab_t","workspace_id":"ws_t","label":"temp","focused":false,"pane_count":1,"agent_status":"idle"},
-                {"tab_id":"tab_1","workspace_id":"ws_1","label":"Shell","focused":true,"pane_count":1,"agent_status":"idle"}
-            ],
-            "panes": [
-                {"pane_id":"pane_t","terminal_id":"term_t","workspace_id":"ws_t","tab_id":"tab_t","agent":"shell","display_agent":"shell","agent_status":"idle","foreground_cwd":"/repo","focused":false},
-                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","foreground_cwd":"/repo","focused":true}
-            ],
-            "agents": [
-                {"pane_id":"pane_t","terminal_id":"term_t","workspace_id":"ws_t","tab_id":"tab_t","agent":"shell","display_agent":"shell","agent_status":"idle","cwd":"/repo","focused":false},
-                {"pane_id":"pane_1","terminal_id":"term_1","workspace_id":"ws_1","tab_id":"tab_1","agent":"jcode","display_agent":"jcode","agent_status":"idle","cwd":"/repo","focused":true}
-            ]
-        }
-    }));
-    assert_eq!(app.selected_workspace, 0, "selection starts on ws_1");
-    let result = app.temp_terminal_toggle();
-    assert!(result.is_ok(), "reuse path needs no backend");
-    assert_eq!(
-        app.selected_workspace, 1,
-        "selection moved to the temp workspace"
-    );
-    assert_eq!(
-        app.selected_agent, 0,
-        "agent selection moved to the temp pane (first in the agents list)"
-    );
-}
-
 fn workspace_fake_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
     use interprocess::TryClone as _;
@@ -544,32 +495,6 @@ fn workspace_backend_actions_succeed_against_fake_socket() {
 }
 
 #[test]
-fn temp_terminal_backend_paths_create_and_promote() {
-    let (mut app, _stop) = app_with_fake_backend();
-    app.snapshot
-        .workspaces
-        .retain(|workspace| workspace.label != "temp");
-
-    assert_eq!(
-        app.temp_terminal_toggle().unwrap(),
-        "temporary terminal ready: Enter attaches"
-    );
-
-    app.snapshot.tabs.push(crate::tui::model::TuiTab {
-        id: "tab_t".to_string(),
-        workspace_id: "ws_1".to_string(),
-        label: "temp".to_string(),
-        focused: false,
-        pane_count: 1,
-        agent_status: "idle".to_string(),
-    });
-    assert_eq!(
-        app.temp_terminal_promote().unwrap(),
-        "temporary terminal promoted"
-    );
-}
-
-#[test]
 fn workspace_prompt_status_and_no_selection_edges() {
     let mut app = app_with_snapshot(workspace_snapshot());
     app.workspace_status(Ok("fine".to_string()));
@@ -617,29 +542,7 @@ fn round3_move_panel_and_prompt_guard_edges() {
 }
 
 #[test]
-fn round3_temp_terminal_promote_missing_refreshed_pane_keeps_selection() {
-    let (mut app, _stop) = app_with_fake_backend();
-    app.snapshot.tabs.push(crate::tui::model::TuiTab {
-        id: "tab_missing_pane".to_string(),
-        workspace_id: "ws_1".to_string(),
-        label: "temp".to_string(),
-        focused: false,
-        pane_count: 0,
-        agent_status: "idle".to_string(),
-    });
-    app.selected_workspace = 1;
-    app.selected_agent = 2;
-
-    assert_eq!(
-        app.temp_terminal_promote().unwrap(),
-        "temporary terminal promoted"
-    );
-    assert_eq!(app.selected_workspace, 0);
-    assert_eq!(app.selected_agent, 0);
-}
-
-#[test]
-fn round4_workspace_temp_empty_ids_and_create_path_backend_error() {
+fn round4_workspace_create_path_backend_error() {
     let mut app = app_with_snapshot(json!({
         "type": "session_snapshot",
         "snapshot": {
@@ -654,31 +557,6 @@ fn round4_workspace_temp_empty_ids_and_create_path_backend_error() {
         " /checkout ",
     );
     assert!(app.error.is_some());
-
-    let mut app = app_with_snapshot(json!({
-        "type": "session_snapshot",
-        "snapshot": {
-            "workspaces": [{"workspace_id":"","label":"temp","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":0,"tab_count":0}],
-            "tabs": [], "panes": [], "agents": []
-        }
-    }));
-    assert_eq!(
-        app.temp_terminal_toggle().unwrap_err(),
-        "could not create the temp workspace"
-    );
-
-    let mut app = app_with_snapshot(json!({
-        "type": "session_snapshot",
-        "snapshot": {
-            "workspaces": [{"workspace_id":"ws_t","label":"temp","cwd":"/repo","focused":true,"agent_status":"idle","pane_count":0,"tab_count":1}],
-            "tabs": [{"tab_id":"","workspace_id":"ws_t","label":"temp","focused":true,"pane_count":0,"agent_status":"idle"}],
-            "panes": [], "agents": []
-        }
-    }));
-    assert_eq!(
-        app.temp_terminal_toggle().unwrap_err(),
-        "could not create the temp tab"
-    );
 }
 
 /// Serializes tests that touch `$HOME`: one removes it process-wide

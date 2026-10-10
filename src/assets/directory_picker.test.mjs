@@ -280,12 +280,12 @@ test("directory picker search paging resets when the filter changes", async () =
   equal(vm.runInContext("__pickerDebug.state.entries.length", ctx), 1, "entries reset for the new term");
 });
 
-// The temporary overlay host drives the picker through a detached hidden
+// The git path-title picker drives the directory picker through a hidden
 // input node (window.HerdrDirectoryPicker.open(input)), not through an id.
-// This pins the node-based export that shipped broken in 87ddc98 (the host
-// called picker.open but the picker never exported it) and was only caught
-// by the e2e acceptance run against the served bundles.
-test("directory picker exposes the node-based open(input) entry the temp overlays use", async () => {
+// This pins the node-based export that shipped broken in 87ddc98 (the
+// caller used picker.open but the picker never exported it) and was only
+// caught by the e2e acceptance run against the served bundles.
+test("directory picker exposes the node-based open(input) entry the git path-title picker uses", async () => {
   const calls = [];
   const { ctx } = loadPicker({
     fetchImpl: async (url) => {

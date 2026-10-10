@@ -70,9 +70,6 @@ test("candidates '>' filter lists actions only, desktop surface", () => {
     ids(registry.candidates(">", { platform: "desktop" })),
     JSON.stringify([
       "open-workspace",
-      "temp-terminal",
-      "temp-files",
-      "temp-git",
       "sessions",
       "toggle-sidebar",
       "toggle-theme",
@@ -83,9 +80,9 @@ test("candidates '>' filter lists actions only, desktop surface", () => {
   const mobile = registry.candidates("", { platform: "mobile" }).map((a) => a.action);
   assert.ok(!mobile.includes("toggle-sidebar"));
   assert.ok(mobile.includes("toggle-theme"));
-  // ">temp" narrows to the temporary tools only.
-  const narrowed = registry.candidates(">temp", { platform: "desktop" }).map((a) => a.action);
-  assert.equal(JSON.stringify(narrowed), JSON.stringify(["temp-terminal", "temp-files", "temp-git"]));
+  // ">sess" narrows to the sessions tool only.
+  const narrowed = registry.candidates(">sess", { platform: "desktop" }).map((a) => a.action);
+  assert.equal(JSON.stringify(narrowed), JSON.stringify(["sessions"]));
 });
 
 test("candidates respects requiresWorkspace and includeMenuOnly gates", () => {

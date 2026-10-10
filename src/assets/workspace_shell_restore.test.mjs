@@ -9,9 +9,21 @@ import vm from "node:vm";
 // shell surface (terminal/git/files) is applied for the target workspace.
 
 function element(id = "") {
-  return {
+  const classes = new Set();
+  const attributes = new Map();
+  const node = {
     id,
-    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    classList: {
+      add(name) { classes.add(name); },
+      remove(name) { classes.delete(name); },
+      toggle(name, force) {
+        const active = force === undefined ? !classes.has(name) : !!force;
+        if (active) classes.add(name);
+        else classes.delete(name);
+        return active;
+      },
+      contains(name) { return classes.has(name); },
+    },
     style: {},
     dataset: {},
     value: "",
@@ -21,13 +33,25 @@ function element(id = "") {
     title: "",
     hidden: false,
     disabled: false,
-    setAttribute() {},
+    setAttribute(name, value) { attributes.set(String(name), String(value)); },
+    getAttribute(name) { return attributes.has(String(name)) ? attributes.get(String(name)) : null; },
     closest() { return this; },
     insertAdjacentHTML() {},
     insertBefore() {},
-    appendChild() {},
+    appendChild(child) {
+      if (child && typeof child === "object") child.parentNode = node;
+      return child;
+    },
+    removeChild(child) {
+      if (child && typeof child === "object") child.parentNode = null;
+    },
     replaceWith() {},
-    remove() {},
+    remove() {
+      if (node.parentNode && typeof node.parentNode.removeChild === "function")
+        node.parentNode.removeChild(node);
+      node.parentNode = null;
+    },
+    children: [],
     focus() {},
     select() {},
     addEventListener() {},
@@ -35,11 +59,19 @@ function element(id = "") {
     querySelector() { return null; },
     querySelectorAll() { return []; },
   };
+  return node;
 }
 
 function context() {
   const elements = new Map();
+  // createElement nodes are not in the id map until someone sets .id on
+  // them, so getElementById scans created nodes for a matching id before
+  // falling back to a fresh stub. This keeps hosted-panel lookups (the
+  // panel is created, given an id, then appended) on the same node object.
+  const created = [];
   const getElement = (id) => {
+    const made = created.find((node) => node.id === id);
+    if (made) return made;
     if (!elements.has(id)) elements.set(id, element(id));
     return elements.get(id);
   };
@@ -57,7 +89,11 @@ function context() {
       body: getElement("body"),
       title: "",
       hidden: false,
-      createElement: () => element(),
+      createElement: () => {
+        const node = element("");
+        created.push(node);
+        return node;
+      },
       execCommand: () => true,
       querySelector: () => null,
       querySelectorAll: () => [],
@@ -116,8 +152,9 @@ function loadSource() {
     "./desktop/search.js",
     "./desktop/app_js/core.js",
     "./desktop/app_js/workspace_shell.js",
-    "./desktop/app_js/legacy_polling.js",
-    "./desktop/app_js/panel_switcher.js",
+    "./desktop/app_js/right_sidebar.js",
+    "./desktop/app_js/search_panel.js",
+    "./desktop/app_js/workspace_panes.js",
     "./desktop/app_js/render.js",
     "./desktop/app_js/terminal.js",
     "./desktop/app_js/worktrees.js",
@@ -165,8 +202,8 @@ describe("workspace shell restoration integration", () => {
       ];
       state.terminalId = "term-b";
       state.workspaceShell = {
-        "ws-a": { mode: "files", minimized: false },
-        "ws-b": { mode: "git", minimized: false },
+        "ws-a": { mode: "files" },
+        "ws-b": { mode: "git" },
       };
       state.ws = "ws-b";
       state.tab = "tab-b1";
@@ -274,7 +311,7 @@ describe("workspace shell restoration integration", () => {
     vm.runInContext(`
       lastShellWorkspace = "ws-a";
       state.ws = "ws-a";
-      state.workspaceShell = { "ws-a": { mode: "git", minimized: false } };
+      state.workspaceShell = { "ws-a": { mode: "git" } };
       // Prevent async refresh from running after the test
       refresh = function() { return Promise.resolve(); };
       refreshSeq = 0;
@@ -288,7 +325,7 @@ describe("workspace shell restoration integration", () => {
 
     assert.equal(lastShell, null, "lastShellWorkspace should be null after goSession");
     assert.equal(ws, null, "state.ws should be null after goSession");
-    // goSession resets to {} but syncWorkspaceShellRestoreControl may add __default_folder__
+    // goSession resets to {}; the fresh state may lazily create a __default_folder__ entry
     assert.ok(!shellState["ws-a"], "ws-a shell state should be cleared after goSession");
     assert.ok(Object.keys(shellState).length <= 1, "workspaceShell should be reset (only default may exist)");
   });
@@ -352,8 +389,12 @@ describe("workspace shell restoration integration", () => {
       "navigateSelection must not call applyWorkspaceShellForSelection (it's now in refreshOnline)",
     );
 
-    // The new call SHOULD be in refreshOnline
-    const refreshOnlineMatch = source.match(/async function refreshOnline[\s\S]*?\n\}/);
+    // The new call SHOULD be in the refreshOnline flow: refreshOnline plus
+    // its shared tail finishRefreshOnline (selection fixups, render, shell
+    // restore) form one flow since the snapshot bootstrap split.
+    const refreshOnlineMatch = source.match(
+      /async function refreshOnline[\s\S]*?\nasync function refresh\(/,
+    );
     assert.ok(refreshOnlineMatch, "refreshOnline function should exist in source");
     assert.match(
       refreshOnlineMatch[0],
@@ -365,5 +406,209 @@ describe("workspace shell restoration integration", () => {
       /state\.ws !== lastShellWorkspace/,
       "refreshOnline should guard with lastShellWorkspace check",
     );
+  });
+
+  it("clears shell mode and pane tabs when a workspace closes", () => {
+    const ctx = context();
+    try {
+      vm.runInContext(loadSource(), ctx);
+    } catch (e) {}
+
+    vm.runInContext(`
+      state.workspaces = [{ workspace_id: "ws-a", cwd: "/repo/alpha" }];
+      state.ws = "ws-a";
+      state.workspaceShell = {
+        "ws-a": { mode: "git" },
+        "path:/repo/alpha": { mode: "git" },
+      };
+      state.workspacePanes = {
+        "ws-a": {
+          root: { kind: "pane", paneId: "p1", tabs: ["editor:src/demo.py"], active: "editor:src/demo.py" },
+        },
+      };
+      saveWorkspaceShellStates();
+      HerdrWorkspacePanes.saveWorkspacePanesStates();
+      forgetWorkspaceClientState({ workspace_id: "ws-a", cwd: "/repo/alpha" });
+    `, ctx);
+
+    assert.equal(vm.runInContext('state.workspaceShell["ws-a"]', ctx), undefined);
+    assert.equal(vm.runInContext('state.workspaceShell["path:/repo/alpha"]', ctx), undefined);
+    assert.equal(vm.runInContext('state.workspacePanes["ws-a"]', ctx), undefined);
+    assert.equal(ctx.localStorage.getItem("herdr-web-workspace-shell"), null);
+    assert.equal(ctx.localStorage.getItem("herdr-web-workspace-panes"), null);
+  });
+});
+
+describe("git rail status sync", () => {
+  it("tints the rail from a shell-side status fetch before git_ui loads", async () => {
+    const calls = [];
+    const ctx = context();
+    // git_ui is NOT loaded: the shell must fetch /api/git-ui/status itself.
+    ctx.fetch = async (url) => {
+      calls.push(String(url));
+      return { status: 200, ok: true, json: async () => ({ state: "dirty", branch: "main" }) };
+    };
+    try {
+      vm.runInContext(loadSource(), ctx);
+    } catch (e) {}
+    vm.runInContext(`
+      options.gitUiEnabled = true;
+      state.ws = "ws-a";
+      state.workspaces = [
+        { workspace_id: "ws-a", label: "Alpha", worktree: { checkout_path: "/repo/alpha" } },
+      ];
+    `, ctx);
+    const button = vm.runInContext("document.getElementById('rightRailGit')", ctx);
+    vm.runInContext("syncGitWorkspaceToggle()", ctx);
+    assert.equal(button.dataset.gitStatus, "unknown", "rail starts neutral while the fetch is in flight");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(button.dataset.gitStatus, "dirty", "rail reads dirty once the shell fetch resolves");
+    const statusCalls = calls.filter((call) => call.includes("/api/git-ui/status"));
+    assert.equal(statusCalls.length, 1, "one shell-side status fetch per cwd");
+    assert.ok(statusCalls[0].includes("cwd=%2Frepo%2Falpha"), "fetch targets the workspace checkout path");
+    // Re-sync does not refetch: the cache holds for the same cwd.
+    vm.runInContext("syncGitWorkspaceToggle()", ctx);
+    assert.equal(calls.filter((call) => call.includes("/api/git-ui/status")).length, 1, "cache prevents refetch");
+  });
+
+  it("parking a failed probe leaves the rail neutral and disables nogit wording", async () => {
+    const ctx = context();
+    ctx.fetch = async () => ({ status: 200, ok: true, json: async () => ({}) });
+    try {
+      vm.runInContext(loadSource(), ctx);
+    } catch (e) {}
+    vm.runInContext(`
+      options.gitUiEnabled = true;
+      state.ws = "ws-a";
+      state.workspaces = [
+        { workspace_id: "ws-a", label: "Alpha", worktree: { checkout_path: "/repo/alpha" } },
+      ];
+    `, ctx);
+    const button = vm.runInContext("document.getElementById('rightRailGit')", ctx);
+    vm.runInContext("syncGitWorkspaceToggle()", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(button.dataset.gitStatus, "unknown", "payload without state stays unknown");
+  });
+
+  it("maps a parked nogit payload to the disabled rail before git_ui loads", async () => {
+    const ctx = context();
+    // The backend answers a non-git folder as a payload instead of a 400,
+    // so the boot fallback must park the nogit tint the same way the
+    // git_ui probe would once it loads.
+    ctx.fetch = async () => ({
+      status: 200,
+      ok: true,
+      json: async () => ({
+        state: "cleanup only",
+        branch: "No Git repository",
+        not_git_repository: true,
+        staged: [],
+        unstaged: [],
+        untracked: [],
+        conflicted: [],
+      }),
+    });
+    try {
+      vm.runInContext(loadSource(), ctx);
+    } catch (e) {}
+    vm.runInContext(`
+      options.gitUiEnabled = true;
+      state.ws = "ws-a";
+      state.workspaces = [
+        { workspace_id: "ws-a", label: "Alpha", worktree: { checkout_path: "/repo/alpha" } },
+      ];
+    `, ctx);
+    const button = vm.runInContext("document.getElementById('rightRailGit')", ctx);
+    vm.runInContext("syncGitWorkspaceToggle()", ctx);
+    assert.equal(button.dataset.gitStatus, "unknown", "rail starts neutral while the fetch is in flight");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(button.dataset.gitStatus, "nogit", "a nogit payload tints the rail nogit at boot");
+    assert.equal(button.disabled, true, "the rail button disables on a nogit folder");
+    assert.equal(button.getAttribute("aria-label"), "No Git repository detected", "aria-label explains the disabled state");
+  });
+});
+
+describe("right sidebar rail active state", () => {
+  it("keeps the rail neutral at boot when no panel is hosted despite a remembered files mode", async () => {
+    const ctx = context();
+    try {
+      vm.runInContext(loadSource(), ctx);
+    } catch (e) {}
+    // Boot-clean shape: no workspace selected, empty workspace list, and
+    // a persisted files mode from a previous visit. The column holds no
+    // panel, so the Files rail button must not read active.
+    vm.runInContext(`
+      state.ws = null;
+      state.workspaces = [];
+      state.workspaceShell = {};
+      state.workspaceShell[workspaceShellKey("__default_folder__")] = { mode: "files" };
+      window.__herdrRightSidebarCollapsed = false;
+    `, ctx);
+    const filesButton = vm.runInContext("document.getElementById('rightRailFiles')", ctx);
+    vm.runInContext("syncRightSidebarRail()", ctx);
+    assert.equal(filesButton.classList.contains("active"), false,
+      "Files rail must stay neutral when the column hosts no panel");
+    assert.equal(filesButton.getAttribute("aria-pressed"), "false");
+  });
+
+  it("lights the rail once a drawer hosts its panel in the column", async () => {
+    const ctx = context();
+    try {
+      vm.runInContext(loadSource(), ctx);
+    } catch (e) {}
+    vm.runInContext(`
+      state.ws = "ws-1";
+      state.workspaces = [{ workspace_id: "ws-1", label: "Alpha", cwd: "/repo/alpha" }];
+      state.workspaceShell = {};
+      window.__herdrRightSidebarCollapsed = false;
+    `, ctx);
+    const filesButton = vm.runInContext("document.getElementById('rightRailFiles')", ctx);
+    // No panel yet: neutral.
+    vm.runInContext("syncRightSidebarRail()", ctx);
+    assert.equal(filesButton.classList.contains("active"), false,
+      "rail is neutral before the panel mounts");
+    // Host the file browser panel like file_browser.js open() does.
+    const hosted = await vm.runInContext(`
+      (async () => {
+        const panel = document.createElement("div");
+        panel.id = "fileBrowserPanel";
+        document.getElementById("rightSidebarContent").appendChild(panel);
+        return window.HerdrRightSidebar.openView("files", "ws-1", () => panel);
+      })()
+    `, ctx);
+    assert.equal(hosted, "hosted", "openView hosts the panel");
+    vm.runInContext("syncRightSidebarRail()", ctx);
+    assert.equal(filesButton.classList.contains("active"), true,
+      "rail reads active once the panel is hosted");
+  });
+
+  it("search result opens fall back to the default folder when no workspace is selected", async () => {
+    const ctx = context();
+    try {
+      vm.runInContext(loadSource(), ctx);
+    } catch (e) {}
+    vm.runInContext(`
+      state.ws = null;
+      state.workspaces = [];
+      state.defaultFolder = "/home/dev";
+      window.__openedAt = [];
+      closeSearchPalette = function() {};
+      currentSearchWorkspace = function() { return null; };
+      ensureFileBrowserLoaded = async function() {};
+      window.HerdrFileBrowser = { openAt: (workspace, path, opts) => { window.__openedAt.push({ workspace, path, opts }); } };
+      HerdrWorkspacePanes = window.HerdrWorkspacePanes || {};
+    `, ctx);
+    await vm.runInContext(`openWorkspaceSearchPath("src/a.py", "file")`, ctx);
+    // The default folder workspace (selectedOrDefaultWorkspace with an
+    // empty selection) must receive the open: the boot-clean desktop
+    // silently dropped these clicks before the fallback existed.
+    const opened = vm.runInContext("window.__openedAt", ctx);
+    assert.equal(opened.length, 1, "the click reached the file browser");
+    assert.equal(opened[0].opts.kind, "file", "the open keeps the clicked kind");
+    assert.ok(String(opened[0].path).includes("src/a.py"), "the open targets the clicked path");
+    const openedWs = opened[0].workspace;
+    assert.equal(typeof openedWs, "object", "openAt received a workspace object");
+    assert.equal(openedWs.default_folder, true,
+      "the default-folder pseudo workspace owns the open when nothing is selected");
   });
 });

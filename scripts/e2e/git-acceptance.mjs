@@ -96,7 +96,13 @@ function context() {
   const localStorage = new Map();
   // One persistent .git-ui-content element so async tab bodies (history rows,
   // log rows) rendered via replaceContent are observable from the checks.
+  // replaceContent resolves the content through the panel host
+  // ((container || ensurePanel()).querySelector(".git-ui-content")), so the
+  // gitUiPanel stub must answer .git-ui-content with this same element, the
+  // way the real panel DOM nests its content node.
   const contentEl = element();
+  const panelEl = element();
+  panelEl.querySelector = (selector) => (selector === ".git-ui-content" ? contentEl : element());
   const ctx = {
     console,
     setTimeout,
@@ -130,6 +136,7 @@ function context() {
             get() { return ctx.document.__panelHtml; },
             set(value) { ctx.document.__panelHtml = String(value); },
           });
+          el.querySelector = panelEl.querySelector;
         }
         return el;
       },
@@ -308,19 +315,13 @@ const afterRes = await httpsJson(`${ORIGIN}/api/git-ui/status?cwd=${encodeURICom
 const after = await afterRes.json();
 assert(!after.untracked.some((p) => p.startsWith("scratchdir")), "scratchdir is gone from real repo status");
 
-// 12. Navigation redesign: the served bundle drives the new location bar,
-// the single Back ladder, and the file-scoped history/log flows against the
-// real backend. The VM stubs document.addEventListener as a no-op, so the
+// 12. Navigation redesign (Phase 4): the served bundle drives the pane-tab
+// views, the single Back ladder, and the file-scoped history/log flows against
+// the real backend. The VM stubs document.addEventListener as a no-op, so the
 // window keydown handler is captured before boot and driven manually for
 // the Esc checks. History/log tab bodies land in the persistent
-// .git-ui-content element; the panel HTML carries the location bar.
+// .git-ui-content element; the panel HTML carries the side chrome.
 const contentHtml = () => ctx.document.__contentEl.innerHTML || "";
-// The breadcrumbs span carries title="A › B › C" (esc()d), which mirrors the
-// rendered crumb labels; parse it instead of walking nested spans.
-const crumbs = (html) => {
-  const title = (html.match(/git-ui-breadcrumbs" title="([^"]*)"/) || ["", ""])[1];
-  return title.replace(/&quot;/g, '"').replace(/&amp;/g, "&").split("›").map((part) => part.trim()).filter(Boolean);
-};
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const pressEsc = () => keydownListeners.forEach((listener) =>
   listener({ key: "Escape", stopPropagation() {}, stopImmediatePropagation() {}, preventDefault() {} }));
@@ -334,10 +335,11 @@ await wait(500);
   assert(historyFetch.url.includes("file=src%2Fapp.js"), "file-history fetch scoped to src/app.js");
   const histHtml = contentHtml();
   assert(/View change/.test(histHtml) && /Find in log/.test(histHtml), "history rows offer View change / Find in log");
+  // Phase 4: the location bar is gone. The pane tab strip names the view,
+  // and Back renders as the side-head icon while a snapshot exists.
   const histBar = panelHtml();
-  assert(/git-ui-location-bar/.test(histBar), "location bar rendered for the history view");
-  assert(JSON.stringify(crumbs(histBar)) === JSON.stringify(["Changes", "src/app.js", "History"]), `history crumbs read Changes › file › History (${crumbs(histBar).join(" › ")})`);
-  assert(!/git-ui-breadcrumb-ellipsis/.test(histBar), "no legacy breadcrumb-ellipsis markup in the location bar");
+  assert(!/git-ui-location-bar/.test(histBar), "no legacy location bar in the history view");
+  assert(/git-ui-back-icon/.test(histBar), "Back icon rendered for the pushed history snapshot");
   assert(!/HerdrFileBrowser/.test(histBar), "history view markup never references the File Browser tool");
 }
 
@@ -351,8 +353,11 @@ await wait(500);
   const compareFetch = calls.filter((c) => c.path === "/api/git-ui/compare").pop();
   assert(compareFetch, "View change fetched compare from the real backend");
   assert(compareFetch.url.includes("file=src%2Fapp.js"), "committed-file compare scoped to src/app.js");
+  // Phase 4: no crumbs. The committed-file view is a pane tab named by its
+  // file; the Back icon stays while the pushed snapshot exists.
   const changeBar = panelHtml();
-  assert(JSON.stringify(crumbs(changeBar)) === JSON.stringify(["History", "src/app.js", `Committed ${decodeURIComponent(firstHash).slice(0, 12)}`]), `committed-file crumbs read History › file › Committed <hash> (${crumbs(changeBar).join(" › ")})`);
+  assert(!/git-ui-location-bar/.test(changeBar), "no legacy location bar in the committed-file view");
+  assert(/git-ui-back-icon/.test(changeBar), "Back icon rendered from the committed-file snapshot");
   assert(/Committed files/.test(panelHtml()), "committed-file side section rendered");
 }
 
@@ -361,8 +366,10 @@ calls.length = 0;
 await ui.goBack();
 await wait(500);
 {
-  const backBar = panelHtml();
-  assert(JSON.stringify(crumbs(backBar)) === JSON.stringify(["Changes", "src/app.js", "History"]), `Back restored the history view (${crumbs(backBar).join(" › ")})`);
+  // Phase 4: Back pops the snapshot; the history rows re-render in the
+  // content host (same drawer, no tool hand-off).
+  const backHtml = contentHtml();
+  assert(/View change/.test(backHtml) && /Find in log/.test(backHtml), `Back restored the history rows (${backHtml.slice(0, 80)})`);
   const historyRefetch = calls.filter((c) => c.path === "/api/git-ui/file-history").pop();
   assert(historyRefetch, "Back re-fetched file-history (restored history, not the changes list)");
   assert(ui.isVisible(), "Back stayed inside the Git drawer (panel still visible)");
@@ -378,10 +385,13 @@ await wait(500);
   const logFetch = calls.filter((c) => c.path === "/api/git-ui/log").pop();
   assert(logFetch, "Find in log fetched the log from the real backend");
   assert(logFetch.url.includes("file=src%2Fapp.js"), "log fetch kept the file scope");
+  // Phase 4: the scope chip lives in the log body (log.js renders the
+  // clear control), not in a location bar.
+  const logHtml = contentHtml();
+  assert(/git-ui-log-file-clear/.test(logHtml), "file-scoped log shows the clear-scope chip in the log body");
+  assert(/clearLogFileHistory/.test(logHtml), "clear-scope chip wires clearLogFileHistory");
   const logBar = panelHtml();
-  assert(JSON.stringify(crumbs(logBar)) === JSON.stringify(["Log", "src/app.js"]), `file-scoped log crumbs read Log › file (${crumbs(logBar).join(" › ")})`);
-  assert(/git-ui-crumb-clear/.test(logBar), "location bar shows the clear-scope control");
-  assert(/clearLogFileHistory/.test(logBar), "clear-scope control wires clearLogFileHistory");
+  assert(!/git-ui-crumb-clear/.test(logBar), "no legacy crumb clear control in the panel chrome");
 }
 
 // 16. Clearing the scope returns the whole-repo log.
@@ -389,9 +399,8 @@ calls.length = 0;
 await ui.clearLogFileHistory();
 await wait(500);
 {
-  const clearBar = panelHtml();
-  assert(JSON.stringify(crumbs(clearBar)) === JSON.stringify(["Log"]), `cleared scope shows the whole-repo log (${crumbs(clearBar).join(" › ")})`);
-  assert(!/git-ui-crumb-clear/.test(clearBar), "clear-scope control hidden when the log is unscoped");
+  const clearHtml = contentHtml();
+  assert(!/git-ui-log-file-clear/.test(clearHtml), "clear-scope chip hidden when the log is unscoped");
   const logFetch = calls.filter((c) => c.path === "/api/git-ui/log").pop();
   assert(logFetch, "clear-scope re-fetched the unscoped log");
   assert(!logFetch.url.includes("file="), "unscoped log fetch dropped the file param");
@@ -404,16 +413,17 @@ calls.length = 0;
 pressEsc();
 await wait(500);
 {
-  const escBar = panelHtml();
-  assert(JSON.stringify(crumbs(escBar)) === JSON.stringify(["Changes", "src/app.js", "History"]), `first Esc popped back to file history (${crumbs(escBar).join(" › ")})`);
+  const escHtml = contentHtml();
+  assert(/View change/.test(escHtml) && /Find in log/.test(escHtml), `first Esc popped back to file history (${escHtml.slice(0, 80)})`);
   assert(ui.isVisible(), "Esc kept the drawer open at a deeper view");
 }
 // Esc at the history view pops the openFileHistory snapshot: back to changes.
 pressEsc();
 await wait(500);
 {
+  // Phase 4: the changes root carries no history rows and no Back icon.
   const escBar = panelHtml();
-  assert(JSON.stringify(crumbs(escBar)) === JSON.stringify(["Changes"]), `second Esc popped file history back to changes (${crumbs(escBar).join(" › ")})`);
+  assert(!/git-ui-back-icon/.test(escBar), "second Esc popped file history back to changes (Back icon gone)");
   assert(ui.isVisible(), "drawer still open at the changes root");
 }
 // Esc at the changes root asks to hide (VM confirm approves) and closes.

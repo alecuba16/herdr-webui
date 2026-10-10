@@ -86,7 +86,7 @@ const EXPECTED_HINTS = {
   optFileContentSearchContextLines: "done", optFileContentSearchAutoCollapseFiles: "done",
   optFileContentSearchMatchesPerFile: "done", optGlobalShortcutPrefix: "done",
   optSearchShortcut: "done", optServerSessionExpiration: "done",
-  optSidebarWorkspacePercent: "done", optTempTerminalLabelMaxChars: "done",
+  optSidebarWorkspacePercent: "done",
   optTreeIndentPx: "done", optWorkingDismissMinutes: "done",
   optWorktreeAutoDiscover: "done", optNoSleepAutoCooldown: "done",
   // Deliberately hintless (inputAttrs() with no argument):
@@ -282,10 +282,9 @@ async function main() {
     await sleep(300);
   } else console.log("SKIP worktree create modal: no active workspace");
 
-  // D. Tab rename: desktop has NO tab strip; the panel switcher owns the
-  // rename input (.panel-label button → startTabRename). The .tab class on
-  // desktop is only styled Cancel buttons, never a rename target. Activate
-  // the workspace so state.tabs loads, then dblclick the panel switcher.
+  // D. Tab rename: the pane strip owns the rename input (terminal tab
+  // button → startTabRename). Activate the workspace so state.tabs loads,
+  // then dblclick a pane-strip terminal tab.
   const tabPrepared = await evalJs(`(async () => {
     if (document.querySelector('.tab-rename-input')) return 'exists';
     if (typeof state !== 'undefined' && !state.ws && ${JSON.stringify(wsId || "")}) { if (typeof go === 'function') { try { await go(${JSON.stringify(wsId || "")}); } catch (e) {} } }
@@ -297,7 +296,7 @@ async function main() {
   })()`);
   if (tabPrepared === 'none') console.log("SKIP tab rename: no workspace tabs available");
   else {
-    const tabRenamed = await evalJs(`(() => { const b = document.querySelector('.panel-field > button.panel-label'); if (!b) return false; b.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return true; })()`);
+    const tabRenamed = await evalJs(`(() => { const b = document.querySelector('#workspacePanes .pane-tab.terminal'); if (!b) return false; b.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return true; })()`);
     if (tabRenamed) {
     try {
       await waitFor(`!!document.querySelector('.tab-rename-input')`, "tab rename input", 5000);
@@ -310,7 +309,7 @@ async function main() {
     // of a synthetic Escape dispatch: synthetic keydown + global shortcut
     // listeners wedged the renderer in this audit sequence.
     await evalJs(`(() => { if (typeof state !== 'undefined' && state.editingTab) { state.editingTab = null; state.editingTabValue = ""; render(); } return true; })()`);
-    } else console.log("SKIP tab rename: panel switcher button not found");
+    } else console.log("SKIP tab rename: pane strip terminal tab not found");
   }
   await sleep(300);
 
@@ -362,8 +361,8 @@ async function main() {
           console.log("FAIL file editor: .herdr-editor did not mount after file click");
         }
         await auditSurface("file editor", ".herdr-editor", { required: true });
-        // Find bar: the editor API owns it; open via the toggle button.
-        const findOpened = await evalJs(`(() => { const b = document.querySelector('.herdr-editor .herdr-editor-find-toggle'); if (!b) return false; b.click(); return !!document.querySelector('.herdr-editor-find:not([hidden])'); })()`);
+        // Find bar: the pane strip owns the control for the active editor.
+        const findOpened = await evalJs(`(() => { const b = document.querySelector('.pane-find-button'); if (!b) return false; b.click(); return !!document.querySelector('.herdr-editor-find:not([hidden])'); })()`);
         if (findOpened) {
           await auditSurface("editor find bar", ".herdr-editor-find", { required: true });
           await evalJs(`(() => { document.activeElement && document.activeElement.blur && document.activeElement.blur(); return true; })()`);

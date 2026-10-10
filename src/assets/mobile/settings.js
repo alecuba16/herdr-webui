@@ -167,6 +167,7 @@
       const regex = contentSearchRegexValue();
       const worktreeDirectory = worktreeDefaultDirectoryValue();
       const explorationDirectory = explorationDefaultDirectoryValue();
+      const workspaceOpenTerminal = readOptions().workspaceOpenTerminal === true;
       const volume = notificationVolumeValue();
       const soundScope = readOptions().soundScope === "all" ? "all" : "current";
       const agentSortMode = readOptions().agentSortMode || "off";
@@ -185,7 +186,7 @@
         { title: "Layout", keywords: "layout mobile desktop auto", html: layoutSection(layout) },
         { title: "Editor", keywords: "editor word wrap tab size codemirror lsp diagnostics language server", html: editorSection(editorEnhanced, editorWordWrap, editorTabSize, lsp) },
         { title: "Files and search", keywords: "files search browser content line numbers regex", html: filesSection(depth, lineNumbers, headerSearch, searchOrder, pathSearchPageSize, minChars, contentPageSize, contextLines, autoCollapse, defaultExpanded, matchesPerFile, matchCase, regex) },
-        { title: "Workspaces", keywords: "workspace worktree exploration default directory", html: workspacesSection(worktreeDirectory, explorationDirectory) },
+        { title: "Workspaces", keywords: "workspace worktree exploration default directory terminal open", html: workspacesSection(worktreeDirectory, explorationDirectory, workspaceOpenTerminal) },
         { title: "Alerts", keywords: "alerts notifications sound volume scope", html: alertsSection(notifications, volume, soundScope) },
         { title: "Agents", keywords: "agents sorting stuck working dismiss blocked done idle", html: agentsSection(agentSortMode, stuckWorking, dismissMinutes) },
         { title: "Energy", keywords: "no sleep energy coffee awake power", html: energySection(noSleep.mode, noSleep.error, noSleep.supported === false) },
@@ -239,8 +240,8 @@
       }).join("")}</div>`;
     }
 
-    function workspacesSection(worktreeDirectory, explorationDirectory) {
-      return `<div class="mobile-settings-group"><h3>Workspaces</h3><label data-settings-id="worktreeDefaultDirectory">${rollbackHtml("worktreeDefaultDirectory")}${appliedFlashHtml("worktreeDefaultDirectory")}<span>Worktree default directory</span><input placeholder="../worktrees"${inputAttrs()} value="${escapeHtml(worktreeDirectory)}" onchange="HerdrMobile.setWorktreeDefaultDirectory(this.value)"></label><small>Base for generated worktree checkout paths.</small><label data-settings-id="explorationDefaultDirectory">${rollbackHtml("explorationDefaultDirectory")}${appliedFlashHtml("explorationDefaultDirectory")}<span>Exploration default directory</span><input placeholder="~/Documents/code"${inputAttrs()} value="${escapeHtml(explorationDirectory)}" onchange="HerdrMobile.setExplorationDefaultDirectory(this.value)"></label><small>Prefills worktree discovery paths.</small></div>`;
+    function workspacesSection(worktreeDirectory, explorationDirectory, openTerminal) {
+      return `<div class="mobile-settings-group"><h3>Workspaces</h3><label data-settings-id="worktreeDefaultDirectory">${rollbackHtml("worktreeDefaultDirectory")}${appliedFlashHtml("worktreeDefaultDirectory")}<span>Worktree default directory</span><input placeholder="../worktrees"${inputAttrs()} value="${escapeHtml(worktreeDirectory)}" onchange="HerdrMobile.setWorktreeDefaultDirectory(this.value)"></label><small>Base for generated worktree checkout paths.</small><label data-settings-id="explorationDefaultDirectory">${rollbackHtml("explorationDefaultDirectory")}${appliedFlashHtml("explorationDefaultDirectory")}<span>Exploration default directory</span><input placeholder="~/Documents/code"${inputAttrs()} value="${escapeHtml(explorationDirectory)}" onchange="HerdrMobile.setExplorationDefaultDirectory(this.value)"></label><small>Prefills worktree discovery paths.</small><label data-settings-id="workspaceOpenTerminal">${rollbackHtml("workspaceOpenTerminal")}${appliedFlashHtml("workspaceOpenTerminal")}<input type="checkbox" ${openTerminal ? "checked" : ""} onchange="HerdrMobile.setWorkspaceOpenTerminal(this.checked)"><span>Open terminal with workspace</span><small>Start a terminal when a workspace opens. Off by default.</small></label></div>`;
     }
 
     function alertsSection(notifications, volume, soundScope) {
@@ -475,6 +476,14 @@
       parsed.explorationDefaultDirectory = String(value || "").trim();
       writeOptions(parsed);
       queueAppliedFlash("explorationDefaultDirectory");
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
+    function setWorkspaceOpenTerminal(value) {
+      const parsed = readOptions();
+      parsed.workspaceOpenTerminal = value === true;
+      writeOptions(parsed);
+      queueAppliedFlash("workspaceOpenTerminal");
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
@@ -760,6 +769,7 @@
       logout,
       setBrowserNotifications,
       setExplorationDefaultDirectory,
+      setWorkspaceOpenTerminal,
       loadNoSleep,
       setNoSleepMode,
       setAgentSortMode,

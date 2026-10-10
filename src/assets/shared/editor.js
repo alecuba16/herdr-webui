@@ -198,8 +198,11 @@
   // visible Find entry — the toolbar existed but only Ctrl/Cmd+F could open
   // it, which mobile keyboards cannot reach. Render a compact floating
   // toggle whenever the header is hidden and find is not disabled.
+  // hideFindToggle suppresses just this floating button (the pane strip
+  // owns a find control for the editor tab instead); the find toolbar
+  // stays so openFind still has something to open.
   function findToggleHtml(opts) {
-    if (!opts.hideHeader || opts.hideFind) return "";
+    if (!opts.hideHeader || opts.hideFind || opts.hideFindToggle) return "";
     return `<button type="button" class="herdr-editor-find-toggle herdr-editor-find-float" title="Find / replace" aria-label="Find / replace" onclick="HerdrEditor.openFind(this.closest('.herdr-editor'))">⌕</button>`;
   }
 

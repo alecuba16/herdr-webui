@@ -1,8 +1,4 @@
 document.addEventListener("click", (e) => {
-  if (state.panelMenuOpen && (!e.target || !e.target.closest || !e.target.closest(".panel-field"))) {
-    state.panelMenuOpen = false;
-    render();
-  }
   const workspaceAction = e.target && e.target.closest && e.target.closest("[data-workspace-action]");
   if (workspaceAction) {
     e.preventDefault();
@@ -211,11 +207,6 @@ el("optTerminalMouseReporting").onchange = () => {
   options.terminalMouseReporting = el("optTerminalMouseReporting").checked;
   saveOptions();
 };
-function commitTempTerminalLabelMaxChars() {
-  options.tempTerminalLabelMaxChars = Math.max(4, Math.min(80, Number(el("optTempTerminalLabelMaxChars").value) || 20));
-  saveOptions();
-}
-registerSettingsCommit("optTempTerminalLabelMaxChars", commitTempTerminalLabelMaxChars, () => options.tempTerminalLabelMaxChars);
 el("optAgentSortMode").onchange = () => {
   options.agentSortMode = el("optAgentSortMode").value;
   if (options.agentSortMode === "attention_inverted")
@@ -282,6 +273,12 @@ el("optParentCloseMode").onchange = () => {
   saveOptions();
   applyOptions();
 };
+el("optWorkspaceOpenTerminal").onchange = () => {
+  options.workspaceOpenTerminal = el("optWorkspaceOpenTerminal").checked;
+  saveOptions();
+  if (typeof flashSettingsApplied === "function")
+    flashSettingsApplied(el("optWorkspaceOpenTerminal"));
+};
 el("optStuckWorkingEnabled").onchange = () => {
   options.stuckWorkingEnabled = el("optStuckWorkingEnabled").checked;
   saveOptions();
@@ -298,18 +295,6 @@ function commitWorkingDismissMinutes() {
   render();
 }
 registerSettingsCommit("optWorkingDismissMinutes", commitWorkingDismissMinutes, () => options.workingDismissMinutes);
-el("optShowTabActivity").onchange = () => {
-  options.showTabActivity = el("optShowTabActivity").checked;
-  saveOptions();
-  applyOptions();
-  render();
-};
-el("optPanelCloseMode").onchange = () => {
-  options.panelCloseMode = el("optPanelCloseMode").value;
-  saveOptions();
-  applyOptions();
-  render();
-};
 el("optWorkspaceSort").onchange = () => {
   options.workspaceSort = el("optWorkspaceSort").value;
   saveOptions();
@@ -336,6 +321,15 @@ el("optScrollLines").oninput = () => {
   saveOptions();
   applyOptions();
 };
+function commitPaneTabMaxChars() {
+  options.paneTabMaxChars = Math.max(4, Math.min(60, Math.round(Number(el("optPaneTabMaxChars").value) || 20)));
+  saveOptions();
+  applyOptions();
+}
+el("optPaneTabMaxChars").oninput = () => {
+  commitPaneTabMaxChars();
+};
+registerSettingsCommit("optPaneTabMaxChars", commitPaneTabMaxChars, () => options.paneTabMaxChars);
 registerSettingsCommit("optScrollLines", () => {
   options.scrollLines = Math.max(1, Math.min(20, Number(el("optScrollLines").value) || 3));
   saveOptions();
@@ -505,7 +499,11 @@ document.addEventListener(
   "keydown",
   (e) => {
     if (e.key !== "Escape") return;
-    if (el("workspaceCreateModal").style.display === "grid") {
+    if (document.getElementById("paneMenu")) {
+      e.preventDefault();
+      e.stopPropagation();
+      closePaneMenu();
+    } else if (el("workspaceCreateModal").style.display === "grid") {
       e.preventDefault();
       e.stopPropagation();
       closeWorkspaceCreateModal();
@@ -522,6 +520,20 @@ document.addEventListener(
       e.stopPropagation();
       closeSearchPalette();
     }
+  },
+  true,
+);
+// Phase 5 pane menu: a click outside [⋮]'s menu (or on its button,
+// which toggles on its own) closes it. Capture phase so the click never
+// reaches a tab or strip control under an open menu.
+document.addEventListener(
+  "mousedown",
+  (e) => {
+    const menu = document.getElementById("paneMenu");
+    if (!menu) return;
+    if (menu.contains && menu.contains(e.target)) return;
+    if (e.target && e.target.closest && e.target.closest(".pane-menu-button")) return;
+    closePaneMenu();
   },
   true,
 );
@@ -694,6 +706,7 @@ window.addEventListener("focus", loadNoSleep);
 document.addEventListener("pointerdown", unlockAudio, { once: true });
 document.addEventListener("keydown", unlockAudio, { once: true });
 setupSessionChrome();
+setupRightSidebarRail();
 applyTheme();
 applyDensity();
 applyOptions();
@@ -732,45 +745,3 @@ loadServerSettings();
 refresh();
 connectEvents();
 
-function tempTerminalWorkspaceId() {
-  if (state.ws) return state.ws;
-  const workspaceIds = new Set((state.workspaces || []).map((workspace) => workspace.workspace_id).filter(Boolean));
-  const visibleDrawerIds = [
-    window.HerdrFileBrowser && window.HerdrFileBrowser.activeWorkspaceId && window.HerdrFileBrowser.activeWorkspaceId(),
-    window.HerdrGitUi && window.HerdrGitUi.activeWorkspaceId && window.HerdrGitUi.activeWorkspaceId(),
-  ];
-  const drawerId = visibleDrawerIds.find((id) => workspaceIds.has(id));
-  if (drawerId) return drawerId;
-  return workspaceIds.size === 1 ? Array.from(workspaceIds)[0] : "";
-}
-
-// Ephemeral temporary terminal overlay (multi-session manager).
-if (globalThis.HerdrTempTerminal) {
-  tempTerminal = globalThis.HerdrTempTerminal.create({
-    el,
-    state,
-    wsUrl,
-    api,
-    modalId: "tempTerminalModal",
-    onHerdrError: typeof handleHerdrErrorFrame === "function" ? handleHerdrErrorFrame : null,
-    fontFamilyFn: terminalFontFamily,
-    fontSizeFn: () => options.terminalFontSize || 14,
-    themeFn: terminalTheme,
-    defaultFolderFn: defaultFolderPath,
-    workspaceIdFn: tempTerminalWorkspaceId,
-    shortcutLabelFn: () => shortcutLabel("webuiShortcuts", "tempTerminalToggle"),
-    promoteShortcutLabelFn: () => shortcutLabel("webuiShortcuts", "tempTerminalPromote"),
-    // Navigate from the HTTP response (no workspace.created handler): the
-    // backend already focused the promoted workspace/tab/pane, and the
-    // workspace.closed event for the emptied temp workspace lands via the
-    // regular refresh burst.
-    onPromoted: (workspace, tab, pane) => {
-      const wsId = workspace && workspace.workspace_id;
-      const tabId = tab && tab.tab_id;
-      const paneId = pane && pane.pane_id;
-      if (!wsId) return;
-      go(wsId, tabId || null, paneId || null);
-    },
-  });
-  window.addEventListener("resize", () => tempTerminal.handleResize());
-}

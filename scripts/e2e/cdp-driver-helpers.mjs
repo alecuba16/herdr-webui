@@ -24,6 +24,7 @@ export function attach(wsUrl) {
     const ws = new WebSocket(wsUrl);
     let id = 0;
     const pending = new Map();
+    const eventHandlers = new Map();
     ws.onopen = () => resolve({
       send(method, params) {
         return new Promise((res2, rej2) => {
@@ -31,6 +32,11 @@ export function attach(wsUrl) {
           pending.set(msgId, { res2, rej2 });
           ws.send(JSON.stringify({ id: msgId, method, params }));
         });
+      },
+      // Subscribe to CDP events (e.g. Fetch.requestPaused) for this
+      // session. Handlers receive (params, method) and run inline.
+      on(method, handler) {
+        eventHandlers.set(method, handler);
       },
     });
     ws.onmessage = (ev) => {
@@ -40,6 +46,11 @@ export function attach(wsUrl) {
         pending.delete(msg.id);
         if (msg.error) rej2(new Error(`${msg.error.message}: ${JSON.stringify(msg.error.data || "")}`));
         else res2(msg.result);
+        return;
+      }
+      if (msg.method && eventHandlers.has(msg.method)) {
+        try { eventHandlers.get(msg.method)(msg.params || {}, msg.method); }
+        catch (error) { console.error(`event handler for ${msg.method} failed:`, error); }
       }
     };
     ws.onerror = () => reject(new Error("ws error"));

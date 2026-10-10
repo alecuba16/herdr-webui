@@ -52,6 +52,18 @@ including the copy toast via trusted input, the accent-2 selected-row
 tint, and the settings/terminal DOM hygiene audits (duplicate element
 ids, IME textarea id/name).
 
+## Pane strip rail (rail-e2e)
+
+```sh
+just rail-e2e  # or: scripts/e2e/run-rail-e2e.sh
+```
+
+Same real-browser setup. Covers the maximize rail: splitPaneRight, an
+editor tab opened from the Files drawer into the fresh leaf, maximize
+keeps the sibling strip visible (stub keyed by pane id, live controls),
+own-tab click keeps maximize, rail tab click restores the split and
+activates the sibling tab, and the git drawer opens a `gitchanges` tab.
+
 ## Utility scripts
 
 - `cdp-driver-helpers.mjs` - shared CDP plumbing for the real-browser drivers

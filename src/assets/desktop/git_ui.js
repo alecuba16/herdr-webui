@@ -69,6 +69,7 @@
     loadDiff,
     loadSelectedCommitPreview,
     render,
+    syncPaneTabFromView,
     esc,
     GIT_LOG_PAGE_SIZE,
   });
@@ -81,7 +82,6 @@
   const resetGitViewForCwd = workspaceNav.resetGitViewForCwd;
   const clonePlain = workspaceNav.clonePlain;
   const viewCrumbs = workspaceNav.viewCrumbs;
-  const renderLocationBar = workspaceNav.renderLocationBar;
   const captureNavigationSnapshot = workspaceNav.captureNavigationSnapshot;
   const pushNavigationSnapshot = workspaceNav.pushNavigationSnapshot;
   const restoreNavigationSnapshot = workspaceNav.restoreNavigationSnapshot;
@@ -257,6 +257,10 @@
     view.error = "";
     view.loading = false;
     view.tab = "cleanup";
+    // Phase 3c heal: cleanup is the only valid view on a non-Git folder;
+    // the pane tree may sit on any other git tab from an earlier repo
+    // state. Sync the strip so the active tab names what renders.
+    syncPaneTabFromView();
     view.file = "";
     view.diff = { files: [] };
     view.status = {
@@ -264,6 +268,11 @@
       repo_path: view.cwd || "",
       branch: "No Git repository",
       not_git_repository: true,
+      // __probed marks this status fresh: the shell probe and the rail
+      // resync read the same cache, an unmarked nogit status would
+      // refetch the failing endpoint on every shell render while the
+      // drawer stays open on the non-git folder.
+      __probed: true,
       conflicted: [],
       staged: [],
       unstaged: [],
@@ -380,6 +389,7 @@
     state,
     active,
     currentMode,
+    activeToggleKind,
     compareRefLabel,
     isNoGitRepositoryView,
     diffFile,
@@ -459,7 +469,6 @@
     renderDiff,
     replaceContent,
     render,
-    renderLocationBar,
   });
   const renderLog = logRender.renderLog;
   const updateGitLogStickyOffsets = logRender.updateGitLogStickyOffsets;
@@ -495,34 +504,154 @@
     return panel;
   }
 
-  function showPanel(show) {
+  function showPanel(show, hosted = panelIsHosted()) {
     const panel = ensurePanel();
-    panel.style.display = show ? "grid" : "none";
-    syncTerminalVisibility(show);
+    panel.style.display = show ? (hosted ? "flex" : "grid") : "none";
     if (!show) {
       state.renderVersion++;
       panel.innerHTML = "";
     }
   }
 
-  function syncTerminalVisibility(show) {
-    // A temporary Git overlay owns the viewport: never hide or refit the
-    // main shell from a temp-surface render.
-    if (globalThis.HerdrTempOverlays && globalThis.HerdrTempOverlays.suppressingGit && globalThis.HerdrTempOverlays.suppressingGit()) return;
-    const shell = document.getElementById("terminalShell");
-    if (!shell) return;
-    const fileBrowser = window.HerdrFileBrowser;
-    const fileVisible = !!(fileBrowser && fileBrowser.isVisible && fileBrowser.isVisible());
-    shell.style.display = show || fileVisible ? "none" : "";
-    if (window.syncShellModeButtons) window.syncShellModeButtons();
-    // Refit the terminal surface when the shell reappears so the
-    // terminal does not extend below the visible area.
-    if (!show && !fileVisible && shell.style.display !== "none") {
-      if (window.HerdrTerminalFit) window.HerdrTerminalFit.afterLayout(function () {
-        if (typeof fitTerminalShell === "function") fitTerminalShell();
-        if (typeof fitTerminalSurface === "function") fitTerminalSurface();
-      });
+  function panelIsHosted() {
+    return !!(window.HerdrRightSidebar && window.HerdrRightSidebar.isHosted("gitUiPanel"));
+  }
+
+  // ---- center git tab bridge (Phase 3c) -------------------------------
+  // workspace_panes owns tab identity and the container node; git_ui owns
+  // per-view state and markup. openViewTab applies the view-key to the
+  // workspace view state, ensures the container exists in the pane content
+  // slot, activates the pane tab, and renders.
+  function applyViewKeyToState(view, viewKey) {
+    const key = String(viewKey || "");
+    if (!key) return false;
+    if (key === "changes") {
+      if (currentMode() !== "changes") resetToChangesMode(view);
+      view.sideEditor = null;
+      view.diffKind = view.diffKind || "";
+      view.diffScope = "all";
+      view.tab = "changes";
+      return true;
     }
+    if (key === "log" || key === "stash" || key === "cleanup" || key === "conflicts") {
+      view.tab = key;
+      return true;
+    }
+    if (key.startsWith("history@")) {
+      view.file = key.slice("history@".length);
+      view.diffKind = "";
+      view.tab = "history";
+      return true;
+    }
+    if (key.startsWith("diff@")) {
+      view.file = key.slice("diff@".length);
+      view.diffKind = "";
+      resetToChangesMode(view);
+      view.tab = "changes";
+      return true;
+    }
+    if (key.startsWith("compare@")) {
+      const target = key.slice("compare@".length);
+      const sep = target.indexOf("..");
+      view.compareBase = sep > 0 ? target.slice(0, sep) : target;
+      // "current" in the view-key names the working tree (the tab title
+      // spells it out; the API keeps taking ".").
+      const rawTarget = sep > 0 ? target.slice(sep + 2) : "";
+      view.compareTarget = rawTarget === "current" ? "." : rawTarget;
+      view.mode = rawTarget === "current" ? "current-compare" : "readonly-compare";
+      view.tab = "changes";
+      return true;
+    }
+    return false;
+  }
+
+  // Creates or reuses the tab's container node in the active pane content
+  // slot (createElement contract). Returns the container, or null when no
+  // pane tree exists (standalone harnesses render into the panel).
+  function ensureViewTabContainer(viewKey) {
+    const panes = window.HerdrWorkspacePanes;
+    if (!panes || !panes.paneGitMountId) return null;
+    // The container follows the tab's owning pane: the open path focuses
+    // the owning leaf before mounting, and the container must land there.
+    const tabId = panes.gitTabId ? panes.gitTabId(String(viewKey)) : null;
+    const pane = (tabId && panes.paneElementForTab && panes.paneElementForTab(tabId))
+      || (panes.activePaneElement && panes.activePaneElement())
+      || document.querySelector("#workspacePanes .workspace-pane");
+    const content = pane && pane.querySelector(".pane-content");
+    if (!content) return null;
+    let container = document.getElementById(panes.paneGitMountId(String(viewKey)));
+    if (!container) {
+      container = document.createElement("section");
+      container.id = panes.paneGitMountId(String(viewKey));
+      container.className = "pane-git-container";
+      container.dataset.viewKey = String(viewKey);
+    }
+    if (container.parentElement !== content) content.appendChild(container);
+    content.querySelectorAll(".pane-editor-container, .pane-git-container").forEach((node) => {
+      if (node !== container) node.style.display = "none";
+      else node.style.display = "";
+    });
+    return container;
+  }
+
+  async function openViewTab(viewKey) {
+    if (!state.visible) return;
+    const view = active();
+    if (!view) return;
+    if (!applyViewKeyToState(view, viewKey)) return;
+    const panes = window.HerdrWorkspacePanes;
+    const container = ensureViewTabContainer(viewKey);
+    if (!container) { render(); return; }
+    if (panes && panes.setActivePaneTab) panes.setActivePaneTab(panes.gitTabId(String(viewKey)));
+    // Whole-tree views refetch their body: log pages in, stash pulls the
+    // stash list, and the changes tree reloads the working diff. Focused
+    // views (per-file diff, compare) keep the loaded diff while the
+    // signature matches; the stash body loads from renderStash, matching
+    // refresh(). The workspace view state is shared by every git tab of
+    // one workspace, so view.diff can hold another tab's result: the
+    // signature mismatch is what tells a fresh or foreign focused tab
+    // (must refetch, or it renders a stale diff) from a focus re-click of
+    // the same view (keep the loaded diff). A returning focused tab first
+    // restores its parked diff from the side cache; the restore misses on
+    // a foreign or mutated view state and the staleness path refetches.
+    if (view.tab !== "stash") restoreFocusedDiff(view, String(viewKey));
+    const focusedStale = focusedDiffView(view)
+      && view.diffSignature !== diffSignatureFor(view);
+    if (view.tab === "log" || (view.tab === "stash" && !view.stashData)
+      || (view.tab === "changes" && !view.file && view.mode !== "readonly-compare" && view.mode !== "current-compare")
+      || focusedStale) {
+      // The whole-tree refetch is best-effort: a repo error renders the
+      // in-panel error surface instead of leaving the tab container blank
+      // (the unhandled rejection would skip the render below).
+      try {
+        if (view.tab !== "stash") await loadDiff();
+      } catch (e) {
+        view.error = e && e.message ? e.message : String(e);
+      }
+    }
+    render();
+  }
+
+  // workspace_panes calls this after a tab close dropped the tab id: the
+  // container node is gone, so nothing left references the view-key.
+  // Per-view git state stays in the workspace cache (cheap to refetch).
+  function releaseViewTab() {}
+
+  // Heals the pane tree after an internal state flip (refresh dropped the
+  // stash view, the repo turned out to not be Git). The pane tree may sit
+  // on the now-invalid tab; without healing, the strip highlight names one
+  // view while the state renders another. Only touches the tree when a git
+  // tab is active, so a terminal/editor session is never hijacked. Best
+  // effort: callers render right after, and openGitTab owns the tab id.
+  function syncPaneTabFromView() {
+    const panes = window.HerdrWorkspacePanes;
+    if (!panes || !panes.paneRoot || !panes.isGitTab || !panes.gitTabViewKey || !panes.paneActiveTab) return;
+    const activeTabId = panes.paneActiveTab();
+    if (!panes.isGitTab(activeTabId)) return;
+    const activeViewKey = panes.gitTabViewKey(activeTabId);
+    const viewKey = mainViewKeyFor(active());
+    if (!viewKey || activeViewKey === viewKey) return;
+    if (panes.openGitTab) void panes.openGitTab(viewKey);
   }
 
   async function open(workspace, options) {
@@ -533,6 +662,13 @@
       hide();
       return;
     }
+    // Any reopen of an already-loaded view is a resync point. forceOpen
+    // onto a visible same-key drawer is a re-focus (re-selecting a git
+    // workspace whose drawer is up), and a plain open after hide() is a
+    // rail-click reopen. Both may sit on a full load that went stale after
+    // an out-of-band commit, so refresh even when needsLoad below says
+    // false. First opens stay on the needsLoad path.
+    const reopenResync = !!(state.cache[key] && state.cache[key].status && (openOptions.forceOpen || !state.visible));
     saveDraftFromDom();
     state.activeKey = key;
     if (!state.cache[key]) {
@@ -596,25 +732,41 @@
     }
     state.open = true;
     state.visible = true;
-    showPanel(true);
+    // Desktop host takes the panel into the right sidebar column before
+    // the first render. Test harnesses keep the fallback host; forceOpen
+    // only bypasses the rail's collapse toggle in the render.js wrapper,
+    // not the mount decision.
+    let hostedResult = "legacy";
+    if (window.HerdrRightSidebar)
+      hostedResult = await window.HerdrRightSidebar.openView("git", state.ws, ensurePanel);
+    showPanel(true, hostedResult === "hosted");
     requestAnimationFrame(() => ensurePanel().focus({ preventScroll: true }));
+    // A center git tab the pane tree restored (reload with a git tab
+    // active) reopens its view so the strip highlight matches the
+    // rendered surface. Without an active git tab the sidebar opens
+    // alone, same as a fresh rail click.
+    const panes = window.HerdrWorkspacePanes;
+    const activeTab = panes && panes.paneActiveTab ? panes.paneActiveTab() : "";
+    const restoredViewKey = panes && panes.isGitTab && panes.isGitTab(activeTab) ? panes.gitTabViewKey(activeTab) : "";
+    // A status parked by the rail probe is a hint, not a load: it never
+    // ran through refresh(), so no diff came with it. Treat the view as
+    // unloaded and let open() do the real fetch.
+    const needsLoad = (view) => !view || !view.status || view.status.__probedOnly;
+    if (restoredViewKey && applyViewKeyToState(active() || {}, restoredViewKey)) {
+      await ensureViewTabContainer(restoredViewKey);
+      if (reopenResync || needsLoad(active())) await refresh();
+    } else {
+      if (reopenResync || needsLoad(active())) await refresh();
+    }
     render();
-    if (!active().status) await refresh();
   }
 
   function hide() {
-    // A temporary Git overlay owns this panel while it is mounted inside
-    // the overlay body: display:none here would blank that overlay's
-    // surface (e.g. when the file browser open() cross-hides the git
-    // drawer). Only the overlay's own close path may dismiss it.
-    if (globalThis.HerdrTempOverlays && globalThis.HerdrTempOverlays.panelInTempOverlay &&
-        globalThis.HerdrTempOverlays.panelInTempOverlay("gitUiPanel")) {
-      return;
-    }
     saveDraftFromDom();
     saveSideEditorFromDom();
     state.visible = false;
     showPanel(false);
+    if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
   }
 
   function close() {
@@ -624,6 +776,7 @@
     state.open = false;
     state.visible = false;
     showPanel(false);
+    if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
   }
 
   async function refresh() {
@@ -639,10 +792,36 @@
     view.error = "";
     view.loading = true;
     if (view.tab === "stash") view.selectedStashDiff = null;
+    // A refresh means the repo moved (commit, stash, switch, pull):
+    // every parked focused diff from before the mutation is stale, so
+    // drop the side cache before the reload refills it.
+    view.focusedDiffCache = {};
     if (state.visible) render();
     try {
-      view.status = await api(`/api/git-ui/status?cwd=${encodeURIComponent(view.cwd)}`);
-      if (view.tab === "stash" && !canOpenStashView(view)) view.tab = "changes";
+      view.status = Object.assign({}, await api(`/api/git-ui/status?cwd=${encodeURIComponent(view.cwd)}`), { __probed: true });
+      // The rail tint reads this cached status. Without a resync a commit
+      // made here leaves the rail dirty until some unrelated shell render
+      // happens to run; refresh is where the cache changes, so resync here.
+      // __probed marks the status fresh so the resync does not refetch it.
+      if (window.syncGitWorkspaceToggle) window.syncGitWorkspaceToggle();
+      // The status endpoint answers a non-git folder as a payload
+      // (not_git_repository) instead of an error, so a plain api() success
+      // can still mean nogit. markNoGitRepository parks the cleanup-only
+      // view exactly like the old error path; without it loadDiff() would
+      // run (empty diff on a nogit cwd) and render changes UI over a
+      // status that says there is no repo.
+      if (isNoGitRepositoryView(view)) {
+        markNoGitRepository(view);
+        if (state.visible) render();
+        return;
+      }
+      // Phase 3c heal: with stashes gone the stash view is invalid. The
+      // pane tree may still sit on git:stash; sync the strip before the
+      // render so the active tab matches what the view renders.
+      if (view.tab === "stash" && !canOpenStashView(view)) {
+        view.tab = "changes";
+        syncPaneTabFromView();
+      }
       if (state.visible) render();
       if (view.tab !== "stash") await loadDiff();
       view.loading = false;
@@ -659,15 +838,82 @@
     }
   }
 
+  function diffContextOf(view) {
+    return Math.max(0, Math.min(200, Number(view.diffContext || 3)));
+  }
+
+  // What view.diff currently holds, as a comparable string. loadDiff
+  // records it after every load; openViewTab compares it against what
+  // the focused pane tab needs. The workspace view state is shared by
+  // every git tab of one workspace, so visiting another tab can leave a
+  // foreign diff in view.diff; the signature is what tells a fresh
+  // compare tab (stale signature, must refetch) from a focus re-click of
+  // the same compare (signature matches, keep the loaded diff).
+  function diffSignatureFor(view) {
+    const mode = view.mode || "changes";
+    const compare = mode !== "changes";
+    return [
+      mode,
+      compare ? (view.compareBase || "") : (view.diffScope || "all"),
+      compare ? (view.compareTarget || "") : "",
+      view.file || "",
+      view.cwd || "",
+      diffContextOf(view),
+    ].join("|");
+  }
+
+  // Focused-view diff side cache, one entry per pane tab view-key. The
+  // shared view.diff slot holds only the latest focused diff, so
+  // compare@A..B → compare@C..D → compare@A..B refetched A on the return
+  // even though its diff was loaded moments ago. Every loadDiff for a
+  // focused view (compare, per-file) parks the result under its view-key;
+  // openViewTab restores before the staleness check so a returning tab
+  // keeps its loaded diff. refresh() drops the cache: a repo mutation
+  // (commit, stash, switch) invalidates every cached diff.
+  function focusedDiffCacheFor(view) {
+    if (!view) return null;
+    if (!view.focusedDiffCache) view.focusedDiffCache = {};
+    return view.focusedDiffCache;
+  }
+
+  // Which views count as a focused diff view: the compare modes and the
+  // per-file changes view. openViewTab's staleness check, save and
+  // restore must agree on this set or the cache writes and reads
+  // different view-keys.
+  function focusedDiffView(view) {
+    const mode = view.mode || "changes";
+    return mode === "readonly-compare" || mode === "current-compare" || (view.tab === "changes" && view.file);
+  }
+
+  function saveFocusedDiff(view) {
+    if (!focusedDiffView(view) || !view.diff) return;
+    const cache = focusedDiffCacheFor(view);
+    const viewKey = mainViewKeyFor(view);
+    if (cache && viewKey) cache[viewKey] = { diff: view.diff, signature: view.diffSignature, compareFilePaths: view.compareFilePaths };
+  }
+
+  function restoreFocusedDiff(view, viewKey) {
+    if (!focusedDiffView(view)) return false;
+    const cache = focusedDiffCacheFor(view);
+    const entry = cache && viewKey ? cache[viewKey] : null;
+    if (!entry || !entry.diff || entry.signature !== diffSignatureFor(view)) return false;
+    view.diff = entry.diff;
+    view.diffSignature = entry.signature;
+    if (entry.compareFilePaths) view.compareFilePaths = entry.compareFilePaths;
+    return true;
+  }
+
   async function loadDiff() {
     const view = active();
     if (!view) return;
-    const context = Math.max(0, Math.min(200, Number(view.diffContext || 3)));
+    const context = diffContextOf(view);
     if (currentMode() !== "changes") {
       const mergeBase = currentMode() === "current-compare" ? "&merge_base=true" : "";
       const file = view.file ? `&file=${encodeURIComponent(view.file)}` : "";
       view.diff = await api(`/api/git-ui/compare?cwd=${encodeURIComponent(view.cwd)}&base=${encodeURIComponent(view.compareBase || "HEAD")}&target=${encodeURIComponent(view.compareTarget || "HEAD")}&context=${context}${mergeBase}${file}`);
+      view.diffSignature = diffSignatureFor(view);
       if (!view.file) view.compareFilePaths = ((view.diff && view.diff.files) || []).map((file) => file.path);
+      saveFocusedDiff(view);
       if (state.visible) render();
       return;
     }
@@ -676,11 +922,14 @@
     const changeCount = changeSetFileCount(view.status || {});
     if (!view.file && changeLimit > 0 && changeCount > changeLimit && !view.loadLargeChangeSet) {
       view.diff = { files: [], skipped_large_change_set: true, file_count: changeCount, file_limit: changeLimit };
+      view.diffSignature = diffSignatureFor(view);
       if (state.visible) render();
       return;
     }
     const url = `/api/git-ui/diff?cwd=${encodeURIComponent(view.cwd)}&scope=${encodeURIComponent(scope)}&context=${context}` + (view.file ? `&file=${encodeURIComponent(view.file)}` : "");
     view.diff = await api(url);
+    view.diffSignature = diffSignatureFor(view);
+    saveFocusedDiff(view);
     if (state.visible) render();
   }
 
@@ -733,6 +982,26 @@
     return view.mode || "changes";
   }
 
+  // The toggle row highlights the view the pane tree actually renders, not
+  // the workspace view state: focus buttons light up when their tab is
+  // active, whatever the shared view state last held. Falls back to the
+  // view tab when no pane tree is mounted (standalone harnesses).
+  function activeToggleKind() {
+    const panes = window.HerdrWorkspacePanes;
+    if (panes && panes.paneActiveTab && panes.isGitTab && panes.gitTabViewKey) {
+      const tabId = panes.paneActiveTab();
+      if (panes.isGitTab(tabId)) {
+        const key = panes.gitTabViewKey(tabId);
+        if (key === "changes") return "changes";
+        if (key === "log" || key === "stash" || key === "cleanup" || key === "conflicts") return key;
+        // Focused views (history@, diff@, compare@) render inside the
+        // changes view state, so the changes button stays lit.
+        return "changes";
+      }
+    }
+    return (active() || {}).tab || "changes";
+  }
+
   function compareRefLabel(ref) {
     const value = String(ref || "").trim();
     if (!value || value === ".") return "working tree";
@@ -741,6 +1010,17 @@
 
   function preserveContentScroll(tab) {
     return tab === "cleanup" || tab === "log" || tab === "stash";
+  }
+
+  // Snap the live content scroll before a re-render wipes it, so the
+  // restore below can put it back. Runs on every render, covering menu
+  // opens, selections, toasts, anything that re-renders while the user
+  // scrolled. Views that do not preserve scroll keep their 0 default.
+  function captureContentScroll(view) {
+    if (!view || !preserveContentScroll(view.tab)) return;
+    const container = gitMainContainer() || ensurePanel();
+    const content = container && container.querySelector(".git-ui-content");
+    if (content) view.contentScrollTop = content.scrollTop || 0;
   }
 
   function setupDiffHunkScrollbars(root) {
@@ -784,13 +1064,42 @@
     if (!state.visible) return;
     saveSideEditorFromDom();
     const activeView = active() || {};
-    const currentContent = document.querySelector(".git-ui-content");
-    if (currentContent && preserveContentScroll(activeView.tab))
-      activeView.contentScrollTop = currentContent.scrollTop;
+    // Scroll capture must precede every innerHTML write below: the menu
+    // open path sets state then re-renders, and the content node the
+    // restore reads from is wiped a few lines down.
+    captureContentScroll(activeView);
     const version = ++state.renderVersion;
     const panel = ensurePanel();
     panel.classList.toggle("mutating", !!activeView.mutating);
-    panel.innerHTML = renderSide() + renderMain() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
+    // The git panel has one desktop surface: hosted in the right sidebar
+    // column (Phase 3c). The side column renders the status sections; the
+    // center pane tab owns the main view markup. Overlays (menus, modals,
+    // toasts) are position: fixed, so they render from the panel host.
+    const container = gitMainContainer();
+    if (container) {
+      panel.innerHTML = renderSide() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
+      const side = panel.querySelector(".git-ui-side");
+      if (side) side.scrollTop = state.sideScrollTop || 0;
+      if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
+      focusDiffSearchIfNeeded();
+      renderMainIntoTab(version, container);
+      return;
+    }
+    // Hosted with no center git tab (fresh rail click): the sidebar column
+    // carries the status side alone, Phase 3b parity. The full diff would
+    // break in the narrow column; a view toggle or status row opens the
+    // center tab on demand. Overlays still render from the panel host.
+    if (panelIsHosted()) {
+      panel.innerHTML = renderSide() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
+      const side = panel.querySelector(".git-ui-side");
+      if (side) side.scrollTop = state.sideScrollTop || 0;
+      if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
+      focusDiffSearchIfNeeded();
+      return;
+    }
+    // Standalone harness fallback: one panel holds side + main + overlays,
+    // the Phase 2 single-surface contract behavioral tests assert on.
+    panel.innerHTML = renderSide() + `<div class="git-ui-panel-main">${renderMain()}</div>` + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
     const nextContent = panel.querySelector(".git-ui-content");
@@ -798,8 +1107,72 @@
       nextContent.scrollTop = activeView.contentScrollTop || 0;
     setupDiffHunkScrollbars(panel);
     mountSideEditors();
+    if (activeView.tab === "log") renderLog(version).catch((e) => { activeView.error = e.message; render(); });
+    if (activeView.tab === "stash") renderStash(version).catch((e) => { activeView.error = e.message; render(); });
+    if (activeView.tab === "history") renderHistory().then((html) => replaceContent(version, html)).catch((e) => { activeView.error = e.message; render(); });
+    if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
     focusDiffSearchIfNeeded();
-    const view = activeView;
+  }
+
+  // Phase 3c: the center git tab's container hosts renderMain. The pane
+  // tree tells git_ui which view-key is active; the container is created
+  // by workspace_panes (createElement contract) and git_ui only fills it.
+  // Without a pane tree (standalone harnesses), renderMain falls back to
+  // the panel host so behavioral tests keep a single surface to assert on.
+  function gitMainContainer() {
+    const viewKey = activeMainViewKey();
+    if (!viewKey) return null;
+    const panes = window.HerdrWorkspacePanes;
+    if (!panes || !panes.paneGitMountId) return null;
+    return document.getElementById(panes.paneGitMountId(viewKey));
+  }
+
+  function activeMainViewKey() {
+    const view = active() || {};
+    const panes = window.HerdrWorkspacePanes;
+    const activeTab = panes && panes.paneActiveTab ? panes.paneActiveTab() : "";
+    if (panes && panes.isGitTab && panes.isGitTab(activeTab)) return panes.gitTabViewKey(activeTab);
+    return mainViewKeyFor(view);
+  }
+
+  // Maps the current view state to the center tab view-key. changes and
+  // the per-file variants all ride the changes tab; log/stash/cleanup/
+  // conflicts/history map 1:1.
+  function mainViewKeyFor(view) {
+    if (!view) return "";
+    if (view.tab === "log") return "log";
+    if (view.tab === "stash") return "stash";
+    if (view.tab === "cleanup") return "cleanup";
+    if (view.tab === "conflicts") return "conflicts";
+    if (view.tab === "history") return view.file ? `history@${view.file}` : "history";
+    if (view.mode === "readonly-compare" || view.mode === "current-compare") {
+      const base = view.compareBase || "";
+      // The against-working-tree compare owns the compare@<hash>..current
+      // tab ("current" spells "." in the API); every other compare rides
+      // compare@<base>..<target>.
+      if (view.mode === "current-compare") return base ? `compare@${base}..current` : "changes";
+      const target = view.compareTarget || "";
+      return base || target ? `compare@${base}..${target}` : "changes";
+    }
+    return "changes";
+  }
+
+  // Snapshot-shaped mainViewKeyFor: navigation snapshots carry the same
+  // tab/mode/file fields as the live view, so the goBack restore can pick
+  // its center tab before the state lands.
+  function mainViewKeyForCapture(view, snapshot) {
+    return mainViewKeyFor(snapshot || view);
+  }
+
+  function renderMainIntoTab(version, container) {
+    const view = active() || {};
+    if (!container) return;
+    container.innerHTML = renderMain();
+    const nextContent = container.querySelector(".git-ui-content");
+    if (nextContent && preserveContentScroll(view.tab))
+      nextContent.scrollTop = view.contentScrollTop || 0;
+    setupDiffHunkScrollbars(container);
+    mountSideEditors();
     if (view.tab === "log") renderLog(version).catch((e) => { view.error = e.message; render(); });
     if (view.tab === "stash") renderStash(version).catch((e) => { view.error = e.message; render(); });
     if (view.tab === "history") renderHistory().then((html) => replaceContent(version, html)).catch((e) => { view.error = e.message; render(); });
@@ -807,7 +1180,10 @@
 
   function replaceContent(version, html) {
     if (!state.visible || version !== state.renderVersion) return;
-    const content = document.querySelector(".git-ui-content");
+    // The main content lives in the center git tab's container when the
+    // pane tree is active, else in the panel fallback host.
+    const container = gitMainContainer();
+    const content = (container || ensurePanel()).querySelector(".git-ui-content");
     if (!content) return;
     const view = active() || {};
     const scrollTop = preserveContentScroll(view.tab) ? (view.contentScrollTop || content.scrollTop || 0) : null;
@@ -986,26 +1362,12 @@
     await post("/api/git-ui/apply-patch", Object.assign({ cwd: active().cwd, patch }, options || {}), options && options.reverse ? "Restoring hunk" : "Applying hunk");
   }
 
-  // A drawer-side cwd change (path title picker) inside a temporary Git
-  // overlay must move the overlay chrome with it: title, folder label, and
-  // restore pill all read the manager folder, not the drawer cwd. The
-  // overlay hosts the drawer through a pseudo workspace whose cwd is the
-  // overlay folder, so the drawer's workspaceCwd must follow too: otherwise
-  // the side return button would appear inside a temporary overlay and
-  // point at the stale overlay folder.
-  function syncTempOverlayFolder(cwd) {
-    const overlays = globalThis.HerdrTempOverlays;
-    if (!overlays || !overlays.panelInTempOverlay || !overlays.applyGitFolder) return;
-    if (!overlays.panelInTempOverlay("gitUiPanel")) return;
-    overlays.applyGitFolder(cwd);
-    const view = active();
-    if (view && view.workspaceCwd !== undefined) view.workspaceCwd = cwd;
-  }
-
   window.HerdrGitUi = {
     open,
     hide,
     close,
+    openViewTab,
+    releaseViewTab,
     forgetWorkspace(workspace) {
       const key = typeof workspace === "string" ? workspace : workspaceKey(workspace);
       if (!key) return;
@@ -1016,6 +1378,83 @@
       delete state.cache[key];
     },
     refresh,
+    // Background prober for the rail tint: fetches /api/git-ui/status for
+    // the workspace cwd into the view cache WITHOUT opening the drawer
+    // (render stays untouched when the drawer is hidden). The shell calls
+    // this per selected workspace; workspaceStatus then tints the rail.
+    async probeWorkspaceStatus(workspace) {
+      const key = workspaceKey(workspace);
+      const cwd = workspaceCwd(workspace);
+      if (!key || !cwd) return;
+      let view = state.cache[key];
+      if (!view) {
+        // cwd/workspaceCwd match open()'s view shape so the landing guards
+        // can tell a same-folder probe from one made stale by a worktree
+        // switch, and so open() keeps its existing cwd-update semantics.
+        view = { loading: false, tab: "changes", mode: "changes", file: "", navigationStack: [], cwd, workspaceCwd: cwd };
+        state.cache[key] = view;
+      }
+      // The __probed skip is only valid while the parked status still
+      // describes this folder. A default-folder change (settings) or a
+      // worktree switch can leave the park on the old cwd; the stale park
+      // (e.g. nogit) would then pin the rail disabled forever, because the
+      // disabled button blocks the open() that would refresh the view.
+      // Re-point the view and drop the stale park so this probe refetches;
+      // open() treats a statusless view as unloaded and does the real load.
+      if (view.status && view.status.__probed
+        && (!samePath(view.workspaceCwd || "", cwd) || (view.cwd && !samePath(view.cwd, cwd)))) {
+        view.cwd = cwd;
+        view.workspaceCwd = cwd;
+        view.status = null;
+        view.error = "";
+      }
+      if (!view.status || !view.status.__probed) {
+        // The fetch is async: the drawer may have opened (refresh loaded a
+        // full status) or the cwd may have changed (worktree switch) while
+        // it was in flight. Either way the probe is now stale. Park only
+        // when the view is still probe-only and points at the same folder:
+        // overwriting a real load would stale the cache, re-mark
+        // __probedOnly (redundant reload on next open), or park the old
+        // folder's result into the new folder's view (wrong tint).
+        const probeCwd = cwd;
+        const landedUnloaded = () => !view.status || view.status.__probedOnly;
+        const landedSameFolder = () => view.workspaceCwd === probeCwd && samePath(view.cwd || "", probeCwd);
+        let parked = false;
+        try {
+          const status = await api(`/api/git-ui/status?cwd=${encodeURIComponent(probeCwd)}`);
+          // __probedOnly: this status only warms the rail tint. It never went
+          // through refresh(), so open() must still do the real load (status
+          // + diff) when the drawer actually opens.
+          if (!landedUnloaded() || !landedSameFolder()) return;
+          view.status = Object.assign({}, status, { __probed: true, __probedOnly: true });
+          // A probe that proves this cwd serves status also clears any error
+          // parked earlier (nogit probe, failed refresh): workspaceStatus
+          // reads view.error before the status, a stale error would keep the
+          // rail on nogit even with a repo status parked. A non-git folder
+          // answers a not_git_repository payload here (not an error), so the
+          // park carries the nogit marker and the tint reads it below.
+          view.error = "";
+          parked = true;
+        } catch (err) {
+          if (isNotGitRepositoryMessage(err && err.message)) {
+            // Same landing guard as the success path.
+            if (landedUnloaded() && landedSameFolder()) {
+              view.error = err.message;
+              // Park the probe result so a non-git folder is not refetched on
+              // every shell render: the failure is permanent until something
+              // calls refresh() (which clears the error and marks the view).
+              view.status = Object.assign({}, view.status, { __probed: true, __probedOnly: true });
+              parked = true;
+            }
+          }
+          // A parked failure changed the rail inputs (nogit tint); sync it.
+          // Unparked errors (transient network failure) leave the rail alone.
+          if (!parked) return;
+        }
+        if (parked && window.syncGitWorkspaceToggle) window.syncGitWorkspaceToggle();
+        else if (parked && state.visible) render();
+      }
+    },
     refreshWithSpin() {
       const view = active();
       if (!view) return;
@@ -1043,15 +1482,33 @@
         this.showChangesList();
         return;
       }
-      active().tab = tab;
-      render();
+      // Phase 3c: the toggle row switches the center git tab. The pane
+      // tree owns the tab id; git_ui applies the view state and renders
+      // into the tab container.
+      const panes = window.HerdrWorkspacePanes;
+      if (panes && panes.openGitTab) void panes.openGitTab(tab);
+      else { active().tab = tab; render(); }
     },
-    showChangesList() {
+    showChangesList(options) {
       const view = active();
       if (!view) return;
       if (isNoGitRepositoryView(view)) {
         view.tab = "cleanup";
         render();
+        return;
+      }
+      // The changes toggle is a focus button: when the changes tab already
+      // renders in the pane tree, the click only focuses it (no state
+      // reset), matching log/stash/cleanup. Only a fresh open (or an
+      // explicit request, e.g. the return-to-current-changes icon) resets
+      // the focused file and compare state.
+      const panes = window.HerdrWorkspacePanes;
+      const focused = !!(panes && panes.paneActiveTab && panes.isGitTab
+        && panes.isGitTab(panes.paneActiveTab())
+        && panes.gitTabViewKey(panes.paneActiveTab()) === "changes");
+      if (focused && !(options && options.forceReset)) {
+        if (panes && panes.openGitTab) void panes.openGitTab("changes");
+        else render();
         return;
       }
       resetToChangesMode(view);
@@ -1063,6 +1520,7 @@
       view.logFilePath = "";
       view.tab = "changes";
       loadDiff().catch((e) => { view.error = e.message; render(); });
+      if (panes && panes.openGitTab) void panes.openGitTab("changes");
     },
     selectFile(file, kind) {
       const view = active();
@@ -1071,6 +1529,44 @@
       view.diffKind = kind || "";
       view.expandedCompactDirs = {};
       if (view.sideEditor && view.sideEditor.path !== path) view.sideEditor = null;
+      const panes = window.HerdrWorkspacePanes;
+      const scrollAfter = (pending) => {
+        void Promise.resolve(pending).then(() => requestAnimationFrame(() => scrollToDiffFile(view.file)))
+          .catch(() => {});
+      };
+      // Phase 3c: a status row click opens/focuses the file's diff in the
+      // center changes tab (m2 contract). The pane tree owns the tab id;
+      // git_ui keeps the focused-file state on the workspace view. The
+      // focused fetch itself rides openViewTab's signature check: the
+      // file/scope change makes the loaded diff stale, so the open
+      // refetches; re-focusing the same file keeps the loaded diff.
+      if (panes && panes.openGitTab) {
+        // A file from a commit preview (log/history "Committed files")
+        // focuses inside that commit's compare tab, not a working-tree
+        // diff tab.
+        if (kind === "C" && view.selectedCommitPreview && view.selectedCommitPreview.hash) {
+          const hash = view.selectedCommitPreview.hash;
+          if (!view.committedFile) pushNavigationSnapshot(view);
+          view.mode = "readonly-compare";
+          view.compareBase = `${hash}^`;
+          view.compareTarget = hash;
+          view.committedFile = { hash, from: view.tab === "history" ? "history" : "log" };
+          view.compareFilePaths = ((view.selectedCommitPreview.diff && view.selectedCommitPreview.diff.files) || []).map((file) => file.path);
+          view.tab = "changes";
+          scrollAfter(panes.openGitTab(mainViewKeyFor(view)));
+          return;
+        }
+        // A file from the "Compared" section focuses inside the compare
+        // the user is already looking at; the working-tree per-file tab
+        // would reset the compare and answer a different question.
+        if (currentMode() !== "changes") {
+          scrollAfter(panes.openGitTab(mainViewKeyFor(view)));
+          return;
+        }
+        view.diffScope = kind === "S" ? "staged" : kind === "M" || kind === "?" ? "working" : "all";
+        scrollAfter(panes.openGitTab(`diff@${path}`));
+        return;
+      }
       if (kind === "C" && view.selectedCommitPreview && view.selectedCommitPreview.hash) {
         const hash = view.selectedCommitPreview.hash;
         if (!view.committedFile) pushNavigationSnapshot(view);
@@ -1165,7 +1661,7 @@
         if (window.HerdrFileBrowser && window.HerdrFileBrowser.openAt) {
           const view = active();
           if (view) {
-            if (window.rememberWorkspaceShellMode) window.rememberWorkspaceShellMode("files", state.ws, { minimized: false });
+            if (window.rememberWorkspaceShellMode) window.rememberWorkspaceShellMode("files", state.ws);
             if (window.syncShellModeButtons) window.syncShellModeButtons();
             await window.HerdrFileBrowser.openAt(
               { workspace_id: `git-file-explorer:${view.cwd}`, cwd: view.cwd, label: compactPath(view.cwd) },
@@ -1439,6 +1935,17 @@
       view.selectedStash = name;
       view.selectedStashDiff = null;
       view.stashFile = "";
+      // Phase 3c: stash bodies render in the center stash tab. Selecting
+      // a stash from the sidebar always focuses that tab; openGitTab is a
+      // no-op re-activate when the stash tab is already active, and
+      // openViewTab keeps the selected-stash state (only the tab field
+      // moves), so the body load below still runs.
+      const panes = window.HerdrWorkspacePanes;
+      if (panes && panes.openGitTab) {
+        void panes.openGitTab("stash");
+        return;
+      }
+      view.tab = "stash";
       render();
       loadStashDiff(view, name);
     },
@@ -2032,9 +2539,8 @@
       refresh();
     },
     // Path title entry: opens the directory picker on the current Git folder.
-    // The picker writes into a detached hidden input (the same node-based flow
-    // the temporary overlays use) and applies the selected folder immediately,
-    // so no extra modal input has to live in the panel.
+    // The picker writes into a hidden input node and applies the selected
+    // folder immediately, so no extra modal input has to live in the panel.
     openCwdPicker() {
       const view = active();
       if (!view) return;
@@ -2044,28 +2550,41 @@
       input.type = "text";
       input.style.display = "none";
       input.value = String(view.cwd || "");
+      let closed = false;
       const onChange = () => {
+        closed = true;
         cleanup();
         const cwd = normalizePathForCompare(input.value || "");
         if (!cwd) return;
         if (samePath(cwd, view.cwd)) return;
         resetGitViewForCwd(view, cwd);
-        syncTempOverlayFolder(cwd);
         render();
         refresh();
       };
-      const onRemoved = () => cleanup();
       function cleanup() {
         input.removeEventListener("change", onChange);
-        window.removeEventListener("herdrTempOverlayPickerClosed", onRemoved);
         if (input.parentNode) input.parentNode.removeChild(input);
       }
       input.addEventListener("change", onChange);
-      // The shared picker close path dispatches this event; it covers both the
-      // Close button and the Esc path so the hidden input never leaks.
-      window.addEventListener("herdrTempOverlayPickerClosed", onRemoved);
       document.body.appendChild(input);
       picker.open(input);
+      // The picker close path (Close button) has no callback: poll for the
+      // modal disappearing. selectCurrent() dispatches change before close,
+      // so the change path wins; only a removal without change cleans up.
+      const poll = (attempt) => {
+        if (closed) return;
+        if (!document.getElementById("directoryPickerModal")) {
+          cleanup();
+          return;
+        }
+        if (attempt > 600) {
+          // Long picker session: keep the change listener armed so a late
+          // Select still applies, just stop polling.
+          return;
+        }
+        requestAnimationFrame(() => poll(attempt + 1));
+      };
+      poll(0);
     },
     switchBranchFromModal() {
       const view = active();
@@ -2100,6 +2619,11 @@
       view.mode = "readonly-compare";
       clearHistoryCompareState(view);
       view.tab = "changes";
+      // Phase 3c: a commit-pair compare rides its own center compare
+      // tab, same as showHistoryCommit. Without this the pane tree keeps
+      // the old tab active while the view state renders a compare.
+      const panes = window.HerdrWorkspacePanes;
+      if (panes && panes.openGitTab) { await panes.openGitTab(`compare@${base}..${target}`); return; }
       await loadDiff();
     },
     async showHistoryCommit(hash) {
@@ -2108,6 +2632,10 @@
       if (!view || !hash) return;
       pushNavigationSnapshot(view);
       startHistoryCommitCompare(view, hash);
+      // Phase 3c: a commit compare from history/log rides the compare
+      // center tab.
+      const panes = window.HerdrWorkspacePanes;
+      if (panes && panes.openGitTab) { await panes.openGitTab(`compare@${view.compareBase}..${view.compareTarget}`); return; }
       view.tab = "changes";
       await loadDiff();
     },
@@ -2122,8 +2650,10 @@
       if (view.file) view.logFilePath = view.file;
       view.logAll = true;
       view.logScope = "all";
-      view.tab = "log";
-      render();
+      // Phase 3c: the log center tab carries the jump.
+      const panes = window.HerdrWorkspacePanes;
+      if (panes && panes.openGitTab) void panes.openGitTab("log");
+      else { view.tab = "log"; render(); }
     },
     async openFileHistory(cwd, path) {
       cwd = decodeURIComponent(cwd || "");
@@ -2144,9 +2674,11 @@
       if (state.visible) pushNavigationSnapshot(view);
       view.file = path;
       view.diffKind = "";
-      view.tab = "history";
       resetToChangesMode(view);
-      render();
+      // Phase 3c: file history opens as its own center git tab.
+      const panes = window.HerdrWorkspacePanes;
+      if (panes && panes.openGitTab) await panes.openGitTab(`history@${path}`);
+      else { view.tab = "history"; render(); }
     },
     clearLogFileHistory() {
       const view = active();
@@ -2156,7 +2688,9 @@
       render();
     },
     latestChanges() {
-      this.showChangesList();
+      // Explicit return-to-current-changes: always reset the compare state,
+      // even when the changes tab is already focused.
+      this.showChangesList({ forceReset: true });
     },
     async goBack() {
       const view = active();
@@ -2165,6 +2699,19 @@
         return;
       }
       const snapshot = view.navigationStack.pop();
+      // Phase 3c: the snapshot may land on a different center git tab
+      // (history → changes, log → file history). Routing the restore
+      // through openGitTab keeps the strip highlight and the pane tree's
+      // active pointer on the tab the restored view actually renders.
+      const panes = window.HerdrWorkspacePanes;
+      if (panes && panes.openGitTab) {
+        const apply = () => restoreNavigationSnapshot(view, snapshot);
+        // applyViewKeyToState inside openViewTab runs first; the snapshot
+        // restore then overwrites the full state before the render.
+        const pending = panes.openGitTab(mainViewKeyForCapture(view, snapshot));
+        void pending.then(apply).catch(apply);
+        return;
+      }
       await restoreNavigationSnapshot(view, snapshot);
     },
     selectLogCommit(event, hash) {
@@ -2252,6 +2799,12 @@
       view.mode = "current-compare";
       clearHistoryCompareState(view);
       view.tab = "changes";
+      // Same tab contract as commit-pair compares: the against-working-tree
+      // compare rides its own center tab (compare@<hash>..current) so the
+      // strip names it and re-clicking focuses instead of mutating the
+      // shared changes tab in place.
+      const panes = window.HerdrWorkspacePanes;
+      if (panes && panes.openGitTab) { await panes.openGitTab(`compare@${hash}..current`); return; }
       await loadDiff();
     },
     setLogAll(value) {

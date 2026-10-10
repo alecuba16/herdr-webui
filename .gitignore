@@ -22,3 +22,4 @@ lcov.info
 # One-off reproduction scripts from debugging sessions, not shipped
 /.repro/
 .e2e-probe/
+.jcode/scratch/

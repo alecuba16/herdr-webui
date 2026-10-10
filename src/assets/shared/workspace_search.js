@@ -103,6 +103,17 @@
     return apiJson(url);
   }
 
+  async function searchContentFile({ cwd, file, query, contextLines, matchesPerFile, matchCase, regex }) {
+    const opts = settings();
+    if (!opts.searchContentEnabled) return { file: null, disabled: true };
+    const context = Math.max(0, Math.min(20, Number.isFinite(Number(contextLines)) ? Number(contextLines) : opts.contextLines));
+    const perFile = Math.max(1, Math.min(500, Number.isFinite(Number(matchesPerFile)) ? Number(matchesPerFile) : 500));
+    const useMatchCase = matchCase == null ? opts.matchCase : matchCase === true;
+    const useRegex = regex == null ? opts.regex : regex === true;
+    const url = `/api/file-browser/content-search/file?cwd=${encodeURIComponent(cwd || "")}&file=${encodeURIComponent(file || "")}&q=${encodeURIComponent(String(query || "").trim())}&context_lines=${context}&max_matches_per_file=${perFile}&match_case=${useMatchCase ? "true" : "false"}&regex=${useRegex ? "true" : "false"}`;
+    return apiJson(url);
+  }
+
   function createContentState(initial) {
     const opts = settings();
     return Object.assign({
@@ -213,6 +224,7 @@
     workspaceCwd,
     searchPaths,
     searchContent,
+    searchContentFile,
     createContentState,
     resetContentState,
     applyContentResults,

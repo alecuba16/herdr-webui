@@ -192,7 +192,10 @@
       let html = marked.parse(source);
       html = transformMermaidFences(html);
       const clean = purify.sanitize(html, sanitizeConfig());
-      container.innerHTML = `<div class="herdr-markdown-body">${clean}</div>`;
+      // Gifs 404 noisily from the workspace file route, so drop them after
+      // the sanitize pass and keep the rest of the doc rendering.
+      const gifless = clean.replace(/<img\b[^>]*\bsrc="[^"]*\.gif"[^>]*>/gi, "");
+      container.innerHTML = `<div class="herdr-markdown-body">${gifless}</div>`;
       renderMermaid(container).catch(() => {});
     }).catch((error) => {
       container.innerHTML = `<div class="herdr-markdown-error">Markdown preview failed: ${esc((error && error.message) || error)}</div>`;

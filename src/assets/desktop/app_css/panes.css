@@ -1,0 +1,510 @@
+/* Center pane tree for the desktop layout. Phase 4: split nodes
+   (.pane-row, .pane-column) stack leaves with flex-grow from the tree
+   sizes, and .pane-divider is the draggable gap between them. */
+
+/* ---- center panes ---- */
+.workspace-panes {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+}
+
+/* Split containers: children get inline flex-grow from the tree node's
+   sizes, so the base rule only sets the direction. min-width/min-height
+   0 lets a child shrink past its content instead of forcing overflow. */
+.pane-row {
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+}
+
+.pane-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+}
+
+.pane-divider {
+  flex: 0 0 6px;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 1;
+}
+
+.pane-column > .pane-divider {
+  cursor: row-resize;
+}
+
+.workspace-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.workspace-pane .pane-content {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pane-tab-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 6px 0 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2, var(--panel));
+  min-height: 34px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  /* Anchor for the Phase 5 drag caret (see .pane-drop-caret below). */
+  position: relative;
+}
+/* The strip sets display:flex, which beats the UA [hidden] rule: the
+   no-workspace dashboard pane hides its strip explicitly. */
+.pane-tab-strip[hidden] {
+  display: none;
+}
+
+.pane-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 6px 6px 0 0;
+  /* Shrink to content: the label ellipsizes at the configured character
+     budget, so a two-char tab is two chars wide instead of a fixed box. */
+  max-width: calc(var(--pane-tab-max-chars, 20) * 1ch + 54px);
+  flex: 0 0 auto;
+}
+
+.pane-tab:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.pane-tab.active {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.pane-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--muted);
+  flex: 0 0 auto;
+}
+
+.pane-tab.active .pane-tab-dot {
+  background: var(--accent-2, var(--accent, var(--text)));
+  border-color: var(--accent-2, var(--accent, var(--text)));
+}
+
+.pane-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+.pane-tab-close:hover {
+  background: var(--danger-tint, rgba(128, 20, 20, 0.12));
+  color: var(--danger, #a51d3d);
+}
+
+.pane-strip-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.pane-strip-button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  font-size: 13px;
+  border-radius: 6px;
+}
+
+.pane-strip-button:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.pane-strip-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ---- maximize rail ----
+ * While a leaf is maximized, the hidden siblings' tab strips stack in
+ * this rail under the flat pane. Stub panes carry no content slot, so
+ * the strip is their only child; clicks restore the layout. */
+.pane-strip-rail {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--panel2, var(--panel));
+  max-height: 35%;
+  overflow-y: auto;
+}
+
+.pane-strip-rail .workspace-pane {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.pane-strip-rail .workspace-pane .pane-tab-strip {
+  border-bottom: 0;
+  background: transparent;
+}
+
+/* ---- pane actions menu (Phase 5) ----
+ * The [⋮] strip button opens this overlay on document.body; it is
+ * positioned from the button rect in JS. Fixed positioning keeps it on
+ * screen when the pane strip scrolls horizontally. */
+.pane-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 180px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.pane-menu-item {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.pane-menu-item:hover,
+.pane-menu-item:focus-visible {
+  background: var(--panel2, var(--panel));
+  color: var(--text);
+  outline: none;
+}
+
+/* ---- tab drag between panes (Phase 5) ----
+ * The caret is an absolutely positioned marker inside the strip; the
+ * dragover handler writes its left offset from the hovered tab rects.
+ * The dragging tab fades so the caret reads as the landing slot. */
+.pane-tab-dragging {
+  opacity: 0.45;
+}
+
+.pane-drop-caret {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent, #89b4fa);
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* ---- right sidebar rail (stopgap until Phase 2 columns) ---- */
+.right-sidebar-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 0;
+  border-left: 1px solid var(--border);
+  background: var(--panel2, var(--panel));
+  width: 44px;
+  flex: 0 0 auto;
+  align-self: stretch;
+}
+
+.right-sidebar-rail-button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  font-size: 15px;
+  position: relative;
+}
+
+.right-sidebar-rail-button:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.right-sidebar-rail-button.active {
+  background: var(--accent-tint, var(--panel));
+  color: var(--accent, var(--text));
+}
+
+.right-sidebar-rail-button .app-icon {
+  font-size: 16px;
+}
+
+/* Right sidebar content column. Hosts the file tree (Files), the git
+ * status side (Git), or the embedded search panel (Search); drawer code
+ * mounts into #rightSidebarContent when the desktop host module is
+ * present. Terminal mode and collapse keep it out of the grid (width 0 +
+ * hidden), matching m6 where the rail stays visible. */
+.right-sidebar-content {
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.right-sidebar-content[hidden] {
+  display: none;
+}
+/* Drawer panels keep a two-column grid layout for their legacy center-area
+ * surface. Hosted, they hold only their side column, so force one track and
+ * let the column own scrolling. */
+.right-sidebar-content > .file-browser-panel,
+.right-sidebar-content > .git-ui-panel {
+  border-top: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  grid-template-columns: none;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+}
+.right-sidebar-content > .file-browser-panel > .file-browser-side,
+.right-sidebar-content > .git-ui-panel > .git-ui-side {
+  border-right: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  width: 100%;
+}
+
+/* Embedded search panel (Search rail view). Same column contract as the
+ * other hosted panels: one track, the results area owns scrolling. */
+.right-sidebar-content > .search-panel {
+  border-top: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+}
+.search-panel-head {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.search-panel-head .search-icon {
+  flex: 0 0 auto;
+  font-size: 14px;
+  opacity: 0.7;
+}
+.search-panel-input {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  flex: 1 1 auto;
+  font: inherit;
+  min-width: 0;
+  outline: none;
+}
+.search-panel-input::placeholder {
+  color: var(--text-dim, var(--text));
+  opacity: 0.6;
+}
+.search-panel-results {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 8px;
+}
+
+/* Right toggle strip: same contract as the left .sidebar-toggle, mirrored. */
+.right-sidebar-toggle {
+  border-left: 0;
+}
+
+#app.right-sidebar-collapsed .right-sidebar-toggle {
+  border-right: 0;
+}
+
+/* Git status tint on the rail button (dataset.gitStatus drives these). */
+.right-sidebar-rail-button[data-git-status="clean"] .app-icon {
+  opacity: 0.7;
+}
+.right-sidebar-rail-button[data-git-status="dirty"] {
+  color: var(--status-working, var(--text));
+}
+.right-sidebar-rail-button[data-git-status="conflicts"] {
+  color: var(--status-blocked, var(--text));
+}
+.right-sidebar-rail-button[data-git-status="nogit"],
+.right-sidebar-rail-button[disabled] {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ---- editor tabs (Phase 3b) ----
+ * One tab per open file. The strip button carries the dirty dot; the
+ * per-file container (.pane-editor-container) lives in the pane content
+ * slot and is shown/hidden by the active tab, keeping each CodeMirror
+ * instance (scroll, cursor, fold state) alive across tab switches. */
+.pane-tab.editor .pane-tab-label {
+  min-width: 0;
+}
+.pane-tab.editor .pane-tab-dirty {
+  color: var(--accent, var(--text));
+  flex: 0 0 auto;
+  font-size: 10px;
+  line-height: 1;
+}
+.pane-editor-container {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.pane-editor-container[hidden] {
+  display: none;
+}
+.pane-editor-mount {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+}
+.pane-editor-mount .herdr-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.pane-editor-container .file-browser-empty {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 8px;
+  justify-content: center;
+}
+.pane-editor-container .herdr-lsp-diagnostics {
+  flex: 0 0 auto;
+}
+
+/* ---- git view tabs (Phase 3c) ----
+ * One tab per git view (changes, log, stash, cleanup, conflicts, per-file
+ * history/diff/compare). The per-view container (.pane-git-container) lives
+ * in the pane content slot next to the editor containers and is shown/hidden
+ * by the active tab; git_ui renders its main markup inside. */
+.pane-tab.git .pane-tab-label {
+  min-width: 0;
+}
+.pane-git-container {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.pane-git-container[hidden] {
+  display: none;
+}
+/* The git main surface is column-flex (.git-ui-main) and needs the full
+ * tab container height; the fallback wrap (.git-ui-panel-main) matches the
+ * editor container layout so harnesses render identically. */
+.pane-git-container > .git-ui-main,
+.pane-git-container > .git-ui-panel-main {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Auxiliary terminal surfaces for non-owner split leaves. Same shape
+   as the parked shell: fill the slot, never force pane overflow. wterm's
+   own element sizes to the grid inside. */
+.pane-terminal-aux {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* A rescued (parked) surface sits directly under #workspacePanes; flex
+   sizing would stretch it into view like the other rescued containers,
+   so keep it collapsed until the mount pass re-parents it. */
+#workspacePanes > .pane-terminal-aux {
+  position: absolute;
+  visibility: hidden;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}

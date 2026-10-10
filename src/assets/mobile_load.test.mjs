@@ -391,6 +391,87 @@ function context(pathname = "/", options = {}) {
           status: 200,
           json: async () => optionValue("recentWorkspaces", { recent: [] }),
         };
+      // Single-request bootstrap: assemble the snapshot from the same
+      // optionValue fixtures the legacy endpoints use, plus the wrapper's
+      // bootstrap-only fields (per-workspace worktree_results, drag order).
+      if (url === "/api/session-snapshot")
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: {
+              snapshot: {
+                workspaces: optionValue("workspaces", [
+                  { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+                ]),
+                tabs: optionValue("tabs", [
+                  { workspace_id: "w1", tab_id: "w1:t1", number: 1 },
+                  { workspace_id: "w1", tab_id: "w1:t2", number: 2 },
+                ]),
+                panes: optionValue("panes", [
+                  { workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" },
+                  { workspace_id: "w1", tab_id: "w1:t2", pane_id: "w1:p2", terminal_id: "term2" },
+                ]).map((pane) => ({ workspace_id: "w1", ...pane })),
+                layouts: [],
+                agents: optionValue("agents", [
+                  {
+                    workspace_id: "w1",
+                    tab_id: "w1:t1",
+                    pane_id: "w1:p1",
+                    terminal_id: "term1",
+                    agent_status: "done",
+                    name: "done-agent",
+                  },
+                  {
+                    workspace_id: "w1",
+                    tab_id: "w1:t2",
+                    pane_id: "w1:p2",
+                    terminal_id: "term2",
+                    agent_status: "blocked",
+                    name: "blocked-agent",
+                  },
+                  {
+                    workspace_id: "w1",
+                    tab_id: "w1:t2",
+                    pane_id: "w1:p2",
+                    terminal_id: "term2",
+                    agent_status: "working",
+                    name: "working-agent",
+                  },
+                ]),
+              },
+              worktree_results: [
+                {
+                  result: {
+                    source: { source_workspace_id: "w1", repo_name: "alpha" },
+                    worktrees: [
+                      {
+                        label: "alpha",
+                        branch: "feature/mobile",
+                        path: "/tmp/alpha/mobile-worktree",
+                        is_linked_worktree: true,
+                        last_commit_at: "2026-07-21T10:00:00Z",
+                      },
+                    ],
+                  },
+                },
+              ],
+              workspace_order: [],
+            },
+          }),
+        };
+      // Tab close has its own optional response so tests can simulate the
+      // server rejecting a close (not-found race, auth, backend error)
+      // without touching the shared fallback.
+      if (String(url).endsWith("/close"))
+        return {
+          ok: !optionValue("closeError", null),
+          status: optionValue("closeError", null) ? 502 : 200,
+          json: async () =>
+            optionValue("closeError", null)
+              ? { error: optionValue("closeError", null) }
+              : { result: {} },
+        };
       const result = url.includes("workspaces")
         ? {
             workspaces: optionValue("workspaces", [
@@ -526,8 +607,6 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
     "\n" +
-    readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8") +
-    "\n" +
     readFileSync(new URL("./mobile/core.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/attention.js", import.meta.url), "utf8") +
@@ -566,23 +645,6 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
 
-
-  it("renders temporary terminal capture hint on mobile", () => {
-    const tempTerminalSource = readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8");
-    const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
-    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
-
-    // Modal HTML is now created dynamically in temp_terminal.js.
-    match(tempTerminalSource, /Input captured · Ctrl\+G detaches/);
-    match(tempTerminalSource, /temp-terminal-minimize/);
-    match(tempTerminalSource, /temp-terminal-close/);
-    match(mobileCss, /\.temp-terminal-hint/);
-    match(mobileCss, /\.temp-terminal-restore-bar \{[\s\S]*?flex-direction: column;/);
-    match(mobileCss, /\.temp-terminal-restore \{[\s\S]*?display: inline-flex;/);
-    match(mobileCss, /height: calc\(var\(--herdr-mobile-viewport-height\) - 24px\)/);
-    match(mobileCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
-    match(mobileCss, /\.temp-terminal-body \.wterm \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
-  });
 
   it("keeps hidden sheets off screen despite their display rules", () => {
     // The confirm sheet stays mounted in the shell with [hidden]; without a
@@ -643,89 +705,6 @@ describe("mobile bundle load", () => {
     match(mobileCss, /--accent-2-border:/);
     match(mobileCss, /--accent-soft:/);
     match(mobileCss, /--accent-border:/);
-  });
-
-  it("passes workspace, theme, and folder to temp terminal on mobile for parity with desktop", () => {
-    const mobileSource = readFileSync(new URL("./mobile/app.js", import.meta.url), "utf8");
-    // Mobile must pass workspaceIdFn so the temp terminal reuses the active workspace.
-    match(mobileSource, /workspaceIdFn:/);
-    // Mobile must pass themeFn so the terminal matches the user's theme.
-    match(mobileSource, /themeFn:/);
-    // Mobile must pass currentWorkspaceCwd() so the temp terminal opens in the
-    // right folder. The temp screens are reached through the shared
-    // runAction('temp-terminal') path from actions.js.
-    match(mobileSource, /getMobileTempTerminal: \(\) => mobileTempTerminal/);
-    const mobileActionsSource = readFileSync(new URL("./mobile/actions.js", import.meta.url), "utf8");
-    // Every action tool (temp-terminal, temp-files, temp-git) funnels through
-    // the same runAction path, keyed by action name.
-    ok(mobileActionsSource.includes('action === "temp-terminal"'), "temp-terminal action present");
-    ok(mobileActionsSource.includes('action === "temp-files"'), "temp-files action present");
-    ok(mobileActionsSource.includes('action === "temp-git"'), "temp-git action present");
-    // Mobile must wire handlePaneExited for server-side pane exit events
-    // (now in the events module, reached via the getTempTerminal dep).
-    const mobileEventsSource = readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8");
-    match(mobileEventsSource, /handlePaneExited/);
-  });
-
-  it("restores a minimized temp terminal before opening a new one on mobile", () => {
-    // Behavior test for the More grid card: restore-first. Load the actions
-    // module standalone with a stub temp terminal and assert call order.
-    const actionsSource = readFileSync(new URL("./mobile/actions.js", import.meta.url), "utf8");
-    const noop = () => {};
-    const state = { worktreeCreateExpanded: false };
-    const calls = [];
-    let visible = false;
-    let minimized = false;
-    const tempTerminal = {
-      isVisible: () => visible,
-      restore: () => { if (minimized) { minimized = false; visible = true; calls.push("restore"); } },
-      open: (folder) => { calls.push("open:" + folder); },
-    };
-    const ctx = vm.createContext({
-      console,
-      globalThis: {},
-      window: { addEventListener: noop },
-    });
-    ctx.globalThis = ctx;
-    vm.runInContext(actionsSource, ctx);
-    const actions = ctx.HerdrMobileActionsModule.create({
-      state,
-      api: {},
-      confirmFn: noop,
-      refresh: noop,
-      render: noop,
-      showScreen: noop,
-      selectionPath: () => "",
-      currentSessionBackend: () => "builtin",
-      saveSessionSelection: noop,
-      sameScopedId: () => false,
-      currentWorkspaceCwd: () => "/home/dev",
-      tabTitle: () => "",
-      getMobileFileBrowser: () => ({}),
-      getMobileTerminal: () => ({}),
-      getMobileSearch: () => ({}),
-      getMobileWorktrees: () => ({}),
-      getMobileTempTerminal: () => tempTerminal,
-      getMobileTheme: () => ({}),
-    });
-    // Nothing live yet: the card opens a new session in the workspace cwd.
-    actions.runMobileAction("temp-terminal");
-    equal(calls.join(","), "open:/home/dev");
-    // Session minimized (minimized sessions are not visible): the same
-    // card must restore it, not spawn another.
-    visible = false;
-    minimized = true;
-    actions.runMobileAction("temp-terminal");
-    equal(calls.join(","), "open:/home/dev,restore");
-    // Fully closed (no minimized session either): back to opening new.
-    visible = false;
-    minimized = false;
-    actions.runMobileAction("temp-terminal");
-    equal(calls.join(","), "open:/home/dev,restore,open:/home/dev");
-    // A live visible overlay: the card click is a no-op (do not stack).
-    visible = true;
-    actions.runMobileAction("temp-terminal");
-    equal(calls.join(","), "open:/home/dev,restore,open:/home/dev");
   });
 
   it("loads mobile shell without browser automation", () => {
@@ -789,7 +768,7 @@ describe("mobile bundle load", () => {
     ctx.HerdrMobile.showScreen("search");
     let html = ctx.document.getElementById("mobileSearchResults").innerHTML;
     ok(html.includes("Open workspace or worktree"));
-    ok(html.includes("Temporary terminal"));
+    ok(!html.includes("Temporary terminal"), "temp terminal action deleted with the overlay machinery");
 
     const input = ctx.document.getElementById("mobileSearchInput");
     input.value = "settings";
@@ -851,8 +830,12 @@ describe("mobile bundle load", () => {
       ctx.localStorage.setItem("herdr-session-backend:default", storedBackend);
       vm.runInContext(source, ctx);
       await ctx.HerdrMobile.refresh();
-      const workspacesRequest = ctx.requests.find((request) => request.url === "/api/workspaces");
-      equal(workspacesRequest.opt.headers["x-herdr-backend"], expected);
+      // The snapshot bootstrap carries the backend header for the whole
+      // refresh; the legacy per-endpoint calls are the fallback path.
+      const bootstrapRequest = ctx.requests.find(
+        (request) => request.url === "/api/session-snapshot" || request.url === "/api/workspaces",
+      );
+      equal(bootstrapRequest.opt.headers["x-herdr-backend"], expected);
       ok(ctx.lastSocket.url.includes(`backend=${encodeURIComponent(expected)}`));
     }
     match(source, /state\.backendMode === "external" \|\| state\.backendMode === "external-herdr"/);
@@ -914,9 +897,11 @@ describe("mobile bundle load", () => {
     ok(launch, "session launch request missing");
     equal(launch.opt.body, JSON.stringify({ session: "revolut", backend: "builtin" }));
     // The browser target switched: header stamping and route follow.
-    const workspacesRequest = ctx.requests.find((r) => r.url === "/api/workspaces");
-    ok(workspacesRequest, "refresh after switch missing");
-    equal(workspacesRequest.opt.headers["x-herdr-backend"], "builtin");
+    const refreshRequest = ctx.requests.find(
+      (r) => r.url === "/api/session-snapshot" || r.url === "/api/workspaces",
+    );
+    ok(refreshRequest, "refresh after switch missing");
+    equal(refreshRequest.opt.headers["x-herdr-backend"], "builtin");
     ok(ctx.history.calls.some((c) => c.path === "/session/revolut"));
   });
 
@@ -1040,7 +1025,9 @@ describe("mobile bundle load", () => {
     equal(ctx.requests.length, before);
     equal(ctx.pendingTimers.filter((timer) => !timer.cleared).length, 1);
     await ctx.flushTimers();
-    equal(ctx.requests.length, before + 6);
+    // One coalesced refresh = one snapshot bootstrap request. The legacy
+    // fallback path needed six calls for the same data.
+    equal(ctx.requests.length, before + 1);
 
     ctx.document.hidden = true;
     eventSocket.onclose();
@@ -1048,6 +1035,101 @@ describe("mobile bundle load", () => {
     ctx.document.hidden = false;
     ctx.dispatchDocumentEvent("visibilitychange");
     equal(ctx.pendingTimers.filter((timer) => !timer.cleared).length, 2);
+  });
+
+  it("sticks to the legacy refresh path after a failed snapshot bootstrap", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    const originalFetch = ctx.fetch;
+    ctx.fetch = async (url, opt = {}) => {
+      if (String(url) === "/api/session-snapshot")
+        return { ok: false, status: 500, json: async () => ({ error: "down" }) };
+      return originalFetch(url, opt);
+    };
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    // The failed request disabled the bootstrap; the refresh still landed
+    // through the legacy multi-call path (selection restored from route).
+    ok(ctx.requests.some((r) => r.url === "/api/workspaces"));
+    equal(ctx.HerdrMobile.currentSelection().tab, "w1:t1");
+    equal(ctx.HerdrMobile.currentSelection().pane, "w1:p1");
+
+    // Sticky-off: the next refresh skips the snapshot call entirely.
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.refresh();
+    equal(
+      ctx.requests.slice(before).filter((r) => r.url === "/api/session-snapshot").length,
+      0,
+    );
+    ok(ctx.requests.slice(before).some((r) => r.url === "/api/workspaces"));
+  });
+
+  it("applies a flat snapshot envelope and unstamped worktree entries", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    const originalFetch = ctx.fetch;
+    // Record the snapshot call too: the harness only records inside its
+    // default fetch, and this override answers the snapshot directly.
+    const urls = [];
+    ctx.fetch = async (url, opt = {}) => {
+      const text = String(url);
+      urls.push(text);
+      // Flat result.* shape plus a worktree entry with no source stamp:
+      // the current-workspace lookup misses, and the fallback to the
+      // first non-null entry must still show rows.
+      if (text === "/api/session-snapshot")
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: {
+              workspaces: [
+                { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+              ],
+              tabs: [{ workspace_id: "w1", tab_id: "w1:t1", number: 1 }],
+              panes: [
+                { workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" },
+              ],
+              layouts: [],
+              agents: [],
+              worktree_results: [
+                {
+                  result: {
+                    source: { repo_name: "alpha" },
+                    worktrees: [
+                      { label: "alpha", branch: "flat-shape", path: "/tmp/alpha/main" },
+                    ],
+                  },
+                },
+                null,
+              ],
+              workspace_order: ["w1"],
+            },
+          }),
+        };
+      return originalFetch(url, opt);
+    };
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    // Flat envelope applied: selection restored, and neither the boot nor
+    // the explicit refresh fell back to the legacy endpoints.
+    equal(ctx.HerdrMobile.currentSelection().tab, "w1:t1");
+    equal(ctx.HerdrMobile.currentSelection().pane, "w1:p1");
+    ok(
+      !urls.some((url) => url.startsWith("/api/workspaces")),
+      "flat snapshot must not fall back to legacy",
+    );
+    // The unstamped worktree entry became the source; the worktrees screen
+    // renders its repo name and the fallback entry's row (title from the
+    // worktree path basename).
+    ctx.HerdrMobile.updateWorktreeField("worktreeDiscoverPath", "/tmp/alpha");
+    ctx.HerdrMobile.showScreen("worktrees");
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("alpha"), "fallback entry repo name rendered");
+    ok(
+      html.includes("<strong>main</strong>"),
+      "fallback entry worktree row rendered",
+    );
   });
 
   it("renders simplified mobile nav with drawer menu", () => {
@@ -1351,6 +1433,170 @@ describe("mobile bundle load", () => {
     html = ctx.document.getElementById("mobileSearchResults").innerHTML;
     const occurrences = html.split("docs/alpha.txt").length - 1;
     ok(occurrences >= 2, `second page appended (occurrences=${occurrences})`);
+  });
+
+  it("mobile content search Load all matches refetches the truncated file (Tr1)", async () => {
+    const ctx = context();
+    const originalFetch = ctx.fetch;
+    const fileRequests = [];
+    // One truncated file first (the shared picker then renders the
+    // "Load all matches" button), then a full file for the per-file
+    // re-search that button triggers.
+    ctx.fetch = async (url, opt = {}) => {
+      const text = String(url);
+      if (text.startsWith("/api/file-browser/content-search")) {
+        if (text.includes("/file?")) {
+          fileRequests.push(text);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              file: {
+                path: "src/needle.txt",
+                match_count: 6,
+                truncated: false,
+                chunks: [{ lines: [{ line_number: 1, html: "needle", matched: true }] }],
+                matches: [{ id: "m1", line_number: 1, html: "needle" }],
+              },
+            }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            files: [{ path: "src/needle.txt", match_count: 3, truncated: true, chunks: [] }],
+            truncated: false,
+            total_files: 1,
+            total_matches: 3,
+          }),
+        };
+      }
+      return originalFetch(url, opt);
+    };
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.showScreen("search");
+    const input = ctx.document.getElementById("mobileSearchInput");
+    input.value = "needle";
+    input.oninput();
+    await ctx.settle();
+    await ctx.flushTimers();
+    await ctx.settle();
+    let html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    ok(html.includes("HerdrMobileSearchContent.loadFile"), "truncated file renders the Load all matches button");
+
+    await ctx.HerdrMobileSearchContent.loadFile(encodeURIComponent("src/needle.txt"));
+    await ctx.settle();
+    equal(fileRequests.length, 1, "the button re-searches the single file");
+    ok(fileRequests[0].includes("max_matches_per_file=500"), "the re-search lifts the per-file cap");
+    ok(fileRequests[0].includes(encodeURIComponent("src/needle.txt")), "the re-search names the clicked file");
+    html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    ok(!html.includes("HerdrMobileSearchContent.loadFile"), "the untruncated entry drops the button");
+  });
+
+  it("mobile Load all matches shows the fetch error and drops stale late responses", async () => {
+    const ctx = context();
+    const originalFetch = ctx.fetch;
+    let fileBehavior = "reject";
+    let resolveLate = null;
+    // The truncated file entry stays: an error or a stale response must
+    // never swap in a newer-looking result for a search the user moved
+    // past.
+    ctx.fetch = async (url, opt = {}) => {
+      const text = String(url);
+      if (text.startsWith("/api/file-browser/content-search") && text.includes("/file?")) {
+        if (fileBehavior === "reject") throw new Error("file read failed");
+        if (fileBehavior === "nofile") return { ok: true, status: 200, json: async () => ({ file: null }) };
+        return new Promise((resolve) => { resolveLate = () => resolve({ ok: true, status: 200, json: async () => ({ file: { path: "src/needle.txt", match_count: 9, truncated: false, chunks: [], matches: [] } }) }); });
+      }
+      if (text.startsWith("/api/file-browser/content-search")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            files: [{ path: "src/needle.txt", match_count: 3, truncated: true, chunks: [] }],
+            truncated: false,
+            total_files: 1,
+            total_matches: 3,
+          }),
+        };
+      }
+      return originalFetch(url, opt);
+    };
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.showScreen("search");
+    const input = ctx.document.getElementById("mobileSearchInput");
+    input.value = "needle";
+    input.oninput();
+    await ctx.settle();
+    await ctx.flushTimers();
+    await ctx.settle();
+    let html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    ok(html.includes("HerdrMobileSearchContent.loadFile"), "truncated entry renders the Load all matches button");
+
+    // Error path: a failed per-file re-search surfaces the message in
+    // the File content section instead of failing silently.
+    await ctx.HerdrMobileSearchContent.loadFile(encodeURIComponent("src/needle.txt"));
+    await ctx.settle();
+    html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    ok(html.includes("file-browser-error"), "the re-search error renders in the content section");
+    ok(html.includes("file read failed"), "the error message names the failure");
+    ok(html.includes("HerdrMobileSearchContent.loadFile"), "the truncated entry keeps its button after the error");
+
+    // Stale response: start a per-file re-search, then move the search
+    // on (a new query bumps the sequence once its debounced search runs)
+    // before the file response lands. The late entry must not swap into
+    // the new results.
+    fileBehavior = "late";
+    const pending = ctx.HerdrMobileSearchContent.loadFile(encodeURIComponent("src/needle.txt"));
+    await ctx.settle(2);
+    input.value = "other";
+    input.oninput();
+    await ctx.flushTimers();
+    await ctx.settle();
+    resolveLate();
+    await pending;
+    await ctx.settle();
+    html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    ok(html.includes("HerdrMobileSearchContent.loadFile"), "the stale late re-search never swaps the truncated entry in");
+
+    // Malformed payload: a per-file re-search that answers without a
+    // file object must not swap an undefined entry into the results
+    // (the truncated entry survives untouched).
+    fileBehavior = "nofile";
+    await ctx.HerdrMobileSearchContent.loadFile(encodeURIComponent("src/needle.txt"));
+    await ctx.settle();
+    html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    ok(html.includes("HerdrMobileSearchContent.loadFile"), "a file-less response never corrupts the results entry");
+
+    // Missing helper: with the shared search module gone the button is a
+    // quiet no-op. The guard must return BEFORE any state churn: without it
+    // the seq bump plus catch parks a TypeError message on content.error,
+    // and that garbage surfaces in the next render once the helper comes
+    // back (a helper script hiccup must not poison the results list).
+    const savedHelper = ctx.HerdrWorkspaceSearch;
+    // The vm keeps an inner-global copy of HerdrWorkspaceSearch that a
+    // sandbox-side delete cannot reach (Node vm shadowing); remove it
+    // from inside the context so the source really sees it gone.
+    vm.runInContext("delete globalThis.HerdrWorkspaceSearch", ctx);
+    let threw = false;
+    try {
+      await ctx.HerdrMobileSearchContent.loadFile(encodeURIComponent("src/needle.txt"));
+    } catch (error) {
+      threw = true;
+    }
+    await ctx.settle();
+    ok(!threw, "loadFile without the helper does not throw");
+    ctx.HerdrWorkspaceSearch = savedHelper;
+    // expandAll forces a render through the global API (the instance is
+    // private to app.js), exposing any error parked while the helper was
+    // gone.
+    ctx.HerdrMobileSearchContent.expandAll();
+    html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    ok(html.includes("HerdrMobileSearchContent.loadFile"), "the results render clean after the helper returns");
+    ok(!html.includes("file-browser-error"), "no TypeError text leaks into the restored render");
   });
 
   it("shows Editor settings group with desktop parity options (B4)", () => {
@@ -1822,9 +2068,157 @@ describe("mobile bundle load", () => {
     ok(ctx.requests.some(
       (request) => request.url === "/api/tabs/w1%3At1/close" && request.opt.method === "POST",
     ));
+    // The workspace close mirror is gone: closing a panel never closes
+    // the workspace, even when it held the last tab.
+    ok(!ctx.requests.some(
+      (request) => request.url === "/api/workspaces/w1/close",
+    ));
     equal(ctx.HerdrMobile.currentSelection().tab, "w1:t2");
     equal(ctx.HerdrMobile.currentSelection().pane, "w1:p2");
     equal(ctx.history.calls.at(-1).path, "/session/default/workspace/w1/tab/t2/pane/p2");
+  });
+
+  it("closing the last mobile panel keeps the workspace on screen", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ workspace_id: "w1", tab_id: "w1:t1", number: 1 }],
+      panes: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    await ctx.HerdrMobile.closeCurrentPanel();
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/tabs/w1%3At1/close" && request.opt.method === "POST",
+    ));
+    ok(!ctx.requests.some(
+      (request) => request.url === "/api/workspaces/w1/close",
+    ));
+    // The workspace stays selected with no tab and no pane.
+    equal(ctx.HerdrMobile.currentSelection().ws, "w1");
+    equal(ctx.HerdrMobile.currentSelection().tab, null);
+    equal(ctx.HerdrMobile.currentSelection().pane, null);
+  });
+
+  it("closes the real panel when a refresh re-scopes the selected id mid-flight", async () => {
+    // Reproduces the builtin backend world: tabs carry bare ids (t1) while
+    // parseRoute scopes the selected id to ws:id (w1:t1) at refresh start.
+    // A refresh kicked off by a WS event leaves that scoped form in
+    // state.tab until finishRefresh normalizes it; a close clicked in that
+    // window must still target and name the real panel.
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      tabs: [{ workspace_id: "w1", tab_id: "t1", number: 1, label: "Shell" }],
+      panes: [{ workspace_id: "w1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" }],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    equal(ctx.HerdrMobile.currentSelection().tab, "t1");
+
+    const confirmMessages = [];
+    const confirmSheet = ctx.document.getElementById("mobileConfirmSheet");
+    confirmSheet.querySelector = (selector) =>
+      selector === "#mobileConfirmMessage"
+        ? { set textContent(value) { confirmMessages.push(value); } }
+        : null;
+
+    // Start a refresh and let its synchronous parseRoute run (state.tab is
+    // scoped again), then close before the refresh's awaits normalize it.
+    const pendingRefresh = ctx.HerdrMobile.refresh();
+    await ctx.HerdrMobile.closeCurrentPanel();
+    await pendingRefresh;
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/tabs/t1/close" && request.opt.method === "POST",
+    ), "close must POST the real bare tab id");
+    ok(!ctx.requests.some(
+      (request) => request.url === "/api/tabs/w1%3At1/close",
+    ), "close must not POST the scoped route form");
+    match(confirmMessages[0] || "", /Close panel "Shell"\?/,
+      "confirm must name the real panel, not tab undefined");
+  });
+
+  it("treats a not-found close as closed and keeps the post-close flow", async () => {
+    // The server now answers a close on a missing tab with an explicit
+    // not-found error instead of a silent 200. When the close loses the
+    // race (pane.exited closed it elsewhere while the sheet was open) the
+    // outcome is the one the user wanted, so the panel state must clear
+    // and the refresh run, not surface an error banner.
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ workspace_id: "w1", tab_id: "w1:t1", number: 1 }],
+      panes: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
+      closeError: "tab w1:t1 not found",
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    await ctx.HerdrMobile.closeCurrentPanel();
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/tabs/w1%3At1/close" && request.opt.method === "POST",
+    ), "the close POST must still fire");
+    equal(ctx.HerdrMobile.currentSelection().tab, null,
+      "a not-found close is the desired outcome: selection must clear");
+    equal(ctx.HerdrMobile.currentSelection().pane, null);
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(!html.includes("not found"),
+      "a benign not-found race must not surface an error banner");
+  });
+
+  it("surfaces real close errors instead of swallowing them", async () => {
+    // Only the benign not-found race is tolerated; any other server error
+    // (backend down, state unavailable) must reach the user.
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      closeError: "state unavailable",
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    await ctx.HerdrMobile.closeCurrentPanel();
+
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("state unavailable"),
+      "a real error must surface in the screen, not vanish");
+  });
+
+  it("treats a not-found close from the tabs sheet as closed", async () => {
+    // closePanelFromSheet closes a NON-current tab directly; the same
+    // benign race applies (the tab may close elsewhere while the sheet
+    // is open). The server's real error shape is the object body
+    // {error:{code,message}}, so tolerance must survive that shape too.
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: [
+        { workspace_id: "w1", tab_id: "w1:t1", number: 1, label: "one" },
+        { workspace_id: "w1", tab_id: "w1:t2", number: 2, label: "two" },
+      ],
+      panes: [
+        { workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" },
+        { workspace_id: "w1", tab_id: "w1:t2", pane_id: "w1:p2", terminal_id: "term2" },
+      ],
+      closeError: { code: "builtin_error", message: "tab w1:t2 not found" },
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    const errorBanner = () => ctx.document.getElementById("mobileScreen").innerHTML;
+
+    await ctx.HerdrMobile.closePanelFromSheet("w1:t2");
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/tabs/w1%3At2/close" && request.opt.method === "POST",
+    ), "the sheet close POST must fire");
+    ok(!errorBanner().includes("not found"),
+      "the not-found race from the sheet must not surface an error banner");
   });
 
   it("restores the saved selection when switching back to a session", async () => {
@@ -1943,7 +2337,17 @@ describe("mobile bundle load", () => {
       ctx.HerdrMobile.showScreen("sessions");
       const screenHtml = ctx.document.getElementById("mobileScreen").innerHTML;
       ok(!screenHtml.includes("mobile-error"), `${error} must not surface as an error`);
-      equal(ctx.location.pathname, "/session/default", `${error} must retarget the default session`);
+      // The retarget pushed the default session path. The async refresh
+      // may then extend it to the restored selection, so assert the push
+      // itself instead of racing the refresh tail.
+      ok(
+        ctx.history.calls.some((c) => c.type === "push" && c.path === "/session/default"),
+        `${error} must retarget the default session`,
+      );
+      ok(
+        ctx.location.pathname.startsWith("/session/default"),
+        `${error} must leave the closed session path`,
+      );
       equal(ctx.localStorage.getItem("herdr-session-state:builtin:revolut"), null);
     }
   });

@@ -28,8 +28,7 @@ function connectEvents() {
     if (window.HerdrLsp && window.HerdrLsp.feedEventsFrame) {
       try { window.HerdrLsp.feedEventsFrame(e.data); } catch (_) {}
     }
-    if (msg.type === "snapshot") applySnapshot(msg);
-    else if (msg.type === "server_settings_changed") {
+    if (msg.type === "server_settings_changed") {
       // Settings changed on the server (possibly another tab). Adopt the new
       // enabled_backends immediately so a disabled backend stops being
       // targeted/offered without requiring a page reload. The frame also
@@ -873,16 +872,6 @@ function modalOpen() {
     const m = el(id);
     return m && m.style.display && m.style.display !== "none";
   })) return true;
-  // Check for any visible dynamically-created temp terminal modal.
-  const tempModals = document.querySelectorAll(".temp-terminal-backdrop");
-  for (const modal of tempModals) {
-    if (modal.style.display && modal.style.display !== "none") return true;
-  }
-  // Temporary Files/Git overlays follow the same rule.
-  const tempOverlayModals = document.querySelectorAll(".temp-overlay-backdrop");
-  for (const modal of tempOverlayModals) {
-    if (modal.style.display && modal.style.display !== "none") return true;
-  }
   return false;
 }
 function preserveActiveElementFocus() {
