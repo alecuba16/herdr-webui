@@ -438,7 +438,7 @@ function paneTerminalTabById(tabId) {
 // The active pointer also re-syncs from the route on real navigation
 // (see lastSyncedRouteTab): boot restores state.tab from the session
 // selection while the tree restores its own active pointer from storage,
-// and go() moves the route without touching the tree — both left the
+// and go() moves the route without touching the tree, both left the
 // strip highlighting a tab the view had already left.
 //
 // Phase 4: the sync runs per-leaf, and the terminal singleton decides

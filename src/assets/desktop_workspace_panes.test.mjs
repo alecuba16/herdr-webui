@@ -1,7 +1,7 @@
 // Regression test: renderWorkspacePanes must never destroy the live
 // #terminalShell node. Phase 1 shipped a first-run `container.innerHTML`
 // that wiped #workspacePanes' children: #terminalShell, #tabs,
-// #projectDashboard — orphaning every id-resolved const in the bundle
+// #projectDashboard, orphaning every id-resolved const in the bundle
 // (the live symptom was "terminal is not defined" in connectTerminal and
 // a dead session). The pane skeleton must be built with createElement so
 // the persistent nodes survive and #terminalShell can move into
