@@ -1178,7 +1178,14 @@
     getMobileTerminal: () => mobileTerminal,
     browserFavicon,
     getBrowserFaviconError: () => browserFaviconError,
-    applyThemeToBody: null,
+    // Runs after the body class flip: push the fresh theme into the open
+    // terminal so an already-open renderer recolors instead of keeping
+    // its creation-time inline vars. Temp sessions are gone (pane
+    // terminals own those surfaces now), so the main terminal is the
+    // only live surface to refresh.
+    applyThemeToBody: () => {
+      if (mobileTerminal && mobileTerminal.applyTheme) mobileTerminal.applyTheme();
+    },
   });
   mobileActions = globalThis.HerdrMobileActionsModule.create({
     state,

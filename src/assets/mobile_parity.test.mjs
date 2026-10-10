@@ -319,11 +319,12 @@ describe("mobile parity feature guards", () => {
     assert.match(terminalSource, /function applyTheme\(\)\s*\{[\s\S]*?term\.setTheme/);
     assert.match(terminalSource, /applyTheme,/);
     assert.match(terminalSource, /theme: terminalTheme\(\),/);
-    // app.js wires the body-class flip to push the theme into every open
-    // surface: the main terminal plus all temp sessions.
+    // app.js wires the body-class flip to push the theme into the open
+    // terminal. Temp sessions are gone (the split-pane layout owns those
+    // surfaces), so the main terminal is the live surface to refresh.
     assert.match(appSource, /applyThemeToBody: \(\) => \{/);
     assert.match(appSource, /mobileTerminal\.applyTheme\(\)/);
-    assert.match(appSource, /mobileTempTerminal\.applyTheme\(\)/);
+    assert.doesNotMatch(appSource, /mobileTempTerminal/);
     // The shared helper exists now (app.js referenced it before it was real).
     const sharedCoreSource = readFileSync(new URL("./shared/core.js", import.meta.url), "utf8");
     assert.match(sharedCoreSource, /terminalThemeColors,/);
