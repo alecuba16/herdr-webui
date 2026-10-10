@@ -19,6 +19,9 @@ function makeNode(id, className) {
     children: [],
     parentNode: null,
     attributes: {},
+    // Mirror the app.html boot state: #projectDashboard carries the
+    // hidden attribute until syncProjectDashboard shows it.
+    hidden: id === "projectDashboard",
     listeners: {},
     __innerHTML: "",
     setAttribute(name, value) {

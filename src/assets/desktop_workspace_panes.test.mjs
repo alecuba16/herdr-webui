@@ -20,6 +20,10 @@ function makeNode(id, className) {
     children: [],
     parentNode: null,
     attributes: {},
+    // Mirror the app.html boot state: #projectDashboard carries the
+    // hidden attribute until syncProjectDashboard shows it, and the
+    // takeover decision reads exactly that attr.
+    hidden: id === "projectDashboard",
     __innerHTML: "",
     setAttribute(name, value) {
       node.attributes[name] = value;

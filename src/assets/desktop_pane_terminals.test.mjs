@@ -19,9 +19,12 @@ function makeNode(id, className) {
     children: [],
     parentNode: null,
     attributes: {},
+    // The app.html siblings (#tabs, #projectDashboard, #terminalShell)
+    // carry the hidden attribute on boot; mirror it so the takeover
+    // decision (dashboard hidden = not shown) matches the real DOM.
+    hidden: id === "projectDashboard",
     listeners: {},
     __innerHTML: "",
-    hidden: false,
     setAttribute(name, value) {
       node.attributes[name] = value;
     },
@@ -545,43 +548,44 @@ test("divider drag finish refits aux grids to the new slot size", async () => {
 
 // ---- no-workspace dashboard mount -------------------------------------
 
-test("dashboard fills the pane slot when no workspace is open", () => {
+test("dashboard takes over the pane area when no workspace is open", () => {
   const { document, nodes } = buildDom();
   const ctx = loadPanes(document, null);
   const panes = ctx.HerdrWorkspacePanes;
   panes.mountDashboardInPane(true);
   const dashboard = document.getElementById("projectDashboard");
-  const pane = document.querySelectorAll(".workspace-pane")[0];
-  assert.ok(pane, "mount creates the flat pane skeleton");
   assert.equal(
-    dashboard.parentNode.className.split(/\s+/).includes("pane-content"),
-    true,
-    "dashboard lives in the pane content slot",
+    document.querySelectorAll(".workspace-pane").length,
+    0,
+    "takeover drops the pane skeleton",
   );
-  assert.equal(pane.querySelector(".pane-tab-strip").hidden, true, "empty strip hidden");
+  assert.equal(
+    dashboard.parentNode,
+    nodes.container,
+    "dashboard is a direct child of #workspacePanes",
+  );
+  assert.equal(nodes.terminalShell.style.display, "none", "shell parked home, hidden");
   // Hide: everything returns to the app.html home.
   panes.mountDashboardInPane(false);
   assert.equal(dashboard.parentNode, nodes.container, "dashboard parked home");
-  assert.equal(document.querySelectorAll(".pane-tab-strip")[0].hidden, false, "strip restored");
 });
 
-test("dashboard mount reuses an existing pane and survives layout sweep", () => {
+test("dashboard takeover survives repeated pane render passes", () => {
   const { document } = buildDom();
   const ctx = loadPanes(document, null);
   const panes = ctx.HerdrWorkspacePanes;
-  // A prior render pass may have built the flat pane already.
-  panes.renderWorkspacePanes();
-  panes.mountDashboardInPane(true);
   const dashboard = document.getElementById("projectDashboard");
-  const panesBefore = document.querySelectorAll(".workspace-pane").length;
-  assert.equal(panesBefore, 1, "no duplicate pane created");
-  // The sweep must not drop the dashboard-hosting pane (live paneId).
+  dashboard.hidden = false;
+  panes.mountDashboardInPane(true);
+  // The render pass must not rebuild dead chrome under the takeover.
+  panes.renderWorkspacePanes();
   panes.renderWorkspacePanes();
   assert.equal(
-    dashboard.parentNode.className.split(/\s+/).includes("pane-content"),
-    true,
-    "dashboard still mounted after the render sweep",
+    document.querySelectorAll(".workspace-pane").length,
+    0,
+    "no pane skeleton re-created",
   );
+  assert.equal(dashboard.parentNode.id, "workspacePanes", "dashboard keeps the container");
 });
 
 // The live bug the deployed build showed: with no workspace the render
@@ -590,7 +594,7 @@ test("dashboard mount reuses an existing pane and survives layout sweep", () => 
 // dashboard mount had just hidden. Plus the placeholder leaf claimed
 // the terminal shell and stacked it dead under the dashboard. These
 // tests replay the full render sequence, not one mount in isolation.
-test("empty state: dashboard owns the pane across the full render sequence", () => {
+test("empty state: dashboard owns the pane area across the full render sequence", () => {
   const { document, nodes } = buildDom();
   // The zero-tab card node, same home as app.html gives it.
   const emptyLeaf = makeNode("workspaceEmptyLeaf", "workspace-empty-leaf");
@@ -606,25 +610,21 @@ test("empty state: dashboard owns the pane across the full render sequence", () 
   emptyLeaf.hidden = true;
   panes.mountDashboardInPane(true);
   panes.mountEmptyLeafInPane(false);
-  const strip = document.querySelectorAll(".pane-tab-strip")[0];
-  assert.equal(strip.hidden, true, "strip stays hidden while the dashboard owns the pane");
   // The shell parks home, hidden: no dead chrome shares the column.
   assert.equal(shell.parentNode, nodes.container, "shell parked at #workspacePanes home");
   assert.equal(shell.style.display, "none", "shell hidden while the dashboard shows");
+  assert.equal(dashboard.parentNode, nodes.container, "dashboard owns the container");
   // A second full render pass (events poll) keeps the contract: the
-  // placeholder leaf must not re-host or re-show the shell.
+  // placeholder leaf must not re-host or re-show the shell, and no
+  // pane skeleton may be rebuilt under the takeover.
   panes.renderWorkspacePanes();
   assert.equal(shell.parentNode, nodes.container, "shell stays parked after re-render");
   assert.equal(shell.style.display, "none", "shell stays hidden after re-render");
-  assert.equal(
-    dashboard.parentNode.className.split(/\s+/).includes("pane-content"),
-    true,
-    "dashboard stays in the pane content slot",
-  );
-  assert.equal(document.querySelectorAll(".pane-tab-strip")[0].hidden, true, "strip stays hidden after re-render");
+  assert.equal(dashboard.parentNode, nodes.container, "dashboard keeps the container after re-render");
+  assert.equal(document.querySelectorAll(".workspace-pane").length, 0, "no pane skeleton under the takeover");
 });
 
-test("empty-leaf hide keeps dashboard strips hidden; dashboard hide keeps empty-leaf strips hidden", () => {
+test("empty-leaf hide does not resurrect pane chrome under the takeover", () => {
   const { document, nodes } = buildDom();
   // The zero-tab workspace card node, same home as app.html.
   const emptyLeaf = makeNode("workspaceEmptyLeaf", "workspace-empty-leaf");
@@ -632,50 +632,41 @@ test("empty-leaf hide keeps dashboard strips hidden; dashboard hide keeps empty-
   const ctx = loadPanes(document, null);
   const panes = ctx.HerdrWorkspacePanes;
   const dashboard = document.getElementById("projectDashboard");
-  const strip = () => document.querySelectorAll(".pane-tab-strip")[0];
 
-  // Dashboard owns, empty-leaf hide pass runs: strips must stay hidden.
+  // Dashboard owns, empty-leaf hide pass runs: nothing may come back.
   dashboard.hidden = false;
   panes.mountDashboardInPane(true);
   panes.mountEmptyLeafInPane(false);
-  assert.equal(strip().hidden, true, "empty-leaf hide does not clobber the dashboard's strips");
-  // The card went home.
+  assert.equal(document.querySelectorAll(".workspace-pane").length, 0, "no pane skeleton under the dashboard");
   assert.equal(emptyLeaf.parentNode, nodes.container, "empty leaf parked home");
-
-  // Now the empty leaf owns (zero-tab workspace): dashboard hide pass
-  // must not clobber its strips either.
-  dashboard.hidden = true;
-  emptyLeaf.hidden = false;
-  panes.mountDashboardInPane(false);
-  assert.equal(strip().hidden, false, "dashboard hide does not clobber the empty-leaf's strips");
 });
 
-// The split + no-workspace case: the dashboard owns the whole pane area,
-// so a split layout left over from an earlier session must not keep
-// strips floating over dead sibling panes. Every strip hides while the
-// dashboard shows, and the hide pass restores them all.
-test("dashboard takeover hides every strip in a split layout", () => {
+// The split + no-workspace case: a split layout left over from an
+// earlier session must not survive the takeover as dead chrome. The
+// whole skeleton goes, so no strips float over empty sibling panes,
+// and the hide pass lets the next render rebuild the layout.
+test("dashboard takeover drops the whole split layout", () => {
   const { document, nodes } = buildDom();
   const ctx = loadPanes(document, null);
   const panes = ctx.HerdrWorkspacePanes;
   const dashboard = document.getElementById("projectDashboard");
   // Build a split: render once so p1 exists, then split it.
+  dashboard.hidden = true;
   panes.renderWorkspacePanes();
   assert.equal(panes.splitPaneRightFor("p1"), true, "split builds a second leaf");
-  assert.equal(document.querySelectorAll(".pane-tab-strip").length, 2, "two strips in the split");
+  assert.equal(document.querySelectorAll(".workspace-pane").length, 2, "two panes in the split");
   // Full render order: panes first, then the dashboard show pass.
   panes.renderWorkspacePanes();
   dashboard.hidden = false;
   panes.mountDashboardInPane(true);
-  const strips = document.querySelectorAll(".pane-tab-strip");
-  assert.equal(strips.length, 2, "split kept both strips");
-  assert.equal(strips[0].hidden, true, "owner leaf strip hidden");
-  assert.equal(strips[1].hidden, true, "sibling leaf strip hidden too");
-  // Hide pass restores every strip for the next render.
+  assert.equal(document.querySelectorAll(".workspace-pane").length, 0, "split skeleton dropped");
+  assert.equal(document.querySelectorAll(".pane-tab-strip").length, 0, "strips dropped with it");
+  assert.equal(dashboard.parentNode, nodes.container, "dashboard owns the container");
+  // Hide pass: the next render rebuilds the pane layout from the tree.
   dashboard.hidden = true;
   panes.mountDashboardInPane(false);
-  assert.equal(strips[0].hidden, false, "owner strip restored");
-  assert.equal(strips[1].hidden, false, "sibling strip restored");
+  panes.renderWorkspacePanes();
+  assert.ok(document.querySelectorAll(".workspace-pane").length >= 1, "pane skeleton rebuilt after the dashboard hides");
 });
 
 // ---- theme fan-out --------------------------------------------------------

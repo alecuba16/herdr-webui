@@ -723,6 +723,10 @@ function ensureDivider(element, dividerFor, kind) {
 function renderWorkspacePanes() {
   const container = el("workspacePanes");
   if (!container) return;
+  // The no-workspace dashboard owns the container: no pane skeleton
+  // renders until a workspace opens, or the takeover would rebuild
+  // dead chrome right after the dashboard mount pass detached it.
+  if (dashboardOwnsPaneArea()) return;
   const treeRoot = paneRoot();
   if (!paneTreeRenderable(treeRoot)) return;
   syncTerminalTabsIntoTree(treeRoot);
@@ -2041,12 +2045,11 @@ function mountEmptyLeafInPane(shown) {
 function mountPaneTabContent(pane, leafArg, auxTabs) {
   const content = pane.querySelector(".pane-content");
   if (!content) return;
-  // The no-workspace dashboard owns this pane's content slot: no tab
-  // mounts here until a workspace opens. The seeded default-folder leaf
-  // carries the terminal placeholder, which would otherwise claim the
-  // singleton shell and stack it dead under the dashboard.
-  const dashboard = el("projectDashboard");
-  if (dashboard && !dashboard.hidden && nodeWithin(content, dashboard)) {
+  // The no-workspace dashboard owns the pane area: every layout node
+  // is gone by the time a pane render runs, and the seeded
+  // default-folder leaf would otherwise re-create a skeleton and claim
+  // the singleton shell under the takeover.
+  if (dashboardOwnsPaneArea()) {
     parkTerminalShellHome();
     return;
   }
@@ -2146,13 +2149,30 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
 }
 
 // ---- no-workspace dashboard mount ---------------------------------
-// The project dashboard renders inside the pane skeleton too: with no
-// workspace the flat slot would sit empty above the dashboard sibling,
-// splitting the column into dead chrome and content. syncProjectDashboard
-// routes the decision here; show moves #projectDashboard into the pane's
-// content slot, hides the empty strip and parks the terminal shell home,
-// hide restores the app.html home and the strip so the next render pass
-// works unchanged.
+// With no workspace the pane skeleton itself is dead chrome: strips,
+// dividers, and per-leaf slots reference nothing. The dashboard takes
+// over the whole #workspacePanes container directly (it is a flex
+// column child there, same as the app.html home, so its existing CSS
+// keeps working): every layout node from the pane render is detached
+// and the terminal shell parks home, hidden. hide restores the app.html
+// home and rebuilds the pane layout on the next render pass.
+
+function detachPaneLayoutNodes(container) {
+  // The pane render owns these classes; anything else (the app.html
+  // id siblings, rescued surfaces, the shell) stays.
+  const isLayoutNode = (node) =>
+    hasClass(node, "workspace-pane") ||
+    hasClass(node, "pane-row") ||
+    hasClass(node, "pane-column") ||
+    hasClass(node, "pane-strip-rail") ||
+    hasClass(node, "pane-divider");
+  for (const child of [...(container.children || [])]) {
+    if (isLayoutNode(child)) {
+      rescueLiveSurfaces(container, child);
+      detachDomNode(child);
+    }
+  }
+}
 
 function unhidePaneStrips(container) {
   const strips = container.querySelectorAll
@@ -2217,48 +2237,15 @@ function mountDashboardInPane(shown) {
     if (!surfaceMountedInPaneContent(emptyLeaf)) unhidePaneStrips(container);
     return;
   }
-  const root = paneRootFor();
-  let pane = null;
-  if (isPaneSplit(root)) {
-    // A default-folder split keeps its layout: the dashboard takes the
-    // active leaf's slot, the sibling panes keep their strips.
-    const leaf = activeLeaf(root) || paneLeaves(root)[0];
-    pane = leaf ? paneLeafElement(container, root, leaf) : null;
-  } else {
-    pane = [...container.children].find((child) => hasClass(child, "workspace-pane"));
-    if (!pane) {
-      // Same flat contract as the render path: pane id from the live
-      // tree so cleanupAbandonedLayout's keep-set recognizes it (a
-      // hardcoded id would make the sweep drop the pane and orphan the
-      // id-resolved dashboard node).
-      pane = document.createElement("div");
-      pane.className = "workspace-pane";
-      pane.dataset.paneId = root.paneId || "root";
-      const strip = document.createElement("div");
-      strip.className = "pane-tab-strip";
-      strip.setAttribute("role", "tablist");
-      strip.setAttribute("aria-label", "Pane tabs");
-      pane.appendChild(strip);
-      const content = document.createElement("div");
-      content.className = "pane-content";
-      pane.appendChild(content);
-      container.appendChild(pane);
-    }
-  }
-  if (!pane) return;
-  // The dashboard owns the WHOLE pane area while no workspace is open,
-  // not just the active leaf's slot: a split layout from an earlier
-  // session keeps sibling panes alive, and their strips (with + and
-  // split controls) would float over dead empty panes beside the
-  // dashboard. Hide every strip; the hide pass restores them all.
-  const strips = container.querySelectorAll
-    ? container.querySelectorAll(".pane-tab-strip")
-    : [];
-  for (const strip of strips) strip.hidden = true;
-  const content = pane.querySelector(".pane-content");
-  if (content && dashboard.parentElement !== content) content.appendChild(dashboard);
-  // The dashboard claims the slot: the shell parks home and hides so
-  // the dashboard fills the pane alone.
+  // Takeover: drop every pane layout node (strips, dividers, per-leaf
+  // slots, split wrappers) so only the dashboard and the parked id
+  // siblings remain, then move the dashboard into the container. The
+  // next renderWorkspacePanes rebuilds the skeleton from the tree when
+  // a workspace opens.
+  detachPaneLayoutNodes(container);
+  if (dashboard.parentElement !== container) container.appendChild(dashboard);
+  // Nothing but the dashboard paints here: the shell parks home,
+  // hidden, so no dead chrome shares the column.
   parkTerminalShellHome();
 }
 
