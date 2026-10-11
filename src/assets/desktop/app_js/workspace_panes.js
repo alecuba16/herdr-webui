@@ -2150,12 +2150,22 @@ function mountPaneTabContent(pane, leafArg, auxTabs) {
 
 // ---- no-workspace dashboard mount ---------------------------------
 // With no workspace the pane skeleton itself is dead chrome: strips,
-// dividers, and per-leaf slots reference nothing. The dashboard takes
-// over the whole #workspacePanes container directly (it is a flex
-// column child there, same as the app.html home, so its existing CSS
-// keeps working): every layout node from the pane render is detached
-// and the terminal shell parks home, hidden. hide restores the app.html
-// home and rebuilds the pane layout on the next render pass.
+// dividers, and per-leaf slots reference nothing, so the mount still
+// drops every layout node from #workspacePanes and parks the terminal
+// shell home, hidden. But the dashboard card no longer paints in the
+// center: it lives in the left sidebar, inside the Workspaces pane's
+// scroll area under the (empty) workspace list, because that is exactly
+// the state it describes. hide returns the node to the app.html home
+// and lets the next render pass rebuild the pane layout.
+
+function dashboardSidebarHome() {
+  // The Workspaces pane core.js builds: its scroll area owns the
+  // dashboard in the empty state, right after the workspace list, so
+  // the card scrolls with the sidebar instead of filling the center.
+  const pane = el("workspacePane");
+  if (!pane) return null;
+  return pane.querySelector(".sidebar-scroll") || pane;
+}
 
 function detachPaneLayoutNodes(container) {
   // The pane render owns these classes; anything else (the app.html
@@ -2227,6 +2237,7 @@ function mountDashboardInPane(shown) {
   const container = el("workspacePanes");
   const dashboard = el("projectDashboard");
   if (!container || !dashboard) return;
+  const sidebarHome = dashboardSidebarHome();
   if (!shown) {
     if (dashboard.parentElement && dashboard.parentElement !== container)
       container.appendChild(dashboard);
@@ -2237,16 +2248,15 @@ function mountDashboardInPane(shown) {
     if (!surfaceMountedInPaneContent(emptyLeaf)) unhidePaneStrips(container);
     return;
   }
-  // Takeover: drop every pane layout node (strips, dividers, per-leaf
-  // slots, split wrappers) so only the dashboard and the parked id
-  // siblings remain, then move the dashboard into the container. The
-  // next renderWorkspacePanes rebuilds the skeleton from the tree when
-  // a workspace opens.
+  // Empty state: the center pane skeleton is dead chrome, so drop every
+  // layout node (strips, dividers, per-leaf slots, split wrappers) and
+  // park the shell home, hidden, exactly as before. The dashboard card
+  // itself moves to the sidebar Workspaces pane: the list is empty in
+  // this state, and the card is the pane's content there.
   detachPaneLayoutNodes(container);
-  if (dashboard.parentElement !== container) container.appendChild(dashboard);
-  // Nothing but the dashboard paints here: the shell parks home,
-  // hidden, so no dead chrome shares the column.
   parkTerminalShellHome();
+  if (sidebarHome && dashboard.parentElement !== sidebarHome)
+    sidebarHome.appendChild(dashboard);
 }
 
 // ---- divider drag (Phase 4) -------------------------------------------

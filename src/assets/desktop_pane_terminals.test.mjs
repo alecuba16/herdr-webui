@@ -182,10 +182,19 @@ function buildDom() {
   container.appendChild(dashboard);
   shell.appendChild(terminal);
   container.appendChild(shell);
-  const nodes = { workspacePanes: container, tabs, projectDashboard: dashboard, terminalShell: shell, terminal };
+  // The sidebar Workspaces pane core.js builds at boot, with its scroll
+  // area that hosts the dashboard in the empty state (same shape as the
+  // real DOM: workspacePane > sidebar-scroll > workspaces list).
+  const sidebarPane = makeNode("workspacePane", "sidebar-pane workspaces-pane");
+  const sidebarScroll = makeNode("", "sidebar-scroll");
+  const workspaces = makeNode("workspaces", "");
+  sidebarScroll.appendChild(workspaces);
+  sidebarPane.appendChild(sidebarScroll);
+  const nodes = { workspacePanes: container, tabs, projectDashboard: dashboard, terminalShell: shell, terminal, workspacePane: sidebarPane, sidebarScroll };
   nodes.container = container;
   const body = makeNode("body", "");
   body.appendChild(container);
+  body.appendChild(sidebarPane);
   const findById = (id, from) => {
     if (!from) return null;
     if (from.id === id) return from;
@@ -548,7 +557,7 @@ test("divider drag finish refits aux grids to the new slot size", async () => {
 
 // ---- no-workspace dashboard mount -------------------------------------
 
-test("dashboard takes over the pane area when no workspace is open", () => {
+test("dashboard moves to the sidebar Workspaces pane when no workspace is open", () => {
   const { document, nodes } = buildDom();
   const ctx = loadPanes(document, null);
   const panes = ctx.HerdrWorkspacePanes;
@@ -557,12 +566,17 @@ test("dashboard takes over the pane area when no workspace is open", () => {
   assert.equal(
     document.querySelectorAll(".workspace-pane").length,
     0,
-    "takeover drops the pane skeleton",
+    "center pane skeleton dropped",
   );
   assert.equal(
     dashboard.parentNode,
-    nodes.container,
-    "dashboard is a direct child of #workspacePanes",
+    nodes.sidebarScroll,
+    "dashboard lives in the sidebar Workspaces scroll area",
+  );
+  assert.equal(
+    dashboard.parentNode.parentNode,
+    nodes.workspacePane,
+    "scroll area sits inside the sidebar pane",
   );
   assert.equal(nodes.terminalShell.style.display, "none", "shell parked home, hidden");
   // Hide: everything returns to the app.html home.
@@ -570,14 +584,15 @@ test("dashboard takes over the pane area when no workspace is open", () => {
   assert.equal(dashboard.parentNode, nodes.container, "dashboard parked home");
 });
 
-test("dashboard takeover survives repeated pane render passes", () => {
-  const { document } = buildDom();
+test("sidebar dashboard state survives repeated pane render passes", () => {
+  const { document, nodes } = buildDom();
   const ctx = loadPanes(document, null);
   const panes = ctx.HerdrWorkspacePanes;
   const dashboard = document.getElementById("projectDashboard");
   dashboard.hidden = false;
   panes.mountDashboardInPane(true);
-  // The render pass must not rebuild dead chrome under the takeover.
+  // The render pass must not rebuild dead chrome nor steal the dashboard
+  // back from the sidebar.
   panes.renderWorkspacePanes();
   panes.renderWorkspacePanes();
   assert.equal(
@@ -585,7 +600,7 @@ test("dashboard takeover survives repeated pane render passes", () => {
     0,
     "no pane skeleton re-created",
   );
-  assert.equal(dashboard.parentNode.id, "workspacePanes", "dashboard keeps the container");
+  assert.equal(dashboard.parentNode, nodes.sidebarScroll, "dashboard keeps the sidebar home");
 });
 
 // The live bug the deployed build showed: with no workspace the render
@@ -594,7 +609,7 @@ test("dashboard takeover survives repeated pane render passes", () => {
 // dashboard mount had just hidden. Plus the placeholder leaf claimed
 // the terminal shell and stacked it dead under the dashboard. These
 // tests replay the full render sequence, not one mount in isolation.
-test("empty state: dashboard owns the pane area across the full render sequence", () => {
+test("empty state: dashboard owns the sidebar across the full render sequence", () => {
   const { document, nodes } = buildDom();
   // The zero-tab card node, same home as app.html gives it.
   const emptyLeaf = makeNode("workspaceEmptyLeaf", "workspace-empty-leaf");
@@ -613,18 +628,18 @@ test("empty state: dashboard owns the pane area across the full render sequence"
   // The shell parks home, hidden: no dead chrome shares the column.
   assert.equal(shell.parentNode, nodes.container, "shell parked at #workspacePanes home");
   assert.equal(shell.style.display, "none", "shell hidden while the dashboard shows");
-  assert.equal(dashboard.parentNode, nodes.container, "dashboard owns the container");
+  assert.equal(dashboard.parentNode, nodes.sidebarScroll, "dashboard lives in the sidebar scroll area");
   // A second full render pass (events poll) keeps the contract: the
   // placeholder leaf must not re-host or re-show the shell, and no
-  // pane skeleton may be rebuilt under the takeover.
+  // pane skeleton may be rebuilt in the empty center.
   panes.renderWorkspacePanes();
   assert.equal(shell.parentNode, nodes.container, "shell stays parked after re-render");
   assert.equal(shell.style.display, "none", "shell stays hidden after re-render");
-  assert.equal(dashboard.parentNode, nodes.container, "dashboard keeps the container after re-render");
-  assert.equal(document.querySelectorAll(".workspace-pane").length, 0, "no pane skeleton under the takeover");
+  assert.equal(dashboard.parentNode, nodes.sidebarScroll, "dashboard keeps the sidebar home after re-render");
+  assert.equal(document.querySelectorAll(".workspace-pane").length, 0, "no pane skeleton in the empty state");
 });
 
-test("empty-leaf hide does not resurrect pane chrome under the takeover", () => {
+test("empty-leaf hide does not resurrect pane chrome under the dashboard state", () => {
   const { document, nodes } = buildDom();
   // The zero-tab workspace card node, same home as app.html.
   const emptyLeaf = makeNode("workspaceEmptyLeaf", "workspace-empty-leaf");
@@ -637,15 +652,15 @@ test("empty-leaf hide does not resurrect pane chrome under the takeover", () => 
   dashboard.hidden = false;
   panes.mountDashboardInPane(true);
   panes.mountEmptyLeafInPane(false);
-  assert.equal(document.querySelectorAll(".workspace-pane").length, 0, "no pane skeleton under the dashboard");
+  assert.equal(document.querySelectorAll(".workspace-pane").length, 0, "no pane skeleton under the dashboard state");
   assert.equal(emptyLeaf.parentNode, nodes.container, "empty leaf parked home");
 });
 
 // The split + no-workspace case: a split layout left over from an
-// earlier session must not survive the takeover as dead chrome. The
+// earlier session must not survive the empty state as dead chrome. The
 // whole skeleton goes, so no strips float over empty sibling panes,
 // and the hide pass lets the next render rebuild the layout.
-test("dashboard takeover drops the whole split layout", () => {
+test("empty-state dashboard drops the whole split layout", () => {
   const { document, nodes } = buildDom();
   const ctx = loadPanes(document, null);
   const panes = ctx.HerdrWorkspacePanes;
@@ -661,7 +676,7 @@ test("dashboard takeover drops the whole split layout", () => {
   panes.mountDashboardInPane(true);
   assert.equal(document.querySelectorAll(".workspace-pane").length, 0, "split skeleton dropped");
   assert.equal(document.querySelectorAll(".pane-tab-strip").length, 0, "strips dropped with it");
-  assert.equal(dashboard.parentNode, nodes.container, "dashboard owns the container");
+  assert.equal(dashboard.parentNode, nodes.sidebarScroll, "dashboard lives in the sidebar");
   // Hide pass: the next render rebuilds the pane layout from the tree.
   dashboard.hidden = true;
   panes.mountDashboardInPane(false);

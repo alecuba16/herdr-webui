@@ -659,6 +659,39 @@ body.light .agent-status.done {
   font-size: 12px;
   line-height: 1.35;
 }
+/* Sidebar variant: the empty-state dashboard lives inside the left
+   Workspaces pane's scroll area, so the centered 920px hero shapes
+   collapse to a compact card that fits the ~240px column. Same
+   components, sidebar-appropriate geometry; nothing else changes. */
+#workspacePane .project-dashboard {
+  align-content: stretch;
+  display: block;
+  flex: 0 0 auto;
+  margin-top: 8px;
+  overflow: visible;
+  padding: 0;
+}
+#workspacePane .project-dashboard-card {
+  border-radius: 12px;
+  box-shadow: none;
+  padding: 14px;
+  width: 100%;
+}
+#workspacePane .project-dashboard-hero h1 {
+  font-size: 15px;
+  margin: 0 0 6px;
+}
+#workspacePane .project-dashboard-hero p {
+  font-size: 12px;
+}
+#workspacePane .project-dashboard-actions {
+  grid-template-columns: 1fr;
+  margin-top: 12px;
+}
+#workspacePane .project-dashboard-action {
+  min-height: 0;
+  padding: 10px;
+}
 
 /* Zero-tab workspace body: the workspace stays open after its last
    terminal closed, so the pane slot shows one card with a way back
