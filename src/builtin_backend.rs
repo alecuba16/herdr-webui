@@ -2612,11 +2612,24 @@ impl TerminalRuntime {
     /// load), so a cleanup that starts right after `drop(terminal)` races
     /// the dying process. Reaping first makes the scratch-tree removal
     /// deterministic.
+    ///
+    /// Also blocks until the reader thread observed EOF and ran
+    /// notify_exited: the `agent_exited` refusal gate keys on the
+    /// `exited` flag, which the reader flips AFTER child.wait() returns,
+    /// so a request landing in that gap would paste into a dead PTY and
+    /// the refusal assert would flake.
     #[cfg(test)]
     fn kill_and_wait(&self) {
         if let Ok(mut child) = self.child.lock() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !self.exited.load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
         }
     }
 }
