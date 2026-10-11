@@ -112,13 +112,55 @@ impl JcodeStoreIndex {
         format!("g{hash:016x}")
     }
 
-    /// (model, status, reasoning_effort) as recorded in the snapshot,
-    /// if readable. Effort is a top-level string ("high"/"max" seen
-    /// live); older snapshots may lack it.
+    /// (model, status, reasoning_effort) as jcode last recorded
+    /// them. The journal's newest meta line is the settled state —
+    /// `model` changes land there alone, without forcing a snapshot
+    /// (persistence.rs: a `model` delta is not in
+    /// metadata_requires_snapshot, so the snapshot can keep the old
+    /// model while the journal already carries the new one). The
+    /// snapshot is the whole state once the journal is gone (a
+    /// checkpoint deletes it). All three absent when neither file is
+    /// readable.
     pub fn session_model_status(
         &self,
         session_id: &str,
     ) -> (Option<String>, Option<String>, Option<String>) {
+        let field = |parsed: &serde_json::Value, key: &str| -> Option<String> {
+            parsed
+                .get(key)
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        // `model: "unknown"` is jcode's marker for a session that
+        // has not chosen a model yet (27 of 36 live journals here,
+        // all spawned-first-turn sessions), and jcode's own UI
+        // filters it out of model pickers and status lines
+        // (commands_overnight.rs: `.filter(|m| *m != "unknown")`,
+        // onboarding_flow_control.rs likewise). The composer's line
+        // reads absent the same way — a placeholder is not a model.
+        let model = |parsed: &serde_json::Value| -> Option<String> {
+            field(parsed, "model").filter(|m| !m.eq_ignore_ascii_case("unknown"))
+        };
+        let journal = self.store_dir.join(format!("{session_id}.journal.jsonl"));
+        if let Ok(text) = std::fs::read_to_string(&journal) {
+            // Same rule as the title: the NEWEST valid meta line
+            // decides. `model`/`status`/`reasoning_effort` are full
+            // state on every meta line (journal.rs), so no field
+            // falls back to an older line — a change is the newest
+            // line's value, an absence is a cleared value.
+            for line in text.lines().rev() {
+                let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                let Some(meta) = parsed.get("meta") else { continue };
+                return (
+                    model(meta),
+                    field(meta, "status"),
+                    field(meta, "reasoning_effort"),
+                );
+            }
+        }
         let snapshot = self.store_dir.join(format!("{session_id}.json"));
         let Ok(text) = std::fs::read_to_string(&snapshot) else {
             return (None, None, None);
@@ -126,19 +168,11 @@ impl JcodeStoreIndex {
         let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
             return (None, None, None);
         };
-        let model = parsed
-            .get("model")
-            .and_then(|m| m.as_str())
-            .map(str::to_string);
-        let status = parsed
-            .get("status")
-            .and_then(|s| s.as_str())
-            .map(str::to_string);
-        let effort = parsed
-            .get("reasoning_effort")
-            .and_then(|e| e.as_str())
-            .map(str::to_string);
-        (model, status, effort)
+        (
+            model(&parsed),
+            field(&parsed, "status"),
+            field(&parsed, "reasoning_effort"),
+        )
     }
 
     /// The session's title as jcode's own display rule resolves it
@@ -1548,6 +1582,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(index.session_title("s").as_deref(), Some("the bookmark"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ---- session_model_status: newest journal meta decides ----
+
+    /// A `model` change lands in the journal's newest meta line
+    /// alone (persistence.rs: not in metadata_requires_snapshot), so
+    /// the snapshot can keep the old model. The composer's line must
+    /// read the journal's.
+    #[test]
+    fn model_change_in_journal_overrides_stale_snapshot() {
+        let dir = std::env::temp_dir().join(format!("model-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("s.json"),
+            serde_json::to_string(&json!({
+                "model": "old-model", "status": "Active",
+                "reasoning_effort": "low",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // The journal's newest meta carries the model switch and the
+        // effort change; status stayed, so no snapshot was forced.
+        std::fs::write(
+            dir.join("s.journal.jsonl"),
+            serde_json::to_string(&json!({
+                "meta": {"model": "new-model", "status": "Active",
+                         "reasoning_effort": "high"},
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        let (model, status, effort) = index.session_model_status("s");
+        assert_eq!(model.as_deref(), Some("new-model"), "journal meta wins over the stale snapshot");
+        assert_eq!(status.as_deref(), Some("Active"));
+        assert_eq!(effort.as_deref(), Some("high"));
+        // Journal gone (checkpoint deleted it): the snapshot is the
+        // whole state.
+        std::fs::remove_file(dir.join("s.journal.jsonl")).unwrap();
+        let (model, _, effort) = index.session_model_status("s");
+        assert_eq!(model.as_deref(), Some("old-model"));
+        assert_eq!(effort.as_deref(), Some("low"));
+        // `model: "unknown"` is jcode's not-chosen-yet marker; jcode's
+        // own UI filters it (commands_overnight.rs), so it serves as
+        // absent, never as a model name.
+        std::fs::write(
+            dir.join("s.journal.jsonl"),
+            serde_json::to_string(&json!({
+                "meta": {"model": "unknown", "status": "Active",
+                         "reasoning_effort": "high"},
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+        let (model, _, _) = index.session_model_status("s");
+        assert_eq!(model, None, "the unknown placeholder serves as absent");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
