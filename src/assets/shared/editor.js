@@ -268,7 +268,12 @@
     }
     function select(range) {
       if (!range) return;
-      if (api.selectRange) api.selectRange(range.from, range.to);
+      // The find query owns the keyboard while the toolbar is open: every
+      // choose() repaints the selection, and a plain selectRange focuses the
+      // CodeMirror content, so the second keystroke landed in the document
+      // instead of the query. keepFocus paints the selection without the
+      // focus move; the input keeps every keystroke.
+      if (api.selectRange) api.selectRange(range.from, range.to, { keepFocus: true });
     }
     // IDE-review D3: findRanges scanned the full document text on every
     // keystroke, prev/next click and replace recompute, even when neither the
@@ -305,7 +310,9 @@
       if (readonly) return;
       const range = current >= 0 ? matches().ranges[current] : choose(1);
       if (!range || !api.replaceRange) return;
-      api.replaceRange(range.from, range.to, replacement ? replacement.value : "");
+      // Same keepFocus contract as select(): the replace button belongs to
+      // the toolbar, so the edit lands without moving the keyboard out of it.
+      api.replaceRange(range.from, range.to, replacement ? replacement.value : "", { keepFocus: true });
       current = Math.max(-1, current - 1);
       choose(1);
     }
@@ -343,10 +350,15 @@
     const next = toolbar.querySelector(".herdr-editor-find-next");
     const one = toolbar.querySelector(".herdr-editor-replace-one");
     const all = toolbar.querySelector(".herdr-editor-replace-all");
-    if (prev) prev.addEventListener("click", () => choose(-1));
-    if (next) next.addEventListener("click", () => choose(1));
-    if (one) one.addEventListener("click", replaceCurrent);
-    if (all) all.addEventListener("click", replaceAll);
+    // Clicking a toolbar button moves focus onto the button itself; put it
+    // back on the query so typing and Enter keep driving the find.
+    function refocusQuery() {
+      if (query && typeof query.focus === "function") query.focus();
+    }
+    if (prev) prev.addEventListener("click", () => { choose(-1); refocusQuery(); });
+    if (next) next.addEventListener("click", () => { choose(1); refocusQuery(); });
+    if (one) one.addEventListener("click", () => { replaceCurrent(); refocusQuery(); });
+    if (all) all.addEventListener("click", () => { replaceAll(); refocusQuery(); });
   }
 
   function create(options) {
@@ -376,20 +388,20 @@
         parent.innerHTML = readonly ? previewHtml(opts) : editHtml(opts);
         wireFindToolbar(parent, api, opts);
       },
-      selectRange(from, to) {
+      selectRange(from, to, opts) {
         if (editor && editor.selectRange) {
-          editor.selectRange(from, to);
+          editor.selectRange(from, to, opts);
           return;
         }
         const node = parent.querySelector("textarea") || parent.querySelector(".herdr-editor-code");
         if (node && typeof node.setSelectionRange === "function") {
-          node.focus();
+          if (!opts || !opts.keepFocus) node.focus();
           node.setSelectionRange(from, to);
         }
       },
-      replaceRange(from, to, value) {
+      replaceRange(from, to, value, opts) {
         if (editor && editor.replaceRange) {
-          editor.replaceRange(from, to, value);
+          editor.replaceRange(from, to, value, opts);
           return;
         }
         const current = api.getValue();
