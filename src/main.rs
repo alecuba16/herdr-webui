@@ -1532,10 +1532,15 @@ async fn security_headers(request: axum::extract::Request, next: Next) -> Respon
         HeaderValue::from_static("no-referrer"),
     );
     if is_api && !is_upgrade {
-        headers.insert(
-            axum::http::header::CACHE_CONTROL,
-            HeaderValue::from_static("no-store"),
-        );
+        // A handler that set its own Cache-Control (the conversation
+        // image route: immutable bytes, a day-long private cache) owns
+        // the decision — the blanket no-store must not overwrite it.
+        if !headers.contains_key(axum::http::header::CACHE_CONTROL) {
+            headers.insert(
+                axum::http::header::CACHE_CONTROL,
+                HeaderValue::from_static("no-store"),
+            );
+        }
     }
     response
 }
