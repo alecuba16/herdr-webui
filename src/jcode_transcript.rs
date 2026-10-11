@@ -2688,8 +2688,12 @@ mod coverage_gaps {
         write_store(&dir, "session_g", Some(json!({"messages": []})), &[]);
         let g1 = index.session_generation("session_g");
         assert!(!g1.is_empty());
+        // Stable with NO change: two reads inside the same file state
+        // must agree (this is what makes the etag usable at all).
+        assert_eq!(g1, index.session_generation("session_g"));
         // In-place rewrite (tmp + rename parity): same content, new
-        // mtime -> different generation.
+        // mtime -> different generation, so a changed transcript can
+        // never answer 304 against a stored etag.
         std::thread::sleep(std::time::Duration::from_millis(5));
         let tmp = dir.join("session_g.tmp");
         std::fs::write(
@@ -2698,11 +2702,24 @@ mod coverage_gaps {
         )
         .unwrap();
         std::fs::rename(&tmp, dir.join("session_g.json")).unwrap();
-        let g2 = index.session_generation("session_generation_bump");
-        // And a missing session yields an empty-ish but stable value.
-        assert!(!index.session_generation("session_absent").is_empty());
-        assert_ne!(g1, ""); // sanity: real value shape
-        let _ = g2; // only that it does not panic
+        let g2 = index.session_generation("session_g");
+        assert_ne!(
+            g1, g2,
+            "an in-place rewrite must bump the etag (the client's stored tag would otherwise 304 a changed transcript)"
+        );
+        // The journal is half the signature too.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let tmp = dir.join("session_g.journal.tmp");
+        std::fs::write(&tmp, "\n").unwrap();
+        std::fs::rename(&tmp, dir.join("session_g.journal.jsonl")).unwrap();
+        let g3 = index.session_generation("session_g");
+        assert_ne!(g2, g3, "a journal rewrite must bump the etag as well");
+        // A missing session yields a stable value too (never a panic,
+        // never random: two reads agree).
+        assert_eq!(
+            index.session_generation("session_absent"),
+            index.session_generation("session_absent")
+        );
     }
 
     // --- refresh: stale-row drop, read_dir failure, throttle ---

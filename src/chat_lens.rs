@@ -1079,6 +1079,61 @@ mod tests {
     }
 
     #[test]
+    fn version_bumps_on_real_file_change_so_etag_stops_matching() {
+        // The end-to-end etag invariant at the wire layer: two reads of
+        // an unchanged store carry the SAME version (the poll stores
+        // it), and an in-place snapshot rewrite (jcode writes tmp +
+        // rename) produces a DIFFERENT one, so the lens's stored tag no
+        // longer matches and the next poll gets the full payload, not a
+        // 304 with stale turns.
+        let (dir, index, session_id) = paged_store("etag-e2e", 3);
+        let page = ConversationPage::default();
+        let v1 = conversation_payload_with(&index, &fixture_context(), &page)
+            .unwrap()["version"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            conversation_payload_with(&index, &fixture_context(), &page)
+                .unwrap()["version"],
+            v1.as_str(),
+            "unchanged store: same version, the etag is usable"
+        );
+        // Rewrite the snapshot in place with one more message.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let messages: Vec<Value> = (0..4)
+            .map(|i| {
+                json!({
+                    "id": format!("m{i:03}"),
+                    "role": "user",
+                    "content": [{"type": "text", "text": format!("turn {i}")}]
+                })
+            })
+            .collect();
+        let tmp = dir.join(format!("{session_id}.tmp"));
+        std::fs::write(
+            &tmp,
+            serde_json::to_string(&json!({
+                "working_dir": "/w",
+                "last_pid": 4242,
+                "status": "Active",
+                "messages": messages,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::rename(&tmp, dir.join(format!("{session_id}.json"))).unwrap();
+        let fresh = conversation_payload_with(&index, &fixture_context(), &page).unwrap();
+        assert_ne!(
+            fresh["version"].as_str().unwrap(),
+            v1,
+            "a rewritten transcript must not answer 304 against the old tag"
+        );
+        assert_eq!(fresh["turns"].as_array().unwrap().len(), 4, "the new turn is visible");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn cursor_generation_segment_rides_but_never_gates() {
         // A held `from` cursor from an OLD generation must still serve:
         // every append bumps the generation, and gating on it would
