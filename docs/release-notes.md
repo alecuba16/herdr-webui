@@ -1,5 +1,28 @@
 # Release notes
 
+## 0.7.1 Release Notes
+- Dead code cleanup across the desktop and mobile bundles. A full
+  corpus scan plus an empirical pass (each candidate removed against
+  the suite, the final patch re-applied to a fresh tree) took out 30
+  never-called functions, methods and clusters: the searchKind
+  label/noun helpers, four expandAll/collapseAll dispatch pairs (the
+  shared content picker only ever emits toggleFile), the clipboard
+  context-menu island (element, CSS, handlers, bindings), git_ui
+  dispatch entries with no emitters (commit, commitAndPush,
+  restoreFile, toggleDiffLayout, activeWorkspaceId, setLogAll,
+  selectedPaths), render/worktree helpers, a dead settings flashError
+  pair, terminal adapter scrollToLine and mouseMode, and the camel
+  helper. fileTabTooltipPath was renamed to fileTabTooltip (the
+  function is live, its old name was not).
+- Tests that pinned removed names were rewritten to behavior
+  assertions instead of introspection, the flashError null-guard
+  coverage was restored through flashSaving(null).fail/.done, stale
+  mock keys mirrored out with their helpers, and the Rust doc comment
+  naming a removed helper was fixed. 1055 JS tests, cargo fmt,
+  clippy, all Rust tests and a headless Chrome runtime smoke (panels
+  open, zero console errors, removed names absent from the runtime
+  surface) green before release.
+
 ## 0.7.0 Release Notes
 - The `promote_join_failure` cancelled-task test no longer flakes in
   CI. The test parked the runtime's only blocking thread by dropping a
