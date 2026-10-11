@@ -311,7 +311,7 @@ test("compareSelectedLog puts the newest commit on the target (right) side", asy
   assert.equal(call.params.get("base"), OLD, "older commit must be the base (left side)");
   assert.equal(call.params.get("target"), NEW, "newest commit must be the target (right side)");
 
-  // Click order 2: NEW first, then OLD — the result must be identical.
+  // Click order 2: NEW first, then OLD. The result must be identical.
   const second = await boot();
   await second.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
   second.ui.tab("log");
@@ -362,6 +362,386 @@ test("showChangesList exits current-compare back to plain working-tree diff", as
   const last = booted.calls[booted.calls.length - 1];
   assert.equal(last.path, "/api/git-ui/diff", "returning to changes must fetch the working-tree diff");
   assert.equal(last.params.get("cwd"), "/tmp/demo-repo");
+});
+
+test("the changes toggle focuses the pane tab without resetting when already active", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [{ hash: NEW }], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  // Enter the against-working-tree compare: its mode survives a focus-only
+  // click and only forceReset exits it.
+  ui.selectLogCommit({ shiftKey: false }, NEW);
+  ui.openSelectedCompareModal();
+  await ui.compareSelectedWithCurrent();
+  assert.match(ctxHtml(booted), /latestChanges/, "current-compare shows the return-to-changes icon");
+  // Make the pane tree report the changes git tab as the active pane tab
+  // (what a real desktop session has after the changes tab opened).
+  const opened = [];
+  ctx.window.HerdrWorkspacePanes = {
+    paneActiveTab: () => "git:changes",
+    isGitTab: (id) => typeof id === "string" && id.startsWith("git:"),
+    gitTabViewKey: (id) => (id.startsWith("git:") ? id.slice(4) : ""),
+    openGitTab: async (viewKey) => { opened.push(viewKey); },
+  };
+  const callsBefore = calls.length;
+  await ui.showChangesList();
+  // Re-clicking the focused changes toggle only focuses: no state reset (the
+  // compare mode survives) and no fresh diff fetch.
+  assert.deepEqual(opened, ["changes"], "focus path re-opens (focuses) the changes pane tab");
+  assert.equal(calls.length, callsBefore, "no new fetch fires while only focusing");
+  // Force a fresh render: the compare state must still be live in the view,
+  // not just stale markup from the last compare render.
+  ui.toggleSection("Compared");
+  assert.match(ctxHtml(booted), /git-ui-current-changes-icon/, "compare mode survives the focus click");
+  assert.match(ctxHtml(booted), /Comparing c+/, "compare header still renders after focusing");
+  // An explicit forceReset (the return-to-current-changes icon) does reset:
+  // the working-tree diff reloads and the compare state clears.
+  await ui.showChangesList({ forceReset: true });
+  assert.ok(calls.some((call, index) => index >= callsBefore && call.path === "/api/git-ui/diff"), "forceReset reloads the working-tree diff");
+  for (let i = 0; i < 20 && /git-ui-current-changes-icon/.test(ctxHtml(booted)); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.doesNotMatch(ctxHtml(booted), /git-ui-current-changes-icon/, "forceReset exits the compare mode");
+  assert.doesNotMatch(ctxHtml(booted), /Comparing c+/, "compare header clears after the reset");
+});
+
+// Pane-tree stub that mirrors the real workspace_panes contract:
+// openGitTab delegates to ui.openViewTab, paneGitMountId names the
+// container, and the container registry lives in document.getElementById.
+// The no-op openGitTab stubs in older tests bypassed openViewTab, which
+// is why the stale-compare bug slipped through.
+function installRealPaneChain(booted, { initialTab } = {}) {
+  const { ui, ctx } = booted;
+  let activeTabId = initialTab || "git:changes";
+  const containers = new Map();
+  const panes = {
+    paneActiveTab: () => activeTabId,
+    isGitTab: (id) => typeof id === "string" && id.startsWith("git:"),
+    gitTabViewKey: (id) => (id.startsWith("git:") ? id.slice(4) : ""),
+    gitTabId: (key) => `git:${key}`,
+    setActivePaneTab: (id) => { activeTabId = id; },
+    paneGitMountId: (key) => `git-mount-${String(key).replace(/[^a-z0-9-]/gi, "_")}`,
+    openGitTab: async (key) => {
+      activeTabId = `git:${key}`;
+      await ui.openViewTab(String(key));
+    },
+  };
+  const originalGetElementById = ctx.document.getElementById;
+  ctx.document.__paneContainers = containers;
+  ctx.document.getElementById = function (id) {
+    if (typeof id === "string" && id.startsWith("git-mount-")) {
+      if (!containers.has(id)) {
+        const el = element();
+        el.id = id;
+        el.querySelector = () => null;
+        el.querySelectorAll = () => [];
+        containers.set(id, el);
+      }
+      return containers.get(id);
+    }
+    return originalGetElementById.call(ctx.document, id);
+  };
+  ctx.window.HerdrWorkspacePanes = panes;
+  return { panes, containers, activeTabId: () => activeTabId };
+}
+
+// Two-pane chain with real appendChild tracking: the owner pane (where
+// the active git tab lives) and a separate active pane, so tests can
+// desync focus from ownership like a maximize-restore does. The container
+// mount must follow the owner, and the landing pane is observable through
+// each content slot's children list.
+function installOwnerActivePaneChain(booted, { initialTab, ownerPaneId, activePaneId } = {}) {
+  const chain = installRealPaneChain(booted, { initialTab });
+  const { ctx } = booted;
+  const makePane = (paneId) => {
+    const paneEl = element();
+    paneEl.dataset.paneId = paneId;
+    const contentEl = element();
+    contentEl.children = [];
+    contentEl.appendChild = (child) => { contentEl.children.push(child); return child; };
+    contentEl.querySelectorAll = () => contentEl.children;
+    paneEl.querySelector = (sel) => (String(sel).includes("pane-content") ? contentEl : null);
+    paneEl.querySelectorAll = () => [];
+    return { paneEl, contentEl };
+  };
+  const owner = makePane(ownerPaneId || "p1");
+  const active = makePane(activePaneId || "p2");
+  let activePaneIdNow = activePaneId || "p2";
+  chain.panes.paneElementForTab = (tabId) => (String(tabId).startsWith("git:") ? owner.paneEl : active.paneEl);
+  chain.panes.activePaneElement = () => (activePaneIdNow === (ownerPaneId || "p1") ? owner.paneEl : active.paneEl);
+  return Object.assign(chain, { owner, active, setActivePane: (id) => { activePaneIdNow = id; } });
+}
+
+async function settle(ms) {
+  for (let i = 0; i < Math.max(1, Math.ceil((ms || 100) / 10)); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+// The pane chain registers mount containers under git-mount-<key>; the
+// compare tab is the one whose view-key starts with compare@.
+function compareContainerHtml(booted) {
+  const containers = booted.ctx.document.__paneContainers || new Map();
+  for (const [id, el] of containers) {
+    if (id.startsWith("git-mount-compare")) return String(el.innerHTML || "");
+  }
+  return "";
+}
+
+test("fresh compare tab through the pane tree fetches its compare and renders it", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [{ path: "work.txt", chunks: [] }] },
+    "/api/git-ui/compare": { files: [{ path: "compared.txt", chunks: [] }] },
+    "/api/git-ui/log": { commits: [{ hash: NEW }], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  // The working diff is loaded first; its result must not leak into the
+  // compare tab that opens next.
+  const before = calls.length;
+  ui.selectLogCommit({ shiftKey: false }, NEW);
+  ui.openSelectedCompareModal();
+  await ui.compareSelectedWithCurrent();
+  await settle();
+  const realCompare = calls.slice(before).filter((call) => call.path === "/api/git-ui/compare"
+    && call.params.get("base") === NEW && call.params.get("target") === ".");
+  assert.equal(realCompare.length, 1, "fresh compare tab fetches its own compare, not the commit preview");
+  assert.equal(realCompare[0].params.get("merge_base"), "true", "current-compare keeps the merge-base flag");
+  const compareHtml = compareContainerHtml(booted);
+  assert.match(compareHtml, /compared\.txt/, "the compare tab renders the compare result");
+  assert.ok(!compareHtml.includes("work.txt"), "the stale working diff must not leak into the compare tab");
+});
+
+test("re-focusing a loaded compare tab keeps its diff without refetching", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [{ path: "compared.txt", chunks: [] }] },
+    "/api/git-ui/log": { commits: [{ hash: NEW }], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  const chain = installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.selectLogCommit({ shiftKey: false }, NEW);
+  ui.openSelectedCompareModal();
+  await ui.compareSelectedWithCurrent();
+  await settle();
+  const afterLoad = calls.length;
+  // Visit another tab (the log), then focus the compare tab back: the
+  // loaded compare must survive, no refetch.
+  await chain.panes.openGitTab("log");
+  await settle();
+  const afterLog = calls.length;
+  await chain.panes.openGitTab(`compare@${NEW}..current`);
+  await settle();
+  const refetch = calls.slice(afterLog).filter((call) => call.path === "/api/git-ui/compare"
+    && call.params.get("base") === NEW && call.params.get("target") === ".");
+  assert.equal(refetch.length, 0, "focusing the loaded compare tab keeps the diff (no refetch)");
+  const compareHtml = compareContainerHtml(booted);
+  assert.match(compareHtml, /compared\.txt/, "the compare result survives the log round trip");
+});
+
+test("compare A to B and back keeps A loaded without refetching", async () => {
+  // The W2 regression: view.diff is one workspace-level slot, so
+  // compare@A..current → compare@B..current → compare@A..current refetched
+  // A on the return trip. The per-view-key side cache keeps both parked.
+  const compareByBase = {
+    aaa111: { files: [{ path: "a-file.txt", chunks: [] }] },
+    bbb222: { files: [{ path: "b-file.txt", chunks: [] }] },
+  };
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": (params) => {
+      const response = compareByBase[params.get("base")];
+      if (!response) throw new Error(`unexpected compare base: ${params.get("base")}`);
+      return response;
+    },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  const chain = installRealPaneChain(booted);
+  // compareContainerHtml returns the first compare container (insertion
+  // order): with two compare tabs open, read the ACTIVE tab's container
+  // instead so each assertion names its own tab.
+  const activeContainerHtml = () => {
+    const containers = booted.ctx.document.__paneContainers || new Map();
+    const viewKey = String(chain.activeTabId()).replace(/^git:/, "");
+    const mountId = `git-mount-${viewKey.replace(/[^a-z0-9-]/gi, "_")}`;
+    const el = containers.get(mountId);
+    return String((el && el.innerHTML) || "");
+  };
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  // Open compare A, then compare B: each mints its own pane tab and
+  // fetches once.
+  await chain.panes.openGitTab("compare@aaa111..current");
+  await settle();
+  assert.match(activeContainerHtml(), /a-file\.txt/, "the A compare renders its own result");
+  await chain.panes.openGitTab("compare@bbb222..current");
+  await settle();
+  assert.match(activeContainerHtml(), /b-file\.txt/, "the B compare renders its own result");
+  const afterB = calls.length;
+  // Return to A: the parked diff must render without a refetch.
+  await chain.panes.openGitTab("compare@aaa111..current");
+  await settle();
+  const refetchA = calls.slice(afterB).filter((call) => call.path === "/api/git-ui/compare");
+  assert.equal(refetchA.length, 0, "returning to A keeps the parked diff (no refetch)");
+  assert.match(activeContainerHtml(), /a-file\.txt/, "the A compare renders its parked result");
+  // A refresh means the repo moved. Refresh reloads the FOCUSED tab
+  // (A), so A's cache entry is fresh; B's parked diff predates the
+  // mutation and must not render again: returning to B refetches.
+  await booted.ui.refresh();
+  await settle();
+  const afterRefresh = calls.length;
+  await chain.panes.openGitTab("compare@bbb222..current");
+  await settle();
+  const postRefreshFetch = calls.slice(afterRefresh).filter((call) => call.path === "/api/git-ui/compare" && call.params.get("base") === "bbb222");
+  assert.equal(postRefreshFetch.length, 1, "refresh invalidates the parked B compare (refetch on focus)");
+  assert.match(activeContainerHtml(), /b-file\.txt/, "B renders its refetched result after the refresh");
+});
+
+test("compareCommits through the pane tree fetches the pair compare on a fresh tab", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [{ path: "pair.txt", chunks: [] }] },
+    "/api/git-ui/log": { commits: [{ hash: NEW }, { hash: OLD }], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const before = calls.length;
+  await ui.compareCommits(OLD, NEW);
+  await settle();
+  const pairCompare = calls.slice(before).filter((call) => call.path === "/api/git-ui/compare"
+    && call.params.get("base") === OLD && call.params.get("target") === NEW);
+  assert.equal(pairCompare.length, 1, "commit-pair compare fetches on a fresh tab");
+  assert.match(compareContainerHtml(booted), /pair\.txt/, "the pair compare result renders");
+});
+
+test("status-row file click through the pane tree fetches the focused diff", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["work.txt"], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [{ path: "work.txt", chunks: [] }, { path: "other.txt", chunks: [] }] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx, calls } = booted;
+  const chain = installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const before = calls.length;
+  ui.selectFile("work.txt", "M");
+  await settle();
+  // The pane tree owns the tab id; the focused diff must still fetch.
+  const focused = calls.slice(before).filter((call) => call.path === "/api/git-ui/diff"
+    && call.params.get("file") === "work.txt");
+  assert.equal(focused.length, 1, "status-row click fetches the per-file diff");
+  assert.equal(focused[0].params.get("scope"), "working", "unstaged row fetches with the working scope");
+  assert.equal(chain.activeTabId(), "git:diff@work.txt", "the diff tab owns the focus");
+  // Re-focusing the same file keeps the loaded diff (no refetch).
+  const refocusBefore = calls.length;
+  await chain.panes.openGitTab("diff@work.txt");
+  await settle();
+  const refetch = calls.slice(refocusBefore).filter((call) => call.path === "/api/git-ui/diff"
+    && call.params.get("file") === "work.txt");
+  assert.equal(refetch.length, 0, "re-focusing the loaded file diff keeps it (no refetch)");
+});
+
+test("compared-file click focuses inside the compare tab and fetches the file", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [{ path: "compared.txt", chunks: [] }] },
+    "/api/git-ui/log": { commits: [{ hash: NEW }], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx, calls } = booted;
+  const chain = installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.selectLogCommit({ shiftKey: false }, NEW);
+  ui.openSelectedCompareModal();
+  await ui.compareSelectedWithCurrent();
+  await settle();
+  const before = calls.length;
+  ui.selectFile("compared.txt", "C");
+  await settle();
+  // The click must not reset the compare: the file focuses inside the
+  // commit's compare tab (its own view-key, not a working-tree diff@ tab).
+  assert.equal(chain.activeTabId(), `git:compare@${NEW}^..${NEW}`, "the commit compare tab keeps the focus");
+  const focused = calls.slice(before).filter((call) => call.path === "/api/git-ui/compare"
+    && call.params.get("file") === "compared.txt");
+  assert.equal(focused.length, 1, "compared-file click fetches the focused compare file");
+  assert.equal(focused[0].params.get("base"), `${NEW}^`, "the commit compare keeps its base");
+  assert.equal(focused[0].params.get("target"), NEW, "the commit compare keeps its target");
+});
+
+test("refresh resyncs the rail tint so a commit flips the workspace status", async () => {
+  // Function handler so the status can flip from dirty to clean when the
+  // simulated commit lands.
+  let repoStatus = { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["work.txt"], untracked: [], conflicted: [] };
+  const booted = await bootGitUi({
+    "/api/git-ui/status": () => repoStatus,
+    "/api/git-ui/diff": { files: [{ path: "work.txt", chunks: [] }] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx, calls } = booted;
+  let railSyncs = 0;
+  ctx.window.syncGitWorkspaceToggle = () => { railSyncs += 1; };
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  assert.ok(railSyncs > 0, "the initial refresh already resyncs the rail");
+  // Simulate the commit landing: the status endpoint now reports clean.
+  repoStatus = { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
+  const syncsBefore = railSyncs;
+  const fetchesBefore = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  await ui.refresh();
+  await settle();
+  assert.ok(railSyncs > syncsBefore, "refresh after a commit resyncs the rail tint");
+  const statusFetches = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  assert.equal(statusFetches, fetchesBefore + 1, "refresh fetched the status exactly once");
+  // The rail reads the cached status; probeWorkspaceStatus must not treat it
+  // as stale (__probed) or a rail render would refetch it.
+  await ui.probeWorkspaceStatus({ cwd: "/tmp/demo-repo", title: "demo" });
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, statusFetches, "the refreshed status is marked fresh, no probe refetch");
+});
+
+test("open() after a rail probe still loads the view: probe-parked status is not a load", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["work.txt"], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [{ path: "work.txt", chunks: [] }] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  // The shell warms the rail before the drawer ever opens.
+  await ui.probeWorkspaceStatus({ cwd: "/tmp/demo-repo", title: "demo" });
+  await settle();
+  const probedFetches = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  assert.equal(probedFetches, 1, "the probe fetched the status once");
+  const before = calls.length;
+  // Opening the drawer must do the real load: a fresh status plus the diff.
+  // The probe-parked status must not satisfy open()'s guard, or the drawer
+  // renders stale data after an out-of-band commit.
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const statusFetches = calls.slice(before).filter((call) => call.path === "/api/git-ui/status").length;
+  const diffFetches = calls.slice(before).filter((call) => call.path === "/api/git-ui/diff").length;
+  assert.equal(statusFetches, 1, "open() refetches the status after a probe-parked one");
+  assert.equal(diffFetches, 1, "open() loads the diff the probe never fetched");
 });
 
 test("folder mutations are hidden and refused outside the changes view", async () => {
@@ -1024,8 +1404,11 @@ test("workspace_nav module is registered and wired before git_ui.js consumes it"
   assert.match(navSource, /function workspaceCwd\(workspace\) \{/);
   assert.match(navSource, /if \(window\.HerdrWorkspacePath\) return window\.HerdrWorkspacePath\(workspace\)/);
   assert.match(navSource, /view\.navigationStack = stack\.concat\(snapshot\)\.slice\(-12\)/);
-  assert.match(navSource, /git-ui-breadcrumbs/);
-  assert.match(navSource, /HerdrGitUi\.goBack\(\)/);
+  // Phase 4: the location bar is deprecated; viewCrumbs only feeds snapshot
+  // labels now, and Back is a side-head icon in diff_view.js.
+  assert.match(navSource, /function viewCrumbs\(view\)/);
+  assert.ok(!navSource.includes("renderLocationBar"), "location bar markup is deprecated");
+  assert.match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /git-ui-back-icon[\s\S]*?HerdrGitUi\.goBack\(\)/);
   const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
   assert.match(gitUiSource, /globalThis\.HerdrGitUiWorkspaceNavModule\.create\(\{/);
   assert.match(gitUiSource, /const compactPath = workspaceNav\.compactPath;/);
@@ -1113,15 +1496,22 @@ test("workspace navigation snapshots, trail, and status helpers behave", () => {
   assert.equal(v.navigationStack[0].file, "f9.js", "oldest entries beyond the cap are dropped");
   assert.equal(v.navigationStack[v.navigationStack.length - 1].file, "f20.js", "newest entry is kept");
   v.file = "b.js";
-  // location bar always renders with a back button and state-derived crumbs.
-  const bar = mod.renderLocationBar(v);
-  assert.match(bar, /git-ui-location-bar/);
-  assert.match(bar, /git-ui-breadcrumbs/);
-  assert.match(bar, /HerdrGitUi\.goBack\(\)/);
-  assert.match(bar, /b\.js/);
-  assert.match(mod.renderLocationBar({}), /git-ui-location-bar/, "location bar renders even with no view");
-  // workspaceStatus: nogit when no workspace cwd, open when active+visible.
-  assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "closed");
+  // Phase 4: the location bar is gone; crumbs only label navigation
+  // snapshots (goBack tooltips in later asserts keep using them).
+  const crumbs = mod.viewCrumbs(v);
+  assert.ok(Array.isArray(crumbs), "viewCrumbs still feeds snapshot labels");
+  assert.ok(crumbs.includes("b.js"));
+  assert.ok(!readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8").includes("renderLocationBar"), "location bar markup is deprecated");
+  // workspaceStatus: nogit when no workspace cwd, open when active+visible,
+  // and tinted by the cached repo state for the rail (Phase 4).
+  assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "unknown", "uncached view is unknown until probed");
+  state.cache["k"] = { status: { state: "dirty" } };
+  assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "dirty", "dirty repo tints the rail yellow");
+  state.cache["k"] = { status: { state: "conflicts" } };
+  assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "conflicts", "conflicts tint the rail red");
+  state.cache["k"] = { status: { state: "clean" } };
+  assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "clean");
+  state.cache["k"] = {};
   state.visible = true;
   state.activeKey = "k";
   assert.equal(mod.workspaceStatus("k", { cwd: "/repo/a" }), "open");
@@ -1181,6 +1571,27 @@ test("restoreNavigationSnapshot reloads diff and clamps log scope", async () => 
   commitView.committedFile = null;
   await mod.restoreNavigationSnapshot(commitView, commitView.navigationStack.pop());
   assert.equal(JSON.stringify(commitView.committedFile), JSON.stringify({ hash: "h9", from: "log" }), "committedFile survives snapshot restore");
+});
+
+test("probeWorkspaceStatus warms the rail tint without opening the drawer", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", state: "dirty", staged: ["a.js"], unstaged: [], untracked: [], conflicted: [] },
+  });
+  const { ui, calls } = booted;
+  const workspace = { workspace_id: "w1", cwd: "/tmp/demo-repo" };
+  // Before probing: unknown, and the drawer has not been opened.
+  assert.equal(ui.workspaceStatus("w1", workspace), "unknown");
+  assert.ok(!calls.some((call) => call.path === "/api/git-ui/status"), "no status call before the probe");
+  await ui.probeWorkspaceStatus(workspace);
+  const statusCall = calls.find((call) => call.path === "/api/git-ui/status");
+  assert.ok(statusCall, "probe fires the status endpoint");
+  assert.equal(statusCall.params.get("cwd"), "/tmp/demo-repo", "probe passes the workspace cwd");
+  assert.equal(ui.workspaceStatus("w1", workspace), "dirty", "rail reads dirty after the probe");
+  // The drawer stays hidden the whole time: no diff/compare/log fetches fired.
+  assert.ok(!calls.some((call) => call.path === "/api/git-ui/diff"), "probe does not open the drawer");
+  // Second probe is cached: no extra status call.
+  await ui.probeWorkspaceStatus(workspace);
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, 1, "probe caches the status");
 });
 
 test("diff_view module is registered and wired before git_ui.js consumes it", () => {
@@ -1423,7 +1834,6 @@ test("log render loads the log, tracks the selected branch, and routes tabs in r
     renderDiff: () => "DIFF",
     replaceContent: (version, html) => { calls.push(`content:${html.slice(0, 40)}`); },
     render: () => { calls.push("render"); },
-    renderLocationBar: (view) => `<div class="git-ui-location-bar">BAR:${view.tab}</div>`,
   });
   // renderLog: fetches, records selectedBranchForHash, scrolls to the pending hash.
   await mod.renderLog(1);
@@ -1432,10 +1842,10 @@ test("log render loads the log, tracks the selected branch, and routes tabs in r
   assert.ok(calls.includes("scroll:abc"), "pending scroll hash consumed");
   assert.equal(view.pendingLogScrollHash, "");
   assert.ok(calls.some((c) => c.startsWith("content:LOG(")), "log content replaced");
-  // renderMain routes per tab inside the main shell, with the location bar always visible.
+  // renderMain routes per tab inside the main shell, with no location bar
+  // (Phase 4: the pane tab strip names the view).
   view.tab = "changes";
-  assert.match(mod.renderMain(), /git-ui-location-bar/);
-  assert.match(mod.renderMain(), /BAR:changes/);
+  assert.ok(!mod.renderMain().includes("git-ui-location-bar"), "location bar is deprecated");
   assert.match(mod.renderMain(), />DIFF</);
   view.tab = "stash";
   assert.match(mod.renderMain(), />STASHDIFF</);
@@ -1526,8 +1936,10 @@ test("gotoLogCommit keeps the file scope and Back returns to the history list", 
   const logCall = lastPostCall(calls, "/api/git-ui/log");
   assert.ok(logCall, "log request fired after the jump");
   assert.equal(logCall.params.get("file"), "src/app.js", "log stays scoped to the history file");
-  assert.match(ctxHtml(booted), /Log[\s\S]*?src\/app\.js/, "location bar names the file-scoped log");
-  assert.match(ctxHtml(booted), /clearLogFileHistory/, "file-scoped log offers a clear-scope action");
+  // Phase 4: no location bar. The file-scoped log names its scope through the
+  // log's own clear chip (rendered by log.js once the log body loads), and
+  // Back renders as the side-head icon while a snapshot exists.
+  assert.match(ctxHtml(booted), /git-ui-back-icon/, "Back icon renders while the stack is non-empty");
   // Back pops the pushed snapshot and returns to the history list, never leaving the drawer.
   await ui.goBack();
   assert.ok(!booted.ctx.window.HerdrFileBrowser, "Back must not hand off to the file browser");
@@ -1553,7 +1965,7 @@ test("goBack from a committed file restores the snapshot without switching tools
   const compareCall = lastPostCall(calls, "/api/git-ui/compare");
   assert.ok(compareCall, "committed file view compares hash^ against hash");
   assert.equal(compareCall.params.get("target"), NEW);
-  assert.match(ctxHtml(booted), /Committed dddddddd/, "crumbs name the committed-file place");
+  assert.match(ctxHtml(booted), /git-ui-back-icon/, "Back icon renders from the pushed snapshot");
   // Back pops to the previous place: the history list (same drawer, same tool).
   await ui.goBack();
   const historyCalls = calls.filter((call) => call.path === "/api/git-ui/file-history");
@@ -1576,7 +1988,7 @@ test("openFileHistory reuses the existing Git view for the same cwd", async () =
   await ui.openFileHistory("/tmp/demo-repo", "src/app.js");
   const after = ui.activeWorkspaceId();
   assert.equal(after, before, "no synthetic git-file-history workspace view is created");
-  assert.match(ctxHtml(booted), /History/, "history tab renders in the reused view");
+  assert.match(ctxHtml(booted), /Loading history/, "history tab renders in the reused view");
 });
 
 test("path title picker moves the Git view and the return button restores the workspace folder", async () => {
@@ -1643,77 +2055,6 @@ test("path title picker moves the Git view and the return button restores the wo
   html = ctxHtml(booted);
   const restored = html.split("git-ui-side-bottom-head")[1] || "";
   assert.ok(!restored.includes("returnToWorkspaceCwd"), "return button disappears after restoring");
-});
-
-test("path title picker inside a temporary Git overlay moves the overlay chrome and keeps workspaceCwd in sync", async () => {
-  const booted = await bootGitUi({
-    "/api/git-ui/status": emptyStatus(),
-    "/api/git-ui/diff": { files: [] },
-    "/api/git-ui/compare": { files: [] },
-    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
-  });
-  const { ui, ctx } = booted;
-  await ui.open({ cwd: "/tmp/overlay-repo", title: "demo" }, { forceOpen: true });
-  // Simulate the temp overlay mounting: panelInTempOverlay walks to the
-  // tempGitOverlayModal, applyGitFolder records the chrome sync.
-  const panel = element();
-  panel.id = "gitUiPanel";
-  const body = element();
-  const modal = element();
-  modal.id = "tempGitOverlayModal";
-  panel.parentNode = body;
-  body.parentNode = modal;
-  ctx.document.getElementById = (id) => (id === "gitUiPanel" ? panel : element());
-  const appliedFolders = [];
-  ctx.HerdrTempOverlays = {
-    panelInTempOverlay(id) {
-      if (id !== "gitUiPanel") return false;
-      let node = ctx.document.getElementById(id);
-      while (node) {
-        if (node.id === "tempGitOverlayModal" || node.id === "tempFilesOverlayModal") return true;
-        node = node.parentNode || null;
-      }
-      return false;
-    },
-    applyGitFolder(folder) { appliedFolders.push(folder); },
-  };
-  // Stub picker like the main behavior test.
-  const makeInput = () => {
-    const listeners = {};
-    return {
-      type: "",
-      style: {},
-      value: "",
-      parentNode: { removeChild() {} },
-      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-      removeEventListener(type, fn) { if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn); },
-      dispatch(type) { (listeners[type] || []).slice().forEach((fn) => fn({ target: this })); },
-    };
-  };
-  const rawCreateElement = ctx.document.createElement;
-  let pickerInput = null;
-  ctx.document.createElement = (tag) => {
-    if (tag !== "input") return rawCreateElement(tag);
-    const node = makeInput();
-    pickerInput = node;
-    return node;
-  };
-  ctx.window.HerdrDirectoryPicker = { open(input) { pickerInput = input; } };
-  ctx.window.addEventListener = () => {};
-  ctx.window.removeEventListener = () => {};
-  ui.openCwdPicker();
-  assert.equal(pickerInput.value, "/tmp/overlay-repo", "picker seeds the overlay cwd");
-  pickerInput.value = "/tmp/moved-repo";
-  pickerInput.dispatch("change");
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.deepEqual(appliedFolders, ["/tmp/moved-repo"], "overlay chrome follows the picked folder");
-  const statusCall = booted.calls.filter((call) => call.path === "/api/git-ui/status").pop();
-  assert.equal(statusCall.params.get("cwd"), "/tmp/moved-repo", "status refetches with the picked cwd");
-  // The pseudo workspace folder must follow, so no return button appears
-  // inside the temporary overlay.
-  const html = ctxHtml(booted);
-  const head = html.split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(!head.includes("returnToWorkspaceCwd"), "no return button inside a temporary Git overlay");
 });
 
 test("Esc pops one navigation level and only hides at the changes root", async () => {
@@ -1815,53 +2156,296 @@ test("Esc closes an open menu or modal before touching the navigation stack", as
   assert.equal(lastAction, "", "Esc with the commit modal open never reaches the navigation stack");
 });
 
-test("hide keeps the git panel visible while a temporary Git overlay owns it", async () => {
+test("drawer reopen mounts the restored tab into its owning pane, not the focused one", async () => {
+  // Maximize-restore desync: the pane tree's active git tab lives in p1
+  // while pane focus sits on p2. The drawer re-open path calls
+  // ensureViewTabContainer with no owner focus before it, so the pane
+  // resolution inside must follow the tab's owner or the container
+  // mounts into p2 and p1 renders blank.
   const booted = await bootGitUi({
     "/api/git-ui/status": emptyStatus(),
     "/api/git-ui/diff": { files: [] },
     "/api/git-ui/compare": { files: [] },
     "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
   });
-  const { ui, ctx } = booted;
+  const { ui } = booted;
+  const chain = installOwnerActivePaneChain(booted, { initialTab: "git:changes" });
   await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle(200);
+  const container = chain.containers.get("git-mount-changes");
+  assert.ok(container, "the changes container exists");
+  assert.ok(
+    chain.owner.contentEl.children.includes(container),
+    "the container mounts into the owning pane's content slot"
+  );
+  assert.ok(
+    !chain.active.contentEl.children.includes(container),
+    "the container does not land in the merely-focused pane"
+  );
+});
 
-  // One stable gitUiPanel node with a parentNode chain that reaches
-  // tempGitOverlayModal: what HerdrTempOverlays.openSurface() produces.
-  const panel = element();
-  panel.id = "gitUiPanel";
-  const body = element();
-  const modal = element();
-  modal.id = "tempGitOverlayModal";
-  panel.parentNode = body;
-  body.parentNode = modal;
-  ctx.document.getElementById = (id) => (id === "gitUiPanel" ? panel : element());
-  ctx.HerdrTempOverlays = {
-    panelInTempOverlay(id) {
-      if (id !== "gitUiPanel") return false;
-      let node = ctx.document.getElementById(id);
-      while (node) {
-        if (node.id === "tempGitOverlayModal" || node.id === "tempFilesOverlayModal") return true;
-        node = node.parentNode || null;
+test("reload restore with a probe-parked view loads the restored compare tab", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [{ path: "work.txt", chunks: [] }] },
+    "/api/git-ui/compare": { files: [{ path: "compared.txt", chunks: [] }] },
+    "/api/git-ui/log": { commits: [{ hash: NEW }], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  // Shell boot: the rail probe parks a minimal view (no cwd, no diff) before
+  // anything opens.
+  await ui.probeWorkspaceStatus({ cwd: "/tmp/demo-repo", title: "demo" });
+  await settle();
+  const chain = installRealPaneChain(booted, { initialTab: `git:compare@${NEW}..current` });
+  // Reload restore: the shell opens the drawer while the pane tree holds an
+  // active compare tab.
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle(300);
+  // The restored compare view-key must win, and needsLoad must not treat the
+  // probe-parked status as a real load.
+  assert.equal(chain.activeTabId(), `git:compare@${NEW}..current`, "the restored compare tab keeps the focus");
+  const compareFetches = calls.filter((call) => call.path === "/api/git-ui/compare"
+    && call.params.get("base") === NEW && call.params.get("target") === ".");
+  assert.equal(compareFetches.length, 1, "the restored compare tab fetches its compare exactly once");
+  assert.match(compareContainerHtml(booted), /compared\.txt/, "the restored compare renders its result");
+  assert.ok(!compareContainerHtml(booted).includes("work.txt"), "the working diff does not leak into the restored compare");
+  assert.ok(calls.filter((call) => call.path === "/api/git-ui/status").length >= 2,
+    "open() refetched the status after the probe-parked one");
+});
+
+test("non-git workspace: probe failure is parked, rail stays consistent through open and hide", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { error: "not a git repository (or any of the parent directories): .git" },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  const workspace = { cwd: "/tmp/plain-folder", title: "demo" };
+  await ui.probeWorkspaceStatus(workspace);
+  await settle();
+  assert.equal(ui.workspaceStatus(null, workspace), "nogit", "a failed probe tints the rail nogit");
+  // Shell renders re-probe; the parked failure must not refetch.
+  const afterProbe = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  await ui.probeWorkspaceStatus(workspace);
+  await ui.probeWorkspaceStatus(workspace);
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, afterProbe,
+    "a parked probe failure is not refetched on later renders");
+  // Opening the drawer keeps the rail clickable (close contract) and the
+  // view flips to the cleanup surface.
+  await ui.open(workspace, { forceOpen: true });
+  await settle();
+  assert.equal(ui.workspaceStatus(null, workspace), "open", "an open drawer keeps the rail clickable");
+  // Hiding and re-probing returns the nogit tint without a refetch.
+  ui.hide();
+  await settle();
+  await ui.probeWorkspaceStatus(workspace);
+  await settle();
+  assert.equal(ui.workspaceStatus(null, workspace), "nogit", "the hidden drawer on a non-git folder tints nogit again");
+  // The drawer-open nogit load is also fresh: shell renders must not refetch
+  // the failing endpoint while the drawer sits open on the non-git folder.
+  await ui.open(workspace, { forceOpen: true });
+  await settle();
+  const openFetches = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  await ui.probeWorkspaceStatus(workspace);
+  await ui.probeWorkspaceStatus(workspace);
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, openFetches,
+    "a drawer open on a non-git folder does not refetch status per render");
+  assert.equal(ui.workspaceStatus(null, workspace), "open", "the rail stays clickable to close the drawer");
+});
+
+test("non-git workspace: status payload (not an error) parks nogit through probe and open", async () => {
+  // The backend answers a non-git folder with a 200 not_git_repository
+  // payload instead of a 400, so the probe and refresh success paths must
+  // carry the nogit contract, not only the error catch.
+  const nogitStatus = {
+    state: "cleanup only",
+    repo_path: "/tmp/plain-folder",
+    branch: "No Git repository",
+    not_git_repository: true,
+    ahead: 0,
+    behind: 0,
+    upstream: "",
+    remote_url: null,
+    staged: [],
+    unstaged: [],
+    untracked: [],
+    conflicted: [],
+    stashes: [],
+  };
+  const booted = await bootGitUi({
+    "/api/git-ui/status": nogitStatus,
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  const workspace = { cwd: "/tmp/plain-folder", title: "demo" };
+  await ui.probeWorkspaceStatus(workspace);
+  await settle();
+  assert.equal(ui.workspaceStatus(null, workspace), "nogit", "a payload probe tints the rail nogit");
+  // The parked probe is a hint only: open() must still do the real load and
+  // land on the cleanup view (markNoGitRepository), not the changes view.
+  await ui.open(workspace, { forceOpen: true });
+  await settle();
+  assert.equal(ui.workspaceStatus(null, workspace), "open", "an open drawer keeps the rail clickable");
+  const html = (booted.ctx.document.__panelHtml || "");
+  assert.match(html, /Open a Git repository to use this view/, "open renders the cleanup-only view");
+  // Hiding parks nogit again, and the open fetches must not refetch on
+  // every render (the markNoGitRepository status carries __probed).
+  ui.hide();
+  await settle();
+  await ui.probeWorkspaceStatus(workspace);
+  await settle();
+  assert.equal(ui.workspaceStatus(null, workspace), "nogit", "the hidden drawer tints nogit again");
+});
+
+test("a probe landing after a real load is discarded, not parked over it", async () => {
+  // Supersede race: the shell probe fetches the status, and while that is in
+  // flight the drawer opens (open() runs the real load). The late probe
+  // would overwrite the real status and re-mark it __probedOnly, staling
+  // the cache and forcing a redundant reload on the next open.
+  const realStatus = { state: "dirty", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["work.txt"], untracked: [], conflicted: [] };
+  const probeStatus = { state: "clean", branch: "probe-only", ahead: 9, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
+  let gateResolve = null;
+  const booted = await bootGitUi({
+    "/api/git-ui/status": (params) => {
+      // The first status fetch belongs to the probe and hangs on the gate;
+      // every later fetch (the open() load, its refresh) resolves at once.
+      if (!gateResolve) {
+        return new Promise((resolve) => { gateResolve = resolve; })
+          .then(() => probeStatus);
       }
-      return false;
+      return realStatus;
     },
-  };
+    "/api/git-ui/diff": { files: [{ path: "work.txt", chunks: [] }] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  const workspace = { cwd: "/tmp/demo-repo", title: "demo" };
+  const probePromise = ui.probeWorkspaceStatus(workspace);
+  await settle();
+  // The real load lands while the probe fetch is still gated.
+  await ui.open(workspace, { forceOpen: true });
+  await settle();
+  const statusFetches = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  // Release the probe: it must not park over the real load.
+  gateResolve();
+  await probePromise;
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, statusFetches,
+    "the late probe does not refetch or overwrite the real load");
+  assert.equal(ui.workspaceStatus(null, workspace), "dirty",
+    "the rail reads the real load's state, not the gated probe's stale one");
+});
 
-  let visibleAfterHide = null;
-  const originalShowPanelSet = Object.getOwnPropertyDescriptor(panel.style, "display");
-  // showPanel(false) sets display:none through the panel; record it.
-  panel.style.display = "grid";
-  ui.hide();
-  visibleAfterHide = panel.style.display;
-  assert.notEqual(visibleAfterHide, "none", "panel not display:none'd while owned by the temp overlay");
+test("a probe landing after a worktree switch is discarded for the new folder", async () => {
+  // Cwd race: the probe captures the old checkout, then the same workspace
+  // re-opens pointing at a different worktree (workspace_id keeps the key,
+  // the cwd moves). The late probe would park the old folder's status into
+  // the new folder's view, freezing the rail on a wrong tint behind a
+  // __probed guard.
+  const oldStatus = { state: "dirty", branch: "old-folder", ahead: 0, behind: 0, staged: [], unstaged: ["old.txt"], untracked: [], conflicted: [] };
+  const newStatus = { state: "clean", branch: "new-folder", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
+  let gateResolve = null;
+  const booted = await bootGitUi({
+    "/api/git-ui/status": (params) => {
+      if (!gateResolve) {
+        return new Promise((resolve) => { gateResolve = resolve; })
+          .then(() => oldStatus);
+      }
+      return params.get("cwd") === "/tmp/repo-old" ? oldStatus : newStatus;
+    },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  const oldFolder = { workspace_id: "w1", cwd: "/tmp/repo-old", title: "demo" };
+  const newFolder = { workspace_id: "w1", cwd: "/tmp/repo-new", title: "demo" };
+  const probePromise = ui.probeWorkspaceStatus(oldFolder);
+  await settle();
+  // The drawer re-opens pointing at the new worktree while the probe still
+  // hangs on the old one.
+  await ui.open(newFolder, { forceOpen: true });
+  await settle();
+  assert.equal(ui.workspaceStatus(null, newFolder), "clean",
+    "the switched folder reads its own status before the probe lands");
+  // Release the stale probe: the old folder's dirty state must not park over
+  // the new folder's clean load.
+  gateResolve();
+  await probePromise;
+  await settle();
+  assert.equal(ui.workspaceStatus(null, newFolder), "clean",
+    "the rail reads the switched folder's status, not the stale probe's");
+  const statusFetches = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  await ui.probeWorkspaceStatus(newFolder);
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, statusFetches,
+    "the parked real load is fresh, no probe refetch for the switched folder");
+});
 
-  // Back outside the overlay, hide() dismisses the panel as before.
-  panel.parentNode = ctx.document.body;
-  ctx.HerdrTempOverlays = {
-    panelInTempOverlay: () => false,
-  };
-  panel.style.display = "grid";
+test("forceOpen re-focus on a loaded visible drawer resyncs after an out-of-band change", async () => {
+  // The rail tint is a cache of mutable external state. An out-of-band
+  // commit (another terminal, an API call) leaves a fully-loaded view
+  // stale: the probe skips it (__probed) and needsLoad is false. The only
+  // convergence path is re-selecting the workspace, which forceOpens the
+  // already-visible drawer. That re-focus must refresh, not trust the
+  // cache.
+  let statusPayload = { state: "dirty", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["work.txt"], untracked: [], conflicted: [] };
+  const booted = await bootGitUi({
+    "/api/git-ui/status": () => statusPayload,
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  const workspace = { cwd: "/tmp/demo-repo", title: "demo" };
+  await ui.open(workspace, { forceOpen: true });
+  await settle();
+  assert.equal(ui.workspaceStatus(null, workspace), "dirty", "the first load tints the rail dirty");
+  const loadedFetches = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  // Out-of-band commit: the server state changes under the loaded view.
+  statusPayload = { state: "clean", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
+  // Re-selecting the workspace forceOpens the visible drawer: resync.
+  await ui.open(workspace, { forceOpen: true });
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, loadedFetches + 1,
+    "the re-focus refreshes instead of trusting the stale cache");
+  assert.equal(ui.workspaceStatus(null, workspace), "clean",
+    "the rail converges to the out-of-band state after the re-focus");
+});
+
+test("a plain reopen of a hidden drawer with a loaded view refetches the status", async () => {
+  // Rail-click reopen (no forceOpen) of a drawer hidden over a fully
+  // loaded view: needsLoad is false, so pre-rework code kept the cached
+  // status and an out-of-band commit left the drawer stale until a manual
+  // refresh. The reload contract is the same family as the forceOpen
+  // re-focus: reopening is a resync point.
+  let statusPayload = { state: "dirty", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["work.txt"], untracked: [], conflicted: [] };
+  const booted = await bootGitUi({
+    "/api/git-ui/status": () => statusPayload,
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  const workspace = { cwd: "/tmp/demo-repo", title: "demo" };
+  await ui.open(workspace, { forceOpen: true });
+  await settle();
+  const loadedFetches = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  assert.equal(ui.workspaceStatus(null, workspace), "dirty", "the first load tints the rail dirty");
+  // Hide the drawer, then the repo changes out of band.
   ui.hide();
-  assert.equal(panel.style.display, "none", "panel hidden once back outside the overlay");
-  if (originalShowPanelSet) Object.defineProperty(panel.style, "display", originalShowPanelSet);
+  statusPayload = { state: "clean", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
+  // Plain rail-click reopen: no options.
+  await ui.open(workspace, {});
+  await settle();
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, loadedFetches + 1,
+    "the plain reopen refetches instead of trusting the pre-hide load");
+  assert.equal(ui.workspaceStatus(null, workspace), "clean",
+    "the reopened drawer reads the out-of-band state");
 });

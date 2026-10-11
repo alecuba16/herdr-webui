@@ -53,7 +53,7 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
     const desktopAppSource = [
       "./desktop/app_js/core.js",
       "./desktop/app_js/workspace_shell.js",
-      "./desktop/app_js/panel_switcher.js",
+      "./desktop/app_js/workspace_panes.js",
       "./desktop/app_js/render.js",
       "./desktop/app_js/terminal.js",
       "./desktop/app_js/worktrees.js",
@@ -96,6 +96,7 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
         appendChild() {},
         replaceWith() {},
         remove() {},
+        children: [],
         focus() { this.focused = true; },
         select() { this.selected = true; },
         addEventListener() {},
@@ -242,11 +243,5 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
     const stored = JSON.parse(store.get("herdr-web-options"));
     assert.equal(stored.terminalCore, "wterm");
     assert.equal(stored.terminalCoreGhosttyMigrated, true);
-  });
-
-  it("temp terminal reads the migrated core and falls back to ghostty", () => {
-    const source = readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8");
-    assert.match(source, /resolveTerminalCoreChoice\(/);
-    assert.match(source, /return "ghostty";/);
   });
 });

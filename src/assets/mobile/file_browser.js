@@ -8,6 +8,16 @@
       return { active: false, query: "", timer: null, files: [], expanded: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, visited: 0, truncated: false, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
     }
     const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterVisible: false, filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, cwdOverride: "", gitStatus: null, editing: false, draft: "", dirty: false, saving: false, saveError: "", actionSheet: null, rename: null, newFile: null, mutating: false, contentSearch: createContentSearchState() };
+    let screenRequestSeq = 0;
+
+    function claimScreenRequest() {
+      screenRequestSeq += 1;
+      return screenRequestSeq;
+    }
+
+    function screenRequestStale(seq) {
+      return seq !== screenRequestSeq;
+    }
 
     function cwd() {
       return local.cwdOverride || deps.currentWorkspaceCwd() || "";
@@ -211,6 +221,7 @@
         deps.render();
         return;
       }
+      const seq = claimScreenRequest();
       local.loading = true;
       local.error = "";
       if (preserveFocus) renderPreservingFocus();
@@ -218,6 +229,7 @@
       try {
         const depth = fileBrowserDepth();
         const data = await deps.api(`/api/file-browser/tree?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(path || "")}&depth=${depth}${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+        if (screenRequestStale(seq)) return;
         local.path = data.path || "";
         local.entries = data.entries || [];
         local.gitStatus = data.git_status || null;
@@ -225,6 +237,7 @@
         local.filterOffset = 0;
         local.filterDone = !local.filter.trim();
       } catch (error) {
+        if (screenRequestStale(seq)) return;
         local.error = error.message || String(error);
       }
       local.loading = false;
@@ -235,12 +248,14 @@
     async function loadFiltered(append = false) {
       const root = cwd();
       if (!root || !local.filter.trim() || local.filterKind === "content") return;
+      const seq = claimScreenRequest();
       local.loading = true;
       renderPreservingFocus();
       try {
         const offset = append ? local.filterOffset : 0;
         const pageSize = pathSearchOptions().pageSize;
         const data = await deps.api(`/api/file-browser/tree?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(local.path || "")}&q=${encodeURIComponent(local.filter.trim())}&${Tree.searchKindQuery(local.filterKind)}&offset=${offset}&limit=${pageSize}${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+        if (screenRequestStale(seq)) return;
         const entries = data.entries || [];
         local.entries = append ? local.entries.concat(entries) : entries;
         local.gitStatus = data.git_status || null;
@@ -248,6 +263,7 @@
         local.filterDone = !data.truncated || entries.length === 0;
         local.error = "";
       } catch (error) {
+        if (screenRequestStale(seq)) return;
         local.error = error.message || String(error);
         local.filterDone = true;
       }
@@ -262,11 +278,13 @@
       const path = decodeURIComponent(encodedPath);
       const root = cwd();
       if (!root) return;
+      const seq = claimScreenRequest();
       local.loading = true;
       local.error = "";
       deps.render();
       try {
         const file = await deps.api(`/api/file-browser/file?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&max_bytes=262144`);
+        if (screenRequestStale(seq)) return;
         file.partialPreview = file.truncated === true;
         file.linesHtml = file.lines_gutter_html != null && file.lines_code_html != null ? { gutter: file.lines_gutter_html, code: file.lines_code_html } : null;
         local.file = file;
@@ -274,6 +292,7 @@
         local.draft = "";
         local.dirty = false;
       } catch (error) {
+        if (screenRequestStale(seq)) return;
         local.error = error.message || String(error);
       }
       local.loading = false;
@@ -283,6 +302,7 @@
     async function openFile(path, searchHighlight) {
       const root = cwd();
       if (local.file && local.file.path && local.file.path !== path) lspDidClose(local.file.path);
+      const seq = claimScreenRequest();
       local.selected = path;
       local.file = null;
       local.editing = false;
@@ -294,10 +314,16 @@
       deps.render();
       try {
         local.error = "";
-        local.file = await deps.api(`/api/file-browser/file?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&render=lines`);
-        local.file.searchHighlight = searchHighlight || null;
-        local.file.linesHtml = local.file.lines_gutter_html != null && local.file.lines_code_html != null ? { gutter: local.file.lines_gutter_html, code: local.file.lines_code_html } : null;
+        const file = await deps.api(`/api/file-browser/file?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}&render=lines`);
+        if (screenRequestStale(seq)) return;
+        file.searchHighlight = searchHighlight || null;
+        file.linesHtml = file.lines_gutter_html != null && file.lines_code_html != null ? { gutter: file.lines_gutter_html, code: file.lines_code_html } : null;
+        local.file = file;
+        local.editing = false;
+        local.draft = "";
+        local.dirty = false;
       } catch (error) {
+        if (screenRequestStale(seq)) return;
         local.error = error.message || String(error);
       }
       local.loading = false;
@@ -625,7 +651,12 @@
 
     function renderScreen() {
       if (!cwd()) return '<div class="mobile-loading">Select workspace with path first</div>';
-      if (!local.entries.length && !local.loading && !local.error) load(local.path || "");
+      // Lazy-load the tree on first render, but never while a file preview
+      // is showing: a re-render after openFile() would kick off a tree
+      // load whose result nulls local.file and swaps the preview for the
+      // tree. The stale seq guard drops superseded responses; this keeps
+      // the lazy load from firing at all in the file view.
+      if (!local.file && !local.entries.length && !local.loading && !local.error) load(local.path || "");
       if (local.file) return renderPreview();
       const currentRow = Tree.renderCurrentDirectoryRow({ callback: "HerdrMobileFiles", canGoUp: canGoUp(), path: currentDirectoryPath(), label: currentDirectoryLabel(), title: currentDirectoryTitle() });
       const tree = currentRow + Tree.renderEntries(treeEntries(), { selectedPath: local.selected, callback: "HerdrMobileFiles", showMeta: true, rowActionMethod: "rowActions", rowActionLabel: "⋯" });

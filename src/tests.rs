@@ -227,26 +227,6 @@ fn parses_backend_modes_and_session_targets() {
 }
 
 #[test]
-fn builtin_event_hub_detection_only_matches_builtin_protocol_16() {
-    assert!(backend_uses_builtin_event_hub(&BackendInfo {
-        version: Some("builtin-0.1.0".to_string()),
-        protocol: Some(18),
-    }));
-    assert!(!backend_uses_builtin_event_hub(&BackendInfo {
-        version: Some("builtin-0.1.0".to_string()),
-        protocol: Some(15),
-    }));
-    assert!(!backend_uses_builtin_event_hub(&BackendInfo {
-        version: Some("1.2.3".to_string()),
-        protocol: Some(18),
-    }));
-    assert!(!backend_uses_builtin_event_hub(&BackendInfo {
-        version: None,
-        protocol: Some(18),
-    }));
-}
-
-#[test]
 fn web_event_kind_extracts_wrapped_backend_events() {
     let value = json!({
         "type": "event",
@@ -5982,6 +5962,507 @@ async fn session_snapshot_handler_proxies_snapshot() {
     let _ = fs::remove_file(socket);
 }
 
+// Fake API socket that answers any number of requests: one queued response
+// per connection, echoing the request id, and records every request line for
+// assertions. Used by the session-snapshot bootstrap tests where the handler
+// issues session.snapshot plus one worktree.list per workspace.
+#[cfg(unix)]
+fn fake_api_socket_multi_recording(
+    responses: Vec<serde_json::Value>,
+) -> (
+    PathBuf,
+    thread::JoinHandle<()>,
+    std::sync::mpsc::Receiver<String>,
+) {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+    let path = std::env::temp_dir().join(format!(
+        "herdr-webui-multi-rec-{}-{}.sock",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        fake_socket_suffix()
+    ));
+    let _ = fs::remove_file(&path);
+    let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let handle = thread::spawn(move || {
+        for mut resp in responses {
+            let Ok(mut stream) = listener.accept() else {
+                break;
+            };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
+                break;
+            }
+            let _ = tx.send(line.clone());
+            if let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) {
+                resp["id"] = request["id"].clone();
+            }
+            stream
+                .write_all(serde_json::to_string(&resp).unwrap().as_bytes())
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        }
+    });
+    (path, handle, rx)
+}
+
+// The snapshot bootstrap must carry the WebUI-only fields alongside the
+// backend envelope: workspace drag order from the web state, one enriched
+// worktree.list result per workspace (cwd pinned to that workspace so builtin
+// resolves the right repo), and the source_workspace_id stamp the frontend
+// uses to attribute rows.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_includes_order_and_worktree_results() {
+    let (socket, handle, rx) = fake_api_socket_multi_recording(vec![
+        json!({
+            "result": {
+                "snapshot": {
+                    "workspaces": [
+                        { "workspace_id": "ws_1", "label": "one" },
+                        { "workspace_id": "ws_2", "label": "two" }
+                    ],
+                    "tabs": [],
+                    "panes": [
+                        { "workspace_id": "ws_1", "tab_id": "tab_1", "pane_id": "pane_1", "cwd": "/tmp/repo-a" },
+                        { "workspace_id": "ws_2", "tab_id": "tab_2", "pane_id": "pane_2", "cwd": "/tmp/repo-b" }
+                    ]
+                },
+                "type": "session_snapshot"
+            }
+        }),
+        json!({ "result": { "worktrees": [ { "path": "/tmp/repo-a", "branch": "main" } ], "source": { "repo_name": "repo-a" } } }),
+        json!({ "result": { "worktrees": [ { "path": "/tmp/repo-b", "branch": "dev" } ], "source": { "source_workspace_id": null, "repo_name": "repo-b" } } }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    state.workspace_orders.lock().unwrap().insert(
+        "default".to_string(),
+        vec!["ws_2".to_string(), "ws_1".to_string()],
+    );
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    // The backend envelope stays untouched: additions are siblings of
+    // result.snapshot, not nested inside it.
+    assert_eq!(
+        body["result"]["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(body["result"]["workspace_order"], json!(["ws_2", "ws_1"]));
+    let entries = body["result"]["worktree_results"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[0]["result"]["source"]["source_workspace_id"],
+        "ws_1"
+    );
+    assert_eq!(entries[0]["result"]["worktrees"][0]["path"], "/tmp/repo-a");
+    assert_eq!(
+        entries[1]["result"]["source"]["source_workspace_id"],
+        "ws_2"
+    );
+    assert_eq!(entries[1]["result"]["worktrees"][0]["branch"], "dev");
+    // Enrichment filled the workspace cwd from the snapshot's own panes.
+    assert_eq!(
+        body["result"]["snapshot"]["workspaces"][0]["cwd"],
+        "/tmp/repo-a"
+    );
+    // The worktree.list requests pinned each workspace's resolved cwd and
+    // asked for the right workspace ids.
+    let requests: Vec<String> = rx.iter().collect();
+    assert_eq!(requests.len(), 3);
+    let first: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
+    assert_eq!(first["method"], "session.snapshot");
+    let second: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
+    assert_eq!(second["method"], "worktree.list");
+    assert_eq!(second["params"]["workspace_id"], "ws_1");
+    assert_eq!(second["params"]["cwd"], "/tmp/repo-a");
+    let third: serde_json::Value = serde_json::from_str(&requests[2]).unwrap();
+    assert_eq!(third["method"], "worktree.list");
+    assert_eq!(third["params"]["workspace_id"], "ws_2");
+    assert_eq!(third["params"]["cwd"], "/tmp/repo-b");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+// A worktree.list failure (backend error response) must not break the rest of
+// the snapshot: the entry becomes null, the same tolerance the frontend's
+// legacy per-workspace catch() had, and the other workspace keeps its rows.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_tolerates_worktree_error_entries() {
+    let (socket, handle) = fake_api_socket_multi(vec![
+        json!({
+            "result": {
+                "snapshot": {
+                    "workspaces": [
+                        { "workspace_id": "ws_1", "label": "one", "cwd": "/tmp/repo-a" },
+                        { "workspace_id": "ws_2", "label": "two", "cwd": "/tmp/repo-b" }
+                    ],
+                    "tabs": [],
+                    "panes": []
+                }
+            }
+        }),
+        json!({ "error": { "message": "worktree.list failed" } }),
+        json!({ "result": { "worktrees": [ { "path": "/tmp/repo-b", "branch": "dev" } ], "source": { "repo_name": "repo-b" } } }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let entries = body["result"]["worktree_results"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(
+        entries[0].is_null(),
+        "failed worktree.list must be a null entry"
+    );
+    assert_eq!(
+        entries[1]["result"]["source"]["source_workspace_id"],
+        "ws_2"
+    );
+    // The snapshot body itself still applied.
+    assert_eq!(
+        body["result"]["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+// A worktree.list whose response already carries source_workspace_id from the
+// backend (protocol 16 external sets it) must keep that value: the wrapper
+// only fills missing or null stamps, it never overwrites backend truth.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_preserves_backend_source_workspace_id() {
+    let (socket, handle) = fake_api_socket_multi(vec![
+        json!({
+            "result": {
+                "snapshot": {
+                    "workspaces": [
+                        { "workspace_id": "ws_1", "label": "one", "cwd": "/tmp/repo-a" },
+                        { "workspace_id": "ws_2", "label": "two", "cwd": "/tmp/repo-b" }
+                    ],
+                    "tabs": [],
+                    "panes": []
+                }
+            }
+        }),
+        // This backend stamps source_workspace_id itself (some backends
+        // attribute by repo, not by the asking workspace). The wrapper must
+        // keep the backend value, not the positional assumption.
+        json!({
+            "result": {
+                "worktrees": [ { "path": "/tmp/repo-b", "branch": "dev" } ],
+                "source": { "source_workspace_id": "ws_2", "repo_name": "repo-b" }
+            }
+        }),
+        // Backend stamp for a different workspace than the request params:
+        // backend truth wins over the wrapper's positional assumption.
+        json!({
+            "result": {
+                "worktrees": [ { "path": "/tmp/repo-a", "branch": "main" } ],
+                "source": { "source_workspace_id": "ws_9", "repo_name": "repo-a" }
+            }
+        }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let entries = body["result"]["worktree_results"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[0]["result"]["source"]["source_workspace_id"],
+        "ws_2"
+    );
+    assert_eq!(
+        entries[1]["result"]["source"]["source_workspace_id"],
+        "ws_9"
+    );
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+// A workspace with no resolvable cwd (no cwd field, no panes) must still get
+// its worktree.list entry, with cwd: null in the request params. Builtin
+// treats a null cwd as "use the session's own cwd"; the entry stays in the
+// envelope so the frontend can attribute rows to it.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_sends_null_cwd_for_workspace_without_cwd() {
+    let (socket, handle, rx) = fake_api_socket_multi_recording(vec![
+        json!({
+            "result": {
+                "snapshot": {
+                    "workspaces": [
+                        { "workspace_id": "ws_1", "label": "one" }
+                    ],
+                    "tabs": [],
+                    "panes": []
+                }
+            }
+        }),
+        json!({ "result": { "worktrees": [], "source": { "repo_name": "repo-x" } } }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let entries = body["result"]["worktree_results"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]["result"]["source"]["source_workspace_id"],
+        "ws_1"
+    );
+    let requests: Vec<String> = rx.iter().collect();
+    assert_eq!(requests.len(), 2);
+    let worktree_request: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
+    assert_eq!(worktree_request["method"], "worktree.list");
+    assert_eq!(worktree_request["params"]["workspace_id"], "ws_1");
+    assert!(worktree_request["params"]["cwd"].is_null());
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+// A worktree.list transport failure (socket refused / closed without a
+// response) must become a null entry, same as a backend-level error: one bad
+// workspace never breaks the whole snapshot bootstrap.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_tolerates_worktree_transport_errors() {
+    // Inline listener: answers session.snapshot, then accepts the
+    // worktree.list connection and closes it without responding, which makes
+    // request_raw fail on the UnexpectedResponse path.
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+
+    let path = std::env::temp_dir().join(format!(
+        "herdr-webui-snap-transport-{}-{}.sock",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        fake_socket_suffix()
+    ));
+    let _ = fs::remove_file(&path);
+    let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let handle = thread::spawn(move || {
+        // First connection: answer session.snapshot with one workspace.
+        {
+            let mut stream = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let response = json!({
+                "id": "web:session:snapshot",
+                "result": {
+                    "snapshot": {
+                        "workspaces": [
+                            { "workspace_id": "ws_1", "label": "one", "cwd": "/tmp/repo-a" }
+                        ],
+                        "tabs": [],
+                        "panes": []
+                    }
+                }
+            });
+            stream
+                .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+            stream.flush().unwrap();
+        }
+        // Second connection: read the worktree.list request, answer nothing,
+        // close. request_raw sees a 0-byte read and fails.
+        {
+            let stream = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            drop(stream);
+        }
+    });
+    let mut state = test_state();
+    state.api_socket = Some(path.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let entries = body["result"]["worktree_results"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(
+        entries[0].is_null(),
+        "transport-failed worktree.list must be a null entry"
+    );
+    // The snapshot body itself still applied.
+    assert_eq!(
+        body["result"]["snapshot"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    handle.join().unwrap();
+    let _ = fs::remove_file(&path);
+}
+
+// A backend result that is not a session-snapshot envelope (no result object
+// at all) must pass through the wrapper untouched: no workspace_order, no
+// worktree_results, no cwd enrichment. The frontend's shape checks then keep
+// the snapshot bootstrap enabled but unused, and legacy refresh handles it.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_non_envelope_result_gets_no_bootstrap_fields() {
+    let (socket, handle) = fake_api_socket_multi(vec![
+        json!({ "ok": true, "note": "not a snapshot envelope" }),
+        // No worktree.list is queued for the non-envelope result. If the
+        // wrapper wrongly issued one, the fake listener is already gone by
+        // then, the connect fails, and the wrapper would still add no fields
+        // because the result object is missing: the shape assertions below
+        // are the contract.
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    state
+        .workspace_orders
+        .lock()
+        .unwrap()
+        .insert("default".to_string(), vec!["ws_9".to_string()]);
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["ok"], true);
+    assert_eq!(
+        body.get("result"),
+        None,
+        "non-envelope body must pass through untouched"
+    );
+    assert!(
+        body.pointer("/result/workspace_order").is_none(),
+        "no workspace_order on a non-envelope result"
+    );
+    assert!(
+        body.pointer("/result/worktree_results").is_none(),
+        "no worktree_results on a non-envelope result"
+    );
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+// An error body from session.snapshot itself passes through with the same
+// status semantics as the legacy endpoints: 200, body untouched. The
+// frontend shape check rejects it (no snapshot.workspaces), the refresh
+// falls back to the legacy calls, and the bootstrap stays enabled for the
+// next round since the request itself did not fail.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_error_body_passes_through_untouched() {
+    let (socket, handle) = fake_api_socket_multi(vec![
+        json!({ "error": { "message": "session not running" } }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(
+        body["error"]["message"], "session not running",
+        "backend error body must pass through untouched, same as legacy handlers"
+    );
+    assert!(
+        body.pointer("/result/worktree_results").is_none(),
+        "no bootstrap fields on an error body"
+    );
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn create_workspace_handler_proxies_create() {
@@ -7527,26 +8008,6 @@ async fn versions_handler_returns_bad_gateway_on_missing_socket() {
 // ── events_socket: verify backend_info uses spawn_blocking and close on drop ──
 // This is hard to test directly because events_socket requires a WebSocket
 // upgrade. Instead we test the helper functions it depends on.
-
-#[test]
-fn backend_uses_builtin_event_hub_detects_builtin() {
-    assert!(backend_uses_builtin_event_hub(&BackendInfo {
-        version: Some("builtin-0.8.0".to_string()),
-        protocol: Some(16),
-    }));
-    assert!(!backend_uses_builtin_event_hub(&BackendInfo {
-        version: Some("0.7.5".to_string()),
-        protocol: Some(15),
-    }));
-    assert!(!backend_uses_builtin_event_hub(&BackendInfo {
-        version: Some("builtin-0.8.0".to_string()),
-        protocol: Some(15),
-    }));
-    assert!(!backend_uses_builtin_event_hub(&BackendInfo {
-        version: None,
-        protocol: Some(16),
-    }));
-}
 
 #[test]
 fn web_event_kind_extracts_kind_from_wrapped_event() {
@@ -9670,11 +10131,11 @@ async fn events_socket_sends_ready_and_forwards_events() {
         .await
         .expect("Failed to connect to WebSocket");
 
-    // Collect messages: we expect "ready", "event", and "snapshot" (in any order).
-    // The interval timer fires immediately, so "snapshot" can arrive before "ready".
+    // Collect messages: we expect "ready" then "event". The 5s polling
+    // snapshot push is gone: external sessions refresh from their
+    // events.subscribe stream, so no "snapshot" frame exists anymore.
     let mut got_ready = false;
     let mut got_event = false;
-    let mut got_snapshot = false;
 
     for _ in 0..30 {
         let msg = match tokio::time::timeout(std::time::Duration::from_secs(15), ws_stream.next())
@@ -9691,20 +10152,15 @@ async fn events_socket_sends_ready_and_forwards_events() {
                 assert_eq!(value["event"]["type"], "workspace.created");
                 got_event = true;
             }
-            Some("snapshot") => got_snapshot = true,
             _ => {}
         }
-        if got_ready && got_event && got_snapshot {
+        if got_ready && got_event {
             break;
         }
     }
 
     assert!(got_ready, "did not receive ready message");
     assert!(got_event, "did not receive event message");
-    assert!(
-        got_snapshot,
-        "did not receive snapshot message from interval poll"
-    );
 
     // The fake socket thread may still be accepting connections.
     // Don't join it - just abort the server and clean up.

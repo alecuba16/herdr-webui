@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::check_auth;
-use super::{git_json_error, git_ui_output, git_ui_text_strings, safe_git_token, safe_repo_path};
+use super::{
+    git_json_error, git_ui_output, git_ui_text_strings, is_not_git_repository, safe_git_token,
+    safe_repo_path,
+};
 use crate::{require_auth, WebState};
 
 #[derive(Deserialize)]
@@ -104,7 +107,13 @@ pub(super) fn socket_diff(
             }
         }
     }
-    let text = git_ui_text_strings(&cwd, &args)?;
+    let text = match git_ui_text_strings(&cwd, &args) {
+        Ok(text) => text,
+        // Same contract as the HTTP diff route: a non-repo cwd answers an
+        // empty diff instead of surfacing git's fatal stderr.
+        Err(err) if is_not_git_repository(&err) => return Ok(json!({ "files": [] })),
+        Err(err) => return Err(err),
+    };
     Ok(json!({ "files": parse_unified_diff(&text) }))
 }
 
@@ -353,6 +362,11 @@ async fn git_ui_diff_common(query: GitUiDiffQuery, compare: bool) -> Response {
     .await
     {
         Ok(Ok(text)) => Json(json!({ "files": parse_unified_diff(&text) })).into_response(),
+        // The drawer requests a diff right after a status that said
+        // not_git_repository (open() on a non-git folder). An error status
+        // here would log a console 400 for a state the client already
+        // knows about; answer the empty diff instead.
+        Ok(Err(err)) if is_not_git_repository(&err) => Json(json!({ "files": [] })).into_response(),
         Ok(Err(err)) => git_json_error(StatusCode::BAD_GATEWAY, err),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }

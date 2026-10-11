@@ -104,6 +104,11 @@
     // connectivity render skeleton placeholders instead of empty rows
     // (see shared/skeleton.js).
     booting: true,
+    // Sticky-off switch for the single-request bootstrap
+    // (/api/session-snapshot). False after the first failure, so later
+    // refreshes use the legacy multi-call path without re-paying the
+    // failed request.
+    snapshotBootstrap: true,
   };
 
   let refreshSeq = 0,
@@ -118,7 +123,6 @@
     mobileAttention,
     mobileSettings,
     mobileTerminal,
-    mobileTempTerminal,
     mobileFileBrowser,
     mobileWorktrees,
     mobileSearch,
@@ -891,6 +895,24 @@
       routeTab = state.tab,
       routePane = state.pane;
     try {
+      // Single-request bootstrap: /api/session-snapshot carries workspaces,
+      // tabs, panes, agents, and per-workspace worktree results in one round
+      // trip. Falls back to the legacy multi-call path below on any failure;
+      // the sticky flag stops retrying the snapshot after the first failure.
+      if (state.snapshotBootstrap) {
+        let snap = null;
+        try {
+          snap = await api("/api/session-snapshot");
+          if (seq !== refreshSeq) return;
+        } catch (e) {
+          state.snapshotBootstrap = false;
+          if (seq !== refreshSeq) return;
+        }
+        if (snap && applySessionSnapshot(snap)) {
+          await finishRefresh(seq, routeWs, routeTab, routePane);
+          return;
+        }
+      }
       const workspaces = await api("/api/workspaces");
       if (seq !== refreshSeq) return;
       state.workspaces = workspaces.result.workspaces || [];
@@ -919,57 +941,119 @@
         browserFaviconError = false;
         mobileAttention.handleSound();
         mobileWorktrees.applyResult(worktrees);
-        const selectedTab = state.tabs.find((tab) => sameScopedId(state.ws, tab.tab_id, state.tab));
-        if (!selectedTab) {
-          const focused = state.tabs.find((tab) => tab.focused);
-          state.tab = (focused || state.tabs[0] || {}).tab_id || null;
-        } else {
-          state.tab = selectedTab.tab_id;
-        }
-        const selectedPane = state.panes.find(
-          (pane) =>
-            sameScopedId(state.ws, pane.pane_id, state.pane) &&
-            sameScopedId(state.ws, pane.tab_id, state.tab),
-        );
-        if (!selectedPane) {
-          const pane =
-            state.panes.find(
-              (item) => sameScopedId(state.ws, item.tab_id, state.tab) && item.focused,
-            ) ||
-            state.panes.find((item) => sameScopedId(state.ws, item.tab_id, state.tab)) ||
-            null;
-          state.pane = pane && pane.pane_id;
-        } else {
-          state.pane = selectedPane.pane_id;
-        }
-        const pane = currentPane();
-        state.terminalId = pane && pane.terminal_id;
-        if (
-          routeWs &&
-          (routeWs !== state.ws ||
-            !sameScopedId(state.ws, routeTab, state.tab) ||
-            !sameScopedId(state.ws, routePane, state.pane))
-        ) {
-          mobileTerminal.destroy(true);
-        }
-        if (state.ws && state.tab && state.pane)
-          history.replaceState(
-            null,
-            "",
-            selectionPath(state.ws, state.tab, state.pane),
-          );
+        await finishRefresh(seq, routeWs, routeTab, routePane);
+        return;
       }
-      // Clear the boot flag BEFORE the final render so the first successful
-      // render paints real rows, not the boot skeletons.
-      state.booting = false;
-      render();
-      if (state.screen === "terminal") mobileTerminal.connect();
+      // No workspace: clear derived rows and render.
+      state.allTabs = [];
+      state.tabs = [];
+      state.panes = [];
+      state.agents = [];
+      state.terminalId = null;
+      await finishRefresh(seq, routeWs, routeTab, routePane);
     } catch (error) {
       browserFaviconError = true;
       state.booting = false;
       state.error = error.message || String(error);
       render();
     }
+  }
+
+  // Applies a /api/session-snapshot response for the mobile UI. Accepts both
+  // wrapper envelopes (flat result.* and result.snapshot.*). Returns true
+  // when a usable snapshot was applied.
+  function applySessionSnapshot(response) {
+    const result = (response && response.result) || {};
+    const snap = result.snapshot || result;
+    const workspaces = snap.workspaces;
+    if (!Array.isArray(workspaces)) return false;
+    state.workspaces = workspaces;
+    if (state.ws && !workspaces.some((workspace) => workspace.workspace_id === state.ws)) {
+      state.ws = null;
+      state.tab = null;
+      state.pane = null;
+    }
+    if (!state.ws && workspaces[0]) state.ws = workspaces[0].workspace_id;
+    if (!state.ws) {
+      state.allTabs = [];
+      state.tabs = [];
+      state.panes = [];
+      state.agents = [];
+      state.terminalId = null;
+      return true;
+    }
+    state.allTabs = snap.tabs || [];
+    state.tabs = state.allTabs.filter((tab) => tab.workspace_id === state.ws);
+    state.panes = (snap.panes || []).filter((pane) => pane.workspace_id === state.ws);
+    state.agents = snap.agents || [];
+    browserFaviconError = false;
+    mobileAttention.handleSound();
+    // Per-workspace worktree results: find the entry stamped for the current
+    // workspace; fall back to the first non-null entry so single-workspace
+    // sessions still show rows when the stamp is missing (older wrappers).
+    const entries = Array.isArray(result.worktree_results)
+      ? result.worktree_results
+      : [];
+    const mine =
+      entries.find(
+        (entry) =>
+          entry &&
+          (entry.result || {}).source &&
+          (entry.result.source || {}).source_workspace_id === state.ws,
+      ) || entries.find((entry) => entry && entry.result) || null;
+    mobileWorktrees.applyResult(mine);
+    return true;
+  }
+
+  // Selection fixups and render tail shared by the snapshot bootstrap and
+  // the legacy multi-call path in refresh(). Callers have populated
+  // state.{workspaces,tabs,panes,agents,worktrees}; this repairs tab/pane
+  // selection, updates the route, and renders.
+  async function finishRefresh(seq, routeWs, routeTab, routePane) {
+    const selectedTab = state.tabs.find((tab) => sameScopedId(state.ws, tab.tab_id, state.tab));
+    if (!selectedTab) {
+      const focused = state.tabs.find((tab) => tab.focused);
+      state.tab = (focused || state.tabs[0] || {}).tab_id || null;
+    } else {
+      state.tab = selectedTab.tab_id;
+    }
+    const selectedPane = state.panes.find(
+      (pane) =>
+        sameScopedId(state.ws, pane.pane_id, state.pane) &&
+        sameScopedId(state.ws, pane.tab_id, state.tab),
+    );
+    if (!selectedPane) {
+      const pane =
+        state.panes.find(
+          (item) => sameScopedId(state.ws, item.tab_id, state.tab) && item.focused,
+        ) ||
+        state.panes.find((item) => sameScopedId(state.ws, item.tab_id, state.tab)) ||
+        null;
+      state.pane = pane && pane.pane_id;
+    } else {
+      state.pane = selectedPane.pane_id;
+    }
+    const pane = currentPane();
+    state.terminalId = pane && pane.terminal_id;
+    if (
+      routeWs &&
+      (routeWs !== state.ws ||
+        !sameScopedId(state.ws, routeTab, state.tab) ||
+        !sameScopedId(state.ws, routePane, state.pane))
+    ) {
+      mobileTerminal.destroy(true);
+    }
+    if (state.ws && state.tab && state.pane)
+      history.replaceState(
+        null,
+        "",
+        selectionPath(state.ws, state.tab, state.pane),
+      );
+    // Clear the boot flag BEFORE the final render so the first successful
+    // render paints real rows, not the boot skeletons.
+    state.booting = false;
+    render();
+    if (state.screen === "terminal") mobileTerminal.connect();
   }
 
   function selectWorkspace(id) {
@@ -1011,6 +1095,13 @@
       await api(`/api/tabs/${encodeURIComponent(tab)}/close`, { method: "POST" });
       await refresh();
     } catch (error) {
+      // Same benign race as closeCurrentPanel: the tab may have closed
+      // elsewhere while the sheet was open, so not-found is the outcome
+      // we wanted. Refresh to show the truth; only real errors surface.
+      if (String(error.message || error).includes("not found")) {
+        await refresh();
+        return;
+      }
       state.error = error.message || String(error);
       render();
     }
@@ -1087,12 +1178,13 @@
     getMobileTerminal: () => mobileTerminal,
     browserFavicon,
     getBrowserFaviconError: () => browserFaviconError,
-    // Runs after the body class flip: push the fresh theme into every open
-    // terminal surface (main + temp sessions) so an already-open renderer
-    // recolors instead of keeping its inline creation-time vars.
+    // Runs after the body class flip: push the fresh theme into the open
+    // terminal so an already-open renderer recolors instead of keeping
+    // its creation-time inline vars. Temp sessions are gone (pane
+    // terminals own those surfaces now), so the main terminal is the
+    // only live surface to refresh.
     applyThemeToBody: () => {
       if (mobileTerminal && mobileTerminal.applyTheme) mobileTerminal.applyTheme();
-      if (mobileTempTerminal && mobileTempTerminal.applyTheme) mobileTempTerminal.applyTheme();
     },
   });
   mobileActions = globalThis.HerdrMobileActionsModule.create({
@@ -1112,7 +1204,6 @@
     getMobileTerminal: () => mobileTerminal,
     getMobileSearch: () => mobileSearch,
     getMobileWorktrees: () => mobileWorktrees,
-    getMobileTempTerminal: () => mobileTempTerminal,
     getMobileTheme: () => mobileTheme,
   });
   mobileBackend = globalThis.HerdrMobileBackendModule.create({
@@ -1150,54 +1241,6 @@
       if (loading) loading.hidden = !connecting;
     },
   });
-  mobileTempTerminal = globalThis.HerdrTempTerminal.create({
-    el,
-    state,
-    wsUrl,
-    api,
-    modalId: "tempTerminalModal",
-    onHerdrError: handleHerdrErrorFrame,
-    // Navigate from the HTTP response: the backend already focused the
-    // promoted workspace/tab/pane. selectAgent mirrors that surface and
-    // persists the selection like any other explicit navigation.
-    onPromoted: (workspace, tab, pane) => {
-      const wsId = workspace && workspace.workspace_id;
-      const tabId = tab && tab.tab_id;
-      const paneId = pane && pane.pane_id;
-      if (!wsId) return;
-      mobileActions.selectAgent(wsId, tabId || null, paneId || null);
-    },
-    fontFamilyFn: () => {
-      try {
-        const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
-        return globalThis.HerdrAppHelpers.resolveTerminalFontFamily(parsed.terminalFontFamily);
-      } catch (_) {
-        return globalThis.HerdrAppHelpers.resolveTerminalFontFamily("");
-      }
-    },
-    themeFn: () => {
-      const light = document.body.classList.contains("light");
-      const helpers = globalThis.HerdrAppHelpers || {};
-      const colors = helpers.terminalThemeColors ? helpers.terminalThemeColors() : {};
-      const theme = light ? (colors.light || {}) : (colors.dark || {});
-      // Merge the shared --term-* token palette so ANSI colors follow the
-      // CSS palette on mobile too (same helper the desktop uses).
-      const tokenPalette = helpers.readTerminalThemeTokens
-        ? helpers.readTerminalThemeTokens()
-        : null;
-      return {
-        background: theme.background || (light ? "#ffffff" : "#1e1e2e"),
-        foreground: theme.foreground || (light ? "#4c4f69" : "#cdd6f4"),
-        cursor: theme.cursor || (light ? "#4c4f69" : "#cdd6f4"),
-        selectionBackground: theme.selectionBackground || (light ? "#dce0f8" : "#45475a"),
-        ...(tokenPalette || {}),
-      };
-    },
-    defaultFolderFn: () => state.defaultFolder || "",
-    workspaceIdFn: () => state.ws || (state.workspaces && state.workspaces.length === 1 ? state.workspaces[0].workspace_id : "") || "",
-    inputGateFactory: createTerminalInputGate,
-  });
-  window.addEventListener("resize", () => mobileTempTerminal.handleResize());
   mobileSettings = globalThis.HerdrMobileSettings.create({
     api,
     applyTheme,
@@ -1301,7 +1344,6 @@
     wsUrl,
     refresh,
     handleServerSettingsChanged,
-    getTempTerminal: () => mobileTempTerminal,
   });
   // Connection dot in the header context: reflects the events stream state.
   mobileEvents.onEventState((connected) => {
@@ -1601,8 +1643,8 @@
     rowActions: mobileFileBrowser.rowActions,
   };
 
-  // Shared helpers for the temporary Files/Git overlays (mobile/temp-overlays.js
-  // loads before this file, so it reads them through these globals).
+  // Shared helpers for directory picker markup and overlay-free navigation
+  // (modules that load before this file read them through these globals).
   globalThis.HerdrMobileApi = api;
   globalThis.HerdrMobileConfirm = (...args) => mobileConfirm(...args);
   globalThis.HerdrMobileJsArg = jsArg;
@@ -1627,8 +1669,6 @@
     confirm: (...args) => mobileConfirm(...args),
     currentWorkspaceCwd,
   };
-  if (globalThis.HerdrMobileTempOverlays && globalThis.HerdrMobileTempOverlays.bindAppHelpers)
-    globalThis.HerdrMobileTempOverlays.bindAppHelpers();
 
   renderShell();
   updateMobileViewport();

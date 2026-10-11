@@ -53,6 +53,38 @@
   `src/jcode_transcript.rs`: resolution, payload shaping and parsing
   are fully unit-tested over synthetic stores (chat_lens 99.7% line
   coverage, 100% regions/functions; jcode_transcript 98.2%).
+- The legacy events-socket polling snapshot is removed. The 5s
+  `agent.list`/`workspace.list` poll that external Herdr sessions fell
+  back to is gone together with `legacy_polling.js`, the browser
+  `snapshot` frame handler, and the dead `supportsSessionSnapshot` state
+  flag; both backends now refresh purely from their `events.subscribe`
+  stream (the builtin hub for built-in sessions, the backend subscription
+  with reconnect backoff for external ones). No pre-protocol-16 backend
+  can connect to this build (minimum supported protocol is 22), so the
+  fallback's original audience no longer exists. The no-sleep auto loop
+  keeps its own agent polling, so power behavior is unchanged.
+- Every refresh is a single request now. `/api/session-snapshot`
+  returns the backend snapshot plus the WebUI-only bootstrap fields
+  (`workspace_order`, per-workspace `worktree_results` stamped with
+  `source_workspace_id`, and workspace cwd enrichment from the
+  snapshot's own panes) as siblings of the backend envelope, and both
+  desktop and mobile prefer it: one call replaces the legacy
+  workspaces, tabs, panes, agents, worktrees, and workspace-order round
+  trips, and the snapshot's layouts seed the pane-layout cache so the
+  cold-cache per-pane sizing call also disappears. A failed snapshot
+  request falls through to the legacy path and disables the bootstrap
+  for the session (sticky fallback); a snapshot with an unexpected
+  shape falls back once without disabling it. Failed per-workspace
+  worktree requests become null entries, the same tolerance the
+  legacy per-workspace catch had.
+- The desktop file browser folder context menu gains `Open workspace
+  here`. Right-clicking a folder resolves it to an absolute path, asks
+  `/api/worktrees?cwd=` whether that exact folder is a git checkout, and
+  opens it the right way: a matching checkout goes through `worktree.open`
+  (which focuses an already-open workspace instead of duplicating it),
+  while plain folders and subfolders inside a repo become a workspace via
+  `/api/workspaces` and land in recents. The opened or focused workspace
+  is selected with its first tab and root pane.
 
 ## 0.4.59 Release Notes
 - The panel selector menu is reachable again on short viewports: the
@@ -1243,7 +1275,9 @@
 ### Workspace shell and file explorer UX
 
 - Restores the valuable PR #90 workspace shell improvements on top of the wterm code path: Terminal, Git, and Files shell modes are remembered per workspace/worktree, with minimize/restore state scoped to that workspace.
-- Adds focused editor find routing: `Cmd/Ctrl+F` opens the active file editor find/replace when focus is inside a file editor, opens global WebUI search elsewhere, and leaves terminal `Ctrl+F` as terminal input.
+- Adds focused editor find routing: `Cmd/Ctrl+F` opens the active file editor find/replace when focus is inside a file editor, opens the right rail search panel with the cursor in its input elsewhere, and leaves terminal `Ctrl+F` as terminal input.
+- Fixes a mobile Files race where opening a file from search results could land back on the folder tree: superseded tree/file responses are dropped and the lazy tree load no longer fires under an open preview.
+- Shows an inline searching row (spinner included, reduced-motion safe) in content search results on every surface hosting the shared renderer, mid-search and above stale results while a refined query runs.
 - Shares file tree styling across desktop file browser and directory picker, keeps search result opens additive as file tabs, and avoids Git branch lookup for non-Git browse folders.
 
 ### Git in-diff editing in both layouts

@@ -75,7 +75,7 @@ async function main() {
 
   // Open the Git drawer and switch to the Log tab via the real API.
   const opened = await evalExpr(`new Promise((resolve) => {
-    const btn = document.getElementById("gitWorkspaceToggle");
+    const btn = document.getElementById("rightRailGit");
     if (!btn) { resolve("no toggle"); return; }
     btn.click();
     const started = Date.now();

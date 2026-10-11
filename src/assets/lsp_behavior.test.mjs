@@ -392,8 +392,13 @@ describe("file browser LSP integration", () => {
     match(FILE_BROWSER_SOURCE, /herdr-lsp-diagnostic/);
   });
 
-  it("shows a diagnostics badge in the toolbar", () => {
-    match(FILE_BROWSER_SOURCE, /lspDiagnosticBadge\(file\.path\)/);
+  it("renders diagnostics inline in the editor mount", () => {
+    // Phase 3b: the toolbar badge died with the file-browser toolbar;
+    // diagnostics render inline under the pane editor mount instead.
+    match(FILE_BROWSER_SOURCE, /function lspRenderDiagnostics\(path\)/);
+    match(FILE_BROWSER_SOURCE, /function renderDiagnosticsInline\(mount, diagnostics\)/);
+    match(FILE_BROWSER_SOURCE, /herdr-lsp-diagnostics/);
+    ok(!FILE_BROWSER_SOURCE.includes("lspDiagnosticBadge"), "the toolbar badge died with the toolbar");
   });
 
   it("exposes refreshLsp on the file browser API", () => {

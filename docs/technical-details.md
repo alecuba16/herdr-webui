@@ -36,10 +36,10 @@ Disabled backends are never silently rerouted to. A request or WebSocket that ta
 - Built-in terminal attach uses `src/protocol.rs` frames over a separate local socket. The protocol supports attach, ANSI output, input, paste, resize, detach, and server shutdown frames.
 - The browser adapter in `src/main.rs` chooses sockets from the effective backend target. Without an explicit target it follows `backend_mode`; with `x-herdr-backend` or `backend=` query data it routes that request to the selected built-in or external Herdr session. Built-in mode must not accidentally route `/ws/events` or `/ws/terminal` to external Herdr session sockets, and external Herdr selections must still work from a WebUI process whose default is built-in.
 - Built-in sessions are stored in a small handle registry keyed by session name. The registry keeps each in-process built-in backend alive while it is running and allows the browser WebUI and TUI/smoke clients to attach in parallel. Closing a built-in session removes its handle; the handle drop unblocks socket listeners and cleans sockets.
-- Built-in sessions do not seed a default workspace during `BuiltinState::new`. A fresh backend socket returns an empty `session.snapshot`; UI surfaces must handle zero workspaces and use `default_folder` for Files, Git, temporary terminals, and workspace/worktree pickers until the user explicitly opens or creates a workspace. Client-side default-folder resolution prefers the browser `explorationDefaultDirectory` option over the server `default_folder` setting; the desktop app bundle exports `defaultFolderPath()` on `window` so the separately served directory picker and Git UI resolve the same value.
+- Built-in sessions do not seed a default workspace during `BuiltinState::new`. A fresh backend socket returns an empty `session.snapshot`; UI surfaces must handle zero workspaces and use `default_folder` for Files, Git, and workspace/worktree pickers until the user explicitly opens or creates a workspace. Client-side default-folder resolution prefers the browser `explorationDefaultDirectory` option over the server `default_folder` setting; the desktop app bundle exports `defaultFolderPath()` on `window` so the separately served directory picker and Git UI resolve the same value.
 - `pane.read` returns terminal text after common TUI rewrites: carriage return, clear-line/display, cursor movement, OSC title skipping, and ANSI/control stripping. This keeps cleared Jcode toolbars/status cards from becoming stale plain text.
 - Agent detection first inspects known argv labels, then scans terminal child process trees with a short process-table cache, then falls back to terminal-screen markers. The screen fallback mirrors Herdr screen-manifest rules for visible `blocked`, `working`, and `idle` states in Amp, Antigravity, Claude, Claurst, Cline, Codex, Cursor, Devin, Droid, Gemini, GitHub Copilot, Grok, Hermes, Jcode, Kilo, Kimi, Kiro, Maki, OpenCode, Pi, Qoder CLI, and Qwen. Jcode status follows the Herdr `jcode-support` manifest bottom-line rules plus active background-task markers so running tasks remain `working` even when an input prompt is visible. Jcode detection supports two variants through `src/builtin_detection/jcode.rs`: vanilla jcode and the alecuba16 fork, each with their own idle/working/blocked screen-text patterns. The built-in backend also captures jcode OSC 9 payloads (`jcode:working`, `jcode:blocked`, `jcode:idle`) as a structured side-channel that takes precedence over screen-scrape. Fresh payloads (within 30s) override screen detection; stale payloads fall back to screen-scrape so a crashed or non-emitting agent does not freeze. The payload prefix identifies the agent even through wrapper scripts that hide the binary name. On terminal exit the tracker is reset and a final `done` status is published so stale screen-scrape patterns in the scrollback do not keep the pane stuck in `working` or `idle`.
-- Built-in `events.subscribe` stays open through an in-process event hub. Workspace, tab, pane, worktree, and agent status mutations publish Herdr-shaped JSON events to subscribers. The WebUI bridge uses those events for built-in sessions instead of its legacy 5s snapshot polling branch; external Herdr sessions keep the existing compatibility behavior. When the backend subscription itself fails (external daemon down, backend restarting), the `/ws/events` socket stays open and retries the subscription with backoff instead of closing, so server-level frames (`server_settings_changed`, LSP diagnostics) keep flowing to connected tabs.
+- Both backends refresh through `events.subscribe`. Built-in sessions publish Herdr-shaped JSON events through an in-process event hub (workspace, tab, pane, worktree, and agent status mutations); external Herdr sessions use their backend subscription stream. The legacy 5s snapshot polling branch is deleted. When the backend subscription itself fails (external daemon down, backend restarting), the `/ws/events` socket stays open and retries the subscription with backoff instead of closing, so server-level frames (`server_settings_changed`, LSP diagnostics) keep flowing to connected tabs.
 - Status detection stays backend-core owned, not WebSocket-owned. PTY/process/status detectors publish internal state-change events, then WebSocket, TUI, and smoke clients consume through backend/client APIs. This keeps TUI/headless clients first-class and keeps status tests independent from browser transport.
 - browser terminal query replies are treated as frontend input sanitation, not backend color logic. Native terminals consume OSC 10/11 color query responses internally, but browser terminal renderers can expose those responses through `onData`. WebUI filters those replies before they reach the terminal WebSocket so they cannot be written into the PTY as shell input.
 - Unsafe destructive operations stay explicit. `worktree.remove` returns unsupported until validation, preview, and rollback rules are implemented.
@@ -97,7 +97,6 @@ The Rust binary embeds assets with `include_str!` or `include_bytes!`. Public ro
 - `/assets/vendor/ghostty-vt.wasm`
 - `/assets/shared/terminal-fit.js`
 - `/assets/shared/terminal-adapter.js`
-- `/assets/shared/temp-terminal.js`
 - `/assets/shared/terminal-scroll.js`, compatibility shim only for cached older boot scripts
 - desktop assets under `/assets/desktop/...`
 - mobile assets under `/assets/mobile/...`
@@ -143,10 +142,6 @@ When a workspace or worktree closes, the cached state is forgotten. Async file f
 ### Folder picker UX
 
 Desktop file browser and the folder picker both use the shared `file-tree.js` current-directory row for the active folder and its `↑ Up` control. This avoids a separate `dir up` tree row that looked like content and behaved inconsistently. The visible picker actions intentionally expose Home and Select only; absolute paths are still supported when typed/pasted, but the UI does not encourage jumping to `/` over the configured default folder.
-
-### Temporary terminal input
-
-The temporary terminal overlay is implemented in `src/assets/shared/temp_terminal.js` for desktop and mobile. While open, the terminal renderer keeps ownership of focused terminal key events so shell completions, prompts, and line rewrites use the same terminal parser path as normal terminals. If focus escapes the terminal surface, the overlay captures normal key input, Tab, Backspace, arrows, and paging keys before browser focus navigation can steal them, then forwards the terminal byte sequence to the temporary terminal websocket. The overlay clamps the modal, terminal body, and terminal surface to the viewport and sizes PTY rows with a one-row safety margin so output does not grow below the visible area. `Ctrl+G` opens the detach confirmation, matching the header hint next to the close button and the Help & Shortcuts modal.
 
 ### Unified header search
 
@@ -322,11 +317,10 @@ Browser-local settings are stored in `localStorage` under `herdr-web-options` an
 | `fileContentSearchMinChars` | `3` | Minimum characters before content search runs, clamped 1 to 20. |
 | `fileContentSearchPageSize` | `50` | Content-search file groups loaded per page, clamped 10 to 500. |
 | `fileContentSearchContextLines` | `2` | Default lines above/below each content-search match, clamped 0 to 20. |
-| `fileContentSearchAutoCollapseFiles` | `8` | Collapse result file groups when file count exceeds this value. 0 disables auto-collapse. |
+| `fileContentSearchAutoCollapseFiles` | `0` | Collapse result file groups when file count exceeds this value. 0 disables auto-collapse. |
 | `fileContentSearchMatchesPerFile` | `5` | Initial matches loaded per file before lazy expansion, clamped 1 to 50. |
 | `fileContentSearchMatchCase` | `false` | Backend content search uses case-sensitive matching when enabled. |
 | `fileContentSearchRegex` | `false` | Backend content search treats the query as a Rust regex when enabled; invalid regex returns 400. |
-| `showTabActivity` | `false` | Show tab activity age. |
 | `worktreeAutoDiscoverSeconds` | `3` | Discovery interval, clamped 0 to 30. |
 | `generateWorktreeNames` | `false` | Auto-generate worktree names. |
 | `worktreeDefaultDirectory` | empty | Default worktree parent dir. |
@@ -341,7 +335,7 @@ Runtime server settings include:
 | `builtin_backend_enabled` | `true` | Enables built-in session discovery/routing/creation. When false, built-in sessions are hidden and requests fall back to an enabled backend. |
 | `external_herdr_backend_enabled` | `true` | Enables passive external Herdr socket discovery plus explicit external launch/close actions. Discovery does not execute `herdr`. |
 | `builtin_shell` | empty | Optional shell/command path for new built-in panes. |
-| `default_folder` | home folder | Default folder for Files, Git, and temporary terminals when no workspace/worktree is selected. The backend verifies read access on load/change, asks macOS for folder permission when needed, and falls back to home if access is unavailable. |
+| `default_folder` | home folder | Default folder for Files and Git when no workspace/worktree is selected. The backend verifies read access on load/change, asks macOS for folder permission when needed, and falls back to home if access is unavailable. |
 
 Disabling a backend mid-session is safe for tabs that already target it: the settings save broadcasts `server_settings_changed` (with `enabled_backends` and `default_backend`) to every connected events socket, and browser tabs retarget to the server's default backend (then built-in, then whichever remains enabled) instead of silently rerouting. Explicit requests for the disabled backend keep failing with a clear error until it is re-enabled.
 
@@ -381,7 +375,7 @@ This split keeps expensive or repository-sensitive work in Rust and keeps browse
 - CodeMirror is lazy-loaded once and reused for preview, edit, and Git hunk editing. A numbered HTML fallback exists only for load failure.
 - Desktop terminal output is coalesced once per animation frame before terminal renderer writes. Attach frames have suppression logic so large initial frames do not reveal partial output.
 - Large paste input bypasses terminal renderer synchronous `paste()` and uses bounded WebSocket chunks with backpressure.
-- Browser terminals use `src/assets/shared/terminal_adapter.js` as the renderer boundary over the checked-in wterm bundle. The adapter exposes `write`, `resize`, `focus`, `destroy`, `cellSize`, `rowHeight`, `scrollLines`, `scrollToBottom`, `atBottom`, link toggling, theme variables, font variables, and normal/alternate-screen detection to desktop, mobile, and temporary terminal controllers.
+- Browser terminals use `src/assets/shared/terminal_adapter.js` as the renderer boundary over the checked-in wterm bundle. The adapter exposes `write`, `resize`, `focus`, `destroy`, `cellSize`, `rowHeight`, `scrollLines`, `scrollToBottom`, `atBottom`, link toggling, theme variables, font variables, and normal/alternate-screen detection to desktop and mobile controllers.
 - `src/assets/shared/terminal_fit.js` owns visible-box measurement and grid sizing. Terminal containers keep `overflow-x: hidden` and `overflow-y: auto` so the renderer can use the full modal/tab viewport while still allowing local scrollback.
 - Git diff views use lazy file loading, context expansion, placeholders, and omitted-line guards for very large diffs.
 
@@ -456,7 +450,7 @@ Current shared tokens cover:
 The in-app Help and Shortcuts modal documents user-facing behavior, including:
 
 - terminal shortcuts,
-- renderer choice, wterm/Ghostty behavior, terminal links, mouse reporting, paste chunking, Tail, and temporary terminal shortcuts,
+- renderer choice, wterm/Ghostty behavior, terminal links, mouse reporting, paste chunking, and Tail,
 - unified header search, file/folder/content search, Git color priority, icons, read-only preview, line numbers, folding, and workspace state preservation,
 - Git UI actions and diff modes,
 - command palette behavior.

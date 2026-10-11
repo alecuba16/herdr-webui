@@ -49,6 +49,7 @@ function element(id = "") {
     appendChild() {},
     replaceWith() {},
     remove() {},
+    children: [],
     focus() {
       this.focused = true;
     },
@@ -175,7 +176,9 @@ describe("app bundle load", () => {
     const desktopAppSource = [
       "./desktop/app_js/core.js",
       "./desktop/app_js/workspace_shell.js",
-      "./desktop/app_js/panel_switcher.js",
+      "./desktop/app_js/right_sidebar.js",
+      "./desktop/app_js/search_panel.js",
+      "./desktop/app_js/workspace_panes.js",
       "./desktop/app_js/render.js",
       "./desktop/app_js/terminal.js",
       "./desktop/app_js/worktrees.js",
@@ -219,10 +222,12 @@ describe("app bundle load", () => {
     match(source, /function searchActionCandidates\(query\)/);
     match(source, /HerdrActionRegistry\.candidates/);
     match(source, /Open workspace or worktree/);
-    match(source, /Temporary terminal/);
+    ok(!source.includes("Temporary terminal"), "temp terminal action deleted with the overlay machinery");
     match(source, /runSearchAction\(result\.action\)/);
     match(source, /window\.syncShellModeButtons = syncShellModeButtons;/);
-    match(source, /function showTerminalShellMode\([^)]*\) \{[\s\S]*?rememberWorkspaceShellMode\("terminal", state\.ws, \{ minimized: false \}\);[\s\S]*?syncShellModeButtons\(\);[\s\S]*?if \(typeof render === "function"\) render\(\);[\s\S]*?requestAnimationFrame\(\(\) => \{[\s\S]*?syncShellModeButtons\(\);/);
+    match(source, /function setupRightSidebarRail\(\) \{[\s\S]*?rightSidebarRail/);
+    match(source, /function showTerminalShellMode\([^)]*\) \{[\s\S]*?rememberWorkspaceShellMode\("terminal", state\.ws\);[\s\S]*?if \(typeof render === "function"\) render\(\);/);
+    ok(!source.includes("shellModeGroup"), "header shell-mode group is gone; the right rail owns view switching");
   });
 
   it("exposes server-persisted recent workspaces in the actions palette", async () => {
@@ -643,7 +648,7 @@ describe("app bundle load", () => {
     const actionNames = (query) => Array.from(ctx.searchActionCandidates(query), (action) => action.action);
     deepEqual(
       actionNames(""),
-      ["open-workspace", "temp-terminal", "temp-files", "temp-git", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
+      ["open-workspace", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
     );
     deepEqual(
       actionNames("session"),
@@ -655,7 +660,7 @@ describe("app bundle load", () => {
     );
     deepEqual(
       actionNames(">"),
-      ["open-workspace", "temp-terminal", "temp-files", "temp-git", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
+      ["open-workspace", "sessions", "toggle-sidebar", "toggle-theme", "settings"],
     );
     deepEqual(
       actionNames(">theme"),
@@ -677,7 +682,6 @@ describe("app bundle load", () => {
     ok(!dashboard.includes("runSearchAction('temp-terminal')"));
     ok(!dashboard.includes("runSearchAction('sessions')"));
     match(source, /if \(action === "open-workspace" \|\| action === "discover-worktrees"\) openWorktreeOpenModal\(selectedWorkspaceRepoPath\(\), true\);/);
-    match(source, /else if \(action === "temp-terminal" && tempTerminal\) \{[\s\S]*?tempTerminal\.open\(folder\);/);
     match(source, /else if \(action === "sessions"\) showSessionManager\(\);/);
     match(source, /else if \(action === "files"\) openWorkspaceFileBrowser\(state\.ws\);/);
     match(source, /else if \(action === "git"\) openWorkspaceGitUi\(state\.ws\);/);
@@ -698,6 +702,8 @@ describe("app bundle load", () => {
     ctx.setupSessionChrome();
     const button = ctx.document.getElementById("headerActionsButton");
     equal(button.title, "Search and actions (Ctrl+B then /)");
+    match(source, /footer\.insertBefore\(head, footer\.firstChild\)/);
+    match(source, /\(head \|\| footer\)\.appendChild\(actions\)/);
     button.onclick();
     equal(ctx.document.getElementById("searchPalette").style.display, "grid");
   });
@@ -706,8 +712,7 @@ describe("app bundle load", () => {
     const ctx = context();
     ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
       globalShortcutPrefix: "Ctrl+Q",
-      webuiShortcuts: { help: "Shift+Slash", settings: "KeyS", newWorkspace: "KeyN", sidebar: "KeyB", newPanel: "KeyP", closePanel: "KeyX", closeWorkspace: "Shift+KeyX", removeWorktree: "Delete" },
-      panelCloseMode: "always"
+      webuiShortcuts: { help: "Shift+Slash", settings: "KeyS", newWorkspace: "KeyN", sidebar: "KeyB", newPanel: "KeyP", closePanel: "KeyX", closeWorkspace: "Shift+KeyX", removeWorktree: "Delete" }
     }));
     vm.runInContext(source, ctx);
     ctx.applyOptions();
@@ -716,63 +721,23 @@ describe("app bundle load", () => {
     equal(ctx.document.getElementById("settingsToggle").title, "Settings (Ctrl+Q then S)");
     equal(ctx.document.getElementById("headerActionsButton").title, "Search and actions (Ctrl+Q then /)");
     equal(ctx.document.getElementById("sidebarToggle").title, "Hide sidebar (Ctrl+Q then B)");
-    // Temp terminal modal is created dynamically; tooltip is set via syncShortcutTooltips.
-    ok(source.includes('temp-terminal-backdrop'));
-    ok(source.includes('Minimize temporary terminal'));
 
-    vm.runInContext(`
-      state.ws = "w1";
-      state.tab = "t1";
-      state.tabs = [{ workspace_id: "w1", tab_id: "t1", label: "Shell" }];
-    `, ctx);
-    ok(ctx.renderPanelField().includes('title="New panel (Ctrl+Q then P)"'));
-    ok(ctx.renderPanelField().includes('title="Close current panel (Ctrl+Q then X)"'));
+    // Phase 5: the workspace-row panel field is gone (the pane strip owns
+    // panels), so the new-panel tooltip pins on the strip control instead.
+    ok(source.includes('title="${escapeAttr(titleWithWebuiShortcut("New panel", "newPanel"))}" aria-label="New panel"'));
 
     const actions = ctx.selectedWorkspaceActionButtons({ workspace_id: "w1", worktree: { checkout_path: "/tmp/wt", is_linked_worktree: true } });
     ok(actions.includes('Ctrl+Q then Shift+X'));
     ok(actions.includes('Ctrl+Q then Delete'));
   });
 
-  it("hides panel close button in smart mode when only one panel", () => {
-    const ctx = context();
-    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
-      globalShortcutPrefix: "Ctrl+Q",
-      webuiShortcuts: { help: "Shift+Slash", settings: "KeyS", newWorkspace: "KeyN", sidebar: "KeyB", newPanel: "KeyP", closePanel: "KeyX", closeWorkspace: "Shift+KeyX", removeWorktree: "Delete" },
-      panelCloseMode: "smart"
-    }));
-    vm.runInContext(source, ctx);
-    ctx.applyOptions();
-
-    vm.runInContext(`
-      state.ws = "w1";
-      state.tab = "t1";
-      state.tabs = [{ workspace_id: "w1", tab_id: "t1", label: "Shell" }];
-    `, ctx);
-    const html = ctx.renderPanelField();
-    ok(!html.includes('class="mini warn panel-close"'), "close button should be hidden with single panel in smart mode");
-  });
-
-  it("shows panel close button in smart mode when multiple panels", () => {
-    const ctx = context();
-    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({
-      globalShortcutPrefix: "Ctrl+Q",
-      webuiShortcuts: { help: "Shift+Slash", settings: "KeyS", newWorkspace: "KeyN", sidebar: "KeyB", newPanel: "KeyP", closePanel: "KeyX", closeWorkspace: "Shift+KeyX", removeWorktree: "Delete" },
-      panelCloseMode: "smart"
-    }));
-    vm.runInContext(source, ctx);
-    ctx.applyOptions();
-
-    vm.runInContext(`
-      state.ws = "w1";
-      state.tab = "t1";
-      state.tabs = [
-        { workspace_id: "w1", tab_id: "t1", label: "Shell" },
-        { workspace_id: "w1", tab_id: "t2", label: "Git" }
-      ];
-    `, ctx);
-    const html = ctx.renderPanelField();
-    ok(html.includes('class="mini warn panel-close"'), "close button should be visible with multiple panels in smart mode");
-    ok(html.includes('title="Close current panel (Ctrl+Q then X)"'), "close button should have shortcut tooltip");
+  it("workspace rows no longer render a panel field (Phase 5)", () => {
+    // The pane strip owns panel switching; the row keeps only the meta line.
+    ok(!source.includes("function renderPanelField"), "panel field is deleted");
+    ok(!source.includes("panel-field"), "no panel-field markup anywhere");
+    ok(!source.includes("syncWorkspacePanelMenuSize"), "menu size sync is deleted");
+    ok(!source.includes("panelMenuOpen"), "panel menu state is deleted");
+    match(source, /<div class="muted space-meta-line">\$\{meta\}<\/div>/);
   });
 
   it("adds configured shortcut labels to Git tooltips", () => {
@@ -821,6 +786,50 @@ describe("app bundle load", () => {
     ctx.syncProjectDashboard();
     equal(dashboard.hidden, false);
     equal(shell.hidden, true);
+  });
+
+  it("keeps the zero-tab workspace card up with a drawer open", () => {
+    // The Files/Git/Search drawers host in the right sidebar column, so
+    // they must not blank the center: the empty-leaf card stays mounted
+    // and the terminal shell stays hidden. The live bug: opening Files on
+    // a zero-tab workspace hid the card and stranded a dead Connecting
+    // shell in the pane slot, and closing the drawer never healed it.
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
+    const shell = ctx.document.getElementById("terminalShell");
+    vm.runInContext(
+      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
+      ctx,
+    );
+
+    ctx.window.HerdrFileBrowser = { isVisible: () => true };
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, false, "card stays up with the file drawer open");
+    equal(shell.hidden, true, "shell stays hidden with the file drawer open");
+
+    ctx.window.HerdrGitUi = { isVisible: () => true };
+    ctx.window.HerdrFileBrowser = { isVisible: () => false };
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, false, "card stays up with the git drawer open");
+    equal(shell.hidden, true, "shell stays hidden with the git drawer open");
+
+    ctx.window.HerdrGitUi = { isVisible: () => false };
+    ctx.window.HerdrSearchPanel = { isOpen: () => true };
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, false, "card stays up with the search drawer open");
+    equal(shell.hidden, true, "shell stays hidden with the search drawer open");
+
+    ctx.window.HerdrSearchPanel = { isOpen: () => false };
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, false, "card stays up with no drawer open");
+    equal(shell.hidden, true, "shell stays hidden with no drawer open");
+
+    // A terminal tab landing kills the card and frees the shell again.
+    vm.runInContext(`state.tab = "tab_1";`, ctx);
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, true, "card hides once a terminal tab exists");
+    equal(shell.hidden, false, "shell frees up once a terminal tab exists");
   });
 
   it("keeps file history header scoped to selected files", () => {
@@ -875,6 +884,10 @@ describe("app bundle load", () => {
     match(desktopTerminalSource, /refreshTerminalAfterFontLoad\(target\)/);
     match(source, /theme: terminalTheme\(\)/);
     match(source, /term && term\.setTheme/);
+    // Theme switches fan out beyond the primary shell: split-pane aux
+    // surfaces must recolor too, same contract as the old temp modal.
+    match(source, /HerdrPaneTerminals && typeof window\.HerdrPaneTerminals\.applyThemeAll/);
+    match(source, /window\.HerdrPaneTerminals\.applyThemeAll\(\)/);
   });
 
   it("keeps desktop terminal scrolling delegated to wterm adapter", () => {
@@ -990,11 +1003,10 @@ describe("app bundle load", () => {
     match(html, /Functionality map/);
     match(html, /Keyboard shortcuts/);
     match(html, /Workspaces show open roots\/worktrees; agents list status/);
-    match(html, /Desktop, mobile, and temporary terminals use the shared renderer adapter/);
+    match(html, /Desktop and mobile terminals use the shared renderer adapter/);
     match(html, /switches between the default Ghostty core and the lightweight wterm core/);
     match(html, /external Herdr sessions try backend scroll first, built-in sessions use local renderer scrollback/);
     match(html, /Links are enabled by default, mouse reporting is opt-in, paste uses bounded WebSocket chunks/);
-    match(html, /Temporary terminal captures Tab\/Backspace\/navigation keys and normal input while open/);
     match(html, /file rows use license-safe type glyphs while folders stay plain except for Git status colors/);
     match(html, /Header search .* is the single search entry point for workspaces\/worktrees, file names, folder names, and file contents/);
     match(html, /File\/folder and content search run in the backend for the focused workspace\/worktree, lazy-load pages, preserve parent folders for path context/);
@@ -1026,17 +1038,10 @@ describe("app bundle load", () => {
     match(html, /Alt\+F selects files, Alt\+D selects folders, Alt\+1\/2\/3 toggles sections, and Alt\+↑\/↓ expands content context/);
     match(html, /Alt\+F\/Alt\+D inside the palette to switch file or folder search, Alt\+1\/2\/3 to collapse or expand search sections, and Alt\+↑\/↓ to expand selected content-match context/);
     match(source, /DEFAULT_WEBUI_SHORTCUTS/);
-    match(source, /tempTerminalToggle: "Shift\+KeyM"/);
-    match(source, /Open\/minimize\/restore temporary terminal/);
-    match(source, /Open, minimize to the restore pill, or restore the same live temporary terminal/);
-    match(source, /Wheel\/trackpad\/touch drag/);
-    match(source, /Tab \/ Backspace \/ navigation keys/);
     match(source, /Paste clipboard text into terminal through bounded WebSocket chunks/);
     const featuresDocs = readFileSync(new URL("../../docs/features.md", import.meta.url), "utf8");
     match(featuresDocs, /Settings → Terminal → Renderer can switch between the default Ghostty core and the wterm core/);
-    match(featuresDocs, /\| Prefix then `Shift\+M` \| Desktop WebUI \| Opens the temporary terminal, minimizes it to the restore pill, or restores the same live temporary terminal/);
     match(featuresDocs, /\| `PageUp` \/ `PageDown` \| Main terminal \| Scrolls terminal output by one visible terminal page/);
-    match(featuresDocs, /\| `Tab`, `Backspace`, navigation keys \| Temporary terminal overlay \| Captured before browser focus movement and sent to the PTY/);
     match(source, /removeWorktreeAlt: "Backspace"/);
     match(source, /removeWorktreeAlt: \(\) =>/);
     match(source, /DEFAULT_GIT_SHORTCUTS/);
@@ -1046,75 +1051,10 @@ describe("app bundle load", () => {
     match(source, /optFileContentSearchDefaultExpanded/);
   });
 
-  it("uses the WebUI prefix shortcut to manage temporary terminals", () => {
+  it("opens the right rail search panel with Cmd/Ctrl+F without stealing editor or terminal Ctrl+F", async () => {
     const ctx = context();
     vm.runInContext(source, ctx);
-    // Set up mock tempTerminal first, then override querySelectorAll to report visible backdrop.
-    vm.runInContext(`
-      tempTerminal = {
-        _visible: false,
-        _minimized: 0,
-        _opened: 0,
-        isVisible() { return this._visible; },
-        minimize() { this._minimized += 1; this._visible = false; },
-        open(folder) { this._opened += 1; this._visible = true; },
-      };
-      const _origQSA = document.querySelectorAll.bind(document);
-      document.querySelectorAll = function(sel) {
-        if (sel === ".temp-terminal-backdrop" && tempTerminal && tempTerminal.isVisible && tempTerminal.isVisible())
-          return [{ style: { display: "grid" }, querySelector: () => null }];
-        return _origQSA ? _origQSA(sel) : [];
-      };
-    `, ctx);
-
-    const key = (code, key, extra = {}) => ({
-      code,
-      key,
-      altKey: false,
-      ctrlKey: false,
-      metaKey: false,
-      shiftKey: false,
-      defaultPrevented: false,
-      propagationStopped: false,
-      immediateStopped: false,
-      target: ctx.document.body,
-      preventDefault() { this.defaultPrevented = true; },
-      stopPropagation() { this.propagationStopped = true; },
-      stopImmediatePropagation() { this.immediateStopped = true; },
-      ...extra,
-    });
-
-    let prefix = key("KeyB", "b", { ctrlKey: true });
-    ctx.handleGlobalShortcut(prefix);
-    equal(prefix.defaultPrevented, true);
-    // First Shift+M with no visible terminal: opens a new one.
-    let shortcut = key("KeyM", "M", { shiftKey: true });
-    ctx.handleGlobalShortcut(shortcut);
-    equal(shortcut.defaultPrevented, true);
-    equal(vm.runInContext("tempTerminal._minimized", ctx), 0);
-    equal(vm.runInContext("tempTerminal._opened", ctx), 1);
-
-    // Second Shift+M with visible terminal (open() set _visible=true): minimizes it.
-    prefix = key("KeyB", "b", { ctrlKey: true });
-    ctx.handleGlobalShortcut(prefix);
-    shortcut = key("KeyM", "M", { shiftKey: true });
-    ctx.handleGlobalShortcut(shortcut);
-    equal(vm.runInContext("tempTerminal._minimized", ctx), 1);
-    equal(vm.runInContext("tempTerminal._opened", ctx), 1);
-
-    // When visible, prefix shortcut should block settings from opening.
-    vm.runInContext(`tempTerminal._visible = true;`, ctx);
-    prefix = key("KeyB", "b", { ctrlKey: true });
-    ctx.handleGlobalShortcut(prefix);
-    const settings = key("KeyS", "s");
-    ctx.handleGlobalShortcut(settings);
-    equal(ctx.document.getElementById("settingsModal").style.display, undefined);
-    equal(vm.runInContext("tempTerminal._minimized", ctx), 1);
-  });
-
-  it("opens app search with Cmd/Ctrl+F without stealing editor or terminal Ctrl+F", () => {
-    const ctx = context();
-    vm.runInContext(source, ctx);
+    vm.runInContext('state.defaultFolder = "/repo";', ctx);
 
     const key = (extra = {}) => ({
       code: "KeyF",
@@ -1135,26 +1075,31 @@ describe("app bundle load", () => {
     const closestClassTarget = (className) => ({
       classList: { contains: (value) => value === className },
     });
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
     let event = key({ metaKey: true });
     ctx.handleGlobalShortcut(event);
     equal(event.defaultPrevented, true);
-    equal(ctx.document.getElementById("searchPalette").style.display, "grid");
+    await flush();
+    ok(ctx.document.getElementById("searchPalette").style.display !== "grid", "palette stays closed: the rail panel owns Ctrl+F");
+    equal(ctx.document.getElementById("searchPanelInput").focused, true, "panel input focused");
+    equal(ctx.document.getElementById("searchPanelInput").selected, true, "caret placed in the panel input");
 
     event = key({ ctrlKey: true });
     ctx.handleGlobalShortcut(event);
     equal(event.defaultPrevented, true);
-    equal(ctx.document.getElementById("searchPaletteInput").focused, true);
-    equal(ctx.document.getElementById("searchPaletteInput").selected, true);
+    await flush();
+    equal(ctx.document.getElementById("searchPanelInput").focused, true);
+    equal(ctx.document.getElementById("searchPanelInput").selected, true);
 
-    ctx.document.getElementById("searchPalette").style.display = "none";
+    const paletteBefore = ctx.document.getElementById("searchPalette").style.display;
     event = key({
       metaKey: true,
       target: { closest: (selector) => selector === ".herdr-editor" ? closestClassTarget("herdr-editor") : null },
     });
     ctx.handleGlobalShortcut(event);
     equal(event.defaultPrevented, false);
-    equal(ctx.document.getElementById("searchPalette").style.display, "none");
+    equal(ctx.document.getElementById("searchPalette").style.display, paletteBefore, "editor Ctrl+F untouched");
 
     event = key({
       ctrlKey: true,
@@ -1162,7 +1107,7 @@ describe("app bundle load", () => {
     });
     ctx.handleGlobalShortcut(event);
     equal(event.defaultPrevented, false);
-    equal(ctx.document.getElementById("searchPalette").style.display, "none");
+    equal(ctx.document.getElementById("searchPalette").style.display, paletteBefore, "terminal ctrl+f untouched");
 
     event = key({
       metaKey: true,
@@ -1170,7 +1115,9 @@ describe("app bundle load", () => {
     });
     ctx.handleGlobalShortcut(event);
     equal(event.defaultPrevented, true);
-    equal(ctx.document.getElementById("searchPalette").style.display, "grid");
+    await flush();
+    equal(ctx.document.getElementById("searchPanelInput").focused, true, "meta+f inside a terminal reopens the rail panel");
+    ok(ctx.document.getElementById("searchPalette").style.display !== "grid");
   });
 
   it("routes Cmd/Ctrl+F to focused file browser editor search before app search", () => {
@@ -1382,19 +1329,15 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function captureNavigationSnapshot\(view, label\)/);
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function pushNavigationSnapshot\(view, label\)/);
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /async function restoreNavigationSnapshot\(view, snapshot\)/);
-    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /Breadcrumbs are derived from the current view state[\s\S]*?function viewCrumbs\(view\) \{/);
-    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /if \(view\.tab === "history"\) return file \? \["Changes", file, "History"\] : \["History"\];/);
-    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /if \(view\.tab === "log"\) return view\.logFilePath \? \["Log", view\.logFilePath\] : \["Log"\];/);
-    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /committed\.from === "history" \? "History" : "Log"/);
-    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /<span class="git-ui-breadcrumbs" title="\$\{esc\(title\)\}">/);
-    match(gitUiLogCss, /\.git-ui-breadcrumb-sep \{[\s\S]*?font-size: 10px;/);
-    ok(!gitUiLogCss.includes(".git-ui-breadcrumb-ellipsis"), "stack-based trail ellipsis is gone");
-    match(gitUiLogCss, /\.git-ui-breadcrumb-step \{[\s\S]*?max-width: 180px;/);
-    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function renderLocationBar\(view\)/);
-    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /onclick="HerdrGitUi\.goBack\(\)"/);
+    // Phase 4: the location bar is gone. Crumbs only feed snapshot labels;
+    // the pane tab strip names the live view and Back is a side-head icon.
+    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /Breadcrumbs feed the navigation-stack labels[\s\S]*?function viewCrumbs\(view\) \{/);
+    ok(!readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8").includes("renderLocationBar"), "location bar markup is deprecated");
+    ok(!gitUiLogCss.includes(".git-ui-location-bar"), "location bar css is gone");
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /git-ui-back-icon[\s\S]*?HerdrGitUi\.goBack\(\)/);
+    match(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), /HerdrGitUi\.clearLogFileHistory\(\)/);
+    match(gitUiLogCss, /\.git-ui-log-file-clear/);
     match(gitUiSource, /if \(view\.file\) view\.logFilePath = view\.file;/);
-    match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /HerdrGitUi\.clearLogFileHistory\(\)/);
-    match(gitUiLogCss, /\.git-ui-crumb-clear/);
     match(gitUiSource, /pushNavigationSnapshot\(view\);\n\s+startHistoryCommitCompare\(view, hash\);/);
     match(gitUiSource, /if \(!view\.committedFile\) pushNavigationSnapshot\(view\);/);
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /view\.navigationStack = \[\];/);
@@ -1583,8 +1526,14 @@ describe("app bundle load", () => {
   it("keeps workspace shell tabs scoped to each workspace", () => {
     match(source, /workspaceShell: \{\}/);
     match(source, /function workspaceShellState/);
-    match(source, /function minimizeWorkspaceShell/);
-    match(source, /function restoreWorkspaceShell/);
+    // The minimize/restore-pill path died with Phase 2: the rail toggle now
+    // collapses the right sidebar column (global flag), never a per-
+    // workspace minimized state.
+    ok(!/function minimizeWorkspaceShell/.test(source), "minimizeWorkspaceShell is gone");
+    ok(!/function restoreWorkspaceShell/.test(source), "restoreWorkspaceShell is gone");
+    ok(!/workspaceShellRestore/.test(source), "the restore pill is gone");
+    match(source, /function rightSidebarHostPanel/);
+    match(source, /HerdrRightSidebar = \{/);
     // Shell mode restoration is centralized in refreshOnline (after render)
     // rather than navigateSelection to avoid a race with the async refresh.
     // The lastShellWorkspace guard skips redundant calls on every poll.
@@ -1595,56 +1544,94 @@ describe("app bundle load", () => {
       "navigateSelection must not call applyWorkspaceShellForSelection directly",
     );
     match(source, /function forgetWorkspaceShell/);
-    match(source, /workspaceShellRestore/);
     const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
-    match(renderSource, /rememberWorkspaceShellMode\("git", id, \{ minimized: false \}\)/);
-    match(renderSource, /rememberWorkspaceShellMode\("files", id, \{ minimized: false \}\)/);
-    match(renderSource, /HerdrGitUi\.open\(workspace, openOptions\)/);
-    match(renderSource, /HerdrFileBrowser\.open\(workspace, openOptions\)/);
-    match(readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8"), /forgetWorkspaceShell\(closingWorkspace\)/);
+    match(renderSource, /rememberWorkspaceShellMode\("git", id\)/);
+    match(renderSource, /rememberWorkspaceShellMode\("files", id\)/);
+    // Phase 3c: the git rehost branch died with the center fallback surface.
+    // The drawer stays hosted and git views open as center pane tabs, so
+    // there is nothing to rehost anymore.
+    match(renderSource, /window\.HerdrGitUi\.open\(workspace, openOptions\)/);
+    ok(!/rehostSide/.test(renderSource), "render must not rehost the git drawer");
     match(gitUiSource, /state\.visible && state\.activeKey === key && !openOptions\.forceOpen/);
-    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /state\.open && activeKey === key && !openOptions\.forceOpen/);
+    ok(!gitUiSource.includes("rehostSide"), "git_ui never rehosts");
+    ok(!gitUiSource.includes("releaseToCenter"), "git_ui never releases to the center");
+    const rightSidebarSource = readFileSync(new URL("./desktop/app_js/right_sidebar.js", import.meta.url), "utf8");
+    ok(!rightSidebarSource.includes("releaseToCenter"), "the right sidebar has no release handoff anymore");
+    // Phase 3b: the file browser rehost branch died with the main+editor
+    // surface. The sidebar tree is right-sidebar hosted and files open as
+    // center editor tabs, so there is nothing to rehost anymore.
+    match(renderSource, /window\.HerdrFileBrowser\.open\(workspace, openOptions\)/);
+    const fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
+    ok(!fileBrowserSource.includes("hostSideOnly"), "the file browser has no side-only host flag anymore");
+    ok(!fileBrowserSource.includes("rehostSide"), "the file browser never rehosts");
+    const worktreesSource = readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8");
+    match(worktreesSource, /forgetWorkspaceClientState\(closingWorkspace\)/);
+    match(worktreesSource, /forgetWorkspaceClientState\(closingWorktree\)/);
+    match(worktreesSource, /const closingWorktree = row\.open_workspace_id/);
+    match(source, /function forgetWorkspaceClientState/);
+    match(source, /kind === "workspace\.closed" \|\| kind === "worktree\.removed"/);
+    match(readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8"), /function forgetWorkspacePanes/);
+    match(gitUiSource, /state\.visible && state\.activeKey === key && !openOptions\.forceOpen/);
+    // The same-key toggle-close contract survives Phase 3b: opening the
+    // already-active file browser toggles it closed. Only the rehost
+    // behavior died with the main+editor surface.
+    match(fileBrowserSource, /state\.open && activeKey === key && !openOptions\.forceOpen/);
   });
 
-  it("persists per-workspace shell mode across reloads in localStorage", () => {
+  it("keeps the git drawer coherent with the center git tabs", () => {
+    const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
+    // Phase 3c render split: the pane container hosts renderMain; the
+    // hosted drawer without a git tab renders the side alone (3b rail
+    // click parity), and only standalone harnesses keep the single-panel
+    // side+main fallback.
+    match(gitUiSource, /function renderMainIntoTab\(version, container\) \{/);
+    match(gitUiSource, /if \(panelIsHosted\(\)\) \{\n      panel\.innerHTML = renderSide\(\) \+ renderContextMenu\(\)/);
+    ok(!/panelIsHosted\(\)[\s\S]{0,200}releaseToCenter/.test(gitUiSource), "no release handoff remains");
+    // Internal state flips heal the pane tree: the stash guard in refresh,
+    // the non-git fallback, and the folder switch all sync the strip so the
+    // active tab names what renders.
+    match(gitUiSource, /function syncPaneTabFromView\(\) \{/);
+    match(gitUiSource, /view\.tab = "changes";\n        syncPaneTabFromView\(\);/);
+    match(gitUiSource, /view\.tab = "cleanup";\n    \/\/ Phase 3c heal[\s\S]*?syncPaneTabFromView\(\);/);
+    match(gitUiSource, /await panes\.openGitTab\(`compare@\$\{base\}\.\.\$\{target\}`\); return;/);
+    const workspaceNavSource = readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8");
+    match(workspaceNavSource, /if \(typeof syncPaneTabFromView === "function"\) syncPaneTabFromView\(\);/, "folder switch heals the strip");
+    match(gitUiSource, /render,\n    syncPaneTabFromView,/, "the factory call passes the heal hook");
+    match(workspaceNavSource, /render, syncPaneTabFromView, esc, GIT_LOG_PAGE_SIZE/, "the factory destructure accepts the heal hook");
+    // The file browser History menu item works without the Git drawer ever
+    // having opened: the desktop shell exposes a loader-aware entry point.
+    match(renderSource, /window\.HerdrShowFileHistory = showFileHistoryPath;/);
+  });
+
+  it("keeps shell mode only for open workspaces during the page session", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
     const storageKey = "herdr-web-workspace-shell";
 
-    // A mode change writes the shell state under the workspace key. The test
-    // workspace is not in state.workspaces, so no path: entry is written.
-    vm.runInContext('state.ws = "ws-keep";', ctx);
-    vm.runInContext('rememberWorkspaceShellMode("git", "ws-keep", { minimized: false });', ctx);
+    // A mode change writes the shell state while the workspace is open.
+    vm.runInContext('state.workspaces = [{ workspace_id: "ws-keep", cwd: "/repo/keep" }]; state.ws = "ws-keep";', ctx);
+    vm.runInContext('rememberWorkspaceShellMode("git", "ws-keep");', ctx);
     let saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
     equal(saved["ws-keep"] && saved["ws-keep"].mode, "git", "rememberWorkspaceShellMode persists the git mode");
-    ok(!("path:/repo/keep" in saved), "workspaces without a loaded row get no path entry");
+    equal(saved["path:/repo/keep"] && saved["path:/repo/keep"].mode, "git", "open workspace path state is temporary");
+    ok(!("minimized" in (saved["ws-keep"] || {})), "the minimized flag died with the restore pill");
 
-    // Minimizing persists the minimized flag too.
-    vm.runInContext('minimizeWorkspaceShell("ws-keep");', ctx);
-    saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
-    equal(saved["ws-keep"] && saved["ws-keep"].minimized, true, "minimizeWorkspaceShell persists minimized");
-
-    // Restoring clears minimized and persists again.
-    vm.runInContext('restoreWorkspaceShell("ws-keep");', ctx);
-    saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
-    equal(saved["ws-keep"] && saved["ws-keep"].minimized, false, "restoreWorkspaceShell persists un-minimized");
-
-    // Forget drops the entry.
-    vm.runInContext('forgetWorkspaceShell("ws-keep");', ctx);
+    // Closing drops both the workspace id and path entries.
+    vm.runInContext('forgetWorkspaceShell({ workspace_id: "ws-keep", cwd: "/repo/keep" });', ctx);
     saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
     ok(!("ws-keep" in saved), "forgetWorkspaceShell drops the persisted entry");
+    ok(!("path:/repo/keep" in saved), "forgetWorkspaceShell drops the path entry");
 
-    // A fresh load (new context) restores the persisted mode for a workspace.
-    vm.runInContext('rememberWorkspaceShellMode("files", "ws-reload", { minimized: false });', ctx);
+    // A fresh load clears any temporary store and starts in terminal mode.
     const fresh = context();
-    // Pre-seed the storage the way a browser would after a reload.
-    fresh.localStorage.setItem(storageKey, ctx.localStorage.getItem(storageKey));
+    fresh.localStorage.setItem(storageKey, JSON.stringify({ "ws-reload": { mode: "files" } }));
     vm.runInContext(source, fresh);
     equal(
       vm.runInContext('currentWorkspaceShellMode("ws-reload");', fresh),
-      "files",
-      "a fresh page load restores the persisted shell mode",
+      "terminal",
+      "a fresh page load resets the persisted shell mode",
     );
+    equal(fresh.localStorage.getItem(storageKey), null, "a fresh page load removes temporary shell storage");
 
     // Corrupted storage is ignored without throwing.
     const broken = context();
@@ -1656,95 +1643,85 @@ describe("app bundle load", () => {
       "corrupted storage falls back to terminal mode",
     );
 
-    // Pruning keeps live workspaces, the default folder, and bounded path
-    // entries; it drops closed workspace ids.
-    vm.runInContext('rememberWorkspaceShellMode("git", "ws-live", { minimized: false });', ctx);
-    vm.runInContext('rememberWorkspaceShellMode("git", "ws-dead", { minimized: false });', ctx);
+    // Pruning keeps live workspaces and drops closed workspace ids and paths.
+    vm.runInContext('rememberWorkspaceShellMode("git", "ws-live");', ctx);
+    vm.runInContext('rememberWorkspaceShellMode("git", "ws-dead");', ctx);
     vm.runInContext('state.workspaces = [{ workspace_id: "ws-live" }];', ctx);
     vm.runInContext("pruneWorkspaceShellStates();", ctx);
     saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
     ok("ws-live" in saved, "prune keeps live workspaces");
     ok(!("ws-dead" in saved), "prune drops closed workspaces from storage");
 
-    // A workspace with a folder row also writes a path: entry, and a reopened
-    // workspace (fresh id, same folder) inherits the remembered mode.
+    // Closing a workspace removes its path memory, so a reopened workspace at
+    // the same folder starts from the terminal view.
     vm.runInContext('state.workspaces = [{ workspace_id: "ws-a", cwd: "/repo/gamma" }];', ctx);
-    vm.runInContext('rememberWorkspaceShellMode("files", "ws-a", { minimized: false });', ctx);
+    vm.runInContext('rememberWorkspaceShellMode("files", "ws-a");', ctx);
     saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
     ok(saved["path:/repo/gamma"] && saved["path:/repo/gamma"].mode === "files", "mode changes write a path entry for the folder");
-    vm.runInContext('delete state.workspaceShell["ws-b"];', ctx);
+    vm.runInContext('forgetWorkspaceShell({ workspace_id: "ws-a", cwd: "/repo/gamma" });', ctx);
     vm.runInContext('state.workspaces = [{ workspace_id: "ws-b", cwd: "/repo/gamma" }];', ctx);
     equal(
       vm.runInContext('currentWorkspaceShellMode("ws-b");', ctx),
-      "files",
-      "a reopened workspace at the same folder restores the remembered mode",
+      "terminal",
+      "a reopened workspace at the same folder starts clean",
     );
-    equal(
-      vm.runInContext('isWorkspaceShellMinimized("ws-b");', ctx),
-      false,
-      "a reopened workspace starts un-minimized",
-    );
-
-    // Minimized state is remembered per folder but reopens still start visible.
-    vm.runInContext('state.workspaces = [{ workspace_id: "ws-c", cwd: "/repo/gamma" }];', ctx);
-    vm.runInContext('minimizeWorkspaceShell("ws-c");', ctx);
-    vm.runInContext('delete state.workspaceShell["ws-d"];', ctx);
-    vm.runInContext('state.workspaces = [{ workspace_id: "ws-d", cwd: "/repo/gamma" }];', ctx);
-    equal(
-      vm.runInContext('currentWorkspaceShellMode("ws-d");', ctx),
-      "files",
-      "a reopened workspace keeps the folder's mode even after a minimize",
-    );
-
-    // Path entries are bounded to the most recent WORKSPACE_SHELL_PATH_LIMIT.
-    vm.runInContext("for (let i = 0; i < 30; i++) { const id = 'ws-many-' + i; state.workspaces = [{ workspace_id: id, cwd: '/repo/many/' + i }]; rememberWorkspaceShellMode('git', id, { minimized: false }); }", ctx);
-    saved = JSON.parse(ctx.localStorage.getItem(storageKey) || "{}");
-    const pathEntryCount = Object.keys(saved).filter((key) => key.startsWith("path:")).length;
-    equal(pathEntryCount, 20, "path entries are capped at 20");
   });
 
-  it("opens search results as file browser tabs with split support", () => {
+  it("opens search results as pane editor tabs with highlight support", () => {
     const fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
     const searchSource = readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8");
     const fileBrowserCss = readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8");
+    const panesSource = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
+    const panesCss = readFileSync(new URL("./desktop/app_css/panes.css", import.meta.url), "utf8");
     const editorSource = readFileSync(new URL("./vendor/codemirror_entry.mjs", import.meta.url), "utf8");
-    match(fileBrowserSource, /role="tablist" aria-label="Open files"/);
-    match(fileBrowserSource, /file-browser-open-tab/);
-    match(fileBrowserSource, /findInFile\(encodedPath\)/);
+    // Phase 3b: open files live in the pane tab strip (workspace_panes.js),
+    // not in the file browser. The registry keeps per-file editor state.
+    ok(!fileBrowserSource.includes("file-browser-open-tab"), "the file browser no longer renders open-file tab buttons");
+    ok(!fileBrowserSource.includes('role="tablist" aria-label="Open files"'), "the in-browser tab strip is gone");
+    match(panesSource, /function paneEditorTabButtonHtml/);
+    match(panesSource, /data-tab-kind="editor"/);
+    match(panesSource, /registry\.editorFor \? registry\.editorFor\(path\) : null/);
+    match(panesSource, /pane-tab-dirty/);
     match(fileBrowserSource, /openFocusedFind\(target\)/);
     match(readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8"), /openFocusedFileBrowserFind\(e\.target\)/);
     match(fileBrowserSource, /HerdrEditor\.openFind/);
     ok(!fileBrowserSource.includes("file-browser-current-file"), "active file title is already represented by the file tab");
     ok(!fileBrowserSource.includes("<span>${esc(file.path)}</span>"), "file panes must not duplicate the selected path next to the tab button");
     match(fileBrowserSource, /function fileTabTooltipPath\(path\)/);
-    match(fileBrowserSource, /title="\$\{esc\(tooltip\)\}" onclick="HerdrFileBrowser\.focusFile/);
-    match(fileBrowserSource, /target\.files\.push\(nextFile\)/);
-    match(fileBrowserSource, /mode === "split"/);
-    match(fileBrowserSource, /target\.split = true/);
-    match(fileBrowserCss, /\.file-browser-file-tabs \{[\s\S]*?flex-wrap: nowrap;/);
-    match(fileBrowserCss, /\.file-browser-file-tabs \{[\s\S]*?overflow-x: auto;/);
+    // Search highlights still reach the editor: the registry turns a
+    // highlight open into a preview-source mount.
+    match(fileBrowserSource, /async function openEditorTab\(path, searchHighlight\)/);
+    match(fileBrowserSource, /if \(searchHighlight\) existing\.previewSource = true/);
+    match(fileBrowserSource, /searchHighlight: searchHighlight \|\| null/);
+    match(fileBrowserSource, /previewSource: !!searchHighlight/);
+    ok(!fileBrowserSource.includes('mode === "split"'), "the split-view mode died with the file-browser preview surface");
+    ok(!fileBrowserSource.includes("target.split = true"), "no per-target split flag anymore");
+    match(panesCss, /\.pane-tab\.editor \.pane-tab-dirty \{/);
+    match(panesCss, /\.pane-tab\.active \.pane-tab-dot \{[\s\S]*?background: var\(--accent-2/);
+    match(panesCss, /\.pane-editor-container \{/);
+    match(panesCss, /\.pane-editor-mount \{/);
     ok(!fileBrowserCss.includes(".file-browser-current-file"));
     ok(!fileBrowserCss.includes(".file-browser-side.previewing"), "file tree must stay visible while previewing files");
-    match(fileBrowserSource, /function renderTabMenu/);
-    match(fileBrowserSource, /HerdrFileBrowser\.tabMenu/);
+    match(fileBrowserCss, /\.cm-foldPlaceholder/);
+    match(fileBrowserCss, /\.cm-activeLineGutter/);
+    match(fileBrowserCss, /\.cm-matchingBracket/);
+    ok(!fileBrowserCss.includes(".file-browser-open-tab.active"), "the old in-browser tab styles died with the tab strip");
+    match(fileBrowserSource, /function renderContextMenu/);
+    match(fileBrowserSource, /file-browser-menu" role="menu"/);
     match(fileBrowserSource, /data-file-menu-action="\$\{action\}"/);
-    match(fileBrowserSource, /menuIcon\("copyPathTab"/);
-    match(fileBrowserSource, /menuIcon\("focus"/);
-    match(fileBrowserSource, /menuIcon\("close"/);
+    match(fileBrowserSource, /menuIcon\("enter", "Enter folder"\)/);
+    match(fileBrowserSource, /menuIcon\("history", "Show history"\)/);
+    match(fileBrowserSource, /menuIcon\("copyPermalink", "Copy permalink"\)/);
+    ok(!fileBrowserSource.includes("tabMenu"), "the strip tab menu died with the in-browser tab strip");
     match(fileBrowserCss, /\.file-browser-panel \{[\s\S]*?overflow: visible;/);
     match(fileBrowserCss, /\.file-browser-menu \{[\s\S]*?z-index: 1500;/);
     match(editorSource, /if \(ext === "json"\) return json\(\);/);
     match(editorSource, /if \(ext === "json"\) return "json";/);
 
-    match(fileBrowserCss, /\.cm-foldPlaceholder/);
-    match(fileBrowserCss, /\.cm-activeLineGutter/);
-    match(fileBrowserCss, /\.cm-matchingBracket/);
-    match(fileBrowserCss, /\.file-browser-open-tab\.active \{/);
-    match(fileBrowserCss, /--accent-2/);
     match(searchSource, /async function openWorkspaceSearchPath/);
     match(searchSource, /await ensureFileBrowserLoaded\(\)/);
     match(searchSource, /await window\.HerdrFileBrowser\.openAt/);
-    match(searchSource, /rememberWorkspaceShellMode\("files", workspace, \{ minimized: false \}\)/);
+    match(searchSource, /rememberWorkspaceShellMode\("files", workspace\)/);
   });
 
   it("moves the diff layout toggle to the bottom of the Git side rail", () => {
@@ -1757,79 +1734,30 @@ describe("app bundle load", () => {
   });
 
 
-  it("documents and traps temporary terminal keyboard input", () => {
-    const tempTerminalSource = readFileSync(new URL("./shared/temp_terminal.js", import.meta.url), "utf8");
+  it("documents terminal fit and scroll behavior", () => {
     const terminalFitSource = readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8");
-    const shortcutsSource = readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8");
-    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
-    const modalCss = readFileSync(new URL("./desktop/app_css/modals.css", import.meta.url), "utf8");
 
-    match(tempTerminalSource, /document\.addEventListener\("keydown", tempTerminalKeydown, true\)/);
-    match(tempTerminalSource, /if \(tempTerminalOwnsEventTarget\(event\.target\)\) \{/);
-    match(tempTerminalSource, /terminalFocusRetainingInputForKey\(event\)/);
-    match(tempTerminalSource, /shortcutLabelFn/);
-    match(tempTerminalSource, /setShortcutTitle\(minimizeBtn, "Minimize temporary terminal"\)/);
-    // Restore button tooltip is set via syncShortcutTooltips in core.js, not in temp_terminal.js.
-    const coreSource = readFileSync(new URL("./desktop/app_js/core.js", import.meta.url), "utf8");
-    match(coreSource, /titleWithWebuiShortcut\("Show temporary terminal", "tempTerminalToggle"\)/);
-    match(shortcutsSource, /tempTerminalToggle/);
-    const bindingsSource = readFileSync(new URL("./desktop/app_js/bindings.js", import.meta.url), "utf8");
-    match(bindingsSource, /function tempTerminalWorkspaceId\(\)/);
-    match(bindingsSource, /window\.HerdrFileBrowser && window\.HerdrFileBrowser\.activeWorkspaceId/);
-    match(bindingsSource, /window\.HerdrGitUi && window\.HerdrGitUi\.activeWorkspaceId/);
-    match(bindingsSource, /workspaceIdFn: tempTerminalWorkspaceId/);
-    match(bindingsSource, /shortcutLabelFn: \(\) => shortcutLabel\("webuiShortcuts", "tempTerminalToggle"\)/);
-    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /activeWorkspaceId\(\) \{ return state\.open \? \(activeKey \|\| ""\) : ""; \}/);
-    match(readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8"), /activeWorkspaceId\(\) \{ return state\.visible \? \(state\.activeKey \|\| ""\) : ""; \}/);
-    match(tempTerminalSource, /if \(event\.key === "Backspace"\) return "\\x7f";/);
-    match(tempTerminalSource, /if \(event\.key === "Tab"\) return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
-    match(tempTerminalSource, /term && term\.element \? term\.element : containerEl\.querySelector/);
-    match(tempTerminalSource, /case "Backspace": return "\\x7f";/);
-    match(tempTerminalSource, /case "Tab": return event\.shiftKey \? "\\x1b\[Z" : "\\t";/);
-    match(tempTerminalSource, /stripTerminalQueryReplies\(data, terminalQueryReplyState\)/);
-    match(tempTerminalSource, /String\(event\.key \|\| ""\)\.toLowerCase\(\) === "g"/);
-    match(shortcutsSource, /function tempTerminalModalOpen\(\)/);
-    match(shortcutsSource, /if \(tempTerminalModalOpen\(\)\) return false;/);
-    match(tempTerminalSource, /function terminalGridSize\(containerEl\)/);
-    match(tempTerminalSource, /function connectTerminalWsAfterLayout\(terminalId, attempt\)/);
-    match(tempTerminalSource, /ensureTerminalSurface\(containerEl\)/);
-    match(tempTerminalSource, /function waitForTerminalFit\(containerEl, attempt, callback\)/);
-    match(tempTerminalSource, /HerdrTerminalFit\.gridSize\(measureTarget, term/);
-    match(tempTerminalSource, /HerdrTerminalFit\.cellSize\(term, containerEl/);
-    match(tempTerminalSource, /HerdrTerminalFit\.fitTerminalToContainer\(termEl, \{ height: alignedHeight \}\)/);
     match(terminalFitSource, /function cellSize\(term, container, fallback\)/);
     match(terminalFitSource, /function gridSize\(container, term, options\)/);
     match(terminalFitSource, /function fitTerminalToContainer\(container, options\)/);
     match(terminalFitSource, /root\.HerdrTerminalFit/);
-    match(tempTerminalSource, /resizeTerminalSurface\(container, cols, rows\)/);
-    match(tempTerminalSource, /box\.width >= 320 && box\.height >= 120/);
-    match(tempTerminalSource, /function afterBrowserLayout\(callback\)/);
-    match(tempTerminalSource, /rowReserve: 0/);
     match(terminalFitSource, /rows: Math\.max\(opts\.minRows \|\| 8,/);
-    ok(!tempTerminalSource.includes("setTimeout(handleResize, 0)"));
-    match(modalCss, /height: calc\(100dvh - 32px\)/);
-    match(modalCss, /width: calc\(100vw - 32px\);\n\s+max-width: none;/);
-    ok(!modalCss.includes("max-width: 1200px"));
-    match(modalCss, /\.temp-terminal-body \{[\s\S]*?min-height: 0;[\s\S]*?overflow: hidden;/);
-    match(modalCss, /\.temp-terminal-body \.terminal \{[\s\S]*?width: 100%;[\s\S]*?height: 100%;/);
-    match(modalCss, /\.temp-terminal-body \.wterm \{[\s\S]*?height: 100%;[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;[\s\S]*?width: 100%;/);
-    // Modal HTML is now created dynamically in temp_terminal.js, not in app.html.
-    match(tempTerminalSource, /Input captured · Ctrl\+G detaches/);
-    match(tempTerminalSource, /temp-terminal-minimize/);
-    match(tempTerminalSource, /temp-terminal-close/);
-    match(modalCss, /\.temp-terminal-hint/);
-    match(modalCss, /\.temp-terminal-restore-bar \{[\s\S]*?flex-direction: column;/);
-    match(modalCss, /\.temp-terminal-restore \{[\s\S]*?display: inline-flex;/);
-    match(source, /Ctrl\+G<\/kbd><span>Detach temporary terminal/);
-    match(source, /Temporary terminal captures Tab\/Backspace\/navigation keys and normal input while open/);
   });
 
   it("defines file explorer and Git file filters", () => {
-    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /q=\$\{encodeURIComponent\(target\.filter\.trim\(\)\)\}/);
-    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /showSearch\(\)/);
-    const sharedFileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+    // Phase 3b: the desktop file browser dropped its in-tree filter row;
+    // path filtering is the search palette's job, and content filtering
+    // lives in the shared content-search renderer. Mobile keeps its own
+    // in-tree filter, and Git keeps its client-side side-tree filter.
     const desktopFileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
+    ok(!desktopFileBrowserSource.includes("target.filter.trim()"), "the desktop tree filter fetch died with the filter row");
+    ok(!desktopFileBrowserSource.includes("showSearch()"), "the desktop tree search toggle died with the toolbar");
     const mobileFileBrowserSource = readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8");
+    match(mobileFileBrowserSource, /q=\$\{encodeURIComponent\(local\.filter\.trim\(\)\)\}/);
+    const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+    match(gitUiSource, /filterFiles\(value\) \{[\s\S]*?view\.fileFilter = String\(value \|\| ""\);/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /oninput="HerdrGitUi\.filterFiles\(this\.value\)"/);
+    const sharedFileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
     const desktopWorktreesSource = readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8");
     const mobileWorktreesSource = readFileSync(new URL("./mobile/worktrees.js", import.meta.url), "utf8");
     const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
@@ -1839,40 +1767,39 @@ describe("app bundle load", () => {
     match(sharedFileTreeSource, /herdr-tree-up-action/);
     match(sharedFileTreeSource, /value === "~"/);
     match(desktopFileBrowserSource, /Tree\.renderCurrentDirectoryRow/);
-    match(desktopFileBrowserSource, /<button class="git-ui-btn" onclick="HerdrFileBrowser\.toggleFind/);
     ok(!desktopFileBrowserSource.includes("file-browser-pane-head"));
     ok(!desktopFileBrowserSource.includes("file-browser-pane-search"));
-    match(desktopFileBrowserSource, /function renderOpenFileTabs\(\)/);
-    match(desktopFileBrowserSource, /state\.files\.length < 2/);
-    match(desktopFileBrowserSource, /const tabs = renderOpenFileTabs\(\);/);
-    match(desktopFileBrowserSource, /function singleTab\(file\)/);
-    match(desktopFileBrowserSource, /\$\{tabs \|\| singleTab\(file\)\}/);
-    match(desktopFileBrowserSource, /renderIfActive\(target, true\);/);
-    match(desktopFileBrowserSource, /file-browser-open-tabs/);
+    // Phase 3b: open-file tabs moved to the pane strip (workspace_panes.js);
+    // the registry exposes per-file state and close/focus entries instead.
+    ok(!desktopFileBrowserSource.includes("renderOpenFileTabs"), "the in-browser open-file tab row is gone");
+    ok(!desktopFileBrowserSource.includes("file-browser-open-tabs"), "the tab strip markup is gone");
+    ok(!desktopFileBrowserSource.includes('role="tablist" aria-label="Open files"'), "the in-browser tablist is gone");
     match(desktopFileBrowserSource, /function fileTabTooltipPath\(path\)/);
-    match(desktopFileBrowserSource, /role="presentation" title="\$\{esc\(tooltip\)\}"/);
-    match(desktopFileBrowserSource, /role="tablist" aria-label="Open files"/);
-    match(desktopFileBrowserSource, /HerdrFileBrowser\.focusFile/);
-    match(desktopFileBrowserSource, /select\(encodedPath, mode\) \{ loadFile\(decodeURIComponent\(encodedPath\), mode \|\| "append"\); \}/);
-    match(desktopFileBrowserSource, /if \(action === "open"\) await loadFile\(menu\.path, "append"\);/);
-    match(desktopFileBrowserSource, /HerdrFileBrowser\.toggleFind/);
+    match(desktopFileBrowserSource, /select\(encodedPath\) \{[\s\S]*?panes\.openEditorTab\(path\)/);
+    match(desktopFileBrowserSource, /async function closeEditorTab\(encodedPath\)/);
+    match(desktopFileBrowserSource, /renderIfActive\(target, true\);/);
+    match(desktopFileBrowserSource, /openFocusedFind\(target\) \{ return openFindForPath\(activeEditorPath\(\) \|\| focusedFilePath\(target\)\); \}/);
     ok(!desktopFileBrowserSource.includes("HerdrSearchPalette.open({ pathKind: 'file', force: true })"));
     const desktopFileBrowserCss = readFileSync(new URL("./desktop/file_browser.css", import.meta.url), "utf8");
     ok(!desktopFileBrowserCss.includes("file-browser-pane-head"));
     ok(!desktopFileBrowserCss.includes("file-browser-pane-search"));
-    match(desktopFileBrowserCss, /file-browser-open-tabs/);
-    match(desktopFileBrowserCss, /flex-wrap: nowrap/);
-    match(desktopFileBrowserCss, /overflow-x: auto/);
-    match(desktopFileBrowserCss, /flex: 0 0 auto/);
-    match(desktopFileBrowserCss, /max-width: min\(240px, 42vw\)/);
-    match(desktopFileBrowserCss, /file-browser-content-actions/);
+    // The filter pill classes stay live: the shared content-search
+    // renderer reuses them inside the search palette.
+    ok(!desktopFileBrowserCss.includes("file-browser-open-tabs"), "the open-file tab strip styles are gone");
+    match(desktopFileBrowserCss, /\.file-browser-filter \{/);
+    match(desktopFileBrowserCss, /\.file-browser-search-icon/);
+    match(desktopFileBrowserCss, /file-browser-searching/);
+    match(desktopFileBrowserCss, /file-browser-more/);
+    ok(!desktopFileBrowserCss.includes("file-browser-content-actions"), "the content-actions bar died with the main surface");
     match(mobileFileBrowserSource, /Tree\.renderCurrentDirectoryRow/);
     match(desktopFileBrowserSource, /permission_required/);
     match(desktopFileBrowserSource, /Grant folder access/);
     match(desktopFileBrowserSource, /\/api\/file-browser\/request-access/);
     match(desktopFileBrowserSource, /Herdr needs folder access to browse or search this folder\./);
-    match(desktopFileBrowserSource, /setError\(target, error\);\n\s+target\.filterDone = true;/);
-    match(desktopFileBrowserSource, /Folder access is required to search file contents\./);
+    // The in-file content search died with the main surface: content
+    // search lives in the shared renderer used by the search palette.
+    ok(!desktopFileBrowserSource.includes("filterDone"), "the tree-filter pagination state is gone");
+    ok(!desktopFileBrowserSource.includes("Folder access is required to search file contents"), "the in-file content-search error copy is gone");
     match(directoryPickerSource, /permission_required/);
     match(directoryPickerSource, /Grant folder access/);
     match(directoryPickerSource, /function ensureStyles\(\)/);
@@ -1939,12 +1866,11 @@ describe("app bundle load", () => {
     ok(!fileContentSearchSource.includes("More above"));
     ok(!fileContentSearchSource.includes("More below"));
     match(fileContentSearchSource, /openMatch/);
-    match(desktopFileBrowserSource, /const preserveContext = options\.preserveContext === true && options\.kind !== "dir";/);
-    match(desktopFileBrowserSource, /if \(!preserveContext\) \{[\s\S]*?clearContentSearchResults\(state\.contentSearch\);[\s\S]*?\}/);
-    match(desktopFileBrowserSource, /if \(path\) await loadFile\(path, options\.mode \|\| \(preserveContext \? "append" : undefined\), options\.highlight \|\| null\);/);
-    match(desktopFileBrowserSource, /mode === "append"/);
-    match(desktopFileBrowserSource, /openFile\(encodedPath\) \{ loadFile\(decodeURIComponent\(encodedPath\), "append"\); \}/);
-    match(desktopFileBrowserSource, /loadFile\(path, "append", matchHighlight\(match, state\.contentSearch\.query\)\);/);
+    match(desktopFileBrowserSource, /async function openAt\(workspace, path, opts\)/);
+    match(desktopFileBrowserSource, /if \(options\.kind === "dir"\) \{[\s\S]*?await loadTree\(path \|\| ""\);[\s\S]*?\}/);
+    match(desktopFileBrowserSource, /const panes = window\.HerdrWorkspacePanes;[\s\S]*?if \(panes && panes\.openEditorTab\) \{[\s\S]*?await panes\.openEditorTab\(path, options\.highlight \|\| null\);\s*return;\s*\}[\s\S]*?await openEditorTab\(path, options\.highlight \|\| null\);/);
+    match(desktopFileBrowserSource, /select\(encodedPath\) \{[\s\S]*?panes\.openEditorTab\(path\)/);
+    match(desktopFileBrowserSource, /if \(searchHighlight\) existing\.previewSource = true/);
     match(searchSource, /preserveContext: isFile, mode: isFile \? "append" : undefined/);
     match(searchSource, /kind: "file", preserveContext: true, mode: "append"/);
     match(mobileFileBrowserSource, /const preserveContext = options\.preserveContext === true && options\.kind !== "dir";/);
@@ -2004,7 +1930,10 @@ describe("app bundle load", () => {
     match(source, /fileContentSearchDefaultExpanded: true/);
     match(source, /fileContentSearchMatchCase: false/);
     match(source, /fileContentSearchRegex: false/);
-    match(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), /\/api\/file-browser\/content-search/);
+    match(readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"), /\/api\/file-browser\/content-search/);
+    // Phase 3b: the desktop file browser no longer runs its own content
+    // search; the shared renderer serves the search palette.
+    ok(!readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8").includes("/api/file-browser/content-search"), "the desktop registry no longer fetches content search");
     match(readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8"), /HerdrMobileFilesContent/);
     ok(!readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8").includes("setFileBrowserPathSearch"));
     match(readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8"), /setFileContentSearchContextLines/);
@@ -2186,6 +2115,74 @@ describe("app bundle load", () => {
     equal(opts.defaultExpanded, false);
     equal(opts.matchCase, true);
     equal(opts.regex, true);
+  });
+
+  it("palette search falls back to the default folder when no workspace is selected", async () => {
+    const ctx = context();
+    ctx.searched = [];
+    ctx.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false }) });
+    vm.runInContext(source, ctx);
+    // Boot-clean desktop: no workspaces at all, but the exploration default
+    // folder exists. The palette is reachable here (header button, search
+    // shortcut), so its search root must match the panel's fallback.
+    vm.runInContext("state.workspaces = []; state.ws = null; state.defaultFolder = '/Users/alejandro.blanco';", ctx);
+    vm.runInContext('searchPaletteState.query = "needle";', ctx);
+    vm.runInContext(
+      "window.HerdrWorkspaceSearch = {" +
+        " workspaceCwd: (w) => (w && w.cwd) || \"\"," +
+        " settings: () => ({})," +
+        " pathSearchAvailable: () => true," +
+        " searchPaths: async (args) => { searched.push({ kind: \"paths\", cwd: args.cwd }); return { entries: [], git_status: null, truncated: false }; }," +
+        " searchContent: async (args) => { searched.push({ kind: \"content\", cwd: args.cwd }); return { files: [], total_files: 0, total_matches: 0, truncated: false }; }," +
+        " applyContentResults: (state, data) => { state.files = data.files || []; state.total_files = data.total_files || 0; state.total_matches = data.total_matches || 0; state.truncated = !!data.truncated; state.done = true; }," +
+        " flattenContentMatches: (files) => []," +
+        " resetContentState: () => {} };",
+      ctx,
+    );
+    await vm.runInContext("runWorkspaceSearch(false)", ctx);
+    const searched = ctx.searched;
+    ok(searched.some((s) => s.cwd === "/Users/alejandro.blanco"), "palette path search used the default folder");
+    ok(searched.some((s) => s.cwd === "/Users/alejandro.blanco" && s.kind === "content"), "palette content search used the default folder");
+  });
+
+  it("prefix-P without a workspace opens the seeded worktree modal instead of dying", () => {
+    const ctx = context();
+    const requests = [];
+    ctx.fetch = async (url) => {
+      requests.push(String(url));
+      return { status: 200, json: async () => ({ result: { worktrees: [], source: {} } }) };
+    };
+    vm.runInContext(source, ctx);
+    // The strip + and prefix-P share one contract: with a workspace the
+    // press creates a panel, without one it routes to the open flow
+    // seeded with the current folder. selectedWorkspaceRepoPath() is
+    // "" in this state by design; the modal's own initializer falls
+    // back to the default folder, so pin that chain end to end.
+    vm.runInContext("state.workspaces = []; state.ws = null; state.defaultFolder = '/Users/alejandro.blanco';", ctx);
+    vm.runInContext(
+      "window.__opens = []; " +
+        "const __realOpen = openWorktreeOpenModal; " +
+        "openWorktreeOpenModal = (path, discover) => { window.__opens.push({ path, discover }); return __realOpen(path, discover); }; " +
+        "newTab = async () => { throw new Error('newTab must not run without a workspace'); };",
+      ctx,
+    );
+    const handled = vm.runInContext(
+      "runPrefixedShortcut({ code: 'KeyP', key: 'p', shiftKey: false })",
+      ctx,
+    );
+    equal(handled, true, "prefix-P is still a consumed shortcut");
+    const opens = vm.runInContext("window.__opens", ctx);
+    equal(opens.length, 1, "the press opens the worktree modal");
+    equal(opens[0].discover, true, "modal starts discovery right away");
+    equal(
+      vm.runInContext("document.getElementById('worktreeDiscoverPath').value", ctx),
+      "/Users/alejandro.blanco",
+      "modal seeds the default folder",
+    );
+    ok(
+      requests.some((url) => url.startsWith("/api/worktrees?cwd=")),
+      "discovery request fired for the seeded folder",
+    );
   });
 
   it("uses shared search settings to skip disabled APIs and clamp query params", async () => {
@@ -2521,7 +2518,6 @@ describe("app bundle load", () => {
     match(source, /default_folder: defaultFolder \|\| null,/);
     match(source, /state\.defaultFolder = settings\.default_folder/);
     match(source, /selectedOrDefaultWorkspace/);
-    match(source, /defaultFolderFn: defaultFolderPath/);
     match(source, /window\.defaultFolderPath = defaultFolderPath;/);
     match(source, /const exploration = usefulDirectoryDefault\(options\.explorationDefaultDirectory\);/);
     ok(!source.includes('body: JSON.stringify({ label: "default", cwd: null })'));
@@ -2674,7 +2670,6 @@ describe("app bundle load", () => {
     vm.runInContext(`
       state.ws = "ws1";
       state.tab = "tab2";
-      state.panelMenuOpen = true;
       state.tabs = [
         { workspace_id: "ws1", tab_id: "tab1", label: "shell", number: 1 },
         { workspace_id: "ws1", tab_id: "tab2", label: "shell", number: 2 },
@@ -2682,14 +2677,14 @@ describe("app bundle load", () => {
       ];
     `, ctx);
 
-    const html = ctx.renderPanelField();
-
-    match(html, /<span>2<\/span>/);
-    match(html, />1<\/button>/);
-    match(html, />2<\/button>/);
-    match(html, />custom<\/button>/);
-    equal(html.includes(">shell</button>"), false);
+    // Phase 5: labels now pin through the pane strip helpers (the panel
+    // field is gone). Defaults render as numbers; customs keep their name.
+    equal(ctx.panelVisibleLabel({ label: "shell", number: 1 }, 0), "1");
+    equal(ctx.panelVisibleLabel({ label: "shell", number: 2 }, 1), "2");
+    equal(ctx.panelVisibleLabel({ label: "custom", number: 3 }, 2), "custom");
     equal(ctx.panelRenameInitialLabel({ label: "shell", number: 1 }), "");
+    equal(ctx.panelRenameInitialLabel({ label: "custom", number: 3 }), "custom");
+    equal(ctx.panelVisibleLabel({ label: "tab 7" }, 6), "7");
 
     vm.runInContext(`
       state.ws = "ws2";
@@ -2699,7 +2694,7 @@ describe("app bundle load", () => {
         { workspace_id: "ws2", tab_id: "ws2-tab2", label: "shell", number: 2 },
       ];
     `, ctx);
-    match(ctx.renderPanelField(), /<span>1<\/span>/);
+    equal(ctx.panelVisibleLabel({ label: "shell", number: 1 }, 0), "1");
   });
 
   it("keeps session manager buttons on one rounded style", () => {
@@ -3731,7 +3726,7 @@ describe("app bundle load", () => {
     match(html, /workspace-group-main/);
   });
 
-  it("closes the last panel by closing its tab then its workspace", async () => {
+  it("closing the last panel keeps the workspace open", async () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
@@ -3752,9 +3747,105 @@ describe("app bundle load", () => {
       ctx,
     );
 
-    equal(calls.length, 2);
+    // One tab close call, no workspace close: terminals are decoupled
+    // from workspace lifecycle.
+    equal(calls.length, 1);
     equal(calls[0].url, "/api/tabs/tab1/close");
-    equal(calls[1].url, "/api/workspaces/ws1/close");
+  });
+
+  it("closing a panel that vanished server-side still finishes the close flow", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const calls = await vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        if (url.endsWith("/close")) throw new Error("tab tab1 not found");
+        return { result: {} };
+      };
+      refresh = () => {};
+      removeClosedTabFromState = () => {};
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      closeTab("tab1")
+        .then(() => ({ ok: true }))
+        .catch((error) => ({ ok: false, message: String(error) }))
+        .then((outcome) => (calls.outcome = outcome, calls));`,
+      ctx,
+    );
+
+    // A not-found race is the desired outcome: the close must not throw,
+    // and the state cleanup and refresh still run.
+    equal(calls[0].url, "/api/tabs/tab1/close");
+    equal(calls.outcome.ok, true, "not-found close must not surface an error");
+    const selectionAfterClose = await vm.runInContext("state.tab", ctx);
+    equal(selectionAfterClose, null, "closed panel leaves the selection");
+    equal(calls.filter((call) => call.url.includes("workspaces")).length, 0,
+      "no workspace close: the panel close race never kills the workspace");
+  });
+
+  it("closing a panel surfaces real server errors", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const outcome = await vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        if (url.endsWith("/close")) throw new Error("state unavailable");
+        return { result: {} };
+      };
+      refresh = () => {};
+      removeClosedTabFromState = () => {};
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      closeTab("tab1")
+        .then(() => ({ ok: true }))
+        .catch((error) => ({ ok: false, message: String(error) }));`,
+      ctx,
+    );
+
+    // Real errors propagate: the close flow must not swallow them.
+    equal(outcome.ok, false, "a real close error must reject");
+    match(outcome.message, /state unavailable/);
+  });
+
+  it("extracts backend object errors, not [object Object]", async () => {
+    // The server answers {error:{code,message}}; the desktop fallback
+    // (no HerdrHttp registered) previously collapsed that to
+    // "[object Object]", breaking every caller matching on message text
+    // like the not-found close tolerance.
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const outcome = await vm.runInContext(
+      `(() => {
+        delete globalThis.HerdrHttp;
+        const objectError = apiErrorMessage(
+          { error: { code: "builtin_error", message: "tab tab1 not found" } },
+          "Bad Gateway",
+        );
+        const stringError = apiErrorMessage({ error: "plain failure" }, "Bad Gateway");
+        const codeOnly = apiErrorMessage({ error: { code: "agent_blocked" } }, "Bad Gateway");
+        const noError = apiErrorMessage({}, "Bad Gateway");
+        return { objectError, stringError, codeOnly, noError };
+      })()`,
+      ctx,
+    );
+
+    equal(outcome.objectError, "tab tab1 not found",
+      "object errors must surface their message, not [object Object]");
+    equal(outcome.stringError, "plain failure");
+    equal(outcome.codeOnly, "agent_blocked");
+    equal(outcome.noError, "Bad Gateway");
   });
 
   it("closes workspace panels through workspace.close", async () => {
@@ -3785,6 +3876,42 @@ describe("app bundle load", () => {
     match(source, /Dismiss/);
     match(source, /herdr-web-working-dismissals/);
     match(source, /displayStatus = dismissed \? "ignored"/);
+  });
+
+  it("defines the open-terminal-with-workspace option", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // Settings row, default off, normalize keeps booleans.
+    match(source, /id="optWorkspaceOpenTerminal"/);
+    match(source, /workspaceOpenTerminal: false/);
+    match(source, /workspaceOpenTerminalFlag/);
+    ok(vm.runInContext("normalizeOptions({ workspaceOpenTerminal: true }).workspaceOpenTerminal === true", ctx));
+    ok(vm.runInContext("normalizeOptions({}).workspaceOpenTerminal === false", ctx));
+  });
+
+  it("sends open_terminal from workspace create with the option on", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const bodies = await vm.runInContext(
+      `const bodies = [];
+      api = async (url, opt = {}) => {
+        bodies.push({ url, body: opt.body || null });
+        return { result: { workspace: { workspace_id: "ws9" }, tab: {}, root_pane: {} } };
+      };
+      go = () => {};
+      hideBlocking = () => {};
+      options.workspaceOpenTerminal = true;
+      document.getElementById("workspaceCreatePath").value = "/tmp/w9";
+      document.getElementById("workspaceCreateLabel").value = "w9";
+      createWorkspaceFromModal().then(() => bodies);`,
+      ctx,
+    );
+
+    const created = bodies.find((call) => call.url === "/api/workspaces" && call.body);
+    ok(created);
+    equal(JSON.parse(created.body).open_terminal, true);
   });
 
   it("defines sidebar collapse controls", () => {
@@ -3944,6 +4071,467 @@ describe("app bundle load", () => {
     equal(result.pane, "newpane");
     equal(result.terminalId, "term2");
     ok(replaced.some((url) => String(url).includes("/tab/new/pane/newpane")));
+  });
+
+  it("bootstraps a refresh from one session-snapshot request", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.location.pathname = "/session/default/workspace/ws1/tab/t1/pane/p1";
+    ctx.Terminal = class {
+      open() {}
+      onData() {}
+      onScroll() {}
+      loadAddon() {}
+      clear() {}
+      focus() {}
+      resize() {}
+      dispose() {}
+    };
+    ctx.fetch = async (url) => {
+      const text = String(url);
+      calls.push(text);
+      // Only the snapshot endpoint answers with bootstrap data; the legacy
+      // endpoints answer boot only. The refresh itself must never call them.
+      if (text === "/api/session-snapshot")
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: {
+              snapshot: {
+                workspaces: [
+                  { workspace_id: "ws1", label: "repo", cwd: "/repo" },
+                  { workspace_id: "ws2", label: "other", cwd: "/other" },
+                ],
+                tabs: [
+                  { workspace_id: "ws1", tab_id: "t1", number: 1 },
+                  { workspace_id: "ws2", tab_id: "t9", number: 9 },
+                ],
+                panes: [
+                  { workspace_id: "ws1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" },
+                ],
+                layouts: [
+                  {
+                    workspace_id: "ws1",
+                    tab_id: "t1",
+                    layout: { panes: [{ pane_id: "p1", rect: { width: 80, height: 24 } }] },
+                  },
+                ],
+                agents: [],
+              },
+              worktree_results: [
+                {
+                  result: {
+                    source: {
+                      source_workspace_id: "ws1",
+                      repo_name: "repo",
+                      source_checkout_path: "/repo",
+                    },
+                    worktrees: [{ path: "/repo", branch: "main" }],
+                  },
+                },
+                null,
+              ],
+              workspace_order: ["ws2", "ws1"],
+            },
+          }),
+        };
+      const result = text.includes("workspaces")
+        ? { workspaces: [{ workspace_id: "ws1", label: "repo" }] }
+        : text.includes("versions")
+          ? { versions: {} }
+          : text.includes("server-settings")
+            ? { settings: {} }
+            : text.includes("sessions")
+              ? { sessions: [] }
+              : text.includes("workspace-order")
+                ? { order: [] }
+                : text.includes("tabs")
+                  ? { tabs: [{ workspace_id: "ws1", tab_id: "t1", number: 1 }] }
+                  : text.includes("panes")
+                    ? { panes: [{ workspace_id: "ws1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" }] }
+                    : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+    // Boot's async calls are still in flight; let them land so the delta
+    // below only counts the explicit refresh.
+    let stable = 0;
+    let seen = -1;
+    while (stable < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (calls.length === seen) stable += 1;
+      else {
+        stable = 0;
+        seen = calls.length;
+      }
+    }
+    const before = calls.length;
+
+    const result = await vm.runInContext(
+      "refreshSeq = 2; refreshOnline(2).then(() => ({ tab: state.tab, pane: state.pane, terminalId: state.terminalId }))",
+      ctx,
+    );
+
+    equal(result.tab, "t1");
+    equal(result.pane, "p1");
+    equal(result.terminalId, "term1");
+    // One request for the whole refresh: no workspaces, tabs, panes,
+    // agents, worktrees, workspace-order, or pane-layout round trips.
+    equal(calls.slice(before).length, 1);
+    equal(calls[before], "/api/session-snapshot");
+    // The seeded layout spared the pane-layout call and sized the terminal.
+    equal(vm.runInContext("state.termCols", ctx), 80);
+    equal(vm.runInContext("state.termRows", ctx), 24);
+    const state = vm.runInContext("state", ctx);
+    equal(state.tabs.length, 1);
+    equal(state.workspaceOrder.join(","), "ws2,ws1");
+    equal(state.worktrees.length, 1);
+    equal(state.worktrees[0].source_workspace_id, "ws1");
+    equal(state.workspaceBranches.ws1, "main");
+    // The sticky bootstrap flag stays on after a successful apply.
+    equal(state.snapshotBootstrap, true);
+  });
+
+  it("falls back to legacy calls when the snapshot is unusable", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.location.pathname = "/session/default/workspace/ws1/tab/t1/pane/p1";
+    ctx.Terminal = class {
+      open() {}
+      onData() {}
+      onScroll() {}
+      loadAddon() {}
+      clear() {}
+      focus() {}
+      resize() {}
+      dispose() {}
+    };
+    ctx.fetch = async (url) => {
+      const text = String(url);
+      calls.push(text);
+      // A snapshot without a workspaces array: applySessionSnapshot
+      // rejects it and refreshOnline must fall through to the legacy path.
+      if (text === "/api/session-snapshot")
+        return { ok: true, status: 200, json: async () => ({ result: { agents: [] } }) };
+      const result = text.includes("workspaces")
+        ? { workspaces: [{ workspace_id: "ws1", label: "repo" }] }
+        : text.includes("workspace-order")
+          ? { order: ["ws1"] }
+          : text.includes("worktrees")
+            ? { source: {}, worktrees: [] }
+            : text.includes("tabs")
+              ? { tabs: [{ workspace_id: "ws1", tab_id: "t1", number: 1 }] }
+              : text.includes("panes")
+                ? { panes: [{ workspace_id: "ws1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" }] }
+                : text.includes("pane-layout")
+                  ? { layout: { panes: [] } }
+                  : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+
+    const result = await vm.runInContext(
+      "refreshSeq = 1; refreshOnline(1).then(() => ({ tab: state.tab, pane: state.pane }))",
+      ctx,
+    );
+
+    equal(result.tab, "t1");
+    equal(result.pane, "p1");
+    ok(calls.includes("/api/workspaces"), "legacy workspaces call must fire");
+    // The snapshot flag survives a shape mismatch (only transport errors
+    // disable it); the next refresh can retry the bootstrap.
+    equal(vm.runInContext("state.snapshotBootstrap", ctx), true);
+  });
+
+  it("disables the snapshot bootstrap after a failed request and retries legacy", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.location.pathname = "/session/default/workspace/ws1/tab/t1/pane/p1";
+    ctx.Terminal = class {
+      open() {}
+      onData() {}
+      onScroll() {}
+      loadAddon() {}
+      clear() {}
+      focus() {}
+      resize() {}
+      dispose() {}
+    };
+    ctx.fetch = async (url) => {
+      const text = String(url);
+      calls.push(text);
+      if (text === "/api/session-snapshot")
+        return { ok: false, status: 500, json: async () => ({ error: "down" }) };
+      const result = text.includes("workspaces")
+        ? { workspaces: [{ workspace_id: "ws1", label: "repo" }] }
+        : text.includes("workspace-order")
+          ? { order: [] }
+          : text.includes("worktrees")
+            ? { source: {}, worktrees: [] }
+            : text.includes("tabs")
+              ? { tabs: [{ workspace_id: "ws1", tab_id: "t1", number: 1 }] }
+              : text.includes("panes")
+                ? { panes: [{ workspace_id: "ws1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" }] }
+                : text.includes("pane-layout")
+                  ? { layout: { panes: [] } }
+                  : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+    const before = calls.length;
+
+    const result = await vm.runInContext(
+      "refreshSeq = 1; refreshOnline(1).then(() => ({ tab: state.tab, pane: state.pane }))",
+      ctx,
+    );
+
+    equal(result.tab, "t1");
+    equal(result.pane, "p1");
+    // Sticky-off: the failed request disabled the bootstrap for the rest
+    // of the session, so later refreshes skip the snapshot call.
+    equal(vm.runInContext("state.snapshotBootstrap", ctx), false);
+    await vm.runInContext("refreshSeq = 2; refreshOnline(2)", ctx);
+    equal(
+      calls.slice(before).filter((c) => c === "/api/session-snapshot").length,
+      1,
+    );
+    ok(calls.slice(before).includes("/api/workspaces"));
+  });
+
+  it("applies a flat snapshot envelope without the nested result.snapshot", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.location.pathname = "/session/default/workspace/ws1/tab/t1/pane/p1";
+    ctx.Terminal = class {
+      open() {}
+      onData() {}
+      onScroll() {}
+      loadAddon() {}
+      clear() {}
+      focus() {}
+      resize() {}
+      dispose() {}
+    };
+    // Flat result.* shape: the older wrapper and TUI-normalized responses
+    // carry the arrays directly under result.
+    ctx.fetch = async (url) => {
+      const text = String(url);
+      calls.push(text);
+      if (text === "/api/session-snapshot")
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: {
+              workspaces: [{ workspace_id: "ws1", label: "flat", cwd: "/flat" }],
+              tabs: [{ workspace_id: "ws1", tab_id: "t1", number: 1 }],
+              panes: [
+                { workspace_id: "ws1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" },
+              ],
+              layouts: [
+                {
+                  workspace_id: "ws1",
+                  tab_id: "t1",
+                  layout: { panes: [{ pane_id: "p1", rect: { width: 80, height: 24 } }] },
+                },
+              ],
+              agents: [],
+              worktree_results: [],
+              workspace_order: ["ws1"],
+            },
+          }),
+        };
+      const result = text.includes("workspaces")
+        ? { workspaces: [] }
+        : text.includes("versions")
+          ? { versions: {} }
+          : text.includes("server-settings")
+            ? { settings: {} }
+            : text.includes("sessions")
+              ? { sessions: [] }
+              : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+    let stable = 0;
+    let seen = -1;
+    while (stable < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (calls.length === seen) stable += 1;
+      else {
+        stable = 0;
+        seen = calls.length;
+      }
+    }
+    const before = calls.length;
+
+    const result = await vm.runInContext(
+      "refreshSeq = 2; refreshOnline(2).then(() => ({ tab: state.tab, pane: state.pane, terminalId: state.terminalId }))",
+      ctx,
+    );
+
+    equal(result.tab, "t1");
+    equal(result.pane, "p1");
+    equal(result.terminalId, "term1");
+    // The flat shape applied in one request, no legacy fallback.
+    equal(calls.slice(before).length, 1);
+    equal(vm.runInContext("state.workspaceOrder.join(',')", ctx), "ws1");
+  });
+
+  it("clears derived state when the snapshot has zero workspaces", async () => {
+    const ctx = context();
+    const calls = [];
+    ctx.location.pathname = "/session/default/workspace/ws1/tab/t1/pane/p1";
+    ctx.Terminal = class {
+      open() {}
+      onData() {}
+      onScroll() {}
+      loadAddon() {}
+      clear() {}
+      focus() {}
+      resize() {}
+      dispose() {}
+    };
+    ctx.fetch = async (url) => {
+      const text = String(url);
+      calls.push(text);
+      if (text === "/api/session-snapshot")
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: {
+              snapshot: { workspaces: [], tabs: [], panes: [], agents: [] },
+              worktree_results: [],
+              workspace_order: [],
+            },
+          }),
+        };
+      const result = text.includes("versions")
+        ? { versions: {} }
+        : text.includes("server-settings")
+          ? { settings: {} }
+          : text.includes("sessions")
+            ? { sessions: [] }
+            : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+    let stable = 0;
+    let seen = -1;
+    while (stable < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (calls.length === seen) stable += 1;
+      else {
+        stable = 0;
+        seen = calls.length;
+      }
+    }
+    const before = calls.length;
+
+    const result = await vm.runInContext(
+      "refreshSeq = 2; refreshOnline(2).then(() => ({ ws: state.ws, tab: state.tab, pane: state.pane }))",
+      ctx,
+    );
+
+    // No workspace in the snapshot: selection and derived rows clear in
+    // one request, without the legacy no-workspace workspaces fetch.
+    equal(result.ws, null);
+    equal(result.tab, null);
+    equal(result.pane, null);
+    equal(calls.slice(before).length, 1);
+    equal(vm.runInContext("state.workspaces.length", ctx), 0);
+    equal(vm.runInContext("state.worktrees.length", ctx), 0);
+  });
+
+  it("applies session-wide snapshot fields on a cold boot with no workspace selected", async () => {
+    // A boot at "/" has no workspace in the URL, so applySessionSnapshot
+    // takes the !state.ws early return. The drag order and worktree rows
+    // are session-wide and must still land; this is the legacy path's
+    // behavior and the cold-boot reload regression it guards.
+    const ctx = context();
+    const calls = [];
+    ctx.location.pathname = "/session/default";
+    ctx.Terminal = class {
+      open() {}
+      onData() {}
+      onScroll() {}
+      loadAddon() {}
+      clear() {}
+      focus() {}
+      resize() {}
+      dispose() {}
+    };
+    ctx.fetch = async (url) => {
+      const text = String(url);
+      calls.push(text);
+      if (text === "/api/session-snapshot")
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: {
+              snapshot: {
+                workspaces: [
+                  { workspace_id: "ws1", label: "repo", cwd: "/repo" },
+                  { workspace_id: "ws2", label: "other", cwd: "/other" },
+                ],
+                tabs: [],
+                panes: [],
+                layouts: [],
+                agents: [],
+              },
+              worktree_results: [
+                {
+                  result: {
+                    source: {
+                      source_workspace_id: "ws1",
+                      repo_name: "repo",
+                      source_checkout_path: "/repo",
+                    },
+                    worktrees: [{ path: "/repo", branch: "main" }],
+                  },
+                },
+                null,
+              ],
+              workspace_order: ["ws2", "ws1"],
+            },
+          }),
+        };
+      const result = text.includes("workspaces")
+        ? { workspaces: [{ workspace_id: "ws1", label: "repo" }] }
+        : text.includes("versions")
+          ? { versions: {} }
+          : text.includes("server-settings")
+            ? { settings: {} }
+            : text.includes("sessions")
+              ? { sessions: [] }
+              : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+    let stable = 0;
+    let seen = -1;
+    while (stable < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (calls.length === seen) stable += 1;
+      else {
+        stable = 0;
+        seen = calls.length;
+      }
+    }
+    const before = calls.length;
+
+    await vm.runInContext("refreshSeq = 2; refreshOnline(2)", ctx);
+
+    equal(vm.runInContext("state.ws", ctx), null);
+    equal(vm.runInContext("state.workspaceOrder.join(',')", ctx), "ws2,ws1");
+    equal(vm.runInContext("state.worktrees.length", ctx), 1);
+    equal(vm.runInContext("state.worktrees[0].source_workspace_id", ctx), "ws1");
+    equal(vm.runInContext("state.workspaceBranches.ws1", ctx), "main");
+    // One snapshot request, no legacy workspace-order fetch to repair it.
+    equal(calls.slice(before).length, 1);
   });
 
   it("clears selected pane when no fallback pane remains", () => {
@@ -4109,6 +4697,84 @@ describe("app bundle load", () => {
     equal(JSON.stringify(result.workspaces), JSON.stringify(["ws2"]));
   });
 
+  it("clears workspace client state when worktree.removed identifies the checkout path", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    const result = vm.runInContext(
+      `state.workspaces = [
+         { workspace_id: "ws1", cwd: "/repo/alpha" },
+         { workspace_id: "ws2", cwd: "/repo/beta" },
+       ];
+       state.workspaceShell = {
+         "ws1": { mode: "git" },
+         "path:/repo/alpha": { mode: "git" },
+       };
+       state.workspacePanes = {
+         "ws1": { root: { kind: "pane", paneId: "p1", tabs: ["editor:src/demo.py"] } },
+       };
+       saveWorkspaceShellStates();
+       HerdrWorkspacePanes.saveWorkspacePanesStates();
+       forgetClosedSelection("worktree.removed", { path: "/repo/alpha" });
+       ({
+         shell: state.workspaceShell["ws1"],
+         shellPath: state.workspaceShell["path:/repo/alpha"],
+         panes: state.workspacePanes["ws1"],
+         workspaces: state.workspaces.map((workspace) => workspace.workspace_id),
+         storageShell: localStorage.getItem("herdr-web-workspace-shell"),
+         storagePanes: localStorage.getItem("herdr-web-workspace-panes"),
+       });`,
+      ctx,
+    );
+
+    equal(result.shell, undefined);
+    equal(result.shellPath, undefined);
+    equal(result.panes, undefined);
+    equal(JSON.stringify(result.workspaces), JSON.stringify(["ws2"]));
+    equal(result.storageShell, null);
+    equal(result.storagePanes, null);
+  });
+
+  it("drops workspaces by workspace_ids when worktree.removed carries ids, even when the path matches nothing", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // ids beat path matching: a stale or mismatched path must not stop
+    // the ids from tearing down their workspaces.
+    const result = vm.runInContext(
+      `state.workspaces = [
+         { workspace_id: "ws1", cwd: "/repo/alpha" },
+         { workspace_id: "ws2", cwd: "/repo/beta" },
+       ];
+       state.workspaceShell = {
+         "ws1": { mode: "git" },
+         "path:/repo/alpha": { mode: "git" },
+       };
+       state.workspacePanes = {
+         "ws1": { root: { kind: "pane", paneId: "p1", tabs: ["editor:src/demo.py"] } },
+       };
+       saveWorkspaceShellStates();
+       HerdrWorkspacePanes.saveWorkspacePanesStates();
+       forgetClosedSelection("worktree.removed", { path: "/gone/elsewhere", workspace_ids: ["ws1"] });
+       ({
+         shell: state.workspaceShell["ws1"],
+         shellPath: state.workspaceShell["path:/repo/alpha"],
+         panes: state.workspacePanes["ws1"],
+         workspaces: state.workspaces.map((workspace) => workspace.workspace_id),
+         storageShell: localStorage.getItem("herdr-web-workspace-shell"),
+         storagePanes: localStorage.getItem("herdr-web-workspace-panes"),
+       });`,
+      ctx,
+    );
+
+    equal(result.shell, undefined);
+    equal(result.shellPath, undefined);
+    equal(result.panes, undefined);
+    equal(JSON.stringify(result.workspaces), JSON.stringify(["ws2"]));
+    equal(result.storageShell, null);
+    equal(result.storagePanes, null);
+  });
+
   it("fast-refreshes workspace.closed events", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
@@ -4247,75 +4913,52 @@ describe("app bundle load", () => {
     equal(ctx.normalizeSidebarWorkspacePercent(90), 80);
   });
 
-  it("defines tab activity setting and badge", () => {
+  it("drops the orphaned tab activity feature", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
-    match(source, /id="optShowTabActivity"/);
-    match(source, /tab-activity/);
-    match(source, /tabActivityLabel/);
-    match(source, /updateTabActivity\(panesByTab, agentsByTab\)/);
+    ok(!source.includes("optShowTabActivity"));
+    ok(!source.includes("tabActivity"));
+    ok(!source.includes("renderTabButton"));
     match(source, /function pushMapList\(map, key, value\)/);
     ok(!source.includes("const panes = state.panes"));
     ok(!source.includes("const agents = state.agents"));
   });
 
-  it("renders current panel as label with add and close buttons", () => {
+  it("workspace row keeps the panel switcher out of the row (Phase 5)", () => {
     const ctx = context();
-    ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ panelCloseMode: "always" }));
     vm.runInContext(source, ctx);
-    const html = vm.runInContext(
+    vm.runInContext(
       `state.ws = "ws1";
        state.tab = "tab1";
        state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "main" }];
-       renderPanelField();`,
+       renderWorkspaceCard({ workspace_id: "ws1", label: "ws" });`,
       ctx,
     );
-
-    match(html, /panel-label/);
-    match(html, /panel-add/);
-    match(html, /panel-close/);
-    match(html, /Close current panel/);
-    ok(!html.includes("panelSelector"));
+    ok(!source.includes("function renderPanelField"));
+    ok(!source.includes("panelSelector"));
   });
 
-  it("resizes workspace pane for an open panel selector", () => {
-    const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
-    const chromeCss = readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8");
-
-    match(renderSource, /function syncWorkspacePanelMenuSize\(\)/);
-    match(renderSource, /querySelector\("\.panel-menu"\)/);
-    match(renderSource, /--workspace-panel-menu-min-height/);
-    match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \{[\s\S]*?min-height: max\(20%, 90px, var\(--workspace-panel-menu-min-height, 0px\)\);/);
-    match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \.sidebar-scroll \{[\s\S]*?overflow: visible;/);
-  });
-
-  it("caps the open panel menu to the visible sidebar on short viewports", () => {
+  it("the panel menu resize machinery is gone (Phase 5)", () => {
     const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
     const chromeCss = readFileSync(new URL("./desktop/app_css/chrome.css", import.meta.url), "utf8");
     const baseCss = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
 
-    // The pane min-height must never exceed what the sidebar section shows
-    // (agents pane keeps its 110px), otherwise the grown pane overflows the
-    // overflow:hidden section and the menu clips.
-    match(renderSource, /paneAvailable/);
-    match(renderSource, /menuAvailable/);
-    match(renderSource, /--workspace-panel-menu-max-height/);
-    match(renderSource, /Math\.min\(Math\.ceil\(menuRect\.bottom - paneRect\.top \+ 10\), paneAvailable\)/);
+    ok(!renderSource.includes("syncWorkspacePanelMenuSize"));
+    ok(!renderSource.includes(".panel-menu"));
+    ok(!renderSource.includes("--workspace-panel-menu-min-height"));
+    ok(!chromeCss.includes("panel-menu-open"));
+    ok(!baseCss.includes(".panel-menu"));
     // The workspace pane keeps a floor so the selector row clears the split
     // handle even on tiny viewports.
     match(chromeCss, /\.sidebar-pane\.workspaces-pane \{[\s\S]*?min-height: max\(20%, 90px\);/);
-    match(chromeCss, /\.sidebar-pane\.workspaces-pane\.panel-menu-open \{[\s\S]*?min-height: max\(20%, 90px, var\(--workspace-panel-menu-min-height, 0px\)\);/);
-    // The menu itself scrolls internally instead of overflowing.
-    match(baseCss, /\.panel-menu \{[\s\S]*?max-height: var\(--workspace-panel-menu-max-height, none\);[\s\S]*?overflow-y: auto;/);
   });
 
-  it("keeps the panel menu out of sidebar row paint containment", () => {
+  it("keeps the selected sidebar row out of paint containment", () => {
     const baseCss = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
 
-    // .section .item { content-visibility:auto } clips the dropdown to the
-    // row box (paint containment). The selected row hosts the panel menu,
-    // so it must opt out.
+    // .section .item { content-visibility:auto } clips descendants to the
+    // row box (paint containment); the selected row opts out.
     match(baseCss, /\.section \.item \{[\s\S]*?content-visibility: auto;/);
     match(baseCss, /\.section \.item\.active \{[\s\S]*?content-visibility: visible;/);
   });
@@ -4883,6 +5526,7 @@ describe("app bundle load", () => {
   it("renders Git log like a four-column graph table with ref chips", () => {
     const gitLogCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
     const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
+    const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
 
     match(assetsSource, /include_str!\("assets\/desktop\/git_ui\/log\.js"\)/);
     match(gitUiSource, /logAll: true,/);
@@ -4895,8 +5539,9 @@ describe("app bundle load", () => {
     match(fileBrowserSource, /menu\.kind === "file" \? menuIcon\("history", "Show history"\) : ""/);
     match(fileBrowserSource, /if \(action === "history"\) \{ showHistoryPath\(menu\.path\); return; \}/);
     match(fileBrowserSource, /role="menuitem"/);
-    match(fileBrowserSource, /hide\(\);\n\s+window\.HerdrGitUi\.openFileHistory/);
-    match(fileBrowserSource, /openFileHistory\(encodeURIComponent\(state\.cwd\), encodeURIComponent\(path\)\)/);
+    match(fileBrowserSource, /hide\(\);\n\s+window\.HerdrShowFileHistory\(cwd, path\)/);
+    match(renderSource, /window\.HerdrShowFileHistory = showFileHistoryPath;/);
+    match(renderSource, /function showFileHistoryPath\(cwd, path\) \{\n  if \(!cwd \|\| !path\) return;\n  try \{\n    await ensureGitUiLoaded\(\);/);
     match(gitUiSource, /\/api\/git-ui\/path-info\?cwd=\$\{encodeURIComponent\(cwd\)\}&path=\$\{encodeURIComponent\(path\)\}/);
     match(gitUiSource, /cwd = info\.repo_root \|\| cwd;/);
     match(gitUiSource, /path = info\.file \|\| path;/);
@@ -5566,130 +6211,14 @@ describe("app bundle load", () => {
   });
 });
 
-describe("temporary overlay vs main shell toggles", () => {
-  let source;
-  beforeEach(() => {
-    // Full production bundle order (mirrors the "app bundle load" suite):
-    // shared helpers, search, then desktop modules. render.js shares the
-    // bundle scope with terminal.js/shortcuts.js helpers (escapeHtml,
-    // globalShortcutPrefixLabel), so partial loads miss them.
-    const desktopAppSource = [
-      "./desktop/app_js/core.js",
-      "./desktop/app_js/workspace_shell.js",
-      "./desktop/app_js/panel_switcher.js",
-      "./desktop/app_js/render.js",
-      "./desktop/app_js/terminal.js",
-      "./desktop/app_js/worktrees.js",
-      "./desktop/app_js/shortcuts.js",
-      "./desktop/app_js/workspace_create.js",
-      "./desktop/app_js/bindings.js",
-    ]
-      .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
-      .join("");
-    source =
-      readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") +
-      "\n" +
-      readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
-      "\n" +
-      readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
-      "\n" +
-      readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
-      "\n" +
-      readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
-      "\n" +
-      desktopAppSource;
-  });
-
-  it("closing a minimized temporary overlay before the main shell opens the drawer", async () => {
-    const ctx = context();
-    vm.runInContext(source, ctx);
-    vm.runInContext("state.workspaces = [{ workspace_id: 'ws-1', cwd: '/repo/main' }]; state.ws = 'ws-1';", ctx);
-
-    const calls = { closeGit: 0, closeFiles: 0, gitOpen: 0, filesOpen: 0, gitHide: 0, filesHide: 0 };
-    ctx.HerdrGitUi = {
-      open() { calls.gitOpen += 1; return Promise.resolve({ ok: true }); },
-      hide() { calls.gitHide += 1; },
-      isWorkspaceVisible: () => false,
-    };
-    ctx.HerdrFileBrowser = {
-      open() { calls.filesOpen += 1; return Promise.resolve({ ok: true }); },
-      hide() { calls.filesHide += 1; },
-      isWorkspaceVisible: () => false,
-    };
-    ctx.HerdrTempOverlays = {
-      isMinimized: () => true,
-      closeGit() { calls.closeGit += 1; },
-      closeFiles() { calls.closeFiles += 1; },
-    };
-
-    await ctx.openWorkspaceGitUi("ws-1");
-    equal(calls.closeGit, 1, "minimized temp git overlay closed before the main git shell opens");
-    equal(calls.gitOpen, 1, "main git drawer opened");
-
-    await ctx.openWorkspaceFileBrowser("ws-1");
-    equal(calls.closeFiles, 1, "minimized temp files overlay closed before the main file browser opens");
-    equal(calls.filesOpen, 1, "main file browser opened");
-  });
-
-  it("leaves an unminimized temporary overlay alone: only the cross-hide runs", async () => {
-    const ctx = context();
-    vm.runInContext(source, ctx);
-    vm.runInContext("state.workspaces = [{ workspace_id: 'ws-1', cwd: '/repo/main' }]; state.ws = 'ws-1';", ctx);
-
-    const calls = { closeGit: 0, closeFiles: 0, gitOpen: 0, filesOpen: 0 };
-    ctx.HerdrGitUi = {
-      open() { calls.gitOpen += 1; return Promise.resolve({ ok: true }); },
-      hide() {},
-      isWorkspaceVisible: () => false,
-    };
-    ctx.HerdrFileBrowser = {
-      open() { calls.filesOpen += 1; return Promise.resolve({ ok: true }); },
-      hide() {},
-      isWorkspaceVisible: () => false,
-    };
-    ctx.HerdrTempOverlays = {
-      isMinimized: () => false,
-      closeGit() { calls.closeGit += 1; },
-      closeFiles() { calls.closeFiles += 1; },
-    };
-
-    await ctx.openWorkspaceGitUi("ws-1");
-    equal(calls.closeGit, 0, "visible temp overlay not closed by the main toggle");
-    equal(calls.gitOpen, 1, "main git drawer opened");
-  });
-
-  it("still opens the main drawers when HerdrTempOverlays is absent", async () => {
-    const ctx = context();
-    vm.runInContext(source, ctx);
-    vm.runInContext("state.workspaces = [{ workspace_id: 'ws-1', cwd: '/repo/main' }]; state.ws = 'ws-1';", ctx);
-
-    const calls = { gitOpen: 0, filesOpen: 0 };
-    ctx.HerdrGitUi = {
-      open() { calls.gitOpen += 1; return Promise.resolve({ ok: true }); },
-      hide() {},
-      isWorkspaceVisible: () => false,
-    };
-    ctx.HerdrFileBrowser = {
-      open() { calls.filesOpen += 1; return Promise.resolve({ ok: true }); },
-      hide() {},
-      isWorkspaceVisible: () => false,
-    };
-
-    await ctx.openWorkspaceGitUi("ws-1");
-    equal(calls.gitOpen, 1, "git drawer opened without the temp overlay host");
-    await ctx.openWorkspaceFileBrowser("ws-1");
-    equal(calls.filesOpen, 1, "file browser opened without the temp overlay host");
-  });
-});
-
 describe("workspace sidebar order", () => {
   // Mirror the production concat order from assets.rs DESKTOP_JS: shared
   // core first, then desktop modules with worktrees.js before shortcuts.js.
   const desktopModules = [
     "./desktop/app_js/core.js",
     "./desktop/app_js/workspace_shell.js",
-    "./desktop/app_js/legacy_polling.js",
-    "./desktop/app_js/panel_switcher.js",
+    "./desktop/app_js/right_sidebar.js",
+    "./desktop/app_js/workspace_panes.js",
     "./desktop/app_js/render.js",
     "./desktop/app_js/terminal.js",
     "./desktop/app_js/lens.js",
@@ -5880,7 +6409,7 @@ describe("terminal loading and failed states", () => {
       [
         "./desktop/app_js/core.js",
         "./desktop/app_js/workspace_shell.js",
-        "./desktop/app_js/panel_switcher.js",
+        "./desktop/app_js/workspace_panes.js",
         "./desktop/app_js/render.js",
         "./desktop/app_js/terminal.js",
         "./desktop/app_js/worktrees.js",
@@ -5965,9 +6494,13 @@ describe("a11y audit contract", () => {
     match(appHtml, /aria-live="polite"/);
   });
 
-  it("exposes selected state on desktop tabs and closes via labeled controls", () => {
-    match(renderSource, /aria-current="page"/);
-    match(renderSource, /aria-label="Close panel"/);
+  it("exposes selected state on pane tabs and closes via labeled controls", () => {
+    const panesSource = read("./desktop/app_js/workspace_panes.js");
+    // The top tab bar died with the pane refactor: selected state lives on
+    // the pane strip tabs now (role=tab + aria-selected), and render.js
+    // keeps the tab hover info behind those titles.
+    match(panesSource, /aria-selected="\${isActive \? "true" : "false"}/);
+    match(panesSource, /aria-label="Close panel"/);
   });
 
   it("labels mobile header icon buttons and the connection state", () => {
@@ -5977,8 +6510,8 @@ describe("a11y audit contract", () => {
     doesNotMatch(mobileSource, /id="mobileBack"/);
     doesNotMatch(mobileSource, /id="mobileSearch"["\s]/);
     doesNotMatch(mobileSource, /id="mobileTabsBtn"/);
-    // Settings and the temporary terminal moved off the header into the
-    // More grid; the header must not render either button anymore.
+    // Settings moved off the header into the More grid; the header must not
+    // render that button anymore.
     doesNotMatch(mobileSource, /id="mobileSettings"/);
     doesNotMatch(mobileSource, /id="mobileTempTerminal"/);
     match(mobileSource, /role="status"/);

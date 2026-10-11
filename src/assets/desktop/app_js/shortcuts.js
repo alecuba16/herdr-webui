@@ -47,62 +47,7 @@ function closeCurrentPanelShortcut(force = false) {
   closeTab(state.tab);
   return true;
 }
-function tempTerminalModalOpen() {
-  return !!(tempTerminal && tempTerminal.isVisible && tempTerminal.isVisible());
-}
-function tempTerminalShortcutAllowed() {
-  if (!tempTerminalModalOpen()) return false;
-  // If a close confirmation dialog is visible, block shortcut toggling.
-  const modals = document.querySelectorAll(".temp-terminal-backdrop");
-  for (const modal of modals) {
-    const confirm = modal.querySelector && modal.querySelector(".temp-terminal-confirm");
-    if (confirm && confirm.style.display && confirm.style.display !== "none") return false;
-  }
-  return true;
-}
-// While a temporary Files/Git overlay is visible, only the temporary-overlay
-// family shortcuts pass through (their own toggles + the temp terminal ones,
-// all overlays of the same family); everything else falls to the surface.
-function tempOverlayShortcutAllowed() {
-  const overlays = globalThis.HerdrTempOverlays;
-  if (!overlays || !overlays.isVisible || !overlays.isVisible()) return false;
-  // The directory picker opened from "Change folder" owns the keys while
-  // it is up: block shortcut dispatching entirely.
-  if (document.getElementById("directoryPickerModal")) return false;
-  return true;
-}
-function tempOverlayOwnShortcut(e) {
-  const webui = options.webuiShortcuts || {};
-  const key = shortcutKey(e);
-  return key === webui.tempFilesToggle || key === webui.tempGitToggle ||
-    key === webui.tempTerminalToggle || key === webui.tempTerminalPromote;
-}
-function toggleTempTerminalShortcut() {
-  if (!tempTerminal) return false;
-  if (tempTerminal.isVisible && tempTerminal.isVisible()) {
-    if (tempTerminal.minimize) tempTerminal.minimize();
-    return true;
-  }
-  const ws = selectedOrDefaultWorkspace();
-  const folder = ws ? (workspacePath(ws) || "") : "";
-  tempTerminal.open(folder);
-  return true;
-}
-// Fresh temporary Files/Git overlays open on the selected workspace path
-// (or the default folder); an already-open overlay keeps its own folder and
-// the toggle just restores/minimizes it.
-function tempOverlayFolder() {
-  const overlays = globalThis.HerdrTempOverlays;
-  if (overlays) {
-    const filesOpen = overlays.files() && overlays.files().isOpen();
-    const gitOpen = overlays.git() && overlays.git().isOpen();
-    if (filesOpen || gitOpen) return "";
-  }
-  const ws = selectedOrDefaultWorkspace();
-  return ws ? (workspacePath(ws) || "") : "";
-}
 function closeShortcutKeydown(e) {
-  if (tempTerminalModalOpen()) return false;
   if (!handleCloseShortcut(e)) return false;
   e.preventDefault();
   e.stopPropagation();
@@ -268,6 +213,19 @@ function openFocusedFileBrowserFind(target) {
   try { return !!fileBrowser.openFocusedFind(target); }
   catch (_) { return false; }
 }
+// Ctrl+F with no focused editor lands on the right rail search panel:
+// expand the column first (forceOpen skips the expand branches), then host
+// the panel, whose open() focuses #searchPanelInput and places the caret.
+function openAppFindFallback() {
+  if (window.HerdrSearchPanel && window.HerdrOpenWorkspaceSearchPanel) {
+    if (window.HerdrRightSidebar && window.HerdrRightSidebar.collapsed && window.HerdrRightSidebar.collapsed())
+      window.HerdrRightSidebar.setCollapsed(false);
+    void window.HerdrOpenWorkspaceSearchPanel(state.ws, { forceOpen: true });
+    return true;
+  }
+  openSearchPalette();
+  return true;
+}
 function showShortcutPrefixOverlay() {
   shortcutPrefixUntil = Date.now() + 5000;
   const overlay = el("shortcutPrefixOverlay");
@@ -305,7 +263,10 @@ function runPrefixedShortcut(e) {
       return true;
     },
     newPanel: () => {
+      // With no workspace the panel cannot exist yet: route the press to
+      // the open flow instead, mirroring the strip + fallback.
       if (state.ws) newTab();
+      else openWorktreeOpenModal(selectedWorkspaceRepoPath(), true);
       return true;
     },
     openWorktrees: () => {
@@ -351,35 +312,36 @@ function runPrefixedShortcut(e) {
       focusTerminal(true);
       return true;
     },
-    tempTerminalToggle: () => {
-      return toggleTempTerminalShortcut();
-    },
-    tempFilesToggle: () => {
-      const overlays = globalThis.HerdrTempOverlays;
-      if (!overlays) return false;
-      const folder = tempOverlayFolder();
-      overlays.toggleFiles(folder);
-      return true;
-    },
-    tempGitToggle: () => {
-      const overlays = globalThis.HerdrTempOverlays;
-      if (!overlays) return false;
-      const folder = tempOverlayFolder();
-      overlays.toggleGit(folder);
-      return true;
-    },
-    tempTerminalPromote: () => {
-      // Only meaningful with the overlay visible: promote the visible
-      // temporary terminal into a workspace at the shell's live cwd.
-      if (!tempTerminal || !tempTerminal.isVisible || !tempTerminal.isVisible()) return false;
-      if (tempTerminal.promote) tempTerminal.promote();
-      return true;
-    },
     focusNext: () => {
       return focusRelativeControl(1);
     },
     focusPrev: () => {
       return focusRelativeControl(-1);
+    },
+    splitRight: () => {
+      return splitPaneRight();
+    },
+    splitDown: () => {
+      return splitPaneDown();
+    },
+    closePane: () => {
+      closeActivePane();
+      return true;
+    },
+    moveTabNextPane: () => {
+      return moveActiveTabToNextPane();
+    },
+    maximizePane: () => {
+      return maximizeActivePane();
+    },
+    togglePaneMenu: () => {
+      // The active pane is a tree pointer, not a DOM class: resolve its
+      // element, then the [⋮] inside its strip.
+      const pane = activePaneElement();
+      const button = pane && pane.querySelector ? pane.querySelector(".pane-menu-button") : null;
+      if (!button) return false;
+      togglePaneMenu(button);
+      return true;
     },
   };
   const key = shortcutKey(e);
@@ -404,33 +366,14 @@ function handleGlobalShortcut(e) {
       return consumeShortcutEvent(e);
     }
   }
-  const tempTerminalOnly = modalOpen() && tempTerminalShortcutAllowed();
-  const tempOverlayOnly = !tempTerminalOnly && modalOpen() && tempOverlayShortcutAllowed();
-  if (modalOpen() && !tempTerminalOnly && !tempOverlayOnly) {
+  if (modalOpen()) {
     hideShortcutPrefixOverlay();
     return false;
   }
   const prefixActive = shortcutPrefixUntil > Date.now();
-  if (tempTerminalOnly || tempOverlayOnly) {
-    if (prefixActive) {
-      hideShortcutPrefixOverlay();
-      // While a temporary overlay is open the prefix branch only honours
-      // its own family shortcuts (terminal + Files/Git toggles): anything
-      // else falls through, so the surface keeps receiving its input.
-      const webui = options.webuiShortcuts || {};
-      const key = shortcutKey(e);
-      if (!tempOverlayOwnShortcut(e) && key !== webui.tempTerminalToggle && key !== webui.tempTerminalPromote)
-        return false;
-      runPrefixedShortcut(e);
-      return consumeShortcutEvent(e);
-    }
-    if (!isShortcutPrefix(e)) return false;
-    showShortcutPrefixOverlay();
-    return consumeShortcutEvent(e);
-  }
   if (appFindShortcut) {
     if (openFocusedFileBrowserFind(e.target)) return consumeShortcutEvent(e);
-    openSearchPalette();
+    openAppFindFallback();
     return consumeShortcutEvent(e);
   }
   if (isSearchShortcut(e)) {

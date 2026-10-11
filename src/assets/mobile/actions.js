@@ -16,7 +16,6 @@
     getMobileTerminal,
     getMobileSearch,
     getMobileWorktrees,
-    getMobileTempTerminal,
     getMobileTheme,
   }) {
     function selectWorkspace(id) {
@@ -79,7 +78,14 @@
 
     let createPanelInFlight = false;
     async function createPanel() {
-      if (!state.ws) return;
+      if (!state.ws) {
+        // No workspace yet: a panel cannot exist. Route the tap to the
+        // worktree discovery flow seeded with the default folder, the
+        // mobile twin of the desktop + fallback.
+        state.worktreeDiscoverPath = state.defaultFolder || "";
+        runMobileAction("discover-worktrees");
+        return;
+      }
       // Guard: rapid re-taps must not POST one tab.create per event.
       if (createPanelInFlight) return;
       createPanelInFlight = true;
@@ -113,15 +119,26 @@
 
     async function closeCurrentPanel() {
       if (!state.tab) return;
-      const tab = state.tabs.find((item) => item.tab_id === state.tab) || { tab_id: state.tab, workspace_id: state.ws };
-      const label = tabTitle(tab);
+      // Refreshes re-scope state.tab from the route mid-flight (ws:id form),
+      // so a strict === lookup against the bare ids in state.tabs can miss
+      // and the confirm would name or close the wrong panel. Resolve through
+      // sameScopedId and freeze the bare id before the confirm await: the
+      // POST must target the panel the user saw, even if a refresh lands
+      // while the sheet is open.
+      const current = state.tabs.find((item) => sameScopedId(state.ws, item.tab_id, state.tab));
+      if (!current) return;
+      const tabId = current.tab_id;
+      const label = tabTitle(current);
       if (!(await confirmFn(`Close panel "${label}"?`))) return;
       try {
-        const workspaceTabs = state.tabs.filter((item) => item.workspace_id === state.ws);
-        if (workspaceTabs.length > 1) {
-          await api(`/api/tabs/${encodeURIComponent(state.tab)}/close`, { method: "POST" });
-        } else if (state.ws) {
-          await api(`/api/workspaces/${encodeURIComponent(state.ws)}/close`, { method: "POST" });
+        // One close call: the workspace survives its last panel, the
+        // terminal screen falls back to its no-terminal state. A
+        // not-found race (the tab closed elsewhere while the sheet was
+        // open) is the outcome we wanted: keep the post-close flow.
+        try {
+          await api(`/api/tabs/${encodeURIComponent(tabId)}/close`, { method: "POST" });
+        } catch (error) {
+          if (!String(error.message || error).includes("not found")) throw error;
         }
         state.tab = null;
         state.pane = null;
@@ -165,36 +182,6 @@
       if (action === "create-worktree") {
         state.worktreeCreateExpanded = true;
         showScreen("worktrees");
-        return;
-      }
-      if (action === "temp-terminal") {
-        const tempTerminal = getMobileTempTerminal();
-        if (!tempTerminal) return;
-        // Restore-first: a minimized session comes back on the card click
-        // (the More grid meta text promises exactly that). Only open a new
-        // one when nothing is live yet. The manager restore() picks the
-        // most recently minimized session and hides the restore bar.
-        if (tempTerminal.isVisible && tempTerminal.isVisible()) return;
-        if (tempTerminal.restore) tempTerminal.restore();
-        if (tempTerminal.isVisible && tempTerminal.isVisible()) return;
-        tempTerminal.open(currentWorkspaceCwd());
-        return;
-      }
-      if (action === "temp-files") {
-        const overlays = globalThis.HerdrMobileTempOverlays;
-        if (!overlays) return;
-        // Same restore-first contract as the temporary terminal card.
-        const files = overlays.files && overlays.files();
-        if (files && files.isOpen && files.isOpen()) { if (files.isMinimized()) files.restore(); return; }
-        overlays.openFiles(currentWorkspaceCwd());
-        return;
-      }
-      if (action === "temp-git") {
-        const overlays = globalThis.HerdrMobileTempOverlays;
-        if (!overlays) return;
-        const git = overlays.git && overlays.git();
-        if (git && git.isOpen && git.isOpen()) { if (git.isMinimized()) git.restore(); return; }
-        overlays.openGit(currentWorkspaceCwd());
         return;
       }
       if (action === "sessions") {

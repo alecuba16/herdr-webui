@@ -84,7 +84,7 @@ The wterm ANSI palette lives in tokens as `--term-*` custom properties
 (`--term-black` ... `--term-bright-white`, Catppuccin dark default,
 `body.light` overrides). `HerdrAppHelpers.readTerminalThemeTokens()` reads
 them via `getComputedStyle` (normalizing `rgb()` to `#rrggbb`) and desktop
-`terminalTheme()` plus the mobile temp-terminal `themeFn` merge the result
+`terminalTheme()` plus the mobile terminal `themeFn` merge the result
 over the legacy JS tables, which remain as fallback where computed styles
 are unavailable (tests). Background/foreground/cursor/selection still come
 from the user-customizable `options.themeColors` (mobile reads them through

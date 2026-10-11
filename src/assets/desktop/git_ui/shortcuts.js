@@ -36,37 +36,8 @@
     alertFn,
     getGitUi,
   }) {
-    function tempTerminalModalVisible() {
-      const modals = document.querySelectorAll(".temp-terminal-backdrop");
-      for (const modal of modals) {
-        if (modal.style.display && modal.style.display !== "none") return true;
-      }
-      return false;
-    }
-
     function handleKeydown(event) {
       if (!state.visible || !event) return;
-      if (tempTerminalModalVisible()) return;
-      // A stacked foreign modal (the directory picker opened from the path
-      // title or the temp overlay "Change folder") owns every key: git's
-      // capture handler runs before the picker's own handlers, so without
-      // this guard Esc would pop the navigation stack underneath it.
-      if (
-        globalThis.HerdrTempOverlay &&
-        globalThis.HerdrTempOverlay.isForeignModalVisible &&
-        globalThis.HerdrTempOverlay.isForeignModalVisible()
-      ) return;
-      // While this drawer is mounted inside a minimized temporary Git
-      // overlay the overlay is hidden (display:none), so the drawer must
-      // not own the keyboard: the terminal parity contract releases all
-      // keys to the app until the overlay is restored.
-      if (
-        globalThis.HerdrTempOverlays &&
-        globalThis.HerdrTempOverlays.isToolMinimized &&
-        globalThis.HerdrTempOverlays.panelInTempOverlay &&
-        globalThis.HerdrTempOverlays.panelInTempOverlay("gitUiPanel") &&
-        globalThis.HerdrTempOverlays.isToolMinimized("git")
-      ) return;
       const view = active();
       if (!view) return;
       // Git drawer owns keyboard while visible, so terminal/global shortcuts behind it do not receive input.
@@ -141,27 +112,6 @@
       }
       if ((view.navigationStack || []).length) {
         getGitUi().goBack();
-        return;
-      }
-      // While this panel is mounted inside a temporary Git overlay, the
-      // overlay owns Escape: git's own hide() is a no-op there (it would
-      // blank the overlay surface), and this window-capture handler runs
-      // before the shared overlay escapeTrap, so closing must happen here.
-      // A stacked foreign modal (folder picker) owns the key instead, and
-      // if the temporary Files overlay is stacked above this one, that one
-      // closes (HerdrTempOverlay.closeTopmost picks the visible topmost).
-      if (
-        globalThis.HerdrTempOverlays &&
-        globalThis.HerdrTempOverlays.panelInTempOverlay &&
-        globalThis.HerdrTempOverlays.panelInTempOverlay("gitUiPanel")
-      ) {
-        if (
-          globalThis.HerdrTempOverlay &&
-          typeof globalThis.HerdrTempOverlay.closeTopmost === "function" &&
-          !(globalThis.HerdrTempOverlay.isForeignModalVisible && globalThis.HerdrTempOverlay.isForeignModalVisible())
-        ) {
-          globalThis.HerdrTempOverlay.closeTopmost();
-        }
         return;
       }
       if (isChangesListView(view)) {

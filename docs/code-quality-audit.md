@@ -81,7 +81,7 @@ gate (frontend `node --test`, `cargo fmt --check`, `cargo clippy --all-targets
 
 ### Landed
 
-**Rust backend (Phase 1 — deferred, not landed)**
+**Rust backend (Phase 1 : deferred, not landed)**
 
 - `src/main.rs` (13,675 lines) is still a god-module: CLI parsing, TLS, auth,
   settings, session registry, all HTTP handlers, terminal WS bridge, and
@@ -101,8 +101,8 @@ gate (frontend `node --test`, `cargo fmt --check`, `cargo clippy --all-targets
   headers, so Git drawer worktree lists hit the default session/backend when
   a non-default session was pinned, and 401s surfaced raw instead of the
   login flow. All four now use the shared client.
-- The duplicate `escapeHtml` copies in desktop `app_js/terminal.js`,
-  `shared/temp_terminal.js` (attr variant), and `mobile/core.js` remain;
+- The duplicate `escapeHtml` copies in desktop `app_js/terminal.js` and
+  `mobile/core.js` remain;
   `shared/core.js` exports the canonical one. Consolidation is still open.
 
 **Desktop `git_ui.js` decomposed (Phase 2b)**
@@ -182,15 +182,13 @@ retarget (never weaken) existing assertions to the module sources.
 
 1. Rust `src/main.rs` (13,675 lines) split into a `web/` module tree
    (router, auth, settings, sessions/workspaces, TLS, install, routes,
-   WS handlers) — the largest deferred item.
+   WS handlers) : the largest deferred item.
 2. Rust `src/builtin_backend.rs` (6,966 lines): runtime state vs PTY vs
    dispatch split, plus table-driven agent status rules replacing the 30
    hand-written `detect_*_status` functions.
-3. `shared/temp_terminal.js` split (manager vs session-instance factory; the
-   repo's worst complexity numbers live here: cyclomatic 202/180).
-4. Desktop `core.js` remainder (Phase 2b leftover where cohesion justified
+3. Desktop `core.js` remainder (Phase 2b leftover where cohesion justified
    stopping).
-5. Full mobile Git parity (commit/log/stash/conflicts) — product call about
+4. Full mobile Git parity (commit/log/stash/conflicts) : product call about
    screen real estate, deliberately roadmap.
 
 ### Carried review suggestions (open items from the 2026-09-12 review pass)
@@ -198,7 +196,7 @@ retarget (never weaken) existing assertions to the module sources.
 - Add `Secure` to the auth `Set-Cookie` when TLS is active (`src/auth.rs`
   builds the cookie without it). Low exploitability (local-first tool) but
   cheap.
-- Decompose the 800–1000-line closure factories beyond temp_terminal:
+- Decompose the remaining 800–1000-line closure factories:
   `mobile/file_browser.js create` (cyclomatic 159, 980 lines) and
   `mobile/settings.js createMobileSettings` (65, 743 lines).
 - Unify the server `ApiClient` and library `BackendClient` protocol

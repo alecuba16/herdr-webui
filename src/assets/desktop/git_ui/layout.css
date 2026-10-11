@@ -121,6 +121,10 @@
 .git-ui-current-changes-icon span {
   mask: url("/assets/icons/git.svg") center / contain no-repeat;
 }
+.git-ui-back-icon span {
+  mask: url("/assets/icons/chevron-right.svg") center / contain no-repeat;
+  transform: scaleX(-1);
+}
 @keyframes app-refresh-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(720deg); }

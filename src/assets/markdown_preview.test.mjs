@@ -21,7 +21,7 @@ function loadModule() {
   return ctx.window.HerdrMarkdownPreview;
 }
 
-function loadRenderModule() {
+function loadRenderModule(parseImpl) {
   const scripts = [];
   const links = [];
   let ctx;
@@ -39,7 +39,7 @@ function loadRenderModule() {
     body: {
       appendChild(node) {
         scripts.push(node);
-        if (node.src.endsWith("/marked.js")) ctx.HerdrMarked = { parse: () => "<p>rendered</p>" };
+        if (node.src.endsWith("/marked.js")) ctx.HerdrMarked = { parse: parseImpl || (() => "<p>rendered</p>") };
         if (node.src.endsWith("/dompurify.js")) ctx.HerdrDOMPurify = { sanitize: (html) => html };
         node.onload();
       },
@@ -115,5 +115,13 @@ describe("HerdrMarkdownPreview", () => {
     await mod.renderInto(container, "# title");
     equal(scripts.length, 2);
     equal(links.length, 1);
+  });
+
+  it("drops gif images after sanitize so they never hit the file route", async () => {
+    const { mod } = loadRenderModule(() => '<p><img src="docs/wave.gif" alt="wave"><img src="docs/keep.png" alt="keep"></p>');
+    const container = { innerHTML: "", querySelectorAll() { return []; } };
+    await mod.renderInto(container, "![wave](docs/wave.gif)![keep](docs/keep.png)");
+    ok(container.innerHTML.includes("keep.png"), "non-gif images survive");
+    equal(container.innerHTML.includes("wave.gif"), false, "gif img tags are stripped");
   });
 });

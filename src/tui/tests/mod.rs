@@ -1734,9 +1734,8 @@ fn shortcut_dispatch_covers_every_arm() {
     assert!(app.git_panel.view == GitView::Branches);
 
     // All git action arms run against the dead API: they must set an
-    // error (or status) and never panic. Stage all is now a plain
-    // in-screen G (webui KeyG parity); the prefix Shift+G belongs to
-    // the temporary Git overlay instead.
+    // error (or status) and never panic. Stage all is a plain
+    // in-screen G (webui KeyG parity).
     app.screen = TuiScreen::Git;
     app.git_panel.view = GitView::Changes;
     app.error = None;
@@ -2377,7 +2376,16 @@ fn fake_backend_socket() -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
                 json!({"id": request["id"], "result": fixture_snapshot_value()})
             }
             "tab.create" | "tab.close" => {
-                json!({"id": request["id"], "result": {"ok": true}})
+                // A close on a tab the server no longer knows (raced by
+                // pane.exited teardown) answers not-found; the TUI must
+                // treat that as the desired outcome.
+                if request["method"] == "tab.close"
+                    && request["params"]["tab_id"].as_str() == Some("tab_gone")
+                {
+                    json!({"id": request["id"], "error": "tab tab_gone not found"})
+                } else {
+                    json!({"id": request["id"], "result": {"ok": true}})
+                }
             }
             "workspace.create" => json!({
                 "id": request["id"],
@@ -2631,6 +2639,38 @@ fn close_last_tab_ignores_workspace_not_found() {
             .as_deref()
             .is_some_and(|e| e.contains("not found")),
         "workspace-already-gone not-found must be ignored: {:?}",
+        app.error
+    );
+    let _ = std::fs::remove_file(&api_socket);
+}
+
+#[test]
+fn close_tab_ignores_tab_not_found() {
+    // pane.exited teardown can close the tab server-side before the TUI's
+    // close request lands; the backend now answers that with an explicit
+    // not-found instead of a silent ok. The TUI must treat it as the
+    // outcome it wanted: run the same post-close flow (status, refresh)
+    // and surface no error.
+    let (api_socket, _stop) = fake_backend_socket();
+    let client = BackendClient::new(api_socket.clone(), api_socket.clone());
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    let mut snapshot = fixture_snapshot();
+    snapshot.tabs[0].id = "tab_gone".to_string();
+    snapshot.workspaces[0].active_tab_id = Some("tab_gone".to_string());
+    app.snapshot = snapshot;
+    app.handle_key(ctrl('b'));
+    app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+    // Refresh succeeds against the fake backend, so the status is the
+    // backend summary: the full success flow ran despite the not-found.
+    assert_eq!(
+        app.status,
+        "backend test \u{b7} protocol 1 \u{b7} 1 workspaces \u{b7} 1 agents"
+    );
+    assert!(
+        !app.error
+            .as_deref()
+            .is_some_and(|e| e.contains("not found")),
+        "tab-already-gone not-found must be ignored: {:?}",
         app.error
     );
     let _ = std::fs::remove_file(&api_socket);
@@ -4068,20 +4108,6 @@ fn tui_created_workspaces_and_opened_worktrees_record_recents() {
     let result2 = app.worktree_open_selected();
     assert!(result2.is_ok(), "open flow: {result2:?}");
 
-    // Promote flow: server route records the promoted workspace from
-    // the result (cwd resolved by the backend + label); the TUI socket
-    // flow must POST the same shape. Push a temp tab into the snapshot.
-    app.snapshot.tabs.push(crate::tui::model::TuiTab {
-        id: "tab_temp".to_string(),
-        workspace_id: "ws_1".to_string(),
-        label: "temp".to_string(),
-        focused: false,
-        pane_count: 1,
-        agent_status: "idle".to_string(),
-    });
-    let result3 = app.temp_terminal_promote();
-    assert!(result3.is_ok(), "promote flow: {result3:?}");
-
     let posted_create = open_requests
         .recv_timeout(Duration::from_secs(5))
         .expect("create record POST reached the server");
@@ -4094,12 +4120,6 @@ fn tui_created_workspaces_and_opened_worktrees_record_recents() {
     assert_eq!(posted_open["path"], "/wt/branch-x");
     assert_eq!(posted_open["kind"], "worktree");
     assert!(posted_open.get("label").is_none_or(|v| v.is_null()));
-    let posted_promote = open_requests
-        .recv_timeout(Duration::from_secs(5))
-        .expect("promote record POST reached the server");
-    assert_eq!(posted_promote["path"], "/promoted/cwd");
-    assert_eq!(posted_promote["label"], "promoted label");
-    assert_eq!(posted_promote["kind"], "workspace");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -4563,16 +4583,6 @@ fn focus_walker_cycles_sidebar_regions_and_main() {
     app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
     app.handle_key(KeyEvent::from(KeyCode::Char(',')));
     assert_eq!(app.sidebar_focus, SidebarFocus::Workspaces);
-}
-
-#[test]
-fn promote_without_temp_terminal_reports_error_via_shortcut() {
-    // Ctrl+B Shift+P with no temp tab: the webui promotes only when the
-    // overlay is visible; the TUI equivalent guard refuses and reports.
-    let mut app = app_with_snapshot();
-    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
-    app.handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT));
-    assert_eq!(app.error.as_deref(), Some("no temporary terminal open"));
 }
 
 #[test]
@@ -5577,10 +5587,6 @@ fn round3_specific_tui_edges_and_shortcuts() {
         PromptKind::RenamePanel
     );
     app.prompt_input = None;
-
-    app.run_shortcut(Shortcut::TempTerminalToggle);
-    assert!(app.error.is_some());
-    app.error = None;
 
     app.screen = TuiScreen::Files;
     app.mode = TuiMode::Attach;
@@ -8871,299 +8877,5 @@ fn footer_hint_names_common_files_actions() {
     assert!(
         rendered.contains("Ctrl+B ? help"),
         "files hint keeps the help tail"
-    );
-}
-
-#[test]
-fn temp_files_shortcut_opens_folder_prompt_without_workspace() {
-    // Ctrl+B Shift+F: the webui temporary Files overlay opens on any
-    // folder without creating a workspace; the TUI asks for the folder
-    // path first. The prompt is ephemeral: the screen only switches when
-    // a folder is actually opened, so Esc cancels leaving the app on the
-    // screen it started on (no backend workspace call can happen either,
-    // nonexistent socket in app_with_snapshot).
-    let mut app = app_with_snapshot();
-    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
-    app.handle_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
-    assert_eq!(
-        app.screen,
-        TuiScreen::Terminal,
-        "prompt opens without switching screens"
-    );
-    let prompt = app.prompt_input.as_ref().expect("temp files prompt open");
-    assert_eq!(prompt.kind, PromptKind::TempFilesFolder);
-    // Esc cancels without touching anything.
-    app.handle_key(KeyEvent::from(KeyCode::Esc));
-    assert!(app.prompt_input.is_none());
-    assert_eq!(
-        app.screen,
-        TuiScreen::Terminal,
-        "cancel leaves the screen untouched"
-    );
-}
-
-#[test]
-fn temp_git_shortcut_opens_repo_prompt_without_workspace() {
-    // Ctrl+B Shift+G: same contract for the temporary Git overlay. The
-    // prompt is ephemeral: no screen switch until a folder is opened.
-    let mut app = app_with_snapshot();
-    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
-    app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
-    assert_eq!(
-        app.screen,
-        TuiScreen::Terminal,
-        "prompt opens without switching screens"
-    );
-    let prompt = app.prompt_input.as_ref().expect("temp git prompt open");
-    assert_eq!(prompt.kind, PromptKind::TempGitFolder);
-    app.handle_key(KeyEvent::from(KeyCode::Esc));
-    assert!(app.prompt_input.is_none());
-    assert_eq!(
-        app.screen,
-        TuiScreen::Terminal,
-        "cancel leaves the screen untouched"
-    );
-}
-
-/// HTTP fake serving the surface the temporary overlays need: the
-/// file tree for Files and status+diff for Git (Changes view). Anything
-/// else answers `{"ok": true}`.
-fn fake_temp_overlay_server() -> (u16, std::sync::mpsc::Sender<()>) {
-    use std::io::{BufRead, BufReader, Write};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            if rx.try_recv().is_ok() {
-                break;
-            }
-            let Ok(mut stream) = stream else { break };
-            let mut line = String::new();
-            {
-                let mut reader = BufReader::new(&mut stream);
-                if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                    continue;
-                }
-            }
-            let target = line.split(' ').nth(1).unwrap_or_default().to_string();
-            let body = if target.starts_with("/api/file-browser/tree") {
-                json!({"entries": [
-                    {"name": "lib.rs", "kind": "file", "path": "lib.rs",
-                     "size": 12, "level": 0}
-                ]})
-            } else if target.starts_with("/api/git-ui/status") {
-                json!({"branch": "main", "state": "dirty", "unstaged": ["lib.rs"]})
-            } else if target.starts_with("/api/git-ui/diff") {
-                json!({"files": [{"path": "lib.rs", "chunks": [
-                    {"lines": [{"text": "+hello", "number": 1, "new_number": 1}]}
-                ]}]})
-            } else {
-                json!({"ok": true})
-            };
-            let _ = stream.write_all(
-                format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                    body.to_string().len(),
-                    body
-                )
-                .as_bytes(),
-            );
-        }
-    });
-    (port, tx)
-}
-
-#[test]
-fn temp_files_prompt_validates_folder_and_retargets_explorer() {
-    // A typed folder that does not exist surfaces the same validation
-    // error as the workspace-create flow; a real folder retargets the
-    // explorer cwd with no workspace created.
-    let (port, _stop) = fake_temp_overlay_server();
-    let mut app = app_with_snapshot();
-    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
-    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
-    app.handle_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
-    for ch in "/definitely/not/here".chars() {
-        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
-    }
-    app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert!(
-        app.error.as_deref().unwrap_or("").contains("must exist"),
-        "missing folder reported: {:?}",
-        app.error
-    );
-    assert_eq!(app.file_explorer.cwd, "", "cwd untouched on error");
-
-    // Real folder: the explorer switches to it and loads the tree.
-    let temp = std::env::temp_dir().join("herdr-tui-temp-files-test");
-    std::fs::create_dir_all(&temp).expect("create temp dir");
-    let folder = temp.to_string_lossy().to_string();
-    app.error = None;
-    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
-    app.handle_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
-    for ch in folder.chars() {
-        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
-    }
-    app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert!(
-        app.error.is_none(),
-        "valid folder must not error: {:?}",
-        app.error
-    );
-    assert_eq!(
-        app.screen,
-        TuiScreen::Files,
-        "successful open switches to the Files screen"
-    );
-    assert_eq!(app.file_explorer.cwd, folder, "explorer retargeted");
-    assert_eq!(
-        app.file_explorer.entries.len(),
-        1,
-        "tree loaded from the fake server"
-    );
-    assert!(
-        app.status.contains("temporary files:"),
-        "status names the temporary surface: {:?}",
-        app.status
-    );
-    // No workspace was created: the snapshot keeps its single fixture
-    // workspace.
-    assert_eq!(app.snapshot.workspaces.len(), 1);
-    let _ = std::fs::remove_dir(&temp);
-}
-
-#[test]
-fn temp_overlay_open_failure_keeps_status_line_clean() {
-    // open_files_screen_at/open_git_screen_at return Result, so the
-    // "temporary files/git: <folder>" status only lands on success. An
-    // API failure must surface as an error with no leftover status from
-    // the failed open.
-    //
-    // Failure source: a TCP port that accepts connections but closes
-    // them without a response. A never-bound port could be reused by an
-    // unrelated local service, so own a listener and drop every stream.
-    let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let dead_port = dead.local_addr().unwrap().port();
-    std::thread::spawn(move || {
-        for stream in dead.incoming() {
-            let Ok(stream) = stream else { break };
-            // Drop immediately: the client sees EOF before any status line.
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-        }
-    });
-    let mut app = app_with_snapshot();
-    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", dead_port);
-    let temp = std::env::temp_dir().join("herdr-tui-temp-status-test");
-    std::fs::create_dir_all(&temp).expect("create temp dir");
-    let folder = temp.to_string_lossy().to_string();
-    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
-    app.handle_key(KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT));
-    for ch in folder.chars() {
-        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
-    }
-    app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert!(
-        app.error.is_some(),
-        "failed refresh surfaces an error: {:?}",
-        app.error
-    );
-    assert!(
-        !app.status.contains("temporary files:"),
-        "status must not claim success on a failed open: {:?}",
-        app.status
-    );
-    // The ephemeral contract: a failed open rolls the switch back, so
-    // the app stays on the screen it was on (Terminal here).
-    assert_eq!(
-        app.screen,
-        crate::tui::TuiScreen::Terminal,
-        "failed open must not strand the user on the Files screen"
-    );
-    assert_eq!(app.file_explorer.cwd, "", "explorer cwd rolled back");
-    let _ = std::fs::remove_dir(&temp);
-}
-
-#[test]
-fn temp_git_prompt_retargets_panel_without_workspace() {
-    // Ctrl+B Shift+G + a real folder: the git panel cwd switches, the
-    // Changes view loads from the fake server, and no workspace appears
-    // in the snapshot.
-    let (port, _stop) = fake_temp_overlay_server();
-    let mut app = app_with_snapshot();
-    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
-    let temp = std::env::temp_dir().join("herdr-tui-temp-git-test");
-    std::fs::create_dir_all(&temp).expect("create temp dir");
-    let folder = temp.to_string_lossy().to_string();
-    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
-    app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
-    for ch in folder.chars() {
-        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
-    }
-    app.handle_key(KeyEvent::from(KeyCode::Enter));
-    assert!(
-        app.error.is_none(),
-        "valid folder must not error: {:?}",
-        app.error
-    );
-    assert_eq!(
-        app.screen,
-        TuiScreen::Git,
-        "successful open switches to the Git screen"
-    );
-    assert_eq!(app.git_panel.cwd, folder, "git panel retargeted");
-    assert_eq!(app.git_panel.branch, "main", "status loaded");
-    assert_eq!(
-        app.git_panel.files.len(),
-        1,
-        "changes loaded from the fake server"
-    );
-    assert!(
-        app.status.contains("temporary git:"),
-        "status names the temporary surface: {:?}",
-        app.status
-    );
-    assert_eq!(app.snapshot.workspaces.len(), 1);
-    let _ = std::fs::remove_dir(&temp);
-}
-
-#[test]
-fn git_screen_stage_all_moves_to_plain_g() {
-    // Webui git-panel `stageAll: KeyG` parity: plain G toggles stage
-    // all from the Changes view (the old prefix Shift+G now opens the
-    // temporary Git overlay instead).
-    let mut app = app_with_snapshot();
-    app.screen = TuiScreen::Git;
-    app.git_panel.view = GitView::Changes;
-    app.git_panel.cwd = "/repo".to_string();
-    // No files loaded: toggle_stage_all still succeeds (nothing staged
-    // stages nothing); the status line confirms the key landed.
-    app.handle_key(KeyEvent::from(KeyCode::Char('G')));
-    assert_eq!(
-        app.status, "staged state toggled",
-        "plain G runs stage-all in-screen"
-    );
-    // Prefix Shift+G must NOT stage: it opens the temp git prompt.
-    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
-    app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
-    let prompt = app.prompt_input.as_ref().expect("temp git prompt open");
-    assert_eq!(prompt.kind, PromptKind::TempGitFolder);
-}
-
-#[test]
-fn help_rows_list_temporary_overlays() {
-    let rows = crate::tui::keys::help_rows();
-    assert!(
-        rows.iter().any(|(keys, _)| keys.contains("Ctrl+B Shift+F")),
-        "help lists the temporary Files overlay"
-    );
-    assert!(
-        rows.iter().any(|(keys, _)| keys.contains("Ctrl+B Shift+G")),
-        "help lists the temporary Git overlay"
-    );
-    assert!(
-        rows.iter()
-            .any(|(keys, desc)| keys.contains("git: G") && desc.contains("stage all")),
-        "help lists the in-screen stage all"
     );
 }

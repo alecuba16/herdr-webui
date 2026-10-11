@@ -66,18 +66,18 @@ use assets::{
     mobile_actions_js, mobile_attention_js, mobile_backend_js, mobile_composer_js, mobile_core_js,
     mobile_css, mobile_directory_picker_js, mobile_events_js, mobile_file_browser_js,
     mobile_git_js, mobile_js, mobile_panels_js, mobile_screens_js, mobile_search_js,
-    mobile_sessions_js, mobile_settings_js, mobile_temp_overlays_js, mobile_terminal_js,
-    mobile_theme_js, mobile_workmeta_js, mobile_worktrees_js, shared_actions_js,
-    shared_alert_card_css, shared_alert_card_js, shared_attention_js, shared_colors_css,
-    shared_content_search_css, shared_core_js, shared_editor_js, shared_file_content_search_js,
-    shared_file_icons_css, shared_file_icons_js, shared_file_tree_css, shared_file_tree_js,
-    shared_graphics_bridge_js, shared_http_js, shared_line_context_js, shared_lsp_js,
-    shared_markdown_preview_css, shared_markdown_preview_js, shared_options_js,
-    shared_primitives_css, shared_settings_confirm_js, shared_settings_feedback_js,
-    shared_skeleton_css, shared_skeleton_js, shared_temp_overlay_js, shared_temp_terminal_js,
-    shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
-    shared_tokens_css, shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js,
-    vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
+    mobile_sessions_js, mobile_settings_js, mobile_terminal_js, mobile_theme_js,
+    mobile_workmeta_js, mobile_worktrees_js, shared_actions_js, shared_alert_card_css,
+    shared_alert_card_js, shared_attention_js, shared_colors_css, shared_content_search_css,
+    shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
+    shared_file_icons_js, shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js,
+    shared_http_js, shared_line_context_js, shared_lsp_js, shared_markdown_preview_css,
+    shared_markdown_preview_js, shared_options_js, shared_primitives_css,
+    shared_settings_confirm_js, shared_settings_feedback_js, shared_skeleton_css,
+    shared_skeleton_js, shared_terminal_adapter_js, shared_terminal_fit_js,
+    shared_terminal_scroll_js, shared_tokens_css, shared_workspace_search_js, vendor_codemirror_js,
+    vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js,
+    vendor_wterm_css, vendor_wterm_js,
 };
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
@@ -1427,14 +1427,6 @@ fn app_router(state: WebState) -> Router {
             "/assets/shared/graphics-bridge.js",
             get(shared_graphics_bridge_js),
         )
-        .route(
-            "/assets/shared/temp-terminal.js",
-            get(shared_temp_terminal_js),
-        )
-        .route(
-            "/assets/shared/temp-overlay.js",
-            get(shared_temp_overlay_js),
-        )
         .route("/assets/desktop/git-ui.js", get(desktop_git_ui_js))
         .route(
             "/assets/desktop/file-browser.js",
@@ -1453,10 +1445,6 @@ fn app_router(state: WebState) -> Router {
         .route("/assets/mobile/settings.js", get(mobile_settings_js))
         .route("/assets/mobile/search.js", get(mobile_search_js))
         .route("/assets/mobile/git.js", get(mobile_git_js))
-        .route(
-            "/assets/mobile/temp-overlays.js",
-            get(mobile_temp_overlays_js),
-        )
         .route("/assets/mobile/composer.js", get(mobile_composer_js))
         .route("/assets/mobile/sessions.js", get(mobile_sessions_js))
         .route("/assets/mobile/events.js", get(mobile_events_js))
@@ -3408,6 +3396,158 @@ fn enrich_workspace_cwds(workspaces: &mut serde_json::Value, panes: &serde_json:
     }
 }
 
+/// Adds the WebUI-only bootstrap fields to a raw backend `session.snapshot`
+/// response. Mutates `result` in place, keeping the backend envelope
+/// (including `result.snapshot` for protocol 16+ backends) untouched:
+/// - `workspace_order`: drag-sort order, a WebUI concept no backend knows.
+/// - `workspace_cwds`: reuses the snapshot's own panes so external daemons
+///   without per-workspace `cwd` still get enriched workspace rows. The
+///   builtin already sets `cwd`/`foreground_cwd` directly, and enrichment
+///   only fills missing fields, so builtin rows pass through unchanged.
+/// - `worktree_results`: one `worktree.list` response per workspace with
+///   `cwd` pinned to that workspace, normalized through the same path as
+///   `/api/worktrees` (activity enrichment + sort). Sending explicit `cwd`
+///   also fixes builtin, whose `worktree.list` otherwise resolves the
+///   focused workspace's cwd regardless of the requested workspace_id,
+///   and lets the wrapper stamp `source_workspace_id` so the frontend
+///   can attribute rows to their source workspace. Failed requests keep
+///   the same tolerance as the frontend's legacy per-workspace fetch:
+///   the entry is null and the rest of the snapshot still applies.
+fn enrich_session_snapshot(
+    value: &mut serde_json::Value,
+    workspace_order: &[String],
+    api: &ApiClient,
+) {
+    if value
+        .get("result")
+        .and_then(serde_json::Value::as_object)
+        .is_none()
+    {
+        return;
+    }
+    // Both known envelope shapes carry the arrays under result: builtin
+    // and protocol 16 external wrap them as result.snapshot.*; the flat
+    // result.* shape stays supported because the TUI parser accepts it.
+    let base = if value.pointer("/result/snapshot").is_some() {
+        "/result/snapshot"
+    } else if value.pointer("/result/workspaces").is_some() {
+        "/result"
+    } else {
+        return;
+    };
+    if value
+        .pointer(&format!("{base}/workspaces"))
+        .and_then(serde_json::Value::as_array)
+        .is_none()
+    {
+        return;
+    };
+    // Enrich workspace cwd/foreground_cwd from the snapshot's own panes.
+    // The wrapper dance exists because enrich_workspace_cwds expects the
+    // /api/workspaces envelope (result.workspaces + result.panes); the
+    // panes argument wants the same envelope shape, not the bare array.
+    let panes = value.pointer(&format!("{base}/panes")).cloned();
+    if let Some(panes) = panes {
+        let mut enriched = json!({
+            "result": {
+                "workspaces": value
+                    .pointer(&format!("{base}/workspaces"))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Array(Vec::new())),
+                "panes": panes.clone(),
+            }
+        });
+        let pane_envelope = json!({ "result": { "panes": panes } });
+        enrich_workspace_cwds(&mut enriched, &pane_envelope);
+        let rows = enriched
+            .pointer("/result/workspaces")
+            .cloned()
+            .unwrap_or(serde_json::Value::Array(Vec::new()));
+        if let Some(workspaces_value) = value.pointer_mut(&format!("{base}/workspaces")) {
+            *workspaces_value = rows;
+        }
+    }
+    // Collect after cwd enrichment so worktree.list pins each workspace's
+    // resolved cwd (and expand ~ the same way /api/worktrees does).
+    let workspace_ids: Vec<(String, Option<String>)> = value
+        .pointer(&format!("{base}/workspaces"))
+        .and_then(serde_json::Value::as_array)
+        .map(|workspaces| {
+            workspaces
+                .iter()
+                .map(|workspace| {
+                    (
+                        workspace
+                            .get("workspace_id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        workspace
+                            .get("cwd")
+                            .and_then(serde_json::Value::as_str)
+                            .map(expand_user_path_string),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut worktree_results = Vec::with_capacity(workspace_ids.len());
+    for (workspace_id, cwd) in &workspace_ids {
+        let request = json!({
+            "id": format!("web:worktree:list:snapshot:{workspace_id}"),
+            "method": "worktree.list",
+            "params": { "workspace_id": workspace_id, "cwd": cwd },
+        });
+        let mut response = match api.request_value(request) {
+            Ok(response) => response,
+            Err(_) => {
+                worktree_results.push(serde_json::Value::Null);
+                continue;
+            }
+        };
+        // Backend-level errors become null entries, matching the legacy
+        // per-workspace fetch where /api/worktrees returned 502 and the
+        // frontend catch() produced null. A null entry must not break the
+        // rest of the snapshot.
+        if response.get("error").is_some() {
+            worktree_results.push(serde_json::Value::Null);
+            continue;
+        }
+        // The wrapper, not the backend, knows which workspace produced each
+        // result (builtin ignores workspace_id and resolves cwd instead, and
+        // never sets source_workspace_id). Stamp it so the frontend can
+        // attribute rows without re-deriving the mapping.
+        if response.pointer("/result/source").is_none() {
+            if let Some(result) = response.get_mut("result") {
+                result["source"] = json!({});
+            }
+        }
+        if let Some(source) = response
+            .pointer_mut("/result/source")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            // Overwrite null too: builtin sets the key but always leaves it
+            // null because it never learned which workspace asked.
+            let stale = source
+                .get("source_workspace_id")
+                .is_none_or(|value| value.is_null());
+            if stale {
+                source.insert("source_workspace_id".to_string(), json!(workspace_id));
+            }
+        }
+        normalize_worktree_response(&mut response);
+        // Full envelope per entry ({result: {worktrees, source}}) so both
+        // desktop and mobile reuse their existing per-request parsing on
+        // each entry unchanged.
+        worktree_results.push(response);
+    }
+    let result = value.get_mut("result").filter(|result| result.is_object());
+    if let Some(result) = result {
+        result["workspace_order"] = json!(workspace_order);
+        result["worktree_results"] = json!(worktree_results);
+    }
+}
+
 fn workspace_order_key(state: &WebState, headers: &HeaderMap) -> String {
     session_display_name(session_from_headers(state, headers).as_deref()).to_string()
 }
@@ -4025,6 +4165,7 @@ struct OpenWorktreeRequest {
     path: Option<String>,
     branch: Option<String>,
     label: Option<String>,
+    open_terminal: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -4254,6 +4395,7 @@ async fn open_worktree(
                 "branch": body.branch,
                 "label": body.label,
                 "focus": true,
+                "open_terminal": body.open_terminal,
             },
         }),
     )
@@ -4267,6 +4409,7 @@ struct OpenRecentWorkspaceRequest {
     path: Option<String>,
     label: Option<String>,
     branch: Option<String>,
+    open_terminal: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -4337,6 +4480,7 @@ async fn open_recent_workspace(
                 "branch": null,
                 "label": body.label,
                 "focus": true,
+                "open_terminal": body.open_terminal,
             },
         }),
     )
@@ -4577,7 +4721,11 @@ async fn pane_layout(
 
 /// Returns the full backend `session.snapshot` response in one round trip so
 /// the frontend can bootstrap workspaces, tabs, panes, layouts, and agents
-/// without issuing separate list requests. Added with protocol 16 backends.
+/// without issuing separate list requests. Extended beyond the raw backend
+/// payload with the WebUI-only bootstrap fields: workspace drag order,
+/// per-workspace `cwd`/`foreground_cwd` enrichment, and one enriched
+/// `worktree.list` result per workspace. All additions are siblings of
+/// `result.snapshot`, so the backend envelope itself stays untouched.
 async fn session_snapshot(
     State(state): State<WebState>,
     headers: HeaderMap,
@@ -4586,17 +4734,38 @@ async fn session_snapshot(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    proxy_request_async(
-        api_for_headers_ensured(&state, &headers).await,
-        json!({ "id": "web:session:snapshot", "method": "session.snapshot", "params": {} }),
-    )
-    .await
+    let key = workspace_order_key(&state, &headers);
+    let order = state
+        .workspace_orders
+        .lock()
+        .ok()
+        .and_then(|orders| orders.get(&key).cloned())
+        .unwrap_or_default();
+    let api = api_for_headers_ensured(&state, &headers).await;
+    let response = tokio::task::spawn_blocking(move || {
+        let mut value = api.request_value(
+            json!({ "id": "web:session:snapshot", "method": "session.snapshot", "params": {} }),
+        )?;
+        enrich_session_snapshot(&mut value, &order, &api);
+        Ok::<_, String>(value)
+    })
+    .await;
+    match response {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Deserialize)]
 struct CreateWorkspaceRequest {
     cwd: Option<String>,
     label: Option<String>,
+    open_terminal: Option<bool>,
 }
 
 fn existing_workspace_cwd(cwd: Option<&str>) -> Result<Option<String>, Box<Response>> {
@@ -4631,7 +4800,7 @@ async fn create_workspace(
     };
     proxy_request_async(
         api_for_headers_ensured(&state, &headers).await,
-        json!({ "id": "web:workspace:create", "method": "workspace.create", "params": { "cwd": cwd, "focus": false, "label": body.label, "env": {} } }),
+        json!({ "id": "web:workspace:create", "method": "workspace.create", "params": { "cwd": cwd, "focus": false, "label": body.label, "env": {}, "open_terminal": body.open_terminal } }),
     )
     .await
 }
@@ -5218,7 +5387,6 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     let backend_info = tokio::task::spawn_blocking(move || backend_info_api.backend_info())
         .await
         .unwrap_or_default();
-    let use_builtin_event_hub = backend_uses_builtin_event_hub(&backend_info);
     let backend_protocol = backend_info.protocol;
     // Push channel for LSP diagnostics (C1): the registry broadcasts every
     // publishDiagnostics batch and we forward it to connected UIs. Receivers
@@ -5312,7 +5480,6 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
         }
     });
 
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
     loop {
         tokio::select! {
             // When the subscription thread exits (backend died), it drops tx
@@ -5357,38 +5524,11 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
                 let Ok(settings) = settings else { break; };
                 if socket.send(Message::Text(settings.to_string().into())).await.is_err() { break; }
             }
-            _ = interval.tick(), if !use_builtin_event_hub => {
-                // request_value() does blocking socket I/O; offload it so the
-                // async runtime and other WebSocket loops are not stalled while
-                // waiting for the backend to respond.
-                let poll_api = api.clone();
-                let poll_result = tokio::task::spawn_blocking(move || {
-                    let agents = poll_api.request_value(json!({ "id": "web:agent:list:poll", "method": "agent.list", "params": {} })).ok();
-                    let workspaces = poll_api.request_value(json!({ "id": "web:workspace:list:poll", "method": "workspace.list", "params": {} })).ok();
-                    (agents, workspaces)
-                }).await;
-                let (agents, workspaces) = match poll_result {
-                    Ok(pair) => pair,
-                    Err(_) => break,
-                };
-                if let Some(agents) = &agents {
-                    sync_auto_no_sleep_from_agents(&state, agents);
-                }
-                let value = json!({ "type": "snapshot", "agents": agents, "workspaces": workspaces });
-                if socket.send(Message::Text(value.to_string().into())).await.is_err() { break; }
-            }
             message = socket.recv() => {
                 if message.is_none() { break; }
             }
         }
     }
-}
-
-fn backend_uses_builtin_event_hub(info: &BackendInfo) -> bool {
-    info.version
-        .as_deref()
-        .is_some_and(|version| version.starts_with("builtin-"))
-        && info.protocol.unwrap_or(0) >= 16
 }
 
 fn web_event_kind(value: &serde_json::Value) -> Option<&str> {

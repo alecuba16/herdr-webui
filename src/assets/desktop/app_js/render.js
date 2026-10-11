@@ -7,8 +7,6 @@ function render() {
     state.allTabs.concat(state.tabs).map((t) => [t.tab_id, t]),
   );
   const panesByTab = panesByTabIndex();
-  const agentsByTab = agentsByTabIndex();
-  updateTabActivity(panesByTab, agentsByTab);
   const tabCountsByWorkspace = new Map();
   for (const tab of state.allTabs)
     tabCountsByWorkspace.set(
@@ -38,7 +36,6 @@ function render() {
     workspaceContextActions.innerHTML !== workspaceContextHtml
   )
     workspaceContextActions.innerHTML = workspaceContextHtml;
-  syncWorkspacePanelMenuSize();
   const agentsHtml = renderAgents(wsById, tabById, tabCountsByWorkspace);
   if (agentsHtml !== lastAgentsHtml) {
     agents.innerHTML = agentsHtml;
@@ -68,6 +65,7 @@ function render() {
   updateTitle(wsById, tabById, tabCountsByWorkspace, pane);
   syncBrowserFavicon();
   syncProjectDashboard();
+  syncWorkspaceEmptyLeaf();
   if (state.editingTab) {
     const input = document.querySelector(".tab-rename-input");
     if (input && document.activeElement !== input) {
@@ -92,6 +90,8 @@ function render() {
     fitTerminalShell();
     if (typeof fitTerminalSurface === "function") fitTerminalSurface();
   }
+  if (window.HerdrWorkspacePanes) window.HerdrWorkspacePanes.renderWorkspacePanes();
+  syncRightSidebarRail();
 }
 // Tracks whether the dedicated shell ResizeObserver owns terminal fitting.
 let terminalShellResizeObserverActive = false;
@@ -105,57 +105,6 @@ function panesByTabIndex() {
     pushMapList(map, pane.tab_id, pane);
   }
   return map;
-}
-function agentsByTabIndex() {
-  const map = new Map();
-  for (const agent of state.agents) {
-    pushMapList(map, workspaceTabKey(agent.workspace_id, agent.tab_id), agent);
-  }
-  return map;
-}
-
-function syncWorkspacePanelMenuSize() {
-  const workspacePane = el("workspacePane"),
-    menu = workspacePane && workspacePane.querySelector && workspacePane.querySelector(".panel-menu");
-  if (!workspacePane) return;
-  if (!menu) {
-    // Skip the class/style writes when the pane is already in the closed
-    // state; this runs on every render so unchanged writes are pure recalc.
-    if (workspacePane.classList.contains("panel-menu-open")) {
-      workspacePane.classList.remove("panel-menu-open");
-      if (workspacePane.style.removeProperty)
-        workspacePane.style.removeProperty("--workspace-panel-menu-min-height");
-      else workspacePane.style.setProperty("--workspace-panel-menu-min-height", "0px");
-    }
-    return;
-  }
-  workspacePane.classList.add("panel-menu-open");
-  const paneRect = workspacePane.getBoundingClientRect ? workspacePane.getBoundingClientRect() : null,
-    menuRect = menu.getBoundingClientRect ? menu.getBoundingClientRect() : null;
-  if (!paneRect || !menuRect) return;
-  // The pane grows so the menu fits, but the sidebar section has a fixed
-  // height (agents pane keeps its 110px minimum), so on short viewports the
-  // grown pane overflows the section and the menu gets clipped by its
-  // overflow:hidden. Cap both sizes to what the section actually shows:
-  // the pane never grows past the section box, and the menu scrolls
-  // internally instead of overflowing the visible sidebar.
-  const sectionEl = workspacePane.parentElement;
-  const sectionRect = sectionEl && sectionEl.getBoundingClientRect ? sectionEl.getBoundingClientRect() : null;
-  const sectionBottom = sectionRect
-    ? Math.min(sectionRect.bottom, window.innerHeight || paneRect.bottom)
-    : paneRect.bottom;
-  const paneAvailable = Math.max(0, Math.floor(sectionBottom - paneRect.top));
-  const menuAvailable = Math.max(0, Math.floor(sectionBottom - menuRect.top));
-  setCustomProperty(menu, "--workspace-panel-menu-max-height", `${menuAvailable}px`);
-  const minHeight = Math.max(0, Math.min(Math.ceil(menuRect.bottom - paneRect.top + 10), paneAvailable));
-  // Setting the property to the same value still dirties style; only write
-  // when the measured min-height actually moved. The typeof guard keeps
-  // DOM-stub test environments (style objects without getPropertyValue) happy.
-  if (
-    typeof workspacePane.style.getPropertyValue !== "function" ||
-    `${minHeight}px` !== workspacePane.style.getPropertyValue("--workspace-panel-menu-min-height")
-  )
-    workspacePane.style.setProperty("--workspace-panel-menu-min-height", `${minHeight}px`);
 }
 
 function setCustomProperty(element, name, value) {
@@ -173,13 +122,42 @@ function syncProjectDashboard() {
   const showDashboard = state.workspaces.length === 0 && !state.ws && !drawerSurfaceVisible();
   dashboard.hidden = !showDashboard;
   if (shell) shell.hidden = showDashboard;
+  // Same decision, pane skeleton placement: the dashboard fills the pane
+  // slot (strip hidden) instead of sharing the column with empty chrome.
+  if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.mountDashboardInPane)
+    window.HerdrWorkspacePanes.mountDashboardInPane(showDashboard);
   if (!showDashboard) return;
   dashboard.innerHTML = renderProjectDashboard();
 }
+// Zero-tab workspace body. A focused workspace whose last terminal closed
+// stays on screen: hide the terminal shell, mount the empty-leaf card in
+// the pane slot, and let the New terminal button spawn a fresh tab. The
+// workspace-scoped surfaces (files, git, search) host in the right column,
+// so they never claim the pane slot: the card stays up with a drawer open,
+// and closing the drawer cannot strand a dead shell in the center.
+function syncWorkspaceEmptyLeaf() {
+  const emptyLeaf = el("workspaceEmptyLeaf"),
+    shell = el("terminalShell");
+  if (!emptyLeaf) return;
+  const show = !!state.ws && !state.tab;
+  emptyLeaf.hidden = !show;
+  if (shell) shell.hidden = show;
+  if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.mountEmptyLeafInPane)
+    window.HerdrWorkspacePanes.mountEmptyLeafInPane(show);
+  if (!show) return;
+  const workspace = (state.workspaces || []).find((w) => w.workspace_id === state.ws);
+  const name = workspace ? (workspace.worktree ? worktreeDisplayName(workspace) : workspace.label) : "";
+  emptyLeaf.innerHTML = `<div class="workspace-empty-leaf-card"><h1>${escapeHtml(name || "Workspace")}</h1><p>No terminal in this workspace yet. Files, Git, and Search still work.</p><button class="workspace-empty-leaf-new" onclick="event.preventDefault();newTab()">New terminal</button></div>`;
+}
 function drawerSurfaceVisible() {
+  // All three rail surfaces count, not just Files/Git: the search panel
+  // is a drawer too, and leaving it out flipped the boot-clean desktop
+  // into dashboard mode the moment Search replaced an open Files drawer
+  // (dashboard popped in and the pane strip hid under it).
   return !!(
     (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible()) ||
-    (window.HerdrFileBrowser && window.HerdrFileBrowser.isVisible && window.HerdrFileBrowser.isVisible())
+    (window.HerdrFileBrowser && window.HerdrFileBrowser.isVisible && window.HerdrFileBrowser.isVisible()) ||
+    (window.HerdrSearchPanel && window.HerdrSearchPanel.isOpen && window.HerdrSearchPanel.isOpen())
   );
 }
 function renderProjectDashboard() {
@@ -201,68 +179,11 @@ function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
       : "panel";
   document.title = `${workspace} • ${panel}`;
 }
-function tabActivityKey(workspaceId, tabId) {
-  return `${state.session || "default"}|${workspaceId || ""}|${tabId || ""}`;
-}
-function workspaceTabKey(workspaceId, tabId) {
-  return `${workspaceId || ""}|${tabId || ""}`;
-}
 function pushMapList(map, key, value) {
   const rows = map.get(key) || [];
   rows.push(value);
   map.set(key, rows);
 }
-function tabActivitySignature(t, panesByTab, agentsByTab) {
-  const panes = (panesByTab.get(t.tab_id) || [])
-    .map((p) => [p.pane_id, p.terminal_id, !!p.focused]);
-  const agents = (agentsByTab.get(workspaceTabKey(t.workspace_id, t.tab_id)) || [])
-    .map((a) => [
-      a.pane_id,
-      a.terminal_id,
-      a.name || a.display_agent || a.agent || "",
-      statusClass(a.agent_status),
-    ]);
-  return JSON.stringify([
-    t.workspace_id,
-    t.tab_id,
-    t.label || "",
-    t.number || 0,
-    !!t.focused,
-    panes,
-    agents,
-  ]);
-}
-function updateTabActivity(panesByTab = new Map(), agentsByTab = new Map()) {
-  // The activity timestamps only feed the optional tab activity labels
-  // (options.showTabActivity, off by default). Building the per-tab
-  // JSON.stringify signature for every tab on every render/poll is pure
-  // waste when the labels are disabled, so skip the whole pass then.
-  if (!options.showTabActivity) {
-    if (!tabActivityPassRecorded) {
-      tabActivity = {};
-      tabActivityPassRecorded = true;
-    }
-    return;
-  }
-  tabActivityPassRecorded = false;
-  const now = Date.now(),
-    seen = new Set();
-  for (const t of state.allTabs.concat(state.tabs)) {
-    const key = tabActivityKey(t.workspace_id, t.tab_id),
-      signature = tabActivitySignature(t, panesByTab, agentsByTab),
-      current = tabActivity[key];
-    seen.add(key);
-    if (!current || current.signature !== signature)
-      tabActivity[key] = { signature, updatedAt: now };
-  }
-  for (const key of Object.keys(tabActivity)) {
-    if (key.startsWith(`${state.session || "default"}|`) && !seen.has(key))
-      delete tabActivity[key];
-  }
-}
-// Whether the disabled-showTabActivity branch already cleared the table,
-// so repeated renders skip even the cleanup.
-let tabActivityPassRecorded = false;
 function tabHoverInfo(t, panesByTab) {
   const panes = panesByTab.get(t.tab_id) || [];
   const pane = panes.find((p) => p.pane_id === state.pane) || panes[0];
@@ -272,16 +193,6 @@ function tabHoverInfo(t, panesByTab) {
       ? ` · ${state.termCols}x${state.termRows}`
       : "";
   return `${tabTitle(t)} · ${pane.pane_id} · ${pane.terminal_id}${size}`;
-}
-function renderTabButton(t, panesByTab) {
-  if (state.editingTab === t.tab_id)
-    return `<span class="tab ${t.tab_id === state.tab ? "active" : ""}"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${t.tab_id}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${t.tab_id}')"></span>`;
-  const activity = tabActivity[tabActivityKey(t.workspace_id, t.tab_id)],
-    activityLabel =
-      options.showTabActivity && activity
-        ? tabActivityLabel(activity.updatedAt, Date.now())
-        : "";
-  return `<a class="tab ${t.tab_id === state.tab ? "active" : ""}"${t.tab_id === state.tab ? ' aria-current="page"' : ""} title="${escapeAttr(tabHoverInfo(t, panesByTab))}" href="${escapeAttr(selectionPath(t.workspace_id, t.tab_id))}" target="herdr-selection" onclick="return navigateSelection(event,'${t.workspace_id}','${t.tab_id}')" ondblclick="event.preventDefault();event.stopPropagation();startTabRename('${t.tab_id}','${escapeAttr(tabTitle(t))}')"><span class="tab-label">${escapeHtml(tabTitle(t))}</span>${activityLabel ? `<span class="tab-activity">${escapeHtml(activityLabel)}</span>` : ""}<span class="tab-actions"><span class="mini warn" title="Close panel" role="button" tabindex="0" aria-label="Close panel" onclick="event.preventDefault();event.stopPropagation();closeTab('${t.tab_id}')">✕</span></span></a>`;
 }
 function renderSpaces() {
   const groups = new Map(),
@@ -359,7 +270,6 @@ function workspaceSidebarSignature() {
     session: state.session || "default",
     selected: [state.ws, state.tab, state.pane],
     editing: [state.editingWorkspace, state.editingWorkspaceValue, state.editingTab, state.editingTabValue],
-    panelMenuOpen: !!state.panelMenuOpen,
     sort: [options.workspaceSort, state.workspaceOrder],
     shortcuts: [options.globalShortcutPrefix, options.webuiShortcuts || null],
     workspaces: (state.workspaces || []).map(workspaceSidebarRowSignature),
@@ -510,43 +420,116 @@ function renderWorkspaceCard(w, extraClass) {
       : "";
   const selected = w.workspace_id === state.ws;
   const meta = selected ? selectedSpaceMeta(w) : spaceMeta(w);
-  const panelControls = selected ? renderPanelField() : "";
-  const body = `<div class="space-title"><span>${statusDot(w.agent_status)}</span>${label}${selectedWorkspaceActionButtons(w)}</div><div class="muted space-meta-line">${panelControls}${meta}</div>`;
+  const body = `<div class="space-title"><span>${statusDot(w.agent_status)}</span>${label}${selectedWorkspaceActionButtons(w)}</div><div class="muted space-meta-line">${meta}</div>`;
   if (selected)
     return `<div class="item active ${extraClass || ""}" data-workspace-id="${escapeAttr(w.workspace_id)}"${drag} ondblclick="event.preventDefault();event.stopPropagation();startWorkspaceRename('${w.workspace_id}','${escapeAttr(w.label)}')">${body}</div>`;
   return `<a class="item ${extraClass || ""}" data-workspace-id="${escapeAttr(w.workspace_id)}" href="${escapeAttr(selectionPath(w.workspace_id))}" target="herdr-selection"${drag} onclick="if(state.editingWorkspace){event.preventDefault();return false}return navigateSelection(event,'${w.workspace_id}')" ondblclick="event.preventDefault();event.stopPropagation();startWorkspaceRename('${w.workspace_id}','${escapeAttr(w.label)}')">${body}</a>`;
 }
 
 function syncGitWorkspaceToggle() {
-  const button = el("gitWorkspaceToggle");
   if (!gitUiEnabled()) {
-    if (button) button.remove();
     if (window.HerdrGitUi) window.HerdrGitUi.hide();
+    const railGit = el("rightRailGit");
+    if (railGit) railGit.remove();
     return;
   }
+  const button = el("rightRailGit");
   if (!button) {
-    setupSessionChrome();
+    setupRightSidebarRail();
     return;
   }
   const workspace = selectedOrDefaultWorkspace();
-  const status = window.HerdrGitUi && window.HerdrGitUi.workspaceStatus ? window.HerdrGitUi.workspaceStatus(state.ws, workspace) : "unknown";
-  const className = `btn worktree-open-trigger shell-action shell-icon-button git-workspace-toggle ${status}`;
-  if (button.className !== className) button.className = className;
-  // The icon markup is static per status; skip the innerHTML rebuild (which
-  // reparses SVG on every render/poll) unless the status class changed it.
-  const iconHtml = appIcon("git");
-  if (button.__herdrGitIcon !== iconHtml || button.__herdrGitIconStatus !== status) {
-    button.innerHTML = iconHtml;
-    button.__herdrGitIcon = iconHtml;
-    button.__herdrGitIconStatus = status;
+  // Warm the rail tint in the background. When git_ui is loaded, the probe
+  // fills its view cache and re-syncs; before it loads (git_ui lazy-loads
+  // on first open), a shell-side fetch parks the state on the button so the
+  // tint shows at boot. Both paths re-use cached results to avoid one fetch
+  // per render pass. A non-git folder answers a payload (not_git_repository)
+  // rather than an error status, so the boot probe never logs a console 400.
+  if (workspace) {
+    const cwd = window.HerdrWorkspacePath ? window.HerdrWorkspacePath(workspace) : workspace.cwd || workspace.path || "";
+    if (cwd && window.HerdrGitUi && window.HerdrGitUi.probeWorkspaceStatus) {
+      window.HerdrGitUi.probeWorkspaceStatus(workspace);
+    } else if (cwd && (!state.gitStatusCache || state.gitStatusCache.cwd !== cwd)) {
+      state.gitStatusCache = { cwd, pending: true };
+      fetch(`/api/git-ui/status?cwd=${encodeURIComponent(cwd)}`)
+        .then((res) => res.json())
+        .then((payload) => {
+          state.gitStatusCache = payload && payload.state ? Object.assign({ cwd }, payload) : { cwd, failed: true };
+          syncGitWorkspaceToggle();
+        })
+        .catch(() => { state.gitStatusCache = { cwd, failed: true }; });
+    }
   }
-  const ariaLabel = status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer";
-  const title = status === "nogit" ? "No Git repository detected" : "Show or hide Git drawer";
+  let status = window.HerdrGitUi && window.HerdrGitUi.workspaceStatus ? window.HerdrGitUi.workspaceStatus(state.ws, workspace) : "unknown";
+  // Pre-load fallback: the parked shell-side status feeds the tint until
+  // git_ui loads and the probe takes over. Only clean/dirty/conflicts map;
+  // a parked nogit payload disables the rail the same way the probe would,
+  // and failed lookups leave the rail neutral.
+  if (status === "unknown" && state.gitStatusCache && !state.gitStatusCache.pending && !state.gitStatusCache.failed && state.gitStatusCache.cwd === (window.HerdrWorkspacePath ? window.HerdrWorkspacePath(workspace) : "")) {
+    if (state.gitStatusCache.state === "clean" || state.gitStatusCache.state === "dirty" || state.gitStatusCache.state === "conflicts")
+      status = state.gitStatusCache.state;
+    else if (state.gitStatusCache.not_git_repository)
+      status = "nogit";
+  }
+  button.dataset.gitStatus = status;
+  const ariaLabel = status === "nogit" ? "No Git repository detected" : "Show or hide Git view";
+  const title = status === "nogit" ? "No Git repository detected" : "Show or hide Git view";
   if (typeof button.getAttribute === "function" && button.getAttribute("aria-label") !== ariaLabel)
     button.setAttribute("aria-label", ariaLabel);
   if (button.title !== title) button.title = title;
+  button.disabled = status === "nogit";
   syncShellModeButtons();
 }
+
+// Reset the desktop window layout to its fresh-boot shape: one pane per
+// workspace, no splits, no maximized pane, terminal as the hosted view,
+// both sidebars expanded, and no remembered panel/pane selection. The
+// per-workspace shell modes and pane trees are client state persisted in
+// this browser (herdr-web-workspace-shell, herdr-web-workspace-panes), so
+// the reset clears both stores and rebuilds; backend panels, workspaces,
+// and agents are untouched. Terminal/editor drafts and git views reload
+// from the server on the next open.
+async function resetWindowLayout({ skipConfirm = false } = {}) {
+  if (!skipConfirm && typeof askQuestion === "function") {
+    const ok = await askQuestion({
+      title: "Reset window layout?",
+      message: "Clears saved panes, splits, panel choices, and the remembered workspace/tab selection in this browser. Workspaces, panels, and agents are untouched.",
+      confirmText: "Reset layout",
+      danger: true,
+    });
+    if (!ok) return false;
+  }
+  // Drop the persisted layout stores first: a reload between here and
+  // the in-place rebuild would boot from the same stale layout otherwise.
+  try {
+    localStorage.removeItem("herdr-web-workspace-shell");
+    localStorage.removeItem("herdr-web-workspace-panes");
+    localStorage.removeItem("herdr-web-sidebar-collapsed");
+    localStorage.removeItem("herdr-web-right-sidebar-collapsed");
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith("herdr-session-state:")) localStorage.removeItem(key);
+    }
+  } catch (e) {}
+  state.workspaceShell = {};
+  state.workspacePanes = {};
+  // Hide the hosted drawers so the column rebuilds from the terminal
+  // view; showTerminalShellMode also re-renders and re-fits the surface.
+  if (window.HerdrGitUi) window.HerdrGitUi.hide();
+  if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
+  if (window.HerdrSearchPanel) window.HerdrSearchPanel.close();
+  // Expand both sidebars. The right setter re-stores "0" (same as absent
+  // for storedFlag reads); the left one mirrors the toggle's write path.
+  setRightSidebarCollapsedFlag(false);
+  sidebarCollapsed = false;
+  storeFlag(SIDEBAR_COLLAPSED_KEY, false);
+  applySidebarCollapsed();
+  showTerminalShellMode({ forceOpen: true });
+  if (window.HerdrWorkspacePanes) window.HerdrWorkspacePanes.renderWorkspacePanes();
+  if (typeof fitTerminalShell === "function") fitTerminalShell();
+  if (typeof fitTerminalSurface === "function") fitTerminalSurface();
+  return true;
+}
+window.resetWindowLayout = resetWindowLayout;
 
 async function loadDesktopFeature(src) {
   if (window.HerdrLoadScript) {
@@ -582,6 +565,22 @@ async function ensureGitUiLoaded() {
   await loadDesktopFeature("/assets/desktop/git-ui.js");
 }
 
+// File-history entry point for the file browser context menu. git_ui
+// lazy-loads, so this loads the module before opening the history view
+// (a center git tab since Phase 3c).
+async function showFileHistoryPath(cwd, path) {
+  if (!cwd || !path) return;
+  try {
+    await ensureGitUiLoaded();
+  } catch (error) {
+    alert(error.message || String(error));
+    return;
+  }
+  if (window.HerdrGitUi && window.HerdrGitUi.openFileHistory)
+    window.HerdrGitUi.openFileHistory(encodeURIComponent(cwd), encodeURIComponent(path));
+}
+window.HerdrShowFileHistory = showFileHistoryPath;
+
 async function ensureFileBrowserLoaded() {
   if (window.HerdrFileBrowser) return;
   loadDesktopFeatureCss("/assets/desktop/file-browser.css");
@@ -599,28 +598,27 @@ async function openWorkspaceGitUi(id, options) {
     alert(error.message || String(error));
     return;
   }
-  if (!openOptions.forceOpen && currentWorkspaceShellMode(id) === "git" && !isWorkspaceShellMinimized(id) && window.HerdrGitUi.isWorkspaceVisible(workspaceShellKey(workspace))) {
-    minimizeWorkspaceShell(id);
+  if (!openOptions.forceOpen && currentWorkspaceShellMode(id) === "git" && window.HerdrGitUi.isWorkspaceVisible(workspaceShellKey(workspace)) && (!window.HerdrRightSidebar || window.HerdrRightSidebar.isHosted("gitUiPanel"))) {
+    // Rail Git already owns this workspace's git side in the column: clicking
+    // the active rail button toggles the column (Zed contract).
+    if (window.HerdrRightSidebar) window.HerdrRightSidebar.setCollapsed(!window.HerdrRightSidebar.collapsed());
     return;
   }
-  // The main-UI shell toggle wins over a minimized temporary overlay
-  // that currently holds the shared drawer panel: close the sibling temp
-  // surface first so the drawer re-homes into the main shell instead of
-  // rendering into the hidden overlay body.
-  if (globalThis.HerdrTempOverlays) {
-    const overlays = globalThis.HerdrTempOverlays;
-    if (overlays.isMinimized && overlays.isMinimized() && overlays.closeGit) overlays.closeGit();
-  }
+  // A rail click on a collapsed column expands it (Zed contract); a
+  // workspace switch (forceOpen) preserves the global collapse flag.
+  if (!openOptions.forceOpen && window.HerdrRightSidebar && window.HerdrRightSidebar.collapsed())
+    window.HerdrRightSidebar.setCollapsed(false);
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
-  rememberWorkspaceShellMode("git", id, { minimized: false });
+  if (window.HerdrSearchPanel) window.HerdrSearchPanel.close();
+  rememberWorkspaceShellMode("git", id);
   window.HerdrGitUi.open(workspace, openOptions);
   render();
 }
 
 function syncFileWorkspaceToggle() {
-  const button = el("fileWorkspaceToggle");
+  const button = el("rightRailFiles");
   if (!button) {
-    setupSessionChrome();
+    setupRightSidebarRail();
     return;
   }
   const workspace = selectedOrDefaultWorkspace();
@@ -640,21 +638,40 @@ async function openWorkspaceFileBrowser(id, options) {
     alert(error.message || String(error));
     return;
   }
-  if (!openOptions.forceOpen && currentWorkspaceShellMode(id) === "files" && !isWorkspaceShellMinimized(id) && window.HerdrFileBrowser.isWorkspaceVisible(workspace)) {
-    minimizeWorkspaceShell(id);
+  if (!openOptions.forceOpen && currentWorkspaceShellMode(id) === "files" && window.HerdrFileBrowser.isWorkspaceVisible(workspace) && (!window.HerdrRightSidebar || window.HerdrRightSidebar.isHosted("fileBrowserPanel"))) {
+    // Same toggle contract as the git branch above.
+    if (window.HerdrRightSidebar) window.HerdrRightSidebar.setCollapsed(!window.HerdrRightSidebar.collapsed());
     return;
   }
-  // Same as openWorkspaceGitUi: a minimized temporary Files overlay must
-  // yield its panel when the user re-opens the main file browser.
-  if (globalThis.HerdrTempOverlays) {
-    const overlays = globalThis.HerdrTempOverlays;
-    if (overlays.isMinimized && overlays.isMinimized() && overlays.closeFiles) overlays.closeFiles();
-  }
+  // Same expand-on-rail-click contract as the git branch above.
+  if (!openOptions.forceOpen && window.HerdrRightSidebar && window.HerdrRightSidebar.collapsed())
+    window.HerdrRightSidebar.setCollapsed(false);
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
-  rememberWorkspaceShellMode("files", id, { minimized: false });
+  if (window.HerdrSearchPanel) window.HerdrSearchPanel.close();
+  rememberWorkspaceShellMode("files", id);
   window.HerdrFileBrowser.open(workspace, openOptions).catch((error) => alert(error.message || String(error)));
   render();
 }
+
+// Rail Search opens the embedded search panel in the sidebar column. The
+// modal palette stays on the header Actions button and the palette
+// shortcut; this wrapper follows the same rail contracts as Files/Git:
+// re-click toggles the column collapse, a click on a collapsed column
+// expands it, forceOpen (workspace switch) keeps the collapse flag.
+async function openWorkspaceSearchPanel(id, options) {
+  const openOptions = options || {};
+  const workspace = selectedOrDefaultWorkspace(id);
+  if (!workspace) return;
+  if (window.HerdrSearchPanel && !openOptions.forceOpen && currentWorkspaceShellMode(id) === "search" && window.HerdrSearchPanel.isOpen() && (!window.HerdrRightSidebar || window.HerdrRightSidebar.isHosted("searchPanel"))) {
+    if (window.HerdrRightSidebar) window.HerdrRightSidebar.setCollapsed(!window.HerdrRightSidebar.collapsed());
+    return;
+  }
+  if (!openOptions.forceOpen && window.HerdrRightSidebar && window.HerdrRightSidebar.collapsed())
+    window.HerdrRightSidebar.setCollapsed(false);
+  await window.HerdrSearchPanel.open(id, openOptions);
+  render();
+}
+window.HerdrOpenWorkspaceSearchPanel = openWorkspaceSearchPanel;
 function runWorkspaceContextAction(action, button, workspaceId) {
   const w = workspaceId
     ? state.workspaces.find((x) => x.workspace_id === workspaceId)

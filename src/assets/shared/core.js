@@ -104,18 +104,6 @@
       && !TERMINAL_QUERY_REPLY_FULL_RE.test(text);
   }
 
-  function tabActivityLabel(updatedAt, now) {
-    const age = Math.max(0, Number(now) - Number(updatedAt));
-    if (!Number.isFinite(age)) return "";
-    const minute = 60 * 1000,
-      hour = 60 * minute,
-      day = 24 * hour;
-    if (age > day) return ">1d";
-    if (age > hour) return ">1h";
-    if (age < minute) return "<1m";
-    return Math.floor(age / minute) + "m ago";
-  }
-
   function isHexColor(value) {
     return /^#[0-9a-fA-F]{6}$/.test(String(value || ""));
   }
@@ -470,7 +458,6 @@
     terminalPasteInput,
     stripTerminalMouseReports,
     stripTerminalQueryReplies,
-    tabActivityLabel,
     escapeHtml,
     inputAttrs,
     pathBasename,

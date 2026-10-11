@@ -14,7 +14,7 @@ const VALID_HINTS = new Set(["enter", "done", "go", "next", "previous", "search"
 // Exact enterkeyhint per checked surface (from the guarded call sites).
 // A wrong hint here is a UX bug the presence check cannot catch.
 const EXPECTED_HINTS = {
-  "composer textarea": "send",
+  "terminal textarea": "send",
   "wterm core textarea": "send",
   "search sheet input": "search",
   "git commit title": "done",
@@ -70,6 +70,14 @@ function guardsOf(elExpr) {
   return evalJs(`(() => { const el = ${elExpr}; if (!el) return null;
     return { ${GUARD_ATTRS.map((a) => `${a}: el.getAttribute(${JSON.stringify(a)})`).join(", ")}, enterkeyhint: el.getAttribute("enterkeyhint"), tag: el.tagName.toLowerCase() };
   })()`);
+}
+
+// Open a drawer item by its visible title so reordering the drawer list
+// never breaks the audit (the nth-child positions shifted when the temp
+// overlay items were removed).
+async function tapDrawerItem(title) {
+  const ok = await evalJs(`(() => { const item = [...document.querySelectorAll('.mobile-drawer-item')].find(x => /${title}/.test((x.querySelector('strong')||{}).textContent || '')); if (!item) return false; item.click(); return true; })()`);
+  if (!ok) throw new Error(`tap: no drawer item matching ${title}`);
 }
 
 const failures = [];
@@ -148,23 +156,24 @@ async function main() {
   await sleep(800);
   // Cold servers can take well over 12s to spawn the first shell pane
   // after a restart; re-tap the terminal screen once mid-wait so a slow
-  // boot state transition does not read as a missing composer.
-  let composerMounted = false;
+  // boot state transition does not read as a missing terminal.
+  let terminalMounted = false;
   for (let waited = 0; waited < 30000; waited += 1000) {
-    composerMounted = !!(await evalJs(`(() => { return !!document.getElementById('mobileComposerInput'); })()`));
-    if (composerMounted) break;
+    terminalMounted = !!(await evalJs(`(() => { return !!document.querySelector('#terminal textarea'); })()`));
+    if (terminalMounted) break;
     if (waited === 12000) await tap('.mobile-nav button[data-screen="terminal"]');
     await sleep(1000);
   }
-  if (!composerMounted) throw new Error("composer input never mounted (30s)");
+  if (!terminalMounted) throw new Error("terminal textarea never mounted (30s)");
 
-  // 1. Composer textarea on the terminal screen.
-  await check("composer textarea", "#mobileComposerInput", `document.getElementById('mobileComposerInput')`);
+  // 1. Terminal IME textarea on the terminal screen (typing goes straight
+  //    into the terminal; the wterm shell owns the guarded textarea).
+  await check("terminal textarea", "#terminal textarea", `document.querySelector('#terminal textarea')`);
 
   // 2. wterm core: switch the terminal renderer to wterm, reload, audit its textarea.
   await tap('.mobile-nav button[data-screen="more"]');
   await waitFor(`!!document.querySelector('.mobile-drawer-item')`, "drawer");
-  await tap('.mobile-drawer-item:nth-child(7)'); // Settings
+  await tapDrawerItem("Settings");
   await sleep(600);
   const coreBefore = await evalJs(`(() => { try { return (JSON.parse(localStorage.getItem('herdr-web-options')||'{}').terminalCore) || 'ghostty'; } catch (_) { return 'ghostty'; } })()`);
   await evalJs(`(() => { const sel = [...document.querySelectorAll('select')].find(s => (s.getAttribute('onchange')||'').includes('setTerminalCore')); if (!sel) return false; sel.value = 'wterm'; sel.onchange({ target: sel }); return true; })()`);
@@ -173,6 +182,12 @@ async function main() {
   if (coreSet !== "wterm") { failures.push(`wterm core switch did not persist (got ${coreSet})`); console.log(`FAIL wterm core switch: got ${coreSet}`); }
   else console.log("OK   wterm core switch persists (HerdrMobile.setTerminalCore exported)");
   // Reload with the routed workspace URL so the terminal remounts under wterm.
+  // selectWorkspace pushes the bare /workspace/<ws> URL first; refresh()
+  // repairs the route with tab/pane segments asynchronously, and on a
+  // cold backend that repair can take seconds. Reloading the bare URL
+  // boots to Home (boot-clean rule) and the terminal never mounts, so
+  // wait for the repaired route first.
+  await waitFor(`!!location.pathname.match(/\\/tab\\//)`, "route repair after workspace tap", 10000).catch(() => {});
   const routeUrl = await evalJs(`location.href`);
   await send("Page.navigate", { url: routeUrl.startsWith("about:") || !routeUrl.includes("/workspace/") ? `${ORIGIN}/session/default` : routeUrl });
   await sleep(2500);
@@ -200,9 +215,7 @@ async function main() {
     body: JSON.stringify({ cwd: repoCwd, paths: ["readme.md"] }),
   }).catch(() => null);
   await sleep(300);
-  await tap('.mobile-nav button[data-screen="more"]');
-  await waitFor(`!!document.querySelector('.mobile-drawer-item')`, "drawer");
-  await tap('.mobile-drawer-item:nth-child(5)'); // Git
+  await tap('.mobile-nav button[data-screen="git"]');
   await sleep(900);
   const commitOpen = await evalJs(`(() => { const b = [...document.querySelectorAll('button')].find(x => /Commit staged/.test(x.textContent)); if (!b) return false; if (b.disabled) return "disabled"; b.click(); return true; })()`);
   if (commitOpen === true) {
@@ -218,7 +231,7 @@ async function main() {
   // 5. Worktrees discover + create fields.
   await tap('.mobile-nav button[data-screen="more"]');
   await waitFor(`!!document.querySelector('.mobile-drawer-item')`, "drawer");
-  await tap('.mobile-drawer-item:nth-child(3)'); // Worktrees
+  await tapDrawerItem("Worktrees");
   await sleep(600);
   await check("worktrees discover path", "flow input", `document.querySelector('.mobile-worktree-flow .mobile-settings-group input')`);
   const createOpen = await evalJs(`(() => { const d = document.querySelector('.mobile-worktree-flow details.mobile-disclosure'); if (d) d.open = true; return !!d; })()`);
@@ -235,7 +248,7 @@ async function main() {
   // 6. Sessions name input.
   await tap('.mobile-nav button[data-screen="more"]');
   await waitFor(`!!document.querySelector('.mobile-drawer-item')`, "drawer");
-  await tap('.mobile-drawer-item:nth-child(6)'); // Sessions
+  await tapDrawerItem("Sessions");
   await sleep(600);
   const sessOpen = await evalJs(`(() => { const d = [...document.querySelectorAll('.mobile-section details')].find(x => /Create new session/.test(x.textContent)); if (d) d.open = true; return !!d; })()`);
   if (sessOpen) {
@@ -246,7 +259,7 @@ async function main() {
   // 7. Settings filter + directory/font text inputs.
   await tap('.mobile-nav button[data-screen="more"]');
   await waitFor(`!!document.querySelector('.mobile-drawer-item')`, "drawer");
-  await tap('.mobile-drawer-item:nth-child(7)'); // Settings
+  await tapDrawerItem("Settings");
   await sleep(600);
   await check("settings filter", "filter input", `document.querySelector('.mobile-settings-filter input')`);
   const settingsInputs = await evalJs(`(() => { const groups = [...document.querySelectorAll('.mobile-settings-group')]; const g = groups.find(x => /Workspaces/.test(x.textContent)); if (g) g.open = true; const t = groups.find(x => /Terminal/.test(x.textContent)); if (t) t.open = true; return true; })()`);
@@ -257,9 +270,7 @@ async function main() {
 
   // 8. File browser rename sheet: open Files, tap a file row's action (⋯)
   // button, then Rename in the action sheet.
-  await tap('.mobile-nav button[data-screen="more"]');
-  await waitFor(`!!document.querySelector('.mobile-drawer-item')`, "drawer");
-  await tap('.mobile-drawer-item:nth-child(4)'); // Files
+  await tap('.mobile-nav button[data-screen="files"]');
   await sleep(600);
   const actionOpened = await evalJs(`(() => {
     const rows = [...document.querySelectorAll('.herdr-tree-row')];

@@ -20,7 +20,6 @@ const {
   validateWorktreeCreate,
   buildWorktreeCreateBody,
   createFaviconNotifier,
-  tabActivityLabel,
   terminalPasteInput,
   stripTerminalMouseReports,
   stripTerminalQueryReplies,
@@ -360,17 +359,6 @@ describe("Git log rendering", () => {
     // Legacy rows without lane still fall back to graph parsing.
     const legacy = render(undefined);
     assert.ok(legacy.includes(laneColor(0)), "legacy row without lane falls back to graph lane 0");
-  });
-});
-
-describe("tabActivityLabel", () => {
-  const now = 1_000_000_000;
-
-  it("formats update ages without sub-minute churn", () => {
-    assert.equal(tabActivityLabel(now - 30_000, now), "<1m");
-    assert.equal(tabActivityLabel(now - 5 * 60_000, now), "5m ago");
-    assert.equal(tabActivityLabel(now - 61 * 60_000, now), ">1h");
-    assert.equal(tabActivityLabel(now - 25 * 60 * 60_000, now), ">1d");
   });
 });
 
@@ -954,6 +942,14 @@ describe("HerdrEditor line number helpers", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.doesNotMatch(env.parent.innerHTML, /herdr-editor-find-toggle/);
     assert.doesNotMatch(env.parent.innerHTML, /herdr-editor-find"/);
+
+    // hideFindToggle suppresses only the floating button: the toolbar
+    // stays so a strip-level control can still open it (desktop panes).
+    env = boot();
+    env.create({ hideHeader: true, hideFindToggle: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.doesNotMatch(env.parent.innerHTML, /herdr-editor-find-float/);
+    assert.match(env.parent.innerHTML, /class="herdr-editor-find"/);
   });
 
   it("memoizes find scans and invalidates on text or query change (D3)", () => {
@@ -1426,6 +1422,7 @@ describe("desktop file browser editor integration", () => {
       };
       this.scrollTop = 0;
       this.value = "";
+      this.dataset = {};
       this._id = "";
       this._innerHTML = "";
       this._attributes = {};
@@ -1451,21 +1448,53 @@ describe("desktop file browser editor integration", () => {
     querySelector(selector) {
       return this.querySelectorAll(selector)[0] || null;
     }
+    // One-token matcher: "#id", ".class", "tag.class", "[data-x]". The
+    // pane flow composes them with descendant whitespace below.
+    static matchesToken(node, token) {
+      const classes = String(node.className || "").split(/\s+/).filter(Boolean);
+      const tag = String(node.tag || "").toLowerCase();
+      let rest = token;
+      let attrName = null;
+      let attrValue = null;
+      const attrMatch = rest.match(/^([^\[]+)\[([^=\]]+)(?:=("[^"]*"|'[^']*'|[^\]]+))?\]$/)
+        || rest.match(/^\[([^=\]]+)(?:=("[^"]*"|'[^']*'|[^\]]+))?\]$/);
+      if (attrMatch) {
+        const lead = rest.slice(0, rest.indexOf("["));
+        attrName = attrMatch[1];
+        attrValue = attrMatch[2] != null ? attrMatch[2].replace(/^["']|["']$/g, "") : null;
+        rest = lead;
+      }
+      if (rest) {
+        if (rest.startsWith("#")) {
+          if (node.id !== rest.slice(1)) return false;
+        } else if (rest.startsWith(".")) {
+          if (!classes.includes(rest.slice(1))) return false;
+        } else if (rest.includes(".")) {
+          const [t, c] = rest.split(".");
+          if (tag !== t.toLowerCase() || !classes.includes(c)) return false;
+        } else if (tag !== rest.toLowerCase()) return false;
+      }
+      if (attrName != null) {
+        const camel = attrName.replace(/^data-/, "").replace(/-([a-z])/g, (m, c) => c.toUpperCase());
+        const value = attrName.startsWith("data-") ? node.dataset[camel] : Object.prototype.hasOwnProperty.call(node._attributes, attrName) ? node._attributes[attrName] : null;
+        if (attrValue != null && String(value) !== attrValue) return false;
+        if (attrValue == null && value == null) return false;
+      }
+      return true;
+    }
     querySelectorAll(selector) {
-      // Minimal selector support for the class-based lookups the file browser uses.
+      const tokens = String(selector).trim().split(/\s+/);
       const results = [];
-      const visit = (node) => {
+      const visit = (node, depth) => {
         for (const child of node.children || []) {
-          const classAttr = String(child.className || "");
-          if (selector.startsWith(".") && classAttr.split(/\s+/).includes(selector.slice(1))) results.push(child);
-          if (selector.includes(".") && !selector.startsWith(".")) {
-            const [tag, cls] = selector.split(".");
-            if (String(child.tag || "").toLowerCase() === tag.toLowerCase() && classAttr.split(/\s+/).includes(cls)) results.push(child);
+          if (FakeElement.matchesToken(child, tokens[depth])) {
+            if (depth === tokens.length - 1) results.push(child);
+            else visit(child, depth + 1);
           }
-          visit(child);
+          visit(child, depth);
         }
       };
-      visit(this);
+      visit(this, 0);
       return results;
     }
     appendChild(child) {
@@ -1480,6 +1509,12 @@ describe("desktop file browser editor integration", () => {
         const index = this.parentNode.children.indexOf(this);
         if (index >= 0) this.parentNode.children.splice(index, 1);
       }
+    }
+    removeChild(child) {
+      const index = this.children.indexOf(child);
+      if (index >= 0) this.children.splice(index, 1);
+      child.parentNode = null;
+      return child;
     }
     focus() {}
     setSelectionRange() {}
@@ -1645,478 +1680,428 @@ describe("desktop file browser editor integration", () => {
     assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-menu/);
   });
 
-  it("opens files editable by default and toggles read-only via lock", async () => {
+  it("opens a right-clicked git checkout through worktree.open", async () => {
     const document = createFakeDocument();
-    const editorCalls = [];
+    const bodies = [];
+    const navigations = [];
     const context = {
       window: {
         addEventListener() {},
-        HerdrEditor: {
-          create(opts) {
-            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, lineNumbers: opts.lineNumbers });
-            opts.parent.innerHTML = `<div class="cm-content cm-lineWrapping" contenteditable="${opts.readonly === false ? "true" : "false"}" data-language="python"></div>`;
-            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
-          },
-        },
+        HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
         HerdrGitUi: { hide() {} },
         HerdrWorkspacePath(workspace) { return workspace.cwd; },
+        rememberWorkspaceShellMode() {},
+        syncShellModeButtons() {},
+        showBlocking() {},
+        hideBlocking() {},
+        go(ws, tab, pane) { navigations.push([ws, tab, pane]); },
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => ({
-        ok: true,
-        async json() {
-          if (String(url).startsWith("/api/file-browser/file")) return { path: "src/demo.py", content: "print('x')", binary: false, truncated: false };
-          return { path: "", entries: [], git_status: null };
-        },
-      }),
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent,
-      decodeURIComponent,
-      Error,
-      JSON,
-      Math,
-      String,
-      setTimeout,
-      clearTimeout,
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    assert.equal(editorCalls.at(-1).path, "src/demo.py");
-    assert.equal(editorCalls.at(-1).readonly, false);
-    assert.equal(editorCalls.at(-1).lineNumbers, true);
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-lock-toggle/);
-
-    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("src/demo.py"));
-    assert.equal(editorCalls.at(-1).readonly, true);
-    assert.equal(editorCalls.at(-1).content, "print('x')");
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-lock-toggle active/);
-
-    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("src/demo.py"));
-    assert.equal(editorCalls.at(-1).readonly, false);
-    assert.equal(editorCalls.at(-1).content, "print('x')");
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-open-tab active/);
-  });
-
-  it("opens markdown files in rendered preview by default and flips via the eye toggle", async () => {
-    const document = createFakeDocument();
-    const editorCalls = [];
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) {
-            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, markdownPreview: opts.markdownPreview });
-            opts.parent.innerHTML = `<div class="cm-content cm-lineWrapping" contenteditable="${opts.readonly === false ? "true" : "false"}" data-language="markdown"></div>`;
-            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
-          },
-          isMarkdownPath(path) { return /\.md$/.test(String(path)); },
-        },
-        HerdrContentSearch: {
-          render() { return ""; },
-          findMatch() { return { line: 2, match_start: 0, match_end: 5 }; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => ({
-        ok: true,
-        async json() {
-          const text = String(url);
-          if (text.startsWith("/api/file-browser/file")) return { path: "README.md", content: "# Title", binary: false, truncated: false };
-          if (text.startsWith("/api/file-browser/content-search?")) return { files: [{ path: "README.md" }], total_files: 1, total_matches: 1, visited: 1, truncated: false };
-          return { path: "", entries: [], git_status: null };
-        },
-      }),
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent,
-      decodeURIComponent,
-      Error,
-      JSON,
-      Math,
-      String,
-      setTimeout,
-      clearTimeout,
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("README.md"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    // Markdown opens read-only with the rendered preview, not the editor.
-    assert.equal(editorCalls.at(-1).path, "README.md");
-    assert.equal(editorCalls.at(-1).readonly, true);
-    assert.equal(editorCalls.at(-1).markdownPreview, true);
-
-    // The toolbar ships the eye toggle in its active (preview) state.
-    const toolbarHtml = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(toolbarHtml, /file-browser-preview-toggle active/);
-    assert.match(toolbarHtml, /Show markdown source/);
-
-    // Eye toggle flips to the source view...
-    context.window.HerdrFileBrowser.toggleMarkdownView(encodeURIComponent("README.md"));
-    assert.equal(editorCalls.at(-1).markdownPreview, false);
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-preview-toggle(?! active)/);
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /Show rendered markdown preview/);
-
-    // ...and back to the rendered preview.
-    context.window.HerdrFileBrowser.toggleMarkdownView(encodeURIComponent("README.md"));
-    assert.equal(editorCalls.at(-1).markdownPreview, true);
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-preview-toggle active/);
-
-    // A content-search match must also leave preview mode when this markdown
-    // file is already open, otherwise the highlighted source line is hidden.
-    context.window.HerdrFileBrowserContent.setQuery("Title");
-    context.window.HerdrFileBrowserContent.run();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    context.window.HerdrFileBrowserContent.openMatch(encodeURIComponent("README.md"), encodeURIComponent("README.md:2:1:Title"));
-    assert.equal(editorCalls.at(-1).markdownPreview, false);
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /Show rendered markdown preview/);
-
-    // Unlocking to edit mounts the plain editor and hides the eye toggle.
-    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("README.md"));
-    assert.equal(editorCalls.at(-1).readonly, false);
-    assert.equal(editorCalls.at(-1).markdownPreview, false);
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-preview-toggle/);
-  });
-
-  it("offers Preview in the tree context menu for markdown and dispatches it", async () => {
-    const document = createFakeDocument();
-    const editorCalls = [];
-    const loadedPaths = [];
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) {
-            editorCalls.push({ path: opts.path, readonly: opts.readonly, markdownPreview: opts.markdownPreview });
-            opts.parent.innerHTML = "<div class='cm-content'></div>";
-            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
-          },
-          isMarkdownPath(path) { return /\.md$/.test(String(path)); },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => ({
-        ok: true,
-        async json() {
-          const text = String(url);
-          if (text.startsWith("/api/file-browser/file")) {
-            const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-            loadedPaths.push(path);
-            return { path, content: `# ${path}`, binary: false, truncated: false };
-          }
-          return { path: "", entries: [{ kind: "file", name: "README.md", path: "docs/README.md" }], git_status: null };
-        },
-      }),
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent,
-      decodeURIComponent,
-      Error,
-      JSON,
-      Math,
-      String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-
-    // Tree menu on a closed markdown file offers Preview.
-    context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("docs/README.md"), "file");
-    const treeHtml = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(treeHtml, /data-file-menu-action="preview"/);
-
-    const click = async (action) => {
-      const button = { dataset: { fileMenuAction: action } };
-      button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
-      const textNodeTarget = { parentElement: button };
-      await document.listeners["click:capture"].at(-1)({
-        target: textNodeTarget,
-        preventDefault() {},
-        stopPropagation() {},
-        stopImmediatePropagation() {},
-      });
-    };
-
-    await click("preview");
-    assert.ok(loadedPaths.includes("docs/README.md"), "preview action loads the file");
-    assert.equal(editorCalls.at(-1).path, "docs/README.md");
-    assert.equal(editorCalls.at(-1).readonly, true);
-    assert.equal(editorCalls.at(-1).markdownPreview, true);
-
-    // Tab menu on the open file flips to the source view.
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("docs/README.md"));
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /data-file-menu-action="source"/);
-    await click("source");
-    assert.equal(editorCalls.at(-1).markdownPreview, false);
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-preview-toggle(?! active)/);
-
-    // Tab menu now offers going back to the preview.
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("docs/README.md"));
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /data-file-menu-action="preview"/);
-    await click("preview");
-    assert.equal(editorCalls.at(-1).markdownPreview, true);
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-preview-toggle active/);
-  });
-
-  it("syncs the dirty dot live from editor changes and never resurrects it after locking", async () => {
-    const document = createFakeDocument();
-    const editorCalls = [];
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) {
-            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, onChange: opts.onChange });
-            opts.parent.innerHTML = `<div class="cm-content cm-lineWrapping" contenteditable="${opts.readonly === false ? "true" : "false"}" data-language="python"></div>`;
-            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
-          },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => ({
-        ok: true,
-        async json() {
-          if (String(url).startsWith("/api/file-browser/file")) return { path: "src/demo.py", content: "print('x')", binary: false, truncated: false };
-          return { path: "", entries: [], git_status: null };
-        },
-      }),
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent,
-      decodeURIComponent,
-      Error,
-      JSON,
-      Math,
-      String,
-      setTimeout,
-      clearTimeout,
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    // Materialize a real tab node the way the browser DOM would hold it, so the
-    // targeted dot sync can be exercised on element children (not innerHTML strings).
-    const panel = document.getElementById("fileBrowserPanel");
-    const tab = document.createElement("div");
-    tab.className = "file-browser-open-tab";
-    tab.setAttribute("title", "/repo/src/demo.py");
-    const label = document.createElement("span");
-    label.className = "file-browser-open-tab-label";
-    tab.appendChild(label);
-    panel.appendChild(tab);
-
-    const dotFor = () => label.querySelector(".file-browser-tab-dirty");
-    assert.equal(dotFor(), null, "no dirty dot before any change");
-
-    editorCalls.at(-1).onChange();
-    assert.ok(dotFor(), "dirty dot appears live on first change");
-    assert.equal(dotFor().textContent, "●");
-    assert.equal(dotFor().title, "Modified");
-
-    editorCalls.at(-1).onChange();
-    assert.equal(label.querySelectorAll(".file-browser-tab-dirty").length, 1, "dot is not duplicated");
-
-    // Locking a dirty file discards the draft and re-renders the tab markup
-    // without the dirty span (the fake DOM keeps children across innerHTML
-    // writes, so assert on the regenerated markup like the browser would).
-    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("src/demo.py"));
-    assert.equal(editorCalls.at(-1).readonly, true);
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-tab-dirty/);
-
-    // A stale change event after the lock must not resurrect the dot on the
-    // rebuilt read-only tab.
-    const rebuiltTab = document.createElement("div");
-    rebuiltTab.className = "file-browser-open-tab";
-    rebuiltTab.setAttribute("title", "/repo/src/demo.py");
-    const rebuiltLabel = document.createElement("span");
-    rebuiltLabel.className = "file-browser-open-tab-label";
-    rebuiltTab.appendChild(rebuiltLabel);
-    document.getElementById("fileBrowserPanel").appendChild(rebuiltTab);
-    editorCalls.at(-1).onChange();
-    assert.equal(rebuiltLabel.querySelector(".file-browser-tab-dirty"), null, "stale change after lock does not resurrect the dot");
-  });
-
-  it("reuses the editor instance across renders and recreates it on state changes (C4)", async () => {
-    const document = createFakeDocument();
-    const creates = [];
-    const destroys = [];
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) {
-            creates.push({ path: opts.path, content: opts.content, readonly: opts.readonly, onChange: opts.onChange });
-            // Build a real child node so the file browser can find and
-            // cache the .herdr-editor wrapper across renders.
-            const wrapper = new FakeElement(document, "div");
-            wrapper.className = "herdr-editor";
-            const mount = new FakeElement(document, "div");
-            mount.className = "herdr-editor-mount";
-            wrapper.appendChild(mount);
-            opts.parent.appendChild(wrapper);
-            opts.parent._wrapper = wrapper;
-            const api = {
-              toggleFind() {},
-              destroy() { destroys.push(opts.path); },
-            };
-            opts.parent._herdrEditorApi = api;
-            return api;
-          },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
+      fetch: async (url, options = {}) => {
         const text = String(url);
+        bodies.push({ url: text, body: options.body || null });
         return {
           ok: true,
           async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: `content of ${path}`, binary: false, truncated: false };
+            if (text.startsWith("/api/worktrees?")) {
+              return {
+                result: {
+                  worktrees: [
+                    { path: "/home/repo", branch: "main", is_linked_worktree: true },
+                    { path: "/home/repo-wt-feature", branch: "feature", is_linked_worktree: true },
+                  ],
+                },
+              };
             }
-            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }], git_status: null };
+            if (text === "/api/worktrees/open") {
+              return {
+                result: {
+                  workspace: { workspace_id: "ws9" },
+                  tab: { tab_id: "tab9" },
+                  root_pane: { pane_id: "pane9" },
+                },
+              };
+            }
+            return { path: "", entries: [{ kind: "dir", name: "repo", path: "repo" }, { kind: "dir", name: "plain", path: "plain" }, { kind: "file", name: "demo.txt", path: "demo.txt" }], git_status: null, root: "/home" };
           },
         };
       },
-      confirm: () => true,
       HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
       setTimeout(fn) { fn(); return 1; },
       clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+      go(ws, tab, pane) { navigations.push([ws, tab, pane]); },
+      showBlocking() {},
+      hideBlocking() {},
     };
     context.window.window = context.window;
     context.window.document = document;
     vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
     vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
 
-    const FB = context.window.HerdrFileBrowser;
-    await FB.open({ cwd: "/repo" });
-    FB.select(encodeURIComponent("src/a.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(creates.length, 1, "editor created once on first open");
-    const firstMount = creates[0];
+    await context.window.HerdrFileBrowser.open({ cwd: "/home" });
+    context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("repo"), "dir");
+    const html = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(html, /data-file-menu-action="openWorkspaceHere"/);
+    assert.match(html, /Open workspace here<\/span>/);
 
-    // Re-render with unchanged state: the editor DOM must be reattached,
-    // not recreated.
-    FB.refresh && await Promise.resolve();
-    FB.focusFile(encodeURIComponent("src/a.py"));
-    assert.equal(creates.length, 1, "unchanged render reuses the cached editor instance");
-    const paneAfter = document.getElementById("fileBrowserEditor-" + creates[0].path.split("/").join(""));
-    assert.ok(paneAfter, "pane container exists after re-render");
+    const button = { dataset: { fileMenuAction: "openWorkspaceHere" } };
+    button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
+    const textNodeTarget = { parentElement: button };
+    await document.listeners["click:capture"].at(-1)({
+      target: textNodeTarget,
+      preventDefault() {},
+      stopPropagation() {},
+      stopImmediatePropagation() {},
+    });
 
-    // Files open editable by default, so locking (read-only) recreates
-    // the editor and the new instance must be readonly.
-    FB.toggleLock(encodeURIComponent("src/a.py"));
-    assert.equal(creates.length, 2, "editability change recreates the editor");
-    assert.equal(creates[1].readonly, true, "new editor is readonly after lock");
-
-    // Closing the file destroys the cached editor and drops it.
-    const destroyedBeforeClose = destroys.length;
-    FB.closeFile(encodeURIComponent("src/a.py"));
-    assert.equal(creates.length, 2, "closing does not create editors");
-    assert.equal(destroys.length, destroyedBeforeClose + 1, "closing destroys the cached editor");
-    assert.ok(destroys.includes("src/a.py"), "destroy received the closed path");
-
-    // Reopening the same file creates a fresh editor (cache was dropped).
-    FB.select(encodeURIComponent("src/a.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(creates.length, 3, "reopen after close creates a fresh editor");
-
-    // forgetWorkspace drops every cached editor for that workspace.
-    const beforeForget = destroys.length;
-    FB.forgetWorkspace({ cwd: "/repo" });
-    assert.equal(destroys.length, beforeForget + 1, "forgetWorkspace destroys the workspace editors");
+    const detection = bodies.find((request) => request.url.startsWith("/api/worktrees?cwd="));
+    assert.ok(detection, "worktree detection request fired");
+    assert.ok(detection.url.includes(encodeURIComponent("/home/repo")), "detection targets the absolute folder");
+    const opened = bodies.find((request) => request.url === "/api/worktrees/open");
+    assert.ok(opened, "worktree.open request fired for the matched checkout");
+    assert.match(opened.body, /"path":"\/home\/repo"/);
+    assert.ok(!bodies.some((request) => request.url === "/api/workspaces"), "git checkout skips workspace create");
+    assert.deepEqual(navigations, [["ws9", "tab9", "pane9"]]);
   });
 
-  it("keeps editing draft per workspace, then forgets closed workspace state", async () => {
+  it("opens a right-clicked plain folder as a workspace and records it in recents", async () => {
+    const document = createFakeDocument();
+    const bodies = [];
+    const navigations = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+        rememberWorkspaceShellMode() {},
+        syncShellModeButtons() {},
+        showBlocking() {},
+        hideBlocking() {},
+        go(ws, tab, pane) { navigations.push([ws, tab, pane]); },
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url, options = {}) => {
+        const text = String(url);
+        bodies.push({ url: text, body: options.body || null });
+        return {
+          ok: true,
+          async json() {
+            if (text.startsWith("/api/worktrees?")) return { result: { worktrees: [] } };
+            if (text === "/api/workspaces") {
+              return {
+                result: {
+                  workspace: { workspace_id: "ws2" },
+                  tab: { tab_id: "tab2" },
+                  root_pane: { pane_id: "pane2" },
+                },
+              };
+            }
+            if (text === "/api/recent-workspaces/record") return { ok: true };
+            return { path: "", entries: [{ kind: "dir", name: "plain", path: "plain" }, { kind: "file", name: "demo.txt", path: "demo.txt" }], git_status: null, root: "/home" };
+          },
+        };
+      },
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+      go(ws, tab, pane) { navigations.push([ws, tab, pane]); },
+      showBlocking() {},
+      hideBlocking() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/home" });
+    context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("plain"), "dir");
+    const button = { dataset: { fileMenuAction: "openWorkspaceHere" } };
+    button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
+    const textNodeTarget = { parentElement: button };
+    await document.listeners["click:capture"].at(-1)({
+      target: textNodeTarget,
+      preventDefault() {},
+      stopPropagation() {},
+      stopImmediatePropagation() {},
+    });
+
+    assert.ok(!bodies.some((request) => request.url === "/api/worktrees/open"), "plain folder skips worktree.open");
+    const created = bodies.find((request) => request.url === "/api/workspaces");
+    assert.ok(created, "workspace create request fired");
+    assert.match(created.body, /"cwd":"\/home\/plain"/);
+    assert.match(created.body, /"label":"plain"/);
+    const recorded = bodies.find((request) => request.url === "/api/recent-workspaces/record");
+    assert.ok(recorded, "recents record request fired");
+    assert.match(recorded.body, /"path":"\/home\/plain"/);
+    assert.deepEqual(navigations, [["ws2", "tab2", "pane2"]]);
+  });
+
+  it("treats a folder inside a repo as a plain folder", async () => {
+    const document = createFakeDocument();
+    const bodies = [];
+    const navigations = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+        rememberWorkspaceShellMode() {},
+        syncShellModeButtons() {},
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url, options = {}) => {
+        const text = String(url);
+        bodies.push({ url: text, body: options.body || null });
+        return {
+          ok: true,
+          async json() {
+            // Rows belong to the enclosing repo: none matches the clicked
+            // subdir, and worktree.open answers with the already-open
+            // workspace instead of creating a duplicate.
+            if (text.startsWith("/api/worktrees?")) {
+              return {
+                result: {
+                  worktrees: [
+                    { path: "/home/repo", branch: "main", is_linked_worktree: true },
+                    { path: "/home/repo-wt", branch: "feature", is_linked_worktree: true },
+                  ],
+                },
+              };
+            }
+            if (text === "/api/workspaces") {
+              return {
+                result: {
+                  workspace: { workspace_id: "ws-existing" },
+                  tab: { tab_id: "tab-existing" },
+                  root_pane: { pane_id: "pane-existing" },
+                },
+              };
+            }
+            if (text === "/api/recent-workspaces/record") return { ok: true };
+            return { path: "", entries: [{ kind: "dir", name: "repo", path: "repo" }, { kind: "file", name: "demo.txt", path: "demo.txt" }], git_status: null, root: "/home" };
+          },
+        };
+      },
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+      go(ws, tab, pane) { navigations.push([ws, tab, pane]); },
+      showBlocking() {},
+      hideBlocking() {},
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    // repo/docs is inside the repo but is not a checkout row.
+    await context.window.HerdrFileBrowser.open({ cwd: "/home" });
+    context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("repo/docs"), "dir");
+    const button = { dataset: { fileMenuAction: "openWorkspaceHere" } };
+    button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
+    const textNodeTarget = { parentElement: button };
+    await document.listeners["click:capture"].at(-1)({
+      target: textNodeTarget,
+      preventDefault() {},
+      stopPropagation() {},
+      stopImmediatePropagation() {},
+    });
+
+    assert.ok(!bodies.some((request) => request.url === "/api/worktrees/open"), "subdir inside repo is not opened as a checkout");
+    const created = bodies.find((request) => request.url === "/api/workspaces");
+    assert.ok(created, "subdir inside repo falls back to workspace create");
+    assert.match(created.body, /"cwd":"\/home\/repo\/docs"/);
+    assert.deepEqual(navigations, [["ws-existing", "tab-existing", "pane-existing"]]);
+  });
+
+  it("keeps Open workspace here off the file menu and ignores it for file rows", async () => {
+    const document = createFakeDocument();
+    const bodies = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+        rememberWorkspaceShellMode() {},
+        syncShellModeButtons() {},
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url, options = {}) => {
+        const text = String(url);
+        bodies.push({ url: text, body: options.body || null });
+        return {
+          ok: true,
+          async json() {
+            return { path: "", entries: [{ kind: "dir", name: "repo", path: "repo" }, { kind: "file", name: "demo.txt", path: "demo.txt" }], git_status: null, root: "/home" };
+          },
+        };
+      },
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.open({ cwd: "/home" });
+    context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("demo.txt"), "file");
+    const html = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.doesNotMatch(html, /data-file-menu-action="openWorkspaceHere"/);
+
+    // A forged file-kind click cannot reach the open flow either.
+    const button = { dataset: { fileMenuAction: "openWorkspaceHere" } };
+    button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
+    const textNodeTarget = { parentElement: button };
+    await document.listeners["click:capture"].at(-1)({
+      target: textNodeTarget,
+      preventDefault() {},
+      stopPropagation() {},
+      stopImmediatePropagation() {},
+    });
+    assert.ok(!bodies.some((request) => request.url.startsWith("/api/worktrees?cwd=")), "file rows never trigger detection");
+    assert.ok(!bodies.some((request) => request.url === "/api/workspaces"), "file rows never trigger workspace create");
+  });
+
+// ---- center-pane editor tab flow (Phase 3b) ---------------------------
+  // Files open as per-file editor tabs (editor:<path>) in the center pane
+  // strip. The harness boots the real workspace_panes module next to the
+  // file browser registry, so tests exercise the same open/mount/close
+  // loop the desktop shell uses: Panes.openEditorTab -> registry fetch ->
+  // mountEditorTab -> pane strip render. The old sidebar-surface tests
+  // (lock toggle, eye toggle, tree Preview, tab context menu, Split) died
+  // with the rehost; the editor behaviors they covered live on here.
+
+  function makePaneHarness(options = {}) {
     const document = createFakeDocument();
     const editorCalls = [];
     const requests = [];
+    const confirmCalls = [];
+    const keydownListeners = [];
+    let confirmAnswer = options.confirmAnswer != null ? options.confirmAnswer : true;
+    const diskFiles = options.diskFiles || {};
+    const harness = {
+      document,
+      editorCalls,
+      requests,
+      confirmCalls,
+      keydownListeners,
+      setConfirm(answer) { confirmAnswer = answer; },
+      setDiskContent(path, content, hash) { diskFiles[path] = { content, hash }; },
+    };
     const context = {
       window: {
-        addEventListener() {},
+        addEventListener(type, listener) {
+          if (type === "keydown") keydownListeners.push(listener);
+        },
         HerdrEditor: {
           create(opts) {
-            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, lineNumbers: opts.lineNumbers, onChange: opts.onChange, toggledFind: false });
-            opts.parent.innerHTML = `<div class="cm-content cm-lineWrapping" contenteditable="${opts.readonly === false ? "true" : "false"}"></div>`;
+            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, markdownPreview: opts.markdownPreview, searchHighlight: opts.searchHighlight, onChange: opts.onChange, lineNumbers: opts.lineNumbers });
+            // Mirror the real mount contract: a .herdr-editor wrapper in
+            // the parent, and onReady fired synchronously (CodeMirror is
+            // preloaded in tests). The registry caches at onReady.
+            const wrapper = document.createElement("div");
+            wrapper.className = "herdr-editor";
+            wrapper.innerHTML = '<div class="cm-content"></div>';
+            opts.parent.appendChild(wrapper);
             opts.parent._herdrEditorApi = { toggleFind() { editorCalls.at(-1).toggledFind = true; } };
+            if (typeof opts.onReady === "function") opts.onReady();
             return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
           },
+          // Mirrors shared/editor.js openFind: the parent is the pane
+          // editor container, the mounted api lives on the inner mount
+          // node (ensureEditorMountPoint), like the find bar lives inside
+          // the mounted editor markup. Returns false with no mounted editor.
+          openFind(parent) {
+            if (!parent) return false;
+            const mount = parent.querySelector && parent.querySelector(".pane-editor-mount");
+            if (!mount || !mount._herdrEditorApi) return false;
+            const call = editorCalls.at(-1);
+            if (call) call.toggledFind = true;
+            return true;
+          },
+          isMarkdownPath(path) { return /\.md$/i.test(String(path || "")); },
         },
         HerdrGitUi: { hide() {} },
         HerdrWorkspacePath(workspace) { return workspace.cwd; },
+        HerdrWorkspacePanes: null,
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        requests.push(text);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: cwd === "/Users/me/repo-a" ? "print('a')" : "print('b')", binary: false, truncated: false };
-            }
-            if (text.includes("q=")) {
-              return { root: decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]), home: "/Users/me", path: "", entries: [{ kind: "file", name: "demo.py", path: "src/demo.py", level: 1 }], git_status: null, truncated: false };
-            }
-            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
-            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "dir", name: "src", path: "src" }], git_status: null };
-          },
-        };
+      localStorage: {
+        getItem(key) {
+          if (String(key) === "herdr-web-workspace-panes") return harness.panesStorage || "{}";
+          return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false });
+        },
+        setItem(key, value) {
+          if (String(key) === "herdr-web-workspace-panes") harness.panesStorage = String(value);
+        },
       },
-      confirm: () => true,
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url, opts) => {
+        const text = String(url);
+        requests.push({ url: text, options: opts || {} });
+        const reply = (body) => ({ ok: true, async json() { return body; } });
+        if (text.startsWith("/api/file-browser/file")) {
+          const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
+          if (opts && opts.method === "POST") {
+            const payload = JSON.parse(opts.body);
+            diskFiles[path] = { content: payload.content, hash: `hash-${harness.postCount = (harness.postCount || 0) + 1}` };
+            return reply({ hash: diskFiles[path].hash });
+          }
+          if (text.includes("max_bytes=262144")) {
+            return reply({ path, content: "x".repeat(262144), hash: "", binary: false, truncated: true, size: 2 * 1024 * 1024, preview_bytes: 262144 });
+          }
+          const disk = diskFiles[path] || { content: `content of ${path}`, hash: "hash-load" };
+          return reply({ path, content: text.includes("hash_only=true") ? "" : disk.content, hash: disk.hash, binary: false, truncated: !!disk.truncated, size: disk.size || disk.content.length });
+        }
+        const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, "/repo"])[1]);
+        return reply({ root: cwd, home: "/home", path: "", entries: [], git_status: null });
+      },
+      confirm(message) { confirmCalls.push(String(message)); return confirmAnswer; },
       HerdrAppHelpers: require("./shared/core.js"),
       appRefreshIconButton: () => "<button>Refresh</button>",
       encodeURIComponent,
@@ -2125,1218 +2110,466 @@ describe("desktop file browser editor integration", () => {
       JSON,
       Math,
       String,
+      Date,
       setTimeout(fn) { fn(); return 1; },
       clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
     };
     context.window.window = context.window;
     context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    // The panes module and the registry read bare bundle identifiers;
+    // hoist every one the VM cannot resolve from the window object.
+    context.window.fetch = context.fetch;
+    context.window.confirm = (message) => { confirmCalls.push(String(message)); return confirmAnswer; };
+    context.window.localStorage = context.localStorage;
+    context.window.navigator = context.navigator;
+    context.window.getComputedStyle = context.getComputedStyle;
+    context.window.HerdrAppHelpers = context.HerdrAppHelpers;
+    context.window.state = { ws: "ws", tabs: [{ tab_id: "terminal", label: "panel 1" }], tab: "terminal", allTabs: [], workspacePanes: {} };
+    context.window.el = (id) => document.getElementById(id);
+    context.window.workspaceShellKey = (id) => `ws|${id}`;
+    context.window.workspacePath = () => "/repo";
+    context.window.selectedOrDefaultWorkspace = () => ({ workspace_id: "ws", cwd: "/repo" });
+    context.window.escapeHtml = (value) => String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    context.window.escapeAttr = (value) => String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/'/g, "&#39;").replace(/"/g, "&quot;");
+    context.window.panelVisibleLabel = (tab) => (tab && (tab.label || tab.title)) || "panel";
+    context.window.panelRenameInitialLabel = () => "panel";
+    context.window.tabTitle = (tab) => (tab && (tab.label || tab.title)) || "panel";
+    context.window.tabHoverInfo = () => "";
+    context.window.panesByTabIndex = () => new Map();
+    context.window.startTabRename = () => {};
+    context.window.closeTab = () => {};
+    context.window.newTab = () => {};
+    context.window.titleWithWebuiShortcut = (title) => title;
+    context.window.go = () => {};
+    context.window.appRefreshIconButton = context.appRefreshIconButton;
+    // Mirror app.html: #workspacePanes hosts the pane skeleton and parks
+    // #terminalShell inside it.
+    const workspacePanes = document.createElement("div");
+    workspacePanes.id = "workspacePanes";
+    document.body.appendChild(workspacePanes);
+    const terminalShell = document.createElement("div");
+    terminalShell.id = "terminalShell";
+    workspacePanes.appendChild(terminalShell);
 
-    const workspaceA = { workspace_id: "ws-a", cwd: "/Users/me/repo-a" };
-    const workspaceB = { workspace_id: "ws-b", cwd: "/opt/repo-b" };
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), vm.createContext(context.window));
+    vm.runInNewContext(readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8"), vm.createContext(context.window));
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), vm.createContext(context.window));
+    harness.context = context;
+    harness.FB = context.window.HerdrFileBrowser;
+    harness.Panes = context.window.HerdrWorkspacePanes;
+    harness.stripHtml = () => {
+      const pane = document.querySelector("#workspacePanes .workspace-pane");
+      const strip = pane && pane.querySelector(".pane-tab-strip");
+      return strip ? strip.innerHTML : "";
+    };
+    harness.containerFor = (path) => document.getElementById("pane-editor-" + require("./shared/core.js").hashId(path));
+    return harness;
+  }
 
-    await context.window.HerdrFileBrowser.open(workspaceA);
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+  it("opens files editable by default as center-pane editor tabs", async () => {
+    const h = makePaneHarness();
+    await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
+    await h.Panes.openEditorTab("src/demo.py");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
-    editorCalls.at(-1).onChange("print('draft-a')");
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/other.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    context.window.HerdrFileBrowser.focusFile(encodeURIComponent("src/demo.py"));
 
-    await context.window.HerdrFileBrowser.open(workspaceB);
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/other.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /title="\/opt\/repo-b\/src\/demo\.py"/);
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /print\('draft-a'\)/);
+    // Tab identity and strip markup come from the panes module.
+    const root = h.Panes.paneRoot();
+    assert.deepEqual([...root.tabs], ["terminal", "editor:src/demo.py"]);
+    assert.equal(root.active, "editor:src/demo.py");
+    const strip = h.stripHtml();
+    assert.match(strip, /pane-tab editor active/);
+    assert.match(strip, /data-tab-kind="editor"/);
+    assert.match(strip, /data-tab-id="editor:src\/demo\.py"/);
+    assert.match(strip, /<span class="pane-tab-label">demo\.py<\/span>/);
+    assert.match(strip, /closeEditorTab\('src%2Fdemo\.py'\)/);
+    assert.doesNotMatch(strip, /pane-tab-dirty/);
 
-    await context.window.HerdrFileBrowser.open(workspaceA);
-    const restoredPanel = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.doesNotMatch(restoredPanel, /file-browser-pane-head/);
-    assert.doesNotMatch(restoredPanel, /file-browser-pane-search/);
-    assert.match(restoredPanel, /title="~\/repo-a\/src\/demo\.py"/);
-    assert.match(restoredPanel, /<span class="file-browser-toolbar-actions">[\s\S]*HerdrFileBrowser\.toggleFind\('src%2Fdemo\.py'\)/);
-    assert.doesNotMatch(restoredPanel, /HerdrSearchPalette\.open/);
-    context.window.HerdrFileBrowser.toggleFind(encodeURIComponent("src/demo.py"));
-    assert.equal(editorCalls.at(-1).toggledFind, true);
-    assert.equal(editorCalls.at(-1).path, "src/demo.py");
-    assert.equal(editorCalls.at(-1).readonly, false);
-    assert.equal(editorCalls.at(-1).content, "print('draft-a')");
+    // Editable by default: the editor mounts in the pane content slot.
+    assert.equal(h.editorCalls.at(-1).path, "src/demo.py");
+    assert.equal(h.editorCalls.at(-1).readonly, false);
+    assert.equal(h.editorCalls.at(-1).lineNumbers, true);
+    const container = h.containerFor("src/demo.py");
+    assert.ok(container, "per-file editor container exists");
+    assert.equal(container.className, "pane-editor-container");
+    assert.equal(container.dataset.path, "src/demo.py");
+    assert.equal(h.FB.activeEditorPath(), "src/demo.py");
+    assert.equal(h.FB.editorFor("src/demo.py").editing, true);
 
-    context.window.HerdrFileBrowser.forgetWorkspace(workspaceA);
-    await context.window.HerdrFileBrowser.open(workspaceA);
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /print\('draft-a'\)/);
+    // Opening another file mounts its own container; the old one hides.
+    await h.Panes.openEditorTab("src/other.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const first = h.containerFor("src/demo.py");
+    const second = h.containerFor("src/other.py");
+    assert.equal(first.style.display, "none");
+    assert.equal(second.style.display, "");
+    assert.equal(h.FB.activeEditorPath(), "src/other.py");
   });
 
-  it("shows tab context menu with actions and dispatches them via button clicks", async () => {
-    const document = createFakeDocument();
-    const editorCalls = [];
-    const clipboardWrites = [];
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) {
-            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, lineNumbers: opts.lineNumbers });
-            opts.parent.innerHTML = `<div class="cm-content" contenteditable="${opts.readonly === false ? "true" : "false"}"></div>`;
-            opts.parent._herdrEditorApi = { toggleFind() {} };
-            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
-          },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async (v) => { clipboardWrites.push(v); } } },
-      fetch: async (url) => {
-        const text = String(url);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: `content of ${path}`, binary: false, truncated: false };
-            }
-            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "demo.py", path: "src/demo.py" }, { kind: "file", name: "other.py", path: "src/other.py" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent,
-      decodeURIComponent,
-      Error,
-      JSON,
-      Math,
-      String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
+  it("opens markdown files read-only with rendered preview", async () => {
+    const h = makePaneHarness();
+    await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
+    await h.Panes.openEditorTab("README.md");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const file = h.FB.editorFor("README.md");
+    assert.equal(file.editing, false, "markdown opens read-only so the preview engages");
+    assert.equal(h.editorCalls.at(-1).readonly, true);
+    assert.equal(h.editorCalls.at(-1).markdownPreview, true);
+    assert.equal(h.editorCalls.at(-1).path, "README.md");
+  });
+
+  it("syncs the dirty dot in the pane strip live from editor changes", async () => {
+    const h = makePaneHarness();
+    await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
+    await h.Panes.openEditorTab("src/demo.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.doesNotMatch(h.stripHtml(), /pane-tab-dirty/);
+
+    h.editorCalls.at(-1).onChange("content of src/demo.py\nplus edits");
+    assert.match(h.stripHtml(), /pane-tab-dirty/);
+    const file = h.FB.editorFor("src/demo.py");
+    assert.equal(file.dirty, true);
+    assert.equal(file.draft, "content of src/demo.py\nplus edits");
+
+    // Reverting the text clears the dot without a remount.
+    h.editorCalls.at(-1).onChange("content of src/demo.py");
+    assert.doesNotMatch(h.stripHtml(), /pane-tab-dirty/);
+  });
+
+  it("reuses the editor instance across remounts and recreates it on content change (C4)", async () => {
+    const h = makePaneHarness();
+    const creates = [];
+    const destroys = [];
+    const origCreate = h.context.window.HerdrEditor.create;
+    h.context.window.HerdrEditor.create = function (opts) {
+      // Build a real .herdr-editor wrapper child so the registry can cache
+      // and reattach it like it does with the real CodeMirror mount.
+      const wrapper = h.document.createElement("div");
+      wrapper.className = "herdr-editor";
+      opts.parent.appendChild(wrapper);
+      const api = { toggleFind() {}, destroy() { destroys.push(opts.path); } };
+      opts.parent._herdrEditorApi = api;
+      creates.push({ path: opts.path, content: opts.content });
+      if (typeof opts.onReady === "function") opts.onReady();
+      return api;
     };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
+    await h.Panes.openEditorTab("src/demo.py");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/other.py"));
+    await h.Panes.openEditorTab("src/other.py");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
-    const html = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(html, /data-file-menu-action="focus"/);
-    assert.match(html, /data-file-menu-action="split"/);
-    assert.match(html, /data-file-menu-action="find"/);
-    assert.match(html, /data-file-menu-action="cancelEdit"/);
-    assert.match(html, /Lock \(read-only\)/);
-    assert.match(html, /data-file-menu-action="history"/);
-    assert.match(html, /data-file-menu-action="reload"/);
-    assert.match(html, /data-file-menu-action="close"/);
-    assert.match(html, /data-file-menu-action="copyPathTab"/);
-    assert.match(html, /file-browser-menu-label/);
+    // Switch back: same content and editability, the cached wrapper is
+    // reattached, no new create() call.
+    const createsBefore = creates.length;
+    await h.Panes.openEditorTab("src/demo.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(creates.length, createsBefore, "no recreate for unchanged signature");
+    assert.equal(h.FB.activeEditorPath(), "src/demo.py");
 
-    const click = async (action) => {
-      const button = { dataset: { fileMenuAction: action } };
-      button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
-      const textNodeTarget = { parentElement: button };
-      await document.listeners["click:capture"].at(-1)({
-        target: textNodeTarget,
-        preventDefault() {},
-        stopPropagation() {},
-        stopImmediatePropagation() {},
+    // A content change invalidates the signature: recreate on next mount.
+    h.FB.editorFor("src/demo.py").draft = "changed draft";
+    await h.Panes.openEditorTab("src/other.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await h.Panes.openEditorTab("src/demo.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(creates.length > createsBefore, "content change recreates the editor");
+    assert.equal(creates.at(-1).content, "changed draft");
+  });
+
+  it("does not reattach a wrapper cached before the lazy CodeMirror mount settled", async () => {
+    // Regression (Phase 3b live smoke): the first editor open of a session
+    // races the lazy CodeMirror load. HerdrEditor.create() mounts a loading
+    // shell and swaps in the real editor later; the registry must cache the
+    // wrapper at onReady (after the swap), never at create-return time. A
+    // cache entry holding the loading shell used to satisfy reactivation
+    // and reattached a dead wrapper: buttons rendered, no editor.
+    const h = makePaneHarness();
+    const creates = [];
+    // Deferred queue standing in for ensureCodeMirror().then(...): the test
+    // pumps it manually so the swap happens strictly after openEditorTab
+    // returned, like a real network script load.
+    const pendingSettles = [];
+    // The real create() opens with parent.innerHTML = codeMirrorShellHtml()
+    // (a loading shell) and the lazy mount later REPLACES that shell before
+    // onReady. FakeElement.innerHTML does not detach children, so the stub
+    // models both replaces by dropping old .herdr-editor children first.
+    const clearWrappers = (parent) => {
+      for (const child of [...(parent.children || [])]) {
+        if (String(child.className || "").split(/\s+/).includes("herdr-editor")) parent.removeChild(child);
+      }
+    };
+    h.context.window.HerdrEditor.create = function (opts) {
+      clearWrappers(opts.parent);
+      const wrapper = h.document.createElement("div");
+      wrapper.className = "herdr-editor";
+      const loading = h.document.createElement("div");
+      loading.className = "herdr-editor-loading";
+      wrapper.appendChild(loading);
+      opts.parent.appendChild(wrapper);
+      const api = { toggleFind() {}, destroy() {} };
+      opts.parent._herdrEditorApi = api;
+      creates.push(opts.path);
+      pendingSettles.push(() => {
+        // The lazy mount replaces the shell: swap wrapper children for the
+        // real editor markup, then fire onReady (cache write point).
+        clearWrappers(opts.parent);
+        const settled = h.document.createElement("div");
+        settled.className = "herdr-editor";
+        const cm = h.document.createElement("div");
+        cm.className = "cm-content";
+        settled.appendChild(cm);
+        opts.parent.appendChild(settled);
+        if (typeof opts.onReady === "function") opts.onReady();
       });
+      return api;
     };
+    await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
+    await h.Panes.openEditorTab("src/demo.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(creates.filter((p) => p === "src/demo.py").length, 1, "first open creates the editor");
 
-    await click("focus");
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-open-tab active[\s\S]*demo\.py/);
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-menu/);
+    // Reactivation while the lazy mount is still in flight: nothing was
+    // cached yet (onReady never ran), so the registry must NOT reattach
+    // the loading shell; it recreates. The old code cached the shell at
+    // create-return time and reattached it dead.
+    await h.Panes.openEditorTab("src/other.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await h.Panes.openEditorTab("src/demo.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(creates.filter((p) => p === "src/demo.py").length, 2, "no stale reattach while the lazy mount is pending");
 
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
-    await click("cancelEdit");
-    assert.equal(editorCalls.at(-1).readonly, true);
-    assert.equal(editorCalls.at(-1).path, "src/demo.py");
+    // Settle the live create (the second demo.py one): the cache now holds
+    // the real editor wrapper, written at onReady.
+    pendingSettles[2]();
+    await h.Panes.openEditorTab("src/other.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await h.Panes.openEditorTab("src/demo.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(creates.filter((p) => p === "src/demo.py").length, 2, "reattaches the onReady-cached wrapper");
+    const container = h.containerFor("src/demo.py");
+    const mount = container.querySelector(".pane-editor-mount");
+    assert.ok(mount, "mount point exists in the container");
+    const wrapper = mount.querySelector(".herdr-editor");
+    assert.ok(wrapper, "wrapper reattached");
+    assert.ok(wrapper.querySelector(".cm-content"), "reattached wrapper carries the real editor, not the loading shell");
+    assert.ok(!wrapper.querySelector(".herdr-editor-loading"), "no loading shell in the reattached wrapper");
+  });
 
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
-    await click("edit");
-    assert.equal(editorCalls.at(-1).readonly, false);
-    assert.equal(editorCalls.at(-1).path, "src/demo.py");
+  it("keeps editor state per workspace and forgets it with the workspace", async () => {
+    const h = makePaneHarness();
+    await h.FB.open({ workspace_id: "ws-a", cwd: "/repo-a" });
+    await h.Panes.openEditorTab("src/demo.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    h.editorCalls.at(-1).onChange("draft for repo-a");
 
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
-    await click("copyPathTab");
-    assert.ok(clipboardWrites.some((v) => v.includes("src/demo.py")));
+    // Same path in another workspace has its own state.
+    await h.FB.open({ workspace_id: "ws-b", cwd: "/repo-b" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await h.Panes.openEditorTab("src/demo.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const fileB = h.FB.editorFor("src/demo.py");
+    assert.equal(fileB.dirty, false, "fresh workspace starts clean");
+    assert.equal(fileB.draft, "content of src/demo.py");
 
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
-    await click("close");
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-open-tab[\s\S]*demo\.py/);
+    // Back to ws-a: the draft survives the workspace switch.
+    await h.FB.open({ workspace_id: "ws-a", cwd: "/repo-a" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await h.Panes.openEditorTab("src/demo.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(h.FB.editorFor("src/demo.py").draft, "draft for repo-a");
+    assert.equal(h.FB.editorFor("src/demo.py").dirty, true);
+
+    // forgetWorkspace drops the cached drafts and editor state.
+    h.FB.forgetWorkspace({ workspace_id: "ws-a" });
+    await h.FB.open({ workspace_id: "ws-a", cwd: "/repo-a" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await h.Panes.openEditorTab("src/demo.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(h.FB.editorFor("src/demo.py").draft, "content of src/demo.py", "draft forgotten with the workspace");
   });
 
   it("keeps a dirty tab when close confirmation is declined and closes it when confirmed", async () => {
-    const document = createFakeDocument();
-    const editorCalls = [];
-    const confirmResults = [];
-    let confirmAnswer = true;
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) {
-            editorCalls.push({ path: opts.path, content: opts.content, readonly: opts.readonly, onChange: opts.onChange });
-            opts.parent.innerHTML = `<div class="cm-content" contenteditable="${opts.readonly === false ? "true" : "false"}"></div>`;
-            opts.parent._herdrEditorApi = { toggleFind() {} };
-            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
-          },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: "print('hello')", binary: false, truncated: false };
-            }
-            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
-            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "dir", name: "src", path: "src" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => { confirmResults.push(confirmAnswer); return confirmAnswer; },
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent,
-      decodeURIComponent,
-      Error,
-      JSON,
-      Math,
-      String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ workspace_id: "ws", cwd: "/Users/me/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
+    const h = makePaneHarness();
+    await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
+    await h.Panes.openEditorTab("src/demo.py");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
-    editorCalls.at(-1).onChange("print('dirty draft')");
+    h.editorCalls.at(-1).onChange("dirty draft");
 
-    const panelHtml = () => document.getElementById("fileBrowserPanel").innerHTML;
-    const openTabCount = () => (panelHtml().match(/file-browser-open-tab\b/g) || []).length;
-    assert.ok(openTabCount() >= 1, "file tab is open");
+    // Declined: the tab stays, state stays. The registry's closeEditorTab
+    // is the confirm gate (the panes wrapper returns void).
+    h.setConfirm(false);
+    let closed = await h.FB.closeEditorTab(encodeURIComponent("src/demo.py"));
+    assert.equal(closed, false);
+    assert.ok(h.Panes.paneRoot().tabs.includes("editor:src/demo.py"));
+    assert.ok(h.FB.editorFor("src/demo.py"), "state kept while close is declined");
+    assert.equal(h.confirmCalls.length, 1);
+    assert.match(h.confirmCalls[0], /src\/demo\.py/);
 
-    confirmAnswer = false;
-    context.window.HerdrFileBrowser.closeFile(encodeURIComponent("src/demo.py"));
-    assert.equal(confirmResults.length, 1, "dirty close asked for confirmation");
-    assert.ok(openTabCount() >= 1, "declined close keeps the dirty tab open");
-
-    confirmAnswer = true;
-    context.window.HerdrFileBrowser.closeFile(encodeURIComponent("src/demo.py"));
-    assert.equal(confirmResults.length, 2);
-    assert.equal(openTabCount(), 0, "confirmed close removes the tab");
-
-    // The tab context-menu "close" action carries its own duplicated guard;
-    // it must behave identically (declined keeps the tab, confirmed closes).
-    await context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/demo.py"));
-    editorCalls.at(-1).onChange("print('dirty draft 2')");
-    confirmAnswer = false;
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 1, clientY: 1 }, encodeURIComponent("src/demo.py"));
-    context.window.HerdrFileBrowser.menuAction("close");
-    assert.equal(confirmResults.at(-1), false, "menu close asked for confirmation");
-    assert.ok(openTabCount() >= 1, "declined menu close keeps the dirty tab open");
-    confirmAnswer = true;
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 1, clientY: 1 }, encodeURIComponent("src/demo.py"));
-    context.window.HerdrFileBrowser.menuAction("close");
-    assert.equal(confirmResults.at(-1), true, "confirmed menu close");
-    assert.equal(openTabCount(), 0, "confirmed menu close removes the tab");
+    // Confirmed: tab dropped from the tree, state and container released.
+    h.setConfirm(true);
+    closed = await h.FB.closeEditorTab(encodeURIComponent("src/demo.py"));
+    assert.equal(closed, true);
+    assert.ok(!h.Panes.paneRoot().tabs.includes("editor:src/demo.py"));
+    assert.ok(!h.FB.editorFor("src/demo.py"), "state dropped after confirmed close");
+    assert.equal(h.containerFor("src/demo.py"), null, "container removed with the tab");
   });
 
-  it("opening the same path twice from content search reuses the tab without a duplicate fetch (A3)", async () => {
-    const document = createFakeDocument();
-    const editorCalls = [];
-    const fileFetches = [];
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) { editorCalls.push({ path: opts.path }); opts.parent.innerHTML = "<div class='cm-content'></div>"; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        if (text.startsWith("/api/file-browser/file")) fileFetches.push(text);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: "print('hello')", binary: false, truncated: false };
-            }
-            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
-            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "file", name: "demo.py", path: "demo.py" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent,
-      decodeURIComponent,
-      Error,
-      JSON,
-      Math,
-      String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ workspace_id: "ws", cwd: "/Users/me/repo" });
-    // First open from content search (append mode).
-    context.window.HerdrFileBrowserContent.openFile(encodeURIComponent("demo.py"));
+  it("opening the same path twice reuses the tab without a duplicate fetch (A3)", async () => {
+    const h = makePaneHarness();
+    await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
+    await h.Panes.openEditorTab("src/demo.py");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    // Second open of the SAME path from content search (append mode).
-    context.window.HerdrFileBrowserContent.openFile(encodeURIComponent("demo.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    const fetchesBefore = h.requests.filter((r) => r.url.startsWith("/api/file-browser/file")).length;
+    assert.equal(fetchesBefore, 1);
 
-    const panelHtml = () => document.getElementById("fileBrowserPanel").innerHTML;
-    const tabCount = () => (panelHtml().match(/file-browser-open-tab\s/g) || []).length;
-    assert.equal(fileFetches.length, 1, "same path fetched exactly once");
-    assert.equal(tabCount(), 1, "one tab for the path, no duplicates");
+    await h.Panes.openEditorTab("src/demo.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const fetchesAfter = h.requests.filter((r) => r.url.startsWith("/api/file-browser/file")).length;
+    assert.equal(fetchesAfter, fetchesBefore, "no duplicate fetch for an open tab");
+    const editorTabs = h.Panes.paneRoot().tabs.filter((tabId) => tabId.startsWith("editor:"));
+    assert.deepEqual([...editorTabs], ["editor:src/demo.py"], "one tab per path");
+  });
+
+  it("reopens from content search with a highlight and forces the source view", async () => {
+    const h = makePaneHarness();
+    await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
+    await h.Panes.openEditorTab("README.md");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(h.editorCalls.at(-1).markdownPreview, true);
+
+    // openAt with a highlight is the search palette path: same tab, source
+    // view forced so the match line is visible.
+    await h.FB.openAt({ workspace_id: "ws", cwd: "/repo" }, "README.md", { highlight: "needle" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const file = h.FB.editorFor("README.md");
+    assert.equal(file.searchHighlight, "needle");
+    assert.equal(file.previewSource, true);
+    assert.equal(h.editorCalls.at(-1).markdownPreview, false, "highlight forces the source view");
+    const editorTabs = h.Panes.paneRoot().tabs.filter((tabId) => tabId.startsWith("editor:"));
+    assert.deepEqual([...editorTabs], ["editor:README.md"], "search open reuses the existing tab");
   });
 
   it("offers and serves a partial preview for oversized files (A4)", async () => {
-    const document = createFakeDocument();
-    const editorCalls = [];
-    const fileRequests = [];
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) { editorCalls.push({ readonly: opts.readonly, content: opts.content, markdownPreview: opts.markdownPreview }); opts.parent.innerHTML = "<div class='cm-content'></div>"; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        fileRequests.push(text);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              if (text.includes("max_bytes=262144")) {
-                return { path, content: "x".repeat(262144), hash: "", binary: false, truncated: true, size: 2 * 1024 * 1024, preview_bytes: 262144 };
-              }
-              return { path, content: "", hash: "", binary: false, truncated: true, size: 2 * 1024 * 1024 };
-            }
-            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
-            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "file", name: "big.log", path: "big.log" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent,
-      decodeURIComponent,
-      Error,
-      JSON,
-      Math,
-      String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ workspace_id: "ws", cwd: "/Users/me/repo" });
-    // Open the oversized file: plain truncated placeholder with the button.
-    await context.window.HerdrFileBrowser.select(encodeURIComponent("big.log"));
+    const h = makePaneHarness({ diskFiles: { "big.log": { content: "", hash: "hash-empty", truncated: true, size: 2 * 1024 * 1024 } } });
+    await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
+    await h.Panes.openEditorTab("big.log");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const panelHtml = () => document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(panelHtml(), /File too large to preview/);
-    assert.match(panelHtml(), /Load first 256 KB/);
-    assert.doesNotMatch(panelHtml(), /filesStartEdit|lockToggle/);
 
-    // Load the partial preview: backend partial read mounts read-only.
-    await context.window.HerdrFileBrowser.loadPartial(encodeURIComponent("big.log"));
+    // Plain truncated open: placeholder with the load-partial button.
+    const containerHtml = () => h.containerFor("big.log").innerHTML;
+    assert.match(containerHtml(), /File too large to preview/);
+    assert.match(containerHtml(), /Load first 256 KB/);
+
+    // Load the partial preview: backend budget read, read-only source mount.
+    await h.FB.loadPartial(encodeURIComponent("big.log"));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(fileRequests.some((url) => url.includes("max_bytes=262144")), "partial fetch uses the budget param");
-    assert.ok(editorCalls.length >= 1, "editor mounted for the partial preview");
-    assert.equal(editorCalls.at(-1).readonly, true, "partial preview mounts read-only");
-    assert.equal(editorCalls.at(-1).markdownPreview, false, "partial preview is source view");
-    assert.doesNotMatch(panelHtml(), /Load first 256 KB/);
+    assert.ok(h.requests.some((r) => r.url.includes("max_bytes=262144")), "partial fetch uses the budget param");
+    assert.equal(h.editorCalls.at(-1).readonly, true, "partial preview mounts read-only");
+    assert.equal(h.editorCalls.at(-1).markdownPreview, false, "partial preview is a source view");
+    assert.equal(h.FB.editorFor("big.log").partialPreview, true);
+    assert.doesNotMatch(containerHtml(), /Load first 256 KB/);
 
     // Reload (plain path) clears the partial marker back to the placeholder.
-    await context.window.HerdrFileBrowser.reload(encodeURIComponent("big.log"));
+    await h.FB.reload(encodeURIComponent("big.log"));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.match(panelHtml(), /File too large to preview/);
+    assert.match(containerHtml(), /File too large to preview/);
+    assert.equal(h.FB.editorFor("big.log").partialPreview, false);
   });
 
   it("prompts to reload when an open file changed on disk (A6)", async () => {
-    const document = createFakeDocument();
-    const confirmCalls = [];
-    let diskContent = "version 1";
-    const fileRequests = [];
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) { opts.parent.innerHTML = "<div class='cm-content'></div>"; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        fileRequests.push(text);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              // Same hash formula for full loads and hash_only probes, so
-              // the watcher only flags real external changes.
-              let h = 0;
-              for (const ch of diskContent) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-              return { path, content: text.includes("hash_only=true") ? "" : diskContent, hash: `hash-${h}`, binary: false, truncated: false, size: diskContent.length };
-            }
-            const cwd = decodeURIComponent((text.match(/cwd=([^&]+)/) || [null, ""])[1]);
-            return { root: cwd, home: "/Users/me", path: "", entries: [{ kind: "file", name: "watched.txt", path: "watched.txt" }], git_status: null };
-          },
-        };
-      },
-      confirm(message) { confirmCalls.push(String(message)); return true; },
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent,
-      decodeURIComponent,
-      Error,
-      JSON,
-      Math,
-      String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ workspace_id: "ws", cwd: "/Users/me/repo" });
-    await context.window.HerdrFileBrowser.select(encodeURIComponent("watched.txt"));
+    const h = makePaneHarness({ diskFiles: { "watched.txt": { content: "version 1", hash: "hash-one" } } });
+    await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
+    await h.Panes.openEditorTab("watched.txt");
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    // Refocus with no external change: no probe (nothing to compare) when
-    // hash matches? The watcher always probes clean files; with identical
-    // state there must be NO prompt.
-    confirmCalls.length = 0;
-    fileRequests.length = 0;
-    await context.window.HerdrFileBrowser.checkOpenFilesForExternalChanges();
+    // No external change: probe runs but never prompts.
+    h.confirmCalls.length = 0;
+    await h.FB.checkOpenFilesForExternalChanges();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(confirmCalls.length, 0, "no prompt when disk matches");
-    assert.ok(fileRequests.some((url) => url.includes("hash_only=true")), "probe uses the cheap hash endpoint");
+    assert.equal(h.confirmCalls.length, 0, "no prompt when disk matches");
+    assert.ok(h.requests.some((r) => r.url.includes("hash_only=true")), "probe uses the cheap hash endpoint");
 
-    // External change: the probe hash no longer matches the loaded hash.
-    diskContent = "version 2 from another tool";
-    confirmCalls.length = 0;
-    await context.window.HerdrFileBrowser.checkOpenFilesForExternalChanges();
+    // External change: prompt, then a full reload after confirm.
+    h.setDiskContent("watched.txt", "version 2 from another tool", "hash-two");
+    h.confirmCalls.length = 0;
+    await h.FB.checkOpenFilesForExternalChanges();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(confirmCalls.length, 1, "prompted once about the external change");
-    assert.match(confirmCalls[0], /watched.txt[\s\S]*changed on disk/);
-    // Confirmed reload: the watcher re-fetches the full file after the
-    // prompt, so the tab picks up the new content and hash.
-    assert.ok(fileRequests.some((url) => url.includes("version") === false && url.includes("hash_only=true") === false && url.includes("watched.txt")), "full reload fetched after confirm");
+    assert.equal(h.confirmCalls.length, 1, "prompted once about the external change");
+    assert.match(h.confirmCalls[0], /watched\.txt[\s\S]*changed on disk/);
+    assert.equal(h.FB.editorFor("watched.txt").content, "version 2 from another tool", "confirmed reload picked up the new content");
 
     // Declining the prompt keeps the stale tab untouched.
-    context.confirm = (message) => { confirmCalls.push(String(message)); return false; };
-    diskContent = "version 3 nobody wants";
-    confirmCalls.length = 0;
-    await context.window.HerdrFileBrowser.checkOpenFilesForExternalChanges();
+    h.setDiskContent("watched.txt", "version 3 nobody wants", "hash-three");
+    h.setConfirm(false);
+    h.confirmCalls.length = 0;
+    await h.FB.checkOpenFilesForExternalChanges();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(confirmCalls.length, 1, "prompted for the second change");
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /version 3/, "declined reload keeps old content");
+    assert.equal(h.confirmCalls.length, 1, "prompted for the second change");
+    assert.equal(h.FB.editorFor("watched.txt").content, "version 2 from another tool", "declined reload keeps old content");
   });
 
-  it("hides tab menu actions for binary and truncated files", async () => {
-    const document = createFakeDocument();
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              if (path === "src/binary.bin") return { path, content: "", binary: true, truncated: false };
-              if (path === "src/huge.log") return { path, content: "", binary: false, truncated: true, size: 99999999 };
-              return { path, content: `content of ${path}`, binary: false, truncated: false };
-            }
-            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "binary.bin", path: "src/binary.bin" }, { kind: "file", name: "huge.log", path: "src/huge.log" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/binary.bin"));
+  it("saves the active editor tab with Cmd+S and keeps editing after save", async () => {
+    const h = makePaneHarness();
+    await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
+    await h.Panes.openEditorTab("src/a.py");
     await new Promise((resolve) => setTimeout(resolve, 0));
+    h.editorCalls.at(-1).onChange("content of src/a.py\nplus edits");
+    assert.match(h.stripHtml(), /pane-tab-dirty/);
 
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/binary.bin"));
-    const html = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(html, /data-file-menu-action="history"/);
-    assert.match(html, /data-file-menu-action="reload"/);
-    assert.match(html, /data-file-menu-action="copyPathTab"/);
-    assert.match(html, /data-file-menu-action="close"/);
-    assert.doesNotMatch(html, /data-file-menu-action="find"/);
-    assert.doesNotMatch(html, /data-file-menu-action="edit"/);
-    assert.doesNotMatch(html, /data-file-menu-action="save"/);
-    assert.doesNotMatch(html, /data-file-menu-action="cancelEdit"/);
-  });
-
-  it("shows Save when a dirty editable file is open, hidden when clean or locked", async () => {
-    const document = createFakeDocument();
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: `content of ${path}`, binary: false, truncated: false };
-            }
-            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "demo.py", path: "src/demo.py" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    let editorOnChange = null;
-    const origCreate = context.window.HerdrEditor.create;
-    context.window.HerdrEditor.create = function(opts) {
-      editorOnChange = opts.onChange;
-      return origCreate.call(this, opts);
-    };
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    editorOnChange("content of src/demo.py\nplus edits");
-
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
-    const html = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(html, /data-file-menu-action="save"/);
-    assert.match(html, /data-file-menu-action="cancelEdit"/);
-    assert.match(html, /file-browser-tab-dirty/);
-    assert.doesNotMatch(html, /data-file-menu-action="edit"/);
-
-    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("src/demo.py"));
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
-    const lockedHtml = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.doesNotMatch(lockedHtml, /data-file-menu-action="save"/);
-    assert.match(lockedHtml, /data-file-menu-action="edit"/);
-  });
-
-  it("hides Split in tab menu when only one file is open", async () => {
-    const document = createFakeDocument();
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: `content of ${path}`, binary: false, truncated: false };
-            }
-            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "demo.py", path: "src/demo.py" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/demo.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/demo.py"));
-    const html = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.doesNotMatch(html, /data-file-menu-action="split"/);
-    assert.doesNotMatch(html, /data-file-menu-action="focus"/);
-    assert.match(html, /data-file-menu-action="cancelEdit"/);
-  });
-
-  it("includes danger class and separator in tab menu", async () => {
-    const document = createFakeDocument();
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: `content of ${path}`, binary: false, truncated: false };
-            }
-            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }, { kind: "file", name: "b.py", path: "src/b.py" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
-    const html = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(html, /class="danger"[^>]*data-file-menu-action="close"/);
-    assert.match(html, /file-browser-menu-sep/);
-  });
-
-  it("renders single file as tab with oncontextmenu, not as plain title", async () => {
-    const document = createFakeDocument();
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: `content of ${path}`, binary: false, truncated: false };
-            }
-            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "only.py", path: "src/only.py" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/only.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    const html = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(html, /file-browser-open-tab active/);
-    assert.match(html, /oncontextmenu="event\.preventDefault\(\);event\.stopPropagation\(\);return HerdrFileBrowser\.tabMenu/);
-    assert.doesNotMatch(html, /<strong[^>]*>src\/only\.py<\/strong>/);
-  });
-
-  it("dispatches split, cancelEdit, and reload from tab menu", async () => {
-    const document = createFakeDocument();
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: `content of ${path}`, binary: false, truncated: false };
-            }
-            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }, { kind: "file", name: "b.py", path: "src/b.py" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/b.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    const click = async (action) => {
-      const button = { dataset: { fileMenuAction: action } };
-      button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
-      const textNodeTarget = { parentElement: button };
-      await document.listeners["click:capture"].at(-1)({
-        target: textNodeTarget,
-        preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {},
-      });
-    };
-
-    // Split from tab menu
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
-    await click("split");
-    assert.ok(context.window.HerdrFileBrowser.isVisible());
-
-    // Cancel edit from tab menu: first enter edit mode, then cancel
-    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/a.py"));
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
-    await click("cancelEdit");
-    // Open menu again to verify edit is shown (not save)
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
-    const htmlAfterCancel = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(htmlAfterCancel, /data-file-menu-action="edit"/);
-    assert.doesNotMatch(htmlAfterCancel, /data-file-menu-action="save"/);
-
-    // Reload from tab menu
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
-    await click("reload");
-    assert.ok(context.window.HerdrFileBrowser.isVisible());
-  });
-
-  it("dispatches find and history from tab menu", async () => {
-    const findCalls = [];
-    const historyCalls = [];
-    const document = createFakeDocument();
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind(f) { findCalls.push(f); } }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
-          isMarkdownPath() { return false; },
-          openFind: () => true,
-        },
-        HerdrGitUi: { hide() {}, openFileHistory(cwd, path) { historyCalls.push({ cwd, path }); } },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: `content of ${path}`, binary: false, truncated: false };
-            }
-            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }, { kind: "file", name: "b.py", path: "src/b.py" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/b.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    const click = async (action) => {
-      const button = { dataset: { fileMenuAction: action } };
-      button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
-      const textNodeTarget = { parentElement: button };
-      await document.listeners["click:capture"].at(-1)({
-        target: textNodeTarget,
-        preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {},
-      });
-    };
-
-    // Find from tab menu
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
-    await click("find");
-    assert.ok(findCalls.length > 0, "toggleFind was called");
-    assert.equal(findCalls.at(-1), true);
-
-    // History from tab menu
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
-    await click("history");
-    assert.ok(historyCalls.length > 0, "openFileHistory was called");
-    assert.ok(decodeURIComponent(historyCalls.at(-1).path).includes("src/a.py"));
-  });
-
-  it("prevents closing a dirty file when user cancels the confirm dialog", async () => {
-    const document = createFakeDocument();
-    let confirmCalls = 0;
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url) => {
-        const text = String(url);
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: `content of ${path}`, binary: false, truncated: false };
-            }
-            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => { confirmCalls++; return false; },
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    // Make file dirty by simulating a content change (files open editable by default)
-    let editorOnChange = null;
-    const origCreate = context.window.HerdrEditor.create;
-    context.window.HerdrEditor.create = function(opts) {
-      editorOnChange = opts.onChange;
-      return origCreate.call(this, opts);
-    };
-    context.window.HerdrFileBrowser.focusFile(encodeURIComponent("src/a.py"));
-    // Simulate content change that sets dirty
-    if (editorOnChange) editorOnChange("modified content");
-
-    const click = async (action) => {
-      const button = { dataset: { fileMenuAction: action } };
-      button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
-      const textNodeTarget = { parentElement: button };
-      await document.listeners["click:capture"].at(-1)({
-        target: textNodeTarget,
-        preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {},
-      });
-    };
-
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
-    await click("close");
-    assert.ok(confirmCalls > 0, "confirm was called for dirty file");
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-open-tab[\s\S]*a\.py/);
-  });
-
-  it("dispatches save from tab menu and persists content", async () => {
-    const document = createFakeDocument();
-    const postCalls = [];
-    const context = {
-      window: {
-        addEventListener() {},
-        HerdrEditor: {
-          create(opts) { opts.parent.innerHTML = `<div class="cm-content"></div>`; opts.parent._herdrEditorApi = { toggleFind() {} }; return { getValue() { return opts.content; }, setValue() {}, destroy() {} }; },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url, opts) => {
-        const text = String(url);
-        if (opts && opts.method === "POST") {
-          postCalls.push({ url: text, body: opts.body });
-          return { ok: true, async json() { return { hash: "newhash" }; } };
-        }
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: `content of ${path}`, binary: false, truncated: false };
-            }
-            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => true,
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    context.window.HerdrFileBrowser.edit(encodeURIComponent("src/a.py"));
-
-    const click = async (action) => {
-      const button = { dataset: { fileMenuAction: action } };
-      button.closest = (selector) => selector === ".file-browser-menu [data-file-menu-action]" ? button : null;
-      const textNodeTarget = { parentElement: button };
-      await document.listeners["click:capture"].at(-1)({
-        target: textNodeTarget,
-        preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {},
-      });
-    };
-
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
-    await click("save");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(postCalls.length > 0, "save POST was made");
-    assert.ok(postCalls[0].body.includes("src/a.py"));
-  });
-
-  it("saves dirty file with Cmd+S, keeps editing after save, and lock discards draft after confirm", async () => {
-    const document = createFakeDocument();
-    const postCalls = [];
-    let confirmCalls = 0;
-    let editorOnChange = null;
-    const keydownListeners = [];
-    const context = {
-      window: {
-        addEventListener(type, listener) { if (type === "keydown") keydownListeners.push(listener); },
-        HerdrEditor: {
-          create(opts) {
-            editorOnChange = opts.onChange;
-            opts.parent.innerHTML = `<div class="cm-content"></div>`;
-            opts.parent._herdrEditorApi = { toggleFind() {} };
-            return { getValue() { return opts.content; }, setValue() {}, destroy() {} };
-          },
-          isMarkdownPath() { return false; },
-        },
-        HerdrGitUi: { hide() {} },
-        HerdrWorkspacePath(workspace) { return workspace.cwd; },
-      },
-      document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserLineNumbers: true, fileBrowserGitStatus: false }); } },
-      navigator: { clipboard: { writeText: async () => {} } },
-      fetch: async (url, opts) => {
-        const text = String(url);
-        if (opts && opts.method === "POST") {
-          postCalls.push({ url: text, body: opts.body });
-          return { ok: true, async json() { return { hash: "newhash" }; } };
-        }
-        return {
-          ok: true,
-          async json() {
-            if (text.startsWith("/api/file-browser/file")) {
-              const path = decodeURIComponent((text.match(/path=([^&]+)/) || [null, ""])[1]);
-              return { path, content: `content of ${path}`, binary: false, truncated: false };
-            }
-            return { root: "/repo", home: "/home", path: "", entries: [{ kind: "file", name: "a.py", path: "src/a.py" }], git_status: null };
-          },
-        };
-      },
-      confirm: () => { confirmCalls++; return true; },
-      HerdrAppHelpers: require("./shared/core.js"),
-      appRefreshIconButton: () => "<button>Refresh</button>",
-      encodeURIComponent, decodeURIComponent, Error, JSON, Math, String,
-      setTimeout(fn) { fn(); return 1; },
-      clearTimeout() {},
-    };
-    context.window.window = context.window;
-    context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-
-    await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
-    context.window.HerdrFileBrowser.select(encodeURIComponent("src/a.py"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    // Dirty state shows tab indicator and Save in tab menu
-    editorOnChange("content of src/a.py\nplus edits");
-    context.window.HerdrFileBrowser.focusFile(encodeURIComponent("src/a.py"));
-    assert.match(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-tab-dirty/);
-
-    // Cmd+S saves the focused file
-    const pane = { getAttribute: (name) => name === "data-path" ? "src%2Fa.py" : "", classList: { contains() { return false; } } };
-    const keydownTarget = { closest: (selector) => selector === ".file-browser-pane" ? pane : null };
-    let defaultPrevented = false;
-    await keydownListeners.at(-1)({
-      target: keydownTarget, key: "s", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false,
-      preventDefault() { defaultPrevented = true; }, stopPropagation() {}, defaultPrevented: false,
+    // Cmd+S saves the active tab: preventDefault + one POST with the
+    // expected_hash guard.
+    let prevented = false;
+    await h.keydownListeners.at(-1)({
+      target: null, key: "s", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false,
+      preventDefault() { prevented = true; }, stopPropagation() {}, defaultPrevented: false,
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(defaultPrevented, "Cmd+S prevented default");
-    assert.equal(postCalls.length, 1, "Cmd+S made one save POST");
-    assert.ok(postCalls[0].body.includes("plus edits"));
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-tab-dirty/);
-    // Still editable after save: menu shows Lock, not Edit
-    context.window.HerdrFileBrowser.tabMenu({ preventDefault() {}, stopPropagation() {}, clientX: 10, clientY: 20 }, encodeURIComponent("src/a.py"));
-    const savedHtml = document.getElementById("fileBrowserPanel").innerHTML;
-    assert.match(savedHtml, /data-file-menu-action="cancelEdit"/);
-    assert.doesNotMatch(savedHtml, /data-file-menu-action="edit"/);
-    assert.doesNotMatch(savedHtml, /data-file-menu-action="save"/);
+    assert.ok(prevented, "Cmd+S prevented the browser save dialog");
+    const posts = h.requests.filter((r) => r.options.method === "POST");
+    assert.equal(posts.length, 1, "Cmd+S made one save POST");
+    assert.equal(posts[0].url, "/api/file-browser/file");
+    assert.match(posts[0].options.body, /"path":"src\/a\.py"/);
+    assert.match(posts[0].options.body, /"expected_hash":"hash-load"/);
+    assert.match(posts[0].options.body, /"content":"content of src\/a\.py\\nplus edits"/);
 
-    // Locking a dirty file confirms, then discards the draft
-    editorOnChange("content of src/a.py\nmore edits");
-    context.window.HerdrFileBrowser.toggleLock(encodeURIComponent("src/a.py"));
-    assert.equal(confirmCalls, 1, "locking dirty file asked for confirmation");
-    assert.doesNotMatch(document.getElementById("fileBrowserPanel").innerHTML, /file-browser-tab-dirty/);
+    // Save clears the dirty state and the strip dot; editing continues.
+    const file = h.FB.editorFor("src/a.py");
+    assert.equal(file.dirty, false);
+    assert.equal(file.content, "content of src/a.py\nplus edits");
+    assert.doesNotMatch(h.stripHtml(), /pane-tab-dirty/);
+    assert.equal(file.editing, true, "still editable after save");
 
-    // Cmd+S on a locked (read-only) file prevents the browser save dialog but makes no POST
-    let lockedPrevented = false;
-    await keydownListeners.at(-1)({
-      target: keydownTarget, key: "s", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false,
-      preventDefault() { lockedPrevented = true; }, stopPropagation() {}, defaultPrevented: false,
+    // Cmd+S on a clean editable file still saves: the POST is idempotent
+    // server-side, and the strip stays dot-free.
+    await h.keydownListeners.at(-1)({
+      target: null, key: "s", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false,
+      preventDefault() { prevented = true; }, stopPropagation() {}, defaultPrevented: false,
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(postCalls.length, 1, "Cmd+S on locked file made no POST");
-    assert.ok(lockedPrevented, "Cmd+S on locked file still prevented browser save dialog");
+    assert.equal(h.requests.filter((r) => r.options.method === "POST").length, 2, "Cmd+S on a clean file posts again");
+    assert.doesNotMatch(h.stripHtml(), /pane-tab-dirty/);
   });
-  
-  it("hide respects the temporary Files overlay: keeps the panel mounted when a temp overlay owns it", async () => {
-    const document = createFakeDocument();
-      const requests = [];
-      const context = {
-        window: {
-          addEventListener() {},
-          HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
-          HerdrGitUi: { hide() {} },
-          HerdrWorkspacePath(workspace) { return workspace.cwd; },
-          rememberWorkspaceShellMode() {},
-          syncShellModeButtons() {},
-        },
-        document,
-        localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
-        fetch: async (url) => {
-          requests.push(String(url));
-          return {
-            ok: true,
-            async json() {
-              const path = decodeURIComponent((String(url).match(/path=([^&]*)/) || [null, ""])[1]);
-              return { path, entries: [{ kind: "file", name: "demo.txt", path: path ? `${path}/demo.txt` : "demo.txt" }], git_status: null };
-            },
-          };
-        },
-        confirm: () => true,
-        HerdrAppHelpers: require("./shared/core.js"),
-        appRefreshIconButton: () => "<button>Refresh</button>",
-        encodeURIComponent,
-        decodeURIComponent,
-        Error,
-        JSON,
-        Math,
-        String,
-        setTimeout(fn) { fn(); return 1; },
-        clearTimeout() {},
-        getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
-      };
-      context.window.window = context.window;
-      context.window.document = document;
-      vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-      vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
-  
-      await context.window.HerdrFileBrowser.openAt({ cwd: "~" }, "src", { kind: "dir" });
-      const panel = document.getElementById("fileBrowserPanel");
-      assert.ok(panel, "panel rendered");
-  
-      // Simulate the panel being re-parented into a temporary overlay modal
-      // body: exactly what HerdrTempOverlays.openSurface() does.
-      const modal = document.createElement("div");
-      modal.id = "tempFilesOverlayModal";
-      const body = document.createElement("div");
-      body.className = "temp-overlay-body";
-      body.appendChild(panel);
-      modal.appendChild(body);
-      document.body.appendChild(modal);
-      // file_browser's guard reads globalThis.HerdrTempOverlays, which in
-      // the vm context is the contextified global (not window).
-      context.HerdrTempOverlays = {
-        panelInTempOverlay(id) {
-          let node = document.getElementById(id);
-          while (node) {
-            if (node.id === "tempFilesOverlayModal" || node.id === "tempGitOverlayModal") return true;
-            node = node.parentNode;
-          }
-          return false;
-        },
-        suppressingFiles: () => false,
-      };
-  
-      context.window.HerdrFileBrowser.hide();
-      assert.ok(document.getElementById("fileBrowserPanel"), "panel NOT removed while owned by the temp overlay");
-      assert.ok(panel.parentNode === body, "panel still a child of the overlay body");
-  
-      // Outside a temp overlay, hide() strips the panel as before.
-      panel.remove();
-      document.body.appendChild(panel);
-      context.window.HerdrFileBrowser.hide();
-      assert.equal(document.getElementById("fileBrowserPanel"), null, "panel removed once back outside the overlay");
+
+  it("toggles find in the active editor tab from the strip shortcut", async () => {
+    const h = makePaneHarness();
+    await h.FB.open({ workspace_id: "ws", cwd: "/repo" });
+    await h.Panes.openEditorTab("src/demo.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // openFocusedFind targets the active editor tab's mounted api.
+    assert.equal(h.FB.openFocusedFind(), true);
+    assert.equal(h.editorCalls.at(-1).toggledFind, true);
+    assert.equal(h.editorCalls.at(-1).path, "src/demo.py");
+
+    // toggleFind targets a specific mounted editor.
+    await h.Panes.openEditorTab("src/other.py");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const before = h.editorCalls.length;
+    h.FB.toggleFind(encodeURIComponent("src/demo.py"));
+    const demoCall = h.editorCalls.find((c) => c.path === "src/demo.py");
+    assert.equal(demoCall.toggledFind, true);
   });
 });
+

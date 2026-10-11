@@ -10,7 +10,7 @@ const source = readFileSync(new URL("./mobile/file_browser.js", import.meta.url)
 const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
 const optionsSource = readFileSync(new URL("./shared/options.js", import.meta.url), "utf8");
 
-function createModule({ fileContent = "print('hello')", writeResult = {}, writeError = "", renameError = "", deleteError = "", confirmAnswer = true, optionsJson = null, lsp = null } = {}) {
+function createModule({ fileContent = "print('hello')", writeResult = {}, writeError = "", renameError = "", deleteError = "", confirmAnswer = true, optionsJson = null, lsp = null, api = null } = {}) {
   const requests = [];
   const editors = [];
   let savedContent = null;
@@ -103,7 +103,7 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
   vm.runInNewContext(treeSource, context);
   vm.runInNewContext(source, context);
   const deps = {
-    api: async (url, opt = {}) => {
+    api: api || (async (url, opt = {}) => {
       requests.push({ url, opt });
       if (String(url).startsWith("/api/file-browser/file?")) {
         return { path: "src/demo.py", content: fileContent, binary: false, truncated: false, hash: "h1" };
@@ -130,7 +130,7 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
         ], git_status: null, truncated: false };
       }
       return {};
-    },
+    }),
     confirm: () => confirmAnswer,
     currentWorkspaceCwd: () => "/tmp/repo",
     escapeHtml: (v) => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"),
@@ -409,5 +409,99 @@ describe("mobile file browser action sheet", () => {
     // And the encoded arg decodes back to the real path.
     assert.equal(decodeURIComponent(renameMatch[1].slice(1, -1)), "src/demo.py");
     assert.equal(decodeURIComponent(deleteMatch[1].slice(1, -1)), "src/demo.py");
+  });
+});
+
+// search-ux: a stale tree load must not wipe a file preview that started
+// later. The mobile Files screen lazily kicks off load() on first render, so
+// a user coming straight from search (empty entries) triggers load() and
+// openFile() at nearly the same time. If the tree response lands last it
+// used to null out local.file and re-render the tree over the preview.
+describe("mobile file browser stale request guard", () => {
+  function deferredApi() {
+    const pending = [];
+    const api = async (url) => {
+      const kind = String(url).startsWith("/api/file-browser/file?") ? "file" : "tree";
+      const entry = { kind, resolve: null, promise: null };
+      entry.promise = new Promise((resolve) => { entry.resolve = resolve; });
+      pending.push(entry);
+      let data;
+      if (kind === "file") {
+        const params = new URL(String(url), "http://e2e").searchParams;
+        const path = params.get("path") || "src/demo.py";
+        data = { path, content: `print('hello: ${path}')`, binary: false, truncated: false, hash: "h1" };
+      } else {
+        data = { path: "", entries: [{ kind: "file", name: "demo.py", path: "src/demo.py", size: 12 }], git_status: null, truncated: false };
+      }
+      return entry.promise.then(() => data);
+    };
+    return { api, pending, resolveFirst() { pending.shift().resolve(); }, resolveLast() { pending.pop().resolve(); } };
+  }
+
+  it("keeps the preview when the tree response lands after the file response", async () => {
+    const { api, pending, resolveLast } = deferredApi();
+    const { module } = createModule({ api });
+    // renderScreen triggers the lazy tree load (seq 1) without awaiting it.
+    module.renderScreen();
+    assert.equal(pending.length, 1, "lazy tree load started");
+    // User opens a file from search results before the tree responded.
+    const openPromise = module.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(pending.length, 2, "file fetch started");
+    // File response lands first...
+    resolveLast();
+    await openPromise;
+    // ...tree response lands last. Old code nulls local.file here.
+    resolveLast();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const html = module.renderScreen();
+    assert.match(html, /mobileFilePreview/, "preview still rendered after stale tree response");
+    assert.doesNotMatch(html, /mobile-files-list-head/, "tree view did not replace the preview");
+    // Layer 2: re-rendering the screen while the preview is up must not
+    // kick off another lazy tree load whose result would wipe the preview.
+    assert.equal(pending.length, 0, "no lazy tree load fired while preview is open");
+  });
+
+  it("keeps the preview across re-renders even when entries are still empty", async () => {
+    const { api, pending, resolveLast } = deferredApi();
+    const { module } = createModule({ api });
+    module.renderScreen();
+    const openPromise = module.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    resolveLast();
+    await openPromise;
+    resolveLast();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Entries are empty (the stale tree response was dropped). Two more
+    // renders while the preview is open: with the renderScreen guard no
+    // new fetch fires; without it a fresh lazy load would resolve and null
+    // out the file.
+    module.renderScreen();
+    module.renderScreen();
+    assert.equal(pending.length, 0, "no new request from re-renders under a preview");
+    const html = module.renderScreen();
+    assert.match(html, /mobileFilePreview/, "preview survives re-renders with empty entries");
+  });
+
+  it("keeps the newest intent: a later file open wins over an older one", async () => {
+    const { api, pending, resolveLast } = deferredApi();
+    const { module } = createModule({ api });
+    module.renderScreen();
+    resolveLast();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const first = module.select(encodeURIComponent("src/demo.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const second = module.select(encodeURIComponent("src/docs/other.py"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(pending.length, 2, "both file fetches in flight (tree already resolved)");
+    // Resolve in reverse order: the newer open settles first, the older one lands last.
+    resolveLast();
+    await second;
+    resolveLast();
+    await first;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const html = module.renderScreen();
+    assert.match(html, /src\/docs\/other\.py/, "latest open wins the screen");
+    assert.doesNotMatch(html, /src\/demo\.py/, "stale first open did not claim the screen");
   });
 });

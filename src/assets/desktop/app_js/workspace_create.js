@@ -46,7 +46,7 @@ async function createWorkspaceFromModal() {
     const r = await api("/api/workspaces", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ label, cwd }),
+      body: JSON.stringify({ label, cwd, open_terminal: workspaceOpenTerminalFlag() }),
     });
     closeWorkspaceCreateModal();
     const ws = r.result.workspace.workspace_id;

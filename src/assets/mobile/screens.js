@@ -242,7 +242,7 @@
       const workspace = currentWorkspace();
       const items = [
         { screen: "agents", title: "Agents", meta: attention ? `${attention} need attention` : `${state.agents.length} active`, icon: "●" },
-        { screen: "panels", title: "Panels", meta: workspace ? `${state.tabs.length} terminal tabs` : "Select workspace first", icon: "▦" },
+        { screen: "panels", title: "Panels", meta: workspace ? `${state.tabs.length} terminal tabs` : "No workspace open", icon: "▦" },
         { screen: "worktrees", title: "Worktrees", meta: "Discover, open, or create Git worktrees", icon: "wt" },
         { screen: "sessions", title: "Sessions", meta: `${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`, icon: "se" },
         { screen: "settings", title: "Settings", meta: "Appearance, search, alerts, terminal", icon: "⚙" },

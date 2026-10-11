@@ -383,7 +383,7 @@ describe("mobile directory picker module", () => {
     const open = calls.api.find((c) => c.url.includes("/api/recent-workspaces"));
     assert.ok(open, "fallback posts to the recents open route");
     assert.equal(open.opts.method, "POST");
-    assert.deepEqual(JSON.parse(open.opts.body), { path: "~/src", label: null });
+    assert.deepEqual(JSON.parse(open.opts.body), { path: "~/src", label: null, open_terminal: false });
   });
 
   it("workspace fallback surfaces API errors on the worktree screen", async () => {

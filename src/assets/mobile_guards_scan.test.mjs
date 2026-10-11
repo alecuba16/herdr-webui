@@ -265,11 +265,11 @@ describe("static mobile keyboard-guard scan", () => {
       const receiver = source.slice(Math.max(0, m.index - 60), m.index).match(/(\w+)\s*=\s*[\w.]+$/);
       // Modules with text inputs need inputAttrs. Modules that render no
       // template text inputs (attention, workmeta, theme, actions, backend,
-      // terminal + temp terminal, search results, events) may omit it.
+      // terminal, search results, events) may omit it.
       const noInputModules = /Attention|Workmeta|Theme|Actions|Backend|Terminal|Search|Panels|Events/i;
       if (window.includes("inputAttrs")) continue;
       if (receiver && noInputModules.test(receiver[1])) continue;
-      if (/HerdrMobileTerminal|HerdrTempTerminal/.test(window)) continue;
+      if (/HerdrMobileTerminal/.test(window)) continue;
       missing.push(`create call near line ${lineOf(source, m.index)}: ${window.slice(0, 70)}`);
     }
     equal(missing.length, 0, `app.js create calls missing inputAttrs:\n${missing.join("\n")}`);

@@ -1647,10 +1647,6 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         }
         // Git cwd: show the current git panel cwd as the starting point.
         crate::tui::PromptKind::GitCwd => app.git_panel.cwd.clone(),
-        // Temporary overlays: suggest the active cwd as the starting
-        // point (webui opens on the selected workspace's folder).
-        crate::tui::PromptKind::TempFilesFolder => app.file_explorer.cwd.clone(),
-        crate::tui::PromptKind::TempGitFolder => app.git_panel.cwd.clone(),
         // Branch create: runs on the repo, no subject line.
         crate::tui::PromptKind::CreateBranch => String::new(),
         // New file/directory: show the root the name joins under.

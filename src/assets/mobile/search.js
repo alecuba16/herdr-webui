@@ -401,7 +401,30 @@
       expandAll() { for (const file of mobileSearch.content.files || []) mobileSearch.content.expanded[file.path] = true; render(); },
       collapseAll() { for (const file of mobileSearch.content.files || []) mobileSearch.content.expanded[file.path] = false; render(); },
       loadMore() { runMobileContentSearch(++mobileSearch.requestSeq, mobileSearch.query, currentWorkspaceCwd(), true, { preserveScroll: true }).then(renderPreservingScroll); },
-      loadFile(_path) {},
+      // The shared content picker renders "Load all matches" for a
+      // truncated file; desktop's palette re-searches that one file with a
+      // higher per-file cap and swaps the entry in. Same behavior here so
+      // the mobile button is not a dead control.
+      async loadFile(encodedPath) {
+        const helper = globalThis.HerdrWorkspaceSearch;
+        const path = decodeURIComponent(encodedPath || "");
+        const query = String(mobileSearch.query || "").trim();
+        const cwd = currentWorkspaceCwd();
+        if (!helper || !helper.searchContentFile || !path || !query || !cwd) return;
+        const seq = ++mobileSearch.requestSeq;
+        try {
+          const data = await helper.searchContentFile({ cwd, file: path, query, contextLines: mobileSearch.content.contextLines, matchesPerFile: 500 });
+          if (seq !== mobileSearch.requestSeq || !data.file) return;
+          const index = mobileSearch.content.files.findIndex((file) => file.path === path);
+          if (index >= 0) mobileSearch.content.files[index] = data.file;
+          mobileSearch.content.expanded[path] = true;
+          renderPreservingScroll();
+        } catch (error) {
+          if (seq !== mobileSearch.requestSeq) return;
+          mobileSearch.content.error = error.message || String(error);
+          renderPreservingScroll();
+        }
+      },
       expandSnippet(_path, _match, _direction) {
         const helper = globalThis.HerdrWorkspaceSearch;
         const opts = helper ? helper.settings() : { contextLines: 2 };

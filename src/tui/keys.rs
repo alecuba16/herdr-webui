@@ -111,23 +111,6 @@ pub enum Shortcut {
     // equivalent of the webui DOM focus walker.
     FocusNext,
     FocusPrev,
-    // Temporary terminal (webui tempTerminalToggle: Shift+KeyM). The
-    // TUI approximates the overlay with a tab labeled "temp" living in
-    // a dedicated "temp" workspace.
-    TempTerminalToggle,
-    // Promote the temporary terminal into a real workspace at the
-    // shell's live cwd (webui tempTerminalPromote: Shift+KeyP). The
-    // old TUI-only prefix-GitPush moved aside (git screen keeps the
-    // in-screen P push).
-    TempTerminalPromote,
-    // Temporary Files (webui tempFilesToggle: Shift+KeyF): open the
-    // files explorer on a typed folder path without creating a
-    // workspace (parity with the webui temporary Files overlay).
-    TempFiles,
-    // Temporary Git (webui tempGitToggle: Shift+KeyG): open the git
-    // panel on a typed repository path without creating a workspace
-    // (parity with the webui temporary Git overlay).
-    TempGit,
     // Chat lens toggle (webui Chat/Terminal segmented switch on the
     // terminal screen; ux overhaul 2/3). Prefix L; plain l stays git
     // log from the git shortcut table.
@@ -184,10 +167,6 @@ impl Shortcut {
             Self::Sidebar => "toggle sidebar",
             Self::FocusNext => "focus next",
             Self::FocusPrev => "focus previous",
-            Self::TempTerminalToggle => "temporary terminal",
-            Self::TempTerminalPromote => "promote temporary terminal",
-            Self::TempFiles => "temporary files",
-            Self::TempGit => "temporary git",
             Self::Lens => "chat lens",
             Self::Composer => "composer",
         }
@@ -210,15 +189,8 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // TUI terminal always owns the keyboard (no DOM), so `F` needs
         // no parity key. The old TUI-only prefix-`f` Files screen stays
         // (the webui has no files-explorer shortcut at all).
-        // Webui tempFilesToggle: Shift+KeyF. Must precede the plain
-        // `f`/`F` Files arm, which would otherwise swallow the shifted
-        // key (the webui has no files-explorer shortcut at all).
-        (KeyCode::Char('F'), true) => Some(Shortcut::TempFiles),
         (KeyCode::Char('f') | KeyCode::Char('F'), _) => Some(Shortcut::Files),
         (KeyCode::Char('g'), false) => Some(Shortcut::Git),
-        // Stage all moved to the in-screen plain `G` (webui git-panel
-        // `stageAll: KeyG` parity); prefix Shift+G now opens the
-        // temporary Git overlay (see the TempGit arm below).
         (KeyCode::Char('t'), false) => Some(Shortcut::Terminal),
         (KeyCode::Char('r') | KeyCode::Char('R'), false) => Some(Shortcut::Refresh),
         // Rename panel: no webui prefix default (the webui renames from
@@ -230,8 +202,6 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         (KeyCode::Char('a'), false) => Some(Shortcut::NextAgent),
         (KeyCode::Char('A'), true) => Some(Shortcut::PrevAgent),
         // Webui newPanel: KeyP. The old `p` => Git was redundant with `g`.
-        // Shift+P is now tempTerminalPromote (webui parity); prefix push
-        // moved aside, the git screen keeps the in-screen `P` push.
         (KeyCode::Char('p'), false) => Some(Shortcut::NewTab),
         // Webui newWorkspace: KeyN.
         (KeyCode::Char('n') | KeyCode::Char('N'), false) => Some(Shortcut::NewWorkspace),
@@ -257,22 +227,10 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // regions instead of DOM controls.
         (KeyCode::Char('.'), _) => Some(Shortcut::FocusNext),
         (KeyCode::Char(','), _) => Some(Shortcut::FocusPrev),
-        // Webui tempTerminalToggle: Shift+KeyM (plain m stays git blame
-        // from DEFAULT_GIT_SHORTCUTS).
-        (KeyCode::Char('M'), true) => Some(Shortcut::TempTerminalToggle),
         // Chat composer (ux overhaul): the webui box rides under the
         // lens; the TUI opens it as a prompt from any terminal-screen
         // state. Shift+C for compose while plain c stays git commit.
         (KeyCode::Char('C'), true) => Some(Shortcut::Composer),
-        // Webui tempTerminalPromote: Shift+KeyP. The old TUI-only prefix
-        // GitPush moved aside for parity (the git screen keeps the
-        // in-screen P push).
-        (KeyCode::Char('P'), true) => Some(Shortcut::TempTerminalPromote),
-        // Webui tempGitToggle: Shift+KeyG. The old prefix Shift+G stage
-        // all moved to the in-screen plain `G` (webui git-panel
-        // `stageAll: KeyG` parity), freeing Shift+G for the temporary
-        // Git overlay.
-        (KeyCode::Char('G'), true) => Some(Shortcut::TempGit),
         // Chat lens (ux overhaul): webui has no prefix binding (the
         // Chat/Terminal switch is a segmented control over the shell),
         // so Shift+L takes it while plain l stays git log.
@@ -351,16 +309,6 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
         ("Ctrl+B q", "quit (y confirms, Esc stays)"),
         ("Ctrl+B Shift+B", "collapse/expand the sidebar"),
         ("Ctrl+B . ,", "focus next/prev region (sidebar/main)"),
-        ("Ctrl+B Shift+M", "temporary terminal (open or refocus)"),
-        ("Ctrl+B Shift+P", "promote temporary terminal to workspace"),
-        (
-            "Ctrl+B Shift+F",
-            "temporary Files: type a folder path, no workspace created",
-        ),
-        (
-            "Ctrl+B Shift+G",
-            "temporary Git: type a repository path, no workspace created",
-        ),
         (
             "Ctrl+B Shift+L",
             "chat lens: transcript view (j/k scroll, Esc close)",
@@ -536,10 +484,6 @@ mod tests {
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('4')), Some(Shortcut::GitStash));
         prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(shift_key('g')), Some(Shortcut::TempGit));
-        prefix.feed(ctrl('b'));
-        assert_eq!(prefix.feed(shift_key('f')), Some(Shortcut::TempFiles));
-        prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('y')), Some(Shortcut::GitStageFile));
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('u')), Some(Shortcut::GitUnstageFile));
@@ -558,21 +502,11 @@ mod tests {
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('e')), Some(Shortcut::EditFile));
         prefix.feed(ctrl('b'));
-        assert_eq!(
-            prefix.feed(shift_key('p')),
-            Some(Shortcut::TempTerminalPromote)
-        );
-        prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key('.')), Some(Shortcut::FocusNext));
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(key(',')), Some(Shortcut::FocusPrev));
         prefix.feed(ctrl('b'));
         assert_eq!(prefix.feed(shift_key('b')), Some(Shortcut::Sidebar));
-        prefix.feed(ctrl('b'));
-        assert_eq!(
-            prefix.feed(shift_key('m')),
-            Some(Shortcut::TempTerminalToggle)
-        );
     }
 
     #[test]
@@ -613,8 +547,6 @@ mod tests {
             Shortcut::Sidebar,
             Shortcut::FocusNext,
             Shortcut::FocusPrev,
-            Shortcut::TempTerminalToggle,
-            Shortcut::TempTerminalPromote,
             Shortcut::Lens,
             Shortcut::Composer,
         ] {

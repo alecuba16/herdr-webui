@@ -97,12 +97,18 @@ body.light {
 }
 #app {
   display: grid;
-  grid-template-columns: 330px 18px minmax(0, 1fr);
+  grid-template-columns: 330px 18px minmax(0, 1fr) 18px 44px 320px;
   height: 100vh;
   overflow: hidden;
 }
 #app.sidebar-collapsed {
-  grid-template-columns: 0 28px minmax(0, 1fr);
+  grid-template-columns: 0 28px minmax(0, 1fr) 18px 44px 320px;
+}
+#app.right-sidebar-collapsed {
+  grid-template-columns: 330px 18px minmax(0, 1fr) 28px 44px 0;
+}
+#app.sidebar-collapsed.right-sidebar-collapsed {
+  grid-template-columns: 0 28px minmax(0, 1fr) 28px 44px 0;
 }
 .side {
   border-right: 1px solid var(--border);
@@ -355,8 +361,7 @@ body.light {
   display: none;
 }
 .workspace-context-empty,
-.workspace-context-title,
-.panel-field-empty {
+.workspace-context-title {
   color: var(--muted);
   font-size: 11px;
   min-width: 0;
@@ -376,93 +381,11 @@ body.light {
 .workspace-context-buttons .mini {
   margin-left: 0;
 }
-.workspace-context-buttons .scope-close,
 .space-actions .scope-close {
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.01em;
   padding: 3px 6px;
-}
-.panel-field {
-  align-items: center;
-  display: inline-flex;
-  gap: 4px;
-  justify-content: flex-end;
-  min-width: 0;
-  position: relative;
-}
-.panel-field .mini {
-  margin-left: 0;
-}
-.panel-label {
-  align-items: center;
-  background: var(--panel);
-  border: 1px solid var(--border2);
-  border-radius: 8px;
-  color: var(--fg);
-  cursor: pointer;
-  display: inline-flex;
-  font-size: 11px;
-  gap: 5px;
-  max-width: 118px;
-  min-width: 0;
-  overflow: hidden;
-  padding: 4px 6px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.panel-label span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.panel-label:hover {
-  background: var(--control-hover);
-  border-color: var(--accent-border);
-}
-.panel-rename-input {
-  cursor: text;
-  max-width: none;
-  width: 100%;
-}
-.panel-caret {
-  color: var(--muted);
-  flex: 0 0 auto;
-  font-size: 9px;
-}
-.panel-add {
-  flex: 0 0 auto;
-}
-.panel-menu {
-  background: var(--panel);
-  border: 1px solid var(--border2);
-  border-radius: 10px;
-  box-shadow: 0 12px 30px #0007;
-  display: grid;
-  gap: 2px;
-  left: 0;
-  max-height: var(--workspace-panel-menu-max-height, none);
-  min-width: min(220px, 70vw);
-  overflow-y: auto;
-  padding: 5px;
-  position: absolute;
-  top: calc(100% + 4px);
-  z-index: 70;
-}
-.panel-menu-item {
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  color: var(--fg);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  padding: 6px 8px;
-  text-align: left;
-}
-.panel-menu-item:hover,
-.panel-menu-item.active {
-  background: var(--control-hover);
-  border-color: var(--border2);
 }
 .repo-header {
   display: flex;
@@ -511,13 +434,6 @@ body.light {
   display: flex;
   gap: 6px;
   min-width: 0;
-}
-.space-meta-line .panel-field {
-  flex: 1;
-}
-.space-meta-line .panel-label {
-  max-width: none;
-  width: 100%;
 }
 .muted {
   color: var(--muted);
@@ -587,10 +503,6 @@ body.light {
 }
 .app-icon-terminal {
   mask-image: url("/assets/icons/terminal.svg");
-}
-.git-workspace-toggle .app-icon {
-  height: 17px;
-  width: 17px;
 }
 .agent-title,
 .agent-meta {
@@ -662,17 +574,9 @@ body.light .agent-status.done {
   align-items: center;
   gap: 6px;
 }
-.tab-activity {
-  color: var(--muted);
-  font-size: 11px;
-}
 .tab.active {
   background: var(--accent);
   color: var(--bg);
-}
-.tab.active .tab-activity {
-  color: var(--accent-fg);
-  opacity: 0.75;
 }
 .tab.active .mini {
   color: var(--fg);
@@ -755,6 +659,90 @@ body.light .agent-status.done {
   font-size: 12px;
   line-height: 1.35;
 }
+/* Sidebar variant: the empty-state dashboard lives inside the left
+   Workspaces pane's scroll area, so the centered 920px hero shapes
+   collapse to a compact card that fits the ~240px column. Same
+   components, sidebar-appropriate geometry; nothing else changes. */
+#workspacePane .project-dashboard {
+  align-content: stretch;
+  display: block;
+  flex: 0 0 auto;
+  margin-top: 8px;
+  overflow: visible;
+  padding: 0;
+}
+#workspacePane .project-dashboard-card {
+  border-radius: 12px;
+  box-shadow: none;
+  padding: 14px;
+  width: 100%;
+}
+#workspacePane .project-dashboard-hero h1 {
+  font-size: 15px;
+  margin: 0 0 6px;
+}
+#workspacePane .project-dashboard-hero p {
+  font-size: 12px;
+}
+#workspacePane .project-dashboard-actions {
+  grid-template-columns: 1fr;
+  margin-top: 12px;
+}
+#workspacePane .project-dashboard-action {
+  min-height: 0;
+  padding: 10px;
+}
+
+/* Zero-tab workspace body: the workspace stays open after its last
+   terminal closed, so the pane slot shows one card with a way back
+   in instead of a dead terminal frame. */
+.workspace-empty-leaf {
+  align-content: center;
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: clamp(18px, 4vw, 48px);
+}
+.workspace-empty-leaf[hidden] {
+  display: none;
+}
+.workspace-empty-leaf-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.24);
+  margin: 0 auto;
+  max-width: 560px;
+  padding: clamp(18px, 3vw, 34px);
+  width: min(100%, 560px);
+}
+.workspace-empty-leaf-card h1 {
+  font-size: clamp(22px, 3vw, 30px);
+  line-height: 1.1;
+  margin: 0 0 10px;
+}
+.workspace-empty-leaf-card p {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0 0 20px;
+}
+.workspace-empty-leaf-new {
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--accent-fg, #fff);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 18px;
+}
+.workspace-empty-leaf-new:hover,
+.workspace-empty-leaf-new:focus-visible {
+  border-color: var(--accent);
+  filter: brightness(1.08);
+  outline: none;
+}
 
 /* Sidebar workspace/agent rows: skip layout/paint for offscreen rows in the
    scrollable section. Rows are single-line height; the intrinsic size keeps
@@ -764,9 +752,8 @@ body.light .agent-status.done {
   contain-intrinsic-size: auto 46px;
 }
 /* content-visibility:auto forces paint containment, which clips descendants
-   to the row box. The panel dropdown (.panel-menu) lives inside the selected
-   workspace row and would be cut to a sliver, so the selected row opts out.
-   One visible row keeps the skip-paint win for everything else. */
+   to the row box, so the selected row opts out. One visible row keeps the
+   skip-paint win for everything else. */
 .section .item.active {
   content-visibility: visible;
 }

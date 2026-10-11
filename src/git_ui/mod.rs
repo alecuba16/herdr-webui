@@ -32,6 +32,14 @@ macro_rules! check_auth {
 }
 pub(crate) use check_auth;
 
+/// Whether a git stderr is the "outside any work tree" answer rather than
+/// a real failure. git prints this for any non-repo cwd; the UI asks about
+/// such folders on purpose (rail probe on the default folder), so callers
+/// map it to the nogit payload instead of an error status.
+pub(super) fn is_not_git_repository(message: &str) -> bool {
+    message.contains("not a git repository") || message.contains("not a git work tree")
+}
+
 /// Run a blocking git operation on the thread pool and map its result to
 /// a Response with the error vocabulary shared by every git-ui handler.
 /// This replaces the per-handler match over spawn_blocking results that
@@ -839,6 +847,30 @@ fn git_remote_url(cwd: &str, upstream: &str) -> Option<String> {
 fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
     let repo = match git_ui_repo(&cwd) {
         Ok(repo) => repo,
+        Err(err) if is_not_git_repository(&err) => {
+            // A non-git folder is a normal state the rail probe asks about
+            // on every boot (default folder, home). Answer it as a payload,
+            // not an error status: browsers log 4xx fetches as console
+            // errors, and the client parks the same shape from
+            // markNoGitRepository (cleanup-only view, nogit rail tint).
+            return Ok(json!({
+                "state": "cleanup only",
+                "repo_path": cwd,
+                "branch": "No Git repository",
+                "not_git_repository": true,
+                "ahead": 0,
+                "behind": 0,
+                "upstream": "",
+                "remote_url": null,
+                "staged": [],
+                "unstaged": [],
+                "untracked": [],
+                "conflicted": [],
+                "stashes": [],
+                "summaries": { "staged": [], "unstaged": [] },
+                "warnings": [],
+            }));
+        }
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
     let status = match git_ui_text(&repo, &["status", "--porcelain=v2", "--branch"]) {
@@ -1720,6 +1752,48 @@ mod tests {
             assert_eq!(blame.status(), StatusCode::OK);
             let json = response_json(blame).await;
             assert!(json["text"].as_str().unwrap().contains("\tone"));
+        });
+    }
+
+    #[test]
+    fn git_ui_status_answers_non_git_folder_as_payload() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            // Any plain temp folder is outside a work tree, like the default
+            // folder the rail probe asks about at boot.
+            let dir = std::env::temp_dir().join(format!(
+                "herdr-webui-git-ui-nogit-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&dir).unwrap();
+            let cwd = dir.to_str().unwrap().to_string();
+            let state = test_state();
+
+            let status = git_ui_status(
+                State(state.clone()),
+                HeaderMap::new(),
+                ConnectInfo(remote()),
+                Query(GitUiCwdQuery {
+                    cwd: Some(cwd.clone()),
+                }),
+            )
+            .await;
+            // The probe must not see an error status: browsers log 4xx
+            // fetches as console errors even when the body is handled.
+            assert_eq!(status.status(), StatusCode::OK);
+            let json = response_json(status).await;
+            assert_eq!(json["not_git_repository"], json!(true));
+            assert_eq!(json["state"], "cleanup only");
+            assert_eq!(json["branch"], "No Git repository");
+            assert_eq!(json["repo_path"], json!(cwd));
+            assert_eq!(json["staged"], json!([]));
+            assert_eq!(json["unstaged"], json!([]));
+            assert_eq!(json["untracked"], json!([]));
+            assert_eq!(json["conflicted"], json!([]));
+            assert_eq!(json["stashes"], json!([]));
         });
     }
 

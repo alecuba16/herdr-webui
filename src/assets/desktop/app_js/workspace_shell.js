@@ -1,6 +1,10 @@
-// Per-workspace shell mode (terminal/git/files) survives page reloads AND
-// workspace reopens: the mode is remembered per workspace id (live sessions)
-// and per folder path (recents), mirroring the server-persisted recents list.
+// Per-workspace shell view (terminal/git/files/search) for the right sidebar
+// column. The mode lives only for open workspaces during this page session.
+// The rail toggle (Files/Git/Search/terminal) changes the mode; the column's
+// collapse state is a separate global flag (core.js owns it).
+// "terminal" is the pane-tab contract, not a sidebar view: expanding the
+// column while the mode is terminal falls back to a hosted view
+// (resolveHostedShellMode) so the extended column never renders empty.
 const WORKSPACE_SHELL_STORAGE_KEY = "herdr-web-workspace-shell";
 const WORKSPACE_SHELL_PATH_PREFIX = "path:";
 const WORKSPACE_SHELL_PATH_LIMIT = 20;
@@ -27,16 +31,15 @@ function shellPathForId(id) {
   return workspacePath(workspace);
 }
 
+function isHostedShellMode(mode) {
+  return mode === "git" || mode === "files" || mode === "search";
+}
+
 function loadWorkspaceShellStates() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(WORKSPACE_SHELL_STORAGE_KEY) || "{}");
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      for (const [key, value] of Object.entries(parsed)) {
-        if (!value || typeof value !== "object") continue;
-        const mode = value.mode === "git" || value.mode === "files" ? value.mode : "terminal";
-        state.workspaceShell[key] = { mode, minimized: !!value.minimized, at: value.at || 0 };
-      }
-    }
+    // A reload starts with clean view state. The store is only a temporary
+    // write-through while this page keeps workspaces open.
+    localStorage.removeItem(WORKSPACE_SHELL_STORAGE_KEY);
   } catch (_) {}
 }
 
@@ -50,13 +53,24 @@ function trimWorkspaceShellPathEntries(limit = WORKSPACE_SHELL_PATH_LIMIT) {
 function syncWorkspaceShellPathEntry(id, shell) {
   const pathKey = shellPathKey(shellPathForId(id));
   if (!pathKey) return;
-  state.workspaceShell[pathKey] = { mode: shell.mode, minimized: !!shell.minimized, at: Date.now() };
+  state.workspaceShell[pathKey] = { mode: shell.mode, at: Date.now() };
   trimWorkspaceShellPathEntries();
 }
 
 function saveWorkspaceShellStates() {
   try {
-    localStorage.setItem(WORKSPACE_SHELL_STORAGE_KEY, JSON.stringify(state.workspaceShell));
+    const keep = new Set();
+    for (const workspace of state.workspaces || []) {
+      keep.add(workspaceShellKey(workspace));
+      const pathKey = shellPathKey(workspacePath(workspace));
+      if (pathKey) keep.add(pathKey);
+    }
+    if (state.ws) keep.add(workspaceShellKey(state.ws));
+    const live = Object.fromEntries(
+      Object.entries(state.workspaceShell || {}).filter(([key]) => keep.has(key)),
+    );
+    if (Object.keys(live).length) localStorage.setItem(WORKSPACE_SHELL_STORAGE_KEY, JSON.stringify(live));
+    else localStorage.removeItem(WORKSPACE_SHELL_STORAGE_KEY);
   } catch (_) {}
 }
 
@@ -71,113 +85,71 @@ function workspaceShellKey(id = state.ws) {
 function workspaceShellState(id = state.ws) {
   const key = workspaceShellKey(id);
   if (!state.workspaceShell[key]) {
-    // A reopened recent workspace gets a fresh workspace id, so fall back to
-    // the shell mode remembered for the same folder. Reopens always start
-    // un-minimized: the user asked to open the workspace, not hide it.
+    // A path entry can bridge a backend id change while the workspace stays open.
+    // Close cleanup removes it before a later reopen can see it.
     const pathKey = shellPathKey(shellPathForId(id));
     const remembered = pathKey ? state.workspaceShell[pathKey] : null;
-    state.workspaceShell[key] = remembered
-      ? { mode: remembered.mode === "git" || remembered.mode === "files" ? remembered.mode : "terminal", minimized: false }
-      : { mode: "terminal", minimized: false };
+    state.workspaceShell[key] = remembered && isHostedShellMode(remembered.mode)
+      ? { mode: remembered.mode }
+      : { mode: "terminal" };
   }
   return state.workspaceShell[key];
 }
 function currentWorkspaceShellMode(id = state.ws) {
   const value = workspaceShellState(id).mode;
-  return value === "git" || value === "files" ? value : "terminal";
+  return isHostedShellMode(value) ? value : "terminal";
 }
-function rememberWorkspaceShellMode(mode, id = state.ws, options = {}) {
+function rememberWorkspaceShellMode(mode, id = state.ws) {
   const shell = workspaceShellState(id);
-  shell.mode = mode === "git" || mode === "files" ? mode : "terminal";
-  if (Object.prototype.hasOwnProperty.call(options, "minimized")) shell.minimized = !!options.minimized;
+  shell.mode = isHostedShellMode(mode) ? mode : "terminal";
   syncWorkspaceShellPathEntry(id, shell);
   saveWorkspaceShellStates();
-  syncWorkspaceShellRestoreControl();
   syncShellModeButtons();
 }
 window.rememberWorkspaceShellMode = rememberWorkspaceShellMode;
-function isWorkspaceShellMinimized(id = state.ws) {
-  return !!workspaceShellState(id).minimized;
-}
-function hideWorkspaceShellSurfaces() {
-  if (window.HerdrGitUi) window.HerdrGitUi.hide();
-  if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
-  const shell = el("terminalShell");
-  if (shell) shell.style.display = "none";
-}
-function minimizeWorkspaceShell(id = state.ws) {
-  const shell = workspaceShellState(id);
-  shell.minimized = true;
-  syncWorkspaceShellPathEntry(id, shell);
-  saveWorkspaceShellStates();
-  hideWorkspaceShellSurfaces();
-  syncWorkspaceShellRestoreControl();
-  syncShellModeButtons();
-}
-function workspaceShellRestoreLabel(mode) {
-  if (mode === "git") return "Show Git";
-  if (mode === "files") return "Show Files";
-  return "Show terminal";
-}
-function syncWorkspaceShellRestoreControl() {
-  let button = el("workspaceShellRestore");
-  const shell = workspaceShellState();
-  if (!shell.minimized) {
-    if (button) button.remove();
-    return;
-  }
-  if (!button) {
-    button = document.createElement("button");
-    button.id = "workspaceShellRestore";
-    button.className = "workspace-shell-restore";
-    button.onclick = () => restoreWorkspaceShell();
-    document.body.appendChild(button);
-  }
-  const label = workspaceShellRestoreLabel(shell.mode);
-  button.textContent = label;
-  button.title = `${label} for this workspace`;
-  button.setAttribute("aria-label", button.title);
-}
 function forgetWorkspaceShell(id) {
   delete state.workspaceShell[workspaceShellKey(id)];
+  const pathKey = shellPathKey(shellPathForId(id));
+  if (pathKey) delete state.workspaceShell[pathKey];
   saveWorkspaceShellStates();
-  syncWorkspaceShellRestoreControl();
-  syncShellModeButtons();
+  const closingId = id && typeof id === "object" ? id.workspace_id : id;
+  if (state.ws !== closingId) syncShellModeButtons();
 }
 function pruneWorkspaceShellStates() {
-  const keep = new Set((state.workspaces || []).map((workspace) => workspace.workspace_id));
-  keep.add("__default_folder__");
-  // path: entries survive closes so a recent reopen can restore the mode;
-  // they are bounded by trimWorkspaceShellPathEntries instead of pruned here.
+  const keep = new Set();
+  for (const workspace of state.workspaces || []) {
+    keep.add(workspaceShellKey(workspace));
+    const pathKey = shellPathKey(workspacePath(workspace));
+    if (pathKey) keep.add(pathKey);
+  }
   let removed = false;
-  for (const key of Object.keys(state.workspaceShell))
-    if (!key.startsWith(WORKSPACE_SHELL_PATH_PREFIX) && !keep.has(key)) {
+  for (const key of Object.keys(state.workspaceShell)) {
+    if (!keep.has(key)) {
       delete state.workspaceShell[key];
       removed = true;
     }
+  }
   // prune runs on every poll; only touch storage when something changed.
   if (removed) saveWorkspaceShellStates();
-  syncWorkspaceShellRestoreControl();
-}
-async function restoreWorkspaceShell(id = state.ws) {
-  const shell = workspaceShellState(id);
-  shell.minimized = false;
-  syncWorkspaceShellPathEntry(id, shell);
-  saveWorkspaceShellStates();
-  syncWorkspaceShellRestoreControl();
-  if (shell.mode === "git") await openWorkspaceGitUi(id, { forceOpen: true });
-  else if (shell.mode === "files") await openWorkspaceFileBrowser(id, { forceOpen: true });
-  else showTerminalShellMode({ forceOpen: true });
 }
 function applyWorkspaceShellForSelection(id = state.ws) {
   const shell = workspaceShellState(id);
-  if (shell.minimized) {
-    hideWorkspaceShellSurfaces();
-    syncWorkspaceShellRestoreControl();
-    syncShellModeButtons();
-    return;
-  }
   if (shell.mode === "git") openWorkspaceGitUi(id, { forceOpen: true });
   else if (shell.mode === "files") openWorkspaceFileBrowser(id, { forceOpen: true });
+  else if (shell.mode === "search") openWorkspaceSearchPanel(id, { forceOpen: true });
   else showTerminalShellMode({ forceOpen: true });
 }
+// The extended column always hosts one of Files/Git/Search. "terminal" is
+// the pane-tab contract; expanding it picks the last hosted view this
+// workspace used in this page session or files when nothing was ever hosted.
+// Callers pass the result to the matching
+// openWorkspace* so the panel mounts before the column expands.
+function resolveHostedShellMode(id = state.ws) {
+  const shell = workspaceShellState(id);
+  if (isHostedShellMode(shell.mode)) return shell.mode;
+  const pathKey = shellPathKey(shellPathForId(id));
+  const remembered = pathKey ? state.workspaceShell[pathKey] : null;
+  if (remembered && isHostedShellMode(remembered.mode)) return remembered.mode;
+  return "files";
+}
+window.resolveHostedShellMode = resolveHostedShellMode;
