@@ -1337,7 +1337,10 @@ fn app_router(state: WebState) -> Router {
         .route("/api/panes/{pane_id}/close", post(close_pane))
         .route("/api/panes/{pane_id}/submit", post(submit_pane))
         .route("/api/panes/{pane_id}/conversation", get(pane_conversation))
-        .route("/api/panes/{pane_id}/conversation/image", get(pane_conversation_image))
+        .route(
+            "/api/panes/{pane_id}/conversation/image",
+            get(pane_conversation_image),
+        )
         .route("/api/panes/{pane_id}/tool-output", get(pane_tool_output))
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/session-snapshot", get(session_snapshot))
@@ -5234,30 +5237,33 @@ async fn pane_conversation_image(
                     let media_type = i.get("media_type")?.as_str()?.to_string();
                     let data = i.get("data")?.as_str()?;
                     Some((media_type, data.to_string()))
-                })
-            {
-                Some((media_type, data)) => {
-                    match crate::jcode_transcript::base64_decode(&data) {
-                        Some(bytes) => (
-                            StatusCode::OK,
-                            [
-                                (axum::http::header::CONTENT_TYPE, media_type.as_str()),
-                                (axum::http::header::CACHE_CONTROL, "private, max-age=86400, immutable"),
-                                (axum::http::HeaderName::from_static("x-content-type-options"), "nosniff"),
-                            ],
-                            bytes,
-                        )
-                            .into_response(),
-                        None => (
-                            StatusCode::NOT_FOUND,
-                            Json(json!({
-                                "error": "no such image in this pane's conversation",
-                                "code": "image_not_found",
-                            })),
-                        )
-                            .into_response(),
-                    }
-                }
+                }) {
+                Some((media_type, data)) => match crate::jcode_transcript::base64_decode(&data) {
+                    Some(bytes) => (
+                        StatusCode::OK,
+                        [
+                            (axum::http::header::CONTENT_TYPE, media_type.as_str()),
+                            (
+                                axum::http::header::CACHE_CONTROL,
+                                "private, max-age=86400, immutable",
+                            ),
+                            (
+                                axum::http::HeaderName::from_static("x-content-type-options"),
+                                "nosniff",
+                            ),
+                        ],
+                        bytes,
+                    )
+                        .into_response(),
+                    None => (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({
+                            "error": "no such image in this pane's conversation",
+                            "code": "image_not_found",
+                        })),
+                    )
+                        .into_response(),
+                },
                 None => (
                     StatusCode::NOT_FOUND,
                     Json(json!({

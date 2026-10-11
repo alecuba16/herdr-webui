@@ -176,7 +176,9 @@ impl JcodeStoreIndex {
                 let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) else {
                     continue;
                 };
-                let Some(meta) = parsed.get("meta") else { continue };
+                let Some(meta) = parsed.get("meta") else {
+                    continue;
+                };
                 return (
                     model(meta),
                     field(meta, "status"),
@@ -262,7 +264,9 @@ impl JcodeStoreIndex {
                 let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) else {
                     continue;
                 };
-                let Some(meta) = parsed.get("meta") else { continue };
+                let Some(meta) = parsed.get("meta") else {
+                    continue;
+                };
                 return meta_of(meta).map(|title| truncate(title));
             }
         }
@@ -387,10 +391,7 @@ impl JcodeStoreIndex {
     /// (same 250 ms TTL). Read once per poll at most, not once per
     /// registry file.
     fn swarm_worker_set(&self) -> HashSet<String> {
-        let mut guard = self
-            .swarm_workers
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.swarm_workers.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(at) = guard.0 {
             if at.elapsed() < Duration::from_millis(250) {
                 return guard.1.clone();
@@ -685,7 +686,10 @@ fn swarm_worker_sessions(dir: &Path) -> HashSet<String> {
                 }
             }
         }
-        if let Some(progress) = parsed.pointer("/plan/task_progress").and_then(|p| p.as_object()) {
+        if let Some(progress) = parsed
+            .pointer("/plan/task_progress")
+            .and_then(|p| p.as_object())
+        {
             for entry in progress.values() {
                 if let Some(id) = entry.get("assigned_session_id").and_then(|i| i.as_str()) {
                     if Some(id) != this_coordinator {
@@ -1690,7 +1694,10 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
-        assert_eq!(index.session_title("s").as_deref(), Some("pre-rename bookmark"));
+        assert_eq!(
+            index.session_title("s").as_deref(),
+            Some("pre-rename bookmark")
+        );
         // An UNSAVED label is not a title.
         std::fs::write(
             dir.join("s.journal.jsonl"),
@@ -1702,7 +1709,11 @@ mod tests {
                 + "\n",
         )
         .unwrap();
-        assert_eq!(index.session_title("s"), None, "unsaved label is not a title");
+        assert_eq!(
+            index.session_title("s"),
+            None,
+            "unsaved label is not a title"
+        );
         // Custom rename wins over the bookmark label.
         std::fs::write(
             dir.join("s.journal.jsonl"),
@@ -1785,7 +1796,11 @@ mod tests {
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         let (model, status, effort) = index.session_model_status("s");
-        assert_eq!(model.as_deref(), Some("new-model"), "journal meta wins over the stale snapshot");
+        assert_eq!(
+            model.as_deref(),
+            Some("new-model"),
+            "journal meta wins over the stale snapshot"
+        );
         assert_eq!(status.as_deref(), Some("Active"));
         assert_eq!(effort.as_deref(), Some("high"));
         // Journal gone (checkpoint deleted it): the snapshot is the
@@ -2462,8 +2477,13 @@ mod tests {
         for name in ["coord", "worker1", "worker2"] {
             std::fs::write(
                 dir.join(format!("session_{name}.json")),
-                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
-                    .unwrap(),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
             )
             .unwrap();
         }
@@ -2506,8 +2526,13 @@ mod tests {
         for name in ["coord", "worker1"] {
             std::fs::write(
                 dir.join(format!("session_{name}.json")),
-                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
-                    .unwrap(),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
             )
             .unwrap();
         }
@@ -2548,8 +2573,13 @@ mod tests {
         for name in ["coord", "worker1"] {
             std::fs::write(
                 dir.join(format!("session_{name}.json")),
-                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
-                    .unwrap(),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
             )
             .unwrap();
         }
@@ -2595,8 +2625,13 @@ mod tests {
         for name in ["coord", "other_coord"] {
             std::fs::write(
                 dir.join(format!("session_{name}.json")),
-                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
-                    .unwrap(),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
             )
             .unwrap();
         }
@@ -2646,8 +2681,13 @@ mod tests {
         for name in ["coord", "other"] {
             std::fs::write(
                 dir.join(format!("session_{name}.json")),
-                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
-                    .unwrap(),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
             )
             .unwrap();
         }
@@ -2673,8 +2713,13 @@ mod tests {
         for name in ["coord", "worker1"] {
             std::fs::write(
                 dir.join(format!("session_{name}.json")),
-                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
-                    .unwrap(),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
             )
             .unwrap();
         }
@@ -2728,8 +2773,13 @@ mod tests {
         for name in ["coord", "worker1"] {
             std::fs::write(
                 dir.join(format!("session_{name}.json")),
-                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
-                    .unwrap(),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
             )
             .unwrap();
         }
@@ -2777,8 +2827,13 @@ mod tests {
         for name in ["coord", "worker1"] {
             std::fs::write(
                 dir.join(format!("session_{name}.json")),
-                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
-                    .unwrap(),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
             )
             .unwrap();
         }

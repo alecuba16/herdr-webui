@@ -10888,7 +10888,8 @@ fn conversation_error_classifies_design_codes_to_statuses() {
     // A cursor the transcript no longer knows: 409 history_changed
     // (reference HistoryChanged parity) — the client drops held pages
     // and re-anchors in ONE round trip.
-    let (status, code) = conversation_error("history_changed: cursor message no longer in the transcript");
+    let (status, code) =
+        conversation_error("history_changed: cursor message no longer in the transcript");
     assert_eq!(code, "history_changed");
     assert_eq!(status, StatusCode::CONFLICT);
 
@@ -10911,9 +10912,7 @@ fn conversation_etag_is_weak_and_strips_w_on_compare() {
     assert!(etag.ends_with('"'));
     // The browser sends the tag back verbatim; the compare strips W/.
     let bare = format!("\"{version}\"");
-    let matches = etag
-        .trim_start_matches("W/")
-        == bare;
+    let matches = etag.trim_start_matches("W/") == bare;
     assert!(matches, "weak round trip must match");
     // A strong-form send (client stripped W/) still matches: same
     // trim on both sides.
@@ -11018,10 +11017,7 @@ async fn conversation_route_answers_304_on_matching_if_none_match() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
     assert_eq!(
-        response
-            .headers()
-            .get(axum::http::header::ETAG)
-            .unwrap(),
+        response.headers().get(axum::http::header::ETAG).unwrap(),
         "W/\"v9\""
     );
     // 304 carries zero turn bytes: the body is empty.
@@ -11131,15 +11127,21 @@ async fn conversation_image_route_serves_bytes_and_not_found() {
     let response = app
         .clone()
         .oneshot(
-            authed_request(Method::GET, "/api/panes/pane_1/conversation/image?ref=msg_img_1")
-                .body(Body::empty())
-                .unwrap(),
+            authed_request(
+                Method::GET,
+                "/api/panes/pane_1/conversation/image?ref=msg_img_1",
+            )
+            .body(Body::empty())
+            .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        response.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap(),
         "image/png"
     );
     assert_eq!(
@@ -11187,9 +11189,12 @@ async fn conversation_image_route_serves_bytes_and_not_found() {
 
     let response = app
         .oneshot(
-            authed_request(Method::GET, "/api/panes/pane_1/conversation/image?ref=toolu_dead")
-                .body(Body::empty())
-                .unwrap(),
+            authed_request(
+                Method::GET,
+                "/api/panes/pane_1/conversation/image?ref=toolu_dead",
+            )
+            .body(Body::empty())
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -11216,9 +11221,21 @@ async fn conversation_route_etag_compare_edge_cases() {
     };
     for (sent, expect_304, why) in [
         ("W/\"v9\"", true, "verbatim weak round trip matches"),
-        ("\"v9\"", true, "strong form of the same tag matches (strip is a no-op)"),
-        ("W/W/\"v9\"", false, "double weak prefix is not a tag the route ever emitted"),
-        ("W/\"v8\"", false, "a different version serves the full payload"),
+        (
+            "\"v9\"",
+            true,
+            "strong form of the same tag matches (strip is a no-op)",
+        ),
+        (
+            "W/W/\"v9\"",
+            false,
+            "double weak prefix is not a tag the route ever emitted",
+        ),
+        (
+            "W/\"v8\"",
+            false,
+            "a different version serves the full payload",
+        ),
         ("*", false, "no star handling, reference has none either"),
         ("", false, "an empty header never matches"),
     ] {
@@ -11236,7 +11253,8 @@ async fn conversation_route_etag_compare_edge_cases() {
             .unwrap();
         let got_304 = response.status() == StatusCode::NOT_MODIFIED;
         assert_eq!(
-            got_304, expect_304,
+            got_304,
+            expect_304,
             "if-none-match {sent:?}: {why} (expected 304={expect_304}, got {})",
             response.status()
         );
@@ -11248,10 +11266,7 @@ async fn conversation_route_etag_compare_edge_cases() {
             // fresh etag to store for the next poll.
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(
-                response
-                    .headers()
-                    .get(axum::http::header::ETAG)
-                    .unwrap(),
+                response.headers().get(axum::http::header::ETAG).unwrap(),
                 "W/\"v9\""
             );
             let body = response_json(response).await;
@@ -11324,9 +11339,12 @@ async fn conversation_image_route_invalid_base64_is_not_found() {
 
     let response = app
         .oneshot(
-            authed_request(Method::GET, "/api/panes/pane_1/conversation/image?ref=msg_img_9")
-                .body(Body::empty())
-                .unwrap(),
+            authed_request(
+                Method::GET,
+                "/api/panes/pane_1/conversation/image?ref=msg_img_9",
+            )
+            .body(Body::empty())
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -11346,7 +11364,10 @@ async fn conversation_route_backend_transport_failure_is_bad_gateway() {
     let mut state = test_state();
     let dead = std::env::temp_dir().join(format!(
         "herdr-webui-dead-api-{}-{}.sock",
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
         fake_socket_suffix()
     ));
     state.api_socket = Some(dead);
@@ -11366,9 +11387,12 @@ async fn conversation_route_backend_transport_failure_is_bad_gateway() {
     let response = app
         .clone()
         .oneshot(
-            authed_request(Method::GET, "/api/panes/pane_1/conversation/image?ref=msg_x")
-                .body(Body::empty())
-                .unwrap(),
+            authed_request(
+                Method::GET,
+                "/api/panes/pane_1/conversation/image?ref=msg_x",
+            )
+            .body(Body::empty())
+            .unwrap(),
         )
         .await
         .unwrap();

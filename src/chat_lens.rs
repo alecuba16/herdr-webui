@@ -154,7 +154,10 @@ struct Cursor {
 
 impl Cursor {
     fn encode(&self) -> String {
-        format!("{}:{}:{}", self.session_id, self.generation, self.message_id)
+        format!(
+            "{}:{}:{}",
+            self.session_id, self.generation, self.message_id
+        )
     }
 
     /// Parse `session_id:generation:message_id`. The session segment
@@ -271,7 +274,9 @@ pub fn conversation_payload_with(
         cut = turns
             .iter()
             .position(|t| t.message_id.as_deref() == Some(before.message_id.as_str()))
-            .ok_or_else(|| "history_changed: cursor message no longer in the transcript".to_string())?;
+            .ok_or_else(|| {
+                "history_changed: cursor message no longer in the transcript".to_string()
+            })?;
     }
     let mut start = 0usize;
     if let Some(from) = &from {
@@ -284,7 +289,9 @@ pub fn conversation_payload_with(
         let pos = turns
             .iter()
             .position(|t| t.message_id.as_deref() == Some(from.message_id.as_str()))
-            .ok_or_else(|| "history_changed: cursor message no longer in the transcript".to_string())?;
+            .ok_or_else(|| {
+                "history_changed: cursor message no longer in the transcript".to_string()
+            })?;
         if pos < cut {
             start = pos;
         }
@@ -727,7 +734,9 @@ mod tests {
     #[test]
     fn conversation_payload_with_builds_turns_version_and_stats() {
         let (_dir, index, _id) = fixture_store("payload");
-        let payload = conversation_payload_with(&index, &fixture_context(), &ConversationPage::default()).unwrap();
+        let payload =
+            conversation_payload_with(&index, &fixture_context(), &ConversationPage::default())
+                .unwrap();
         // Wire shape (design section 4): source, session_id, version,
         // turns.
         assert_eq!(payload["source"], "jcode-transcript");
@@ -754,7 +763,9 @@ mod tests {
         let session_id = resolve_session_with(&index, &fixture_context()).unwrap();
         std::fs::remove_file(dir.join(format!("{session_id}.json"))).unwrap();
         std::fs::remove_file(dir.join(format!("{session_id}.journal.jsonl"))).unwrap();
-        let err = conversation_payload_with(&index, &fixture_context(), &ConversationPage::default()).unwrap_err();
+        let err =
+            conversation_payload_with(&index, &fixture_context(), &ConversationPage::default())
+                .unwrap_err();
         assert!(
             err.starts_with("transcript_missing") || err.starts_with("no_session_path"),
             "got {err}"
@@ -779,7 +790,9 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let payload = conversation_payload_with(&index, &fixture_context(), &ConversationPage::default()).unwrap();
+        let payload =
+            conversation_payload_with(&index, &fixture_context(), &ConversationPage::default())
+                .unwrap();
         assert_eq!(payload["turns"].as_array().unwrap().len(), 0);
     }
 
@@ -861,7 +874,9 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let payload = conversation_payload_with(&index, &fixture_context(), &ConversationPage::default()).unwrap();
+        let payload =
+            conversation_payload_with(&index, &fixture_context(), &ConversationPage::default())
+                .unwrap();
         let turns = payload["turns"].as_array().unwrap();
         assert_eq!(turns.len(), 2);
         assert_eq!(turns[0]["role"], "user");
@@ -973,7 +988,10 @@ mod tests {
         let older = conversation_payload_with(
             &index,
             &fixture_context(),
-            &ConversationPage { before: Some(cursor), from: None },
+            &ConversationPage {
+                before: Some(cursor),
+                from: None,
+            },
         )
         .unwrap();
         let turns = older["turns"].as_array().unwrap();
@@ -984,13 +1002,22 @@ mod tests {
         assert_eq!(turns.first().unwrap()["parts"][0]["text"], "turn 50");
         // And it chains: the next-older cursor names m050.
         let older_cursor = older["cursor"].as_str().unwrap();
-        assert!(older_cursor.starts_with(&format!("{session_id}:")), "same session");
-        assert!(older_cursor.ends_with(":m050"), "cursor names m050, got {older_cursor}");
+        assert!(
+            older_cursor.starts_with(&format!("{session_id}:")),
+            "same session"
+        );
+        assert!(
+            older_cursor.ends_with(":m050"),
+            "cursor names m050, got {older_cursor}"
+        );
         // The third page reaches the beginning: cursor becomes null.
         let oldest = conversation_payload_with(
             &index,
             &fixture_context(),
-            &ConversationPage { before: Some(older_cursor.to_string()), from: None },
+            &ConversationPage {
+                before: Some(older_cursor.to_string()),
+                from: None,
+            },
         )
         .unwrap();
         let oldest_turns = oldest["turns"].as_array().unwrap();
@@ -1008,7 +1035,10 @@ mod tests {
         let anchored = conversation_payload_with(
             &index,
             &fixture_context(),
-            &ConversationPage { before: None, from: Some("session_from:g1:m050".into()) },
+            &ConversationPage {
+                before: None,
+                from: Some("session_from:g1:m050".into()),
+            },
         )
         .unwrap();
         let turns = anchored["turns"].as_array().unwrap();
@@ -1025,7 +1055,10 @@ mod tests {
         let slid = conversation_payload_with(
             &index,
             &fixture_context(),
-            &ConversationPage { before: None, from: Some("session_from:g1:m010".into()) },
+            &ConversationPage {
+                before: None,
+                from: Some("session_from:g1:m010".into()),
+            },
         )
         .unwrap();
         let slid_turns = slid["turns"].as_array().unwrap();
@@ -1053,7 +1086,10 @@ mod tests {
         let after = conversation_payload_with(
             &index,
             &fixture_context(),
-            &ConversationPage { before: None, from: Some("session_from2:g1:m010".into()) },
+            &ConversationPage {
+                before: None,
+                from: Some("session_from2:g1:m010".into()),
+            },
         )
         .unwrap();
         let turns = after["turns"].as_array().unwrap();
@@ -1068,7 +1104,10 @@ mod tests {
         let err = conversation_payload_with(
             &index,
             &fixture_context(),
-            &ConversationPage { before: Some("session_other:g1:m001".into()), from: None },
+            &ConversationPage {
+                before: Some("session_other:g1:m001".into()),
+                from: None,
+            },
         )
         .unwrap_err();
         assert!(err.starts_with("history_changed"), "got {err}");
@@ -1077,7 +1116,10 @@ mod tests {
         let err = conversation_payload_with(
             &index,
             &fixture_context(),
-            &ConversationPage { before: Some(format!("{session_id}:g1:nope")), from: None },
+            &ConversationPage {
+                before: Some(format!("{session_id}:g1:nope")),
+                from: None,
+            },
         )
         .unwrap_err();
         assert!(err.starts_with("history_changed"), "got {err}");
@@ -1085,7 +1127,10 @@ mod tests {
         let err = conversation_payload_with(
             &index,
             &fixture_context(),
-            &ConversationPage { before: None, from: Some(format!("{session_id}:g1:nope")) },
+            &ConversationPage {
+                before: None,
+                from: Some(format!("{session_id}:g1:nope")),
+            },
         )
         .unwrap_err();
         assert!(err.starts_with("history_changed"), "got {err}");
@@ -1098,10 +1143,8 @@ mod tests {
         // fallback) and `context_used` (NEWEST prompt_tokens — a
         // session's context grows, so the last request's usage is the
         // one a status line should read).
-        let dir = std::env::temp_dir().join(format!(
-            "herdr-chat-lens-test-meta-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("herdr-chat-lens-test-meta-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let session_id = "session_lens_meta";
@@ -1162,8 +1205,9 @@ mod tests {
         );
         std::fs::write(dir.join(format!("{session_id}.journal.jsonl")), text).unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
-        let payload = conversation_payload_with(&index, &fixture_context(), &ConversationPage::default())
-            .unwrap();
+        let payload =
+            conversation_payload_with(&index, &fixture_context(), &ConversationPage::default())
+                .unwrap();
         // Title: the journal's newest meta line decides — custom_title
         // (the user-chosen name) over the auto-generated `title`
         // summary, exactly jcode's display_title rule (session.rs).
@@ -1199,9 +1243,14 @@ mod tests {
         )
         .unwrap();
         let index2 = JcodeStoreIndex::with_store_dir(no_usage_dir.clone());
-        let bare = conversation_payload_with(&index2, &fixture_context(), &ConversationPage::default())
-            .unwrap();
-        assert_eq!(bare["title"], serde_json::Value::Null, "no title anywhere: null");
+        let bare =
+            conversation_payload_with(&index2, &fixture_context(), &ConversationPage::default())
+                .unwrap();
+        assert_eq!(
+            bare["title"],
+            serde_json::Value::Null,
+            "no title anywhere: null"
+        );
         assert_eq!(
             bare["context_used"],
             serde_json::Value::Null,
@@ -1229,14 +1278,11 @@ mod tests {
             serde_json::to_string(&snap3).unwrap(),
         )
         .unwrap();
-        std::fs::write(
-            auto_dir.join(format!("{session_id}.journal.jsonl")),
-            "\n",
-        )
-        .unwrap();
+        std::fs::write(auto_dir.join(format!("{session_id}.journal.jsonl")), "\n").unwrap();
         let index3 = JcodeStoreIndex::with_store_dir(auto_dir.clone());
-        let auto = conversation_payload_with(&index3, &fixture_context(), &ConversationPage::default())
-            .unwrap();
+        let auto =
+            conversation_payload_with(&index3, &fixture_context(), &ConversationPage::default())
+                .unwrap();
         assert_eq!(
             auto["title"].as_str().unwrap().chars().count(),
             81,
@@ -1257,14 +1303,12 @@ mod tests {
         // 304 with stale turns.
         let (dir, index, session_id) = paged_store("etag-e2e", 3);
         let page = ConversationPage::default();
-        let v1 = conversation_payload_with(&index, &fixture_context(), &page)
-            .unwrap()["version"]
+        let v1 = conversation_payload_with(&index, &fixture_context(), &page).unwrap()["version"]
             .as_str()
             .unwrap()
             .to_string();
         assert_eq!(
-            conversation_payload_with(&index, &fixture_context(), &page)
-                .unwrap()["version"],
+            conversation_payload_with(&index, &fixture_context(), &page).unwrap()["version"],
             v1.as_str(),
             "unchanged store: same version, the etag is usable"
         );
@@ -1298,7 +1342,11 @@ mod tests {
             v1,
             "a rewritten transcript must not answer 304 against the old tag"
         );
-        assert_eq!(fresh["turns"].as_array().unwrap().len(), 4, "the new turn is visible");
+        assert_eq!(
+            fresh["turns"].as_array().unwrap().len(),
+            4,
+            "the new turn is visible"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1324,7 +1372,10 @@ mod tests {
         let anchored = conversation_payload_with(
             &index,
             &fixture_context(),
-            &ConversationPage { before: None, from: Some("session_gen:stale-generation:m001".into()) },
+            &ConversationPage {
+                before: None,
+                from: Some("session_gen:stale-generation:m001".into()),
+            },
         )
         .unwrap();
         let turns = anchored["turns"].as_array().unwrap();
@@ -1336,10 +1387,8 @@ mod tests {
 
     #[test]
     fn conversation_image_with_serves_the_named_message_bytes() {
-        let dir = std::env::temp_dir().join(format!(
-            "herdr-chat-lens-test-img-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("herdr-chat-lens-test-img-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // 1x1 PNG, hand-encoded base64 (no crates).
@@ -1375,15 +1424,25 @@ mod tests {
         assert_eq!(part["media_type"], "image/png");
         assert_eq!(part["ref"], "m1");
         assert_eq!(payload["turns"][0]["parts"][1]["text"], "look");
-        let (media_type, bytes) =
-            conversation_image_with(&index, &fixture_context(), "m1").unwrap().unwrap();
+        let (media_type, bytes) = conversation_image_with(&index, &fixture_context(), "m1")
+            .unwrap()
+            .unwrap();
         assert_eq!(media_type, "image/png");
         assert_eq!(bytes, decoded);
         // Unknown ref: None (image_not_found at the route).
-        assert_eq!(conversation_image_with(&index, &fixture_context(), "m999"), Ok(None));
+        assert_eq!(
+            conversation_image_with(&index, &fixture_context(), "m999"),
+            Ok(None)
+        );
         // Invalid charset: None before resolution work.
-        assert_eq!(conversation_image_with(&index, &fixture_context(), "has space"), Ok(None));
+        assert_eq!(
+            conversation_image_with(&index, &fixture_context(), "has space"),
+            Ok(None)
+        );
         // Empty ref: None.
-        assert_eq!(conversation_image_with(&index, &fixture_context(), ""), Ok(None));
+        assert_eq!(
+            conversation_image_with(&index, &fixture_context(), ""),
+            Ok(None)
+        );
     }
 }
