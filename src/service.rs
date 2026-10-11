@@ -5,6 +5,109 @@ use std::process::Command;
 
 use crate::{TlsMode, WebConfig, HERDR_WEBUI_VERSION, INSTALL_LABEL};
 
+/// Stable code-signing identifier for installed macOS binaries.
+const MAC_INSTALL_SIGN_ID: &str = "codesign.herdr-webui.installed";
+
+/// Pick the identity used to re-sign installed macOS binaries.
+///
+/// macOS TCC keys privacy grants (Documents, Desktop, Downloads) on the
+/// binary's designated requirement. Rust builds are adhoc-signed, so the
+/// DR pins the cdhash and changes every build: each update looked like a
+/// new app and re-prompted for permissions. Re-signing with a keychain
+/// identity and a fixed identifier pins the DR to the certificate leaf
+/// instead, so grants survive every future update.
+fn mac_sign_identity() -> Option<String> {
+    if let Ok(explicit) = std::env::var("HERDR_WEB_CODESIGN_IDENTITY") {
+        if !explicit.is_empty() {
+            return Some(explicit);
+        }
+    }
+    // The keychain lists identities in trust order; the first valid
+    // codesigning identity is the user's preferred one.
+    let output = Command::new("security")
+        .args(["find-identity", "-v", "-p", "codesigning"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    parse_first_signing_identity(&text)
+}
+
+/// Extract the quoted identity name from `security find-identity` output.
+/// Lines look like `  1) HASH "Name"` (valid) or `  2) HASH "Name" (CSSMERR..)`
+/// (invalid, skipped: the parenthesised suffix only appears on invalid
+/// identities and the trust ranking already pushes them to the bottom).
+fn parse_first_signing_identity(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.ends_with('"') {
+            continue;
+        }
+        let start = trimmed.find('"')?;
+        let name = &trimmed[start + 1..trimmed.len() - 1];
+        if name.is_empty() {
+            continue;
+        }
+        if trimmed
+            .split_whitespace()
+            .any(|token| token.starts_with("(CSSMERR"))
+        {
+            continue;
+        }
+        return Some(name.to_string());
+    }
+    None
+}
+
+/// Re-sign an installed binary so TCC privacy grants survive updates.
+/// Returns `true` when a re-sign happened, `false` when skipped (no
+/// identity found or codesign failed); skips are logged, never fatal,
+/// because the binary is already installed and working at that point.
+fn sign_installed_mac_binary(bin: &Path) -> bool {
+    let Some(identity) = mac_sign_identity() else {
+        if service_verbose() {
+            eprintln!(
+                "  codesign: no keychain identity found, skipping re-sign of {}",
+                bin.display()
+            );
+        }
+        return false;
+    };
+    let path = bin.display().to_string();
+    let args = [
+        "--force",
+        "--sign",
+        identity.as_str(),
+        "--identifier",
+        MAC_INSTALL_SIGN_ID,
+        path.as_str(),
+    ];
+    match Command::new("codesign").args(args).output() {
+        Ok(output) => {
+            log_command_output("codesign", &args, &output);
+            if output.status.success() {
+                println!("Signed {} with identity \"{identity}\"", bin.display());
+                true
+            } else {
+                eprintln!(
+                    "warning: codesign failed for {}, privacy permissions may re-prompt after updates",
+                    bin.display()
+                );
+                false
+            }
+        }
+        Err(err) => {
+            eprintln!(
+                "warning: cannot run codesign for {}: {err}, privacy permissions may re-prompt after updates",
+                bin.display()
+            );
+            false
+        }
+    }
+}
+
 /// Outcome of copying an executable into the install directory.
 #[derive(Debug, PartialEq, Eq)]
 enum CopyOutcome {
@@ -31,6 +134,12 @@ pub fn install_macos(config: WebConfig) -> io::Result<()> {
     {
         print_tui_install_line("Installed", &tui_bin, &tui_outcome);
     }
+    // Re-sign before the first launch so the initial TCC grant binds to
+    // the stable identity, not the adhoc per-build hash.
+    sign_installed_mac_binary(&install_bin);
+    if let Some(tui_bin) = tui_installed_path() {
+        sign_installed_mac_binary(&tui_bin);
+    }
     print_main_install_line("Installed", &install_bin, &outcome);
     fs::create_dir_all(plist.parent().expect("plist has parent"))?;
     fs::create_dir_all(mac_log_dir()?)?;
@@ -56,6 +165,12 @@ pub fn update_macos() -> io::Result<()> {
         copy_sibling_tui_to_install_path(std::env::current_exe()?.parent())?
     {
         print_tui_install_line("Updated", &tui_bin, &tui_outcome);
+    }
+    // Re-sign after every refresh: the copied bytes carry the adhoc
+    // per-build signature, which would re-prompt TCC on the next launch.
+    sign_installed_mac_binary(&install_bin);
+    if let Some(tui_bin) = tui_installed_path() {
+        sign_installed_mac_binary(&tui_bin);
     }
     start_macos_service()?;
     print_main_install_line("Updated", &install_bin, &outcome);
@@ -230,6 +345,12 @@ fn copy_current_exe_to_install_path() -> io::Result<(PathBuf, CopyOutcome)> {
 
 fn tui_install_bin_path() -> io::Result<PathBuf> {
     Ok(local_bin_dir()?.join("herdr-webui-tui"))
+}
+
+/// The installed TUI binary path, when the file exists on disk.
+fn tui_installed_path() -> Option<PathBuf> {
+    let path = tui_install_bin_path().ok()?;
+    path.is_file().then_some(path)
 }
 
 /// Copy the `herdr-webui-tui` binary sitting next to the running main
@@ -768,6 +889,37 @@ unsafe fn libc_geteuid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_identity_picks_first_valid_quoted_name() {
+        let text = "  1) AACB139C259775E7F2F63857FE981B68BEC5E05B \"CodeSign\"\n";
+        assert_eq!(
+            parse_first_signing_identity(text).as_deref(),
+            Some("CodeSign")
+        );
+    }
+
+    #[test]
+    fn parse_identity_skips_invalid_cssmerr_entries() {
+        let text = "  1) AACB139C \"Apple Worldwide\"\n  \n  2) DEADBEEF \"Expired Self\" (CSSMERR_TP_CERT_EXPIRED)\n";
+        assert_eq!(
+            parse_first_signing_identity(text).as_deref(),
+            Some("Apple Worldwide")
+        );
+    }
+
+    #[test]
+    fn parse_identity_rejects_all_invalid() {
+        let text = "  1) DEADBEEF \"Expired Self\" (CSSMERR_TP_CERT_EXPIRED)\n";
+        assert_eq!(parse_first_signing_identity(text), None);
+    }
+
+    #[test]
+    fn parse_identity_rejects_empty_name_and_garbage() {
+        assert_eq!(parse_first_signing_identity(""), None);
+        assert_eq!(parse_first_signing_identity("no quoted names here"), None);
+        assert_eq!(parse_first_signing_identity("  1) ABC123 \"\""), None);
+    }
 
     fn test_config(tls: crate::TlsConfig) -> WebConfig {
         WebConfig {
