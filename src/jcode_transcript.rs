@@ -267,7 +267,7 @@ impl JcodeStoreIndex {
                 let Some(meta) = parsed.get("meta") else {
                     continue;
                 };
-                return meta_of(meta).map(|title| truncate(title));
+                return meta_of(meta).map(truncate);
             }
         }
         // Journal absent, empty, or unrecoverably malformed: the
@@ -275,7 +275,7 @@ impl JcodeStoreIndex {
         let snapshot = self.store_dir.join(format!("{session_id}.json"));
         let text = std::fs::read_to_string(&snapshot).ok()?;
         let parsed: serde_json::Value = serde_json::from_str(&text).ok()?;
-        meta_of(&parsed).map(|t| truncate(t))
+        meta_of(&parsed).map(truncate)
     }
 
     /// Resolves a pane to its jcode session using the design's ordered
@@ -1410,7 +1410,7 @@ pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
         table
     }
     let bytes = input.as_bytes();
-    if bytes.is_empty() || bytes.len() % 4 != 0 {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
         return None;
     }
     let reverse = reverse_table();

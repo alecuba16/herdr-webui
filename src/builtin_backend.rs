@@ -1265,7 +1265,7 @@ impl BuiltinState {
             ));
         }
         chat_lens::conversation_payload_with(
-            &chat_lens::store_index(),
+            chat_lens::store_index(),
             &self.pane_context(&pane),
             page,
         )
@@ -1293,7 +1293,7 @@ impl BuiltinState {
             ));
         }
         chat_lens::conversation_image_with(
-            &chat_lens::store_index(),
+            chat_lens::store_index(),
             &self.pane_context(&pane),
             reference,
         )

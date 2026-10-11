@@ -912,7 +912,7 @@ mod tests {
         // on the real store; the answer is refusal regardless of its
         // contents (nothing can match an empty process set).
         let err = conversation_payload_with(
-            &store_index(),
+            store_index(),
             &dummy_context(),
             &ConversationPage::default(),
         )
