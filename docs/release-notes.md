@@ -1,5 +1,15 @@
 # Release notes
 
+## 0.7.0 Release Notes
+- The `promote_join_failure` cancelled-task test no longer flakes in
+  CI. The test parked the runtime's only blocking thread by dropping a
+  oneshot receiver, which returns immediately, so the queued probe
+  task grabbed the freed slot and ran its unreachable!() before
+  abort() landed. The park now holds in `blocking_recv`, the probe is
+  aborted while provably queued behind it, and the park is released
+  only after the abort so the pool thread pops the cancelled probe.
+  Stress verified with 150 cargo-driven runs, 0 failures.
+
 ## 0.6.0 Release Notes
 - The editor find bar keeps keyboard focus while you type. Every
   keystroke used to trigger a match selection that focused the editor
