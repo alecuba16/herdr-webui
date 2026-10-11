@@ -12,7 +12,7 @@
 //! misses (skipped lines, ignored unknown parts), never panics. The
 //! store is only ever read.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
@@ -66,6 +66,12 @@ pub struct JcodeStoreIndex {
     // is bounded by this, and the stat-generation check still invalidates
     // rows once a sweep runs. Invisible at the 2 s poll interval.
     last_sweep: Mutex<Option<Instant>>,
+    // Swarm-registry worker ids, refreshed with the same 250 ms
+    // throttle as the store sweep: resolve runs on every poll, and
+    // re-reading `~/.jcode/state/swarm/*.json` per poll would be
+    // wasted work between registry rotations.
+    swarm_dir: PathBuf,
+    swarm_workers: Mutex<(Option<Instant>, HashSet<String>)>,
 }
 
 impl JcodeStoreIndex {
@@ -74,11 +80,22 @@ impl JcodeStoreIndex {
     }
 
     pub fn with_store_dir(store_dir: PathBuf) -> Self {
+        let swarm_dir = default_swarm_registry_dir();
         Self {
             store_dir,
             cache: Mutex::new(HashMap::new()),
             last_sweep: Mutex::new(None),
+            swarm_dir,
+            swarm_workers: Mutex::new((None, HashSet::new())),
         }
+    }
+
+    /// Test hook: the swarm registry dir this index reads (mirrors
+    /// `with_store_dir` for the registry).
+    #[cfg(test)]
+    pub fn with_swarm_dir(&mut self, swarm_dir: PathBuf) {
+        self.swarm_dir = swarm_dir;
+        *self.swarm_workers.lock().unwrap_or_else(|p| p.into_inner()) = (None, HashSet::new());
     }
 
     pub fn store_dir(&self) -> &Path {
@@ -86,10 +103,16 @@ impl JcodeStoreIndex {
     }
 
     /// Test hook: forces the next `resolve` to re-sweep instead of
-    /// serving the throttled cache.
+    /// serving the throttled cache. Clears the swarm-registry
+    /// throttle too, so a test that rewrites its registry fixture
+    /// mid-test observes the change.
     #[cfg(test)]
     pub fn force_sweep_for_tests(&self) {
         *self.last_sweep.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.swarm_workers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .0 = None;
     }
 
     /// Response `version` (design section 4): the combined stat
@@ -112,13 +135,57 @@ impl JcodeStoreIndex {
         format!("g{hash:016x}")
     }
 
-    /// (model, status, reasoning_effort) as recorded in the snapshot,
-    /// if readable. Effort is a top-level string ("high"/"max" seen
-    /// live); older snapshots may lack it.
+    /// (model, status, reasoning_effort) as jcode last recorded
+    /// them. The journal's newest meta line is the settled state —
+    /// `model` changes land there alone, without forcing a snapshot
+    /// (persistence.rs: a `model` delta is not in
+    /// metadata_requires_snapshot, so the snapshot can keep the old
+    /// model while the journal already carries the new one). The
+    /// snapshot is the whole state once the journal is gone (a
+    /// checkpoint deletes it). All three absent when neither file is
+    /// readable.
     pub fn session_model_status(
         &self,
         session_id: &str,
     ) -> (Option<String>, Option<String>, Option<String>) {
+        let field = |parsed: &serde_json::Value, key: &str| -> Option<String> {
+            parsed
+                .get(key)
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        // `model: "unknown"` is jcode's marker for a session that
+        // has not chosen a model yet (27 of 36 live journals here,
+        // all spawned-first-turn sessions), and jcode's own UI
+        // filters it out of model pickers and status lines
+        // (commands_overnight.rs: `.filter(|m| *m != "unknown")`,
+        // onboarding_flow_control.rs likewise). The composer's line
+        // reads absent the same way — a placeholder is not a model.
+        let model = |parsed: &serde_json::Value| -> Option<String> {
+            field(parsed, "model").filter(|m| !m.eq_ignore_ascii_case("unknown"))
+        };
+        let journal = self.store_dir.join(format!("{session_id}.journal.jsonl"));
+        if let Ok(text) = std::fs::read_to_string(&journal) {
+            // Same rule as the title: the NEWEST valid meta line
+            // decides. `model`/`status`/`reasoning_effort` are full
+            // state on every meta line (journal.rs), so no field
+            // falls back to an older line — a change is the newest
+            // line's value, an absence is a cleared value.
+            for line in text.lines().rev() {
+                let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                let Some(meta) = parsed.get("meta") else {
+                    continue;
+                };
+                return (
+                    model(meta),
+                    field(meta, "status"),
+                    field(meta, "reasoning_effort"),
+                );
+            }
+        }
         let snapshot = self.store_dir.join(format!("{session_id}.json"));
         let Ok(text) = std::fs::read_to_string(&snapshot) else {
             return (None, None, None);
@@ -126,19 +193,89 @@ impl JcodeStoreIndex {
         let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
             return (None, None, None);
         };
-        let model = parsed
-            .get("model")
-            .and_then(|m| m.as_str())
-            .map(str::to_string);
-        let status = parsed
-            .get("status")
-            .and_then(|s| s.as_str())
-            .map(str::to_string);
-        let effort = parsed
-            .get("reasoning_effort")
-            .and_then(|e| e.as_str())
-            .map(str::to_string);
-        (model, status, effort)
+        (
+            model(&parsed),
+            field(&parsed, "status"),
+            field(&parsed, "reasoning_effort"),
+        )
+    }
+
+    /// The session's title as jcode's own display rule resolves it
+    /// (session.rs display_title: `custom_title`, then the bookmark
+    /// `save_label` of a saved session — labels doubled as titles
+    /// before custom renames existed — then the auto-generated
+    /// `title` summary), truncated to status-line length. None when
+    /// neither file is readable or none of the three exist.
+    pub fn session_title(&self, session_id: &str) -> Option<String> {
+        // Journal meta lines are full state, not deltas: the newest
+        // line that carries a field is its settled value, and a line
+        // without the field means it is unset (rename_title(None)
+        // clears it). So read the NEWEST meta line only, never scan
+        // backward for the newest line that has it — that would
+        // resurrect a name the user cleared.
+        let truncate = |text: &str| -> String {
+            const MAX_TITLE: usize = 80;
+            if text.chars().count() <= MAX_TITLE {
+                return text.to_string();
+            }
+            let cut: String = text.chars().take(MAX_TITLE).collect();
+            format!("{cut}…")
+        };
+        // The user-chosen name and the bookmark label live in the
+        // journal's newest meta line; the snapshot carries the same
+        // fields when the journal is absent (post-checkpoint).
+        fn meta_of(parsed: &serde_json::Value) -> Option<&str> {
+            let custom = parsed
+                .get("custom_title")
+                .and_then(|t| t.as_str())
+                .filter(|t| !t.is_empty());
+            if custom.is_some() {
+                return custom;
+            }
+            let saved = parsed
+                .get("saved")
+                .and_then(|s| s.as_bool())
+                .unwrap_or(false);
+            let label = parsed
+                .get("save_label")
+                .and_then(|t| t.as_str())
+                .filter(|t| !t.is_empty());
+            if saved {
+                if let Some(label) = label {
+                    return Some(label);
+                }
+            }
+            parsed
+                .get("title")
+                .and_then(|t| t.as_str())
+                .filter(|t| !t.is_empty())
+        }
+        let journal = self.store_dir.join(format!("{session_id}.journal.jsonl"));
+        if let Ok(text) = std::fs::read_to_string(&journal) {
+            // The NEWEST valid meta line decides — meta is a full
+            // state snapshot on every entry (journal.rs
+            // SessionJournalEntry.meta, required), and the journal is
+            // always newer than the snapshot it grew from (a
+            // checkpoint deletes it, persistence.rs). A newest meta
+            // with no title is a cleared title; falling through to
+            // the snapshot or an older line would resurrect a name
+            // the user removed.
+            for line in text.lines().rev() {
+                let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                let Some(meta) = parsed.get("meta") else {
+                    continue;
+                };
+                return meta_of(meta).map(truncate);
+            }
+        }
+        // Journal absent, empty, or unrecoverably malformed: the
+        // snapshot holds the whole state.
+        let snapshot = self.store_dir.join(format!("{session_id}.json"));
+        let text = std::fs::read_to_string(&snapshot).ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&text).ok()?;
+        meta_of(&parsed).map(truncate)
     }
 
     /// Resolves a pane to its jcode session using the design's ordered
@@ -153,7 +290,12 @@ impl JcodeStoreIndex {
         descendants: &dyn Fn(u32) -> bool,
         pane_tail: &str,
     ) -> JcodeSessionResolution {
-        let index = self.refresh();
+        let swarm_workers = self.swarm_worker_set();
+        let index: Vec<SessionEvidence> = self
+            .refresh()
+            .into_iter()
+            .filter(|e| !swarm_workers.contains(&e.session_id))
+            .collect();
         let cwd = pane_cwd.to_string_lossy();
 
         // Step 1: PID evidence (primary). Sessions whose last_pid is in
@@ -243,6 +385,21 @@ impl JcodeStoreIndex {
             }
         }
         winner
+    }
+
+    /// The swarm-registry worker ids, throttled like the store sweep
+    /// (same 250 ms TTL). Read once per poll at most, not once per
+    /// registry file.
+    fn swarm_worker_set(&self) -> HashSet<String> {
+        let mut guard = self.swarm_workers.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(at) = guard.0 {
+            if at.elapsed() < Duration::from_millis(250) {
+                return guard.1.clone();
+            }
+        }
+        let workers = swarm_worker_sessions(&self.swarm_dir);
+        *guard = (Some(Instant::now()), workers.clone());
+        workers
     }
 
     /// Re-stats the store and re-reads only changed files. Returns the
@@ -421,6 +578,130 @@ fn default_store_dir() -> PathBuf {
     }
 }
 
+/// The durable swarm registry dir jcode itself reads
+/// (harness swarm_persistence.rs). Kept next to the session store
+/// under `~/.jcode/state/swarm` — a distinct tree from the transcript
+/// store, so a custom test store dir never drags a custom registry
+/// with it.
+fn default_swarm_registry_dir() -> PathBuf {
+    #[cfg(unix)]
+    {
+        std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(".jcode").join("state").join("swarm"))
+            .unwrap_or_else(|| PathBuf::from(".jcode/state/swarm"))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(".jcode/state/swarm")
+    }
+}
+
+/// The durable swarm registry's worker session ids, one flat set
+/// (`members[].session_id`, `plan.items[].assigned_to`,
+/// `plan.task_progress.<node>.assigned_session_id`), read from every
+/// non-superseded `*.json` under the registry dir. Workers run
+/// headless with the daemon's pid and the coordinator's cwd, so they
+/// would collide with the human's pane at every resolve step; the
+/// registry is the discriminator jcode's own sidebar enrichment uses
+/// (harness swarm_metadata.rs: "Only swarm ownership is used, never a
+/// transcript's ordinary fork parent"), so resume/fork chains are
+/// never excluded. THE COORDINATOR IS NEVER COLLECTED — and note the
+/// coordinator is registered AS a member (role "coordinator") and
+/// may self-assign plan items in its own swarm, so the coordinator
+/// check applies to every slot, not just coordinator_session_id
+/// (which may be absent: session-scoped swarms carry it only in the
+/// members[] role). `plan.participants` names requester AND assignee
+/// (comm_control.rs:475) and is not collected either. Exclusion is
+/// permanent once listed, matching jcode's enrichment (newest record
+/// that MENTIONS a member wins; absence from a newer snapshot does not
+/// unmember): a worker session is finished work history, never the
+/// pane's interactive session, and resuming one mints a NEW session
+/// id (create_transfer_child_session) that is not excluded.
+fn swarm_worker_sessions(dir: &Path) -> HashSet<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return HashSet::new();
+    };
+    let mut workers: HashSet<String> = HashSet::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Rotate-on-write: `<id>.bak` is the superseded backup of
+        // `<id>.json` (extension REPLACED, jcode storage writer
+        // path.with_extension("bak"), storage.rs:585-605; live files:
+        // swarm-1.bak next to swarm-1.json). The primary wins when it
+        // exists — the same skip rule jcode's loader applies
+        // (swarm_persistence.rs:488): a union-load would resurrect
+        // state the primary deliberately dropped (a deleted swarm's
+        // tombstone is an EMPTY primary, the pre-deletion workers
+        // live only in the .bak). A lone `.bak` (primary write
+        // failed, or corrupt primary) still loads — the same fallback
+        // jcode's read_json recovery gives (storage.rs:669-680).
+        if path.extension().and_then(|e| e.to_str()) == Some("bak")
+            && path.with_extension("json").is_file()
+        {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        // This snapshot's coordinator: the member with role
+        // "coordinator" (comm_graph.rs:111, comm_session.rs:1464;
+        // verified live: session-scoped swarms carry their own
+        // coordinator in members[] with report_back_to_session_id
+        // null) or the top-level coordinator_session_id. It is the
+        // human's pane session and must stay resolvable, so ids equal
+        // to THIS swarm's coordinator are never collected from any
+        // slot (members, assigned_to, task_progress). jcode's
+        // watchdog makes the same role check (swarm_watchdog.rs:86);
+        // `role` is lowercase (SwarmRole serde, jcode-swarm-core
+        // lib.rs:105). A session coordinating a DIFFERENT swarm but
+        // assigned in this one stays excluded: here it is an agent.
+        let mut this_coordinator: Option<&str> = parsed
+            .get("coordinator_session_id")
+            .and_then(|c| c.as_str());
+        if let Some(members) = parsed.get("members").and_then(|m| m.as_array()) {
+            for member in members {
+                if member.get("role").and_then(|r| r.as_str()) == Some("coordinator") {
+                    this_coordinator = member.get("session_id").and_then(|i| i.as_str());
+                }
+            }
+        }
+        if let Some(members) = parsed.get("members").and_then(|m| m.as_array()) {
+            for member in members {
+                if let Some(id) = member.get("session_id").and_then(|i| i.as_str()) {
+                    if Some(id) != this_coordinator {
+                        workers.insert(id.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(items) = parsed.pointer("/plan/items").and_then(|i| i.as_array()) {
+            for item in items {
+                if let Some(id) = item.get("assigned_to").and_then(|i| i.as_str()) {
+                    if Some(id) != this_coordinator {
+                        workers.insert(id.to_string());
+                    }
+                }
+            }
+        }
+        if let Some(progress) = parsed
+            .pointer("/plan/task_progress")
+            .and_then(|p| p.as_object())
+        {
+            for entry in progress.values() {
+                if let Some(id) = entry.get("assigned_session_id").and_then(|i| i.as_str()) {
+                    if Some(id) != this_coordinator {
+                        workers.insert(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    workers
+}
+
 // ---------------------------------------------------------------------------
 // Transcript: turns from snapshot + journal
 // ---------------------------------------------------------------------------
@@ -434,6 +715,11 @@ pub struct Turn {
     pub ts: Option<String>,
     /// Last message timestamp (ISO) in this turn, when present.
     pub end_ts: Option<String>,
+    /// Id of the message that opened the turn (census: jcode ids are
+    /// globally unique, 0 duplicates at full store scale). None only
+    /// for a synthetic turn with no source message (the compaction
+    /// lead). The wire layer uses it as the paging cursor anchor.
+    pub message_id: Option<String>,
     pub parts: Vec<TurnPart>,
 }
 
@@ -499,9 +785,17 @@ pub enum TurnPart {
     Compact {
         summary: String,
     },
+    /// An image the user attached to the prompt (screenshot paste,
+    /// image read). The bytes never ride the page: the part carries
+    /// the media type and an opaque ref, and the client fetches on
+    /// demand through the image route (reference image part parity).
+    Image {
+        media_type: String,
+        /// Opaque fetch ref: the source message id. Validated against
+        /// `valid_tool_ref` before any use, same charset as tool refs.
+        ref_id: String,
+    },
 }
-
-pub const MAX_TURNS: usize = 200;
 
 /// Bookkeeping user messages jcode records but never shows as chat:
 /// the session-context reminder injected at session create (seen
@@ -521,6 +815,46 @@ fn message_ts(message: &serde_json::Value) -> Option<String> {
         .get("timestamp")
         .and_then(|t| t.as_str())
         .map(str::to_string)
+}
+
+fn message_id(message: &serde_json::Value) -> Option<String> {
+    message
+        .get("id")
+        .and_then(|i| i.as_str())
+        .filter(|i| valid_tool_ref(i))
+        .map(str::to_string)
+}
+
+/// The image types a chat shows (reference IMAGE_TYPES parity):
+/// anything else stays out of the page.
+fn is_supported_image_type(media_type: &str) -> bool {
+    matches!(
+        media_type,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
+
+/// One image block of a user message, as a fetch ref: the block must
+/// carry a supported media type AND actual base64 data (a ref without
+/// bytes behind it answers not_found and renders a broken img).
+/// Multiple images in one message keep their order.
+fn user_image_refs(message: &serde_json::Value) -> Vec<(String, String)> {
+    let Some(blocks) = message.get("content").and_then(|c| c.as_array()) else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter_map(|b| b.as_object())
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("image"))
+        .filter_map(|b| {
+            let media_type = b.get("media_type").and_then(|m| m.as_str())?;
+            let data = b.get("data").and_then(|d| d.as_str())?;
+            if !is_supported_image_type(media_type) || data.is_empty() {
+                return None;
+            }
+            Some((media_type.to_string(), data.to_string()))
+        })
+        .collect()
 }
 
 /// Parses the full message list (snapshot messages + journal delta,
@@ -546,6 +880,8 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
         match role {
             "user" => {
                 let mut texts: Vec<&str> = Vec::new();
+                let id = message_id(message);
+                let images = user_image_refs(message);
                 let mut tool_results: Vec<(
                     String,
                     serde_json::Map<String, serde_json::Value>,
@@ -600,15 +936,28 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
                         pending_tools.remove(&id);
                     }
                 }
-                if !texts.is_empty() {
+                if !texts.is_empty() || !images.is_empty() {
                     let ts = message_ts(message);
+                    // Image parts lead the turn (reference parity: the
+                    // user's words reference the picture above them).
+                    let mut parts: Vec<TurnPart> = images
+                        .into_iter()
+                        .filter_map(|(media_type, _)| {
+                            let ref_id = id.clone()?;
+                            Some(TurnPart::Image { media_type, ref_id })
+                        })
+                        .collect();
+                    if !texts.is_empty() {
+                        parts.push(TurnPart::Text {
+                            text: texts.join("\n"),
+                        });
+                    }
                     turns.push(Turn {
                         role: TurnRole::User,
                         ts: ts.clone(),
                         end_ts: ts,
-                        parts: vec![TurnPart::Text {
-                            text: texts.join("\n"),
-                        }],
+                        message_id: id.clone().or_else(|| message_id(message)),
+                        parts,
                     });
                 }
             }
@@ -623,6 +972,7 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
                             role: TurnRole::Assistant,
                             ts: ts.clone(),
                             end_ts: ts,
+                            message_id: message_id(message),
                             parts: Vec::new(),
                         });
                         turns.len() - 1
@@ -766,11 +1116,10 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
         }
     }
 
-    if turns.len() > MAX_TURNS {
-        turns.drain(0..turns.len() - MAX_TURNS);
-    }
-    // Reference parity: a turn with no renderable parts drops (e.g. an
-    // assistant merge target whose every block was skipped).
+    // No MAX_TURNS cap here: the wire layer pages (a cursor named
+    // session id + message id), so the parser must return the FULL
+    // turn list or the cursor math sees a truncated history. The
+    // page-size bound lives in chat_lens::conversation_payload_with.
     turns.retain(|t| !t.parts.is_empty());
     turns
 }
@@ -975,6 +1324,133 @@ pub fn valid_tool_ref(reference: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.' | '-'))
 }
 
+/// One image the conversation's image part named, by its ref (the
+/// source message id). Returns (media_type, decoded bytes) when that
+/// message carries an image block with the same supported media type
+/// and decodable base64 data; None otherwise (reference image_not_found
+/// parity: rotated out, a ref that never existed, or corrupt base64).
+/// The ref is charset-validated before the scan, same as tool refs.
+pub fn image_by_ref(
+    store_dir: &Path,
+    session_id: &str,
+    reference: &str,
+) -> Option<(String, Vec<u8>)> {
+    if !valid_tool_ref(reference) {
+        return None;
+    }
+    let messages = load_session_messages(store_dir, session_id);
+    for message in &messages {
+        if message.get("id").and_then(|i| i.as_str()) != Some(reference) {
+            continue;
+        }
+        let Some(blocks) = message.get("content").and_then(|c| c.as_array()) else {
+            continue;
+        };
+        for block in blocks.iter().filter_map(|b| b.as_object()) {
+            if block.get("type").and_then(|t| t.as_str()) != Some("image") {
+                continue;
+            }
+            let Some(media_type) = block.get("media_type").and_then(|m| m.as_str()) else {
+                continue;
+            };
+            let Some(data) = block.get("data").and_then(|d| d.as_str()) else {
+                continue;
+            };
+            if !is_supported_image_type(media_type) {
+                continue;
+            }
+            let Some(bytes) = base64_decode(data) else {
+                continue; // corrupt base64: not found, not a 500
+            };
+            return Some((media_type.to_string(), bytes));
+        }
+    }
+    None
+}
+
+/// Standard base64 encoder (no external crate): sibling of
+/// [`base64_decode`], used by the backend adapter to carry image
+/// bytes over the RPC envelope.
+pub fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[(n >> 6) as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[n as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// Standard base64 decoder (no external crate, mirrors the asset
+/// uploader's hand-rolled encoder in main.rs): rejects whitespace,
+/// stray padding, and non-alphabet bytes instead of guessing — an
+/// image that does not decode answers not_found, never half-decoded
+/// bytes.
+pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    fn reverse_table() -> [i8; 256] {
+        let mut table = [-1i8; 256];
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for (index, byte) in alphabet.iter().enumerate() {
+            table[*byte as usize] = index as i8;
+        }
+        table
+    }
+    let bytes = input.as_bytes();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return None;
+    }
+    let reverse = reverse_table();
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let mut sextets = [0u8; 4];
+        let mut pad = 0usize;
+        for (slot, byte) in chunk.iter().enumerate() {
+            if *byte == b'=' {
+                if slot < 2 {
+                    return None; // pad in a data slot: malformed
+                }
+                pad += 1;
+                sextets[slot] = 0;
+                continue;
+            }
+            if pad > 0 {
+                return None; // data after pad: malformed
+            }
+            let value = reverse[*byte as usize];
+            if value < 0 {
+                return None; // non-alphabet byte
+            }
+            sextets[slot] = value as u8;
+        }
+        let n = (u32::from(sextets[0]) << 18)
+            | (u32::from(sextets[1]) << 12)
+            | (u32::from(sextets[2]) << 6)
+            | u32::from(sextets[3]);
+        out.push((n >> 16) as u8);
+        if pad < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(n as u8);
+        }
+    }
+    Some(out)
+}
+
 /// TOOL_OUTPUT_MAX parity: a whole output is still bounded — a page of
 /// it, not a log file. Same "… trimmed" marker as the head cap.
 const TOOL_OUTPUT_MAX: usize = 2_000_000;
@@ -1167,6 +1643,188 @@ mod tests {
         json!({"id": id, "role": "user", "content": [
             {"type": "tool_result", "tool_use_id": call_id, "content": content}
         ]})
+    }
+
+    // ---- session_title: jcode's display_title parity ----
+
+    /// The newest journal meta line is the settled state: a title
+    /// cleared there stays cleared, and no older line or the
+    /// snapshot may resurrect it.
+    #[test]
+    fn cleared_title_in_newest_meta_is_not_resurrected() {
+        let dir = std::env::temp_dir().join(format!("title-clear-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Two meta lines: the older carries a custom_title, the
+        // newest (what rename_title(None) writes) carries none.
+        let older = json!({"meta": {"custom_title": "old name"}});
+        let newest = json!({"meta": {"title": null}});
+        std::fs::write(
+            dir.join("s.journal.jsonl"),
+            format!("{}\n{}\n", older, newest),
+        )
+        .unwrap();
+        // The snapshot still carries a title, but the journal is
+        // newer state: no resurrection from any source.
+        std::fs::write(
+            dir.join("s.json"),
+            serde_json::to_string(&json!({"title": "snapshot title"})).unwrap(),
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        assert_eq!(index.session_title("s"), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// jcode's display_title fallback order: a saved session's
+    /// bookmark label counts as its title when no custom rename
+    /// exists (session.rs: labels doubled as titles before custom
+    /// renames existed); an unsaved label does not.
+    #[test]
+    fn saved_bookmark_label_is_the_title_fallback() {
+        let dir = std::env::temp_dir().join(format!("title-label-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Saved with a label, no custom rename.
+        let journal = json!({"meta": {
+            "saved": true, "save_label": "pre-rename bookmark",
+            "title": null,
+        }});
+        std::fs::write(
+            dir.join("s.journal.jsonl"),
+            serde_json::to_string(&journal).unwrap() + "\n",
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        assert_eq!(
+            index.session_title("s").as_deref(),
+            Some("pre-rename bookmark")
+        );
+        // An UNSAVED label is not a title.
+        std::fs::write(
+            dir.join("s.journal.jsonl"),
+            serde_json::to_string(&json!({"meta": {
+                "saved": false, "save_label": "saved flag lost",
+                "title": null,
+            }}))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+        assert_eq!(
+            index.session_title("s"),
+            None,
+            "unsaved label is not a title"
+        );
+        // Custom rename wins over the bookmark label.
+        std::fs::write(
+            dir.join("s.journal.jsonl"),
+            serde_json::to_string(&json!({"meta": {
+                "saved": true, "save_label": "bookmark",
+                "custom_title": "the user's name", "title": null,
+            }}))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+        assert_eq!(index.session_title("s").as_deref(), Some("the user's name"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The snapshot is the whole state once the journal is gone
+    /// (a checkpoint deletes it): its display_title fields are read
+    /// there, same order.
+    #[test]
+    fn snapshot_only_store_reads_the_same_fallback_order() {
+        let dir = std::env::temp_dir().join(format!("title-snap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("s.json"),
+            serde_json::to_string(&json!({
+                "title": "auto summary",
+                "save_label": "label but not saved",
+                "saved": false,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        assert_eq!(index.session_title("s").as_deref(), Some("auto summary"));
+        // Saved + label wins over the auto-summary.
+        std::fs::write(
+            dir.join("s.json"),
+            serde_json::to_string(&json!({
+                "title": "auto summary",
+                "save_label": "the bookmark",
+                "saved": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(index.session_title("s").as_deref(), Some("the bookmark"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // ---- session_model_status: newest journal meta decides ----
+
+    /// A `model` change lands in the journal's newest meta line
+    /// alone (persistence.rs: not in metadata_requires_snapshot), so
+    /// the snapshot can keep the old model. The composer's line must
+    /// read the journal's.
+    #[test]
+    fn model_change_in_journal_overrides_stale_snapshot() {
+        let dir = std::env::temp_dir().join(format!("model-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("s.json"),
+            serde_json::to_string(&json!({
+                "model": "old-model", "status": "Active",
+                "reasoning_effort": "low",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // The journal's newest meta carries the model switch and the
+        // effort change; status stayed, so no snapshot was forced.
+        std::fs::write(
+            dir.join("s.journal.jsonl"),
+            serde_json::to_string(&json!({
+                "meta": {"model": "new-model", "status": "Active",
+                         "reasoning_effort": "high"},
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        let (model, status, effort) = index.session_model_status("s");
+        assert_eq!(
+            model.as_deref(),
+            Some("new-model"),
+            "journal meta wins over the stale snapshot"
+        );
+        assert_eq!(status.as_deref(), Some("Active"));
+        assert_eq!(effort.as_deref(), Some("high"));
+        // Journal gone (checkpoint deleted it): the snapshot is the
+        // whole state.
+        std::fs::remove_file(dir.join("s.journal.jsonl")).unwrap();
+        let (model, _, effort) = index.session_model_status("s");
+        assert_eq!(model.as_deref(), Some("old-model"));
+        assert_eq!(effort.as_deref(), Some("low"));
+        // `model: "unknown"` is jcode's not-chosen-yet marker; jcode's
+        // own UI filters it (commands_overnight.rs), so it serves as
+        // absent, never as a model name.
+        std::fs::write(
+            dir.join("s.journal.jsonl"),
+            serde_json::to_string(&json!({
+                "meta": {"model": "unknown", "status": "Active",
+                         "reasoning_effort": "high"},
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+        let (model, _, _) = index.session_model_status("s");
+        assert_eq!(model, None, "the unknown placeholder serves as absent");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // ---- tool_output_by_ref ----
@@ -1553,13 +2211,17 @@ mod tests {
     }
 
     #[test]
-    fn max_turns_caps_output() {
+    fn parser_returns_full_history_for_the_wire_pager() {
+        // The cap moved to the wire layer (chat_lens pages by cursor):
+        // the parser must return every turn or the cursor math would
+        // see a truncated history.
+        const MAX_TURNS: usize = 200;
         let mut msgs = Vec::new();
         for i in 0..(MAX_TURNS + 10) {
             msgs.push(user_text(&format!("m{i}"), "x"));
         }
         let turns = parse_jcode_transcript(&msgs);
-        assert_eq!(turns.len(), MAX_TURNS);
+        assert_eq!(turns.len(), MAX_TURNS + 10);
     }
 
     // --- loader tests over a synthetic store ---
@@ -1800,6 +2462,400 @@ mod tests {
             res,
             JcodeSessionResolution::Resolved {
                 session_id: "session_j".into()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_excludes_swarm_workers_named_in_plan() {
+        // The live collision shape: coordinator + worker share the
+        // daemon pid and the coordinator's cwd; the worker is named
+        // only in the swarm registry's plan (task-graph swarms leave
+        // `members` empty). Without exclusion this resolves
+        // `Ambiguous`; with it, the coordinator wins.
+        let dir = temp_store("sw1");
+        for name in ["coord", "worker1", "worker2"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let swarm_dir = temp_store("sw1-registry");
+        std::fs::write(
+            swarm_dir.join("swarm_abc.json"),
+            serde_json::to_string(&json!({
+                "swarm_id": "abc",
+                "coordinator_session_id": "session_coord",
+                "members": [],
+                "plan": {
+                    "items": [
+                        {"id": "n1", "assigned_to": "session_worker1"},
+                        {"id": "n2", "assigned_to": "session_worker2"}
+                    ],
+                    "task_progress": {
+                        "n1": {"assigned_session_id": "session_worker1"}
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(swarm_dir);
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_coord".into()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_excludes_swarm_members_listed_in_members_array() {
+        // Registry style of the `swarm spawn` flow: `members[]`
+        // carries the worker ids directly (PersistedSwarmMember).
+        let dir = temp_store("sw2");
+        for name in ["coord", "worker1"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let swarm_dir = temp_store("sw2-registry");
+        std::fs::write(
+            swarm_dir.join("swarm_def.json"),
+            serde_json::to_string(&json!({
+                "swarm_id": "def",
+                "coordinator_session_id": "session_coord",
+                "members": [
+                    {"session_id": "session_worker1", "label": "api reviewer"}
+                ],
+                "plan": {"items": [], "task_progress": {}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(swarm_dir);
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_coord".into()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_keeps_coordinator_member_resolvable() {
+        // Live shape (found on the real registry): session-scoped
+        // swarms register the COORDINATOR as a members[] entry with
+        // role "coordinator" and report_back_to_session_id null, and
+        // coordinator_session_id is absent. The coordinator is the
+        // human's pane session; collecting it would de-resolve its
+        // own pane. Only the agent-role member is excluded.
+        let dir = temp_store("sw7");
+        for name in ["coord", "worker1"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let swarm_dir = temp_store("sw7-registry");
+        std::fs::write(
+            swarm_dir.join("session_coord-swarm.json"),
+            serde_json::to_string(&json!({
+                "swarm_id": "session:session_coord",
+                "members": [
+                    {"session_id": "session_coord", "role": "coordinator",
+                     "report_back_to_session_id": null, "is_headless": false,
+                     "swarm_enabled": true, "status": "running"},
+                    {"session_id": "session_worker1", "role": "agent",
+                     "report_back_to_session_id": "session_coord",
+                     "is_headless": false, "swarm_enabled": true, "status": "running"}
+                ],
+                "plan": {"items": [], "task_progress": {}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(swarm_dir);
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_coord".into()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_keeps_coordinator_self_assignment_resolvable() {
+        // assign_task lets the coordinator target itself (jcode does
+        // not forbid it; comm_control.rs:467-476). A coordinator that
+        // self-assigns in its own swarm is still the pane session —
+        // the per-file coordinator check applies to assigned_to and
+        // task_progress too, not just members[]. Cross-check: a
+        // DIFFERENT swarm's coordinator assigned here stays excluded
+        // (in this swarm it is an agent).
+        let dir = temp_store("sw8");
+        for name in ["coord", "other_coord"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let swarm_dir = temp_store("sw8-registry");
+        std::fs::write(
+            swarm_dir.join("swarm_self.json"),
+            serde_json::to_string(&json!({
+                "swarm_id": "self",
+                "members": [
+                    {"session_id": "session_coord", "role": "coordinator"},
+                    {"session_id": "session_other_coord", "role": "agent"}
+                ],
+                "plan": {
+                    "items": [
+                        {"id": "n1", "assigned_to": "session_coord"},
+                        {"id": "n2", "assigned_to": "session_other_coord"}
+                    ],
+                    "task_progress": {
+                        "n1": {"assigned_session_id": "session_coord"},
+                        "n2": {"assigned_session_id": "session_other_coord"}
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(swarm_dir);
+        // The coordinator stays resolvable (not collected from ANY
+        // slot); the other member is excluded; so resolve is unique.
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_coord".into()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_without_registry_dir_treats_all_sessions_as_human() {
+        // No `~/.jcode/state/swarm` (fresh machine, or the temp
+        // registry dir was never created): the filter is a no-op and
+        // the two-sessions-same-evidence case stays ambiguous, as
+        // before the change.
+        let dir = temp_store("sw3");
+        for name in ["coord", "other"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(temp_store("sw3-registry")); // exists, empty
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::Ambiguous
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_registry_bak_skipped_when_json_exists() {
+        // Rotate-on-write parity: jcode's writer backs `<id>.json` up
+        // as `<id>.bak` (extension REPLACED, storage.rs:585-605). A
+        // worker removed from the primary `.json` but still named in
+        // the stale `.bak` must not be excluded (the .bak is
+        // superseded history).
+        let dir = temp_store("sw4");
+        for name in ["coord", "worker1"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let swarm_dir = temp_store("sw4-registry");
+        std::fs::write(
+            swarm_dir.join("swarm_abc.json"),
+            serde_json::to_string(&json!({
+                "swarm_id": "abc",
+                "coordinator_session_id": "session_coord",
+                "members": [],
+                "plan": {"items": [], "task_progress": {}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            swarm_dir.join("swarm_abc.bak"),
+            serde_json::to_string(&json!({
+                "swarm_id": "abc",
+                "coordinator_session_id": "session_coord",
+                "members": [{"session_id": "session_worker1"}],
+                "plan": {"items": [], "task_progress": {}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(swarm_dir);
+        // Both sessions have resolvable evidence: without the .bak-skip
+        // the worker would be excluded and the coordinator would win.
+        // With it, the pair is ambiguous.
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::Ambiguous
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_registry_tombstone_overrides_worker_bearing_bak() {
+        // Deleted-swarm parity (swarm_persistence.rs:253-268): removal
+        // replaces the primary with an EMPTY tombstone; the workers
+        // live only in the rotated `.bak`. The primary wins, so no
+        // worker ids are collected and the pane collision returns.
+        // (For exclusion semantics the direction is harmless either
+        // way — permanent exclusion — but the read rule must match
+        // jcode's or a future reader change diverges silently.)
+        let dir = temp_store("sw6");
+        for name in ["coord", "worker1"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let swarm_dir = temp_store("sw6-registry");
+        // Empty tombstone primary (plan: None, members: [] — written
+        // by remove_snapshot_files as an empty PersistedSwarmState).
+        std::fs::write(
+            swarm_dir.join("swarm_abc.json"),
+            serde_json::to_string(&json!({
+                "swarm_id": "abc",
+                "updated_at_unix_ms": 1791753000000u64
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            swarm_dir.join("swarm_abc.bak"),
+            serde_json::to_string(&json!({
+                "swarm_id": "abc",
+                "coordinator_session_id": "session_coord",
+                "members": [{"session_id": "session_worker1"}],
+                "plan": {"items": [], "task_progress": {}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(swarm_dir);
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::Ambiguous
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_registry_bak_loaded_when_json_missing() {
+        // The other half of the rotate rule: a lone `.bak` (primary
+        // write failed, or the primary is corrupt and jcode's own
+        // read_json falls back) still names its workers, so the
+        // worker stays excluded.
+        let dir = temp_store("sw5");
+        for name in ["coord", "worker1"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(
+                    &format!("session_{name}"),
+                    21155,
+                    "/repo",
+                    "Active",
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let swarm_dir = temp_store("sw5-registry");
+        std::fs::write(
+            swarm_dir.join("swarm_abc.bak"),
+            serde_json::to_string(&json!({
+                "swarm_id": "abc",
+                "coordinator_id": "session_coord",
+                "members": [{"session_id": "session_worker1"}],
+                "plan": {"items": [], "task_progress": {}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(swarm_dir);
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_coord".into()
             }
         );
     }
@@ -2458,8 +3514,12 @@ mod coverage_gaps {
         write_store(&dir, "session_g", Some(json!({"messages": []})), &[]);
         let g1 = index.session_generation("session_g");
         assert!(!g1.is_empty());
+        // Stable with NO change: two reads inside the same file state
+        // must agree (this is what makes the etag usable at all).
+        assert_eq!(g1, index.session_generation("session_g"));
         // In-place rewrite (tmp + rename parity): same content, new
-        // mtime -> different generation.
+        // mtime -> different generation, so a changed transcript can
+        // never answer 304 against a stored etag.
         std::thread::sleep(std::time::Duration::from_millis(5));
         let tmp = dir.join("session_g.tmp");
         std::fs::write(
@@ -2468,11 +3528,24 @@ mod coverage_gaps {
         )
         .unwrap();
         std::fs::rename(&tmp, dir.join("session_g.json")).unwrap();
-        let g2 = index.session_generation("session_generation_bump");
-        // And a missing session yields an empty-ish but stable value.
-        assert!(!index.session_generation("session_absent").is_empty());
-        assert_ne!(g1, ""); // sanity: real value shape
-        let _ = g2; // only that it does not panic
+        let g2 = index.session_generation("session_g");
+        assert_ne!(
+            g1, g2,
+            "an in-place rewrite must bump the etag (the client's stored tag would otherwise 304 a changed transcript)"
+        );
+        // The journal is half the signature too.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let tmp = dir.join("session_g.journal.tmp");
+        std::fs::write(&tmp, "\n").unwrap();
+        std::fs::rename(&tmp, dir.join("session_g.journal.jsonl")).unwrap();
+        let g3 = index.session_generation("session_g");
+        assert_ne!(g2, g3, "a journal rewrite must bump the etag as well");
+        // A missing session yields a stable value too (never a panic,
+        // never random: two reads agree).
+        assert_eq!(
+            index.session_generation("session_absent"),
+            index.session_generation("session_absent")
+        );
     }
 
     // --- refresh: stale-row drop, read_dir failure, throttle ---

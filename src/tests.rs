@@ -10858,3 +10858,543 @@ fn submit_pane_code_reads_builtin_prefix_and_herdr_code() {
     // Nothing recognizable: empty string, not a panic.
     assert_eq!(submit_pane_code(&json!({})), "");
 }
+
+/// The conversation route's error classification (design codes -> HTTP
+/// statuses): the chat lens reads `code` to pick its reset paths, so
+/// the mapping is a wire contract, same style as submit_pane_error.
+#[test]
+fn conversation_error_classifies_design_codes_to_statuses() {
+    // Resolution refusals: 404 (the pane is real, the conversation is not).
+    let (status, code) = conversation_error("agent_not_found: pane x has no agent");
+    assert_eq!(code, "agent_not_found");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, code) = conversation_error("unsupported_agent: claude has no transcript support");
+    assert_eq!(code, "unsupported_agent");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, code) = conversation_error("no_session_path: no jcode session in this pane");
+    assert_eq!(code, "no_session_path");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, code) = conversation_error("ambiguous: two sessions match");
+    assert_eq!(code, "ambiguous");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, code) = conversation_error("transcript_missing: session files unreadable");
+    assert_eq!(code, "transcript_missing");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A cursor the transcript no longer knows: 409 history_changed
+    // (reference HistoryChanged parity) — the client drops held pages
+    // and re-anchors in ONE round trip.
+    let (status, code) =
+        conversation_error("history_changed: cursor message no longer in the transcript");
+    assert_eq!(code, "history_changed");
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Unknown codes degrade to 502 with the raw prefix.
+    let (status, code) = conversation_error("io_error: read failed");
+    assert_eq!(code, "io_error");
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+/// The ETag header contract of the conversation route: weak form
+/// W/"<version>", compare after stripping W/ (reference index.ts
+/// parity). These strings are the wire contract between the route and
+/// the lens poll (If-None-Match in, 304 out).
+#[test]
+fn conversation_etag_is_weak_and_strips_w_on_compare() {
+    // Weak tag format: W/"version".
+    let version = "g7317e00af883a5c2";
+    let etag = format!("W/\"{version}\"");
+    assert!(etag.starts_with("W/\""));
+    assert!(etag.ends_with('"'));
+    // The browser sends the tag back verbatim; the compare strips W/.
+    let bare = format!("\"{version}\"");
+    let matches = etag.trim_start_matches("W/") == bare;
+    assert!(matches, "weak round trip must match");
+    // A strong-form send (client stripped W/) still matches: same
+    // trim on both sides.
+    assert_eq!(bare.trim_start_matches("W/"), bare);
+}
+
+// ── conversation route integration (real router + fake backend) ──
+//
+// The unit tests above cover the classification helpers in isolation;
+// these go through the mounted router with a fake backend socket, the
+// way the browser does: auth cookie, query params, envelope unwrap,
+// ETag/304 short-circuit, image bytes.
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_route_serves_payload_and_forwards_cursors() {
+    let (socket, handle, rx) = fake_api_socket_multi_recording(vec![json!({
+        "result": {
+            "type": "pane_conversation",
+            "conversation": {
+                "source": "jcode-transcript",
+                "turns": [ { "role": "user", "ts": "t1", "parts": [] } ],
+                "cursor": "sess_1:g1:m42",
+                "title": "fix the lens poll",
+                "context_used": 68412,
+                "version": "v9"
+            }
+        }
+    })]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    // before/from ride the query string; URL-encoded cursors must
+    // survive to the backend params verbatim.
+    let uri = "/api/panes/pane_1/conversation?before=sess_1%3Ag1%3Am42&from=sess_1%3Ag1%3Am7";
+    let response = app
+        .clone()
+        .oneshot(
+            authed_request(Method::GET, uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let etag = response
+        .headers()
+        .get(axum::http::header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(etag, "W/\"v9\"");
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .unwrap(),
+        "no-store"
+    );
+    let body = response_json(response).await;
+    // Envelope unwrapped: the browser sees the flat conversation.
+    assert_eq!(body["source"], "jcode-transcript");
+    assert_eq!(body["cursor"], "sess_1:g1:m42");
+    assert_eq!(body["title"], "fix the lens poll");
+    assert_eq!(body["context_used"], 68412);
+
+    // The backend saw the cursors decoded, not double-encoded.
+    let request: Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
+    assert_eq!(request["method"], "pane.conversation");
+    assert_eq!(request["params"]["pane_id"], "pane_1");
+    assert_eq!(request["params"]["before"], "sess_1:g1:m42");
+    assert_eq!(request["params"]["from"], "sess_1:g1:m7");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_route_answers_304_on_matching_if_none_match() {
+    let (socket, handle, _rx) = fake_api_socket_multi_recording(vec![json!({
+        "result": {
+            "type": "pane_conversation",
+            "conversation": { "turns": [], "cursor": null, "version": "v9" }
+        }
+    })]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    // The lens poll sends the tag the route handed it (weak form
+    // verbatim); the strip-W/ compare must match its own output.
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/conversation")
+                .header(axum::http::header::IF_NONE_MATCH, "W/\"v9\"")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        response.headers().get(axum::http::header::ETAG).unwrap(),
+        "W/\"v9\""
+    );
+    // 304 carries zero turn bytes: the body is empty.
+    let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+    assert!(bytes.is_empty(), "304 must carry no body");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_route_rejects_unauthenticated_before_backend() {
+    // No cookie: the middleware answers 401 and the backend socket is
+    // never dialed (no listener exists at the state's socket path, so a
+    // pass-through would surface as 502, not 401).
+    let app = test_app();
+
+    let response = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/api/panes/pane_1/conversation")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let response = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/api/panes/pane_1/conversation/image?ref=abc")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_route_maps_backend_errors_and_malformed_payloads() {
+    // history_changed: 409 with the design code, so the lens drops
+    // held pages and re-anchors in one round trip.
+    let (socket, handle, _rx) = fake_api_socket_multi_recording(vec![json!({
+        "error": { "message": "history_changed: cursor message no longer in the transcript" }
+    })]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/conversation")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "history_changed");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+
+    // A result without the conversation envelope: 502 malformed, not
+    // a 200 with an empty chat.
+    let (socket, handle, _rx) = fake_api_socket_multi_recording(vec![json!({
+        "result": { "type": "something_else" }
+    })]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/conversation")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "error");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_image_route_serves_bytes_and_not_found() {
+    // 1x1 PNG, base64 (the reference wire carries base64; the route
+    // decodes and serves raw bytes with the stored media type).
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let (socket, handle, rx) = fake_api_socket_multi_recording(vec![json!({
+        "result": {
+            "type": "pane_conversation_image",
+            "image": { "media_type": "image/png", "data": png }
+        }
+    })]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            authed_request(
+                Method::GET,
+                "/api/panes/pane_1/conversation/image?ref=msg_img_1",
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap(),
+        "image/png"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .unwrap(),
+        "private, max-age=86400, immutable"
+    );
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    let decoded = crate::jcode_transcript::base64_decode(png).unwrap();
+    assert_eq!(bytes.to_vec(), decoded);
+    assert!(!bytes.is_empty());
+
+    // The ref rode the params, and the media type is not sniffable.
+    let request: Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
+    assert_eq!(request["method"], "pane.conversation_image");
+    assert_eq!(request["params"]["pane_id"], "pane_1");
+    assert_eq!(request["params"]["ref"], "msg_img_1");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+
+    // Missing ref: 400 before any backend call.
+    let app2 = test_app();
+    let response = app2
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/conversation/image")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "bad_request");
+
+    // Null image (rotated out / never existed): 404 image_not_found,
+    // the page's placeholder path, not an error banner.
+    let (socket, handle, _rx) = fake_api_socket_multi_recording(vec![json!({
+        "result": { "type": "pane_conversation_image", "image": null }
+    })]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(
+                Method::GET,
+                "/api/panes/pane_1/conversation/image?ref=toolu_dead",
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "image_not_found");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_route_etag_compare_edge_cases() {
+    // Reference index.ts:2407 strips ONE leading W/ from the sent
+    // header and compares to "version" (quoted). These pin the edge
+    // semantics the happy-path test cannot see.
+    let conv = |version: &str| {
+        vec![json!({
+            "result": {
+                "type": "pane_conversation",
+                "conversation": { "turns": [], "cursor": null, "version": version }
+            }
+        })]
+    };
+    for (sent, expect_304, why) in [
+        ("W/\"v9\"", true, "verbatim weak round trip matches"),
+        (
+            "\"v9\"",
+            true,
+            "strong form of the same tag matches (strip is a no-op)",
+        ),
+        (
+            "W/W/\"v9\"",
+            false,
+            "double weak prefix is not a tag the route ever emitted",
+        ),
+        (
+            "W/\"v8\"",
+            false,
+            "a different version serves the full payload",
+        ),
+        ("*", false, "no star handling, reference has none either"),
+        ("", false, "an empty header never matches"),
+    ] {
+        let (socket, handle, _rx) = fake_api_socket_multi_recording(conv("v9"));
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+        let mut builder = authed_request(Method::GET, "/api/panes/pane_1/conversation");
+        if !sent.is_empty() {
+            builder = builder.header(axum::http::header::IF_NONE_MATCH, sent);
+        }
+        let response = app
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let got_304 = response.status() == StatusCode::NOT_MODIFIED;
+        assert_eq!(
+            got_304,
+            expect_304,
+            "if-none-match {sent:?}: {why} (expected 304={expect_304}, got {})",
+            response.status()
+        );
+        if expect_304 {
+            let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+            assert!(bytes.is_empty(), "304 carries no body");
+        } else {
+            // Full answer: the browser must get the payload AND the
+            // fresh etag to store for the next poll.
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers().get(axum::http::header::ETAG).unwrap(),
+                "W/\"v9\""
+            );
+            let body = response_json(response).await;
+            assert_eq!(body["version"], "v9");
+        }
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_route_empty_cursors_treated_as_absent() {
+    // The lens only sets a cursor param when it has one, but a stale
+    // URL or a hand-crafted request can carry an empty one: the route
+    // filters empties to absent so the backend sees a clean newest
+    // page, not an empty cursor string (which would 409 on decode).
+    let (socket, handle, rx) = fake_api_socket_multi_recording(vec![json!({
+        "result": {
+            "type": "pane_conversation",
+            "conversation": { "turns": [], "cursor": null, "version": "v1" }
+        }
+    })]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/conversation?before=&from=")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["version"], "v1");
+
+    let request: Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
+    assert!(
+        request["params"].get("before").is_none(),
+        "empty before must not reach the backend params"
+    );
+    assert!(
+        request["params"].get("from").is_none(),
+        "empty from must not reach the backend params"
+    );
+    assert_eq!(request["params"]["pane_id"], "pane_1");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_image_route_invalid_base64_is_not_found() {
+    // The backend arm validated the ref but the data failed to decode
+    // (a truncated file, a hand-edit): bytes cannot be served, and a
+    // 500 would break the page for a placeholder-sized problem — the
+    // lens drops just the image, same as a rotated-out ref.
+    let (socket, handle, _rx) = fake_api_socket_multi_recording(vec![json!({
+        "result": {
+            "type": "pane_conversation_image",
+            "image": { "media_type": "image/png", "data": "not!!valid!!base64" }
+        }
+    })]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(
+                Method::GET,
+                "/api/panes/pane_1/conversation/image?ref=msg_img_9",
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "image_not_found");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_route_backend_transport_failure_is_bad_gateway() {
+    // No listener at the socket path: the backend dial fails outright.
+    // The route must answer 502 (browser-renderable), never panic or
+    // hang — the lens shows its refusal state and the poll re-arms.
+    let mut state = test_state();
+    let dead = std::env::temp_dir().join(format!(
+        "herdr-webui-dead-api-{}-{}.sock",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        fake_socket_suffix()
+    ));
+    state.api_socket = Some(dead);
+    let app = test_app_with_state(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/conversation")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+    let response = app
+        .clone()
+        .oneshot(
+            authed_request(
+                Method::GET,
+                "/api/panes/pane_1/conversation/image?ref=msg_x",
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+}

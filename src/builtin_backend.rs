@@ -780,8 +780,32 @@ impl BuiltinState {
             "agent.list" => Ok(json!({ "type": "agent_list", "agents": self.agent_list()? })),
             "pane.conversation" => {
                 let pane_id = required_string(&params, "pane_id")?;
-                let result = self.pane_conversation(&pane_id)?;
+                // Page cursors (reference before/from parity): optional
+                // strings; the chat lens passes them once it holds pages.
+                let page = chat_lens::ConversationPage {
+                    before: optional_string(&params, "before"),
+                    from: optional_string(&params, "from"),
+                };
+                let result = self.pane_conversation(&pane_id, &page)?;
                 Ok(json!({ "type": "pane_conversation", "conversation": result }))
+            }
+            "pane.conversation_image" => {
+                // One image the conversation's image part named, by ref
+                // (reference conversationImage parity): same resolution
+                // pipeline as pane.conversation so the ref can only name
+                // the session the page came from. {media_type, data} on
+                // the wire, base64 as the reference carries it; null
+                // output -> image_not_found at the route.
+                let pane_id = required_string(&params, "pane_id")?;
+                let reference = required_string(&params, "ref")?;
+                let image = self.pane_conversation_image(&pane_id, &reference)?;
+                Ok(json!({
+                    "type": "pane_conversation_image",
+                    "image": image.map(|(media_type, bytes)| json!({
+                        "media_type": media_type,
+                        "data": crate::jcode_transcript::base64_encode(&bytes),
+                    })),
+                }))
             }
             "pane.tool_output" => {
                 // One whole tool output by call id (reference toolOutput
@@ -1226,7 +1250,11 @@ impl BuiltinState {
     /// `unsupported_agent` (no transcript support), `no_session_path` /
     /// `ambiguous` (resolution refused), `transcript_missing` (files
     /// unreadable or unparseable).
-    fn pane_conversation(&self, pane_id: &str) -> Result<Value, String> {
+    fn pane_conversation(
+        &self,
+        pane_id: &str,
+        page: &chat_lens::ConversationPage,
+    ) -> Result<Value, String> {
         let (pane, presentation) = self.pane_and_presentation(pane_id)?;
         let Some(agent) = presentation.agent else {
             return Err("unsupported_agent: no agent running in this pane".to_string());
@@ -1236,7 +1264,39 @@ impl BuiltinState {
                 "unsupported_agent: {agent} has no transcript support"
             ));
         }
-        chat_lens::conversation_payload(&self.pane_context(&pane))
+        chat_lens::conversation_payload_with(
+            chat_lens::store_index(),
+            &self.pane_context(&pane),
+            page,
+        )
+    }
+
+    /// One image by ref (reference conversationImage parity): same
+    /// resolution pipeline and error codes as pane_conversation, so a
+    /// ref can only name the session the page came from. Ok(None) ->
+    /// image_not_found (rotated out, a ref that never existed).
+    fn pane_conversation_image(
+        &self,
+        pane_id: &str,
+        reference: &str,
+    ) -> Result<Option<(String, Vec<u8>)>, String> {
+        if !crate::jcode_transcript::valid_tool_ref(reference) {
+            return Ok(None);
+        }
+        let (pane, presentation) = self.pane_and_presentation(pane_id)?;
+        let Some(agent) = presentation.agent else {
+            return Err("unsupported_agent: no agent running in this pane".to_string());
+        };
+        if !chat_lens::agent_supported(Some(agent)) {
+            return Err(format!(
+                "unsupported_agent: {agent} has no transcript support"
+            ));
+        }
+        chat_lens::conversation_image_with(
+            chat_lens::store_index(),
+            &self.pane_context(&pane),
+            reference,
+        )
     }
 
     /// One whole tool output by call id: reference toolOutput parity.
