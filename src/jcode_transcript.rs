@@ -141,24 +141,38 @@ impl JcodeStoreIndex {
         (model, status, effort)
     }
 
-    /// The session's title as jcode recorded it: the journal's latest
-    /// meta line first (jcode rewrites it on every append, so it is
-    /// the freshest), the snapshot's `title` field as the fallback
-    /// (a compact-only or journal-rotated session still has it). None
-    /// when neither file is readable or neither carries a title.
+    /// The session's title as jcode recorded it: the user-chosen
+    /// `custom_title` first (journal's latest meta line, then the
+    /// snapshot's copy), the auto-generated `title` summary last,
+    /// truncated to status-line length. None when neither file is
+    /// readable or neither carries a title.
     pub fn session_title(&self, session_id: &str) -> Option<String> {
+        // What jcode actually writes (verified on the real store): the
+        // user-chosen name lives in `custom_title` (journal meta lines,
+        // newest last; the snapshot carries a copy too), while `title`
+        // is the auto-generated summary, often a full sentence. A
+        // status line reads the custom name first; the auto-summary is
+        // truncated so the composer's one-line meta stays a line.
+        let truncate = |text: &str| -> String {
+            const MAX_TITLE: usize = 80;
+            if text.chars().count() <= MAX_TITLE {
+                return text.to_string();
+            }
+            let cut: String = text.chars().take(MAX_TITLE).collect();
+            format!("{cut}…")
+        };
         let journal = self.store_dir.join(format!("{session_id}.journal.jsonl"));
         if let Ok(text) = std::fs::read_to_string(&journal) {
             for line in text.lines().rev() {
                 let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) else {
                     continue;
                 };
-                if let Some(title) = parsed
-                    .pointer("/meta/title")
+                if let Some(custom) = parsed
+                    .pointer("/meta/custom_title")
                     .and_then(|t| t.as_str())
                     .filter(|t| !t.is_empty())
                 {
-                    return Some(title.to_string());
+                    return Some(custom.to_string());
                 }
             }
         }
@@ -166,10 +180,17 @@ impl JcodeStoreIndex {
         let text = std::fs::read_to_string(&snapshot).ok()?;
         let parsed: serde_json::Value = serde_json::from_str(&text).ok()?;
         parsed
-            .get("title")
+            .get("custom_title")
             .and_then(|t| t.as_str())
             .filter(|t| !t.is_empty())
-            .map(str::to_string)
+            .map(|t| truncate(t))
+            .or_else(|| {
+                parsed
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .filter(|t| !t.is_empty())
+                    .map(|t| truncate(t))
+            })
     }
 
     /// Resolves a pane to its jcode session using the design's ordered

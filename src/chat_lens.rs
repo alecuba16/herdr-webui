@@ -1079,6 +1079,149 @@ mod tests {
     }
 
     #[test]
+    fn payload_carries_title_and_context_used_from_the_newest_usage() {
+        // The composer meta line rests on two wire fields that have no
+        // wire-layer assertion: `title` (journal meta first, snapshot
+        // fallback) and `context_used` (NEWEST prompt_tokens — a
+        // session's context grows, so the last request's usage is the
+        // one a status line should read).
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-chat-lens-test-meta-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let session_id = "session_lens_meta";
+        // Journal: a meta line (real shape: title lives under
+        // `meta`, custom_title is the user-chosen name) plus a delta
+        // record whose appended user turn's token_usage is the NEWEST
+        // (12k, later than the snapshot's 950). Real journals carry
+        // {meta, append_messages} pairs, never bare messages.
+        let journal = json!({
+            "meta": {},
+            "append_messages": [],
+        });
+        let delta = json!({
+            "meta": {
+                "title": null,
+                "custom_title": "permissions to dmitri",
+            },
+            "append_messages": [{
+                "id": "m3",
+                "role": "user",
+                "token_usage": { "prompt_tokens": 12000 },
+                "content": [{"type": "text", "text": "later turn"}],
+            }],
+        });
+        let snapshot = json!({
+            "working_dir": "/w",
+            "last_pid": 4242,
+            "status": "Active",
+            "title": "snapshot fallback title",
+            "messages": [
+                {"id": "m1", "role": "user",
+                 "token_usage": { "prompt_tokens": 950 },
+                 "content": [{"type": "text", "text": "hello"}]},
+                {"id": "m2", "role": "assistant",
+                 "content": [{"type": "text", "text": "hi there"}]}
+            ]
+        });
+        std::fs::write(
+            dir.join(format!("{session_id}.json")),
+            serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let text = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&journal).unwrap(),
+            serde_json::to_string(&delta).unwrap()
+        );
+        std::fs::write(dir.join(format!("{session_id}.journal.jsonl")), text).unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        let payload = conversation_payload_with(&index, &fixture_context(), &ConversationPage::default())
+            .unwrap();
+        // Title: the journal's custom_title wins over everything
+        // (verified against the real store: the user-chosen name
+        // lives in custom_title; meta.title is usually null).
+        assert_eq!(payload["title"], "permissions to dmitri");
+        // Context: the newest prompt_tokens, not the oldest, not a sum.
+        assert_eq!(payload["context_used"], 12000);
+        // The delta turn made it into the page.
+        assert_eq!(payload["turns"].as_array().unwrap().len(), 3);
+
+        // Without any usage on the wire: null, so the composer drops
+        // the segment instead of inventing a count.
+        let no_usage_dir = dir.join("no-usage");
+        std::fs::create_dir_all(&no_usage_dir).unwrap();
+        let snap2 = json!({
+            "working_dir": "/w",
+            "last_pid": 4242,
+            "status": "Active",
+            "messages": [
+                {"id": "m1", "role": "user",
+                 "content": [{"type": "text", "text": "hello"}]}
+            ]
+        });
+        std::fs::write(
+            no_usage_dir.join(format!("{session_id}.json")),
+            serde_json::to_string(&snap2).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            no_usage_dir.join(format!("{session_id}.journal.jsonl")),
+            "\n",
+        )
+        .unwrap();
+        let index2 = JcodeStoreIndex::with_store_dir(no_usage_dir.clone());
+        let bare = conversation_payload_with(&index2, &fixture_context(), &ConversationPage::default())
+            .unwrap();
+        assert_eq!(bare["title"], serde_json::Value::Null, "no title anywhere: null");
+        assert_eq!(
+            bare["context_used"],
+            serde_json::Value::Null,
+            "no token_usage recorded: null, never 0 (composer drops the segment)"
+        );
+
+        // Auto-summary fallback: the snapshot's long `title` (the real
+        // store carries full sentences there) is truncated to one
+        // status line; a short one passes through untouched.
+        let auto_dir = dir.join("auto-title");
+        std::fs::create_dir_all(&auto_dir).unwrap();
+        let long = "The objective is to increase the UX quality and visual feel of the whole application, across every surface, without regressions";
+        let snap3 = json!({
+            "working_dir": "/w",
+            "last_pid": 4242,
+            "status": "Active",
+            "title": long,
+            "messages": [
+                {"id": "m1", "role": "user",
+                 "content": [{"type": "text", "text": "hello"}]}
+            ]
+        });
+        std::fs::write(
+            auto_dir.join(format!("{session_id}.json")),
+            serde_json::to_string(&snap3).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            auto_dir.join(format!("{session_id}.journal.jsonl")),
+            "\n",
+        )
+        .unwrap();
+        let index3 = JcodeStoreIndex::with_store_dir(auto_dir.clone());
+        let auto = conversation_payload_with(&index3, &fixture_context(), &ConversationPage::default())
+            .unwrap();
+        assert_eq!(
+            auto["title"].as_str().unwrap().chars().count(),
+            81,
+            "a long auto-summary truncates to 80 chars plus the ellipsis"
+        );
+        assert!(auto["title"].as_str().unwrap().ends_with('…'));
+        assert!(auto["title"].as_str().unwrap().starts_with("The objective"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn version_bumps_on_real_file_change_so_etag_stops_matching() {
         // The end-to-end etag invariant at the wire layer: two reads of
         // an unchanged store carry the SAME version (the poll stores

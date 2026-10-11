@@ -279,7 +279,7 @@ Response (thin server, thick shaping — same SOLID call as the composer):
                "parts": [ {"kind":"text"|"thinking"|"tool"|"compact"|"image",
                             ... } ] } ],
   "cursor": "<session>:<generation>:<message-id of the page's first turn>, or null at the transcript start",
-  "title": "conversation title (optional, null when absent)",
+  "title": "the session's custom_title (user-chosen name) or its auto-generated title summary truncated to 80 chars, null when absent",
   "model": "...", "reasoning_effort": null,
   "context_used": 12345,
   "status": "Active",
