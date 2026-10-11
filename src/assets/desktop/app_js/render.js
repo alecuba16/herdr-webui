@@ -132,13 +132,14 @@ function syncProjectDashboard() {
 // Zero-tab workspace body. A focused workspace whose last terminal closed
 // stays on screen: hide the terminal shell, mount the empty-leaf card in
 // the pane slot, and let the New terminal button spawn a fresh tab. The
-// workspace-scoped surfaces (files, git, search) keep working, so the card
-// is only about the missing terminal, not a dead end.
+// workspace-scoped surfaces (files, git, search) host in the right column,
+// so they never claim the pane slot: the card stays up with a drawer open,
+// and closing the drawer cannot strand a dead shell in the center.
 function syncWorkspaceEmptyLeaf() {
   const emptyLeaf = el("workspaceEmptyLeaf"),
     shell = el("terminalShell");
   if (!emptyLeaf) return;
-  const show = !!state.ws && !state.tab && !drawerSurfaceVisible();
+  const show = !!state.ws && !state.tab;
   emptyLeaf.hidden = !show;
   if (shell) shell.hidden = show;
   if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.mountEmptyLeafInPane)

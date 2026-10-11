@@ -788,6 +788,50 @@ describe("app bundle load", () => {
     equal(shell.hidden, true);
   });
 
+  it("keeps the zero-tab workspace card up with a drawer open", () => {
+    // The Files/Git/Search drawers host in the right sidebar column, so
+    // they must not blank the center: the empty-leaf card stays mounted
+    // and the terminal shell stays hidden. The live bug: opening Files on
+    // a zero-tab workspace hid the card and stranded a dead Connecting
+    // shell in the pane slot, and closing the drawer never healed it.
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
+    const shell = ctx.document.getElementById("terminalShell");
+    vm.runInContext(
+      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
+      ctx,
+    );
+
+    ctx.window.HerdrFileBrowser = { isVisible: () => true };
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, false, "card stays up with the file drawer open");
+    equal(shell.hidden, true, "shell stays hidden with the file drawer open");
+
+    ctx.window.HerdrGitUi = { isVisible: () => true };
+    ctx.window.HerdrFileBrowser = { isVisible: () => false };
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, false, "card stays up with the git drawer open");
+    equal(shell.hidden, true, "shell stays hidden with the git drawer open");
+
+    ctx.window.HerdrGitUi = { isVisible: () => false };
+    ctx.window.HerdrSearchPanel = { isOpen: () => true };
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, false, "card stays up with the search drawer open");
+    equal(shell.hidden, true, "shell stays hidden with the search drawer open");
+
+    ctx.window.HerdrSearchPanel = { isOpen: () => false };
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, false, "card stays up with no drawer open");
+    equal(shell.hidden, true, "shell stays hidden with no drawer open");
+
+    // A terminal tab landing kills the card and frees the shell again.
+    vm.runInContext(`state.tab = "tab_1";`, ctx);
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, true, "card hides once a terminal tab exists");
+    equal(shell.hidden, false, "shell frees up once a terminal tab exists");
+  });
+
   it("keeps file history header scoped to selected files", () => {
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" title="\$\{esc\(titleWithGitShortcut\("File history", "history"\)\)\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);

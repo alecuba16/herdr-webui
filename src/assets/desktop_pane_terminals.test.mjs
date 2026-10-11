@@ -656,6 +656,42 @@ test("empty-leaf hide does not resurrect pane chrome under the dashboard state",
   assert.equal(emptyLeaf.parentNode, nodes.container, "empty leaf parked home");
 });
 
+// The live bug the deployed build showed on a zero-tab workspace: opening
+// the Files drawer hid the empty-leaf card, the pane render then claimed the
+// slot for the terminal shell, and a dead Connecting panel painted in the
+// center. render.js keeps the card up with a drawer open now; this test
+// pins the panes side of the contract: the render pass must not steal the
+// slot from the mounted card nor unhide the shell the card pass hid.
+test("zero-tab workspace: pane render keeps the mounted card owner and the shell hidden", () => {
+  const { document, nodes } = buildDom();
+  const emptyLeaf = makeNode("workspaceEmptyLeaf", "workspace-empty-leaf");
+  nodes.container.appendChild(emptyLeaf);
+  const ctx = loadPanes(document, "ws-1");
+  const panes = ctx.HerdrWorkspacePanes;
+  const shell = nodes.terminalShell;
+  // Full render sequence with a drawer open, render.js order: the leaf
+  // sync shows the card (shell hidden attr), then the pane render runs.
+  ctx.state.tab = null;
+  emptyLeaf.hidden = false;
+  shell.hidden = true;
+  panes.mountEmptyLeafInPane(true);
+  panes.renderWorkspacePanes();
+  const content = document.querySelectorAll(".pane-content")[0];
+  assert.ok(content, "pane content slot renders");
+  assert.equal(emptyLeaf.parentNode, content, "card keeps the pane content slot");
+  assert.equal(shell.hidden, true, "shell stays hidden while the card owns the slot");
+  // A second pass (events poll) must not drift.
+  panes.renderWorkspacePanes();
+  assert.equal(emptyLeaf.parentNode, content, "card keeps the slot across re-render");
+  assert.equal(shell.hidden, true, "shell stays hidden across re-render");
+  // Closing the drawer re-runs the same sequence with no state change:
+  // the card keeps the slot, nothing dead claims the center.
+  panes.mountEmptyLeafInPane(true);
+  panes.renderWorkspacePanes();
+  assert.equal(emptyLeaf.parentNode, content, "card keeps the slot after the drawer closes");
+  assert.equal(shell.hidden, true, "shell stays hidden after the drawer closes");
+});
+
 // The split + no-workspace case: a split layout left over from an
 // earlier session must not survive the empty state as dead chrome. The
 // whole skeleton goes, so no strips float over empty sibling panes,
