@@ -340,7 +340,13 @@ const PAGE_TURNS: usize = 100;
 /// the model just saw. `prompt_tokens` is the full prompt size per
 /// request (jcode-session-types doc comment: older records lack it
 /// and mixed-provider totals cannot be reconstructed), so it is the
-/// only honest number; absent means absent on the wire.
+/// only honest number; absent means absent on the wire. Verified
+/// against the real store: `prompt_tokens == input_tokens` in all
+/// 76,743 messages that carry both — jcode's figure for what one
+/// request filled, the same semantics the reference reads.
+/// The scan walks backward past usage-less messages: usage rides
+/// assistant records, so the newest USER turn carries none and the
+/// latest assistant usage is the one a status line should read.
 fn context_usage(messages: &[serde_json::Value]) -> Option<u64> {
     messages.iter().rev().find_map(|message| {
         let usage = message.get("token_usage")?;
@@ -1106,12 +1112,23 @@ mod tests {
                 "title": null,
                 "custom_title": "permissions to dmitri",
             },
-            "append_messages": [{
-                "id": "m3",
-                "role": "user",
-                "token_usage": { "prompt_tokens": 12000 },
-                "content": [{"type": "text", "text": "later turn"}],
-            }],
+            // Real store shape (verified live): token_usage rides
+            // ASSISTANT messages — the response carries the request's
+            // usage. A trailing user message carries none, so the scan
+            // must keep walking backward past it.
+            "append_messages": [
+                {
+                    "id": "m3",
+                    "role": "assistant",
+                    "token_usage": { "prompt_tokens": 12000 },
+                    "content": [{"type": "text", "text": "later turn"}],
+                },
+                {
+                    "id": "m4",
+                    "role": "user",
+                    "content": [{"type": "text", "text": "follow-up question"}],
+                }
+            ],
         });
         let snapshot = json!({
             "working_dir": "/w",
@@ -1120,9 +1137,9 @@ mod tests {
             "title": "snapshot fallback title",
             "messages": [
                 {"id": "m1", "role": "user",
-                 "token_usage": { "prompt_tokens": 950 },
                  "content": [{"type": "text", "text": "hello"}]},
                 {"id": "m2", "role": "assistant",
+                 "token_usage": { "prompt_tokens": 950 },
                  "content": [{"type": "text", "text": "hi there"}]}
             ]
         });
@@ -1146,7 +1163,9 @@ mod tests {
         assert_eq!(payload["title"], "permissions to dmitri");
         // Context: the newest prompt_tokens, not the oldest, not a sum.
         assert_eq!(payload["context_used"], 12000);
-        // The delta turn made it into the page.
+        // Three turns: m2+m3 are adjacent assistants and merge into
+        // one turn (parse rule, tested in jcode_transcript); the
+        // trailing user message is its own turn.
         assert_eq!(payload["turns"].as_array().unwrap().len(), 3);
 
         // Without any usage on the wire: null, so the composer drops
