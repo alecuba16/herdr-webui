@@ -398,8 +398,6 @@
       },
       openFile(encodedPath) { globalThis.HerdrMobileSearch.openPath(decodeURIComponent(encodedPath), "file"); },
       openMatch(encodedPath, encodedMatchId) { globalThis.HerdrMobileSearch.openContent(decodeURIComponent(encodedPath), decodeURIComponent(encodedMatchId)); },
-      expandAll() { for (const file of mobileSearch.content.files || []) mobileSearch.content.expanded[file.path] = true; render(); },
-      collapseAll() { for (const file of mobileSearch.content.files || []) mobileSearch.content.expanded[file.path] = false; render(); },
       loadMore() { runMobileContentSearch(++mobileSearch.requestSeq, mobileSearch.query, currentWorkspaceCwd(), true, { preserveScroll: true }).then(renderPreservingScroll); },
       // The shared content picker renders "Load all matches" for a
       // truncated file; desktop's palette re-searches that one file with a

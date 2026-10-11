@@ -107,13 +107,6 @@ function panesByTabIndex() {
   return map;
 }
 
-function setCustomProperty(element, name, value) {
-  if (
-    typeof element.style.getPropertyValue !== "function" ||
-    element.style.getPropertyValue(name) !== value
-  )
-    element.style.setProperty(name, value);
-}
 window.HerdrDesktopRender = render;
 function syncProjectDashboard() {
   const dashboard = el("projectDashboard"),
@@ -318,13 +311,6 @@ function selectedWorkspaceRepoPath() {
   if (!w) return "";
   if (w.worktree && w.worktree.repo_root) return w.worktree.repo_root;
   return workspacePath(w) || "";
-}
-function worktreeRowsForKey(key) {
-  if (!key) return [];
-  return state.worktrees.filter((w) => worktreeRowGroupKey(w) === key);
-}
-function selectedWorkspaceWorktreeKey(w = selectedWorkspace()) {
-  return worktreeGroupKey(w);
 }
 function renderWorkspaceContextActions() {
   return "";
@@ -681,20 +667,6 @@ function runWorkspaceContextAction(action, button, workspaceId) {
   else if (action === "open-worktrees") openWorktreesForWorkspace(w, button.dataset.key || "");
   else if (action === "close") closeWorkspace(w.workspace_id);
   else if (action === "remove-worktree") removeWorktree(w.workspace_id);
-}
-async function renameCurrentPanel() {
-  const tab = state.allTabs.concat(state.tabs).find((t) => t.tab_id === state.tab);
-  if (!tab) return;
-  const label = prompt("Rename panel", tabTitle(tab));
-  if (label === null) return;
-  const trimmed = String(label || "").trim();
-  if (!trimmed) return;
-  await api(`/api/tabs/${encodeURIComponent(tab.tab_id)}/rename`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ label: trimmed }),
-  });
-  refresh();
 }
 function workspaceDisplayTitle(w) {
   if (!isLinkedWorktree(w)) return w.label;

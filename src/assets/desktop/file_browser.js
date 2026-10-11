@@ -82,7 +82,7 @@
     return normalizeDisplayPath(`${root}/${value.replace(/^\/+/, "")}`);
   }
 
-  function fileTabTooltipPath(path) {
+  function fileTabTooltip(path) {
     const absolute = absoluteFilePath(path);
     const home = normalizeDisplayPath(state.home || "").replace(/\/+$/, "");
     if (home && absolute === home) return "~";
@@ -1340,7 +1340,6 @@
     },
     menuAction(action) { return handleMenuAction(action); },
     isVisible() { return state.open; },
-    activeWorkspaceId() { return state.open ? (activeKey || "") : ""; },
     isWorkspaceVisible(workspace) { return state.open && activeKey === workspaceKey(workspace); },
   };
 })();

@@ -655,9 +655,6 @@
       this.element.scrollTop = this.element.scrollHeight || 0;
     }
 
-    scrollToLine(line) {
-      this.element.scrollTop = Math.max(0, Math.trunc(Number(line) || 0) * this.rowHeight());
-    }
 
     atBottom() {
       return (this.element.scrollHeight || 0) - (this.element.scrollTop || 0) - (this.element.clientHeight || 0) <= 2;
@@ -669,10 +666,6 @@
       } catch (_) {
         return true;
       }
-    }
-
-    mouseMode() {
-      return { tracking: !!(this._mouseMode && this._mouseMode.tracking), sgr: !!(this._mouseMode && this._mouseMode.sgrMouse) };
     }
 
     // Track the pointer cell for wheel reports. wterm reports pointer cell

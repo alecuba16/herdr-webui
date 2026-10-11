@@ -239,14 +239,6 @@
     return normalizeSearchKind(kind) === "dir" ? "file" : "dir";
   }
 
-  function searchKindLabel(kind) {
-    return normalizeSearchKind(kind) === "dir" ? "Folders" : "Files";
-  }
-
-  function searchKindNoun(kind) {
-    return normalizeSearchKind(kind) === "dir" ? "folder" : "file";
-  }
-
   function searchKindQuery(kind) {
     return `search_kind=${encodeURIComponent(normalizeSearchKind(kind))}`;
   }
@@ -328,8 +320,6 @@
     removePathFromEntries,
     renamePathInEntries,
     replacePathPrefix,
-    searchKindLabel,
-    searchKindNoun,
     searchKindQuery,
     searchTreeEntries,
     searchTreeEntriesByKind,

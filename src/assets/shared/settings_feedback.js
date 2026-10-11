@@ -130,12 +130,6 @@
           },
         };
       },
-      flashError(control, message) {
-        return show(findRow(control), "error", message);
-      },
-      flashErrorRow(row, message) {
-        return show(row, "error", message);
-      },
       clear(control) {
         const row = findRow(control);
         if (!row) return;

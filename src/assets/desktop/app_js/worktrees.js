@@ -998,17 +998,6 @@ async function closeWorkspace(id) {
     hideBlocking();
   }
 }
-function tabsForWorkspace(id) {
-  return state.allTabs
-    .concat(state.tabs)
-    .filter((tab, index, tabs) =>
-      tab.workspace_id === id &&
-      tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) === index,
-    );
-}
-function panesForTab(id) {
-  return state.panes.filter((pane) => pane.tab_id === id);
-}
 async function closePaneById(id) {
   await api(`/api/panes/${encodeURIComponent(id)}/close`, { method: "POST" });
 }

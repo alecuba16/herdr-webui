@@ -309,16 +309,6 @@
       const match = window.HerdrContentSearch && window.HerdrContentSearch.findMatch(file, decodeURIComponent(encodedMatchId));
       openWorkspaceSearchContent(file, match);
     },
-    expandAll() {
-      const state = ensureState();
-      for (const file of state.content.files || []) state.content.expanded[file.path] = true;
-      renderPanel();
-    },
-    collapseAll() {
-      const state = ensureState();
-      for (const file of state.content.files || []) state.content.expanded[file.path] = false;
-      renderPanel();
-    },
     loadMore() {
       runSearch(true);
     },

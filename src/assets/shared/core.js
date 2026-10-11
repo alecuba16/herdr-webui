@@ -407,7 +407,6 @@
     } catch (_) {
       return null;
     }
-    const camel = (name) => name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
     const theme = {};
     for (const key of keys || TERMINAL_TOKEN_KEYS) {
       const cssVar = "--term-" + key.replace(/([A-Z])/g, "-$1").toLowerCase();

@@ -289,11 +289,6 @@
 
     // ---- Render ----
 
-    function folderName() {
-      const parts = String(picker.path || "").split("/").filter(Boolean);
-      return parts[parts.length - 1] || picker.root;
-    }
-
     function filterMatches(entry) {
       const needle = String(picker.filter || "").trim().toLowerCase();
       if (!needle) return true;

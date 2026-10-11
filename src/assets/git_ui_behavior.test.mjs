@@ -1984,9 +1984,9 @@ test("openFileHistory reuses the existing Git view for the same cwd", async () =
   });
   const { ui } = booted;
   await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
-  const before = ui.activeWorkspaceId();
+  const before = ui.isWorkspaceVisible("") ? "visible" : "hidden";
   await ui.openFileHistory("/tmp/demo-repo", "src/app.js");
-  const after = ui.activeWorkspaceId();
+  const after = ui.isWorkspaceVisible("") ? "visible" : "hidden";
   assert.equal(after, before, "no synthetic git-file-history workspace view is created");
   assert.match(ctxHtml(booted), /Loading history/, "history tab renders in the reused view");
 });

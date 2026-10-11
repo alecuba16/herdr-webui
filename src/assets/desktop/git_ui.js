@@ -429,7 +429,6 @@
     appRefreshIconButton,
   });
   const canMutateDiff = diffView.canMutateDiff;
-  const allFiles = diffView.allFiles;
   const renderContextMenu = diffView.renderContextMenu;
   const renderLogContextMenu = diffView.renderLogContextMenu;
   const historicalFileCommitLabel = diffView.historicalFileCommitLabel;
@@ -1310,11 +1309,6 @@
     });
   }
 
-  function selectedPaths() {
-    const view = active() || {};
-    return view.file ? [view.file] : allFiles();
-  }
-
   function diffFile(path) {
     const view = active() || {};
     return ((view.diff && view.diff.files) || []).find((file) => file.path === path);
@@ -1469,7 +1463,6 @@
     },
     refreshVisible() { if (state.visible) render(); },
     isVisible() { return state.visible; },
-    activeWorkspaceId() { return state.visible ? (state.activeKey || "") : ""; },
     isWorkspaceVisible(key) { return state.visible && state.activeKey === key; },
     workspaceStatus,
     statusLabel() { return state.open ? (state.visible ? "open" : "hidden") : "closed"; },
@@ -1749,7 +1742,6 @@
     },
     stageFile(path) { post("/api/git-ui/stage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }, "Staging file"); },
     unstageFile(path) { post("/api/git-ui/unstage", { cwd: active().cwd, paths: [decodeURIComponent(path)] }, "Unstaging file"); },
-    restoreFile(path) { if (confirm("Restore this file change?")) post("/api/git-ui/discard", { cwd: active().cwd, paths: [decodeURIComponent(path)], confirmed: true }, "Restoring file"); },
     restoreHunk(path, index) {
       path = decodeURIComponent(path);
       const view = active() || {};
@@ -1758,10 +1750,6 @@
     },
     discardFile(path) { path = decodeURIComponent(path); if (confirm(`Restore complete file ${path}? This discards staged and unstaged changes.`)) post("/api/git-ui/discard", { cwd: active().cwd, paths: [path], confirmed: true }, "Restoring file"); },
     toggleBlame() { const view = active(); if (!view) return; view.showBlame = !view.showBlame; render(); },
-    toggleDiffLayout() {
-      setGitUiOption("gitUiDiffLayout", diffLayoutMode() === "unified" ? "side-by-side" : "unified");
-      render();
-    },
     setDiffLayout(layout) {
       setGitUiOption("gitUiDiffLayout", layout === "unified" ? "unified" : "side-by-side");
       render();
@@ -1912,7 +1900,6 @@
     },
     unstageHunk(path, index) { path = decodeURIComponent(path); applyHunk(path, index, { reverse: true, cached: true }); },
     stageHunk(path, index) { path = decodeURIComponent(path); applyHunk(path, index, { cached: true }); },
-    discardSelected() { if (confirm("Discard selected working tree changes?")) post("/api/git-ui/discard", { cwd: active().cwd, paths: selectedPaths(), confirmed: true }, "Discarding changes"); },
     stash() { const message = prompt("Stash message", "herdr-webui stash"); if (message !== null) post("/api/git-ui/stash", { cwd: active().cwd, message }, "Stashing"); },
     stashFile(path) {
       path = decodeURIComponent(path);
@@ -2203,8 +2190,6 @@
         render();
       }
     },
-    commit(amend) { this.commitFromModal(false); },
-    commitAndPush() { this.commitFromModal(true); },
     async openGitOpModal(type) {
       const view = active();
       if (!view) return;
@@ -2367,11 +2352,6 @@
       render();
       if (view && typeof openWorktreeCreateFromGitBranch === "function") openWorktreeCreateFromGitBranch(view.cwd, ((view.status || {}).branch || ""));
       else if (typeof openWorktreeOpenModal === "function") openWorktreeOpenModal(view && view.cwd, true);
-    },
-    closeBranchList() {
-      if (!state.branchList) return;
-      state.branchList = null;
-      render();
     },
     branchListFilter(value) {
       if (!state.branchList) return;
@@ -2806,14 +2786,6 @@
       const panes = window.HerdrWorkspacePanes;
       if (panes && panes.openGitTab) { await panes.openGitTab(`compare@${hash}..current`); return; }
       await loadDiff();
-    },
-    setLogAll(value) {
-      const view = active();
-      if (!view) return;
-      view.logScope = value ? "all" : "base-current";
-      view.logAll = view.logScope === "all";
-      view.logLimit = GIT_LOG_PAGE_SIZE;
-      render();
     },
     cycleLogScope() {
       const view = active();

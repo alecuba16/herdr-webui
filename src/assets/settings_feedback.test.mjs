@@ -150,14 +150,14 @@ describe("HerdrSettingsFeedback", () => {
     const control = createNodeStub();
     row.appendChild(control);
 
-    api.flashError(control, "Could not save");
+    api.flashSaving(control).fail("Could not save");
     const badge = row.children[1];
     equal(badge.className, "settings-error-flash");
     equal(badge.textContent, "Could not save");
     equal(badge.dataset.state, "settings-applied-error");
 
     // Switching the same row to applied replaces the error badge state.
-    api.flashApplied(control);
+    api.flashSaving(control).done();
     equal(badge.className, "settings-applied");
     equal(badge.dataset.state, "settings-applied-ok");
     equal(row.children.length, 2, "still a single badge per row");
@@ -199,7 +199,8 @@ describe("HerdrSettingsFeedback", () => {
   it("does nothing without a control", () => {
     const { api } = createContext();
     equal(api.flashApplied(null), null);
-    equal(api.flashError(null, "x"), null);
+    equal(api.flashSaving(null).fail("boom"), undefined);
+    equal(api.flashSaving(null).done(), undefined);
     equal(api.clear(null), undefined);
   });
 

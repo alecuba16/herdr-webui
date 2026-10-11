@@ -549,9 +549,8 @@ describe("terminal adapter wheel-to-SGR forwarding", () => {
     adapter.write(new TextEncoder().encode("\x1b[?1049h"), () => {});
     adapter.write("\x1b[?100", () => {});
     adapter.write("0;1006h", () => {});
-    equal(adapter.mouseMode().tracking, true);
-    equal(adapter.mouseMode().sgr, true);
-
+    // The mode is asserted through behavior: the wheel listener only
+    // reports when SGR mouse tracking is active.
     const listener = container.listeners.get("wheel");
     listener(wheelEvent(40));
     equal(reports.length, 1);
