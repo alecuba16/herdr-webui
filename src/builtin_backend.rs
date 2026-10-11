@@ -2604,6 +2604,23 @@ impl TerminalRuntime {
     }
 }
 
+impl TerminalRuntime {
+    /// Test-only: kill the pane child and block until it is truly gone.
+    /// `Drop` kills without waiting, and jcode's session threads can keep
+    /// creating files under `JCODE_HOME` for a while after the kill lands
+    /// (observed re-creating `ambient/transcripts` over 1s later under
+    /// load), so a cleanup that starts right after `drop(terminal)` races
+    /// the dying process. Reaping first makes the scratch-tree removal
+    /// deterministic.
+    #[cfg(test)]
+    fn kill_and_wait(&self) {
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 impl Drop for TerminalRuntime {
     fn drop(&mut self) {
         if let Ok(mut child) = self.child.lock() {
@@ -6200,18 +6217,21 @@ mod tests {
     /// Removes the live e2e scratch tree on drop, panic-safe. Each run
     /// boots a real jcode whose isolated home accumulates session logs,
     /// transcripts, and setup state (~100KB per run); without cleanup every
-    /// test run leaves that behind in the system temp dir. Retries briefly
-    /// because the pane child is killed but not waited on drop, and jcode
-    /// can create session dirs for a moment after the tree is first removed.
+    /// test run leaves that behind in the system temp dir. Retries for up
+    /// to 5s because the pane child is killed but not waited on drop, and
+    /// jcode's session threads can re-create dirs (`ambient/transcripts`)
+    /// well past 1s on a loaded machine (observed during parallel stress
+    /// runs; a 1s window leaked one dir).
     struct RemoveTempDir(PathBuf);
 
     impl Drop for RemoveTempDir {
         fn drop(&mut self) {
-            for _ in 0..50 {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
                 if std::fs::remove_dir_all(&self.0).is_ok() || !self.0.exists() {
                     return;
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::sleep(Duration::from_millis(50));
             }
             let _ = std::fs::remove_dir_all(&self.0);
         }
@@ -6424,6 +6444,11 @@ mod tests {
             );
         }
 
+        // Reap the pane child before the cleanup guard runs: Drop kills
+        // without waiting, and jcode's session threads can re-create dirs
+        // under the scratch home for a while after the kill, which raced
+        // the removal and leaked a dir on a loaded machine.
+        terminal.kill_and_wait();
         drop(terminal);
         // The `_remove_temp` guard removes the scratch tree (retrying past
         // the pane child's post-kill session writes).
@@ -6838,11 +6863,12 @@ mod tests {
         };
 
         // Boot into a known idle state, mirroring the real captured chrome:
-        // the numbered prompt row and the overscroll status line whose
-        // context bar (`▱▱▱▱ 2%` on a fresh session, `overscroll_context_bar`
-        // in ui_input.rs) is what the idle heuristic keys on.
+        // the numbered input row (`1> `, ASCII per input_prompt in
+        // ui_input.rs; `›` is only the transcript echo) and the overscroll
+        // status line whose context bar (`▱▱▱▱ 2%` on a fresh session,
+        // `overscroll_context_bar`) is what the idle heuristic keys on.
         terminal
-            .append_output("jcode\n1› ask anything\n~/…/proj  main ▱▱▱▱ 2% llmg-coding".as_bytes());
+            .append_output("jcode\n1> ask anything\n~/…/proj  main ▱▱▱▱ 2% llmg-coding".as_bytes());
         let mut booted_idle = false;
         let boot_deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
