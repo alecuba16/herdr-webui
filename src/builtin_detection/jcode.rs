@@ -216,7 +216,11 @@ fn jcode_idle_chrome(bottom12: &str) -> bool {
     // Overscroll status line: fact groups joined by single spaces, where the
     // model fact is the final group. Accept the two always-rendered shapes:
     // a trailing context percentage, or the model group at line end.
-    if last.contains('▰') || is_overscroll_status_line(last) {
+    // The context bar is `▰` filled + `▱` empty segments
+    // (`overscroll_context_bar` in jcode's ui_input.rs); at low context use
+    // (e.g. 2% on a fresh session) every segment is empty, so the line
+    // carries `▱▱▱▱` and no `▰`. Both glyphs identify the bar.
+    if last.contains('▰') || last.contains('▱') || is_overscroll_status_line(last) {
         return true;
     }
     false
@@ -238,8 +242,9 @@ pub(crate) fn jcode_shell_prompt_line(line: &str) -> bool {
 /// groups (`dir branch git context auth provider model`), fits one row, and
 /// always contains a token-count ratio like `74k/256k` or a trailing context
 /// percentage. A bare ratio in prose ("74k/256k tokens used") is not enough:
-/// the real line also carries the ▰ context bar or trailing model facts, so
-/// require one of those alongside the ratio.
+/// the real line also carries the context bar (`▰` filled and/or `▱` empty
+/// segments; a fresh session at 2% renders only `▱`) or trailing model
+/// facts, so require one of those alongside the ratio.
 fn is_overscroll_status_line(line: &str) -> bool {
     let has_token_ratio = line.split_whitespace().any(|word| {
         let Some((used, limit)) = word.split_once('/') else {
@@ -248,13 +253,14 @@ fn is_overscroll_status_line(line: &str) -> bool {
         compact_number(used) && compact_number(limit)
     });
     // No ratio: the only other always-rendered shape ends in a context
-    // percentage behind the ▰ bar.
+    // percentage behind the context bar. At zero filled segments the bar
+    // is only `▱`, so accept either glyph.
     if !has_token_ratio {
-        return line.ends_with('%') && line.contains('▰');
+        return line.ends_with('%') && (line.contains('▰') || line.contains('▱'));
     }
-    // The real line always pairs the ratio with the ▰ bar. A ratio in prose
-    // ("74k/256k tokens used") must not match.
-    line.contains('▰')
+    // The real line always pairs the ratio with the context bar. A ratio in
+    // prose ("74k/256k tokens used") must not match.
+    line.contains('▰') || line.contains('▱')
 }
 
 /// `74k`, `256k`, `1.2m`, or a plain number, as `overscroll_format_tokens`
@@ -332,6 +338,19 @@ mod tests {
                     1> \n\
                     ~/projects/app main ±6 ↑1 74k/256k ▰▰▰▱▱▱▱▱▱▱ 29% oauth claude gpt-5.3 high";
         assert_eq!(detect(tail, JcodeDetectionVariant::Vanilla), "idle");
+    }
+
+    #[test]
+    fn vanilla_idle_with_empty_context_bar() {
+        // Fresh session at 2% context: `overscroll_context_bar` rounds to
+        // zero filled segments, so the compact bar renders `▱▱▱▱` with no
+        // `▰` (live capture from a real jcode boot in a PTY).
+        let tail = "skills: 17 loaded\n\
+                    ~/projects/app (main)\n\
+                    1>\n\
+                    ~/…/app main… ±37 ▱▱▱▱ 2% llmg-coding together/revolut glm 5 2 nvfp4 max";
+        assert_eq!(detect(tail, JcodeDetectionVariant::Vanilla), "idle");
+        assert_eq!(detect(tail, JcodeDetectionVariant::InfoFields), "idle");
     }
 
     #[test]

@@ -6182,6 +6182,138 @@ mod tests {
         assert_eq!(blocked["data"]["agent_status"], "blocked");
     }
 
+    /// Real jcode binary for live e2e tests, when a build exists. Checks
+    /// the known build locations in order; `None` skips the caller silently
+    /// so CI without jcode stays green. The variant argument is kept for a
+    /// future info_fields build path ("vanilla" is the only one resolved
+    /// today: the worktree build shares one target dir with other
+    /// branches, so a per-branch binary is not addressable right now).
+    fn live_jcode_binary(_variant: &str) -> Option<String> {
+        let home = std::env::var("HOME").ok()?;
+        let candidates = [
+            // Upstream master debug build in the main checkout.
+            format!("{home}/Documents/projects/jcode/target/debug/jcode"),
+            // Promoted build (usually the merged fork).
+            format!("{home}/.jcode/builds/current/jcode"),
+        ];
+        candidates
+            .into_iter()
+            .find(|path| std::path::Path::new(path).is_file())
+    }
+
+    #[test]
+    fn live_jcode_tui_detection_end_to_end() {
+        // REAL acceptance path: spawn the actual jcode binary (vanilla
+        // master build) in a real PTY, let its TUI render, and require the
+        // detector to publish jcode agent events. Skipped when no jcode
+        // build exists so CI stays green.
+        let Some(jcode) = live_jcode_binary("vanilla") else {
+            return;
+        };
+        let _guard = crate::tests::lock_env();
+        let temp = std::env::temp_dir().join(format!("herdr-jcode-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&temp).unwrap();
+        // Isolated jcode home: no real sessions, no telemetry, no menubar.
+        // Env vars are restored at the end so sibling tests (same process)
+        // spawn their panes with the developer's real environment.
+        let home = temp.join("jcode-home");
+        std::fs::create_dir_all(&home).unwrap();
+        let previous_home = std::env::var("JCODE_HOME").ok();
+        let previous_selfdev = std::env::var("JCODE_NO_SELFDEV").ok();
+        let previous_menubar = std::env::var("JCODE_NO_MENUBAR").ok();
+        let previous_telemetry = std::env::var("JCODE_NO_TELEMETRY").ok();
+        std::env::set_var("JCODE_HOME", &home);
+        std::env::set_var("JCODE_NO_SELFDEV", "1");
+        std::env::set_var("JCODE_NO_MENUBAR", "1");
+        std::env::set_var("JCODE_NO_TELEMETRY", "1");
+        // Skip first-run onboarding ("Welcome to jcode" picker): a fresh
+        // home looks like a brand-new install (is_new_user_install in
+        // jcode's onboarding_flow_control.rs: launch_count <= 5 and < 10
+        // native sessions) and the welcome screen never shows the "1> "
+        // prompt, so the test could never observe an idle state. Seeding
+        // launch_count > 5 marks the install as established and boots the
+        // real prompt screen directly.
+        std::fs::write(home.join("setup_hints.json"), "{\"launch_count\":9}").unwrap();
+
+        let state =
+            BuiltinState::new(temp.clone(), Some(jcode), JcodeDetectionVariant::Vanilla).unwrap();
+        // Subscribe BEFORE the pane exists: jcode writes "Connecting to
+        // server..." the moment the PTY spawns, and the first detection run
+        // (argv label, no screen markers yet → "unknown") fires on those
+        // bytes. A subscriber attached after that misses the transition and
+        // sees only silence, because later runs detect the same
+        // (jcode, unknown) state and skip publishing.
+        let rx = state.subscribe_events();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+
+        // The real TUI boots, renders its input prompt, then idles. Wait
+        // for the first jcode status event (label + status from the real
+        // screen scrape of real render output).
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut saw_jcode_event = false;
+        let mut saw_idle = false;
+        loop {
+            let timeout = deadline.saturating_duration_since(std::time::Instant::now());
+            if timeout.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(timeout) {
+                Ok(event) => {
+                    if event["event"] == "pane.agent_status_changed"
+                        && event["data"]["agent"].as_str() == Some("jcode")
+                    {
+                        saw_jcode_event = true;
+                        let status = event["data"]["agent_status"].as_str().unwrap_or("");
+                        // A fresh boot lands on idle (prompt visible) or
+                        // working (spinner while loading); both prove the
+                        // detector reads the real chrome.
+                        if status == "idle" || status == "working" {
+                            saw_idle = true;
+                            break;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            saw_jcode_event,
+            "real jcode TUI must be detected by agent label (argv/process path)"
+        );
+        assert!(
+            saw_idle,
+            "real jcode TUI must reach idle or working status via screen scrape"
+        );
+
+        // Restore so sibling tests spawn their panes with the real env.
+        match previous_home {
+            Some(value) => std::env::set_var("JCODE_HOME", value),
+            None => std::env::remove_var("JCODE_HOME"),
+        }
+        match previous_selfdev {
+            Some(value) => std::env::set_var("JCODE_NO_SELFDEV", value),
+            None => std::env::remove_var("JCODE_NO_SELFDEV"),
+        }
+        match previous_menubar {
+            Some(value) => std::env::set_var("JCODE_NO_MENUBAR", value),
+            None => std::env::remove_var("JCODE_NO_MENUBAR"),
+        }
+        match previous_telemetry {
+            Some(value) => std::env::set_var("JCODE_NO_TELEMETRY", value),
+            None => std::env::remove_var("JCODE_NO_TELEMETRY"),
+        }
+        drop(terminal);
+        // Best-effort: the PTY child is dead (Drop kills it), so the home
+        // and workspace files are closed. Leftover dirs would accumulate in
+        // /tmp on every local run; CI machines are wiped anyway.
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
     #[test]
     fn sweeper_force_check_skips_exited_terminal() {
         // After the terminal exits, notify_exited already published the
