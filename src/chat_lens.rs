@@ -338,7 +338,7 @@ pub fn conversation_payload_with(
     };
     let (model, status, reasoning_effort) = index.session_model_status(&session_id);
     let title = index.session_title(&session_id);
-    let context_used = context_usage(&messages);
+    let context_used = context_usage(messages);
     Ok(json!({
         "source": "jcode-transcript",
         "session_id": session_id,

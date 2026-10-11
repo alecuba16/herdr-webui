@@ -55,6 +55,15 @@ struct SessionEvidence {
     generation: (u128, u64),
 }
 
+/// Parsed-turn cache entry for the chat lens: the stat signatures
+/// of snapshot+journal the entry was built from, plus the shared
+/// parse results so both consumers clone an `Arc` instead of a Vec.
+struct TurnsCacheEntry {
+    signatures: Vec<(u128, u64)>,
+    messages: Arc<Vec<serde_json::Value>>,
+    turns: Arc<Vec<Turn>>,
+}
+
 /// Cached evidence index over `~/.jcode/sessions` (design section 2:
 /// ~600 ms cold build, ~17 ms stat-only revalidation sweep — the cache
 /// is mandatory, never rebuild per poll).
@@ -79,16 +88,7 @@ pub struct JcodeStoreIndex {
     // any journal append or snapshot rewrite bumps it and the next
     // request re-reads and re-parses whole. Never served partial: a
     // signature mismatch drops the entry before any read.
-    turns_cache: Mutex<
-        HashMap<
-            String,
-            (
-                Vec<(u128, u64)>,
-                Arc<Vec<serde_json::Value>>,
-                Arc<Vec<Turn>>,
-            ),
-        >,
-    >,
+    turns_cache: Mutex<HashMap<String, TurnsCacheEntry>>,
 }
 
 impl JcodeStoreIndex {
@@ -144,14 +144,18 @@ impl JcodeStoreIndex {
             }
         }
         let mut cache = self.turns_cache.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((cached, messages, turns)) = cache.get(session_id) {
+        if let Some(entry) = cache.get(session_id) {
             // Match only when BOTH signatures agree AND neither file
             // is missing: a file with no stat cannot partially match,
             // it must be a mismatch.
-            let fresh = cached.len() == signatures.len()
-                && cached.iter().zip(signatures.iter()).all(|(a, b)| a == b);
+            let fresh = entry.signatures.len() == signatures.len()
+                && entry
+                    .signatures
+                    .iter()
+                    .zip(signatures.iter())
+                    .all(|(a, b)| a == b);
             if fresh {
-                return (Arc::clone(messages), Arc::clone(turns));
+                return (Arc::clone(&entry.messages), Arc::clone(&entry.turns));
             }
             cache.remove(session_id);
         }
@@ -159,7 +163,11 @@ impl JcodeStoreIndex {
         let turns = Arc::new(parse_jcode_transcript(&messages));
         cache.insert(
             session_id.to_string(),
-            (signatures, Arc::clone(&messages), Arc::clone(&turns)),
+            TurnsCacheEntry {
+                signatures,
+                messages: Arc::clone(&messages),
+                turns: Arc::clone(&turns),
+            },
         );
         (messages, turns)
     }
