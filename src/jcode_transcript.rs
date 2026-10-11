@@ -141,6 +141,37 @@ impl JcodeStoreIndex {
         (model, status, effort)
     }
 
+    /// The session's title as jcode recorded it: the journal's latest
+    /// meta line first (jcode rewrites it on every append, so it is
+    /// the freshest), the snapshot's `title` field as the fallback
+    /// (a compact-only or journal-rotated session still has it). None
+    /// when neither file is readable or neither carries a title.
+    pub fn session_title(&self, session_id: &str) -> Option<String> {
+        let journal = self.store_dir.join(format!("{session_id}.journal.jsonl"));
+        if let Ok(text) = std::fs::read_to_string(&journal) {
+            for line in text.lines().rev() {
+                let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                if let Some(title) = parsed
+                    .pointer("/meta/title")
+                    .and_then(|t| t.as_str())
+                    .filter(|t| !t.is_empty())
+                {
+                    return Some(title.to_string());
+                }
+            }
+        }
+        let snapshot = self.store_dir.join(format!("{session_id}.json"));
+        let text = std::fs::read_to_string(&snapshot).ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&text).ok()?;
+        parsed
+            .get("title")
+            .and_then(|t| t.as_str())
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    }
+
     /// Resolves a pane to its jcode session using the design's ordered
     /// steps. `pane_cwd` is the pane's (live, if available) working
     /// directory, `live_pids` the set of pids alive right now, and
@@ -434,6 +465,11 @@ pub struct Turn {
     pub ts: Option<String>,
     /// Last message timestamp (ISO) in this turn, when present.
     pub end_ts: Option<String>,
+    /// Id of the message that opened the turn (census: jcode ids are
+    /// globally unique, 0 duplicates at full store scale). None only
+    /// for a synthetic turn with no source message (the compaction
+    /// lead). The wire layer uses it as the paging cursor anchor.
+    pub message_id: Option<String>,
     pub parts: Vec<TurnPart>,
 }
 
@@ -499,9 +535,17 @@ pub enum TurnPart {
     Compact {
         summary: String,
     },
+    /// An image the user attached to the prompt (screenshot paste,
+    /// image read). The bytes never ride the page: the part carries
+    /// the media type and an opaque ref, and the client fetches on
+    /// demand through the image route (reference image part parity).
+    Image {
+        media_type: String,
+        /// Opaque fetch ref: the source message id. Validated against
+        /// `valid_tool_ref` before any use, same charset as tool refs.
+        ref_id: String,
+    },
 }
-
-pub const MAX_TURNS: usize = 200;
 
 /// Bookkeeping user messages jcode records but never shows as chat:
 /// the session-context reminder injected at session create (seen
@@ -521,6 +565,46 @@ fn message_ts(message: &serde_json::Value) -> Option<String> {
         .get("timestamp")
         .and_then(|t| t.as_str())
         .map(str::to_string)
+}
+
+fn message_id(message: &serde_json::Value) -> Option<String> {
+    message
+        .get("id")
+        .and_then(|i| i.as_str())
+        .filter(|i| valid_tool_ref(i))
+        .map(str::to_string)
+}
+
+/// The image types a chat shows (reference IMAGE_TYPES parity):
+/// anything else stays out of the page.
+fn is_supported_image_type(media_type: &str) -> bool {
+    matches!(
+        media_type,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
+
+/// One image block of a user message, as a fetch ref: the block must
+/// carry a supported media type AND actual base64 data (a ref without
+/// bytes behind it answers not_found and renders a broken img).
+/// Multiple images in one message keep their order.
+fn user_image_refs(message: &serde_json::Value) -> Vec<(String, String)> {
+    let Some(blocks) = message.get("content").and_then(|c| c.as_array()) else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter_map(|b| b.as_object())
+        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("image"))
+        .filter_map(|b| {
+            let media_type = b.get("media_type").and_then(|m| m.as_str())?;
+            let data = b.get("data").and_then(|d| d.as_str())?;
+            if !is_supported_image_type(media_type) || data.is_empty() {
+                return None;
+            }
+            Some((media_type.to_string(), data.to_string()))
+        })
+        .collect()
 }
 
 /// Parses the full message list (snapshot messages + journal delta,
@@ -546,6 +630,8 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
         match role {
             "user" => {
                 let mut texts: Vec<&str> = Vec::new();
+                let id = message_id(message);
+                let images = user_image_refs(message);
                 let mut tool_results: Vec<(
                     String,
                     serde_json::Map<String, serde_json::Value>,
@@ -600,15 +686,28 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
                         pending_tools.remove(&id);
                     }
                 }
-                if !texts.is_empty() {
+                if !texts.is_empty() || !images.is_empty() {
                     let ts = message_ts(message);
+                    // Image parts lead the turn (reference parity: the
+                    // user's words reference the picture above them).
+                    let mut parts: Vec<TurnPart> = images
+                        .into_iter()
+                        .filter_map(|(media_type, _)| {
+                            let ref_id = id.clone()?;
+                            Some(TurnPart::Image { media_type, ref_id })
+                        })
+                        .collect();
+                    if !texts.is_empty() {
+                        parts.push(TurnPart::Text {
+                            text: texts.join("\n"),
+                        });
+                    }
                     turns.push(Turn {
                         role: TurnRole::User,
                         ts: ts.clone(),
                         end_ts: ts,
-                        parts: vec![TurnPart::Text {
-                            text: texts.join("\n"),
-                        }],
+                        message_id: id.clone().or_else(|| message_id(message)),
+                        parts,
                     });
                 }
             }
@@ -623,6 +722,7 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
                             role: TurnRole::Assistant,
                             ts: ts.clone(),
                             end_ts: ts,
+                            message_id: message_id(message),
                             parts: Vec::new(),
                         });
                         turns.len() - 1
@@ -766,11 +866,10 @@ pub fn parse_jcode_transcript(messages: &[serde_json::Value]) -> Vec<Turn> {
         }
     }
 
-    if turns.len() > MAX_TURNS {
-        turns.drain(0..turns.len() - MAX_TURNS);
-    }
-    // Reference parity: a turn with no renderable parts drops (e.g. an
-    // assistant merge target whose every block was skipped).
+    // No MAX_TURNS cap here: the wire layer pages (a cursor named
+    // session id + message id), so the parser must return the FULL
+    // turn list or the cursor math sees a truncated history. The
+    // page-size bound lives in chat_lens::conversation_payload_with.
     turns.retain(|t| !t.parts.is_empty());
     turns
 }
@@ -973,6 +1072,133 @@ pub fn valid_tool_ref(reference: &str) -> bool {
     reference
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.' | '-'))
+}
+
+/// One image the conversation's image part named, by its ref (the
+/// source message id). Returns (media_type, decoded bytes) when that
+/// message carries an image block with the same supported media type
+/// and decodable base64 data; None otherwise (reference image_not_found
+/// parity: rotated out, a ref that never existed, or corrupt base64).
+/// The ref is charset-validated before the scan, same as tool refs.
+pub fn image_by_ref(
+    store_dir: &Path,
+    session_id: &str,
+    reference: &str,
+) -> Option<(String, Vec<u8>)> {
+    if !valid_tool_ref(reference) {
+        return None;
+    }
+    let messages = load_session_messages(store_dir, session_id);
+    for message in &messages {
+        if message.get("id").and_then(|i| i.as_str()) != Some(reference) {
+            continue;
+        }
+        let Some(blocks) = message.get("content").and_then(|c| c.as_array()) else {
+            continue;
+        };
+        for block in blocks.iter().filter_map(|b| b.as_object()) {
+            if block.get("type").and_then(|t| t.as_str()) != Some("image") {
+                continue;
+            }
+            let Some(media_type) = block.get("media_type").and_then(|m| m.as_str()) else {
+                continue;
+            };
+            let Some(data) = block.get("data").and_then(|d| d.as_str()) else {
+                continue;
+            };
+            if !is_supported_image_type(media_type) {
+                continue;
+            }
+            let Some(bytes) = base64_decode(data) else {
+                continue; // corrupt base64: not found, not a 500
+            };
+            return Some((media_type.to_string(), bytes));
+        }
+    }
+    None
+}
+
+/// Standard base64 encoder (no external crate): sibling of
+/// [`base64_decode`], used by the backend adapter to carry image
+/// bytes over the RPC envelope.
+pub fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[(n >> 6) as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[n as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// Standard base64 decoder (no external crate, mirrors the asset
+/// uploader's hand-rolled encoder in main.rs): rejects whitespace,
+/// stray padding, and non-alphabet bytes instead of guessing — an
+/// image that does not decode answers not_found, never half-decoded
+/// bytes.
+pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    fn reverse_table() -> [i8; 256] {
+        let mut table = [-1i8; 256];
+        let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for (index, byte) in alphabet.iter().enumerate() {
+            table[*byte as usize] = index as i8;
+        }
+        table
+    }
+    let bytes = input.as_bytes();
+    if bytes.is_empty() || bytes.len() % 4 != 0 {
+        return None;
+    }
+    let reverse = reverse_table();
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let mut sextets = [0u8; 4];
+        let mut pad = 0usize;
+        for (slot, byte) in chunk.iter().enumerate() {
+            if *byte == b'=' {
+                if slot < 2 {
+                    return None; // pad in a data slot: malformed
+                }
+                pad += 1;
+                sextets[slot] = 0;
+                continue;
+            }
+            if pad > 0 {
+                return None; // data after pad: malformed
+            }
+            let value = reverse[*byte as usize];
+            if value < 0 {
+                return None; // non-alphabet byte
+            }
+            sextets[slot] = value as u8;
+        }
+        let n = (u32::from(sextets[0]) << 18)
+            | (u32::from(sextets[1]) << 12)
+            | (u32::from(sextets[2]) << 6)
+            | u32::from(sextets[3]);
+        out.push((n >> 16) as u8);
+        if pad < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(n as u8);
+        }
+    }
+    Some(out)
 }
 
 /// TOOL_OUTPUT_MAX parity: a whole output is still bounded — a page of
@@ -1553,13 +1779,17 @@ mod tests {
     }
 
     #[test]
-    fn max_turns_caps_output() {
+    fn parser_returns_full_history_for_the_wire_pager() {
+        // The cap moved to the wire layer (chat_lens pages by cursor):
+        // the parser must return every turn or the cursor math would
+        // see a truncated history.
+        const MAX_TURNS: usize = 200;
         let mut msgs = Vec::new();
         for i in 0..(MAX_TURNS + 10) {
             msgs.push(user_text(&format!("m{i}"), "x"));
         }
         let turns = parse_jcode_transcript(&msgs);
-        assert_eq!(turns.len(), MAX_TURNS);
+        assert_eq!(turns.len(), MAX_TURNS + 10);
     }
 
     // --- loader tests over a synthetic store ---

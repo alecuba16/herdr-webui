@@ -38,7 +38,7 @@ function parseHtml(host, html) {
     const node = top();
     if (node) node.textContent += text;
   };
-  const tokenRe = /<\/(div|span|button|pre|form|input)\s*>|<(div|span|button|pre|form|input)\b([^>]*?)(\/)?>/g;
+  const tokenRe = /<\/(div|span|button|pre|form|input|img)\s*>|<(div|span|button|pre|form|input|img)\b([^>]*?)(\/)?>/g;
   let last = 0;
   let m;
   while ((m = tokenRe.exec(html)) !== null) {
@@ -62,8 +62,9 @@ function parseHtml(host, html) {
       node.parentNode = host;
     }
     // Void elements never open a nesting scope, even without a
-    // self-closing slash (real HTML parsers close <input> implicitly).
-    if (!m[4] && m[2] !== "input") stack.push(node);
+    // self-closing slash (real HTML parsers close <input> and <img>
+    // implicitly).
+    if (!m[4] && m[2] !== "input" && m[2] !== "img") stack.push(node);
   }
   pushText(html.slice(last));
   return root;
@@ -351,6 +352,28 @@ function makeContext(overrides = {}) {
     document: doc,
     state: overrides.state || { pane: "pane_1", agents: [] },
     api: overrides.api || (async () => { throw Error("no api"); }),
+    // The lens polls the conversation route with a direct fetch (304
+    // bypass, reference parity), so the harness serves the injected api
+    // stub through a fetch-shaped Response: status/headers/json(). The
+    // stub sees the same URL the browser would send.
+    fetch: async (url, opts) => {
+      const called = overrides.fetch
+        ? await overrides.fetch(url, opts)
+        : undefined;
+      if (called) return called;
+      const body = await ctx.api(url);
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: {
+          get(name) {
+            return String(name).toLowerCase() === "etag" ? null : null;
+          },
+        },
+        json: async () => body,
+      };
+    },
     term: null,
     CSS: undefined,
     // The lens reads these from the DESKTOP_JS bundle scope (terminal.js
@@ -504,6 +527,8 @@ describe("lens structured chat mode", () => {
     equal(seen[0], null, "lens open clears stale meta before the first poll");
     equal(seen[1].model, "m", "model travels from the poll response");
     equal(seen[1].reasoning_effort, null, "missing effort stays null");
+    equal(seen[1].title, null, "missing title stays null");
+    equal(seen[1].context_used, null, "missing context stays null");
 
     // A failing poll clears the meta (never a stale label).
     ctx.api = async () => { throw Error("boom"); };
@@ -742,6 +767,7 @@ describe("lens structured chat mode", () => {
     match(content.innerHTML, /No jcode conversation found/,
       "fresh poll refusal wins over the stale resolved row");
   });
+
 
   it("appends new turns without rewriting old ones", async () => {
     const first = conversationFixture();
@@ -1782,5 +1808,259 @@ describe("lens working indicator (thinking animation)", () => {
     ctx.HerdrLens.onAgentStatusChanged({ pane_id: "pane_1", agent_status: "blocked" });
     await settle();
     ok(!content.querySelector(".lens-working"), "blocked replaces the working block");
+  });
+});
+
+// ---- cursor paging, ETag polling, 409 resets, image parts ----
+// The wire contract the routes and the lens share: before/from page
+// cursors, If-None-Match 304 short-circuits, history_changed resets,
+// and image parts pointing at the byte route.
+describe("lens cursor paging and poll contract", () => {
+  // Fixture pages: newest page of 2 turns with a before cursor, and
+  // one older page of 2 turns ending at the transcript beginning.
+  function pagedFixtures() {
+    const newest = {
+      ...conversationFixture(),
+      cursor: "session_x:g1:m1",
+      turns: [
+        { role: "user", ts: "t3", end_ts: "t3", parts: [{ kind: "text", text: "third" }] },
+        { role: "assistant", ts: "t4", end_ts: "t4", parts: [{ kind: "text", text: "fourth" }] },
+      ],
+    };
+    const older = {
+      ...conversationFixture(),
+      cursor: null,
+      turns: [
+        { role: "user", ts: "t1", end_ts: "t1", parts: [{ kind: "text", text: "first" }] },
+        { role: "assistant", ts: "t2", end_ts: "t2", parts: [{ kind: "text", text: "second" }] },
+      ],
+    };
+    return { newest, older };
+  }
+
+
+  it("loads the older page above and keeps the viewport anchored", async () => {
+    const { newest, older } = pagedFixtures();
+    let calls = [];
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      fetch: async (url) => {
+        calls.push(url);
+        const wantsOlder = String(url).includes("before=");
+        const body = wantsOlder ? older : newest;
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: { get: () => null },
+          json: async () => body,
+        };
+      },
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    ok(content.querySelector(".lens-older-load"), "load-older button renders while a cursor exists");
+    equal(content.querySelectorAll(".lens-turn").length, 2, "newest page only at first");
+    // Click the load-older control.
+    const button = content.querySelector("[data-load-older]");
+    for (const fn of lens.listeners.click || []) fn({ target: button });
+    await settle();
+    equal(content.querySelectorAll(".lens-turn").length, 4, "older page prepended");
+    const html = content.innerHTML;
+    ok(html.indexOf("first") < html.indexOf("fourth"), "older turns render above the newest");
+    ok(html.includes("first") && html.includes("fourth"), "both pages present");
+    ok(
+      calls.some((u) => String(u).includes("before=session_x%3Ag1%3Am1")),
+      "the before cursor travels URL-encoded",
+    );
+    // The endcap replaces the button once the beginning is held.
+    ok(content.querySelector(".lens-older-done"), "beginning endcap after the last page");
+    ok(!content.querySelector(".lens-older-load"), "no button once at the beginning");
+  });
+
+  it("a 304 skips every render and re-etag key: same DOM, one request", async () => {
+    const fixture = { ...conversationFixture(), cursor: null };
+    let calls = [];
+    let etagSeen = null;
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      fetch: async (url, opts) => {
+        calls.push({ url: String(url), etag: opts && opts.headers ? opts.headers["if-none-match"] : undefined });
+        if (etagSeen && opts && opts.headers && opts.headers["if-none-match"] === etagSeen) {
+          return { ok: false, status: 304, statusText: "Not Modified", headers: { get: () => etagSeen } };
+        }
+        etagSeen = 'W/"g1"';
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: { get: (n) => (String(n).toLowerCase() === "etag" ? 'W/"g1"' : null) },
+          json: async () => fixture,
+        };
+      },
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    const turnsBefore = [...content.querySelectorAll(".lens-turn")];
+    equal(turnsBefore.length, 2, "first poll renders the turns");
+    fireTimers(ctx);
+    await settle();
+    equal(calls.length, 2, "second poll fired");
+    equal(calls[1].etag, 'W/"g1"', "second poll carries If-None-Match");
+    const turnsAfter = [...content.querySelectorAll(".lens-turn")];
+    equal(turnsAfter.length, 2, "304 renders nothing new");
+    equal(turnsAfter[0], turnsBefore[0], "node identity survives the 304");
+  });
+
+
+  it("a 409 history_changed drops held pages and re-anchors in one round trip", async () => {
+    const { newest, older } = pagedFixtures();
+    const rotated = {
+      ...conversationFixture(),
+      cursor: null,
+      turns: [
+        { role: "user", ts: "r1", end_ts: "r1", parts: [{ kind: "text", text: "rotated fresh" }] },
+      ],
+    };
+    let historyRewritten = false;
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      fetch: async (url) => {
+        const u = String(url);
+        if (u.includes("before=")) {
+          if (historyRewritten) {
+            return {
+              ok: false,
+              status: 409,
+              statusText: "Conflict",
+              headers: { get: () => null },
+              json: async () => ({ error: "history_changed: cursor message no longer in the transcript", code: "history_changed" }),
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            headers: { get: () => null },
+            json: async () => older,
+          };
+        }
+        if (u.includes("from=")) {
+          // The held from-cursor names a message the rotated transcript
+          // no longer holds: 409 history_changed.
+          if (!historyRewritten) {
+            return {
+              ok: true,
+              status: 200,
+              statusText: "OK",
+              headers: { get: () => null },
+              json: async () => newest,
+            };
+          }
+          return {
+            ok: false,
+            status: 409,
+            statusText: "Conflict",
+            headers: { get: () => null },
+            json: async () => ({
+              error: "history_changed: cursor message no longer in the transcript",
+              code: "history_changed",
+            }),
+          };
+        }
+        // The plain newest-page read (first poll and the post-409 clean
+        // refetch): the rotated page once the rewrite happened.
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: { get: () => null },
+          json: async () => (historyRewritten ? rotated : newest),
+        };
+      },
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    const button = content.querySelector("[data-load-older]");
+    for (const fn of lens.listeners.click || []) fn({ target: button });
+    await settle();
+    equal(content.querySelectorAll(".lens-turn").length, 4, "older page held");
+    // The history rewrites: the next before fetch 409s and the poll's
+    // clean refetch serves the rotated newest page.
+    historyRewritten = true;
+    fireTimers(ctx);
+    await settle();
+    const html = content.innerHTML;
+    ok(html.includes("rotated fresh"), "clean refetch renders the rotated page");
+    ok(!html.includes("first"), "held older pages are gone");
+    const resetState = ctx.HerdrLens._olderState();
+    equal(resetState.olderState, "idle", "older state reset");
+    equal(resetState.olderCursor, null, "no held cursor");
+    equal(resetState.heldFrom, null, "no held anchor");
+    equal(resetState.olderTurns.length, 0, "held pages dropped");
+  });
+
+  it("image parts render the byte route with an escaped ref", async () => {
+    const fixture = {
+      ...conversationFixture(),
+      cursor: null,
+      turns: [
+        {
+          role: "user",
+          ts: "t1",
+          end_ts: "t1",
+          parts: [
+            { kind: "image", media_type: "image/png", ref: "msg_img_1" },
+            { kind: "text", text: "look at this" },
+          ],
+        },
+      ],
+    };
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => fixture,
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    const img = content.querySelector(".lens-image img");
+    ok(img, "image part renders an <img>");
+    equal(
+      img.getAttribute("src"),
+      "/api/panes/pane_1/conversation/image?ref=msg_img_1",
+      "src points at the byte route with the ref",
+    );
+    equal(img.getAttribute("loading"), "lazy", "lazy loading like the reference");
+    ok(img.getAttribute("alt").includes("image/png"), "alt names the media type");
+    // No ref: no img, no crash (the part renders as nothing).
+    const noRef = {
+      ...fixture,
+      turns: [
+        {
+          role: "user",
+          ts: "t1",
+          end_ts: "t1",
+          parts: [
+            { kind: "image", media_type: "image/png", ref: "" },
+            { kind: "text", text: "no ref here" },
+          ],
+        },
+      ],
+    };
+    ctx.api = async () => noRef;
+    fireTimers(ctx);
+    await settle();
+    ok(!content.querySelector(".lens-image img"), "ref-less image renders nothing");
   });
 });

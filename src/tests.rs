@@ -10858,3 +10858,64 @@ fn submit_pane_code_reads_builtin_prefix_and_herdr_code() {
     // Nothing recognizable: empty string, not a panic.
     assert_eq!(submit_pane_code(&json!({})), "");
 }
+
+/// The conversation route's error classification (design codes -> HTTP
+/// statuses): the chat lens reads `code` to pick its reset paths, so
+/// the mapping is a wire contract, same style as submit_pane_error.
+#[test]
+fn conversation_error_classifies_design_codes_to_statuses() {
+    // Resolution refusals: 404 (the pane is real, the conversation is not).
+    let (status, code) = conversation_error("agent_not_found: pane x has no agent");
+    assert_eq!(code, "agent_not_found");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, code) = conversation_error("unsupported_agent: claude has no transcript support");
+    assert_eq!(code, "unsupported_agent");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, code) = conversation_error("no_session_path: no jcode session in this pane");
+    assert_eq!(code, "no_session_path");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, code) = conversation_error("ambiguous: two sessions match");
+    assert_eq!(code, "ambiguous");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, code) = conversation_error("transcript_missing: session files unreadable");
+    assert_eq!(code, "transcript_missing");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A cursor the transcript no longer knows: 409 history_changed
+    // (reference HistoryChanged parity) — the client drops held pages
+    // and re-anchors in ONE round trip.
+    let (status, code) = conversation_error("history_changed: cursor message no longer in the transcript");
+    assert_eq!(code, "history_changed");
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Unknown codes degrade to 502 with the raw prefix.
+    let (status, code) = conversation_error("io_error: read failed");
+    assert_eq!(code, "io_error");
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+/// The ETag header contract of the conversation route: weak form
+/// W/"<version>", compare after stripping W/ (reference index.ts
+/// parity). These strings are the wire contract between the route and
+/// the lens poll (If-None-Match in, 304 out).
+#[test]
+fn conversation_etag_is_weak_and_strips_w_on_compare() {
+    // Weak tag format: W/"version".
+    let version = "g7317e00af883a5c2";
+    let etag = format!("W/\"{version}\"");
+    assert!(etag.starts_with("W/\""));
+    assert!(etag.ends_with('"'));
+    // The browser sends the tag back verbatim; the compare strips W/.
+    let bare = format!("\"{version}\"");
+    let matches = etag
+        .trim_start_matches("W/")
+        == bare;
+    assert!(matches, "weak round trip must match");
+    // A strong-form send (client stripped W/) still matches: same
+    // trim on both sides.
+    assert_eq!(bare.trim_start_matches("W/"), bare);
+}

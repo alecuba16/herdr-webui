@@ -159,20 +159,42 @@
     renderSessionMeta();
   }
 
+  // A token count the way a status line reads it (reference
+  // compose.ts formatTokens parity): 950, 68k, 1.2M.
+  function formatTokens(tokens) {
+    const value = Number(tokens);
+    if (!Number.isFinite(value)) return "";
+    if (value < 1000) return String(Math.round(value));
+    if (value < 1000000) return `${Math.round(value / 1000)}k`;
+    return `${(value / 1000000).toFixed(1).replace(/\.0$/, "")}M`;
+  }
+
   function sessionMetaText(meta) {
     // Optional argument so callers (and tests) can render arbitrary
     // shapes; default reflects whatever the last poll published.
     const source = meta === undefined ? sessionMeta : meta;
     if (!source) return "";
+    const segments = [];
+    // The conversation's title first, the way the pane names itself
+    // (reference document.title/displayPaneTitle role): muted but
+    // leading, because it says WHAT the reader is looking at.
+    const title = (source.title || "").trim();
+    if (title) segments.push(title);
     const model = source.model || "";
     const effort = source.reasoning_effort || "";
     // The reference keeps a "Reasoning —" placeholder when effort is
     // unknown; we drop the segment instead and only ever render known
     // values, so the line never carries a dangling dash.
-    if (model && effort) return `${model} · Reasoning ${effort}`;
-    if (model) return model;
-    if (effort) return `Reasoning ${effort}`;
-    return "";
+    if (model && effort) segments.push(`${model} · Reasoning ${effort}`);
+    else if (model) segments.push(model);
+    else if (effort) segments.push(`Reasoning ${effort}`);
+    // Context tokens of the LAST request (reference ContextRing's
+    // tooltip text). A bare count without the window is what the
+    // journal honestly carries, so no percent is invented.
+    if (Number.isFinite(source.context_used) && source.context_used > 0) {
+      segments.push(`${formatTokens(source.context_used)} tokens`);
+    }
+    return segments.join(" · ");
   }
 
   function renderSessionMeta() {

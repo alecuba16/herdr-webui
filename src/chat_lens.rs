@@ -126,26 +126,101 @@ pub fn agent_session(agent: &str, context: &PaneContext) -> Value {
     }
 }
 
+/// Page request for the conversation payload (reference `before` /
+/// `from` parity): `before` names the turn the next OLDER page must
+/// end before; `from` anchors the newest page so a poll never reads
+/// more than a page once the chat holds older pages. Both cursors
+/// are validated against the SAME session + generation or refused
+/// with `history_changed` (409 semantics, design section 3).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConversationPage {
+    /// Cursor of the turn BEFORE which the page is cut. None = the
+    /// newest page (no `before` param).
+    pub before: Option<String>,
+    /// Cursor of the oldest turn the chat already holds (`from`): a
+    /// newest-page poll starts at it while it is still inside the
+    /// newest page. None = first fetch.
+    pub from: Option<String>,
+}
+
+/// A validated cursor: which session, which generation, which message
+/// id opened the turn. The string form is `session_id:generation:message_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Cursor {
+    session_id: String,
+    generation: String,
+    message_id: String,
+}
+
+impl Cursor {
+    fn encode(&self) -> String {
+        format!("{}:{}:{}", self.session_id, self.generation, self.message_id)
+    }
+
+    /// Parse `session_id:generation:message_id`. The session segment
+    /// must match the live session (a cursor from another file answers
+    /// history_changed, reference parity). The generation segment is
+    /// NOT compared to the live stat signature: appends bump it every
+    /// poll, and a held `from` cursor would 409 on every new message.
+    /// Rotation is caught one layer down instead — the message id must
+    /// still exist in the transcript, and rotation removes ids
+    /// (snapshot+journal replay keeps survivors; /clear drops them).
+    fn decode(cursor: &str, session_id: &str) -> Option<Self> {
+        let mut parts = cursor.splitn(3, ':');
+        let c_session = parts.next()?;
+        let c_generation = parts.next()?;
+        let c_message = parts.next()?;
+        if c_session != session_id {
+            return None; // another session's cursor
+        }
+        if !crate::jcode_transcript::valid_tool_ref(c_message) {
+            return None;
+        }
+        Some(Self {
+            session_id: c_session.to_string(),
+            generation: c_generation.to_string(),
+            message_id: c_message.to_string(),
+        })
+    }
+}
+
 /// Full conversation payload for a jcode pane (design section 4). The
 /// stat signature of BOTH files (snapshot + journal) forms the response
 /// `version`: an in-place rewrite (jcode writes tmp + rename) bumps it,
 /// and any rotation/compaction changes it — so the client can render
 /// append-only while it is unchanged (round 11).
-pub fn conversation_payload(context: &PaneContext) -> Result<Value, String> {
-    conversation_payload_with(store_index(), context)
-}
-
-/// Same, against an explicit evidence index (tests pass a fixture
-/// store; the adapter passes the process-lifetime one).
+///
+/// Tests pass a fixture index; the adapter passes the process-lifetime
+/// one (`store_index()`).
 pub fn conversation_payload_with(
     index: &JcodeStoreIndex,
     context: &PaneContext,
+    page: &ConversationPage,
 ) -> Result<Value, String> {
     // Resolution (pid evidence, live-pid+Active, recency tiebreak) is
     // shared with tool output: the conversation and every fetched
     // output must come from the SAME session.
     let session_id = resolve_session_with(index, context)?;
     let store_dir = index.store_dir();
+    let generation = index.session_generation(&session_id);
+    // Cursor validation FIRST (reference parseCursor parity): a cursor
+    // naming another session refuses with history_changed before any
+    // transcript work happens. (The generation segment rides along for
+    // debugging only; see Cursor::decode for why it is not compared.)
+    let before = match &page.before {
+        Some(raw) => Some(
+            Cursor::decode(raw, &session_id)
+                .ok_or_else(|| "history_changed: cursor names another session".to_string())?,
+        ),
+        None => None,
+    };
+    let from = match &page.from {
+        Some(raw) => Some(
+            Cursor::decode(raw, &session_id)
+                .ok_or_else(|| "history_changed: cursor names another session".to_string())?,
+        ),
+        None => None,
+    };
     let messages = crate::jcode_transcript::load_session_messages(store_dir, &session_id);
     let compaction = crate::jcode_transcript::load_compaction(store_dir, &session_id);
     // Both files unreadable/unparseable NOW (they existed at sweep time —
@@ -175,22 +250,124 @@ pub fn conversation_payload_with(
                 role: TurnRole::User,
                 ts: None,
                 end_ts: None,
+                message_id: None,
                 parts: vec![TurnPart::Compact { summary }],
             },
         );
     }
-    let version = index.session_generation(&session_id);
+    // --- page cut (reference MAX_PAGE_PROMPTS parity) ---
+    // Cursors name the message id that OPENED a turn. The `before`
+    // cursor's own turn belongs to the page ABOVE it: a `before` page
+    // must end strictly before it, so find the turn whose message_id
+    // matches and cut there. An id the live transcript no longer
+    // holds answers history_changed (reference parseCursor parity):
+    // rotation or /clear removed it, and serving anything else would
+    // let the chat join pages from two different histories. The
+    // compaction lead has no message id; it can never be a cursor
+    // anchor and always stays on the page containing the session's
+    // oldest real turn.
+    let mut cut = turns.len();
+    if let Some(before) = &before {
+        cut = turns
+            .iter()
+            .position(|t| t.message_id.as_deref() == Some(before.message_id.as_str()))
+            .ok_or_else(|| "history_changed: cursor message no longer in the transcript".to_string())?;
+    }
+    let mut start = 0usize;
+    if let Some(from) = &from {
+        // Hold the from-anchor while it is inside the newest page
+        // (reference: `held >= newest.start`): the anchor's index is
+        // where the newest page starts. A vanished `from` id answers
+        // history_changed for the same reason as a vanished `before`
+        // id: the anchor cannot be honored, and the reference makes the
+        // chat re-anchor with a clean fetch rather than guess.
+        let pos = turns
+            .iter()
+            .position(|t| t.message_id.as_deref() == Some(from.message_id.as_str()))
+            .ok_or_else(|| "history_changed: cursor message no longer in the transcript".to_string())?;
+        if pos < cut {
+            start = pos;
+        }
+    }
+    // At most PAGE_TURNS turns, ending at `cut`, starting on a turn
+    // boundary: the newest page must exactly meet the page above it.
+    let page_len = cut.saturating_sub(start).min(PAGE_TURNS);
+    start = cut.saturating_sub(page_len);
+    let page_turns = &turns[start..cut];
+    // The next-older cursor: the message id that opens the page's
+    // first turn. A page that starts AT the transcript's beginning
+    // carries no cursor (reference: `cursor = null at the
+    // conversation's beginning`) — the load-older control must see
+    // the beginning, not a self-referencing `before` of the first
+    // turn (which would answer a zero-turn page forever).
+    let cursor = if start > 0 {
+        page_turns
+            .first()
+            .and_then(|t| t.message_id.clone())
+            .map(|message_id| Cursor {
+                session_id: session_id.clone(),
+                generation: generation.clone(),
+                message_id,
+            })
+            .map(|c| c.encode())
+    } else {
+        None
+    };
     let (model, status, reasoning_effort) = index.session_model_status(&session_id);
+    let title = index.session_title(&session_id);
+    let context_used = context_usage(&messages);
     Ok(json!({
         "source": "jcode-transcript",
         "session_id": session_id,
-        "turns": turns.iter().map(turn_json).collect::<Vec<_>>(),
-        "cursor": null,
+        "turns": page_turns.iter().map(turn_json).collect::<Vec<_>>(),
+        "cursor": cursor,
+        "title": title,
+        "context_used": context_used,
         "model": model,
         "reasoning_effort": reasoning_effort,
         "status": status,
-        "version": version,
+        "version": generation,
     }))
+}
+
+/// Page bound (reference MAX_PAGE_PROMPTS: half of MAX_TURNS, a
+/// prompt-count the reference picks so a page reads quickly).
+const PAGE_TURNS: usize = 100;
+
+/// Tokens of context the LAST request filled (reference
+/// ConversationMetadata.context.used parity). jcode records
+/// `token_usage` per assistant message; the LAST one is the context
+/// the model just saw. `prompt_tokens` is the full prompt size per
+/// request (jcode-session-types doc comment: older records lack it
+/// and mixed-provider totals cannot be reconstructed), so it is the
+/// only honest number; absent means absent on the wire.
+fn context_usage(messages: &[serde_json::Value]) -> Option<u64> {
+    messages.iter().rev().find_map(|message| {
+        let usage = message.get("token_usage")?;
+        usage
+            .get("prompt_tokens")
+            .and_then(|t| t.as_u64())
+            .filter(|t| *t > 0)
+    })
+}
+
+/// One image the conversation's image part named, by ref (reference
+/// conversationImage parity): same resolution pipeline and error
+/// codes as the conversation itself, so an image ref can only be
+/// fetched from the session the page came from. Ok(None) ->
+/// image_not_found.
+/// Same, against an explicit evidence index (fixture stores in tests).
+pub fn conversation_image_with(
+    index: &JcodeStoreIndex,
+    context: &PaneContext,
+    reference: &str,
+) -> Result<Option<(String, Vec<u8>)>, String> {
+    let session_id = resolve_session_with(index, context)?;
+    Ok(crate::jcode_transcript::image_by_ref(
+        index.store_dir(),
+        &session_id,
+        reference,
+    ))
 }
 
 /// One whole tool output by call id (reference toolOutput parity):
@@ -269,6 +446,9 @@ fn turn_json(turn: &Turn) -> Value {
                 })
             }
             TurnPart::Compact { summary } => json!({ "kind": "compact", "summary": summary }),
+            TurnPart::Image { media_type, ref_id } => {
+                json!({ "kind": "image", "media_type": media_type, "ref": ref_id })
+            }
         })
         .collect::<Vec<_>>();
     json!({
@@ -327,6 +507,7 @@ mod tests {
             role: TurnRole::Assistant,
             ts: Some("2026-01-01T00:00:00Z".into()),
             end_ts: Some("2026-01-01T00:00:01Z".into()),
+            message_id: Some("message_1".into()),
             parts: vec![
                 TurnPart::Text {
                     text: "answer".into(),
@@ -401,6 +582,7 @@ mod tests {
             role: TurnRole::User,
             ts: None,
             end_ts: None,
+            message_id: None,
             parts: vec![TurnPart::Tool {
                 name: "t".into(),
                 brief: "b".into(),
@@ -532,7 +714,7 @@ mod tests {
     #[test]
     fn conversation_payload_with_builds_turns_version_and_stats() {
         let (_dir, index, _id) = fixture_store("payload");
-        let payload = conversation_payload_with(&index, &fixture_context()).unwrap();
+        let payload = conversation_payload_with(&index, &fixture_context(), &ConversationPage::default()).unwrap();
         // Wire shape (design section 4): source, session_id, version,
         // turns.
         assert_eq!(payload["source"], "jcode-transcript");
@@ -559,7 +741,7 @@ mod tests {
         let session_id = resolve_session_with(&index, &fixture_context()).unwrap();
         std::fs::remove_file(dir.join(format!("{session_id}.json"))).unwrap();
         std::fs::remove_file(dir.join(format!("{session_id}.journal.jsonl"))).unwrap();
-        let err = conversation_payload_with(&index, &fixture_context()).unwrap_err();
+        let err = conversation_payload_with(&index, &fixture_context(), &ConversationPage::default()).unwrap_err();
         assert!(
             err.starts_with("transcript_missing") || err.starts_with("no_session_path"),
             "got {err}"
@@ -584,7 +766,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let payload = conversation_payload_with(&index, &fixture_context()).unwrap();
+        let payload = conversation_payload_with(&index, &fixture_context(), &ConversationPage::default()).unwrap();
         assert_eq!(payload["turns"].as_array().unwrap().len(), 0);
     }
 
@@ -666,7 +848,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let payload = conversation_payload_with(&index, &fixture_context()).unwrap();
+        let payload = conversation_payload_with(&index, &fixture_context(), &ConversationPage::default()).unwrap();
         let turns = payload["turns"].as_array().unwrap();
         assert_eq!(turns.len(), 2);
         assert_eq!(turns[0]["role"], "user");
@@ -701,12 +883,283 @@ mod tests {
         // does not exist, no live processes, no pane text. Read-only
         // on the real store; the answer is refusal regardless of its
         // contents (nothing can match an empty process set).
-        let err = conversation_payload(&dummy_context()).unwrap_err();
+        let err = conversation_payload_with(
+            &store_index(),
+            &dummy_context(),
+            &ConversationPage::default(),
+        )
+        .unwrap_err();
         assert!(err.starts_with("no_session_path"), "got {err}");
         // Invalid ref short-circuits before resolution.
         assert_eq!(tool_output(&dummy_context(), "has space"), Ok(None));
         // Valid ref, unresolvable pane: refusal, not a crash.
         let err = tool_output(&dummy_context(), "toolu_deadbeef").unwrap_err();
         assert!(err.starts_with("no_session_path"), "got {err}");
+    }
+
+    // --- cursor paging (reference before/from parity) ---
+
+    /// A store with `count` user turns, ids m001..: long enough to
+    /// cross the PAGE_TURNS bound.
+    fn paged_store(name: &str, count: usize) -> (std::path::PathBuf, JcodeStoreIndex, String) {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-chat-lens-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let session_id = format!("session_{name}");
+        let messages: Vec<Value> = (0..count)
+            .map(|i| {
+                json!({
+                    "id": format!("m{i:03}"),
+                    "role": "user",
+                    "content": [{"type": "text", "text": format!("turn {i}")}]
+                })
+            })
+            .collect();
+        std::fs::write(
+            dir.join(format!("{session_id}.json")),
+            serde_json::to_string(&json!({
+                "working_dir": "/w",
+                "last_pid": 4242,
+                "status": "Active",
+                "messages": messages,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        (dir, index, session_id)
+    }
+
+    #[test]
+    fn newest_page_is_capped_and_carries_a_before_cursor() {
+        let (_dir, index, session_id) = paged_store("page", 250);
+        let payload =
+            conversation_payload_with(&index, &fixture_context(), &ConversationPage::default())
+                .unwrap();
+        let turns = payload["turns"].as_array().unwrap();
+        assert_eq!(turns.len(), PAGE_TURNS, "newest page is exactly PAGE_TURNS");
+        // The newest page ends at the transcript tail.
+        assert_eq!(turns.last().unwrap()["parts"][0]["text"], "turn 249");
+        // The cursor is the ENCODED session:generation:message form the
+        // client passes back as `before`.
+        let cursor = payload["cursor"].as_str().unwrap();
+        assert!(cursor.ends_with(":m150"), "cursor names m150, got {cursor}");
+        assert!(cursor.starts_with(&session_id), "cursor names this session");
+    }
+
+    #[test]
+    fn before_cursor_serves_the_page_above() {
+        let (_dir, index, session_id) = paged_store("before", 250);
+        let newest =
+            conversation_payload_with(&index, &fixture_context(), &ConversationPage::default())
+                .unwrap();
+        let cursor = newest["cursor"].as_str().unwrap().to_string();
+        let older = conversation_payload_with(
+            &index,
+            &fixture_context(),
+            &ConversationPage { before: Some(cursor), from: None },
+        )
+        .unwrap();
+        let turns = older["turns"].as_array().unwrap();
+        assert_eq!(turns.len(), PAGE_TURNS);
+        // The before-page ENDS strictly before the cursor's own turn:
+        // its last turn is the one just older than m150.
+        assert_eq!(turns.last().unwrap()["parts"][0]["text"], "turn 149");
+        assert_eq!(turns.first().unwrap()["parts"][0]["text"], "turn 50");
+        // And it chains: the next-older cursor names m050.
+        let older_cursor = older["cursor"].as_str().unwrap();
+        assert!(older_cursor.starts_with(&format!("{session_id}:")), "same session");
+        assert!(older_cursor.ends_with(":m050"), "cursor names m050, got {older_cursor}");
+        // The third page reaches the beginning: cursor becomes null.
+        let oldest = conversation_payload_with(
+            &index,
+            &fixture_context(),
+            &ConversationPage { before: Some(older_cursor.to_string()), from: None },
+        )
+        .unwrap();
+        let oldest_turns = oldest["turns"].as_array().unwrap();
+        assert_eq!(oldest_turns.len(), 50);
+        assert_eq!(oldest_turns.first().unwrap()["parts"][0]["text"], "turn 0");
+        assert_eq!(oldest["cursor"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn from_cursor_holds_the_anchor_inside_the_newest_page() {
+        // 120 turns: the newest page is capped at PAGE_TURNS (100), so
+        // it starts at m020. A `from` anchor INSIDE that page is honored
+        // (reference `held >= newest.start ? held : newest.start`).
+        let (_dir, index, _id) = paged_store("from", 120);
+        let anchored = conversation_payload_with(
+            &index,
+            &fixture_context(),
+            &ConversationPage { before: None, from: Some("session_from:g1:m050".into()) },
+        )
+        .unwrap();
+        let turns = anchored["turns"].as_array().unwrap();
+        assert_eq!(
+            turns.first().unwrap()["parts"][0]["text"],
+            "turn 50",
+            "from anchor inside the page window is the first turn served"
+        );
+        assert_eq!(turns.len(), 70);
+        // An anchor OLDER than the page window cannot be honored in one
+        // page: the newest page serves its capped window and the client
+        // detects the slide (cursor != from) and backfills with `before`.
+        // This mirrors the reference's `held >= newest.start ? held : newest.start`.
+        let slid = conversation_payload_with(
+            &index,
+            &fixture_context(),
+            &ConversationPage { before: None, from: Some("session_from:g1:m010".into()) },
+        )
+        .unwrap();
+        let slid_turns = slid["turns"].as_array().unwrap();
+        assert_eq!(slid_turns.len(), PAGE_TURNS);
+        assert_eq!(slid_turns.first().unwrap()["parts"][0]["text"], "turn 20");
+        assert!(slid["cursor"].as_str().unwrap().ends_with(":m020"));
+        // The anchor survives appends: a from-poll after two new turns
+        // still starts at the (in-window) anchor and reaches the tail.
+        let (dir, index, _id) = paged_store("from2", 60);
+        std::fs::write(
+            dir.join("session_from2.journal.jsonl"),
+            serde_json::to_string(&json!({
+                "meta": {},
+                "append_messages": [
+                    {"id": "m060", "role": "user",
+                     "content": [{"type": "text", "text": "new a"}]},
+                    {"id": "m061", "role": "user",
+                     "content": [{"type": "text", "text": "new b"}]}
+                ]
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+        let after = conversation_payload_with(
+            &index,
+            &fixture_context(),
+            &ConversationPage { before: None, from: Some("session_from2:g1:m010".into()) },
+        )
+        .unwrap();
+        let turns = after["turns"].as_array().unwrap();
+        assert_eq!(turns.first().unwrap()["parts"][0]["text"], "turn 10");
+        assert_eq!(turns.last().unwrap()["parts"][0]["text"], "new b");
+    }
+
+    #[test]
+    fn cursor_from_another_session_or_a_vanished_id_answers_history_changed() {
+        let (_dir, index, session_id) = paged_store("gone", 5);
+        // Session-mismatched cursor: refused before any transcript work.
+        let err = conversation_payload_with(
+            &index,
+            &fixture_context(),
+            &ConversationPage { before: Some("session_other:g1:m001".into()), from: None },
+        )
+        .unwrap_err();
+        assert!(err.starts_with("history_changed"), "got {err}");
+        // Same-session cursor whose message id no longer exists
+        // (rotation or /clear removed it).
+        let err = conversation_payload_with(
+            &index,
+            &fixture_context(),
+            &ConversationPage { before: Some(format!("{session_id}:g1:nope")), from: None },
+        )
+        .unwrap_err();
+        assert!(err.starts_with("history_changed"), "got {err}");
+        // Same for `from`.
+        let err = conversation_payload_with(
+            &index,
+            &fixture_context(),
+            &ConversationPage { before: None, from: Some(format!("{session_id}:g1:nope")) },
+        )
+        .unwrap_err();
+        assert!(err.starts_with("history_changed"), "got {err}");
+    }
+
+    #[test]
+    fn cursor_generation_segment_rides_but_never_gates() {
+        // A held `from` cursor from an OLD generation must still serve:
+        // every append bumps the generation, and gating on it would
+        // 409 the anchor on every new message (design change, Cursor::decode).
+        let (dir, index, _id) = paged_store("gen", 5);
+        std::fs::write(
+            dir.join("session_gen.journal.jsonl"),
+            serde_json::to_string(&json!({
+                "meta": {},
+                "append_messages": [
+                    {"id": "m005", "role": "user",
+                     "content": [{"type": "text", "text": "appended"}]}
+                ]
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+        let anchored = conversation_payload_with(
+            &index,
+            &fixture_context(),
+            &ConversationPage { before: None, from: Some("session_gen:stale-generation:m001".into()) },
+        )
+        .unwrap();
+        let turns = anchored["turns"].as_array().unwrap();
+        assert_eq!(turns.first().unwrap()["parts"][0]["text"], "turn 1");
+        assert_eq!(turns.last().unwrap()["parts"][0]["text"], "appended");
+    }
+
+    // --- image part bytes (reference conversationImage parity) ---
+
+    #[test]
+    fn conversation_image_with_serves_the_named_message_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-chat-lens-test-img-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 1x1 PNG, hand-encoded base64 (no crates).
+        let png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let decoded = crate::jcode_transcript::base64_decode(png_b64).unwrap();
+        std::fs::write(
+            dir.join("session_img.json"),
+            serde_json::to_string(&json!({
+                "working_dir": "/w",
+                "last_pid": 4242,
+                "status": "Active",
+                "messages": [
+                    {"id": "m1", "role": "user",
+                     "content": [
+                        {"type": "text", "text": "look"},
+                        {"type": "image", "media_type": "image/png", "data": png_b64}
+                     ]}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        // The image part carries the ref on the wire (turn_json) and the
+        // bytes come back through conversation_image_with. Images LEAD
+        // the turn (reference parity: the words reference the picture
+        // above them), so the image is parts[0] and the text parts[1].
+        let payload =
+            conversation_payload_with(&index, &fixture_context(), &ConversationPage::default())
+                .unwrap();
+        let part = &payload["turns"][0]["parts"][0];
+        assert_eq!(part["kind"], "image");
+        assert_eq!(part["media_type"], "image/png");
+        assert_eq!(part["ref"], "m1");
+        assert_eq!(payload["turns"][0]["parts"][1]["text"], "look");
+        let (media_type, bytes) =
+            conversation_image_with(&index, &fixture_context(), "m1").unwrap().unwrap();
+        assert_eq!(media_type, "image/png");
+        assert_eq!(bytes, decoded);
+        // Unknown ref: None (image_not_found at the route).
+        assert_eq!(conversation_image_with(&index, &fixture_context(), "m999"), Ok(None));
+        // Invalid charset: None before resolution work.
+        assert_eq!(conversation_image_with(&index, &fixture_context(), "has space"), Ok(None));
+        // Empty ref: None.
+        assert_eq!(conversation_image_with(&index, &fixture_context(), ""), Ok(None));
     }
 }

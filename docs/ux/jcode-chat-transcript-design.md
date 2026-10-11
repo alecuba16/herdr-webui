@@ -239,24 +239,30 @@ Validated live-update cadence (executable prototype run against this very
   therefore sufficient to catch new records; no frame-level streaming is
   possible or needed.
 
-Paging: v1 ships newest-page-only — last 200 turns (the reference
-  caps at `MAX_TURNS = 100` in `transcript-records.ts:78`; we pick 200
-  for jcode since snapshots parse cheaply at 34 ms), no `before`
-  cursor. Justification: the largest snapshot in the store (12 MiB)
-  parses in 34 ms (round 4), well inside the 2s poll budget; the
-  reference uses a 16 MB tail window (`TRANSCRIPT_WINDOW_BYTES`,
-  `conversation.ts:58`) precisely to bound reparsing cost, which our
-  full-snapshot read avoids; add paging only if a real session renders
-  slowly. The response keeps a `cursor: null` field so the wire shape
-  is forward-compatible. When paging is added later, cursor = message
-  id, NOT a byte offset: jcode message ids are globally unique
-  (verified at full store scale: 100,059 ids, 0 duplicates; treat ids
-  as opaque strings, see the id caveat in the parsing section), and
-  byte offsets into the journal cannot survive rotation (journal
-  deleted + recreated at each
-  checkpoint). Generation invalidation must cover BOTH file identities
-  — cursor = (snapshot generation, journal generation, message id),
-  refused with 409 semantics when either generation changed.
+Paging (round 12, shipped — reference `before`/`from` parity): the
+  newest page caps at `PAGE_TURNS = 100` turns (half of the reference's
+  `MAX_TURNS = 200` window, `transcript-records.ts:78`; the reference
+  serves its whole window per request, we page because snapshots parse
+  server-side every poll). Cursor = message id, NOT a byte offset:
+  jcode message ids are globally unique (verified at full store scale:
+  100,059 ids, 0 duplicates; treat ids as opaque strings, see the id
+  caveat in the parsing section), and byte offsets into the journal
+  cannot survive rotation (journal deleted + recreated at each
+  checkpoint). The wire cursor is `session_id:generation:message_id`
+  (URL-encoded once by the client); the generation segment rides
+  along for DEBUGGING ONLY — it is never compared (design change from
+  the round-10 sketch: jcode restarts regenerate both files with fresh
+  generations while the message ids stay valid, so gating on it would
+  409 every restart; rotation invalidation is carried by the message
+  id instead — a rotated-out id refuses with `history_changed`).
+  `before=<cursor>` names the turn the next OLDER page ends before;
+  `from=<cursor>` anchors the newest-page poll at the oldest turn the
+  chat already holds, so a poll never reads more than a page once
+  older pages are held (reference `held` parity). A page that starts at
+  the transcript beginning returns `cursor: null` — the endcap signal.
+  Session-mismatched or vanished cursor ids refuse with 409
+  `history_changed`; the client then drops held pages and re-anchors
+  on a clean newest-page fetch in one round trip.
 
 ## 4. HTTP route
 
@@ -270,17 +276,31 @@ Response (thin server, thick shaping — same SOLID call as the composer):
   "source": "jcode-transcript",
   "turns": [ { "role": "user"|"assistant",
                "ts": "...", "end_ts": "...",
-               "parts": [ {"kind":"text"|"thinking"|"tool"|"compact",
+               "parts": [ {"kind":"text"|"thinking"|"tool"|"compact"|"image",
                             ... } ] } ],
-  "cursor": "null in v1 (forward-compatible, see section 3 paging)",
+  "cursor": "<session>:<generation>:<message-id of the page's first turn>, or null at the transcript start",
+  "title": "conversation title (optional, null when absent)",
   "model": "...", "reasoning_effort": null,
+  "context_used": 12345,
   "status": "Active",
   "version": "<etag-ish hash>"
 }
 ```
 
+Caching (round 12): the response `version` doubles as the ETag — weak
+  form (`W/"<version>"`), because a restart may produce the same turn
+  content under a new stat signature and the reference accepts that.
+  A poll with a matching `If-None-Match` answers `304` with zero turn
+  bytes; the client compares weak-stripped, so `W/` never blocks the
+  skip. Image bytes are immutable (a ref names a message id in a
+  signed session file), so `GET /api/panes/{pane_id}/conversation/image?ref=<id>`
+  serves raw bytes with the stored media type under a day-long private
+  cache. A ref that is missing from the conversation (rotated out,
+  or never existed) answers `image_not_found`.
+
 Errors: `{error, code}` with codes `no_session_path`, `agent_not_found`,
-`unsupported_agent`, `transcript_missing`. Consistency note (round 10,
+`unsupported_agent`, `transcript_missing`, plus `history_changed` for
+cursor refusals (HTTP 409). Consistency note (round 10,
 verified live): the existing submit route answers a missing pane with
 HTTP 404 and `{error, code: "agent_not_found", note: "Not sent: this
 panel is gone. Pick another panel."}` — the new route reuses the same
@@ -323,6 +343,32 @@ other /api route (verified live: cookie-gated).
   in structured mode the refusal reason (`agent_session.reason` copy)
   replaces the alt-screen hint entirely; the alt hint only renders in
   scrollback mode.
+- **Paging UI (round 12):** a `Load earlier messages` control renders
+  above the turns while a `before` cursor exists (`data-load-older`),
+  in every state: idle (button), loading (`Loading earlier…`), failed
+  (`Load earlier messages (retry)`), and the `Beginning of
+  conversation` endcap when the walk reaches `cursor: null` — the
+  endcap only renders when pages were held and walked to the start; a
+  short conversation with no cursor and no held pages shows nothing.
+  Pages prepend above the turns without touching the newest page, and
+  a scroll near the top auto-loads the next page the way the reference
+  does (the button stays for keyboard and precise clicks). A 409
+  `history_changed` (rotation caught by any fetch — poll or
+  load-older) drops all held pages and re-anchors on one clean
+  newest-page fetch; no zombie pages survive a rewrite.
+- **Image parts (round 12):** turns can carry image parts (pasted
+  screenshots); each renders as a fixed-size lazy thumbnail whose `src`
+  is the byte route with the escaped ref, alt text naming the media
+  type. The fixed box keeps a landing image from growing the turn and
+  shifting the scroll; the full-size view is the browser's own image
+  view. A ref-less image part renders nothing.
+- **Session meta (round 12):** the composer's session line renders
+  the conversation title first (what the reader is looking at), then
+  model/effort, then `{tokens} tokens` (reference `formatTokens`
+  formatting: 950, 68k, 1.2M) when the journal carries a finite
+  `context_used > 0`. No invented percentages — the window size is
+  not on the wire, so a bare count is all the journal honestly says.
+  Title and tokens publish as `null` when absent.
 - Render per the existing lens aesthetic: user turns as accent-bold bubbles
   (the bubble pattern already exists — `.lens-turn-user > span` in
   `terminal.css:425`, right-aligned rounded panel; accent-bold color is

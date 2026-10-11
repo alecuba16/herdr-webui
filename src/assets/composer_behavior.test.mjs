@@ -383,6 +383,32 @@ describe("composer module", () => {
     equal(result.ctx.HerdrComposer.sessionMetaText({}), "");
     equal(result.ctx.HerdrComposer.sessionMetaText({ model: "m", reasoning_effort: "max" }), "m · Reasoning max");
     equal(result.ctx.HerdrComposer.sessionMetaText({ model: "m", reasoning_effort: "" }), "m");
+    // The title leads the line: it says what the reader is looking at.
+    equal(
+      result.ctx.HerdrComposer.sessionMetaText({ title: "Fix login bug", model: "m", reasoning_effort: "low" }),
+      "Fix login bug · m · Reasoning low",
+    );
+    // Whitespace-only title renders as no title, never an empty segment.
+    equal(
+      result.ctx.HerdrComposer.sessionMetaText({ title: "   ", model: "m", reasoning_effort: "low" }),
+      "m · Reasoning low",
+    );
+    // Context tokens join the line (reference formatTokens: 950, 68k, 1.2M).
+    equal(
+      result.ctx.HerdrComposer.sessionMetaText({ title: "Fix login bug", context_used: 950 }),
+      "Fix login bug · 950 tokens",
+    );
+    equal(
+      result.ctx.HerdrComposer.sessionMetaText({ context_used: 68000 }),
+      "68k tokens",
+    );
+    equal(
+      result.ctx.HerdrComposer.sessionMetaText({ context_used: 1234567 }),
+      "1.2M tokens",
+    );
+    // Zero and non-numbers mean "not reported": no segment.
+    equal(result.ctx.HerdrComposer.sessionMetaText({ context_used: 0 }), "");
+    equal(result.ctx.HerdrComposer.sessionMetaText({ context_used: "abc" }), "");
   });
 
   it("guards against a missing active pane", async () => {

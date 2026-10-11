@@ -40,6 +40,22 @@
   let convError = null; // {code} of the last failed poll
   let loadingChat = true; // true until the first response lands
   let pendingBubble = null; // {text} of the optimistic user bubble
+  // Older pages (reference heldOlder parity): turns the chat holds above
+  // the newest page, fetched with `before` as the reader scrolls up.
+  // heldFrom anchors the newest-page poll at the oldest turn the chat
+  // holds, so no poll ever reads more than a page once older pages are
+  // held. olderCursor is the next-older cursor (null = beginning
+  // reached); olderState gates the loader (idle/loading/failed).
+  let olderTurns = [];
+  let olderCursor = null;
+  let heldFrom = null;
+  let olderState = "idle";
+  // ETag of the last newest-page answer, keyed by the poll URL. A poll
+  // that sends If-None-Match and gets 304 skips all re-render work; the
+  // browser cache stays out of it (no-store, reference parity) so the
+  // lens itself is the only cache.
+  let pollEtag = null;
+  let pollUrl = null;
   // Expansion state survives polls: key = tool part identity, value =
   // true when the output body is shown. Collapsed thinking is the
   // default so the map only stores the expanded ones.
@@ -163,6 +179,54 @@
     }, delayMs);
   }
 
+  // The newest-page poll request. Bypasses the shared api() helper on
+  // purpose: it unconditionally parses JSON, and a 304 has no body to
+  // parse (reference fetchPaneConversation parity). HerdrHttp.options()
+  // keeps the session/backend headers on the direct fetch, so auth rides
+  // exactly like every other call.
+  function conversationUrl(paneId, params) {
+    // Hand-built query, not URLSearchParams: the vm test harness and
+    // any sandboxed host may not expose the constructor, and the shape
+    // here is fixed (pane_id plus at most one cursor param).
+    let query = `pane_id=${encodeURIComponent(paneId)}`;
+    for (const [key, value] of Object.entries(params || {})) {
+      if (value !== undefined && value !== null)
+        query += `&${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`;
+    }
+    return `/api/panes/${encodeURIComponent(paneId)}/conversation?${query}`;
+  }
+
+  async function fetchConversation(paneId, params, etag) {
+    const url = conversationUrl(paneId, params);
+    const headers = {};
+    if (etag) headers["if-none-match"] = etag;
+    const opts =
+      typeof globalThis.HerdrHttp === "object" && globalThis.HerdrHttp
+        ? globalThis.HerdrHttp.options({ headers })
+        : { credentials: "same-origin", headers };
+    const response = await fetch(url, opts);
+    if (response.status === 304 && etag) return { notModified: true };
+    if (response.status === 401 && typeof location !== "undefined") {
+      location.href = "/";
+      throw Error("unauthorized");
+    }
+    let body = null;
+    try {
+      body = await response.json();
+    } catch (_) {
+      body = null;
+    }
+    if (!response.ok || (body && body.error)) {
+      const error = Error(
+        (body && body.error && String(body.error)) || response.statusText || "poll failed",
+      );
+      error.status = response.status;
+      error.details = body || {};
+      throw error;
+    }
+    return { notModified: false, body, etag: response.headers.get("etag") };
+  }
+
   async function pollConversation() {
     if (!lensActive || !chatSupported()) {
       // The pane stopped being chat-capable between ticks (workspace
@@ -181,9 +245,13 @@
     }
     pollInFlight = true;
     try {
-      const response = await api(
-        `/api/panes/${encodeURIComponent(paneId)}/conversation`,
-      );
+      // From-anchored newest-page poll (reference parity): once older
+      // pages are held the poll starts at the held start, so no poll
+      // reads more than a page.
+      const params = heldFrom !== null ? { from: heldFrom } : {};
+      const url = conversationUrl(paneId, params);
+      const etag = pollUrl === url ? pollEtag : null;
+      const result = await fetchConversation(paneId, params, etag);
       if (paneId !== chatPane || !lensActive) {
         // Stale in-flight poll (the pane moved while the request was
         // out): the response belongs to a pane nobody is looking at.
@@ -193,9 +261,54 @@
         clearStaleSessionMeta();
         return;
       }
+      if (result.notModified) {
+        // Unchanged since the last answer (304 + If-None-Match): the
+        // rendered conversation is already current — no re-render, no
+        // meta churn, no pending-bubble scan. The idle poll costs one
+        // header round trip.
+        return;
+      }
+      const response = result.body;
+      pollUrl = url;
+      pollEtag = result.etag || null;
       convError = null;
       loadingChat = false;
       conversation = response;
+      // While no older pages are held, the newest page's cursor is the
+      // next-older page's `before` (reference: setOlderCursor on every
+      // read). Once pages are held, the poll's cursor describes the
+      // held join point instead and loadOlder owns olderCursor.
+      if (heldFrom === null) olderCursor = response.cursor;
+      // Older pages: the newest page may have moved past the held
+      // start (new turns pushed the page window). Backfill the gap
+      // with `before` pages and re-anchor, so the held turns and the
+      // newest page stay contiguous (reference turnsBetween parity,
+      // bounded so a runaway walk cannot spin).
+      if (heldFrom !== null && response.cursor && response.cursor !== heldFrom) {
+        const moved = await turnsBetween(paneId, heldFrom, response.cursor);
+        if (moved === null) {
+          // The gap cannot be joined (history changed mid-walk): drop
+          // the older pages and re-anchor on the newest page — the
+          // same clean-reset a 409 triggers.
+          dropOlderPages();
+          const fresh = await fetchConversation(paneId, {}, null);
+          if (fresh.notModified) return;
+          if (paneId !== chatPane || !lensActive) return;
+          conversation = fresh.body;
+          pollUrl = conversationUrl(paneId, {});
+          pollEtag = fresh.etag || null;
+        } else if (moved.length) {
+          olderTurns = olderTurns.concat(moved);
+          heldFrom = response.cursor;
+        } else {
+          heldFrom = response.cursor;
+        }
+      } else if (heldFrom !== null && !response.cursor) {
+        // The held start fell out of the newest page AND the page
+        // reached the transcript beginning: everything before the
+        // newest page is the older pages already held. Keep them.
+        heldFrom = response.cursor; // null: next poll reads the newest page whole
+      }
       // Session metadata travels on every poll (model/effort refresh
       // even without a new message, reference parity): publish it so the
       // composer status line can render it.
@@ -204,6 +317,11 @@
         reasoning_effort:
           response && response.reasoning_effort
             ? String(response.reasoning_effort)
+            : null,
+        title: response && response.title ? String(response.title) : null,
+        context_used:
+          response && Number.isFinite(Number(response.context_used))
+            ? Number(response.context_used)
             : null,
       };
       publishSessionMeta();
@@ -216,8 +334,38 @@
     } catch (error) {
       if (paneId !== chatPane || !lensActive) return;
       const details = error && error.details;
+      const code = (details && details.code) || "error";
+      if (code === "history_changed" || error.status === 409) {
+        // The transcript the older pages came from is gone (rotation,
+        // /clear, or a cursor the transcript no longer knows). Drop the
+        // older pages and re-anchor: the next tick reads the newest
+        // page of whatever history exists now (reference dropOlder
+        // parity — one clean reset, no zombie pages).
+        dropOlderPages();
+        convError = null;
+        loadingChat = false;
+        pollEtag = null;
+        pollUrl = null;
+        // Retry once immediately with a clean fetch; on failure the
+        // normal error path below renders the refusal.
+        try {
+          const fresh = await fetchConversation(paneId, {}, null);
+          if (paneId !== chatPane || !lensActive) return;
+          if (!fresh.notModified) {
+            conversation = fresh.body;
+            pollUrl = conversationUrl(paneId, {});
+            pollEtag = fresh.etag || null;
+            sessionMeta = metaFromConversation(conversation);
+            publishSessionMeta();
+            render();
+            return;
+          }
+        } catch (_) {
+          // fall through to the error render
+        }
+      }
       convError = {
-        code: (details && details.code) || "error",
+        code,
       };
       loadingChat = false;
       // A failed poll must not leave a stale model label on the
@@ -239,6 +387,51 @@
     }
   }
 
+  // Turns between a held start and where the newest page now starts,
+  // a page at a time (reference turnsBetween parity). Null when the
+  // walk cannot be joined (history changed, or the bound hit).
+  async function turnsBetween(paneId, held, start) {
+    const pages = [];
+    let before = start;
+    try {
+      for (let step = 0; step < 32 && before !== held; step++) {
+        const result = await fetchConversation(paneId, { before }, null);
+        if (result.notModified) return null;
+        const page = result.body;
+        if (typeof page.cursor !== "string") return null;
+        pages.unshift(page.turns || []);
+        before = page.cursor;
+      }
+    } catch (_) {
+      return null;
+    }
+    return before === held ? pages.flat() : null;
+  }
+
+  function metaFromConversation(response) {
+    return {
+      model: response && response.model ? String(response.model) : null,
+      reasoning_effort:
+        response && response.reasoning_effort
+          ? String(response.reasoning_effort)
+          : null,
+      title: response && response.title ? String(response.title) : null,
+      context_used:
+        response && Number.isFinite(Number(response.context_used))
+          ? Number(response.context_used)
+          : null,
+    };
+  }
+
+  // Drop the held older pages and re-anchor on the newest page (a 409,
+  // a history rewrite, or a failed gap join).
+  function dropOlderPages() {
+    olderTurns = [];
+    olderCursor = null;
+    heldFrom = null;
+    olderState = "idle";
+  }
+
   function userTurnTexts(response) {
     const texts = new Set();
     for (const turn of (response && response.turns) || []) {
@@ -258,6 +451,9 @@
     pendingBubble = null;
     sessionMeta = null;
     publishSessionMeta();
+    dropOlderPages();
+    pollEtag = null;
+    pollUrl = null;
     expandedTools.clear();
     expandedThinking.clear();
     fetchedOutputs.clear();
@@ -296,6 +492,65 @@
     if (!pollInFlight) {
       pollQueued = false;
       pollConversation();
+    }
+  }
+
+  // ---- older pages (reference loadOlder parity) ----
+
+  // Fetch one page of older turns with `before` and prepend them,
+  // keeping the reader's viewport anchored where it was (the scroll
+  // position math happens in renderStructured, keyed on the
+  // prepended-anchor dataset this function sets).
+  async function loadOlder() {
+    const paneId = activePaneId();
+    if (!paneId || paneId !== chatPane) return;
+    if (olderState === "loading" || typeof olderCursor !== "string") return;
+    const before = olderCursor;
+    olderState = "loading";
+    try {
+      const result = await fetchConversation(paneId, { before }, null);
+      // Pane moved while the fetch was out: the page belongs to a
+      // pane nobody is looking at.
+      if (paneId !== chatPane || !lensActive) return;
+      if (result.notModified) {
+        olderState = "failed";
+        return;
+      }
+      const page = result.body;
+      // A history rewrite between the poll and this fetch: drop and
+      // re-anchor (same clean reset as a 409 on the poll).
+      if (page && page.error) {
+        olderState = "failed";
+        return;
+      }
+      if (!page || typeof page.cursor !== "string" && page.cursor !== null) {
+        olderState = "failed";
+        return;
+      }
+      // First older page: anchor the newest-page poll at the start of
+      // the newest turns the chat already holds, so no later poll reads
+      // more than a page.
+      const first = heldFrom === null;
+      heldFrom = first ? before : heldFrom;
+      olderTurns = (page.turns || []).concat(olderTurns);
+      olderCursor = page.cursor;
+      olderState = "idle";
+      // The newest page may have slid since it was read (turns landed
+      // between the poll and this fetch): poll from the held start
+      // now instead of waiting for the next tick.
+      if (first) refreshConversation();
+      render();
+    } catch (error) {
+      if (paneId !== chatPane || !lensActive) return;
+      const status = error && error.status;
+      const code = error && error.details && error.details.code;
+      if (status === 409 || code === "history_changed") {
+        dropOlderPages();
+        refreshConversation();
+        return;
+      }
+      olderState = "failed";
+      render();
     }
   }
 
@@ -403,6 +658,24 @@
       // (a miss would append a duplicate on every poll), and a text part
       // appended to an open turn must render once and then compare equal.
       return `<div class="lens-text" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">${escapeHtml(part.text || "")}</div>`;
+    }
+    if (part.kind === "image") {
+      // Image parts reference their bytes by message id (reference
+      // conversationImage parity): the <img> src points at the byte
+      // route, which serves the same session's immutable bytes with a
+      // day-long private cache — repeated polls cost no refetches. The
+      // media_type rides on the part for alt text only; the byte route
+      // owns the real content-type.
+      const ref = part.ref || "";
+      if (!ref) return "";
+      const paneId = activePaneId();
+      const src = paneId
+        ? `/api/panes/${encodeURIComponent(paneId)}/conversation/image?ref=${encodeURIComponent(ref)}`
+        : "";
+      const alt = part.media_type ? `pasted ${part.media_type} image` : "pasted image";
+      return `<div class="lens-image" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">` +
+        `<img src="${escapeAttr(src)}" alt="${escapeAttr(alt)}" loading="lazy">` +
+        `</div>`;
     }
     if (part.kind === "thinking") {
       const key = partKey(turnIndex, partIndex, part);
@@ -939,6 +1212,12 @@
       return;
     }
     const turns = conversation.turns || [];
+    // The rendered conversation is older pages + the newest page; the
+    // turn-key indices the DOM already carries stay valid only when the
+    // OLDER prefix is unchanged, so the append detection works on the
+    // joined view, not the newest page alone.
+    const olderCount = olderTurns.length;
+    const prevOlder = Number(content.dataset.renderedOlder || 0);
     const prevTurns = Number(content.dataset.renderedTurns || 0);
     const version = conversation.version;
     // Version changes on EVERY append (it is a stat-hash of both files),
@@ -949,52 +1228,130 @@
     // an intact prefix takes the sync path (in-flight tools resolving,
     // pending bubble) — never a rewrite: a full innerHTML swap on every
     // idle poll would wipe text selection every 2s.
+    const joinedTurns = olderTurns.concat(turns);
+    // An older page landing rewrites the front of the view: turn keys
+    // SHIFT, so the append path cannot serve it. One full re-render,
+    // scroll-anchored so the reader's viewport keeps the content it was
+    // looking at (reference prepended.current parity).
+    const olderPrepended = olderCount !== prevOlder;
     const prefixHolds =
       prevTurns > 0 &&
-      turns.length >= prevTurns &&
-      prefixMatches(content, turns, prevTurns);
-    if (prevTurns === 0 || !prefixHolds) {
-      // First render or a history rewrite (rotation, compaction, /clear):
-      // one full re-render. Expansion state survives via the part keys.
-      content.innerHTML = conversationHtml(conversation);
+      !olderPrepended &&
+      joinedTurns.length >= prevTurns &&
+      prefixMatches(content, joinedTurns, prevTurns);
+    const scroller0 = node.querySelector("#terminalLensScroller");
+    const anchor = scroller0
+      ? { top: scroller0.scrollTop, height: scroller0.scrollHeight }
+      : null;
+    if (prevTurns === 0 || olderPrepended || !prefixHolds) {
+      // First render, an older-page prepend, or a history rewrite
+      // (rotation, compaction, /clear): one full re-render. Expansion
+      // state survives via the part keys.
+      const olderHeader = olderPagesHeaderHtml();
+      content.innerHTML =
+        (olderHeader
+          ? `<div data-older-control="1">${olderHeader}</div>`
+          : "") + conversationHtml({ turns: joinedTurns });
       content.dataset.renderedVersion = version;
-      content.dataset.renderedTurns = String(turns.length);
+      content.dataset.renderedTurns = String(joinedTurns.length);
+      content.dataset.renderedOlder = String(olderCount);
       // A pending bubble on an empty/rewritten conversation is not part
       // of conversationHtml's turn output (empty turns short-circuit
       // before the bubble row): the DOM sync covers it.
       syncPendingBubbleDom(content);
       syncWorkingDom(content);
-    } else if (turns.length !== prevTurns) {
+    } else if (joinedTurns.length !== prevTurns) {
       // Append-only: rendered turn bodies are immutable, so only the
       // new turns are inserted at the tail (before the pending bubble,
       // which stays last). The chunk is rendered with the bubble
       // suppressed — syncPendingBubbleDom owns its single instance.
+      // Turn keys are global across the joined view, so the chunk
+      // starts at the joined offset.
       const bubble = content.querySelector(".lens-turn-pending");
       const at = document.createElement("div");
-      at.innerHTML = turns
+      at.innerHTML = joinedTurns
         .slice(prevTurns)
-        .map((turn, i) => conversationHtml({ turns: [turn] }, { from: prevTurns + i }))
+        .map((turn, i) =>
+          conversationHtml({ turns: [turn] }, { from: prevTurns + i }),
+        )
         .join("");
       if (bubble) {
         while (at.firstChild) content.insertBefore(at.firstChild, bubble);
       } else {
         while (at.firstChild) content.appendChild(at.firstChild);
       }
-      content.dataset.renderedTurns = String(turns.length);
+      content.dataset.renderedTurns = String(joinedTurns.length);
       // In-flight tools in ALREADY-rendered turns may have resolved
       // (running -> full row) at constant prefix; sync them in place.
-      syncMutableParts(content, turns);
+      syncMutableParts(content, joinedTurns);
       syncPendingBubbleDom(content);
       syncWorkingDom(content);
     } else {
-      // Same turn count: only in-flight tool rows and the pending
-      // bubble can move; refresh both without touching the rest.
-      syncMutableParts(content, turns);
+      // Same turn count: only in-flight tool rows, the pending
+      // bubble, and the older-page control can move; refresh without
+      // touching the rest.
+      syncMutableParts(content, joinedTurns);
       syncPendingBubbleDom(content);
       syncWorkingDom(content);
+      syncOlderControlDom(content);
     }
+    // Prepended older turns shift the scroll: restore the reader's
+    // viewport so the content under their eyes does not jump. Only a
+    // prepend lands here (appends keep the follow tail below).
     const scroller = node.querySelector("#terminalLensScroller");
-    if (follow && scroller) scroller.scrollTop = scroller.scrollHeight;
+    if (olderPrepended && anchor && scroller) {
+      scroller.scrollTop = anchor.top + (scroller.scrollHeight - anchor.height);
+    } else if (follow && scroller) {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
+  }
+
+  // The load-older row above the turns: a button while older turns
+  // remain ("Load earlier messages" / "Loading…" / "Retry"), or a
+  // muted marker once the beginning is held. Wrapped in the
+  // data-older-control row so the in-place sync can find it on every
+  // render without disturbing the turn keys below.
+  function olderPagesHeaderHtml() {
+    if (!conversation) return "";
+    if (typeof olderCursor !== "string") {
+      // The endcap only marks a KNOWN beginning: older pages were held
+      // and walked to the transcript start (reference chat-endcap:
+      // `olderCursor === null && older.length > 0`). A newest page with
+      // no cursor and no held pages shows nothing — it is just a short
+      // conversation.
+      if (!olderTurns.length) return "";
+      return '<div class="lens-older-done">Beginning of conversation</div>';
+    }
+    const label =
+      olderState === "loading"
+        ? "Loading earlier…"
+        : olderState === "failed"
+          ? "Load earlier messages (retry)"
+          : "Load earlier messages";
+    return `<button type="button" class="lens-older-load" data-load-older="1">${label}</button>`;
+  }
+
+  // Keep the older-page control in sync without a full rewrite: swap
+  // its content in place, or insert it above the first turn when the
+  // append path skipped the full render (which created it).
+  function syncOlderControlDom(content) {
+    let row = content.querySelector("[data-older-control]");
+    const header = olderPagesHeaderHtml();
+    if (!header) {
+      // The control fell away (history reset dropped the held pages,
+      // or the conversation is simply short): the row must not linger
+      // as an empty div above the turns.
+      if (row) row.remove();
+      return;
+    }
+    if (!row) {
+      row = document.createElement("div");
+      row.setAttribute("data-older-control", "1");
+      const firstTurn = content.querySelector(".lens-turn");
+      if (firstTurn) content.insertBefore(row, firstTurn);
+      else content.appendChild(row);
+    }
+    row.innerHTML = header;
   }
 
   function prefixMatches(content, turns, prevTurns) {
@@ -1139,6 +1496,12 @@
         fetchButton,
         fetchButton.getAttribute("data-fetch-output"),
       );
+      return;
+    }
+    // Load-older button: fetch the next page above the turns.
+    const olderButton = target.closest("[data-load-older]");
+    if (olderButton) {
+      loadOlder();
     }
   }
 
@@ -1327,6 +1690,17 @@
             if (pill) pill.hidden = true;
           } else {
             follow = false;
+          }
+          // Near the top (structured mode with older pages left):
+          // fetch the next page the way the reference auto-loads on
+          // scroll — the button stays for keyboard and precise clicks.
+          if (
+            structuredMode() &&
+            scroller.scrollTop <= 80 &&
+            typeof olderCursor === "string" &&
+            olderState === "idle"
+          ) {
+            loadOlder();
           }
         });
       }
@@ -1601,6 +1975,10 @@
     syncSwitchVisibility,
     refreshConversation,
     setPendingBubble,
+    loadOlder,
+    // Test/diagnostic surface: older-page internals.
+    _olderState: () => ({ olderCursor, heldFrom, olderState, olderTurns }),
+    _dropOlderPages: dropOlderPages,
     // Test/diagnostic surface: the turn-shaping heuristics.
     transcriptHtml,
     PROMPT_LINE,
