@@ -279,7 +279,7 @@ Response (thin server, thick shaping — same SOLID call as the composer):
                "parts": [ {"kind":"text"|"thinking"|"tool"|"compact"|"image",
                             ... } ] } ],
   "cursor": "<session>:<generation>:<message-id of the page's first turn>, or null at the transcript start",
-  "title": "the session's custom_title (user-chosen name) or its auto-generated title summary truncated to 80 chars, null when absent",
+  "title": "jcode's display rule, read from the journal's newest meta line (custom_title, else a saved session's save_label, else the auto-generated title summary), truncated to 80 chars, null when absent",
   "model": "...", "reasoning_effort": null,
   "context_used": 12345,
   "status": "Active",

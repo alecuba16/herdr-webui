@@ -141,18 +141,19 @@ impl JcodeStoreIndex {
         (model, status, effort)
     }
 
-    /// The session's title as jcode recorded it: the user-chosen
-    /// `custom_title` first (journal's latest meta line, then the
-    /// snapshot's copy), the auto-generated `title` summary last,
-    /// truncated to status-line length. None when neither file is
-    /// readable or neither carries a title.
+    /// The session's title as jcode's own display rule resolves it
+    /// (session.rs display_title: `custom_title`, then the bookmark
+    /// `save_label` of a saved session — labels doubled as titles
+    /// before custom renames existed — then the auto-generated
+    /// `title` summary), truncated to status-line length. None when
+    /// neither file is readable or none of the three exist.
     pub fn session_title(&self, session_id: &str) -> Option<String> {
-        // What jcode actually writes (verified on the real store): the
-        // user-chosen name lives in `custom_title` (journal meta lines,
-        // newest last; the snapshot carries a copy too), while `title`
-        // is the auto-generated summary, often a full sentence. A
-        // status line reads the custom name first; the auto-summary is
-        // truncated so the composer's one-line meta stays a line.
+        // Journal meta lines are full state, not deltas: the newest
+        // line that carries a field is its settled value, and a line
+        // without the field means it is unset (rename_title(None)
+        // clears it). So read the NEWEST meta line only, never scan
+        // backward for the newest line that has it — that would
+        // resurrect a name the user cleared.
         let truncate = |text: &str| -> String {
             const MAX_TITLE: usize = 80;
             if text.chars().count() <= MAX_TITLE {
@@ -161,36 +162,59 @@ impl JcodeStoreIndex {
             let cut: String = text.chars().take(MAX_TITLE).collect();
             format!("{cut}…")
         };
+        // The user-chosen name and the bookmark label live in the
+        // journal's newest meta line; the snapshot carries the same
+        // fields when the journal is absent (post-checkpoint).
+        fn meta_of(parsed: &serde_json::Value) -> Option<&str> {
+            let custom = parsed
+                .get("custom_title")
+                .and_then(|t| t.as_str())
+                .filter(|t| !t.is_empty());
+            if custom.is_some() {
+                return custom;
+            }
+            let saved = parsed
+                .get("saved")
+                .and_then(|s| s.as_bool())
+                .unwrap_or(false);
+            let label = parsed
+                .get("save_label")
+                .and_then(|t| t.as_str())
+                .filter(|t| !t.is_empty());
+            if saved {
+                if let Some(label) = label {
+                    return Some(label);
+                }
+            }
+            parsed
+                .get("title")
+                .and_then(|t| t.as_str())
+                .filter(|t| !t.is_empty())
+        }
         let journal = self.store_dir.join(format!("{session_id}.journal.jsonl"));
         if let Ok(text) = std::fs::read_to_string(&journal) {
+            // The NEWEST valid meta line decides — meta is a full
+            // state snapshot on every entry (journal.rs
+            // SessionJournalEntry.meta, required), and the journal is
+            // always newer than the snapshot it grew from (a
+            // checkpoint deletes it, persistence.rs). A newest meta
+            // with no title is a cleared title; falling through to
+            // the snapshot or an older line would resurrect a name
+            // the user removed.
             for line in text.lines().rev() {
                 let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) else {
                     continue;
                 };
-                if let Some(custom) = parsed
-                    .pointer("/meta/custom_title")
-                    .and_then(|t| t.as_str())
-                    .filter(|t| !t.is_empty())
-                {
-                    return Some(custom.to_string());
-                }
+                let Some(meta) = parsed.get("meta") else { continue };
+                return meta_of(meta).map(|title| truncate(title));
             }
         }
+        // Journal absent, empty, or unrecoverably malformed: the
+        // snapshot holds the whole state.
         let snapshot = self.store_dir.join(format!("{session_id}.json"));
         let text = std::fs::read_to_string(&snapshot).ok()?;
         let parsed: serde_json::Value = serde_json::from_str(&text).ok()?;
-        parsed
-            .get("custom_title")
-            .and_then(|t| t.as_str())
-            .filter(|t| !t.is_empty())
-            .map(|t| truncate(t))
-            .or_else(|| {
-                parsed
-                    .get("title")
-                    .and_then(|t| t.as_str())
-                    .filter(|t| !t.is_empty())
-                    .map(|t| truncate(t))
-            })
+        meta_of(&parsed).map(|t| truncate(t))
     }
 
     /// Resolves a pane to its jcode session using the design's ordered
@@ -1414,6 +1438,117 @@ mod tests {
         json!({"id": id, "role": "user", "content": [
             {"type": "tool_result", "tool_use_id": call_id, "content": content}
         ]})
+    }
+
+    // ---- session_title: jcode's display_title parity ----
+
+    /// The newest journal meta line is the settled state: a title
+    /// cleared there stays cleared, and no older line or the
+    /// snapshot may resurrect it.
+    #[test]
+    fn cleared_title_in_newest_meta_is_not_resurrected() {
+        let dir = std::env::temp_dir().join(format!("title-clear-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Two meta lines: the older carries a custom_title, the
+        // newest (what rename_title(None) writes) carries none.
+        let older = json!({"meta": {"custom_title": "old name"}});
+        let newest = json!({"meta": {"title": null}});
+        std::fs::write(
+            dir.join("s.journal.jsonl"),
+            format!("{}\n{}\n", older, newest),
+        )
+        .unwrap();
+        // The snapshot still carries a title, but the journal is
+        // newer state: no resurrection from any source.
+        std::fs::write(
+            dir.join("s.json"),
+            serde_json::to_string(&json!({"title": "snapshot title"})).unwrap(),
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        assert_eq!(index.session_title("s"), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// jcode's display_title fallback order: a saved session's
+    /// bookmark label counts as its title when no custom rename
+    /// exists (session.rs: labels doubled as titles before custom
+    /// renames existed); an unsaved label does not.
+    #[test]
+    fn saved_bookmark_label_is_the_title_fallback() {
+        let dir = std::env::temp_dir().join(format!("title-label-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Saved with a label, no custom rename.
+        let journal = json!({"meta": {
+            "saved": true, "save_label": "pre-rename bookmark",
+            "title": null,
+        }});
+        std::fs::write(
+            dir.join("s.journal.jsonl"),
+            serde_json::to_string(&journal).unwrap() + "\n",
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        assert_eq!(index.session_title("s").as_deref(), Some("pre-rename bookmark"));
+        // An UNSAVED label is not a title.
+        std::fs::write(
+            dir.join("s.journal.jsonl"),
+            serde_json::to_string(&json!({"meta": {
+                "saved": false, "save_label": "saved flag lost",
+                "title": null,
+            }}))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+        assert_eq!(index.session_title("s"), None, "unsaved label is not a title");
+        // Custom rename wins over the bookmark label.
+        std::fs::write(
+            dir.join("s.journal.jsonl"),
+            serde_json::to_string(&json!({"meta": {
+                "saved": true, "save_label": "bookmark",
+                "custom_title": "the user's name", "title": null,
+            }}))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+        assert_eq!(index.session_title("s").as_deref(), Some("the user's name"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The snapshot is the whole state once the journal is gone
+    /// (a checkpoint deletes it): its display_title fields are read
+    /// there, same order.
+    #[test]
+    fn snapshot_only_store_reads_the_same_fallback_order() {
+        let dir = std::env::temp_dir().join(format!("title-snap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("s.json"),
+            serde_json::to_string(&json!({
+                "title": "auto summary",
+                "save_label": "label but not saved",
+                "saved": false,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let index = JcodeStoreIndex::with_store_dir(dir.clone());
+        assert_eq!(index.session_title("s").as_deref(), Some("auto summary"));
+        // Saved + label wins over the auto-summary.
+        std::fs::write(
+            dir.join("s.json"),
+            serde_json::to_string(&json!({
+                "title": "auto summary",
+                "save_label": "the bookmark",
+                "saved": true,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(index.session_title("s").as_deref(), Some("the bookmark"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // ---- tool_output_by_ref ----

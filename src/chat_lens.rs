@@ -337,16 +337,23 @@ const PAGE_TURNS: usize = 100;
 /// Tokens of context the LAST request filled (reference
 /// ConversationMetadata.context.used parity). jcode records
 /// `token_usage` per assistant message; the LAST one is the context
-/// the model just saw. `prompt_tokens` is the full prompt size per
-/// request (jcode-session-types doc comment: older records lack it
-/// and mixed-provider totals cannot be reconstructed), so it is the
-/// only honest number; absent means absent on the wire. Verified
-/// against the real store: `prompt_tokens == input_tokens` in all
-/// 76,743 messages that carry both — jcode's figure for what one
-/// request filled, the same semantics the reference reads.
-/// The scan walks backward past usage-less messages: usage rides
-/// assistant records, so the newest USER turn carries none and the
-/// latest assistant usage is the one a status line should read.
+/// the model just saw. The writer is the guarantee: jcode stores
+/// `prompt_tokens = effective_context_tokens_from_usage(...)`
+/// (turn_streaming_mpsc.rs:1367, turn_loops.rs:921) — the effective
+/// context fill under the provider's own accounting style
+/// (compaction-core, issue #441: OpenAI-style subsets count the
+/// cache inside `input_tokens`, Anthropic-style splits add
+/// `cache_read` and `cache_creation` on top). It is what the
+/// reference computes at read time for gjc transcripts
+/// (conversation-metadata.ts:86, `input + cacheRead + cacheWrite`),
+/// pre-resolved per request and immune to provider switches
+/// mid-session. Older records lack it and mixed-provider totals
+/// cannot be reconstructed, so absent means absent on the wire.
+/// Verified against the real store: every usage record across
+/// journals and snapshots carries it (77k+ on a live, growing
+/// store), and usage rides assistant records only — the newest
+/// user turn carries none, so the backward scan walks past it to
+/// the latest assistant fill, the number a status line reads.
 fn context_usage(messages: &[serde_json::Value]) -> Option<u64> {
     messages.iter().rev().find_map(|message| {
         let usage = message.get("token_usage")?;
@@ -1157,9 +1164,9 @@ mod tests {
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         let payload = conversation_payload_with(&index, &fixture_context(), &ConversationPage::default())
             .unwrap();
-        // Title: the journal's custom_title wins over everything
-        // (verified against the real store: the user-chosen name
-        // lives in custom_title; meta.title is usually null).
+        // Title: the journal's newest meta line decides — custom_title
+        // (the user-chosen name) over the auto-generated `title`
+        // summary, exactly jcode's display_title rule (session.rs).
         assert_eq!(payload["title"], "permissions to dmitri");
         // Context: the newest prompt_tokens, not the oldest, not a sum.
         assert_eq!(payload["context_used"], 12000);
