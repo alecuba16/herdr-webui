@@ -3017,7 +3017,12 @@ fn normalize_focus(data: &mut BuiltinData) {
         .focused_workspace_id
         .as_ref()
         .and_then(|id| data.workspaces.get(id).map(|ws| ws.workspace_id.clone()))
-        .or_else(|| data.workspaces.values().next().map(|ws| ws.workspace_id.clone()));
+        .or_else(|| {
+            data.workspaces
+                .values()
+                .next()
+                .map(|ws| ws.workspace_id.clone())
+        });
     let Some(workspace) = workspace else {
         data.focused_workspace_id = None;
         data.focused_tab_id = None;
@@ -5816,9 +5821,7 @@ mod tests {
         let closed = state.handle_request("close", "tab.close", json!({ "tab_id": tab_id }));
         assert!(closed["error"].is_null(), "closing a real tab must succeed");
         let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
-        let tabs = snapshot["result"]["snapshot"]["tabs"]
-            .as_array()
-            .unwrap();
+        let tabs = snapshot["result"]["snapshot"]["tabs"].as_array().unwrap();
         assert!(tabs.iter().all(|tab| tab["tab_id"] != tab_id));
         let _ = fs::remove_dir_all(&temp);
     }
@@ -9361,8 +9364,7 @@ mod tests {
                 assert_eq!(event["data"]["tab_id"], tab_id);
             }
             assert_ne!(
-                event["event"],
-                "workspace.closed",
+                event["event"], "workspace.closed",
                 "closing a terminal must never close the workspace"
             );
         }
@@ -9431,8 +9433,7 @@ mod tests {
                 assert_eq!(event["data"]["tab_id"], tab_id);
             }
             assert_ne!(
-                event["event"],
-                "workspace.closed",
+                event["event"], "workspace.closed",
                 "closing a terminal must never close the workspace"
             );
         }
@@ -9484,8 +9485,14 @@ mod tests {
             snapshot["result"]["snapshot"]["focused_workspace_id"],
             workspace_id.as_str()
         );
-        assert_eq!(snapshot["result"]["snapshot"]["focused_tab_id"], Value::Null);
-        assert_eq!(snapshot["result"]["snapshot"]["focused_pane_id"], Value::Null);
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_tab_id"],
+            Value::Null
+        );
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_pane_id"],
+            Value::Null
+        );
 
         // Spawning a terminal into the zero-tab workspace works: create_tab
         // takes the cwd from the workspace record.
@@ -9547,7 +9554,10 @@ mod tests {
             snapshot["result"]["snapshot"]["focused_workspace_id"],
             workspace_id.as_str()
         );
-        assert_eq!(snapshot["result"]["snapshot"]["focused_tab_id"], Value::Null);
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_tab_id"],
+            Value::Null
+        );
         let _ = std::fs::remove_dir_all(temp);
     }
 
@@ -9560,14 +9570,10 @@ mod tests {
         )
         .unwrap();
         // No open_terminal param: legacy one-tab mint for non-web clients.
-        let response = state.handle_request(
-            "seed",
-            "workspace.create",
-            json!({ "label": "Legacy" }),
-        );
+        let response =
+            state.handle_request("seed", "workspace.create", json!({ "label": "Legacy" }));
         assert_eq!(
-            response["result"]["tab"]["label"],
-            "Shell",
+            response["result"]["tab"]["label"], "Shell",
             "absent open_terminal must keep the legacy Shell tab"
         );
         let pane_id = response["result"]["root_pane"]["pane_id"].as_str();
@@ -9627,18 +9633,17 @@ mod tests {
 
         // Close Two's only tab: focus must stay on the zero-tab Two, not
         // jump to One.
-        state.handle_request(
-            "close",
-            "tab.close",
-            json!({ "tab_id": second_tab }),
-        );
+        state.handle_request("close", "tab.close", json!({ "tab_id": second_tab }));
         let snapshot = state.handle_request("snap", "session.snapshot", json!({}));
         assert_eq!(
             snapshot["result"]["snapshot"]["focused_workspace_id"],
             second_id.as_str(),
             "focus must stay on the zero-tab workspace, not jump to another"
         );
-        assert_eq!(snapshot["result"]["snapshot"]["focused_tab_id"], Value::Null);
+        assert_eq!(
+            snapshot["result"]["snapshot"]["focused_tab_id"],
+            Value::Null
+        );
         let workspaces = snapshot["result"]["snapshot"]["workspaces"]
             .as_array()
             .unwrap();
