@@ -50,6 +50,11 @@
   let olderCursor = null;
   let heldFrom = null;
   let olderState = "idle";
+  // True when the gap-backfill walk hit its 32-page bound and the
+  // held older pages were dropped: the transcript between the shown
+  // pages and the held ones is KNOWN-missing, and the endcap below
+  // the load-older control says so instead of hiding the truncation.
+  let olderTruncated = false;
   // ETag of the last newest-page answer, keyed by the poll URL. A poll
   // that sends If-None-Match and gets 304 skips all re-render work; the
   // browser cache stays out of it (no-store, reference parity) so the
@@ -286,17 +291,28 @@
       // bounded so a runaway walk cannot spin).
       if (heldFrom !== null && response.cursor && response.cursor !== heldFrom) {
         const moved = await turnsBetween(paneId, heldFrom, response.cursor);
-        if (moved === null) {
-          // The gap cannot be joined (history changed mid-walk): drop
-          // the older pages and re-anchor on the newest page — the
-          // same clean-reset a 409 triggers.
+        if (moved === null || moved === "bounded") {
+          // The gap cannot be joined (history changed mid-walk) or the
+          // walk hit its 32-page bound: drop the older pages and
+          // re-anchor on the newest page: the same clean-reset a 409
+          // triggers. A bounded walk also marks what was lost: the
+          // endcap under the load-older control says turns were
+          // skipped instead of hiding the truncation.
+          const bounded = moved === "bounded";
           dropOlderPages();
+          olderTruncated = bounded;
           const fresh = await fetchConversation(paneId, {}, null);
           if (fresh.notModified) return;
           if (paneId !== chatPane || !lensActive) return;
           conversation = fresh.body;
           pollUrl = conversationUrl(paneId, {});
           pollEtag = fresh.etag || null;
+          // The gap was too wide to join, but the newest page's own
+          // cursor is a valid walk-back point: keep the load-older
+          // control alive so the reader can page down manually, with
+          // the truncation note above it explaining the skip.
+          if (bounded && typeof fresh.body.cursor === "string")
+            olderCursor = fresh.body.cursor;
         } else if (moved.length) {
           olderTurns = olderTurns.concat(moved);
           heldFrom = response.cursor;
@@ -389,7 +405,10 @@
 
   // Turns between a held start and where the newest page now starts,
   // a page at a time (reference turnsBetween parity). Null when the
-  // walk cannot be joined (history changed, or the bound hit).
+  // walk cannot be joined (history changed); "bounded" when the walk
+  // hit its 32-page bound before reaching the held start: a caller
+  // that treats both alike silently hides a real truncation, so the
+  // bound gets its own answer.
   async function turnsBetween(paneId, held, start) {
     const pages = [];
     let before = start;
@@ -405,7 +424,8 @@
     } catch (_) {
       return null;
     }
-    return before === held ? pages.flat() : null;
+    if (before === held) return pages.flat();
+    return "bounded";
   }
 
   function metaFromConversation(response) {
@@ -430,6 +450,7 @@
     olderCursor = null;
     heldFrom = null;
     olderState = "idle";
+    olderTruncated = false;
   }
 
   function userTurnTexts(response) {
@@ -1319,7 +1340,12 @@
       // `olderCursor === null && older.length > 0`). A newest page with
       // no cursor and no held pages shows nothing — it is just a short
       // conversation.
-      if (!olderTurns.length) return "";
+      if (!olderTurns.length && !olderTruncated) return "";
+      // A bounded reset with no held pages left is NOT the beginning:
+      // turns were skipped, and the endcap must say that, not claim a
+      // beginning the transcript never reached.
+      if (olderTruncated && !olderTurns.length)
+        return '<div class="lens-older-done" data-older-truncated="1">Some earlier messages were skipped to catch up</div>';
       return '<div class="lens-older-done">Beginning of conversation</div>';
     }
     const label =
@@ -1328,7 +1354,10 @@
         : olderState === "failed"
           ? "Load earlier messages (retry)"
           : "Load earlier messages";
-    return `<button type="button" class="lens-older-load" data-load-older="1">${label}</button>`;
+    const truncatedNote = olderTruncated
+      ? '<div class="lens-older-done" data-older-truncated="1">Some earlier messages were skipped to catch up</div>'
+      : "";
+    return `${truncatedNote}<button type="button" class="lens-older-load" data-load-older="1">${label}</button>`;
   }
 
   // Keep the older-page control in sync without a full rewrite: swap
@@ -1977,7 +2006,7 @@
     setPendingBubble,
     loadOlder,
     // Test/diagnostic surface: older-page internals.
-    _olderState: () => ({ olderCursor, heldFrom, olderState, olderTurns }),
+    _olderState: () => ({ olderCursor, heldFrom, olderState, olderTurns, olderTruncated }),
     _dropOlderPages: dropOlderPages,
     // Test/diagnostic surface: the turn-shaping heuristics.
     transcriptHtml,

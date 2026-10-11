@@ -455,6 +455,18 @@ function fireTimers(ctx) {
   ctx._fireTimers();
 }
 
+// A fetch-shaped 200 with a JSON body: the vm harness only needs
+// status/headers/json() for the lens's direct fetch path.
+function json200(body) {
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    headers: { get: () => null },
+    json: async () => body,
+  };
+}
+
 // Drain pending promise continuations the way the browser would: the
 // poll chain (timer -> await api() -> render) needs both a macrotask
 // boundary and the microtask queue to flush.
@@ -2014,6 +2026,161 @@ describe("lens cursor paging and poll contract", () => {
     equal(resetState.olderCursor, null, "no held cursor");
     equal(resetState.heldFrom, null, "no held anchor");
     equal(resetState.olderTurns.length, 0, "held pages dropped");
+  });
+
+  // --- gap backfill (turnsBetween join) and its 32-page bound ---
+
+  it("backfills the gap between held pages and the newest page, joined in order", async () => {
+    // newest page [19,20], older page [17,18]: the reader holds both,
+    // anchored at m17. Then new turns land and the newest page slides
+    // to [21,22] with its own cursor m19: the poll must walk the gap
+    // ([19,20] via before=m19) and prepend it to the held pages.
+    const newestA = {
+      ...conversationFixture(),
+      cursor: "session_x:g1:m17",
+      turns: [
+        { role: "user", ts: "t19", end_ts: "t19", parts: [{ kind: "text", text: "nineteen" }] },
+        { role: "user", ts: "t20", end_ts: "t20", parts: [{ kind: "text", text: "twenty" }] },
+      ],
+    };
+    const olderA = {
+      ...conversationFixture(),
+      cursor: "session_x:g1:m15",
+      turns: [
+        { role: "user", ts: "t17", end_ts: "t17", parts: [{ kind: "text", text: "seventeen" }] },
+        { role: "user", ts: "t18", end_ts: "t18", parts: [{ kind: "text", text: "eighteen" }] },
+      ],
+    };
+    const newestB = {
+      ...conversationFixture(),
+      cursor: "session_x:g1:m19",
+      turns: [
+        { role: "user", ts: "t21", end_ts: "t21", parts: [{ kind: "text", text: "twenty-one" }] },
+        { role: "user", ts: "t22", end_ts: "t22", parts: [{ kind: "text", text: "twenty-two" }] },
+      ],
+    };
+    const gapPage = {
+      ...conversationFixture(),
+      cursor: "session_x:g1:m17",
+      turns: [
+        { role: "user", ts: "t19", end_ts: "t19", parts: [{ kind: "text", text: "nineteen" }] },
+        { role: "user", ts: "t20", end_ts: "t20", parts: [{ kind: "text", text: "twenty" }] },
+      ],
+    };
+    let slid = false;
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      fetch: async (url) => {
+        const u = String(url);
+        if (u.includes("before=session_x%3Ag1%3Am19")) return json200(gapPage);
+        if (u.includes("before=session_x%3Ag1%3Am17")) return json200(olderA);
+        if (u.includes("from=")) return json200(slid ? newestB : newestA);
+        return json200(slid ? newestB : newestA);
+      },
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    const button = content.querySelector("[data-load-older]");
+    for (const fn of lens.listeners.click || []) fn({ target: button });
+    await settle();
+    equal(content.querySelectorAll(".lens-turn").length, 4, "older page held before the slide");
+    // New turns land: the next poll sees the newest page moved.
+    slid = true;
+    fireTimers(ctx);
+    await settle();
+    const turns = [...content.querySelectorAll(".lens-turn")];
+    equal(turns.length, 6, "gap page joined between the held and newest pages");
+    const html = content.innerHTML;
+    ok(
+      html.indexOf("seventeen") < html.indexOf("nineteen") &&
+        html.indexOf("nineteen") < html.indexOf("twenty-one"),
+      "joined turns stay in transcript order",
+    );
+    const state = ctx.HerdrLens._olderState();
+    equal(state.heldFrom, "session_x:g1:m19", "anchor moved to the newest page start");
+    equal(state.olderTruncated, false, "a joined gap is not a truncation");
+    ok(!content.querySelector("[data-older-truncated]"), "no truncation note after a join");
+  });
+
+  it("a gap wider than the 32-page bound resets with an explicit truncation note", async () => {
+    const newestA = {
+      ...conversationFixture(),
+      cursor: "session_x:g1:m17",
+      turns: [
+        { role: "user", ts: "t19", end_ts: "t19", parts: [{ kind: "text", text: "nineteen" }] },
+        { role: "user", ts: "t20", end_ts: "t20", parts: [{ kind: "text", text: "twenty" }] },
+      ],
+    };
+    const olderA = {
+      ...conversationFixture(),
+      cursor: "session_x:g1:m15",
+      turns: [
+        { role: "user", ts: "t17", end_ts: "t17", parts: [{ kind: "text", text: "seventeen" }] },
+        { role: "user", ts: "t18", end_ts: "t18", parts: [{ kind: "text", text: "eighteen" }] },
+      ],
+    };
+    // The slid newest page sits far away: the walk can never reach
+    // m17 in 32 steps.
+    const newestB = {
+      ...conversationFixture(),
+      cursor: "session_x:g1:m999",
+      turns: [
+        { role: "user", ts: "t1001", end_ts: "t1001", parts: [{ kind: "text", text: "way later" }] },
+        { role: "user", ts: "t1002", end_ts: "t1002", parts: [{ kind: "text", text: "even later" }] },
+      ],
+    };
+    let slid = false;
+    let gapFetches = 0;
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      fetch: async (url) => {
+        const u = String(url);
+        if (u.includes("before=session_x%3Ag1%3Am17") && !slid) return json200(olderA);
+        if (u.includes("before=")) {
+          // Every gap page still has older pages (cursor never m17):
+          // the walk runs out of steps, not of pages.
+          gapFetches += 1;
+          return json200({
+            ...conversationFixture(),
+            cursor: `session_x:g1:m${900 - gapFetches * 2}`,
+            turns: [
+              { role: "user", ts: `g${gapFetches}`, end_ts: `g${gapFetches}`, parts: [{ kind: "text", text: `gap page ${gapFetches}` }] },
+            ],
+          });
+        }
+        return json200(slid ? newestB : newestA);
+      },
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    const button = content.querySelector("[data-load-older]");
+    for (const fn of lens.listeners.click || []) fn({ target: button });
+    await settle();
+    equal(content.querySelectorAll(".lens-turn").length, 4, "older page held before the slide");
+    slid = true;
+    fireTimers(ctx);
+    await settle();
+    // The bound hit exactly 32 gap fetches, then one clean refetch.
+    equal(gapFetches, 32, "the walk stops at the 32-page bound");
+    equal(content.querySelectorAll(".lens-turn").length, 2, "held pages dropped, newest page shown");
+    ok(!content.innerHTML.includes("seventeen"), "the held older pages are gone");
+    const note = content.querySelector("[data-older-truncated]");
+    ok(note, "the truncation is marked in the open");
+    ok(
+      note.textContent.includes("skipped"),
+      "the note says messages were skipped",
+    );
+    ok(content.querySelector("[data-load-older]"), "load-older stays alive to page back manually");
+    const state = ctx.HerdrLens._olderState();
+    equal(state.olderTruncated, true, "the bound is surfaced, not swallowed");
+    equal(state.olderCursor, "session_x:g1:m999", "the newest page cursor is the walk-back point");
+    equal(state.heldFrom, null, "no stale anchor after the reset");
   });
 
   it("image parts render the byte route with an escaped ref", async () => {
