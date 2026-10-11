@@ -6197,6 +6197,26 @@ mod tests {
         value: Option<std::ffi::OsString>,
     }
 
+    /// Removes the live e2e scratch tree on drop, panic-safe. Each run
+    /// boots a real jcode whose isolated home accumulates session logs,
+    /// transcripts, and setup state (~100KB per run); without cleanup every
+    /// test run leaves that behind in the system temp dir. Retries briefly
+    /// because the pane child is killed but not waited on drop, and jcode
+    /// can create session dirs for a moment after the tree is first removed.
+    struct RemoveTempDir(PathBuf);
+
+    impl Drop for RemoveTempDir {
+        fn drop(&mut self) {
+            for _ in 0..50 {
+                if std::fs::remove_dir_all(&self.0).is_ok() || !self.0.exists() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     impl Drop for RestoreEnvVar {
         fn drop(&mut self) {
             match self.value.take() {
@@ -6255,6 +6275,7 @@ mod tests {
         let _guard = crate::tests::lock_env();
         let temp = std::env::temp_dir().join(format!("herdr-jcode-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&temp).unwrap();
+        let _remove_temp = RemoveTempDir(temp.clone());
         // Isolated jcode home: no real sessions, no telemetry, no menubar.
         // The restore guards put the real environment back on drop, even if
         // an assert below panics, so sibling tests (same process) keep
@@ -6404,10 +6425,8 @@ mod tests {
         }
 
         drop(terminal);
-        // Best-effort: the PTY child is dead (Drop kills it), so the home
-        // and workspace files are closed. Leftover dirs would accumulate in
-        // /tmp on every local run; CI machines are wiped anyway.
-        let _ = std::fs::remove_dir_all(&temp);
+        // The `_remove_temp` guard removes the scratch tree (retrying past
+        // the pane child's post-kill session writes).
     }
 
     #[test]
