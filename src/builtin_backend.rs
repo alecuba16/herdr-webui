@@ -6182,12 +6182,44 @@ mod tests {
         assert_eq!(blocked["data"]["agent_status"], "blocked");
     }
 
+    /// Restores one env var on drop, even when the test panics mid-run
+    /// (asserts keep `JCODE_HOME` from leaking into sibling tests, which
+    /// spawn panes in the same process and would hit the isolated home).
+    struct RestoreEnvVar {
+        key: &'static str,
+        value: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for RestoreEnvVar {
+        fn drop(&mut self) {
+            match self.value.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn restore_env_var(key: &'static str) -> RestoreEnvVar {
+        RestoreEnvVar {
+            key,
+            value: std::env::var_os(key),
+        }
+    }
+
     /// Real jcode binary for live e2e tests, when a build exists. Checks
     /// the known build locations in order; `None` skips the caller silently
     /// so CI without jcode stays green. The variant argument is kept for a
     /// future info_fields build path ("vanilla" is the only one resolved
     /// today: the worktree build shares one target dir with other
     /// branches, so a per-branch binary is not addressable right now).
+    ///
+    /// TEMPORARY divergence note: the fallback path
+    /// (`~/.jcode/builds/current/jcode`) is whatever build the developer
+    /// last promoted, not necessarily upstream master. Both formats
+    /// currently render the same bottom chrome (`N> ` prompt + context
+    /// bar), so the vanilla assertions hold either way; if the fork
+    /// format drifts, gate the fallback out and resolve the variant from
+    /// the binary path instead.
     fn live_jcode_binary(_variant: &str) -> Option<String> {
         let home = std::env::var("HOME").ok()?;
         let candidates = [
@@ -6214,14 +6246,15 @@ mod tests {
         let temp = std::env::temp_dir().join(format!("herdr-jcode-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&temp).unwrap();
         // Isolated jcode home: no real sessions, no telemetry, no menubar.
-        // Env vars are restored at the end so sibling tests (same process)
-        // spawn their panes with the developer's real environment.
+        // The restore guards put the real environment back on drop, even if
+        // an assert below panics, so sibling tests (same process) keep
+        // spawning their panes with the developer's real env.
         let home = temp.join("jcode-home");
         std::fs::create_dir_all(&home).unwrap();
-        let previous_home = std::env::var("JCODE_HOME").ok();
-        let previous_selfdev = std::env::var("JCODE_NO_SELFDEV").ok();
-        let previous_menubar = std::env::var("JCODE_NO_MENUBAR").ok();
-        let previous_telemetry = std::env::var("JCODE_NO_TELEMETRY").ok();
+        let _restore_home = restore_env_var("JCODE_HOME");
+        let _restore_selfdev = restore_env_var("JCODE_NO_SELFDEV");
+        let _restore_menubar = restore_env_var("JCODE_NO_MENUBAR");
+        let _restore_telemetry = restore_env_var("JCODE_NO_TELEMETRY");
         std::env::set_var("JCODE_HOME", &home);
         std::env::set_var("JCODE_NO_SELFDEV", "1");
         std::env::set_var("JCODE_NO_MENUBAR", "1");
@@ -6290,23 +6323,6 @@ mod tests {
             "real jcode TUI must reach idle or working status via screen scrape"
         );
 
-        // Restore so sibling tests spawn their panes with the real env.
-        match previous_home {
-            Some(value) => std::env::set_var("JCODE_HOME", value),
-            None => std::env::remove_var("JCODE_HOME"),
-        }
-        match previous_selfdev {
-            Some(value) => std::env::set_var("JCODE_NO_SELFDEV", value),
-            None => std::env::remove_var("JCODE_NO_SELFDEV"),
-        }
-        match previous_menubar {
-            Some(value) => std::env::set_var("JCODE_NO_MENUBAR", value),
-            None => std::env::remove_var("JCODE_NO_MENUBAR"),
-        }
-        match previous_telemetry {
-            Some(value) => std::env::set_var("JCODE_NO_TELEMETRY", value),
-            None => std::env::remove_var("JCODE_NO_TELEMETRY"),
-        }
         drop(terminal);
         // Best-effort: the PTY child is dead (Drop kills it), so the home
         // and workspace files are closed. Leftover dirs would accumulate in
