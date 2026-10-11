@@ -5118,10 +5118,15 @@ async fn pane_conversation(
                     // weak round trip still matches.
                     let etag = format!("W/\"{version}\"");
                     let bare = format!("\"{version}\"");
+                    // Reference index.ts:2407 strips the weak prefix
+                    // ONCE from the sent header (replace(/^W\//, "")),
+                    // so a malformed W/W/"…" never matches. A single
+                    // strip_prefix mirrors that; multiple W/ prefixes
+                    // stay and fail the compare.
                     if headers
                         .get(axum::http::header::IF_NONE_MATCH)
                         .and_then(|v| v.to_str().ok())
-                        .map(|v| v.trim_start_matches("W/") == bare)
+                        .map(|v| v.strip_prefix("W/").unwrap_or(v) == bare)
                         .unwrap_or(false)
                     {
                         return (

@@ -1844,8 +1844,8 @@ describe("lens cursor paging and poll contract", () => {
     let calls = [];
     const { ctx, registry } = makeContext({
       state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
-      fetch: async (url) => {
-        calls.push(url);
+      fetch: async (url, opts) => {
+        calls.push({ url: String(url), etag: opts && opts.headers ? opts.headers["if-none-match"] : undefined });
         const wantsOlder = String(url).includes("before=");
         const body = wantsOlder ? older : newest;
         return {
@@ -1873,8 +1873,15 @@ describe("lens cursor paging and poll contract", () => {
     ok(html.indexOf("first") < html.indexOf("fourth"), "older turns render above the newest");
     ok(html.includes("first") && html.includes("fourth"), "both pages present");
     ok(
-      calls.some((u) => String(u).includes("before=session_x%3Ag1%3Am1")),
+      calls.some((c) => String(c.url).includes("before=session_x%3Ag1%3Am1")),
       "the before cursor travels URL-encoded",
+    );
+    // The load-older fetch is not the polled page: it must not carry
+    // the poll's etag (reference gates If-None-Match to the newest-page
+    // poll; a 304 on a before= fetch would discard the page).
+    ok(
+      calls.every((c) => (String(c.url).includes("before=") ? c.etag === undefined : true)),
+      "load-older fetches carry no If-None-Match",
     );
     // The endcap replaces the button once the beginning is held.
     ok(content.querySelector(".lens-older-done"), "beginning endcap after the last page");

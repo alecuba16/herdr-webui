@@ -11199,3 +11199,65 @@ async fn conversation_image_route_serves_bytes_and_not_found() {
     handle.join().unwrap();
     let _ = fs::remove_file(socket);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_route_etag_compare_edge_cases() {
+    // Reference index.ts:2407 strips ONE leading W/ from the sent
+    // header and compares to "version" (quoted). These pin the edge
+    // semantics the happy-path test cannot see.
+    let conv = |version: &str| {
+        vec![json!({
+            "result": {
+                "type": "pane_conversation",
+                "conversation": { "turns": [], "cursor": null, "version": version }
+            }
+        })]
+    };
+    for (sent, expect_304, why) in [
+        ("W/\"v9\"", true, "verbatim weak round trip matches"),
+        ("\"v9\"", true, "strong form of the same tag matches (strip is a no-op)"),
+        ("W/W/\"v9\"", false, "double weak prefix is not a tag the route ever emitted"),
+        ("W/\"v8\"", false, "a different version serves the full payload"),
+        ("*", false, "no star handling, reference has none either"),
+        ("", false, "an empty header never matches"),
+    ] {
+        let (socket, handle, _rx) = fake_api_socket_multi_recording(conv("v9"));
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+        let mut builder = authed_request(Method::GET, "/api/panes/pane_1/conversation");
+        if !sent.is_empty() {
+            builder = builder.header(axum::http::header::IF_NONE_MATCH, sent);
+        }
+        let response = app
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let got_304 = response.status() == StatusCode::NOT_MODIFIED;
+        assert_eq!(
+            got_304, expect_304,
+            "if-none-match {sent:?}: {why} (expected 304={expect_304}, got {})",
+            response.status()
+        );
+        if expect_304 {
+            let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+            assert!(bytes.is_empty(), "304 carries no body");
+        } else {
+            // Full answer: the browser must get the payload AND the
+            // fresh etag to store for the next poll.
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(axum::http::header::ETAG)
+                    .unwrap(),
+                "W/\"v9\""
+            );
+            let body = response_json(response).await;
+            assert_eq!(body["version"], "v9");
+        }
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+}
