@@ -170,6 +170,10 @@ fn sweep_dead_test_artifacts_once() {
         return;
     }
     let current = std::process::id();
+    // Grace window: a test binary that started during this scan has not
+    // created minute-old artifacts, so its fresh dirs and sockets are
+    // never removed even if the ps snapshot raced its spawn.
+    const GRACE: std::time::Duration = std::time::Duration::from_secs(60);
     let sweep_dir = |base: &Path| {
         let Ok(entries) = fs::read_dir(base) else {
             return;
@@ -187,10 +191,17 @@ fn sweep_dead_test_artifacts_once() {
                 if let Ok(pid) = rest.parse::<u32>() {
                     if pid != current && !live.contains(&pid) {
                         let path = entry.path();
-                        if path.is_dir() {
-                            let _ = fs::remove_dir_all(&path);
-                        } else {
-                            let _ = fs::remove_file(&path);
+                        let stale = entry
+                            .metadata()
+                            .and_then(|meta| meta.modified())
+                            .map(|mtime| mtime.elapsed().map(|age| age >= GRACE).unwrap_or(true))
+                            .unwrap_or(true);
+                        if stale {
+                            if path.is_dir() {
+                                let _ = fs::remove_dir_all(&path);
+                            } else {
+                                let _ = fs::remove_file(&path);
+                            }
                         }
                     }
                     continue;
@@ -203,6 +214,14 @@ fn sweep_dead_test_artifacts_once() {
                 continue;
             }
             let path = entry.path();
+            let stale = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .map(|mtime| mtime.elapsed().map(|age| age >= GRACE).unwrap_or(true))
+                .unwrap_or(true);
+            if !stale {
+                continue;
+            }
             if path.is_dir() {
                 let _ = fs::remove_dir_all(&path);
             } else {

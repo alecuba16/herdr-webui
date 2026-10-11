@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1967,7 +1967,15 @@ struct TerminalRuntime {
     argv: Vec<String>,
     event_hub: BuiltinEventHub,
     event_context: PaneEventContext,
-    last_agent_state: Mutex<Option<(Option<String>, String)>>,
+    last_agent_state: Mutex<Option<(Option<String>, String, u64)>>,
+    /// Monotonic detection sequence: grabbed at the start of every
+    /// detect_and_publish_agent_status run and committed with the result.
+    /// The sweeper force pass and the agent_prompt synchronous re-check can
+    /// run concurrently with the output path; without a sequence number a
+    /// later-started pass with an older tail snapshot could commit after a
+    /// newer one and briefly regress the published status. Stale commits
+    /// are dropped inside the compare-and-set.
+    detection_seq: AtomicU64,
     last_status_check: Mutex<Option<Instant>>,
     /// Set when output arrived while the status check was throttled. A
     /// trailing-edge sweeper (spawned once per runtime) runs the pending
@@ -1985,7 +1993,7 @@ struct TerminalRuntime {
     /// empty after this was set records an exit.
     last_live_process_agent: Mutex<Option<&'static str>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
-    child: Mutex<Box<dyn Child + Send + Sync>>,
+    child: Mutex<Option<Box<dyn Child + Send + Sync>>>,
     writer: Mutex<Box<dyn Write + Send>>,
     scrollback: Mutex<VecDeque<u8>>,
     subscribers: Mutex<Vec<mpsc::SyncSender<TerminalSubscriberMessage>>>,
@@ -2099,12 +2107,13 @@ impl TerminalRuntime {
             event_hub,
             event_context,
             last_agent_state: Mutex::new(None),
+            detection_seq: AtomicU64::new(0),
             last_status_check: Mutex::new(None),
             pending_status_check: AtomicBool::new(false),
             recent_agent_process_exit: Mutex::new(None),
             last_live_process_agent: Mutex::new(None),
             master: Mutex::new(pair.master),
-            child: Mutex::new(child),
+            child: Mutex::new(Some(child)),
             writer: Mutex::new(writer),
             scrollback: Mutex::new(VecDeque::new()),
             subscribers: Mutex::new(Vec::new()),
@@ -2426,7 +2435,7 @@ impl TerminalRuntime {
         self.last_agent_state
             .lock()
             .ok()
-            .and_then(|state| state.as_ref().map(|(_, status)| status.clone()))
+            .and_then(|state| state.as_ref().map(|(_, status, _)| status.clone()))
     }
 
     /// Server-side composer submit ("agent.prompt" semantics): paste the
@@ -2524,6 +2533,11 @@ impl TerminalRuntime {
     /// publish the resulting (agent, status) pair when it changed.
     /// Throttle-free by design; the callers own rate limiting.
     fn detect_and_publish_agent_status(&self) {
+        // Reserve the sequence before reading the tail: two concurrent
+        // passes get distinct seqs, and a pass that commits after a newer
+        // one (higher committed seq) is stale and must not regress the
+        // published state.
+        let seq = self.detection_seq.fetch_add(1, Ordering::AcqRel) + 1;
         let tail = self.history_tail_text(DETECTION_TAIL_BYTES);
         let (osc_progress, osc_title, osc_agent) = self
             .osc9_tracker
@@ -2576,14 +2590,28 @@ impl TerminalRuntime {
             .last_agent_state
             .lock()
             .map(|mut previous| {
-                let changed = previous.as_ref() != Some(&current);
+                // Stale pass: a newer detection already committed after
+                // this one started reading its tail. Committing would
+                // regress the published status; drop the result instead.
+                if previous
+                    .as_ref()
+                    .is_some_and(|(_, _, committed_seq)| *committed_seq >= seq)
+                {
+                    return false;
+                }
+                let changed = previous
+                    .as_ref()
+                    .map(|(prev_agent, prev_status, _)| {
+                        (prev_agent.clone(), prev_status.clone()) != current
+                    })
+                    .unwrap_or(true);
                 // A Some→None agent transition must emit an event so the
                 // frontend drops the exited agent from its list; plain shell
                 // panes (previous was already None) must not spam events.
                 let previous_agent_was_some = previous
                     .as_ref()
-                    .is_some_and(|(previous_agent, _)| previous_agent.is_some());
-                *previous = Some(current);
+                    .is_some_and(|(previous_agent, _, _)| previous_agent.is_some());
+                *previous = Some((current.0, current.1, seq));
                 changed && (agent.is_some() || previous_agent_was_some)
             })
             .unwrap_or(false);
@@ -2621,8 +2649,10 @@ impl TerminalRuntime {
     #[cfg(test)]
     fn kill_and_wait(&self) {
         if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
+            if let Some(child) = child.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
         let deadline = Instant::now() + Duration::from_secs(5);
         while !self.exited.load(Ordering::Acquire) {
@@ -2637,7 +2667,19 @@ impl TerminalRuntime {
 impl Drop for TerminalRuntime {
     fn drop(&mut self) {
         if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
+            // Reap without blocking the dropping thread: kill delivers
+            // SIGKILL, so wait() returns almost immediately, but a Drop on
+            // a UI-sensitive thread must never sit in a syscall. An
+            // unreaped child would linger as a zombie until server exit.
+            // Taking the box out releases the lock before the thread
+            // spawn, so the guard never crosses a thread boundary.
+            if let Some(child) = child.take() {
+                let mut child = child;
+                let _ = child.kill();
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
         }
     }
 }
@@ -6637,7 +6679,7 @@ mod tests {
         terminal.append_output(b"warmup\n");
         {
             let mut previous = terminal.last_agent_state.lock().unwrap();
-            *previous = Some((Some("claurst".to_string()), "working".to_string()));
+            *previous = Some((Some("claurst".to_string()), "working".to_string(), 0));
         }
         // Fresh screen: a Claurst permission dialog lands in the tail but
         // the detection is throttled out, so the cached status still says
@@ -6693,7 +6735,7 @@ mod tests {
         };
         {
             let mut previous = terminal.last_agent_state.lock().unwrap();
-            *previous = Some((Some("jcode".to_string()), "blocked".to_string()));
+            *previous = Some((Some("jcode".to_string()), "blocked".to_string(), 0));
         }
 
         let response = state.handle_request(
@@ -6956,6 +6998,50 @@ mod tests {
             }
         }
         assert!(saw_working, "the working flip must publish an event");
+    }
+
+    #[test]
+    fn stale_detection_pass_does_not_regress_committed_state() {
+        // The sweeper force pass and the agent_prompt synchronous re-check
+        // can run detection concurrently with the output path. Each pass
+        // reserves a monotonic sequence before reading its tail; a pass
+        // that commits after a newer pass (higher committed seq) is stale
+        // and must drop its result, because committing an older tail
+        // snapshot would briefly regress the published status. Here a
+        // detection with a FUTURE sequence commits first (simulating a
+        // newer pass that started later but finished first), and the
+        // in-flight older pass must not overwrite it.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+        // Simulate the newer pass: it reserved a high sequence and
+        // committed an idle jcode state, the way detect_and_publish would.
+        // The counter is left untouched, so the next real detection pass
+        // reserves a far lower sequence: exactly the stale-pass shape.
+        {
+            let mut previous = terminal.last_agent_state.lock().unwrap();
+            *previous = Some((Some("jcode".to_string()), "idle".to_string(), 1000));
+        }
+        // The stale pass: screen text says working, but its sequence is
+        // lower than the committed one, so the result must be dropped.
+        terminal.append_output("jcode\n⠋ sending…".as_bytes());
+        terminal.reset_status_throttle();
+        terminal.publish_agent_status_if_changed_force();
+        let status = terminal.last_agent_status();
+        assert_eq!(
+            status.as_deref(),
+            Some("idle"),
+            "a stale detection pass must not regress the newer committed state"
+        );
     }
 
     #[test]
