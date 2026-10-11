@@ -311,18 +311,22 @@ function create(options) {
     setValue(value) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: String(value == null ? "" : value) } });
     },
-    selectRange(from, to) {
+    selectRange(from, to, opts) {
       const start = Math.max(0, Math.min(view.state.doc.length, Number(from) || 0));
       const end = Math.max(start, Math.min(view.state.doc.length, Number(to) || start));
       view.dispatch({ selection: { anchor: start, head: end }, effects: EditorView.scrollIntoView(start, { y: "center" }) });
-      view.focus();
+      // The find toolbar types into its own input and asks the editor only
+      // to highlight the match: focusing here steals the keystrokes. Callers
+      // that own the keyboard pass keepFocus and get the selection painted
+      // without the focus move.
+      if (!opts || !opts.keepFocus) view.focus();
     },
-    replaceRange(from, to, value) {
+    replaceRange(from, to, value, opts) {
       const start = Math.max(0, Math.min(view.state.doc.length, Number(from) || 0));
       const end = Math.max(start, Math.min(view.state.doc.length, Number(to) || start));
       const insert = String(value == null ? "" : value);
       view.dispatch({ changes: { from: start, to: end, insert }, selection: { anchor: start + insert.length } });
-      view.focus();
+      if (!opts || !opts.keepFocus) view.focus();
     },
     destroy() { view.destroy(); },
   };
