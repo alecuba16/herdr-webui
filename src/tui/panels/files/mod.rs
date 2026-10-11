@@ -33,7 +33,7 @@ impl SearchKind {
         }
     }
 
-    /// Webui `searchScopeLabel`.
+    /// Mirrors the webui file/folder search scope labels.
     pub fn label(self) -> &'static str {
         match self {
             Self::File => "Files",

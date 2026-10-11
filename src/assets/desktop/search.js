@@ -873,14 +873,6 @@ const HerdrSearchPaletteContent = {
     const match = window.HerdrContentSearch && window.HerdrContentSearch.findMatch(file, decodeURIComponent(encodedMatchId));
     openWorkspaceSearchContent(file, match);
   },
-  expandAll() {
-    for (const file of searchPaletteState.content.files || []) searchPaletteState.content.expanded[file.path] = true;
-    renderSearchPalette();
-  },
-  collapseAll() {
-    for (const file of searchPaletteState.content.files || []) searchPaletteState.content.expanded[file.path] = false;
-    renderSearchPalette();
-  },
   loadMore() { HerdrSearchPalette.loadMoreContent(); },
   async loadFile(encodedPath) {
     const helper = window.HerdrWorkspaceSearch;

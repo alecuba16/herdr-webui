@@ -1590,10 +1590,11 @@ describe("mobile bundle load", () => {
     await ctx.settle();
     ok(!threw, "loadFile without the helper does not throw");
     ctx.HerdrWorkspaceSearch = savedHelper;
-    // expandAll forces a render through the global API (the instance is
+    // toggleFile forces a render through the global API (the instance is
     // private to app.js), exposing any error parked while the helper was
-    // gone.
-    ctx.HerdrMobileSearchContent.expandAll();
+    // gone. Toggle twice so the file ends in its original expanded state.
+    ctx.HerdrMobileSearchContent.toggleFile(encodeURIComponent("src/needle.txt"));
+    ctx.HerdrMobileSearchContent.toggleFile(encodeURIComponent("src/needle.txt"));
     html = ctx.document.getElementById("mobileSearchResults").innerHTML;
     ok(html.includes("HerdrMobileSearchContent.loadFile"), "the results render clean after the helper returns");
     ok(!html.includes("file-browser-error"), "no TypeError text leaks into the restored render");

@@ -77,8 +77,6 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
     basename: (p) => String(p || "").split("/").pop() || "",
     normalizeSearchKind: (k) => (k === "dir" ? "dir" : "file"),
     searchKindQuery: (k) => `search_kind=${k}`,
-    searchKindLabel: (k) => (k === "dir" ? "Folders" : "Files"),
-    searchKindNoun: (k) => (k === "dir" ? "folder" : "file"),
     applyGitStatus: (entries) => entries,
     renderEntries: () => "",
     renderCurrentDirectoryRow: () => "",

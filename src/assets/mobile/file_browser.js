@@ -186,16 +186,6 @@
       return Tree.normalizeSearchKind(kind);
     }
 
-    function searchScopeLabel(kind) {
-      if (kind === "content") return "Content";
-      return Tree.searchKindLabel(kind);
-    }
-
-    function searchScopeNoun(kind) {
-      if (kind === "content") return "content";
-      return Tree.searchKindNoun(kind);
-    }
-
     function nextSearchScope(kind) {
       if (kind === "file") return "dir";
       if (kind === "dir") return "content";
@@ -728,14 +718,6 @@
         const file = contentFile(path);
         const match = globalThis.HerdrContentSearch && globalThis.HerdrContentSearch.findMatch(file, decodeURIComponent(encodedMatchId));
         openFile(path, matchHighlight(match, local.contentSearch.query));
-      },
-      expandAll() {
-        for (const file of local.contentSearch.files || []) local.contentSearch.expanded[file.path] = true;
-        deps.render();
-      },
-      collapseAll() {
-        for (const file of local.contentSearch.files || []) local.contentSearch.expanded[file.path] = false;
-        deps.render();
       },
       async expandSnippet(encodedPath, _index, direction) {
         const path = decodeURIComponent(encodedPath);

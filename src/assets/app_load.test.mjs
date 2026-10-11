@@ -1687,7 +1687,7 @@ describe("app bundle load", () => {
     match(fileBrowserSource, /HerdrEditor\.openFind/);
     ok(!fileBrowserSource.includes("file-browser-current-file"), "active file title is already represented by the file tab");
     ok(!fileBrowserSource.includes("<span>${esc(file.path)}</span>"), "file panes must not duplicate the selected path next to the tab button");
-    match(fileBrowserSource, /function fileTabTooltipPath\(path\)/);
+    match(fileBrowserSource, /function fileTabTooltip\(path\)/);
     // Search highlights still reach the editor: the registry turns a
     // highlight open into a preview-source mount.
     match(fileBrowserSource, /async function openEditorTab\(path, searchHighlight\)/);
@@ -1774,7 +1774,7 @@ describe("app bundle load", () => {
     ok(!desktopFileBrowserSource.includes("renderOpenFileTabs"), "the in-browser open-file tab row is gone");
     ok(!desktopFileBrowserSource.includes("file-browser-open-tabs"), "the tab strip markup is gone");
     ok(!desktopFileBrowserSource.includes('role="tablist" aria-label="Open files"'), "the in-browser tablist is gone");
-    match(desktopFileBrowserSource, /function fileTabTooltipPath\(path\)/);
+    match(desktopFileBrowserSource, /function fileTabTooltip\(path\)/);
     match(desktopFileBrowserSource, /select\(encodedPath\) \{[\s\S]*?panes\.openEditorTab\(path\)/);
     match(desktopFileBrowserSource, /async function closeEditorTab\(encodedPath\)/);
     match(desktopFileBrowserSource, /renderIfActive\(target, true\);/);

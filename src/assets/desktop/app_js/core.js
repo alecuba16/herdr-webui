@@ -1283,9 +1283,6 @@ function bindSettingsModule(module) {
     setOption(key, value) {
       options[key] = value;
     },
-    getOption(key) {
-      return options[key];
-    },
   });
 }
 function normalizeThemeMode(value) {
