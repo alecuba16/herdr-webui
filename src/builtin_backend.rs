@@ -2400,7 +2400,14 @@ impl TerminalRuntime {
             return;
         }
         self.pending_status_check.store(false, Ordering::Release);
-        self.run_status_detection();
+        // Run the detection core directly. Routing through
+        // run_status_detection would re-check the throttle this method just
+        // consumed (last_status_check was refreshed a moment ago, so the
+        // second gate always fails), starving detection for as long as
+        // output keeps flowing: a turn with continuous spinner frames
+        // would never publish "working", and even the boot sequence only
+        // ever detected via the sweeper's silent-window luck.
+        self.detect_and_publish_agent_status();
     }
 
     /// Un-throttled detection entry point used by the sweeper thread. The
@@ -6238,8 +6245,11 @@ mod tests {
         // REAL acceptance path: spawn the actual jcode binary (vanilla
         // master build) in a real PTY, let its TUI render, and require the
         // detector to publish jcode agent events. Skipped when no jcode
-        // build exists so CI stays green.
+        // build exists so CI stays green; the skip prints one line so a
+        // machine that never runs the real path is visible in --nocapture
+        // output instead of silently passing.
         let Some(jcode) = live_jcode_binary("vanilla") else {
+            eprintln!("live_jcode_tui_detection_end_to_end: no jcode build, skipping");
             return;
         };
         let _guard = crate::tests::lock_env();
@@ -6286,7 +6296,9 @@ mod tests {
 
         // The real TUI boots, renders its input prompt, then idles. Wait
         // for the first jcode status event (label + status from the real
-        // screen scrape of real render output).
+        // screen scrape of real render output). A clean boot must never
+        // report blocked or done: seeing either would mean a fabricated
+        // pattern fires against real output.
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let mut saw_jcode_event = false;
         let mut saw_idle = false;
@@ -6302,6 +6314,10 @@ mod tests {
                     {
                         saw_jcode_event = true;
                         let status = event["data"]["agent_status"].as_str().unwrap_or("");
+                        assert!(
+                            status != "blocked" && status != "done",
+                            "clean jcode boot reported {status:?}; no permission dialog or agent exit exists at this point"
+                        );
                         // A fresh boot lands on idle (prompt visible) or
                         // working (spinner while loading); both prove the
                         // detector reads the real chrome.
@@ -6322,6 +6338,70 @@ mod tests {
             saw_idle,
             "real jcode TUI must reach idle or working status via screen scrape"
         );
+
+        // Real working→idle flip: submit a tiny prompt (the TUI shows the
+        // spinner status line `⠋ sending…`, a working marker), interrupt
+        // with Ctrl+C (input.rs sets cancel_requested), and require the
+        // detector to publish working then idle again. This exercises the
+        // full output-driven path (throttle, trailing sweeper, publish)
+        // against real render bytes in both directions, not just boot.
+        if saw_idle {
+            // Submit via the same paste+Enter sequence agent_prompt uses:
+            // a trailing bare `\r` inside jcode's 150ms paste-guard window
+            // would be swallowed as paste residue (paste_guard.rs).
+            let message =
+                composer_message("write the numbers from 1 to 30, one per line, no other text");
+            let payload = bracketed_paste_payload(&message);
+            let _ = terminal.write_input(payload.as_bytes());
+            thread::sleep(Duration::from_millis(AGENT_PROMPT_ENTER_GAP_MS));
+            if terminal.exited.load(Ordering::Acquire) {
+                return;
+            }
+            let _ = terminal.write_input(b"\r");
+            let flip_deadline = std::time::Instant::now() + Duration::from_secs(60);
+            let mut saw_working = false;
+            let mut returned_to_idle = false;
+            loop {
+                let timeout = flip_deadline.saturating_duration_since(std::time::Instant::now());
+                if timeout.is_zero() {
+                    break;
+                }
+                match rx.recv_timeout(timeout) {
+                    Ok(event)
+                        if event["event"] == "pane.agent_status_changed"
+                            && event["data"]["agent"].as_str() == Some("jcode") =>
+                    {
+                        let status = event["data"]["agent_status"].as_str().unwrap_or("");
+                        match status {
+                            "working" if !saw_working => {
+                                saw_working = true;
+                                // Interrupt: Ctrl+C cancels the running turn
+                                // (app/input.rs: cancel_requested = true). A
+                                // turn that finishes first just returns to
+                                // idle; do not press Ctrl+C again after the
+                                // prompt is back, a second press quits jcode.
+                                let _ = terminal.write_input(b"\x03");
+                            }
+                            "idle" if saw_working => {
+                                returned_to_idle = true;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            assert!(
+                saw_working,
+                "a submitted prompt must flip the pane to working (spinner status line)"
+            );
+            assert!(
+                returned_to_idle,
+                "after the turn ends or Ctrl+C, the pane must return to idle (numbered prompt restored)"
+            );
+        }
 
         drop(terminal);
         // Best-effort: the PTY child is dead (Drop kills it), so the home
@@ -6703,6 +6783,94 @@ mod tests {
         );
         assert_eq!(list[0]["agent"], "jcode");
         assert_eq!(list[0]["agent_status"], "idle");
+    }
+
+    #[test]
+    fn spinner_append_publishes_working_inline() {
+        // Regression: the output path used to route its gate-passing check
+        // through run_status_detection, which re-checked the throttle that
+        // had just been refreshed, a second gate that always fails, so an
+        // append that won the first gate never ran detection. During a real
+        // jcode turn (spinner frames streaming for the whole turn) only the
+        // 100ms sweeper could land a check, and only when its tick happened
+        // to fall in the short window between throttle expiry and the next
+        // gate-passing append. The live e2e flipped to working in ~1 run of
+        // 6. The fix runs the detection core inline after the first gate,
+        // so detection is guaranteed at most one throttle window behind the
+        // output. This test pins the inline behavior: an append that passes
+        // the throttle must update the status synchronously, before the
+        // sweeper could ever intervene (it asserts immediately, within
+        // microseconds of the append, so on the double-gate code the sweeper
+        // cannot rescue the check).
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            // /bin/cat never writes, so the detection tail contains exactly
+            // the synthetic bytes below.
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let rx = state.subscribe_events();
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+
+        // Boot into a known idle state, mirroring the real captured chrome:
+        // the numbered prompt row and the overscroll status line whose
+        // context bar (`▱▱▱▱ 2%` on a fresh session, `overscroll_context_bar`
+        // in ui_input.rs) is what the idle heuristic keys on.
+        terminal
+            .append_output("jcode\n1› ask anything\n~/…/proj  main ▱▱▱▱ 2% llmg-coding".as_bytes());
+        let mut booted_idle = false;
+        let boot_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let remaining = boot_deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(remaining) {
+                Ok(event)
+                    if event["event"] == "pane.agent_status_changed"
+                        && event["data"]["agent"].as_str() == Some("jcode")
+                        && event["data"]["agent_status"].as_str() == Some("idle") =>
+                {
+                    booted_idle = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        assert!(booted_idle, "boot must reach idle (sweeper path)");
+
+        // Force the throttle open so the next append passes the output
+        // path's gate, then feed one real spinner status line (braille
+        // glyph + label, as jcode renders it mid-turn). The status must flip
+        // synchronously inside the append: on the double-gate code the
+        // second gate failed and the status stayed "idle" until some later
+        // sweeper tick (which this test never grants).
+        terminal.reset_status_throttle();
+        terminal.append_output("\u{1b}[1;1H\u{280b} sending…".as_bytes());
+        assert_eq!(
+            terminal.last_agent_status().as_deref(),
+            Some("working"),
+            "a throttle-passing append must run detection inline"
+        );
+
+        // The inline detection must also have published the event.
+        let mut saw_working = false;
+        while let Ok(event) = rx.try_recv() {
+            if event["event"] == "pane.agent_status_changed"
+                && event["data"]["agent"].as_str() == Some("jcode")
+                && event["data"]["agent_status"].as_str() == Some("working")
+            {
+                saw_working = true;
+            }
+        }
+        assert!(saw_working, "the working flip must publish an event");
     }
 
     #[test]
