@@ -12,7 +12,7 @@
 //! misses (skipped lines, ignored unknown parts), never panics. The
 //! store is only ever read.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
@@ -66,6 +66,12 @@ pub struct JcodeStoreIndex {
     // is bounded by this, and the stat-generation check still invalidates
     // rows once a sweep runs. Invisible at the 2 s poll interval.
     last_sweep: Mutex<Option<Instant>>,
+    // Swarm-registry worker ids, refreshed with the same 250 ms
+    // throttle as the store sweep: resolve runs on every poll, and
+    // re-reading `~/.jcode/state/swarm/*.json` per poll would be
+    // wasted work between registry rotations.
+    swarm_dir: PathBuf,
+    swarm_workers: Mutex<(Option<Instant>, HashSet<String>)>,
 }
 
 impl JcodeStoreIndex {
@@ -74,11 +80,22 @@ impl JcodeStoreIndex {
     }
 
     pub fn with_store_dir(store_dir: PathBuf) -> Self {
+        let swarm_dir = default_swarm_registry_dir();
         Self {
             store_dir,
             cache: Mutex::new(HashMap::new()),
             last_sweep: Mutex::new(None),
+            swarm_dir,
+            swarm_workers: Mutex::new((None, HashSet::new())),
         }
+    }
+
+    /// Test hook: the swarm registry dir this index reads (mirrors
+    /// `with_store_dir` for the registry).
+    #[cfg(test)]
+    pub fn with_swarm_dir(&mut self, swarm_dir: PathBuf) {
+        self.swarm_dir = swarm_dir;
+        *self.swarm_workers.lock().unwrap_or_else(|p| p.into_inner()) = (None, HashSet::new());
     }
 
     pub fn store_dir(&self) -> &Path {
@@ -86,10 +103,16 @@ impl JcodeStoreIndex {
     }
 
     /// Test hook: forces the next `resolve` to re-sweep instead of
-    /// serving the throttled cache.
+    /// serving the throttled cache. Clears the swarm-registry
+    /// throttle too, so a test that rewrites its registry fixture
+    /// mid-test observes the change.
     #[cfg(test)]
     pub fn force_sweep_for_tests(&self) {
         *self.last_sweep.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.swarm_workers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .0 = None;
     }
 
     /// Response `version` (design section 4): the combined stat
@@ -263,7 +286,12 @@ impl JcodeStoreIndex {
         descendants: &dyn Fn(u32) -> bool,
         pane_tail: &str,
     ) -> JcodeSessionResolution {
-        let index = self.refresh();
+        let swarm_workers = self.swarm_worker_set();
+        let index: Vec<SessionEvidence> = self
+            .refresh()
+            .into_iter()
+            .filter(|e| !swarm_workers.contains(&e.session_id))
+            .collect();
         let cwd = pane_cwd.to_string_lossy();
 
         // Step 1: PID evidence (primary). Sessions whose last_pid is in
@@ -353,6 +381,24 @@ impl JcodeStoreIndex {
             }
         }
         winner
+    }
+
+    /// The swarm-registry worker ids, throttled like the store sweep
+    /// (same 250 ms TTL). Read once per poll at most, not once per
+    /// registry file.
+    fn swarm_worker_set(&self) -> HashSet<String> {
+        let mut guard = self
+            .swarm_workers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(at) = guard.0 {
+            if at.elapsed() < Duration::from_millis(250) {
+                return guard.1.clone();
+            }
+        }
+        let workers = swarm_worker_sessions(&self.swarm_dir);
+        *guard = (Some(Instant::now()), workers.clone());
+        workers
     }
 
     /// Re-stats the store and re-reads only changed files. Returns the
@@ -529,6 +575,98 @@ fn default_store_dir() -> PathBuf {
     {
         PathBuf::from(".jcode/sessions")
     }
+}
+
+/// The durable swarm registry dir jcode itself reads
+/// (harness swarm_persistence.rs). Kept next to the session store
+/// under `~/.jcode/state/swarm` — a distinct tree from the transcript
+/// store, so a custom test store dir never drags a custom registry
+/// with it.
+fn default_swarm_registry_dir() -> PathBuf {
+    #[cfg(unix)]
+    {
+        std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(".jcode").join("state").join("swarm"))
+            .unwrap_or_else(|| PathBuf::from(".jcode/state/swarm"))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(".jcode/state/swarm")
+    }
+}
+
+/// The durable swarm registry's worker session ids, one flat set
+/// (`members[].session_id`, `plan.items[].assigned_to`,
+/// `plan.task_progress.<node>.assigned_session_id`), read from every
+/// non-superseded `*.json` under the registry dir. Workers run
+/// headless with the daemon's pid and the coordinator's cwd, so they
+/// would collide with the human's pane at every resolve step; the
+/// registry is the discriminator jcode's own sidebar enrichment uses
+/// (harness swarm_metadata.rs: "Only swarm ownership is used, never a
+/// transcript's ordinary fork parent"), so resume/fork chains are
+/// never excluded. `coordinator_session_id` is deliberately NOT
+/// collected: the coordinator is the human's session and stays
+/// pane-resolvable. `.bak` files skip when the `.json` exists — the
+/// same rotate-on-write rule jcode's loader applies; loading both
+/// would resurrect state the primary deliberately dropped.
+/// Exclusion is permanent once listed, matching jcode's enrichment
+/// (newest record that MENTIONS a member wins; absence from a newer
+/// snapshot does not unmember): a worker session is finished work
+/// history, never the pane's interactive session, and resuming one
+/// mints a NEW session id (create_transfer_child_session) that is
+/// not excluded.
+fn swarm_worker_sessions(dir: &Path) -> HashSet<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return HashSet::new();
+    };
+    let mut workers: HashSet<String> = HashSet::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Rotate-on-write: `<id>.json.bak` is the superseded backup of
+        // `<id>.json`; the primary wins when it exists. Must strip the
+        // `.bak` suffix, NOT `with_extension` — that would turn
+        // `x.json.bak` into `x.json.json` and load stale backups as
+        // if they were primary.
+        let is_backup = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".bak"));
+        if is_backup {
+            let primary = path.to_string_lossy();
+            let primary = primary.strip_suffix(".bak").unwrap_or(&primary);
+            if Path::new(primary).is_file() {
+                continue;
+            }
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        if let Some(members) = parsed.get("members").and_then(|m| m.as_array()) {
+            for member in members {
+                if let Some(id) = member.get("session_id").and_then(|i| i.as_str()) {
+                    workers.insert(id.to_string());
+                }
+            }
+        }
+        if let Some(items) = parsed.pointer("/plan/items").and_then(|i| i.as_array()) {
+            for item in items {
+                if let Some(id) = item.get("assigned_to").and_then(|i| i.as_str()) {
+                    workers.insert(id.to_string());
+                }
+            }
+        }
+        if let Some(progress) = parsed.pointer("/plan/task_progress").and_then(|p| p.as_object()) {
+            for entry in progress.values() {
+                if let Some(id) = entry.get("assigned_session_id").and_then(|i| i.as_str()) {
+                    workers.insert(id.to_string());
+                }
+            }
+        }
+    }
+    workers
 }
 
 // ---------------------------------------------------------------------------
@@ -2280,6 +2418,205 @@ mod tests {
             res,
             JcodeSessionResolution::Resolved {
                 session_id: "session_j".into()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_excludes_swarm_workers_named_in_plan() {
+        // The live collision shape: coordinator + worker share the
+        // daemon pid and the coordinator's cwd; the worker is named
+        // only in the swarm registry's plan (task-graph swarms leave
+        // `members` empty). Without exclusion this resolves
+        // `Ambiguous`; with it, the coordinator wins.
+        let dir = temp_store("sw1");
+        for name in ["coord", "worker1", "worker2"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        let swarm_dir = temp_store("sw1-registry");
+        std::fs::write(
+            swarm_dir.join("swarm_abc.json"),
+            serde_json::to_string(&json!({
+                "swarm_id": "abc",
+                "coordinator_session_id": "session_coord",
+                "members": [],
+                "plan": {
+                    "items": [
+                        {"id": "n1", "assigned_to": "session_worker1"},
+                        {"id": "n2", "assigned_to": "session_worker2"}
+                    ],
+                    "task_progress": {
+                        "n1": {"assigned_session_id": "session_worker1"}
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(swarm_dir);
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_coord".into()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_excludes_swarm_members_listed_in_members_array() {
+        // Registry style of the `swarm spawn` flow: `members[]`
+        // carries the worker ids directly (PersistedSwarmMember).
+        let dir = temp_store("sw2");
+        for name in ["coord", "worker1"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        let swarm_dir = temp_store("sw2-registry");
+        std::fs::write(
+            swarm_dir.join("swarm_def.json"),
+            serde_json::to_string(&json!({
+                "swarm_id": "def",
+                "coordinator_session_id": "session_coord",
+                "members": [
+                    {"session_id": "session_worker1", "label": "api reviewer"}
+                ],
+                "plan": {"items": [], "task_progress": {}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(swarm_dir);
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_coord".into()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_without_registry_dir_treats_all_sessions_as_human() {
+        // No `~/.jcode/state/swarm` (fresh machine, or the temp
+        // registry dir was never created): the filter is a no-op and
+        // the two-sessions-same-evidence case stays ambiguous, as
+        // before the change.
+        let dir = temp_store("sw3");
+        for name in ["coord", "other"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(temp_store("sw3-registry")); // exists, empty
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::Ambiguous
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_registry_bak_skipped_when_json_exists() {
+        // Rotate-on-write parity: a worker removed from the primary
+        // `.json` but still named in the stale `.bak` must not be
+        // excluded (the .bak is superseded history).
+        let dir = temp_store("sw4");
+        for name in ["coord", "worker1"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        let swarm_dir = temp_store("sw4-registry");
+        std::fs::write(
+            swarm_dir.join("swarm_abc.json"),
+            serde_json::to_string(&json!({
+                "swarm_id": "abc",
+                "coordinator_session_id": "session_coord",
+                "members": [],
+                "plan": {"items": [], "task_progress": {}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            swarm_dir.join("swarm_abc.json.bak"),
+            serde_json::to_string(&json!({
+                "swarm_id": "abc",
+                "coordinator_session_id": "session_coord",
+                "members": [{"session_id": "session_worker1"}],
+                "plan": {"items": [], "task_progress": {}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(swarm_dir);
+        // Both sessions resolvable evidence: without the .bak-skip the
+        // worker would be excluded and the coordinator would win.
+        // With it, the pair is ambiguous.
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::Ambiguous
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_registry_bak_loaded_when_json_missing() {
+        // The other half of the rotate rule: a lone `.bak` (primary
+        // write failed, or the file was rotated away) still names its
+        // workers, so the worker stays excluded.
+        let dir = temp_store("sw5");
+        for name in ["coord", "worker1"] {
+            std::fs::write(
+                dir.join(format!("session_{name}.json")),
+                serde_json::to_string(&ev_session(&format!("session_{name}"), 21155, "/repo", "Active"))
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        let swarm_dir = temp_store("sw5-registry");
+        std::fs::write(
+            swarm_dir.join("swarm_abc.json.bak"),
+            serde_json::to_string(&json!({
+                "swarm_id": "abc",
+                "coordinator_id": "session_coord",
+                "members": [{"session_id": "session_worker1"}],
+                "plan": {"items": [], "task_progress": {}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir);
+        index.with_swarm_dir(swarm_dir);
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_coord".into()
             }
         );
     }
