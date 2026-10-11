@@ -6990,9 +6990,12 @@ async fn promote_join_failure_propagates_backend_panic() {
 
 /// A cancelled spawn_blocking task yields a JoinError that is not a
 /// panic: promote_join_failure must degrade it to its message string so
-/// the route answers 502 and restores auto-close. Built on a runtime
-/// whose only blocking thread is parked, so the queued task is still
-/// waiting for a pool slot when it is aborted.
+/// the route answers 502 and restores auto-close. The runtime has a
+/// single blocking thread, which the `parked` task holds in
+/// blocking_recv: the probe is still queued behind it (the pool is
+/// FIFO) when aborted, so its closure never runs. The park is released
+/// only after the abort so the pool thread dequeues the cancelled
+/// probe and resolves its JoinHandle as cancelled.
 #[test]
 fn promote_join_failure_degrades_cancelled_task_to_message() {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -7002,15 +7005,20 @@ fn promote_join_failure_degrades_cancelled_task_to_message() {
     rt.block_on(async {
         let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
         let parked = tokio::task::spawn_blocking(move || {
-            let _ = std::sync::mpsc::channel::<()>();
-            // Park the only blocking thread until the test is done.
-            drop(release_rx);
+            // Hold the only blocking thread until the probe has been
+            // aborted. A plain drop(release_rx) returned immediately,
+            // the probe grabbed the freed slot and ran its closure
+            // before abort() landed, flaking CI ("probe task must be
+            // cancelled, not run").
+            let _ = release_rx.blocking_recv();
         });
         let queued = tokio::task::spawn_blocking(|| unreachable!());
-        // Yield so `queued` is registered as waiting for the pool, then
-        // cancel it before it ever runs.
-        tokio::task::yield_now().await;
+        // The probe is queued behind the parked task, so aborting now
+        // marks it cancelled before it can ever run.
         queued.abort();
+        // Free the blocking thread: it pops the cancelled probe, skips
+        // its closure, and completes the JoinHandle as cancelled.
+        let _ = release_tx.send(());
         let join = queued.await.unwrap_err();
         assert!(join.is_cancelled(), "probe task must be cancelled, not run");
         let message = promote_join_failure(join);
@@ -7018,7 +7026,6 @@ fn promote_join_failure_degrades_cancelled_task_to_message() {
             message.contains("cancelled"),
             "join failure must degrade to its message, got {message}"
         );
-        let _ = release_tx.send(());
         let _ = parked.await;
     });
 }
