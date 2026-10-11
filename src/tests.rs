@@ -11261,3 +11261,116 @@ async fn conversation_route_etag_compare_edge_cases() {
         let _ = fs::remove_file(socket);
     }
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_route_empty_cursors_treated_as_absent() {
+    // The lens only sets a cursor param when it has one, but a stale
+    // URL or a hand-crafted request can carry an empty one: the route
+    // filters empties to absent so the backend sees a clean newest
+    // page, not an empty cursor string (which would 409 on decode).
+    let (socket, handle, rx) = fake_api_socket_multi_recording(vec![json!({
+        "result": {
+            "type": "pane_conversation",
+            "conversation": { "turns": [], "cursor": null, "version": "v1" }
+        }
+    })]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/conversation?before=&from=")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["version"], "v1");
+
+    let request: Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
+    assert!(
+        request["params"].get("before").is_none(),
+        "empty before must not reach the backend params"
+    );
+    assert!(
+        request["params"].get("from").is_none(),
+        "empty from must not reach the backend params"
+    );
+    assert_eq!(request["params"]["pane_id"], "pane_1");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_image_route_invalid_base64_is_not_found() {
+    // The backend arm validated the ref but the data failed to decode
+    // (a truncated file, a hand-edit): bytes cannot be served, and a
+    // 500 would break the page for a placeholder-sized problem — the
+    // lens drops just the image, same as a rotated-out ref.
+    let (socket, handle, _rx) = fake_api_socket_multi_recording(vec![json!({
+        "result": {
+            "type": "pane_conversation_image",
+            "image": { "media_type": "image/png", "data": "not!!valid!!base64" }
+        }
+    })]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/conversation/image?ref=msg_img_9")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "image_not_found");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn conversation_route_backend_transport_failure_is_bad_gateway() {
+    // No listener at the socket path: the backend dial fails outright.
+    // The route must answer 502 (browser-renderable), never panic or
+    // hang — the lens shows its refusal state and the poll re-arms.
+    let mut state = test_state();
+    let dead = std::env::temp_dir().join(format!(
+        "herdr-webui-dead-api-{}-{}.sock",
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        fake_socket_suffix()
+    ));
+    state.api_socket = Some(dead);
+    let app = test_app_with_state(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/conversation")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+    let response = app
+        .clone()
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/conversation/image?ref=msg_x")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+}
