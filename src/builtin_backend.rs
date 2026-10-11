@@ -5958,14 +5958,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "no terminal for tab")]
     fn builtin_promote_send_cd_panics_without_terminal_runtime() {
-        let temp = std::env::temp_dir().join(format!(
-            "herdr-promote-cd-noterm-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&temp).unwrap();
+        let (temp, _temp_guard) = crate::tests::temp_guard("herdr-promote-cd-noterm");
         let (state, _workspace_id, tab_id) = promote_fixture(&temp);
         // Tab and pane stay, the terminal runtime goes: the helper's
         // lookup must fail loudly instead of writing into a dead PTY.
@@ -5983,14 +5976,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "never processed cd into")]
     fn builtin_promote_send_cd_panics_when_shell_never_cds() {
-        let temp = std::env::temp_dir().join(format!(
-            "herdr-promote-cd-stuck-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&temp).unwrap();
+        let (temp, _temp_guard) = crate::tests::temp_guard("herdr-promote-cd-stuck");
         let (state, _workspace_id, tab_id) = promote_fixture(&temp);
         // A directory that cannot become the shell's cwd: remove it after
         // creating the fixture, so every probe observation disagrees with
@@ -6277,9 +6263,11 @@ mod tests {
     /// (`~/.jcode/builds/current/jcode`) is whatever build the developer
     /// last promoted, not necessarily upstream master. Both formats
     /// currently render the same bottom chrome (`N> ` prompt + context
-    /// bar), so the vanilla assertions hold either way; if the fork
-    /// format drifts, gate the fallback out and resolve the variant from
-    /// the binary path instead.
+    /// bar), so the vanilla assertions hold either way; verified live
+    /// 2026-10-11 against the promoted fork build v0.94.19-dev (full e2e
+    /// incl. flip + refusal gates green with the primary binary moved
+    /// aside). If the fork format drifts, gate the fallback out and
+    /// resolve the variant from the binary path instead.
     fn live_jcode_binary(_variant: &str) -> Option<String> {
         let home = std::env::var("HOME").ok()?;
         let candidates = [

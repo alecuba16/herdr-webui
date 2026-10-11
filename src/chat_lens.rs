@@ -458,13 +458,24 @@ mod tests {
     use serde_json::json;
 
     /// Evidence + messages in one snapshot, journal appending more.
-    fn fixture_store(name: &str) -> (std::path::PathBuf, JcodeStoreIndex, String) {
+    /// The returned guard removes the scratch dir on scope exit, panic
+    /// included; the trailing best-effort removes in older tests could
+    /// not guarantee that and leaked a dir per run into TMPDIR.
+    fn fixture_store(
+        name: &str,
+    ) -> (
+        std::path::PathBuf,
+        crate::tests::TempDirGuard,
+        JcodeStoreIndex,
+        String,
+    ) {
         let dir = std::env::temp_dir().join(format!(
             "herdr-chat-lens-test-{name}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let _guard = crate::tests::TempDirGuard::new(dir.clone());
         let session_id = format!("session_lens_{name}");
         // Snapshot: evidence (pid 4242, cwd /w, Active) + base turns.
         let snapshot = json!({
@@ -497,7 +508,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
-        (dir, index, session_id)
+        (dir, _guard, index, session_id)
     }
 
     fn fixture_context() -> PaneContext {
@@ -515,7 +526,7 @@ mod tests {
 
     #[test]
     fn resolve_session_with_matches_by_process_tree() {
-        let (_dir, index, session_id) = fixture_store("resolve");
+        let (_dir, _guard, index, session_id) = fixture_store("resolve");
         assert_eq!(
             resolve_session_with(&index, &fixture_context()),
             Ok(session_id)
@@ -524,14 +535,14 @@ mod tests {
 
     #[test]
     fn resolve_session_with_no_evidence_refuses_no_session_path() {
-        let (_dir, index, _id) = fixture_store("refuse");
+        let (_dir, _guard, index, _id) = fixture_store("refuse");
         let err = resolve_session_with(&index, &dummy_context()).unwrap_err();
         assert!(err.starts_with("no_session_path"), "got {err}");
     }
 
     #[test]
     fn conversation_payload_with_builds_turns_version_and_stats() {
-        let (_dir, index, _id) = fixture_store("payload");
+        let (_dir, _guard, index, _id) = fixture_store("payload");
         let payload = conversation_payload_with(&index, &fixture_context()).unwrap();
         // Wire shape (design section 4): source, session_id, version,
         // turns.
@@ -549,7 +560,7 @@ mod tests {
 
     #[test]
     fn conversation_payload_with_transcript_missing_when_files_deleted() {
-        let (dir, index, _id) = fixture_store("missing");
+        let (dir, _guard, index, _id) = fixture_store("missing");
         // Prime the evidence cache (sweep sees the files), then the
         // session vanishes before the transcript read: resolution
         // still serves the cached row, both files unreadable NOW ->
@@ -574,6 +585,7 @@ mod tests {
             std::env::temp_dir().join(format!("herdr-chat-lens-test-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let _dir_guard = crate::tests::TempDirGuard::new(dir.clone());
         std::fs::write(
             dir.join("session_empty.json"),
             serde_json::to_string(&json!({
@@ -590,7 +602,7 @@ mod tests {
 
     #[test]
     fn tool_output_with_walks_the_same_message_stream() {
-        let (_dir, index, _id) = fixture_store("tool");
+        let (_dir, _guard, index, _id) = fixture_store("tool");
         // No tool calls in the fixture: any ref is not found.
         assert_eq!(
             tool_output_with(&index, &fixture_context(), "toolu_call_1"),
@@ -619,6 +631,7 @@ mod tests {
             std::env::temp_dir().join(format!("herdr-chat-lens-test-amb-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let _dir_guard = crate::tests::TempDirGuard::new(dir.clone());
         for id in ["session_p", "session_q"] {
             std::fs::write(
                 dir.join(format!("{id}.json")),
@@ -643,6 +656,7 @@ mod tests {
             std::env::temp_dir().join(format!("herdr-chat-lens-test-cpt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let _dir_guard = crate::tests::TempDirGuard::new(dir.clone());
         std::fs::write(
             dir.join("session_c.json"),
             serde_json::to_string(&json!({

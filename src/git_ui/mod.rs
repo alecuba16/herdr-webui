@@ -1760,15 +1760,7 @@ mod tests {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             // Any plain temp folder is outside a work tree, like the default
             // folder the rail probe asks about at boot.
-            let dir = std::env::temp_dir().join(format!(
-                "herdr-webui-git-ui-nogit-{}-{}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            fs::create_dir_all(&dir).unwrap();
+            let (dir, _temp_guard) = crate::tests::temp_guard("herdr-webui-git-ui-nogit");
             let cwd = dir.to_str().unwrap().to_string();
             let state = test_state();
 
