@@ -1,5 +1,18 @@
 # Release notes
 
+## 0.6.0 Release Notes
+- The editor find bar keeps keyboard focus while you type. Every
+  keystroke used to trigger a match selection that focused the editor
+  content, so the second key landed in the document instead of the find
+  query and the match highlight never stayed painted. The find toolbar
+  owns the keyboard while it is open: the selection repaints per
+  keystroke without stealing focus, the match highlight persists, and the
+  prev/next and replace buttons hand focus back to the query after each
+  click so typing and Enter keep driving the find.
+- The same keepFocus contract covers replace flows and the fallback
+  editor: replace-one lands the edit without moving focus into the
+  editor, and the textarea fallback honors keepFocus too.
+
 ## 0.5.0 Release Notes
 - Workspace panes gain split layouts: a pane can split horizontally
   or vertically into auxiliary terminal surfaces, and terminals are
