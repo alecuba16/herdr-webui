@@ -6380,25 +6380,31 @@ mod tests {
             "real jcode TUI must reach idle or working status via screen scrape"
         );
 
-        // Real working→idle flip: submit a tiny prompt (the TUI shows the
-        // spinner status line `⠋ sending…`, a working marker), interrupt
-        // with Ctrl+C (input.rs sets cancel_requested), and require the
-        // detector to publish working then idle again. This exercises the
-        // full output-driven path (throttle, trailing sweeper, publish)
-        // against real render bytes in both directions, not just boot.
+        // Real working→idle flip through the real composer API
+        // (agent.prompt): paste+Enter with the 300ms gap outside jcode's
+        // 150ms paste-guard window, then the detector must publish working
+        // (spinner status line `⠋ sending…`) and, after the turn ends or a
+        // single Ctrl+C, idle again (numbered prompt restored). This closes
+        // the loop between the request route the phone UI hits and the
+        // output-driven detector (throttle, trailing sweeper, publish)
+        // against real render bytes, not a hand-rolled PTY write.
         if saw_idle {
-            // Submit via the same paste+Enter sequence agent_prompt uses:
-            // a trailing bare `\r` inside jcode's 150ms paste-guard window
-            // would be swallowed as paste residue (paste_guard.rs).
-            let message =
-                composer_message("write the numbers from 1 to 30, one per line, no other text");
-            let payload = bracketed_paste_payload(&message);
-            let _ = terminal.write_input(payload.as_bytes());
-            thread::sleep(Duration::from_millis(AGENT_PROMPT_ENTER_GAP_MS));
-            if terminal.exited.load(Ordering::Acquire) {
-                return;
-            }
-            let _ = terminal.write_input(b"\r");
+            let pane_id = {
+                let data = state.data.lock().unwrap();
+                data.panes.keys().next().unwrap().clone()
+            };
+            let response = state.handle_request(
+                "seed",
+                "agent.prompt",
+                json!({
+                    "pane_id": pane_id,
+                    "text": "count from 1 to 60, one number per line, nothing else",
+                }),
+            );
+            assert!(
+                response.get("error").is_none(),
+                "agent.prompt must be accepted on a live idle jcode pane: {response}"
+            );
             let flip_deadline = std::time::Instant::now() + Duration::from_secs(60);
             let mut saw_working = false;
             let mut returned_to_idle = false;
@@ -6442,13 +6448,46 @@ mod tests {
                 returned_to_idle,
                 "after the turn ends or Ctrl+C, the pane must return to idle (numbered prompt restored)"
             );
+
+            // Refusal paths on the same live pane: a prompt for an unknown
+            // pane id must route to agent_not_found, and once the child is
+            // reaped the pane's own id must flip to agent_exited. These pin
+            // the composer-side gates (route lookup, runtime exited check)
+            // against the same live state the flip used.
+            let missing = state.handle_request(
+                "seed",
+                "agent.prompt",
+                json!({ "pane_id": "pane-nope", "text": "hi" }),
+            );
+            assert!(
+                missing["error"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("agent_not_found:"),
+                "unknown pane must refuse with agent_not_found: {missing}"
+            );
+            terminal.kill_and_wait();
+            let gone = state.handle_request(
+                "seed",
+                "agent.prompt",
+                json!({ "pane_id": pane_id, "text": "hi" }),
+            );
+            assert!(
+                gone["error"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("agent_exited:"),
+                "prompt on a dead pane must refuse with agent_exited: {gone}"
+            );
+        } else {
+            terminal.kill_and_wait();
         }
 
-        // Reap the pane child before the cleanup guard runs: Drop kills
-        // without waiting, and jcode's session threads can re-create dirs
-        // under the scratch home for a while after the kill, which raced
-        // the removal and leaked a dir on a loaded machine.
-        terminal.kill_and_wait();
+        // The pane child is already reaped above (kill_and_wait in both
+        // branches); Drop only kills without waiting, and jcode's session
+        // threads can re-create dirs under the scratch home for a while
+        // after the kill, which raced the removal and leaked a dir on a
+        // loaded machine.
         drop(terminal);
         // The `_remove_temp` guard removes the scratch tree (retrying past
         // the pane child's post-kill session writes).
