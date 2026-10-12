@@ -1,6 +1,24 @@
 # Release notes
 
 ## Next release
+- Workspaces close with their last terminal now. A new
+  closeWorkspaceOnLastTerminal option (on by default; Settings →
+  Workspace behavior) closes the workspace or worktree once its last
+  terminal panel closes, instead of leaving an empty shell behind. The
+  pane-exit/pane-close/tab-close paths all route through one
+  maybeAutoCloseWorkspace guard (option on, workspace known, no tabs
+  left, not already closing), and the selection falls back to another
+  open workspace instead of pointing at a dead id. Terminal-decouple
+  e2e proves both sides: td4/td5 still assert survival with the option
+  off, td8/td9 assert the close and the selection fallback with it on.
+- Settings save themselves. Text-like settings inputs auto-commit
+  ~800 ms after the last keystroke, so changes stick without pressing
+  Enter or clicking the pencil. Enter, the pencil, and rollback remain
+  explicit commit paths; range sliders still save on release. The green
+  tick flashes on the row that saved, even when the debounce lands
+  after focus moved elsewhere. The settings modal also reorders its
+  sections by task: Appearance, Terminal input, Shortcuts, Workspace
+  behavior, Worktrees, File browser, Editor, Agents and alerts, Server.
 - Chat mode text segments carry meaning by color now. The thinking
   toggle reads magenta (reasoning), tool names cyan (machine action),
   running tool rows and the working chip amber (in flight), failed parts
