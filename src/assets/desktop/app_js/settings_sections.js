@@ -20,6 +20,15 @@
   let scrollSyncTarget = null;
   const scrollSync = () => updateSettingsNavCurrent();
 
+  // Smooth-scroll respects the OS reduced-motion setting; matches the
+  // base.css prefers-reduced-motion rule for CSS-driven animation.
+  function prefersReducedMotion() {
+    return (
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+  }
+
   function modal() {
     return document.getElementById("settingsModal");
   }
@@ -134,7 +143,10 @@
     // A target beyond the scroll max would clamp mid-animation; jump to
     // the max directly so the last section lands fully in view.
     if (target >= scrollMax - 8) target = scrollMax;
-    scroller.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+    scroller.scrollTo({
+      top: Math.max(0, target),
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
     updateSettingsNavCurrent();
     const head = section.querySelector(":scope > .settings-section-head");
     if (head) {
