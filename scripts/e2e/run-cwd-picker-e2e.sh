@@ -88,9 +88,22 @@ CDP_HTTP="http://127.0.0.1:$CDP" APP_URL="http://127.0.0.1:$PORT/" \
   REPO_A="$REPO_A" REPO_B="$REPO_B" PLAIN_DIR="$PLAIN" \
   node "$ROOT/scripts/e2e/cwd-picker-acceptance.mjs" || status=$?
 
+# Folder-only search acceptance for the picker search box; same server,
+# Chrome and fixtures (WORK_ROOT is the scratch parent of all three).
+# Runs even when the cwd phase has failures: those are pre-existing and
+# tracked separately, and this phase owns its own exit status.
+search_status=0
+echo "==> running dir-picker search acceptance checks"
+CDP_HTTP="http://127.0.0.1:$CDP" APP_URL="http://127.0.0.1:$PORT/" \
+  REPO_A="$REPO_A" WORK_ROOT="$WORK" \
+  node "$ROOT/scripts/e2e/dir-picker-search-acceptance.mjs" || search_status=$?
+
+if [[ $search_status -ne 0 ]]; then
+  status=$search_status
+fi
 if [[ $status -eq 0 ]]; then
-  echo "==> cwd-picker acceptance: PASSED"
+  echo "==> cwd-picker + search acceptance: PASSED"
 else
-  echo "==> cwd-picker acceptance: FAILED (exit $status)" >&2
+  echo "==> cwd-picker + search acceptance: FAILED (exit $status)" >&2
 fi
 exit $status
