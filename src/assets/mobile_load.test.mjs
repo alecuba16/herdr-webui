@@ -1284,6 +1284,47 @@ describe("mobile bundle load", () => {
     match(backendSource, /state\.backendMode = settings\.backend_mode/);
   });
 
+  it("settings rows expose the close-workspace checkbox and default it on", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.showScreen("settings");
+    const settingsHtml = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(settingsHtml.includes("Close workspace with last terminal"));
+    ok(settingsHtml.includes("HerdrMobile.setCloseWorkspaceOnLastTerminal"));
+    equal(typeof ctx.HerdrMobile.setCloseWorkspaceOnLastTerminal, "function");
+    // Default on: the row ships checked without any stored options.
+    ok(settingsHtml.includes('data-settings-id="closeWorkspaceOnLastTerminal"'));
+    const row = settingsHtml.split('data-settings-id="closeWorkspaceOnLastTerminal"')[1] || "";
+    ok(row.slice(0, 400).includes("checked"), "checkbox renders checked by default");
+  });
+
+  it("text-like settings save through the debounced input path", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.setSettingDebounced("worktreeDefaultDirectory", "../wt-deb");
+    // Nothing saved before the debounce fires.
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").worktreeDefaultDirectory, undefined);
+    await ctx.flushTimers();
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").worktreeDefaultDirectory, "../wt-deb");
+  });
+
+  it("retyping resets the debounce and change commits flush it early", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.setSettingDebounced("explorationDefaultDirectory", "~/first");
+    ctx.HerdrMobile.setSettingDebounced("explorationDefaultDirectory", "~/second");
+    await ctx.flushTimers();
+    // Only the last value commits.
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").explorationDefaultDirectory, "~/second");
+    ctx.HerdrMobile.setSettingDebounced("explorationDefaultDirectory", "~/third");
+    // A change event (blur / Android IME) commits now and cancels the timer.
+    ctx.HerdrMobile.commitSettingFromChange("explorationDefaultDirectory", "~/third");
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").explorationDefaultDirectory, "~/third");
+    await ctx.flushTimers();
+    // The cancelled debounce never writes a second time.
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").explorationDefaultDirectory, "~/third");
+  });
+
   it("renders settings and worktrees screens without browser automation", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
@@ -1297,7 +1338,8 @@ describe("mobile bundle load", () => {
     ok(settingsHtml.includes("Terminal mouse reporting"));
     match(source, /stripTerminalQueryReplies\(data, terminalQueryReplyState\)/);
     ok(settingsHtml.includes("Line numbers"));
-    ok(settingsHtml.includes("HerdrMobile.setTerminalFontFamily"));
+    ok(settingsHtml.includes("HerdrMobile.setSettingDebounced('terminalFontFamily'"));
+    ok(settingsHtml.includes("HerdrMobile.commitSettingFromChange('terminalFontFamily'"));
     ok(settingsHtml.includes("HerdrMobile.setFileBrowserLineNumbers"));
     ok(settingsHtml.includes("HerdrMobile.setTerminalLinks"));
     ok(settingsHtml.includes("HerdrMobile.setTerminalMouseReporting"));
@@ -1610,7 +1652,8 @@ describe("mobile bundle load", () => {
     ok(settingsHtml.includes("Editor tab size"));
     ok(settingsHtml.includes("LSP diagnostics"));
     ok(settingsHtml.includes("HerdrMobile.setEditorWordWrap"));
-    ok(settingsHtml.includes("HerdrMobile.setEditorTabSize"));
+    ok(settingsHtml.includes("HerdrMobile.setSettingDebounced('editorTabSize'"));
+    ok(settingsHtml.includes("HerdrMobile.commitSettingFromChange('editorTabSize'"));
     ok(settingsHtml.includes("HerdrMobile.setLspEnabled"));
     equal(typeof ctx.HerdrMobile.setEditorEnabled, "function");
     equal(typeof ctx.HerdrMobile.setEditorWordWrap, "function");
@@ -2110,7 +2153,42 @@ describe("mobile bundle load", () => {
     equal(ctx.history.calls.at(-1).path, "/session/default/workspace/w1/tab/t2/pane/p2");
   });
 
-  it("closing the last mobile panel keeps the workspace on screen", async () => {
+  it("closing the last mobile panel auto-closes the workspace (default on)", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ workspace_id: "w1", tab_id: "w1:t1", number: 1 }],
+      panes: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
+      workspaces: ({ requests }) =>
+        requests.some((request) => request.url === "/api/workspaces/w1/close")
+          ? []
+          : [{ workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" }],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    await ctx.HerdrMobile.closeCurrentPanel();
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/tabs/w1%3At1/close" && request.opt.method === "POST",
+    ));
+    // closeWorkspaceOnLastTerminal defaults on: the workspace follows its
+    // last panel down.
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/workspaces/w1/close" && request.opt.method === "POST",
+    ));
+    // With no surviving workspace the selection clears; the next refresh
+    // would offer the workspace-open flow.
+    equal(ctx.HerdrMobile.currentSelection().ws, null);
+    equal(ctx.HerdrMobile.currentSelection().tab, null);
+    equal(ctx.HerdrMobile.currentSelection().pane, null);
+  });
+
+  it("closing the last mobile panel keeps the workspace when the option is off", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
       tabs: ({ requests }) =>
         requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
@@ -2122,6 +2200,10 @@ describe("mobile bundle load", () => {
           : [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
     });
     vm.runInContext(source, ctx);
+    ctx.localStorage.setItem(
+      "herdr-web-options",
+      JSON.stringify({ closeWorkspaceOnLastTerminal: false }),
+    );
     await ctx.HerdrMobile.refresh();
 
     await ctx.HerdrMobile.closeCurrentPanel();

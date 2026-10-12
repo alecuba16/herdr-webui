@@ -1089,11 +1089,16 @@
     }
     // Non-current tab: close it directly without switching. The confirm
     // guard matters here too, same as closeCurrentPanel.
+    const closingTab = (state.tabs || []).find((item) => sameScopedId(state.ws, item.tab_id, tab)) ||
+      (state.allTabs || []).find((item) => sameScopedId(state.ws, item.tab_id, tab)) ||
+      { tab_id: tab, workspace_id: state.ws };
+    const workspaceId = closingTab.workspace_id || state.ws;
     const label = tabTitle(state.tabs.find((item) => sameScopedId(state.ws, item.tab_id, tab)) || { tab_id: tab, workspace_id: state.ws });
     if (!(await mobileConfirm(`Close panel "${label}"?`))) return;
     try {
       await api(`/api/tabs/${encodeURIComponent(tab)}/close`, { method: "POST" });
       await refresh();
+      await mobileActions.maybeAutoCloseWorkspace(workspaceId);
     } catch (error) {
       // Same benign race as closeCurrentPanel: the tab may have closed
       // elsewhere while the sheet was open, so not-found is the outcome
@@ -1557,6 +1562,10 @@
     setTerminalLinks: mobileSettings.setTerminalLinks,
     setTerminalMouseReporting: mobileSettings.setTerminalMouseReporting,
     setWorktreeDefaultDirectory: mobileSettings.setWorktreeDefaultDirectory,
+    setWorkspaceOpenTerminal: mobileSettings.setWorkspaceOpenTerminal,
+    setCloseWorkspaceOnLastTerminal: mobileSettings.setCloseWorkspaceOnLastTerminal,
+    setSettingDebounced: mobileSettings.setSettingDebounced,
+    commitSettingFromChange: mobileSettings.commitSettingFromChange,
     applyTerminalFontFamily: mobileTerminal.applyFontFamily,
     applyTerminalLinks: mobileTerminal.applyLinks,
     reloadTerminal() { mobileTerminal.destroy(false); scheduleTerminalResize(); },
