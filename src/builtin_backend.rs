@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -13,7 +13,13 @@ use interprocess::TryClone as _;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde_json::{json, Value};
 
-use crate::builtin_detection::{jcode::detect_jcode_status_with_variant, JcodeDetectionVariant};
+use crate::builtin_detection::{
+    jcode::{
+        detect_jcode_status_with_variant, is_jcode_active_background_line,
+        jcode_blocked as jcode_blocked_markers, jcode_shell_prompt_line,
+    },
+    JcodeDetectionVariant,
+};
 use crate::builtin_events::{BuiltinEventHub, PaneEventContext};
 use crate::chat_lens;
 use crate::protocol::{
@@ -83,15 +89,21 @@ impl RecentAgentProcessExit {
 }
 
 /// Captures the latest OSC 9 progress payload from raw PTY bytes.
-/// Agents like jcode emit `ESC]9;jcode:<state> BEL` as a structured
+/// Some agents emit `ESC]9;<agent>:<state> BEL` as a structured
 /// side-channel for agent status detection, avoiding fragile screen-scraping.
+/// Real jcode (master) does not emit it; jcode status rides on the terminal
+/// title (` · work ~` / ` · last ~`, see `osc_title_status_for_agent`) plus
+/// the screen-scrape fallback. This tracker serves agents that do use the
+/// channel (amp, codex, hermes, qwen, grok, claude) and a hypothetical jcode
+/// build with the herdr_detectable side-channel.
 /// This is a minimal state machine that tracks the OSC body between
 /// `ESC ]` and `BEL` (0x07) or `ST` (`ESC \`).
 ///
 /// Matching upstream herdr's `AgentOscStateTracker`, the latest payload is
-/// retained without a TTL: agents emit on state change only (jcode dedups in
-/// `agent_osc_state`), so a timestamped staleness window would treat every
-/// long turn as "no recent status" and silently degrade to screen-scraping.
+/// retained without a TTL: agents on this channel emit on state change only
+/// (upstream jcode dedups in `agent_osc_state`), so a timestamped staleness
+/// window would treat every long turn as "no recent status" and silently
+/// degrade to screen-scraping.
 /// Staleness is handled structurally instead: `reset()` clears the payload
 /// when the terminal exits, and `notify_exited` clears it when the agent
 /// process disappears.
@@ -188,10 +200,11 @@ impl Osc9Tracker {
     }
 
     /// Extract a stable agent label from the OSC 9 progress payload when the
-    /// payload follows a `<agent>:<state>` convention (jcode emits
-    /// `jcode:working`, `jcode:idle`, `jcode:blocked`). This lets the backend
+    /// payload follows a `<agent>:<state>` convention (the herdr_detectable
+    /// jcode branch emits `jcode:working`, `jcode:idle`, `jcode:blocked`;
+    /// jcode master does not emit OSC 9). This lets the backend
     /// identify the agent from its side-channel even when argv and process-tree
-    /// detection fail (e.g. jcode launched through a wrapper script or shell
+    /// detection fail (e.g. an agent launched through a wrapper script or shell
     /// that hides the binary name).
     fn latest_agent_label(&self) -> Option<&'static str> {
         let payload = self.latest_payload.as_deref()?;
@@ -2021,7 +2034,15 @@ struct TerminalRuntime {
     argv: Vec<String>,
     event_hub: BuiltinEventHub,
     event_context: PaneEventContext,
-    last_agent_state: Mutex<Option<(Option<String>, String)>>,
+    last_agent_state: Mutex<Option<(Option<String>, String, u64)>>,
+    /// Monotonic detection sequence: grabbed at the start of every
+    /// detect_and_publish_agent_status run and committed with the result.
+    /// The sweeper force pass and the agent_prompt synchronous re-check can
+    /// run concurrently with the output path; without a sequence number a
+    /// later-started pass with an older tail snapshot could commit after a
+    /// newer one and briefly regress the published status. Stale commits
+    /// are dropped inside the compare-and-set.
+    detection_seq: AtomicU64,
     last_status_check: Mutex<Option<Instant>>,
     /// Set when output arrived while the status check was throttled. A
     /// trailing-edge sweeper (spawned once per runtime) runs the pending
@@ -2039,7 +2060,7 @@ struct TerminalRuntime {
     /// empty after this was set records an exit.
     last_live_process_agent: Mutex<Option<&'static str>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
-    child: Mutex<Box<dyn Child + Send + Sync>>,
+    child: Mutex<Option<Box<dyn Child + Send + Sync>>>,
     writer: Mutex<Box<dyn Write + Send>>,
     scrollback: Mutex<VecDeque<u8>>,
     subscribers: Mutex<Vec<mpsc::SyncSender<TerminalSubscriberMessage>>>,
@@ -2153,12 +2174,13 @@ impl TerminalRuntime {
             event_hub,
             event_context,
             last_agent_state: Mutex::new(None),
+            detection_seq: AtomicU64::new(0),
             last_status_check: Mutex::new(None),
             pending_status_check: AtomicBool::new(false),
             recent_agent_process_exit: Mutex::new(None),
             last_live_process_agent: Mutex::new(None),
             master: Mutex::new(pair.master),
-            child: Mutex::new(child),
+            child: Mutex::new(Some(child)),
             writer: Mutex::new(writer),
             scrollback: Mutex::new(VecDeque::new()),
             subscribers: Mutex::new(Vec::new()),
@@ -2327,7 +2349,8 @@ impl TerminalRuntime {
             }
         }
         // Feed raw bytes to the OSC 9 tracker so agent status can be detected
-        // via structured payloads (e.g. jcode emits `ESC]9;jcode:working BEL`).
+        // via structured payloads (e.g. `ESC]9;jcode:working BEL` on the
+        // herdr_detectable branch; jcode master never sends one).
         if let Ok(mut tracker) = self.osc9_tracker.lock() {
             tracker.observe(bytes);
         }
@@ -2454,7 +2477,14 @@ impl TerminalRuntime {
             return;
         }
         self.pending_status_check.store(false, Ordering::Release);
-        self.run_status_detection();
+        // Run the detection core directly. Routing through
+        // run_status_detection would re-check the throttle this method just
+        // consumed (last_status_check was refreshed a moment ago, so the
+        // second gate always fails), starving detection for as long as
+        // output keeps flowing: a turn with continuous spinner frames
+        // would never publish "working", and even the boot sequence only
+        // ever detected via the sweeper's silent-window luck.
+        self.detect_and_publish_agent_status();
     }
 
     /// Un-throttled detection entry point used by the sweeper thread. The
@@ -2473,7 +2503,7 @@ impl TerminalRuntime {
         self.last_agent_state
             .lock()
             .ok()
-            .and_then(|state| state.as_ref().map(|(_, status)| status.clone()))
+            .and_then(|state| state.as_ref().map(|(_, status, _)| status.clone()))
     }
 
     /// Server-side composer submit ("agent.prompt" semantics): paste the
@@ -2571,6 +2601,11 @@ impl TerminalRuntime {
     /// publish the resulting (agent, status) pair when it changed.
     /// Throttle-free by design; the callers own rate limiting.
     fn detect_and_publish_agent_status(&self) {
+        // Reserve the sequence before reading the tail: two concurrent
+        // passes get distinct seqs, and a pass that commits after a newer
+        // one (higher committed seq) is stale and must not regress the
+        // published state.
+        let seq = self.detection_seq.fetch_add(1, Ordering::AcqRel) + 1;
         let tail = self.history_tail_text(DETECTION_TAIL_BYTES);
         let (osc_progress, osc_title, osc_agent) = self
             .osc9_tracker
@@ -2578,9 +2613,12 @@ impl TerminalRuntime {
             .map(|tracker| {
                 // The OSC 9 payload is retained until the terminal exits
                 // (reset) or the agent process disappears (notify_exited
-                // resets the tracker). jcode emits on state change only, so
-                // there is no timestamped freshness window: a long turn must
-                // keep reporting `jcode:working`.
+                // resets the tracker). Agents that use this channel emit on
+                // state change only, so there is no timestamped freshness
+                // window. Note real jcode master emits no OSC 9 progress:
+                // status comes from the title rules plus screen-scrape, and
+                // this payload path only serves a hypothetical jcode build
+                // with the herdr_detectable side-channel.
                 let progress = tracker.latest_progress().to_string();
                 (
                     progress,
@@ -2623,14 +2661,28 @@ impl TerminalRuntime {
             .last_agent_state
             .lock()
             .map(|mut previous| {
-                let changed = previous.as_ref() != Some(&current);
+                // Stale pass: a newer detection already committed after
+                // this one started reading its tail. Committing would
+                // regress the published status; drop the result instead.
+                if previous
+                    .as_ref()
+                    .is_some_and(|(_, _, committed_seq)| *committed_seq >= seq)
+                {
+                    return false;
+                }
+                let changed = previous
+                    .as_ref()
+                    .map(|(prev_agent, prev_status, _)| {
+                        (prev_agent.clone(), prev_status.clone()) != current
+                    })
+                    .unwrap_or(true);
                 // A Some→None agent transition must emit an event so the
                 // frontend drops the exited agent from its list; plain shell
                 // panes (previous was already None) must not spam events.
                 let previous_agent_was_some = previous
                     .as_ref()
-                    .is_some_and(|(previous_agent, _)| previous_agent.is_some());
-                *previous = Some(current);
+                    .is_some_and(|(previous_agent, _, _)| previous_agent.is_some());
+                *previous = Some((current.0, current.1, seq));
                 changed && (agent.is_some() || previous_agent_was_some)
             })
             .unwrap_or(false);
@@ -2651,10 +2703,54 @@ impl TerminalRuntime {
     }
 }
 
+impl TerminalRuntime {
+    /// Test-only: kill the pane child and block until it is truly gone.
+    /// `Drop` kills without waiting, and jcode's session threads can keep
+    /// creating files under `JCODE_HOME` for a while after the kill lands
+    /// (observed re-creating `ambient/transcripts` over 1s later under
+    /// load), so a cleanup that starts right after `drop(terminal)` races
+    /// the dying process. Reaping first makes the scratch-tree removal
+    /// deterministic.
+    ///
+    /// Also blocks until the reader thread observed EOF and ran
+    /// notify_exited: the `agent_exited` refusal gate keys on the
+    /// `exited` flag, which the reader flips AFTER child.wait() returns,
+    /// so a request landing in that gap would paste into a dead PTY and
+    /// the refusal assert would flake.
+    #[cfg(test)]
+    fn kill_and_wait(&self) {
+        if let Ok(mut child) = self.child.lock() {
+            if let Some(child) = child.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !self.exited.load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
 impl Drop for TerminalRuntime {
     fn drop(&mut self) {
         if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
+            // Reap without blocking the dropping thread: kill delivers
+            // SIGKILL, so wait() returns almost immediately, but a Drop on
+            // a UI-sensitive thread must never sit in a syscall. An
+            // unreaped child would linger as a zombie until server exit.
+            // Taking the box out releases the lock before the thread
+            // spawn, so the guard never crosses a thread boundary.
+            if let Some(child) = child.take() {
+                let mut child = child;
+                let _ = child.kill();
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
         }
     }
 }
@@ -3468,17 +3564,22 @@ fn detect_agent_label_from_text(text: &str) -> Option<&'static str> {
     {
         return Some("opencode");
     }
-    let bottom4 = bottom_non_empty_lines(&lower, 4);
     let bottom3 = bottom_non_empty_lines(&lower, 3);
+    let bottom8 = bottom_non_empty_lines(&lower, 8);
+    let bottom12 = bottom_non_empty_lines(&lower, 12);
     if lower.contains("jcode")
-        || lower.contains("session ready")
-        || lower.contains("ready for input")
-        || jcode_blocked(&bottom_non_empty_lines(&lower, 8))
+        || jcode_blocked_markers(&bottom8)
         || has_jcode_spinner(&bottom3)
-        || has_jcode_tool_bar(&bottom4)
-        || lower.contains("running tool")
-        || lower.contains("executing tool")
+        || is_jcode_active_background_line(&bottom8)
         || lower.contains("network disconnected, waiting to retry")
+        || bottom12
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .is_some_and(|line| {
+                let line = line.trim();
+                jcode_numbered_prompt_line(line) || jcode_shell_prompt_line(line)
+            })
     {
         return Some("jcode");
     }
@@ -3828,7 +3929,8 @@ fn detect_agent_status_with_osc(
 /// Map an OSC 9 progress payload to an agent status string.
 ///
 /// Agents emit structured progress via OSC 9:
-/// - jcode: `jcode:working`, `jcode:idle`, `jcode:blocked`
+/// - jcode (herdr_detectable branch only; master never emits OSC 9):
+///   `jcode:working`, `jcode:idle`, `jcode:blocked`
 /// - Claude: OSC 9;4 `4;0` → idle only (no working rule in manifest)
 /// - Qwen: OSC 9;4 `4;3` → working only (no idle rule in manifest)
 /// - Grok: OSC 9;4 `4;1;-1` → working, `4;0;0` → idle
@@ -3882,7 +3984,8 @@ fn osc_progress_status_for_agent(agent: &str, osc_progress: &str) -> Option<&'st
 /// screen-scrape detection.
 ///
 /// Mirrors the `osc_title` rules from herdr's detection manifests for:
-/// amp, claude, codex, grok, hermes, qwen.
+/// amp, claude, codex, grok, hermes, qwen. The jcode arm reads jcode's
+/// own title grammar instead (work/last segments).
 fn osc_title_status_for_agent(agent: &str, title: &str) -> Option<&'static str> {
     match agent {
         // amp.toml: blocked if "Plugin confirmation needed", working if
@@ -3982,6 +4085,21 @@ fn osc_title_status_for_agent(agent: &str, title: &str) -> Option<&'static str> 
                 } else {
                     None
                 }
+            } else {
+                None
+            }
+        }
+        // jcode: the title's work-segment suffix encodes the turn state
+        // (`title_with_metrics` in jcode's terminal_title.rs): ` · work ~<dur>`
+        // while a turn runs and ` · last ~<dur>` once it finished. `last` is
+        // the only reliable idle signal for the post-turn screen, where the
+        // scrape markers (numbered prompt, hint row, context bar) fall out of
+        // the tail window. `work` maps to None on purpose: the scrape path
+        // also carries `blocked`, and a title saying `work` must not outrank
+        // a live Permissions viewer on screen.
+        "jcode" => {
+            if title.contains(" · last ~") {
+                Some("idle")
             } else {
                 None
             }
@@ -4898,14 +5016,6 @@ fn detect_opencode_like_status(lower: &str) -> Option<&'static str> {
     None
 }
 
-pub(crate) fn jcode_idle_line(line: &str) -> bool {
-    let line = line.trim();
-    line == "❯"
-        || jcode_numbered_prompt_line(line)
-        || line.contains("session ready")
-        || line.contains("ready for input")
-}
-
 pub(crate) fn jcode_numbered_prompt_line(line: &str) -> bool {
     let line = line.trim_start();
     let digit_count = line.chars().take_while(|ch| ch.is_ascii_digit()).count();
@@ -4933,28 +5043,6 @@ fn detect_opencode_status(lower: &str) -> &'static str {
         return "working";
     }
     "unknown"
-}
-
-pub(crate) fn jcode_blocked(text: &str) -> bool {
-    (text.contains("permission")
-        && contains_any(text, &["allow once", "always allow", "allow"])
-        && contains_any(text, &["deny", "reject", "cancel"]))
-        || (text.contains("approve?")
-            && contains_any(text, &["allow", "yes"])
-            && contains_any(text, &["reject", "no", "cancel"]))
-        || (text.contains("confirm action")
-            && contains_any(text, &["allow", "yes", "proceed"])
-            && contains_any(text, &["reject", "no", "cancel"]))
-}
-
-pub(crate) fn jcode_question_blocked(text: &str) -> bool {
-    (text.contains("enter your response") && contains_any(text, &["continue", "submit", "cancel"]))
-        || (text.contains("asking user")
-            && contains_any(
-                text,
-                &["enter your response", "awaiting input", "waiting for user"],
-            ))
-        || (text.contains("awaiting input") && contains_any(text, &["enter", "type", "respond"]))
 }
 
 pub(crate) fn has_jcode_spinner(text: &str) -> bool {
@@ -5129,71 +5217,6 @@ fn has_opencode_interrupt_line(line: &str) -> bool {
         rest = &rest[index + "esc".len()..];
     }
     false
-}
-
-pub(crate) fn has_jcode_tool_bar(text: &str) -> bool {
-    text.lines().any(jcode_tool_bar_line)
-}
-
-fn jcode_tool_bar_line(line: &str) -> bool {
-    let mut rest = line.trim_start();
-    let Some(after_prefix) = consume_jcode_dots(rest, 3) else {
-        return false;
-    };
-    rest = after_prefix;
-    let Some(after_space) = consume_some_whitespace(rest) else {
-        return false;
-    };
-    rest = after_space;
-    let Some(after_command) = consume_non_whitespace(rest) else {
-        return false;
-    };
-    rest = after_command;
-    let Some(after_space) = consume_some_whitespace(rest) else {
-        return false;
-    };
-    rest = after_space;
-    let Some(after_suffix) = consume_jcode_dots(rest, 3) else {
-        return false;
-    };
-    rest = after_suffix;
-
-    if rest.trim().is_empty() {
-        return true;
-    }
-
-    let Some(after_space) = consume_some_whitespace(rest) else {
-        return false;
-    };
-    let Some(after_dot) = after_space.strip_prefix('·') else {
-        return false;
-    };
-    consume_some_whitespace(after_dot).is_some()
-}
-
-fn consume_jcode_dots(text: &str, count: usize) -> Option<&str> {
-    let mut rest = text;
-    for _ in 0..count {
-        let mut chars = rest.chars();
-        match chars.next() {
-            Some('·' | '●') => rest = chars.as_str(),
-            _ => return None,
-        }
-    }
-    Some(rest)
-}
-
-fn consume_some_whitespace(text: &str) -> Option<&str> {
-    let trimmed = text.trim_start();
-    (trimmed.len() < text.len()).then_some(trimmed)
-}
-
-fn consume_non_whitespace(text: &str) -> Option<&str> {
-    let end = text
-        .char_indices()
-        .find_map(|(idx, ch)| ch.is_whitespace().then_some(idx))
-        .unwrap_or(text.len());
-    (end > 0).then_some(&text[end..])
 }
 
 fn has_opencode_progress(text: &str) -> bool {
@@ -6065,14 +6088,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "no terminal for tab")]
     fn builtin_promote_send_cd_panics_without_terminal_runtime() {
-        let temp = std::env::temp_dir().join(format!(
-            "herdr-promote-cd-noterm-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&temp).unwrap();
+        let (temp, _temp_guard) = crate::tests::temp_guard("herdr-promote-cd-noterm");
         let (state, _workspace_id, tab_id) = promote_fixture(&temp);
         // Tab and pane stay, the terminal runtime goes: the helper's
         // lookup must fail loudly instead of writing into a dead PTY.
@@ -6090,14 +6106,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "never processed cd into")]
     fn builtin_promote_send_cd_panics_when_shell_never_cds() {
-        let temp = std::env::temp_dir().join(format!(
-            "herdr-promote-cd-stuck-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&temp).unwrap();
+        let (temp, _temp_guard) = crate::tests::temp_guard("herdr-promote-cd-stuck");
         let (state, _workspace_id, tab_id) = promote_fixture(&temp);
         // A directory that cannot become the shell's cwd: remove it after
         // creating the fixture, so every probe observation disagrees with
@@ -6217,15 +6226,19 @@ mod tests {
         // someone's throttle window, so the pending/sweeper path carries
         // most of the detection load.
         terminal.reset_status_throttle();
-        terminal.append_output("●·· batch ··● · 1/5 done".as_bytes());
+        terminal.append_output("⠋ running bash · npm test".as_bytes());
         for _round in 0..6 {
             // working -> blocked -> working -> blocked, all inside windows.
+            // The blocked payload is the real `jcode permissions` viewer
+            // (`jcode-tui-permissions/src/lib.rs`): border title, the
+            // `⏳ Agent is waiting for this decision` line, and the
+            // `a approve / d deny` help row.
             terminal.append_output(
-                "permission needed: allow the tool to run now?\n> 1. Allow once\n> 2. Always allow\n> 3. Deny".as_bytes(),
+                "┌─ Permissions (1 pending) ──┐\n│ ⏳ Agent is waiting for this decision │\n└──────────┘\n a  approve    d  deny    A  approve all    D  deny all".as_bytes(),
             );
-            terminal.append_output("\n\n●·· batch ··● · done".as_bytes());
+            terminal.append_output("\n\n⠹ streaming · 4.1 tps".as_bytes());
             terminal.append_output(
-                "permission needed: allow the tool to run now?\n> 1. Allow once\n> 2. Always allow\n> 3. Deny".as_bytes(),
+                "┌─ Permissions (1 pending) ──┐\n│ ⏳ Agent is waiting for this decision │\n└──────────┘\n a  approve    d  deny    A  approve all    D  deny all".as_bytes(),
             );
             // Give the sweeper a moment to drain the pending flag between
             // rounds so the sequence does not collapse into one window.
@@ -6294,18 +6307,21 @@ mod tests {
 
         // First burst consumes the throttle window with a working status.
         terminal.reset_status_throttle();
-        terminal.append_output("●·· batch ··● · 2/5 done".as_bytes());
+        terminal.append_output("⠋ thinking… 3s".as_bytes());
         let working = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("working status event");
         assert_eq!(working["data"]["agent_status"], "working");
 
-        // Immediately (inside the throttle window) print the blocked dialog.
+        // Immediately (inside the throttle window) print the blocked dialog:
+        // the real `jcode permissions` viewer chrome (border title + the
+        // `⏳ Agent is waiting for this decision` line + help row), as the
+        // user would see when jcode queues an ambient permission request.
         // append_output is throttled, so this only sets the pending flag; the
         // pane then goes silent. Without the sweeper, no event would ever
         // carry the blocked flip.
         terminal.append_output(
-            "permission needed: allow the tool to run now?\n> 1. Allow once\n> 2. Always allow\n> 3. Deny".as_bytes(),
+            "┌─ Permissions (1 pending) ──┐\n│ ⏳ Agent is waiting for this decision │\n└──────────┘\n a  approve    d  deny    A  approve all    D  deny all".as_bytes(),
         );
 
         // The sweeper ticks every 100ms and runs the pending check once the
@@ -6317,6 +6333,295 @@ mod tests {
         assert_eq!(blocked["event"], "pane.agent_status_changed");
         assert_eq!(blocked["data"]["agent"], "jcode");
         assert_eq!(blocked["data"]["agent_status"], "blocked");
+    }
+
+    /// Restores one env var on drop, even when the test panics mid-run
+    /// (asserts keep `JCODE_HOME` from leaking into sibling tests, which
+    /// spawn panes in the same process and would hit the isolated home).
+    struct RestoreEnvVar {
+        key: &'static str,
+        value: Option<std::ffi::OsString>,
+    }
+
+    /// Removes the live e2e scratch tree on drop, panic-safe. Each run
+    /// boots a real jcode whose isolated home accumulates session logs,
+    /// transcripts, and setup state (~100KB per run); without cleanup every
+    /// test run leaves that behind in the system temp dir. Retries for up
+    /// to 5s because the pane child is killed but not waited on drop, and
+    /// jcode's session threads can re-create dirs (`ambient/transcripts`)
+    /// well past 1s on a loaded machine (observed during parallel stress
+    /// runs; a 1s window leaked one dir).
+    struct RemoveTempDir(PathBuf);
+
+    impl Drop for RemoveTempDir {
+        fn drop(&mut self) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                if std::fs::remove_dir_all(&self.0).is_ok() || !self.0.exists() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    impl Drop for RestoreEnvVar {
+        fn drop(&mut self) {
+            match self.value.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn restore_env_var(key: &'static str) -> RestoreEnvVar {
+        RestoreEnvVar {
+            key,
+            value: std::env::var_os(key),
+        }
+    }
+
+    /// Real jcode binary for live e2e tests, when a build exists. Checks
+    /// the known build locations in order; `None` skips the caller silently
+    /// so CI without jcode stays green. The variant argument is kept for a
+    /// future info_fields build path ("vanilla" is the only one resolved
+    /// today: the worktree build shares one target dir with other
+    /// branches, so a per-branch binary is not addressable right now).
+    ///
+    /// TEMPORARY divergence note: the fallback path
+    /// (`~/.jcode/builds/current/jcode`) is whatever build the developer
+    /// last promoted, not necessarily upstream master. Both formats
+    /// currently render the same bottom chrome (`N> ` prompt + context
+    /// bar), so the vanilla assertions hold either way; verified live
+    /// 2026-10-11 against the promoted fork build v0.94.19-dev (full e2e
+    /// incl. flip + refusal gates green with the primary binary moved
+    /// aside). If the fork format drifts, gate the fallback out and
+    /// resolve the variant from the binary path instead.
+    fn live_jcode_binary(_variant: &str) -> Option<String> {
+        let home = std::env::var("HOME").ok()?;
+        let candidates = [
+            // Upstream master debug build in the main checkout.
+            format!("{home}/Documents/projects/jcode/target/debug/jcode"),
+            // Promoted build (usually the merged fork).
+            format!("{home}/.jcode/builds/current/jcode"),
+        ];
+        candidates
+            .into_iter()
+            .find(|path| std::path::Path::new(path).is_file())
+    }
+
+    #[test]
+    fn live_jcode_tui_detection_end_to_end() {
+        // REAL acceptance path: spawn the actual jcode binary (vanilla
+        // master build) in a real PTY, let its TUI render, and require the
+        // detector to publish jcode agent events. Skipped when no jcode
+        // build exists so CI stays green; the skip prints one line so a
+        // machine that never runs the real path is visible in --nocapture
+        // output instead of silently passing.
+        let Some(jcode) = live_jcode_binary("vanilla") else {
+            eprintln!("live_jcode_tui_detection_end_to_end: no jcode build, skipping");
+            return;
+        };
+        let _guard = crate::tests::lock_env();
+        let temp = std::env::temp_dir().join(format!("herdr-jcode-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let _remove_temp = RemoveTempDir(temp.clone());
+        // Isolated jcode home: no real sessions, no telemetry, no menubar.
+        // The restore guards put the real environment back on drop, even if
+        // an assert below panics, so sibling tests (same process) keep
+        // spawning their panes with the developer's real env.
+        let home = temp.join("jcode-home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _restore_home = restore_env_var("JCODE_HOME");
+        let _restore_selfdev = restore_env_var("JCODE_NO_SELFDEV");
+        let _restore_menubar = restore_env_var("JCODE_NO_MENUBAR");
+        let _restore_telemetry = restore_env_var("JCODE_NO_TELEMETRY");
+        std::env::set_var("JCODE_HOME", &home);
+        std::env::set_var("JCODE_NO_SELFDEV", "1");
+        std::env::set_var("JCODE_NO_MENUBAR", "1");
+        std::env::set_var("JCODE_NO_TELEMETRY", "1");
+        // Skip first-run onboarding ("Welcome to jcode" picker): a fresh
+        // home looks like a brand-new install (is_new_user_install in
+        // jcode's onboarding_flow_control.rs: launch_count <= 5 and < 10
+        // native sessions) and the welcome screen never shows the "1> "
+        // prompt, so the test could never observe an idle state. Seeding
+        // launch_count > 5 marks the install as established and boots the
+        // real prompt screen directly.
+        std::fs::write(home.join("setup_hints.json"), "{\"launch_count\":9}").unwrap();
+
+        let state =
+            BuiltinState::new(temp.clone(), Some(jcode), JcodeDetectionVariant::Vanilla).unwrap();
+        // Subscribe BEFORE the pane exists: jcode writes "Connecting to
+        // server..." the moment the PTY spawns, and the first detection run
+        // (argv label, no screen markers yet → "unknown") fires on those
+        // bytes. A subscriber attached after that misses the transition and
+        // sees only silence, because later runs detect the same
+        // (jcode, unknown) state and skip publishing.
+        let rx = state.subscribe_events();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+
+        // The real TUI boots, renders its input prompt, then idles. Wait
+        // for the first jcode status event (label + status from the real
+        // screen scrape of real render output). A clean boot must never
+        // report blocked or done: seeing either would mean a fabricated
+        // pattern fires against real output.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut saw_jcode_event = false;
+        let mut saw_idle = false;
+        loop {
+            let timeout = deadline.saturating_duration_since(std::time::Instant::now());
+            if timeout.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(timeout) {
+                Ok(event) => {
+                    if event["event"] == "pane.agent_status_changed"
+                        && event["data"]["agent"].as_str() == Some("jcode")
+                    {
+                        saw_jcode_event = true;
+                        let status = event["data"]["agent_status"].as_str().unwrap_or("");
+                        assert!(
+                            status != "blocked" && status != "done",
+                            "clean jcode boot reported {status:?}; no permission dialog or agent exit exists at this point"
+                        );
+                        // A fresh boot lands on idle (prompt visible) or
+                        // working (spinner while loading); both prove the
+                        // detector reads the real chrome.
+                        if status == "idle" || status == "working" {
+                            saw_idle = true;
+                            break;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            saw_jcode_event,
+            "real jcode TUI must be detected by agent label (argv/process path)"
+        );
+        assert!(
+            saw_idle,
+            "real jcode TUI must reach idle or working status via screen scrape"
+        );
+
+        // Real working→idle flip through the real composer API
+        // (agent.prompt): paste+Enter with the 300ms gap outside jcode's
+        // 150ms paste-guard window, then the detector must publish working
+        // (spinner status line `⠋ sending…`) and, after the turn ends or a
+        // single Ctrl+C, idle again (numbered prompt restored). This closes
+        // the loop between the request route the phone UI hits and the
+        // output-driven detector (throttle, trailing sweeper, publish)
+        // against real render bytes, not a hand-rolled PTY write.
+        if saw_idle {
+            let pane_id = {
+                let data = state.data.lock().unwrap();
+                data.panes.keys().next().unwrap().clone()
+            };
+            let response = state.handle_request(
+                "seed",
+                "agent.prompt",
+                json!({
+                    "pane_id": pane_id,
+                    "text": "count from 1 to 60, one number per line, nothing else",
+                }),
+            );
+            assert!(
+                response.get("error").is_none(),
+                "agent.prompt must be accepted on a live idle jcode pane: {response}"
+            );
+            let flip_deadline = std::time::Instant::now() + Duration::from_secs(60);
+            let mut saw_working = false;
+            let mut returned_to_idle = false;
+            loop {
+                let timeout = flip_deadline.saturating_duration_since(std::time::Instant::now());
+                if timeout.is_zero() {
+                    break;
+                }
+                match rx.recv_timeout(timeout) {
+                    Ok(event)
+                        if event["event"] == "pane.agent_status_changed"
+                            && event["data"]["agent"].as_str() == Some("jcode") =>
+                    {
+                        let status = event["data"]["agent_status"].as_str().unwrap_or("");
+                        match status {
+                            "working" if !saw_working => {
+                                saw_working = true;
+                                // Interrupt: Ctrl+C cancels the running turn
+                                // (app/input.rs: cancel_requested = true). A
+                                // turn that finishes first just returns to
+                                // idle; do not press Ctrl+C again after the
+                                // prompt is back, a second press quits jcode.
+                                let _ = terminal.write_input(b"\x03");
+                            }
+                            "idle" if saw_working => {
+                                returned_to_idle = true;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+            assert!(
+                saw_working,
+                "a submitted prompt must flip the pane to working (spinner status line)"
+            );
+            assert!(
+                returned_to_idle,
+                "after the turn ends or Ctrl+C, the pane must return to idle (numbered prompt restored)"
+            );
+
+            // Refusal paths on the same live pane: a prompt for an unknown
+            // pane id must route to agent_not_found, and once the child is
+            // reaped the pane's own id must flip to agent_exited. These pin
+            // the composer-side gates (route lookup, runtime exited check)
+            // against the same live state the flip used.
+            let missing = state.handle_request(
+                "seed",
+                "agent.prompt",
+                json!({ "pane_id": "pane-nope", "text": "hi" }),
+            );
+            assert!(
+                missing["error"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("agent_not_found:"),
+                "unknown pane must refuse with agent_not_found: {missing}"
+            );
+            terminal.kill_and_wait();
+            let gone = state.handle_request(
+                "seed",
+                "agent.prompt",
+                json!({ "pane_id": pane_id, "text": "hi" }),
+            );
+            assert!(
+                gone["error"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("agent_exited:"),
+                "prompt on a dead pane must refuse with agent_exited: {gone}"
+            );
+        } else {
+            terminal.kill_and_wait();
+        }
+
+        // The pane child is already reaped above (kill_and_wait in both
+        // branches); Drop only kills without waiting, and jcode's session
+        // threads can re-create dirs under the scratch home for a while
+        // after the kill, which raced the removal and leaked a dir on a
+        // loaded machine.
+        drop(terminal);
+        // The `_remove_temp` guard removes the scratch tree (retrying past
+        // the pane child's post-kill session writes).
     }
 
     #[test]
@@ -6462,7 +6767,7 @@ mod tests {
         terminal.append_output(b"warmup\n");
         {
             let mut previous = terminal.last_agent_state.lock().unwrap();
-            *previous = Some((Some("claurst".to_string()), "working".to_string()));
+            *previous = Some((Some("claurst".to_string()), "working".to_string(), 0));
         }
         // Fresh screen: a Claurst permission dialog lands in the tail but
         // the detection is throttled out, so the cached status still says
@@ -6518,7 +6823,7 @@ mod tests {
         };
         {
             let mut previous = terminal.last_agent_state.lock().unwrap();
-            *previous = Some((Some("jcode".to_string()), "blocked".to_string()));
+            *previous = Some((Some("jcode".to_string()), "blocked".to_string(), 0));
         }
 
         let response = state.handle_request(
@@ -6627,7 +6932,7 @@ mod tests {
         // the synthetic output is guaranteed to trigger the status-change
         // publish even if some earlier byte slipped through.
         terminal.reset_status_throttle();
-        terminal.append_output("●·· batch ··● · 2/5 done".as_bytes());
+        terminal.append_output("⠋ thinking… 3s".as_bytes());
 
         // Generous window: on a loaded CI runner the detection scan itself
         // (tail extraction + regex) can take a moment; 5s leaves room without
@@ -6678,7 +6983,7 @@ mod tests {
             let pane = data.panes.values().next().unwrap();
             data.terminals.get(&pane.terminal_id).unwrap().clone()
         };
-        terminal.append_output("jcode session ready\n❯".as_bytes());
+        terminal.append_output("jcode\n1> ".as_bytes());
         // Give the reader thread time to process.
         std::thread::sleep(Duration::from_millis(200));
 
@@ -6692,6 +6997,139 @@ mod tests {
         );
         assert_eq!(list[0]["agent"], "jcode");
         assert_eq!(list[0]["agent_status"], "idle");
+    }
+
+    #[test]
+    fn spinner_append_publishes_working_inline() {
+        // Regression: the output path used to route its gate-passing check
+        // through run_status_detection, which re-checked the throttle that
+        // had just been refreshed, a second gate that always fails, so an
+        // append that won the first gate never ran detection. During a real
+        // jcode turn (spinner frames streaming for the whole turn) only the
+        // 100ms sweeper could land a check, and only when its tick happened
+        // to fall in the short window between throttle expiry and the next
+        // gate-passing append. The live e2e flipped to working in ~1 run of
+        // 6. The fix runs the detection core inline after the first gate,
+        // so detection is guaranteed at most one throttle window behind the
+        // output. This test pins the inline behavior: an append that passes
+        // the throttle must update the status synchronously, before the
+        // sweeper could ever intervene (it asserts immediately, within
+        // microseconds of the append, so on the double-gate code the sweeper
+        // cannot rescue the check).
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            // /bin/cat never writes, so the detection tail contains exactly
+            // the synthetic bytes below.
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let rx = state.subscribe_events();
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+
+        // Boot into a known idle state, mirroring the real captured chrome:
+        // the numbered input row (`1> `, ASCII per input_prompt in
+        // ui_input.rs; `›` is only the transcript echo) and the overscroll
+        // status line whose context bar (`▱▱▱▱ 2%` on a fresh session,
+        // `overscroll_context_bar`) is what the idle heuristic keys on.
+        terminal
+            .append_output("jcode\n1> ask anything\n~/…/proj  main ▱▱▱▱ 2% llmg-coding".as_bytes());
+        let mut booted_idle = false;
+        let boot_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let remaining = boot_deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(remaining) {
+                Ok(event)
+                    if event["event"] == "pane.agent_status_changed"
+                        && event["data"]["agent"].as_str() == Some("jcode")
+                        && event["data"]["agent_status"].as_str() == Some("idle") =>
+                {
+                    booted_idle = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        assert!(booted_idle, "boot must reach idle (sweeper path)");
+
+        // Force the throttle open so the next append passes the output
+        // path's gate, then feed one real spinner status line (braille
+        // glyph + label, as jcode renders it mid-turn). The status must flip
+        // synchronously inside the append: on the double-gate code the
+        // second gate failed and the status stayed "idle" until some later
+        // sweeper tick (which this test never grants).
+        terminal.reset_status_throttle();
+        terminal.append_output("\u{1b}[1;1H\u{280b} sending…".as_bytes());
+        assert_eq!(
+            terminal.last_agent_status().as_deref(),
+            Some("working"),
+            "a throttle-passing append must run detection inline"
+        );
+
+        // The inline detection must also have published the event.
+        let mut saw_working = false;
+        while let Ok(event) = rx.try_recv() {
+            if event["event"] == "pane.agent_status_changed"
+                && event["data"]["agent"].as_str() == Some("jcode")
+                && event["data"]["agent_status"].as_str() == Some("working")
+            {
+                saw_working = true;
+            }
+        }
+        assert!(saw_working, "the working flip must publish an event");
+    }
+
+    #[test]
+    fn stale_detection_pass_does_not_regress_committed_state() {
+        // The sweeper force pass and the agent_prompt synchronous re-check
+        // can run detection concurrently with the output path. Each pass
+        // reserves a monotonic sequence before reading its tail; a pass
+        // that commits after a newer pass (higher committed seq) is stale
+        // and must drop its result, because committing an older tail
+        // snapshot would briefly regress the published status. Here a
+        // detection with a FUTURE sequence commits first (simulating a
+        // newer pass that started later but finished first), and the
+        // in-flight older pass must not overwrite it.
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some("/bin/cat".to_string()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        state.handle_request("seed", "workspace.create", json!({ "label": "Workspace" }));
+        let terminal = {
+            let data = state.data.lock().unwrap();
+            let pane = data.panes.values().next().unwrap();
+            data.terminals.get(&pane.terminal_id).unwrap().clone()
+        };
+        // Simulate the newer pass: it reserved a high sequence and
+        // committed an idle jcode state, the way detect_and_publish would.
+        // The counter is left untouched, so the next real detection pass
+        // reserves a far lower sequence: exactly the stale-pass shape.
+        {
+            let mut previous = terminal.last_agent_state.lock().unwrap();
+            *previous = Some((Some("jcode".to_string()), "idle".to_string(), 1000));
+        }
+        // The stale pass: screen text says working, but its sequence is
+        // lower than the committed one, so the result must be dropped.
+        terminal.append_output("jcode\n⠋ sending…".as_bytes());
+        terminal.reset_status_throttle();
+        terminal.publish_agent_status_if_changed_force();
+        let status = terminal.last_agent_status();
+        assert_eq!(
+            status.as_deref(),
+            Some("idle"),
+            "a stale detection pass must not regress the newer committed state"
+        );
     }
 
     #[test]
@@ -6943,7 +7381,7 @@ mod tests {
         )
         .unwrap();
         // Stale screen text that would otherwise detect jcode + idle.
-        terminal.append_output(b"jcode session ready\nready for input\n\xe2\x9d\xaf\n");
+        terminal.append_output(b"jcode\n1> \n");
         // Simulate the live→absent transition: jcode was live, then gone.
         terminal.update_agent_exit_record(Some("jcode"), true);
         terminal.update_agent_exit_record(None, true);
@@ -7026,7 +7464,7 @@ mod tests {
             vec![
                 "/bin/sh".to_string(),
                 "-c".to_string(),
-                "printf 'jcode session ready' && sleep 0.1".to_string(),
+                "printf 'jcode' && sleep 0.1".to_string(),
             ],
             24,
             80,
@@ -7127,7 +7565,7 @@ mod tests {
         .unwrap();
 
         // Seed last_agent_state with a live jcode detection via screen text.
-        terminal.append_output(b"jcode session ready\nready for input\n\xe2\x9d\xaf\n");
+        terminal.append_output(b"jcode\n1> \n");
         // The plain publish is double-throttled (outer gate arms the
         // window, inner gate re-checks it and defers to the sweeper), so
         // use the force entry point to run detection synchronously here;
@@ -7241,8 +7679,8 @@ mod tests {
 
     #[test]
     fn osc9_tracker_retains_payload_without_ttl() {
-        // jcode emits on state change only, so a payload must remain
-        // authoritative for the whole pane lifetime (matching upstream
+        // Agents on this channel emit on state change only, so a payload must
+        // remain authoritative for the whole pane lifetime (matching upstream
         // herdr's no-TTL retention). There is no freshness window: a long
         // turn keeps reporting `jcode:working` and long idle keeps
         // reporting `jcode:idle`.
@@ -7294,7 +7732,7 @@ mod tests {
         assert_eq!(
             detect_agent_status_with_osc(
                 Some("jcode"),
-                "❯",
+                "1> ",
                 "jcode:working",
                 "",
                 JcodeDetectionVariant::Vanilla
@@ -7305,7 +7743,7 @@ mod tests {
         assert_eq!(
             detect_agent_status_with_osc(
                 Some("jcode"),
-                "❯",
+                "1> ",
                 "jcode:blocked",
                 "",
                 JcodeDetectionVariant::Vanilla
@@ -7330,7 +7768,7 @@ mod tests {
         assert_eq!(
             detect_agent_status_with_osc(
                 Some("jcode"),
-                "Session ready\n❯",
+                "jcode\n1> ",
                 "",
                 "",
                 JcodeDetectionVariant::Vanilla
@@ -7415,6 +7853,41 @@ mod tests {
 
     #[test]
     fn osc_title_detection_for_all_agents() {
+        // jcode: ` · last ~<dur>` → idle (post-turn), everything else falls
+        // through so the scrape path keeps blocked/working.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "",
+                "",
+                "🌐 jcode/observatory Humpback · last ~1m11s",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        // `work` segment must NOT classify via title: a live Permissions
+        // viewer on screen (blocked) outranks the title.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "┌ Permissions (1 pending) ┐\na approve · d deny",
+                "",
+                "🌐 jcode/observatory Humpback · work ~1m09s",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Boot title (no work segment) falls through to the scrape path.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "1> ",
+                "",
+                "🐳 jcode/observatory Humpback",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
         // Qwen: ✳ prefix → blocked, ◐ prefix → working.
         assert_eq!(
             detect_agent_status_with_osc(
@@ -7626,10 +8099,12 @@ mod tests {
 
     #[test]
     fn detects_jcode_status_from_jcode_support_manifest_patterns() {
+        // Blocked: Permissions viewer chrome from
+        // `crates/jcode-tui-permissions/src/lib.rs`.
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
-                "Permission required\nAllow once\nAlways allow\nDeny",
+                "┌ Permissions (1 pending) ────┐\n│ ❯ [normal] run bash │\n└──────────┘\na approve · d deny · A approve all · D deny all",
                 JcodeDetectionVariant::Vanilla
             ),
             "blocked"
@@ -7637,131 +8112,47 @@ mod tests {
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
-                "Asking user\nEnter your response\nSubmit",
+                "⏳ Agent is waiting for this decision",
                 JcodeDetectionVariant::Vanilla
             ),
             "blocked"
         );
+        // Working: spinner status line (`draw_status` in ui_input.rs).
+        for line in [
+            "⠋ thinking… 1.2s",
+            "⠋ streaming · ↑1.2k ↓42 · 1.2s",
+            "⠋ sending… 0.3s",
+            "⠸ running bash · npm test",
+            "⠋ connecting… 0.3s",
+            "⠋ Rate limited. Auto-retry in 1m 30s...",
+            "↻ network disconnected, waiting to retry · websocket · 8s",
+        ] {
+            assert_eq!(
+                detect_agent_status(Some("jcode"), line, JcodeDetectionVariant::Vanilla),
+                "working",
+                "{line}"
+            );
+        }
+        // Working: background-task progress while the prompt is visible
+        // (`render_background_task_message` in ui_messages.rs).
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
-                "⠋ running analysis",
+                "Jcode is running this in the background. Progress, checkpoints, and completion will appear here.\n╭ ◌ bg run full Rust and JS tests · 5202362vb9 ╮\nLatest status: bg action=\"status\" task_id=\"5202362vb9\"\n1> ",
                 JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
+        // Idle: completed bg task falls back to the prompt.
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
-                "Running tool bash",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "⠋ thinking… 1.2s",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "⠋ streaming · ↑1.2k ↓42 · 1.2s",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "⠋ sending… 0.3s",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "⠋ connecting… 0.3s",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "··● bash ●·· · 12s",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "··● bash ●··",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "●·· batch ··● · 2/5 done · last done: read · 1m 3s",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "●·· batch ··● · 2/5 done",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "↻ network disconnected, waiting to retry · websocket · 8s",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "working"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "Jcode is running this in the background. Progress, checkpoints, and completion will appear here.\n╭ ◌ bg run full Rust and JS tests · 5202362vb9 ╮\nLatest status: bg action=\"status\" task_id=\"5202362vb9\"\n❯",
+                "╭ ✓ bg run full Rust and JS tests completed · 5202362vb9 ╮\nexit 0 · 5.7s\n1> ",
                 JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "╭ ✓ bg run full Rust and JS tests completed · 5202362vb9 ╮\nexit 0 · 5.7s\n❯",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "Jcode is running this in the background. Progress, checkpoints, and completion will appear here.\n╭ ◌ bg run full Rust and JS tests · 5202362vb9 ╮\nLatest status: bg action=\"status\" task_id=\"5202362vb9\"\n╭ ✓ bg run full Rust and JS tests completed · 5202362vb9 ╮\nexit 0 · 5.7s\n❯",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "Session ready\n❯",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "idle"
-        );
+        // Idle: numbered prompt, shell prompt, and hint rows.
         assert_eq!(
             detect_agent_status(Some("jcode"), "1> ", JcodeDetectionVariant::Vanilla),
             "idle"
@@ -7770,14 +8161,18 @@ mod tests {
             detect_agent_status(
                 Some("jcode"),
                 "1>                                                            together_ai/revolut ca/glm 5 2 · ~/repo",
-                                JcodeDetectionVariant::Vanilla
+                JcodeDetectionVariant::Vanilla
             ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("jcode"), "2$ ", JcodeDetectionVariant::Vanilla),
             "idle"
         );
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
-                "We should deny this assumption in the explanation.\n❯ ",
+                "1> \n↗ next prompt opens a new session",
                 JcodeDetectionVariant::Vanilla
             ),
             "idle"
@@ -7785,75 +8180,33 @@ mod tests {
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
-                "Permission request\n❯ Allow once\n  Deny\nold response line 1\nold response line 2\nold response line 3\nold response line 4\nold response line 5\nold response line 6\nold response line 7\nold response line 8\n❯ ",
-                                JcodeDetectionVariant::Vanilla
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "Processing request\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ ",
-                                JcodeDetectionVariant::Vanilla
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "··● bash ●·· · 12s\nold response line 1\nold response line 2\nold response line 3\nold response line 4\n❯ ",
-                                JcodeDetectionVariant::Vanilla
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "··● bash ●·· · 12s\nSession ready\n❯ ",
+                "2$ \nshell mode · enter runs locally",
                 JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
+        // While a turn runs the prompt is `N… ` and the spinner sits in the
+        // chrome above it; an old `N> ` prompt means the turn ended, so the
+        // spinner text in scrollback is stale transcript, and the pane is
+        // idle (the status line itself is cleared when processing stops).
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
-                "Running tool bash\nresult mentions running tool\n❯ ",
+                "⠋ thinking… 12s\nold response line 1\nold response line 2\nold response line 3\nold response line 4\nold response line 5\nold response line 6\nold response line 7\nold response line 8\n1> ",
                 JcodeDetectionVariant::Vanilla
             ),
             "idle"
         );
+        // Spinner with the processing prompt `N… ` directly below: working.
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
-                "··● bash ●·· · 12s\n1> ",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "Running tool bash\n1> typed input",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "idle"
-        );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "Session ready\n❯\n··● bash ●·· · 12s",
+                "1… \n⠋ thinking… 12s",
                 JcodeDetectionVariant::Vanilla
             ),
             "working"
         );
-        assert_eq!(
-            detect_agent_status(
-                Some("jcode"),
-                "··● not a toolbar\n❯",
-                JcodeDetectionVariant::Vanilla
-            ),
-            "idle"
-        );
+        // Guards: transcript text without chrome stays unknown.
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
@@ -7872,7 +8225,7 @@ mod tests {
         );
 
         assert_eq!(
-            detect_agent_label_from_text("●·· batch ··● · 2/5 done"),
+            detect_agent_label_from_text("◌ bg cargo test · 5202362vb9"),
             Some("jcode")
         );
         assert_eq!(
@@ -8046,64 +8399,28 @@ mod tests {
 
     #[test]
     fn jcode_status_covers_manifest_choice_combinations() {
-        for allow in ["allow once", "always allow", "allow"] {
-            for deny in ["deny", "reject", "cancel"] {
-                let text = format!("Permission request\n{allow}\n{deny}");
-                assert_eq!(
-                    detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
-                    "blocked"
-                );
-            }
-        }
+        // Blocked: the Permissions viewer help row and its key bindings
+        // (`crates/jcode-tui-permissions/src/lib.rs` render_help).
+        let viewer = "Permissions (1 pending)\na approve\nd deny\nA approve all\nD deny all";
+        assert_eq!(
+            detect_agent_status(Some("jcode"), viewer, JcodeDetectionVariant::Vanilla),
+            "blocked"
+        );
+        let waiting = "⏳ Agent is waiting for this decision";
+        assert_eq!(
+            detect_agent_status(Some("jcode"), waiting, JcodeDetectionVariant::Vanilla),
+            "blocked"
+        );
 
-        for allow in ["allow", "yes"] {
-            for deny in ["reject", "no", "cancel"] {
-                let text = format!("Approve?\n{allow}\n{deny}");
-                assert_eq!(
-                    detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
-                    "blocked"
-                );
-            }
-        }
-
-        for allow in ["allow", "yes", "proceed"] {
-            for deny in ["reject", "no", "cancel"] {
-                let text = format!("Confirm action\n{allow}\n{deny}");
-                assert_eq!(
-                    detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
-                    "blocked"
-                );
-            }
-        }
-
-        for action in ["continue", "submit", "cancel"] {
-            let text = format!("Enter your response\n{action}");
-            assert_eq!(
-                detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
-                "blocked"
-            );
-        }
-
-        for prompt in ["enter your response", "awaiting input", "waiting for user"] {
-            let text = format!("Asking user\n{prompt}");
-            assert_eq!(
-                detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
-                "blocked"
-            );
-        }
-
-        for action in ["enter", "type", "respond"] {
-            let text = format!("Awaiting input\n{action}");
-            assert_eq!(
-                detect_agent_status(Some("jcode"), &text, JcodeDetectionVariant::Vanilla),
-                "blocked"
-            );
-        }
-
+        // Working: spinner status line shapes from `draw_status`
+        // (`ui_input.rs`): every phase label the TUI renders.
         for status in [
-            "running tool",
-            "executing tool",
-            "network disconnected, waiting to retry",
+            "⠋ sending… 3s",
+            "⠙ thinking… 1m 02s",
+            "⠹ streaming · 12.3 tps · ↑1.2k ↓4.5k",
+            "⠸ running bash · npm test",
+            "⠋ Rate limited. Auto-retry in 1m 30s...",
+            "↻ network disconnected, waiting to retry · ws · 12s",
         ] {
             assert_eq!(
                 detect_agent_status(Some("jcode"), status, JcodeDetectionVariant::Vanilla),
@@ -8111,7 +8428,8 @@ mod tests {
             );
         }
 
-        for ready in ["session ready", "ready for input", "❯"] {
+        // Idle: the numbered input prompt is the last non-empty line.
+        for ready in ["1> ", "3> fix the bug", "2$ "] {
             assert_eq!(
                 detect_agent_status(Some("jcode"), ready, JcodeDetectionVariant::Vanilla),
                 "idle"
@@ -8120,39 +8438,16 @@ mod tests {
     }
 
     #[test]
-    fn jcode_tool_bar_matcher_tracks_manifest_shape() {
-        for line in [
-            "··● bash ●·· · 12s",
-            "··● bash ●··",
-            "●·· batch ··● · 2/5 done",
-            "●·· batch ··● · 2/5 done · last done: read · 1m 3s",
-        ] {
-            assert!(has_jcode_tool_bar(line), "expected toolbar: {line:?}");
-        }
-
-        for line in [
-            "··● not a toolbar",
-            "·· bash ●··",
-            "··● bash ●·",
-            "··● bash ●··tail",
-            "··● bash ●·· ·",
-            "··● bash ●··· 12s",
-        ] {
-            assert!(!has_jcode_tool_bar(line), "unexpected toolbar: {line:?}");
-        }
-    }
-
-    #[test]
     fn terminal_screen_text_applies_common_tui_rewrites() {
         assert_eq!(
-            terminal_screen_text_lossy("Session ready\n❯\r\u{1b}[2K··● bash ●·· · 12s"),
-            "Session ready\n··● bash ●·· · 12s"
+            terminal_screen_text_lossy("Session ready\n❯\r\u{1b}[2K⠋ sending… 3s"),
+            "Session ready\n⠋ sending… 3s"
         );
         assert_eq!(
-            terminal_screen_text_lossy(
-                "Session ready\n··● bash ●·· · 12s\r\u{1b}[2KSession ready\n❯"
-            ),
-            "Session ready\nSession ready\n❯"
+            terminal_screen_text_lossy("Session ready\n⠋ sending… 3s\r\u{1b}[2KSession ready\n1> "),
+            // The screen emulator trims trailing spaces per line: `1> `
+            // collapses to `1>` (detectors trim too, so statuses match).
+            "Session ready\nSession ready\n1>"
         );
         assert_eq!(terminal_screen_text_lossy("old\u{1b}[2Jnew"), "new");
         assert_eq!(terminal_screen_text_lossy("abc\rxy"), "xyc");
@@ -8170,8 +8465,10 @@ mod tests {
 
     #[test]
     fn jcode_status_uses_screen_not_stale_ansi_history() {
+        // The real bottom chrome: a spinner status line replaces the prompt
+        // while working, then the numbered prompt returns when idle.
         let working_screen =
-            terminal_screen_text_lossy("Session ready\n❯\r\u{1b}[2K··● bash ●·· · 12s");
+            terminal_screen_text_lossy("1> \r\u{1b}[2K⠋ running bash · npm test · 12s");
         assert_eq!(
             detect_agent_status(
                 Some("jcode"),
@@ -8182,7 +8479,7 @@ mod tests {
         );
 
         let idle_screen = terminal_screen_text_lossy(
-            "Session ready\n··● bash ●·· · 12s\r\u{1b}[2KSession ready\n❯",
+            "⠋ running bash · npm test · 12s\r\u{1b}[2KSession ready\n1> ",
         );
         assert_eq!(
             detect_agent_status(Some("jcode"), &idle_screen, JcodeDetectionVariant::Vanilla),
@@ -8191,7 +8488,7 @@ mod tests {
         assert_eq!(detect_agent_label_from_text(&idle_screen), Some("jcode"));
 
         let blocked_screen = terminal_screen_text_lossy(
-            "··● bash ●·· · 12s\r\u{1b}[2KApprove?\n❯ Allow\n  Reject\nEsc to cancel",
+            "⠋ running bash · 12s\r\u{1b}[2KPermissions (1 pending)\n⏳ Agent is waiting for this decision",
         );
         assert_eq!(
             detect_agent_status(
@@ -8541,10 +8838,10 @@ mod tests {
 
     #[test]
     fn strips_ansi_before_tail_detection() {
-        let stripped = strip_ansi_lossy("\u{1b}[31mSession ready\u{1b}[0m\r\n\u{1b}]0;title\u{7}❯");
+        let stripped = strip_ansi_lossy("\u{1b}[31mjcode\u{1b}[0m\r\n\u{1b}]0;title\u{7}1> ");
 
-        assert!(stripped.contains("Session ready"));
-        assert!(stripped.contains("❯"));
+        assert!(stripped.contains("jcode"));
+        assert!(stripped.contains("1> "));
         assert!(!stripped.contains("[31m"));
         assert_eq!(detect_agent_label_from_text(&stripped), Some("jcode"));
     }

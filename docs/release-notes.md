@@ -1,14 +1,24 @@
 # Release notes
 
 ## 0.7.2 Release Notes
-- The jcode detector matches what the real TUI prints instead of
-  fabricated patterns. The old tests pinned ghost strings like
-  "session ready" and made-up permission dialogs; the detector now
-  matches the real bottom chrome read from the jcode repo source:
-  numbered prompts ("1> "), shell mode ("N$ "), braille spinner
-  status lines, the Permissions viewer with its approve/deny help
-  row, background-task progress boxes, and the fix/info_fields
-  Overview panels behind a variant selector.
+- Jcode screen-scrape detection rewritten to mirror the real TUI output
+  of both supported branches, upstream `master` (vanilla variant) and
+  `fix/info_fields` (info_fields variant). The previous pattern set
+  (`session ready`, `ready for input`, bare `❯`, `··● bash ●··` toolbar,
+  permission/confirm prompt shapes) matched nothing jcode actually
+  renders, so panes sat in `unknown`. The detectors now read the real
+  chrome: numbered prompts (`1> ` idle, `1… ` processing, `1$ ` shell
+  mode), the spinner status line with phase labels (` sending…`,
+  ` thinking…`, ` running bash · detail`, rate-limit and
+  network-retry lines), queued rows (`N ⏳/↻/⚡ text`), hint rows,
+  the overscroll status line, and the Permissions viewer
+  (`a approve · d deny · A approve all · D deny all`). The info_fields
+  variant adds the Overview Runtime `🏠 model · effort` identity row
+  as an idle marker. Selection is a persisted temporary setting
+  (`auto` default, `vanilla`, `info_fields`, legacy `alecuba16`
+  alias); it merges back into a single detector once jcode ships a
+  final output format. Dead legacy helpers and the tests pinning the
+  fabricated patterns were removed; docs updated.
 - Post-turn idle comes from the terminal title. jcode emits no OSC 9
   progress side-channel, so status rides on a screen scrape of the
   emulator-extracted tail plus the title. The scrape markers fall out
@@ -1325,7 +1335,7 @@
 
 ### Jcode detection variant support
 
-- Adds jcode detection variant support in `src/builtin_detection/jcode.rs` covering vanilla jcode and the alecuba16 fork.
+- Adds jcode detection variant support in `src/builtin_detection/jcode.rs` covering vanilla jcode (upstream `master`) and the info_fields variant (`fix/info_fields` branch).
 - Each variant has its own idle, working, and blocked screen-text patterns, dispatched via `detect_jcode_status_with_variant`.
 
 ### Markdown preview with Mermaid support

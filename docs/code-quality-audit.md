@@ -47,8 +47,8 @@ Scope: full `herdr-webui` repository, indexed with codebase-memory.
   9 focused files for branch, cleanup, conflict, diff, file, log, log_graph,
   stash, and shared mod.
 - Extracted agent detection into `src/builtin_detection/` module (`claurst.rs`,
-  `jcode.rs`, `mod.rs`), with jcode variant detection (vanilla + alecuba16
-  fork).
+  `jcode.rs`, `mod.rs`), with jcode variant detection (vanilla + info_fields
+  branch patterns).
 - Desktop `core.js` refactored into `src/assets/desktop/app_js/` with separate
   files for `render.js`, `shortcuts.js`, `terminal.js`, `workspace_create.js`,
   `workspace_shell.js`, `worktrees.js`.

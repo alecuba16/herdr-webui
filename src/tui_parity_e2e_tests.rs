@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herdr_webui::tui::panels::{FileExplorer, GitFileStatus, GitPanel, GitView};
 use herdr_webui::tui::web_api::WebApiClient;
 
-fn temp_git_repo() -> PathBuf {
+fn temp_git_repo() -> TempRepoFixture {
     // Fixture dirs must be unique per call even when tests run in
     // parallel inside one process: the macOS clock has ~1us resolution,
     // so pid + timestamp alone can collide (two tokio worker threads
@@ -30,6 +30,11 @@ fn temp_git_repo() -> PathBuf {
             .as_nanos()
     ));
     std::fs::create_dir_all(&dir).unwrap();
+    // Scope-exit removal for BOTH the repo and the bare "origin"
+    // sibling created below: the trailing best-effort removes at the
+    // call sites were skipped on any panic, and the bare sibling had
+    // none at all in most tests, leaking two dirs per run.
+    let mut guard_dirs = vec![dir.clone()];
     let run = |args: &[&str]| {
         let mut attempt = 0;
         loop {
@@ -69,6 +74,7 @@ fn temp_git_repo() -> PathBuf {
             .replace("herdr-tui-e2e-repo-", "herdr-tui-e2e-bare-"),
     );
     let bare_str = bare.to_string_lossy().to_string();
+    guard_dirs.push(bare.clone());
     // The runner environment can hit transient git failures (packfile
     // refresh races right after the commit above). Retry like the other
     // setup commands instead of failing the whole matrix job.
@@ -105,7 +111,49 @@ fn temp_git_repo() -> PathBuf {
     run(&["push", "-q", "-u", "origin", "HEAD"]);
     run(&["config", "pull.rebase", "true"]);
     std::thread::sleep(std::time::Duration::from_millis(1));
-    dir
+    TempRepoFixture {
+        path: dir,
+        _guard: RepoDirGuard(guard_dirs),
+    }
+}
+
+/// Repo fixture handle: Derefs to the repo path so existing call sites
+/// keep working unchanged, while the guard removes repo + bare sibling
+/// on scope exit (panic included).
+struct TempRepoFixture {
+    path: PathBuf,
+    _guard: RepoDirGuard,
+}
+
+impl std::ops::Deref for TempRepoFixture {
+    type Target = PathBuf;
+    fn deref(&self) -> &PathBuf {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TempRepoFixture {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+struct RepoDirGuard(Vec<PathBuf>);
+
+impl Drop for RepoDirGuard {
+    fn drop(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut remaining = self.0.clone();
+        while !remaining.is_empty() && std::time::Instant::now() < deadline {
+            remaining.retain(|path| match std::fs::remove_dir_all(path) {
+                Ok(()) => false,
+                Err(_) => path.exists(),
+            });
+            if !remaining.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
 }
 
 fn localhost_no_auth_state(default_folder: PathBuf) -> WebState {
