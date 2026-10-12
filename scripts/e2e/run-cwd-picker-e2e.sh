@@ -55,6 +55,9 @@ for repo in "$REPO_A" "$REPO_B"; do
   git -C "$repo" add README.md
   git -C "$repo" -c user.name=e2e -c user.email=e2e@local commit -qm init
 done
+# Nested folders inside repo-a so the picker search results render a
+# collapsible block (repo-a > repo-a/nested-src > repo-a/nested-src/inner).
+mkdir -p "$REPO_A/nested-src/inner"
 mkdir -p "$PLAIN"
 echo "not a repo" > "$PLAIN/note.txt"
 
