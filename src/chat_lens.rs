@@ -224,7 +224,23 @@ pub fn conversation_payload_with(
         ),
         None => None,
     };
-    let messages = crate::jcode_transcript::load_session_messages(store_dir, &session_id);
+    // A contradictory pair (both `before` and `from`) used to fall
+    // through with `from` silently ignored. Refuse it: the client
+    // only ever sends one direction per request, so a pair means a
+    // bug or a hand-crafted URL, and guessing a winner would serve a
+    // page the caller never asked for. Same refusal family as the
+    // decode failures above so the wire code stays history_changed.
+    if before.is_some() && from.is_some() {
+        return Err("history_changed: before and from cursors are mutually exclusive".to_string());
+    }
+    // Cached read+parse, keyed by both files' stat signatures (the
+    // SAME pair `generation` above hashes): an unchanged transcript
+    // costs two stat calls, a journal append re-parses whole before
+    // anything is served. `load_compaction` still reads every call:
+    // it is one small file and must never ride a stale snapshot.
+    let (messages, parsed_turns) = index.session_transcript_cached(&session_id);
+    let messages = messages.as_ref();
+    let turns_source = parsed_turns.as_ref().clone();
     let compaction = crate::jcode_transcript::load_compaction(store_dir, &session_id);
     // Both files unreadable/unparseable NOW (they existed at sweep time —
     // rotation or a deleted session raced us): transcript_missing.
@@ -242,7 +258,7 @@ pub fn conversation_payload_with(
             return Err("transcript_missing: session files are unreadable".to_string());
         }
     }
-    let mut turns = crate::jcode_transcript::parse_jcode_transcript(&messages);
+    let mut turns = turns_source;
     if let Some(summary) = compaction {
         // The server emits compaction as its own leading user turn and
         // drops nothing; the client renders it as a collapsed summary
@@ -322,7 +338,7 @@ pub fn conversation_payload_with(
     };
     let (model, status, reasoning_effort) = index.session_model_status(&session_id);
     let title = index.session_title(&session_id);
-    let context_used = context_usage(&messages);
+    let context_used = context_usage(messages);
     Ok(json!({
         "source": "jcode-transcript",
         "session_id": session_id,
@@ -512,7 +528,7 @@ fn pid_in_tree(pid: u32, root_pid: Option<u32>, processes: &[ProcessRow]) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use std::sync::Arc;
     #[test]
     fn only_jcode_is_supported() {
         assert!(agent_supported(Some("jcode")));
@@ -1458,5 +1474,77 @@ mod tests {
             conversation_image_with(&index, &fixture_context(), ""),
             Ok(None)
         );
+    }
+
+    // --- cached read+parse (per-session, stat-signature keyed) ---
+
+    #[test]
+    fn transcript_cache_serves_the_same_parse_while_files_are_unchanged() {
+        let (_dir, index, session_id) = fixture_store("cache_hit");
+        let page = ConversationPage::default();
+        let first = conversation_payload_with(&index, &fixture_context(), &page).unwrap();
+        let (messages_a, turns_a) = index.session_transcript_cached(&session_id);
+        let second = conversation_payload_with(&index, &fixture_context(), &page).unwrap();
+        let (messages_b, turns_b) = index.session_transcript_cached(&session_id);
+        // Same generation, same Arc: the second call served the cached
+        // parse instead of re-reading the files.
+        assert!(Arc::ptr_eq(&messages_a, &messages_b));
+        assert!(Arc::ptr_eq(&turns_a, &turns_b));
+        // And the payload over the cache is the payload from disk.
+        assert_eq!(first, second);
+        let turns = second["turns"].as_array().unwrap();
+        assert_eq!(turns.len(), 3, "snapshot m1/m2 + journal m3");
+    }
+
+    #[test]
+    fn transcript_cache_invalidates_on_journal_append() {
+        let (dir, index, session_id) = fixture_store("cache_inval");
+        let page = ConversationPage::default();
+        let first = conversation_payload_with(&index, &fixture_context(), &page).unwrap();
+        assert_eq!(first["turns"].as_array().unwrap().len(), 3);
+        // Append one more turn to the journal: the size stat moves, the
+        // cached parse must be dropped, never partially patched.
+        let journal = json!({
+            "meta": {},
+            "append_messages": [
+                {"id": "m4", "role": "user",
+                 "content": [{"type": "text", "text": "fresh append"}]}
+            ]
+        });
+        std::fs::write(
+            dir.join(format!("{session_id}.journal.jsonl")),
+            serde_json::to_string(&journal).unwrap() + "\n",
+        )
+        .unwrap();
+        let second = conversation_payload_with(&index, &fixture_context(), &page).unwrap();
+        let turns = second["turns"].as_array().unwrap();
+        assert_eq!(turns.len(), 3, "snapshot m1/m2 + journal m4 only");
+        assert_eq!(turns.last().unwrap()["parts"][0]["text"], "fresh append");
+    }
+
+    // --- before+from pair: explicit refusal, no silent winner ---
+
+    #[test]
+    fn before_and_from_together_refuse_with_history_changed() {
+        let (_dir, index, _session_id) = paged_store("pair", 120);
+        let newest =
+            conversation_payload_with(&index, &fixture_context(), &ConversationPage::default())
+                .unwrap();
+        let before_cursor = newest["cursor"].as_str().unwrap().to_string();
+        let err = conversation_payload_with(
+            &index,
+            &fixture_context(),
+            &ConversationPage {
+                before: Some(before_cursor),
+                from: Some(format!("{}:g1:m007", newest_session_id(&newest))),
+            },
+        )
+        .unwrap_err();
+        assert!(err.starts_with("history_changed"), "got {err}");
+        assert!(err.contains("mutually exclusive"), "got {err}");
+    }
+
+    fn newest_session_id(payload: &Value) -> String {
+        payload["session_id"].as_str().unwrap().to_string()
     }
 }

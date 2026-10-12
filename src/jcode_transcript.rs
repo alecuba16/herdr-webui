@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Resolution outcome for one pane. `agent_session` on the wire mirrors
@@ -55,6 +55,15 @@ struct SessionEvidence {
     generation: (u128, u64),
 }
 
+/// Parsed-turn cache entry for the chat lens: the stat signatures
+/// of snapshot+journal the entry was built from, plus the shared
+/// parse results so both consumers clone an `Arc` instead of a Vec.
+struct TurnsCacheEntry {
+    signatures: Vec<(u128, u64)>,
+    messages: Arc<Vec<serde_json::Value>>,
+    turns: Arc<Vec<Turn>>,
+}
+
 /// Cached evidence index over `~/.jcode/sessions` (design section 2:
 /// ~600 ms cold build, ~17 ms stat-only revalidation sweep — the cache
 /// is mandatory, never rebuild per poll).
@@ -72,6 +81,14 @@ pub struct JcodeStoreIndex {
     // wasted work between registry rotations.
     swarm_dir: PathBuf,
     swarm_workers: Mutex<(Option<Instant>, HashSet<String>)>,
+    // Parsed-turn cache for the chat lens: full snapshot+journal
+    // re-read/re-parse per poll was the lens's hot path. One entry
+    // per session, keyed by the stat signatures of both files (the
+    // SAME (mtime_ns, size) pair `session_generation` hashes), so
+    // any journal append or snapshot rewrite bumps it and the next
+    // request re-reads and re-parses whole. Never served partial: a
+    // signature mismatch drops the entry before any read.
+    turns_cache: Mutex<HashMap<String, TurnsCacheEntry>>,
 }
 
 impl JcodeStoreIndex {
@@ -87,6 +104,7 @@ impl JcodeStoreIndex {
             last_sweep: Mutex::new(None),
             swarm_dir,
             swarm_workers: Mutex::new((None, HashSet::new())),
+            turns_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -100,6 +118,58 @@ impl JcodeStoreIndex {
 
     pub fn store_dir(&self) -> &Path {
         &self.store_dir
+    }
+
+    /// The session's raw messages and parsed turns, cached per
+    /// session and validated against the stat signatures of both
+    /// transcript files on every call (the pair `session_generation`
+    /// already hashes). On a match the cached Arcs are served without
+    /// touching disk; on a mismatch (or first sight) the files are
+    /// re-read and re-parsed whole, so a journal append mid-poll can
+    /// never yield a half transcript. Bounded by the same lifecycle as
+    /// the evidence cache: the lens asks for one session per poll, and
+    /// `refresh`'s vanished-files cleanup drops rows whose files went
+    /// away (rotation to `.bak` changes the signatures first, and the
+    /// entry is simply re-parsed on the next request).
+    pub fn session_transcript_cached(
+        &self,
+        session_id: &str,
+    ) -> (Arc<Vec<serde_json::Value>>, Arc<Vec<Turn>>) {
+        let mut signatures = Vec::with_capacity(2);
+        for suffix in [".json", ".journal.jsonl"] {
+            if let Ok(meta) =
+                std::fs::metadata(self.store_dir.join(format!("{session_id}{suffix}")))
+            {
+                signatures.push(stat_generation(&meta));
+            }
+        }
+        let mut cache = self.turns_cache.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(entry) = cache.get(session_id) {
+            // Match only when BOTH signatures agree AND neither file
+            // is missing: a file with no stat cannot partially match,
+            // it must be a mismatch.
+            let fresh = entry.signatures.len() == signatures.len()
+                && entry
+                    .signatures
+                    .iter()
+                    .zip(signatures.iter())
+                    .all(|(a, b)| a == b);
+            if fresh {
+                return (Arc::clone(&entry.messages), Arc::clone(&entry.turns));
+            }
+            cache.remove(session_id);
+        }
+        let messages = Arc::new(load_session_messages(&self.store_dir, session_id));
+        let turns = Arc::new(parse_jcode_transcript(&messages));
+        cache.insert(
+            session_id.to_string(),
+            TurnsCacheEntry {
+                signatures,
+                messages: Arc::clone(&messages),
+                turns: Arc::clone(&turns),
+            },
+        );
+        (messages, turns)
     }
 
     /// Test hook: forces the next `resolve` to re-sweep instead of
