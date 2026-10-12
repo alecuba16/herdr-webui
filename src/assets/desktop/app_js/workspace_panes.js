@@ -1195,8 +1195,8 @@ function closePaneMenu() {
   paneMenu = null;
   // Focus restore belongs here, not in paneMenuKeydown: every close path
   // (Escape cascade, outside click, re-toggle) must return focus to the
-  // [⋮] button. Removing the menu drops focus on the closed item first;
-  // the button ref is captured before paneMenu is cleared.
+  // [⋮] button. Removing the menu drops focus on the closed item first,
+  // so the live button is resolved before paneMenu is cleared above.
   if (button && typeof button.focus === "function") button.focus();
 }
 
