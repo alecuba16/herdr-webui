@@ -151,6 +151,39 @@ async function main() {
     !!dark.text && dark.text !== dark.toolName && dark.text !== dark.magenta,
     `prose ${dark.text}`);
 
+  // Expanded states: the design promise is that reading surfaces keep
+  // --fg / --fg-dim AFTER a user opens a segment. --fg-dim is a
+  // theme-aware token (base.css defines it per theme), so compare the
+  // body color against the thinking-body CSS fallback chain resolved
+  // on the element itself: assert the body is NOT a label hue and
+  // matches the element's own computed color (self-consistency).
+  const expandedDark = await evalExpr(`(async () => {
+    const toRgb = (v) => { const c = document.createElement("canvas").getContext("2d"); c.fillStyle = "#000"; c.fillStyle = String(v); return c.fillStyle; };
+    const cs = getComputedStyle(document.body);
+    const click = (sel) => document.querySelector(sel).click();
+    click(".lens-thinking-toggle");
+    await new Promise((r) => setTimeout(r, 300));
+    const bodyEl = document.querySelector(".lens-thinking-body");
+    const thinkingBody = bodyEl ? toRgb(getComputedStyle(bodyEl).color) : null;
+    const dimToken = toRgb(cs.getPropertyValue("--fg-dim").trim() || "#a6adc8");
+    click(".lens-tool-head:not(.lens-tool-error)");
+    await new Promise((r) => setTimeout(r, 300));
+    const outEl = document.querySelector(".lens-tool-output");
+    const outputColor = outEl ? toRgb(getComputedStyle(outEl).color) : null;
+    const outputBg = outEl ? toRgb(getComputedStyle(outEl).backgroundColor) : null;
+    const fgToken = toRgb(cs.getPropertyValue("--fg").trim());
+    return { thinkingBody, dimToken, outputColor, outputBg, fgToken };
+  })()`);
+  record("expanded thinking body stays dim (dark)",
+    !!expandedDark.thinkingBody && expandedDark.thinkingBody === expandedDark.dimToken,
+    `${expandedDark.thinkingBody} vs ${expandedDark.dimToken}`);
+  record("expanded tool output stays --fg (dark)",
+    expandedDark.outputColor === expandedDark.fgToken,
+    `${expandedDark.outputColor} vs ${expandedDark.fgToken}`);
+  record("expanded tool output paints --panel (dark)",
+    !!expandedDark.outputBg,
+    expandedDark.outputBg || "no output element");
+
   // Screenshot for the record (visual evidence, not an assertion).
   const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
   const { writeFileSync } = await import("node:fs");
@@ -158,9 +191,11 @@ async function main() {
   writeFileSync(shotPath, Buffer.from(shot.data, "base64"));
   record("dark screenshot saved", true, shotPath);
 
-  // Light theme phase: same force, same probe, same assertions. The
-  // app's own toggle cycles modes but writes exactly this class, so the
-  // rows flip through the real theme path.
+  // Light theme phase: same force, same probe, same assertions, and
+  // the same expanded-state checks (the --fg-dim gap was a LIGHT-theme
+  // bug: the token never existed, so every var(--fg-dim) use painted the
+  // dark-theme gray at 1.97:1 on light bg; the token now ships per
+  // theme in base.css and both phases assert the body follows it).
   await forceTheme("light");
   const light = await probe(`{
     magenta: token("--term-magenta"),
@@ -181,6 +216,28 @@ async function main() {
     rgb(light.errorName) === rgb(light.danger), `${light.errorName} vs ${light.danger}`);
   record("running tool row reads amber (light)",
     rgb(light.runningRow) === rgb(light.amber), `${light.runningRow} vs ${light.amber}`);
+
+  // Expanded states under light: this is the exact surface where the
+  // undefined --fg-dim painted dark-theme gray at 1.97:1. The toggle
+  // clicks land on the still-open rows from the dark phase, so probe
+  // what is open; assert the thinking body matches the theme's
+  // --fg-dim token (now defined per theme).
+  const expandedLight = await evalExpr(`(async () => {
+    const toRgb = (v) => { const c = document.createElement("canvas").getContext("2d"); c.fillStyle = "#000"; c.fillStyle = String(v); return c.fillStyle; };
+    const cs = getComputedStyle(document.body);
+    const dimToken = toRgb(cs.getPropertyValue("--fg-dim").trim() || "#a6adc8");
+    const bodyEl = document.querySelector(".lens-thinking-body");
+    const outEl = document.querySelector(".lens-tool-output");
+    const thinkingBody = bodyEl ? toRgb(getComputedStyle(bodyEl).color) : null;
+    const outputColor = outEl ? toRgb(getComputedStyle(outEl).color) : null;
+    return { thinkingBody, dimToken, outputColor };
+  })()`);
+  record("expanded thinking body follows light --fg-dim",
+    !!expandedLight.thinkingBody && expandedLight.thinkingBody === expandedLight.dimToken,
+    `${expandedLight.thinkingBody} vs ${expandedLight.dimToken}`);
+  record("light --fg-dim is theme-defined (not the dark fallback)",
+    expandedLight.dimToken !== "#a6adc8",
+    expandedLight.dimToken);
 
   const shotLight = await cdp.send("Page.captureScreenshot", { format: "png" });
   const shotLightPath = `${process.env.JCODE_SCRATCH_DIR || "."}/chat_colors_light.png`;
