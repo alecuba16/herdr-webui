@@ -16,8 +16,11 @@
 //!   master, so the info_fields detector is the vanilla one plus the
 //!   Overview markers.
 //!
-//! Both branches are also natively detectable via OSC 9 progress payloads
-//! (`ESC]9;jcode:<state> BEL`, the `herdr_detectable` branch) and via the
+//! Both branches are also natively detectable via the terminal title
+//! (` · work ~<dur>` while a turn runs, ` · last ~<dur>` after it ends;
+//! mapped in `osc_title_status_for_agent` upstream, `last` is the live
+//! post-turn idle signal), via OSC 9 progress payloads on the
+//! `herdr_detectable` branch (`ESC]9;jcode:<state> BEL`), and via the
 //! herdr CLI `pane report-agent` channel; those are handled in
 //! `detect_agent_status_with_osc` upstream and always win over this
 //! screen-scrape fallback.

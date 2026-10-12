@@ -2605,9 +2605,12 @@ impl TerminalRuntime {
             .map(|tracker| {
                 // The OSC 9 payload is retained until the terminal exits
                 // (reset) or the agent process disappears (notify_exited
-                // resets the tracker). jcode emits on state change only, so
-                // there is no timestamped freshness window: a long turn must
-                // keep reporting `jcode:working`.
+                // resets the tracker). Agents that use this channel emit on
+                // state change only, so there is no timestamped freshness
+                // window. Note real jcode master emits no OSC 9 progress:
+                // status comes from the title rules plus screen-scrape, and
+                // this payload path only serves a hypothetical jcode build
+                // with the herdr_detectable side-channel.
                 let progress = tracker.latest_progress().to_string();
                 (
                     progress,
@@ -3972,7 +3975,8 @@ fn osc_progress_status_for_agent(agent: &str, osc_progress: &str) -> Option<&'st
 /// screen-scrape detection.
 ///
 /// Mirrors the `osc_title` rules from herdr's detection manifests for:
-/// amp, claude, codex, grok, hermes, qwen.
+/// amp, claude, codex, grok, hermes, qwen. The jcode arm reads jcode's
+/// own title grammar instead (work/last segments).
 fn osc_title_status_for_agent(agent: &str, title: &str) -> Option<&'static str> {
     match agent {
         // amp.toml: blocked if "Plugin confirmation needed", working if
@@ -4072,6 +4076,21 @@ fn osc_title_status_for_agent(agent: &str, title: &str) -> Option<&'static str> 
                 } else {
                     None
                 }
+            } else {
+                None
+            }
+        }
+        // jcode: the title's work-segment suffix encodes the turn state
+        // (`title_with_metrics` in jcode's terminal_title.rs): ` · work ~<dur>`
+        // while a turn runs and ` · last ~<dur>` once it finished. `last` is
+        // the only reliable idle signal for the post-turn screen, where the
+        // scrape markers (numbered prompt, hint row, context bar) fall out of
+        // the tail window. `work` maps to None on purpose: the scrape path
+        // also carries `blocked`, and a title saying `work` must not outrank
+        // a live Permissions viewer on screen.
+        "jcode" => {
+            if title.contains(" · last ~") {
+                Some("idle")
             } else {
                 None
             }
@@ -7825,6 +7844,41 @@ mod tests {
 
     #[test]
     fn osc_title_detection_for_all_agents() {
+        // jcode: ` · last ~<dur>` → idle (post-turn), everything else falls
+        // through so the scrape path keeps blocked/working.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "",
+                "",
+                "🌐 jcode/observatory Humpback · last ~1m11s",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        // `work` segment must NOT classify via title: a live Permissions
+        // viewer on screen (blocked) outranks the title.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "┌ Permissions (1 pending) ┐\na approve · d deny",
+                "",
+                "🌐 jcode/observatory Humpback · work ~1m09s",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Boot title (no work segment) falls through to the scrape path.
+        assert_eq!(
+            detect_agent_status_with_osc(
+                Some("jcode"),
+                "1> ",
+                "",
+                "🐳 jcode/observatory Humpback",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
         // Qwen: ✳ prefix → blocked, ◐ prefix → working.
         assert_eq!(
             detect_agent_status_with_osc(
