@@ -693,7 +693,10 @@
       return `<div class="lens-thinking" data-part-key="${escapeAttr(key)}">${head}${body}</div>`;
     }
     if (part.kind === "tool_pending") {
-      return `<div class="lens-tool lens-tool-running" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">running ${escapeHtml(part.name || "tool")}…</div>`;
+      // The name gets the tool-name span so the cyan anchor holds while a
+      // call runs (the row itself is amber: in-flight state reads first,
+      // then what is running).
+      return `<div class="lens-tool lens-tool-running" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">running <span class="lens-tool-name">${escapeHtml(part.name || "tool")}</span>…</div>`;
     }
     if (part.kind === "tool") {
       const key = partKey(turnIndex, partIndex, part);

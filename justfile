@@ -36,6 +36,12 @@ log-hover-e2e:
 rail-e2e:
     scripts/e2e/run-rail-e2e.sh
 
+# Real-browser acceptance for the chat lens segment colors (thinking /
+# tool names / running / failed rows, both themes, WCAG AA contrast).
+# See scripts/e2e/README.md.
+chat-colors-e2e:
+    bash scripts/e2e/run-chat-colors-e2e.sh
+
 # No-browser acceptance run for backend-built content-search chunks. See scripts/e2e/README.md.
 content-search-e2e:
     scripts/e2e/run-content-search-e2e.sh

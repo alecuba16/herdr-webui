@@ -490,14 +490,22 @@ input {
 .lens-thinking {
   margin: 2px 0;
 }
+/* Segment colorization: one hue per part kind so a long turn scans
+ * without reading. The hues come from the shared terminal palette
+ * (tokens.css): thinking is magenta (the reasoning convention across
+ * agent UIs), tools are cyan (machine action, the embedded terminal's
+ * own command hue). Color sits on the label glyphs only; bodies keep
+ * --fg/--fg-dim so reading surfaces never lose contrast (design rule:
+ * color is a scan aid, never the only signal, every part already
+ * carries a written label). */
 .lens-thinking-toggle {
-  color: var(--fg-dim, #a6adc8);
+  color: var(--term-magenta, #cba6f7);
   cursor: pointer;
   font-size: var(--fs-2xs, 11px);
   user-select: none;
 }
 .lens-thinking-toggle:hover {
-  color: var(--fg);
+  color: var(--term-bright-magenta, var(--term-magenta, #cba6f7));
 }
 .lens-thinking-toggle:focus-visible,
 .lens-tool-head:focus-visible {
@@ -538,6 +546,12 @@ input {
 .lens-tool-name {
   flex: none;
   font-weight: 600;
+  color: var(--term-cyan, #94e2d5);
+}
+.lens-tool-error .lens-tool-name {
+  /* Errors keep the danger hue on the name too: a failed bash call must
+     scan red from its label alone, not only from the row's text color. */
+  color: var(--danger, #f38ba8);
 }
 .lens-tool-brief {
   flex: 1 1 auto;
@@ -550,7 +564,7 @@ input {
   flex: none;
 }
 .lens-tool-running {
-  color: var(--fg-dim, #a6adc8);
+  color: var(--status-working, #f9e2af);
   font-size: var(--fs-2xs, 11px);
   padding: 1px 0;
 }
@@ -904,6 +918,9 @@ input {
   border-radius: var(--radius-pill, 999px);
   padding: 1px 8px;
   font-size: var(--fs-2xs, 11px);
+  /* Same hue as the running tool row in the transcript (the chip names
+     a tool mid-flight): amber means still running, system-wide. */
+  color: var(--status-working, #f9e2af);
 }
 .lens-working-note {
   color: var(--fg-dim, #a6adc8);

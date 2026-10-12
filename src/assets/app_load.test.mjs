@@ -6718,3 +6718,65 @@ describe("lens working block packaging", () => {
     match(keydown[0], /data-toggle-working/, "keydown delegate covers the working carrier");
   });
 });
+
+// ---- chat mode segment colorization contract ----
+// One hue per part kind (thinking magenta, tools cyan, running amber,
+// errors danger) so a long turn scans without reading. These pins hold
+// the mapping to the shared palette tokens: a revert to --fg-dim or a
+// raw hex swap silently flattens the transcript back to monochrome.
+describe("lens chat mode segment colors", () => {
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
+  const css = read("./desktop/app_css/terminal.css");
+
+  it("colors the thinking toggle with the reasoning hue", () => {
+    match(
+      css,
+      /\.lens-thinking-toggle \{[\s\S]*?color: var\(--term-magenta, #cba6f7\);/,
+      "thinking reads magenta",
+    );
+    // The body stays dim: color is a scan anchor, never a reading surface.
+    match(
+      css,
+      /\.lens-thinking-body \{[\s\S]*?color: var\(--fg-dim, #a6adc8\);/,
+      "thinking body keeps dim foreground",
+    );
+  });
+
+  it("colors tool names cyan and failed tools danger", () => {
+    match(
+      css,
+      /\.lens-tool-name \{[\s\S]*?color: var\(--term-cyan, #94e2d5\);/,
+      "tool name reads cyan",
+    );
+    match(
+      css,
+      /\.lens-tool-error \.lens-tool-name \{[\s\S]*?color: var\(--danger, #f38ba8\);/,
+      "failed tool name overrides with danger",
+    );
+    // Specificity pin: the error override must come AFTER the cyan rule
+    // so it wins in the cascade for same-specificity edits too.
+    const cyanAt = css.indexOf(".lens-tool-name {");
+    const dangerAt = css.indexOf(".lens-tool-error .lens-tool-name {");
+    ok(cyanAt !== -1 && dangerAt > cyanAt, "error override follows the cyan rule");
+  });
+
+  it("colors running tools amber like the working chips", () => {
+    match(
+      css,
+      /\.lens-tool-running \{[\s\S]*?color: var\(--status-working, #f9e2af\);/,
+      "running row reads amber",
+    );
+    match(
+      css,
+      /\.lens-working-tool \{[\s\S]*?color: var\(--status-working, #f9e2af\);/,
+      "working chip reads amber",
+    );
+  });
+
+  it("keeps reading surfaces at full foreground", () => {
+    // Assistant prose and tool output stay --fg: the answer is the
+    // content, coloring it would flatten hierarchy, not add it.
+    match(css, /\.lens-text \{[\s\S]*?color: var\(--fg\);/);
+    match(css, /\.lens-tool-output \{[\s\S]*?color: var\(--fg\);/);
+  });
+});

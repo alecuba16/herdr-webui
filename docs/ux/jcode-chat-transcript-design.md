@@ -374,6 +374,13 @@ other /api route (verified live: cookie-gated).
   `terminal.css:425`, right-aligned rounded panel; accent-bold color is
   the one rendering addition), assistant text plain, thinking collapsed,
   tool calls as one-line summaries expandable to output.
+  Segment colorization: one hue per part kind so a long turn scans
+  without reading. Thinking magenta (`--term-magenta`, the reasoning
+  convention), tool names cyan (`--term-cyan`, machine action), running
+  tools amber (`--status-working`, in-flight state system-wide), failed
+  tools danger red. Color rides the label glyphs only; bodies keep
+  `--fg`/`--fg-dim` so reading surfaces never lose contrast, and every
+  part still carries a written label (color is never the only signal).
   DOM budget note: the scrollback lens caps at 400 lines; 200 turns with
   collapsed tool/thinking parts keep structured mode in the same order
   of magnitude (expansion is user-triggered, not default).
