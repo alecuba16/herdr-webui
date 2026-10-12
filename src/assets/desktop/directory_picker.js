@@ -151,7 +151,10 @@
     // more results; skip when appending so the scroll position survives.
     if (!append) render();
     try {
-      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.root)}&path=${encodeURIComponent(state.path)}&q=${encodeURIComponent(term)}&offset=${offset}&limit=${SEARCH_PAGE_SIZE}${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+      // search_kind=dir keeps the picker folder-only while searching;
+      // without it the backend returns files too because q= drives the
+      // search branch, where dirs_only does not apply.
+      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(state.root)}&path=${encodeURIComponent(state.path)}&q=${encodeURIComponent(term)}&search_kind=dir&offset=${offset}&limit=${SEARCH_PAGE_SIZE}${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
       const entries = data.entries || [];
       state.entries = append ? state.entries.concat(entries) : entries;
       state.gitStatus = data.git_status || null;

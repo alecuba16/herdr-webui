@@ -1472,7 +1472,11 @@ fn file_browser_tree_payload(
         let search_kind = query
             .search_kind
             .as_deref()
-            .filter(|kind| *kind == "file" || *kind == "dir");
+            .filter(|kind| *kind == "file" || *kind == "dir")
+            // dirs_only callers are browsing folders (directory pickers),
+            // so their q= searches must stay folder-only even if they
+            // forget the explicit kind.
+            .or(if dirs_only { Some("dir") } else { None });
         if let Err(err) = push_search_entries(
             &mut build,
             &dir,
@@ -2272,6 +2276,47 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(dir_paths.contains(&("dir", "app_dir")));
         assert!(!dir_paths.iter().any(|(_, path)| *path == "src"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tree_payload_dirs_only_search_stays_folder_only() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-tree-payload-dirs-only-search-{}",
+            std::process::id(),
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("projects/herdr-webui")).unwrap();
+        fs::write(root.join("herdr-webui.txt"), "file").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        // Directory pickers send dirs_only=true and q= without an explicit
+        // search_kind; the payload must still return folders only.
+        let query = FileBrowserQuery {
+            cwd: root.to_string_lossy().to_string(),
+            path: None,
+            dirs_only: Some(true),
+            depth: None,
+            q: Some("herdr-webui".to_string()),
+            search_kind: None,
+            offset: None,
+            limit: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        };
+        let payload = file_browser_tree_payload(query).unwrap();
+        let entries = payload["entries"].as_array().unwrap();
+        let paths: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["projects/herdr-webui"],
+            "dirs_only search must not return files"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
