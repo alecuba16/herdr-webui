@@ -17,6 +17,13 @@
     return parts[parts.length - 1] || String(path || "");
   }
 
+  // Enter/Space twin of the row onclick. Runs on the row itself so every
+  // consumer (desktop, mobile, search palettes) gets keyboard activation
+  // without depending on a surface-level delegated handler.
+  function keyActivateAttr() {
+    return ' onkeydown="if(event.target===this&&[\'Enter\',\' \',\'Spacebar\'].includes(event.key)){event.preventDefault();event.stopPropagation();this.click();}"';
+  }
+
   function icon(kind, pathOrName) {
     if (kind === "open" || kind === "closed" || kind === "up") {
       const safe = kind === "open" ? "chevron-down" : kind === "closed" ? "chevron-right" : "folder-up";
@@ -117,7 +124,7 @@
         const compact = compactDirChain(entry, path, opts);
         const dirPath = compact.path;
         const collapsed = !!((opts.collapsedDirs || {})[dirPath]);
-        const keydown = opts.activateMethod ? ` onkeydown="${callback}.${opts.activateMethod}(event)"` : "";
+        const keydown = opts.activateMethod ? ` onkeydown="${callback}.${opts.activateMethod}(event)"` : keyActivateAttr();
         const dirClass = opts.dirClass ? ` ${opts.dirClass}` : "";
         const status = typeof opts.statusForPath === "function" ? opts.statusForPath(dirPath, opts.kind) : "";
         const meta = typeof opts.metaForPath === "function" ? opts.metaForPath(dirPath, opts.kind) : "";
@@ -128,7 +135,7 @@
       const selected = opts.selectedPath === entry.path && (!opts.selectedKind || opts.selectedKind === opts.kind);
       const meta = typeof opts.metaForPath === "function" ? opts.metaForPath(entry.path, opts.kind) : "";
       const status = typeof opts.statusForPath === "function" ? opts.statusForPath(entry.path, opts.kind) : opts.status;
-      const keydown = opts.activateMethod ? ` onkeydown="${callback}.${opts.activateMethod}(event)"` : "";
+      const keydown = opts.activateMethod ? ` onkeydown="${callback}.${opts.activateMethod}(event)"` : keyActivateAttr();
       const context = opts.contextMethod ? ` oncontextmenu="return ${callback}.${opts.contextMethod}(event,'${arg(entry.path)}'${kindArg})"` : "";
       const data = opts.dataPrefix ? ` data-${opts.dataPrefix}-path="${esc(entry.path)}" data-${opts.dataPrefix}-kind="${esc(opts.kind || "")}"` : "";
       const rowClass = opts.rowClass ? ` ${opts.rowClass}` : "";
@@ -168,14 +175,21 @@
     const dirClickMethod = opts.dirClickMethod === "none" ? "" : opts.dirClickMethod || toggleMethod;
     const dbl = kind === "dir" && entry.kind !== "up" && opts.dirDoubleClickMethod ? ` ondblclick="event.preventDefault();event.stopPropagation();${callback}.${opts.dirDoubleClickMethod}('${arg(path)}')"` : "";
     const context = opts.contextMethod && entry.kind !== "up" ? ` oncontextmenu="return ${callback}.${opts.contextMethod}(event,'${arg(path)}','${entry.kind === "dir" ? "dir" : "file"}')"` : "";
-    const caret = entry.kind === "up" ? '<span class="herdr-tree-caret"></span>' : kind === "dir" ? `<span class="herdr-tree-caret" onclick="event.preventDefault();event.stopPropagation();${callback}.${toggleMethod}('${arg(path)}')">${icon(expanded ? "open" : "closed")}</span>` : '<span class="herdr-tree-caret"></span>';
+    // Dir rows can be click-silent (dirClickMethod "none", e.g. the desktop
+    // file browser where double-click enters). Keyboard still needs a path:
+    // Enter/Space toggles expansion in place, so the row itself stays the
+    // treeitem and the caret below is a mouse shortcut, not a tab stop.
+    const dirKeys = kind === "dir" && entry.kind !== "up" && !dirClickMethod
+      ? ` onkeydown="if(event.target===this&&['Enter',' ','Spacebar'].includes(event.key)){event.preventDefault();event.stopPropagation();${callback}.${toggleMethod}('${arg(path)}');}"` : "";
+    const expandedAttr = kind === "dir" && entry.kind !== "up" ? ` aria-expanded="${expanded ? "true" : "false"}"` : "";
+    const caret = entry.kind === "up" ? '<span class="herdr-tree-caret" aria-hidden="true"></span>' : kind === "dir" ? `<span class="herdr-tree-caret" aria-hidden="true" onclick="event.preventDefault();event.stopPropagation();${callback}.${toggleMethod}('${arg(path)}')">${icon(expanded ? "open" : "closed")}</span>` : '<span class="herdr-tree-caret" aria-hidden="true"></span>';
     const action = entry.kind === "up" ? "up" : kind === "dir" ? dirClickMethod : selectMethod;
     const click = action ? ` onclick="${callback}.${action}('${arg(path)}'${kind === "file" && opts.shiftSelectMode ? `,event.shiftKey?'split':''` : ""})"` : "";
     const meta = opts.showMeta && entry.size != null ? `<span class="herdr-tree-meta">${formatBytes(entry.size)}</span>` : "";
     // Optional trailing row action (e.g. a "..." sheet trigger on mobile).
     // Rendered as its own element so the row click handler is untouched.
-    const rowAction = opts.rowActionMethod && entry.kind !== "up" ? `<span class="herdr-tree-row-action" role="button" tabindex="0" aria-label="Actions for ${esc(basename(path) || path)}" onclick="event.preventDefault();event.stopPropagation();${callback}.${opts.rowActionMethod}('${arg(path)}','${kind}')">${opts.rowActionLabel || "⋯"}</span>` : "";
-    return `<button class="herdr-tree-row ${kind}${entry.kind === "up" ? " up" : ""}${active}${entry.status ? ` git-${entry.status}` : ""}" role="treeitem" style="${indentStyle(level, opts)}" title="${esc(path)}"${click}${dbl}${context}>${caret}<span class="herdr-tree-kind">${icon(entry.kind === "up" ? "up" : kind, path || entry.name)}</span><span class="herdr-tree-name">${highlight(entry.name || basename(path), opts.filterTerm)}</span>${statusBadge(entry.status)}${meta}${rowAction}</button>`;
+    const rowAction = opts.rowActionMethod && entry.kind !== "up" ? `<span class="herdr-tree-row-action" role="button" tabindex="0" aria-label="Actions for ${esc(basename(path) || path)}"${keyActivateAttr()} onclick="event.preventDefault();event.stopPropagation();${callback}.${opts.rowActionMethod}('${arg(path)}','${kind}')">${opts.rowActionLabel || "⋯"}</span>` : "";
+    return `<button class="herdr-tree-row ${kind}${entry.kind === "up" ? " up" : ""}${active}${entry.status ? ` git-${entry.status}` : ""}" role="treeitem"${expandedAttr} style="${indentStyle(level, opts)}" title="${esc(path)}"${click}${dirKeys}${dbl}${context}>${caret}<span class="herdr-tree-kind">${icon(entry.kind === "up" ? "up" : kind, path || entry.name)}</span><span class="herdr-tree-name">${highlight(entry.name || basename(path), opts.filterTerm)}</span>${statusBadge(entry.status)}${meta}${rowAction}</button>`;
   }
 
   function buildGitEntries(files, status) {

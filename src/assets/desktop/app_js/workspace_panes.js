@@ -1099,6 +1099,34 @@ function paneMenuHtml(items) {
     .join("");
 }
 
+// Menu-list key handling: ArrowUp/Down/Home/End move focus between
+// items, Escape closes. Escape focus restore lives in closePaneMenu, not
+// here: the document-level capture Escape cascade (bindings.js) closes the
+// menu before this bubble-phase listener can run, and its stopPropagation
+// prevents this handler entirely. Enter is left to the native button
+// behavior.
+function paneMenuKeydown(event) {
+  const menu = document.getElementById("paneMenu");
+  if (!menu) return;
+  const items = [...menu.querySelectorAll(".pane-menu-item")];
+  if (!items.length) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closePaneMenu();
+    return;
+  }
+  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const current = items.indexOf(document.activeElement);
+  let next = 0;
+  if (event.key === "ArrowDown") next = (current + 1 + items.length) % items.length;
+  else if (event.key === "ArrowUp") next = (current - 1 + items.length) % items.length;
+  else if (event.key === "Home") next = 0;
+  else next = items.length - 1;
+  if (items[next] && typeof items[next].focus === "function") items[next].focus();
+}
+
 function togglePaneMenu(button) {
   const existing = document.getElementById("paneMenu");
   if (existing) {
@@ -1132,6 +1160,7 @@ function togglePaneMenu(button) {
     closePaneMenu();
     item.action();
   });
+  menu.addEventListener("keydown", paneMenuKeydown);
   document.body.appendChild(menu);
   positionPaneMenu(menu, button);
   if (button.setAttribute) button.setAttribute("aria-expanded", "true");
@@ -1155,11 +1184,42 @@ function positionPaneMenu(menu, button) {
 
 function closePaneMenu() {
   const menu = document.getElementById("paneMenu");
+  // pane strips re-render on layout changes; the captured button ref can be
+  // detached by then, so resolve the live node by paneId. aria-expanded and
+  // focus go to that node, never to the stale one.
+  const paneId = paneMenu && paneMenu.paneId;
+  const captured = paneMenu && paneMenu.button;
+  let button = (paneId && paneButtonByPaneId(paneId)) || captured;
   if (menu) detachDomNode(menu);
-  if (paneMenu && paneMenu.button && paneMenu.button.setAttribute) {
-    paneMenu.button.setAttribute("aria-expanded", "false");
-  }
+  if (button && button.setAttribute) button.setAttribute("aria-expanded", "false");
   paneMenu = null;
+  // Focus restore belongs here, not in paneMenuKeydown: every close path
+  // (Escape cascade, outside click, re-toggle) must return focus to the
+  // [⋮] button. Removing the menu drops focus on the closed item first,
+  // so the live button is resolved before paneMenu is cleared above.
+  // A pane closed while its menu was open leaves both the re-query and
+  // the captured ref detached. Focusing a dead node is a silent no-op that
+  // strands the user on body, so hand focus to the surviving pane's
+  // button instead.
+  if (button && button.isConnected === false) button = paneButtonByPaneId("*") || null;
+  if (button && typeof button.focus === "function") button.focus();
+}
+
+// The pane strip is innerHTML-swapped on re-renders; this resolves the
+// current [⋮] button for a pane so menu close restores focus to a live
+// node even after the strip that opened the menu was replaced. Returns
+// null where the host document cannot query (unit-test fake DOMs), so
+// closePaneMenu falls back to the captured button ref.
+function paneButtonByPaneId(paneId) {
+  if (typeof document.querySelector !== "function" || typeof CSS === "undefined" || !CSS.escape) return null;
+  // "*" resolves any pane's button: the fallback for a menu whose own
+  // pane vanished while it was open (closePaneMenu hands focus to the
+  // survivor so it never lands on body).
+  const pane = paneId === "*"
+    ? document.querySelector(".workspace-pane[data-pane-id]")
+    : document.querySelector(`.workspace-pane[data-pane-id="${CSS.escape(String(paneId))}"]`);
+  const button = pane && pane.querySelector(".pane-menu-button");
+  return button || null;
 }
 
 // ---- tab drag between panes (Phase 5) ----------------------------------

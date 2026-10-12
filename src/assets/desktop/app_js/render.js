@@ -140,7 +140,8 @@ function syncWorkspaceEmptyLeaf() {
   if (!show) return;
   const workspace = (state.workspaces || []).find((w) => w.workspace_id === state.ws);
   const name = workspace ? (workspace.worktree ? worktreeDisplayName(workspace) : workspace.label) : "";
-  emptyLeaf.innerHTML = `<div class="workspace-empty-leaf-card"><h1>${escapeHtml(name || "Workspace")}</h1><p>No terminal in this workspace yet. Files, Git, and Search still work.</p><button class="workspace-empty-leaf-new" onclick="event.preventDefault();newTab()">New terminal</button></div>`;
+  const newTitle = titleWithWebuiShortcut("New terminal", "newPanel");
+  emptyLeaf.innerHTML = `<div class="workspace-empty-leaf-card"><h1>${escapeHtml(name || "Workspace")}</h1><p>No terminal in this workspace yet. Files, Git, and Search still work.</p><button class="workspace-empty-leaf-new" title="${escapeAttr(newTitle)}" aria-label="${escapeAttr(newTitle)}" onclick="event.preventDefault();newTab()">New terminal</button></div>`;
 }
 function drawerSurfaceVisible() {
   // All three rail surfaces count, not just Files/Git: the search panel
@@ -155,7 +156,11 @@ function drawerSurfaceVisible() {
 }
 function renderProjectDashboard() {
   const actionsMenu = window.HerdrActionRegistry.action("actions-menu");
-  return `<div class="project-dashboard-card"><div class="project-dashboard-hero"><h1>Start with a project</h1><p>Open one project first. Less-used actions stay in one menu and the command palette.</p></div><div class="project-dashboard-actions"><button class="project-dashboard-action primary" onclick="runSearchAction('open-workspace')"><strong>Open workspace or worktree</strong><span>Pick a folder, discover linked worktrees, and open the checkout.</span></button><button class="project-dashboard-action" onclick="openSearchPalette()"><strong>${escapeHtml(actionsMenu.title)}</strong><span>${escapeHtml(actionsMenu.subtitle)}</span></button></div></div>`;
+  // Same titles the desktop tooltips get, so the card and the header
+  // controls never drift apart on a rebind.
+  const openTitle = titleWithWebuiShortcut("Open workspace or worktree", "newWorkspace");
+  const menuTitle = titleWithWebuiShortcut(actionsMenu.title, "search");
+  return `<div class="project-dashboard-card"><div class="project-dashboard-hero"><h1>Start with a project</h1><p>Open one project first. Less-used actions stay in one menu and the command palette.</p></div><div class="project-dashboard-actions"><button class="project-dashboard-action primary" title="${escapeAttr(openTitle)}" aria-label="${escapeAttr(openTitle)}" onclick="runSearchAction('open-workspace')"><strong>Open workspace or worktree</strong><span>Pick a folder, discover linked worktrees, and open the checkout.</span></button><button class="project-dashboard-action" title="${escapeAttr(menuTitle)}" aria-label="${escapeAttr(menuTitle)}" onclick="openSearchPalette()"><strong>${escapeHtml(actionsMenu.title)}</strong><span>${escapeHtml(actionsMenu.subtitle)}</span></button></div></div>`;
 }
 function updateTitle(wsById, tabById, tabCountsByWorkspace, pane) {
   const w = wsById[state.ws];
@@ -320,12 +325,14 @@ function selectedWorkspaceActionButtons(w) {
   const linked = isLinkedWorktree(w);
   const isSelected = w.workspace_id === state.ws;
   const buttons = [];
+  // tabindex/role plus the delegated keydown in bindings.js make these
+  // spans keyboard-operable: Enter/Space runs the same click path.
   buttons.push(
-    `<span class="mini warn" data-workspace-action="close" title="${escapeAttr(titleWithWebuiShortcut(`Close ${linked ? "worktree" : "workspace"} and its panels`, "closeWorkspace"))}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('close', this, '${escapeAttr(w.workspace_id)}')">✕</span>`,
+    `<span class="mini warn" role="button" tabindex="0" data-workspace-action="close" title="${escapeAttr(titleWithWebuiShortcut(`Close ${linked ? "worktree" : "workspace"} and its panels`, "closeWorkspace"))}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('close', this, '${escapeAttr(w.workspace_id)}')">✕</span>`,
   );
   if (linked)
     buttons.push(
-      `<span class="mini danger" data-workspace-action="remove-worktree" title="${escapeAttr(titleWithWebuiShortcut("Remove worktree from disk after confirmation", "removeWorktree"))}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('remove-worktree', this, '${escapeAttr(w.workspace_id)}')">🗑</span>`,
+      `<span class="mini danger" role="button" tabindex="0" data-workspace-action="remove-worktree" title="${escapeAttr(titleWithWebuiShortcut("Remove worktree from disk after confirmation", "removeWorktree"))}" onclick="event.preventDefault();event.stopPropagation();runWorkspaceContextAction('remove-worktree', this, '${escapeAttr(w.workspace_id)}')">🗑</span>`,
     );
   const className = isSelected ? "selected-space-actions" : "space-actions";
   return `<span class="space-actions ${className}">${buttons.join("")}</span>`;
@@ -845,8 +852,8 @@ function renderAgentRow(a, wsById, tabById, tabCountsByWorkspace) {
   const action =
     status === "working" && options.stuckWorkingEnabled
       ? dismissed
-        ? `<span class="mini agent-action" title="Show this working agent again" onclick="event.preventDefault();event.stopPropagation();restoreWorkingAgent('${a.workspace_id}','${a.tab_id}','${a.pane_id}','${a.terminal_id || ""}')">Undo</span>`
-        : `<span class="mini agent-action" title="Locally ignore this stuck working state" onclick="event.preventDefault();event.stopPropagation();dismissWorkingAgent('${a.workspace_id}','${a.tab_id}','${a.pane_id}','${a.terminal_id || ""}')">Dismiss</span>`
+        ? `<span class="mini agent-action" role="button" tabindex="0" title="Show this working agent again" onclick="event.preventDefault();event.stopPropagation();restoreWorkingAgent('${a.workspace_id}','${a.tab_id}','${a.pane_id}','${a.terminal_id || ""}')">Undo</span>`
+        : `<span class="mini agent-action" role="button" tabindex="0" title="Locally ignore this stuck working state" onclick="event.preventDefault();event.stopPropagation();dismissWorkingAgent('${a.workspace_id}','${a.tab_id}','${a.pane_id}','${a.terminal_id || ""}')">Dismiss</span>`
       : "";
   const active =
     a.workspace_id === state.ws &&

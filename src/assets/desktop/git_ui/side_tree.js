@@ -179,7 +179,7 @@
         const name = String(s.name || "");
         const selected = view.selectedStash === name ? " active" : "";
         const meta = [s.date, s.message].filter(Boolean).map((v) => esc(v)).join(" · ");
-        return `<div class="git-ui-stash-entry${selected}" data-stash-name="${esc(name)}" onclick="HerdrGitUi.selectStash('${arg(name)}')"><span class="git-ui-stash-name">${esc(name)}</span><span class="git-ui-stash-meta">${meta}</span></div>`;
+        return `<div class="git-ui-stash-entry${selected}" role="button" tabindex="0" data-stash-name="${esc(name)}" onclick="HerdrGitUi.selectStash('${arg(name)}')" onkeydown="if(event.target===this&&['Enter',' ','Spacebar'].includes(event.key)){event.preventDefault();event.stopPropagation();HerdrGitUi.selectStash('${arg(name)}')}"><span class="git-ui-stash-name">${esc(name)}</span><span class="git-ui-stash-meta">${meta}</span></div>`;
       }).join("");
       return `<div class="git-ui-section"><div class="git-ui-section-head"><strong>Stashes</strong><em>${esc(String(stashes.length))}</em></div><div class="git-ui-list git-ui-stash-list">${items || `<div class="git-ui-empty-row">No stashes</div>`}</div></div>`;
     }

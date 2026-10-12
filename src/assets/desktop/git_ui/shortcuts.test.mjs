@@ -155,6 +155,46 @@ describe("git_ui shortcuts: Escape contract", () => {
     ok(event._stopped, "git owns the keyboard while visible");
   });
 
+  it("passes unconsumed drawer-internal keys through to row handlers", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const { shortcuts } = makeShortcuts(ctx);
+
+    // Enter on a focused stash entry: no git shortcut maps Enter, so the
+    // capture handler must let the row's inline keydown run at target phase.
+    const target = { closest: (sel) => (sel === "#gitUiPanel" ? {} : null) };
+    const event = keyEvent({ key: "Enter", code: "Enter", target });
+    shortcuts.handleKeydown(event);
+    equal(event._stopped, undefined, "unconsumed in-panel keys keep propagating");
+    equal(event.defaultPrevented, false, "row activation decides default behavior");
+  });
+
+  it("passes unconsumed keys through in the pane-hosted git mount", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const { shortcuts } = makeShortcuts(ctx);
+
+    // Workspace panes host git log rows in .pane-git-container instead of
+    // #gitUiPanel; the pass-through must cover both hosting roots.
+    const target = { closest: (sel) => (sel === ".pane-git-container" ? {} : null) };
+    const event = keyEvent({ key: "Enter", code: "Enter", target });
+    shortcuts.handleKeydown(event);
+    equal(event._stopped, undefined, "pane-hosted rows keep receiving keys");
+  });
+
+  it("mutes unconsumed keys aimed outside the drawer", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const { shortcuts } = makeShortcuts(ctx);
+
+    // Enter with focus left in the terminal behind the drawer stays muted so
+    // typed keys never leak into the terminal.
+    const target = { closest: () => null };
+    const event = keyEvent({ key: "Enter", code: "Enter", target });
+    shortcuts.handleKeydown(event);
+    ok(event._stopped, "outside-drawer keys never reach the terminal");
+  });
+
   it("ignores keys while the drawer is hidden", () => {
     const ctx = makeContext();
     loadShortcuts(ctx);

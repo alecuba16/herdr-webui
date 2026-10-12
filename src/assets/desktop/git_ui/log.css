@@ -147,6 +147,10 @@
 .git-ui-log-row:hover {
   background: var(--panel2);
 }
+.git-ui-log-row:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
 .git-ui-log-row.selected {
   background: var(--accent-2, rgba(56, 139, 253, 0.14));
   outline: 1px solid var(--accent);
@@ -279,7 +283,8 @@
 .git-ui-log-ref:hover .git-ui-log-copy-label,
 .git-ui-log-ref:focus-within .git-ui-log-copy-label,
 .git-ui-log-hover-card:hover .git-ui-log-copy-hash,
-.git-ui-log-hover-card:focus-within .git-ui-log-copy-hash {
+.git-ui-log-hover-card:focus-within .git-ui-log-copy-hash,
+.git-ui-log-row:focus-within .git-ui-log-copy-hash {
   display: inline-block;
 }
 .git-ui-log-hover-field {
@@ -470,7 +475,8 @@
 .git-ui-log-row {
   position: relative;
 }
-.git-ui-log-row:hover .git-ui-log-hover-card {
+.git-ui-log-row:hover .git-ui-log-hover-card,
+.git-ui-log-row:focus-within .git-ui-log-hover-card {
   display: grid;
 }
 .git-ui-log-hover-labels {

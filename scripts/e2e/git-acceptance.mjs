@@ -271,7 +271,10 @@ ui.branchListFilter("no-such-branch");
 const filteredHtml = panelHtml();
 assert(!/git-ui-branch-row"/.test(filteredHtml), "filter hides all rows on no match");
 ui.branchListFilter("ma");
-ui.closeBranchList();
+// closeBranchList was removed as dead code (e25d01c): the chip re-toggle
+// closes the list, so drive the same path with the remaining API.
+ui.openBranchList({ stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 });
+await new Promise((resolve) => setTimeout(resolve, 200));
 await ui.open({ cwd: CLEAN, title: "clean-repo" }, { forceOpen: true });
 await new Promise((resolve) => setTimeout(resolve, 300));
 await ui.openBranchList({ stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 });

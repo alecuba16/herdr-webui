@@ -25,6 +25,26 @@ document.addEventListener("click", (e) => {
   }
   if (!e.target || !e.target.closest || !e.target.closest(".no-sleep-wrap")) closeNoSleepMenus();
 });
+// Keyboard twin of the click delegation above: Enter/Space on a focused
+// span role=button (workspace close/remove actions, pane-tab ✕, agent
+// Undo/Dismiss, session lines) triggers its native click path. Native
+// <button>/<a> elements are excluded: they already synthesize a click on
+// these keys. Git stash entries and log rows carry their own inline
+// keydown with stopPropagation, so they never reach this fallback.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+  const target = e.target;
+  if (!target || !target.closest) return;
+  if (target.tagName === "BUTTON" || target.tagName === "A") return;
+  const spanButton =
+    target.closest('[role="button"][tabindex="0"]') ||
+    target.closest("[data-workspace-action]") ||
+    target.closest(".pane-tab-close");
+  if (!spanButton || spanButton.tagName === "BUTTON") return;
+  e.preventDefault();
+  e.stopPropagation();
+  spanButton.click();
+});
 if (window.matchMedia) {
   try {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -503,6 +523,10 @@ document.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       closePaneMenu();
+    } else if (el("questionModal").style.display === "grid") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeQuestion(false);
     } else if (el("workspaceCreateModal").style.display === "grid") {
       e.preventDefault();
       e.stopPropagation();
@@ -546,6 +570,7 @@ document.addEventListener("keydown", (e) => {
     "workspaceCreateModal",
     "shortcutsModal",
     "searchPalette",
+    "questionModal",
   ];
   const modal = modalIds
     .map((id) => el(id))

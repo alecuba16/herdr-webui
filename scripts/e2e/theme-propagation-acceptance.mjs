@@ -78,7 +78,7 @@ const setScheme = (cdp, value) =>
   cdp.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value }] });
 
 // Shared page plumbing: the main terminal host is #terminal in both layouts
-// and the temp terminal container is .temp-terminal-backdrop .terminal.
+// and the aux pane terminal container is .pane-terminal-aux .terminal.
 const mainVarsExpr = `(() => {
   const host = document.getElementById("terminal");
   return {
@@ -89,9 +89,12 @@ const mainVarsExpr = `(() => {
   };
 })()`;
 
-const tempVarsExpr = `(() => {
-  const modal = document.querySelector(".temp-terminal-backdrop");
-  const host = modal && modal.querySelector(".terminal");
+const auxVarsExpr = `(() => {
+  // The split-pane aux terminal replaced the old temp-terminal modal.
+  // The pane fan-out promise lives on these surfaces now. The aux
+  // container IS the wterm host (class pane-terminal-aux wterm). Rows
+  // sit directly inside it, no nested .terminal wrapper.
+  const host = document.querySelector(".pane-terminal-aux");
   return {
     bg: host ? host.style.getPropertyValue("--term-bg") : null,
     fg: host ? host.style.getPropertyValue("--term-fg") : null,
@@ -279,253 +282,156 @@ async function runPass(layout, cdp) {
       `cycle=${cycle} mode=${modeNow} bg=${after.bg}`);
   }
 
-  // Restore the shared manual-light state for the temp terminal pass below
+  // Restore the shared manual-light state for the aux pane pass below
   // (it opens on light and asserts a dark flip).
   await setMode("light");
   await sleep(400);
   after = await evalExpr(mainVarsExpr);
-  if (after.bg !== LIGHT_BG) throw new Error(`expected light theme before temp terminal pass, bg=${after.bg}`);
+  if (after.bg !== LIGHT_BG) throw new Error(`expected light theme before aux pane pass, bg=${after.bg}`);
 
-  // 3. Temporary terminal through the real user path.
-  let tempOpen;
+  // 3-6b. Aux pane terminal through the real user path. The split-pane
+  // rework (b3db27a) replaced the temp-terminal modal with pane terminals,
+  // so the fan-out parity promise now lives on the aux pane surface.
+  // Mobile has no pane split: it loads no desktop scripts at all, so the
+  // structural check below pins that single-surface fact instead.
   if (layout === "desktop") {
-    // Ctrl+B prefix then Shift+M, the real keydown path.
-    tempOpen = await evalExpr(`new Promise((resolve) => {
+    // Real user path: Ctrl+B prefix then D splits right (the fresh leaf
+    // starts empty and takes focus). Its strip + button then creates the
+    // terminal tab routed into that leaf (newTabForPane sets the pending
+    // placement), which mounts the aux terminal surface. Reused by the
+    // strip-close round in 6b.
+    const openAuxPane = () => evalExpr(`new Promise((resolve) => {
       const fire = (opts) => {
         const ev = new KeyboardEvent("keydown", Object.assign({ bubbles: true, cancelable: true }, opts));
         document.dispatchEvent(ev);
-        return ev;
       };
       fire({ code: "KeyB", key: "b", ctrlKey: true });
       setTimeout(() => {
-        fire({ code: "KeyM", key: "M", shiftKey: true });
+        fire({ code: "KeyD", key: "d" });
         let n = 0;
         const check = () => {
-          const modal = document.querySelector(".temp-terminal-backdrop");
-          if (modal) { resolve("opened"); return; }
-          if (n >= 60) { resolve("no modal"); return; }
+          const panes = Array.from(document.querySelectorAll(".workspace-pane[data-pane-id]"));
+          if (panes.length >= 2) {
+            // The focused fresh pane is the split's new sibling: find the
+            // pane whose strip has no terminal tab buttons.
+            const fresh = panes.find((p) => !p.querySelector('.pane-tab[data-tab-kind="terminal"]'));
+            const plus = fresh && fresh.querySelector('.pane-strip-button[aria-label="New panel"]');
+            if (!fresh || !plus) { resolve("no fresh pane +"); return; }
+            plus.click();
+            const t0 = Date.now();
+            const waitAux = () => {
+              const aux = document.querySelector(".pane-terminal-aux");
+              if (aux) { resolve("split"); return; }
+              if (Date.now() - t0 > 15000) { resolve("no aux pane"); return; }
+              setTimeout(waitAux, 250);
+            };
+            waitAux();
+            return;
+          }
+          if (n >= 60) { resolve("no pane split"); return; }
           n += 1;
           setTimeout(check, 250);
         };
         check();
       }, 150);
     })`);
-  } else {
-    // The mobile nav Search button opens the search sheet (its handler calls
-    // mobileSearch.open()); the sheet's action rows dispatch the shared
-    // action registry, which opens the temp terminal on the workspace cwd.
-    tempOpen = await evalExpr(`new Promise((resolve) => {
-      const navBtn = document.querySelector('nav.mobile-nav button[data-screen="search"]');
-      if (!navBtn) { resolve("no search nav button"); return; }
-      navBtn.click();
-      const t0 = Date.now();
-      const check = () => {
-        const rows = Array.from(document.querySelectorAll(".mobile-row"));
-        const row = rows.find((r) => r.textContent.indexOf("Temporary terminal") !== -1);
-        if (row) {
-          row.click();
-          const t1 = Date.now();
-          const waitModal = () => {
-            const modal = document.querySelector(".temp-terminal-backdrop");
-            if (modal) { resolve("opened"); return; }
-            if (Date.now() - t1 > 15000) { resolve("no modal after click"); return; }
-            setTimeout(waitModal, 250);
-          };
-          waitModal();
-          return;
-        }
-        if (Date.now() - t0 > 8000) { resolve("no action row"); return; }
-        setTimeout(check, 300);
-      };
-      check();
-    })`);
-  }
-  record(layout, "temporary terminal opened", tempOpen === "opened", `got ${tempOpen}`);
-  if (tempOpen !== "opened") throw new Error(`temp terminal did not open (${tempOpen})`);
+    const splitOk = await openAuxPane();
+    record(layout, "aux pane terminal opened (split + new panel)", splitOk === "split", `got ${splitOk}`);
+    if (splitOk !== "split") throw new Error(`aux pane did not split (${splitOk})`);
 
-  const tempRows = await evalExpr(rowsPromise(null, `(document.querySelector(".temp-terminal-backdrop") || {}).querySelector ? document.querySelector(".temp-terminal-backdrop").querySelector(".terminal") : null`));
-  record(layout, "temporary terminal rendered rows", tempRows.rows > 0, `rows=${tempRows.rows} waited=${tempRows.waited}ms`);
-  if (!tempRows.rows) throw new Error("temp terminal renderer never painted");
+    const auxRows = await evalExpr(rowsPromise(null, `document.querySelector(".pane-terminal-aux")`));
+    record(layout, "aux pane terminal rendered rows", auxRows.rows > 0, `rows=${auxRows.rows} waited=${auxRows.waited}ms`);
+    if (!auxRows.rows) throw new Error("aux pane renderer never painted");
 
-  before = await evalExpr(tempVarsExpr);
-  record(layout, "temp terminal opens on the current (light) theme", before.bg === LIGHT_BG,
-    `bg=${before.bg}`);
+    before = await evalExpr(auxVarsExpr);
+    record(layout, "aux pane terminal opens on the current (light) theme", before.bg === LIGHT_BG,
+      `bg=${before.bg}`);
 
-  // 4. Manual switch while the temp terminal is open: fan-out must repaint it.
-  // Current: manual light, OS dark. Switch to dark: both surfaces repaint.
-  await setMode("dark");
-  await sleep(400);
-  after = await evalExpr(tempVarsExpr);
-  record(layout, "manual switch repaints open temp terminal", after.bg === DARK_BG,
-    `bg ${before.bg} -> ${after.bg}`);
-  const mainAfterTemp = await evalExpr(mainVarsExpr);
-  record(layout, "manual switch repaints main terminal too", mainAfterTemp.bg === DARK_BG,
-    `bg=${mainAfterTemp.bg}`);
-
-  // 5. System flip while the temp terminal is open, in auto mode.
-  await setMode("auto");
-  await sleep(300);
-  after = await evalExpr(tempVarsExpr);
-  record(layout, "auto mode returns temp terminal to system dark", after.bg === DARK_BG,
-    `bg=${after.bg}`);
-  await setScheme(cdp, "light");
-  await sleep(500);
-  after = await evalExpr(tempVarsExpr);
-  record(layout, "system flip repaints open temp terminal (auto mode)", after.bg === LIGHT_BG,
-    `bg=${after.bg}`);
-
-  // 6. Minimized temp session keeps following: minimize, flip, restore.
-  await evalExpr(`(document.querySelector(".temp-terminal-backdrop .temp-terminal-minimize") || {}).click?.()`);
-  await sleep(400);
-  await setScheme(cdp, "dark");
-  await sleep(500);
-  const restored = await evalExpr(`new Promise((resolve) => {
-    const bar = document.querySelector(".temp-terminal-restore-bar");
-    const btn = bar && bar.querySelector(".temp-terminal-restore");
-    if (!btn) { resolve("no restore bar"); return; }
-    btn.click();
-    const t0 = Date.now();
-    const check = () => {
-      const modal = document.querySelector(".temp-terminal-backdrop");
-      const host = modal && modal.querySelector(".terminal");
-      if (modal && host && host.querySelectorAll(".term-row").length > 0) {
-        resolve({ bg: host.style.getPropertyValue("--term-bg") });
-        return;
-      }
-      if (Date.now() - t0 > 5000) { resolve("rows gone"); return; }
-      setTimeout(check, 200);
-    };
-    check();
-  })`);
-  record(layout, "restored minimized temp terminal shows current theme",
-    restored && restored.bg === DARK_BG, `bg=${restored && restored.bg}`);
-
-  // 6b. Desktop-only, multi-session fan-out: a second Ctrl+B Shift+M creates
-  // a NEW session (the first gets minimized, both stay live). A theme flip
-  // must repaint BOTH renderer surfaces through the manager loop; the
-  // minimized one must come back with the new colors on restore, no stale
-  // flash. This is the actual for-over-sessions code path, not a single
-  // session re-used.
-  if (layout === "desktop") {
+    // 4. Manual switch while the aux pane is open: fan-out must repaint it.
+    // Current: manual light, OS dark. Switch to dark: both surfaces repaint.
     await setMode("dark");
-    await sleep(300);
-    const secondOpen = await evalExpr(`new Promise((resolve) => {
-      const fire = (opts) => {
-        const ev = new KeyboardEvent("keydown", Object.assign({ bubbles: true, cancelable: true }, opts));
-        document.dispatchEvent(ev);
-      };
-      // Press 1: a visible session exists, so the toggle MINIMIZES it.
-      fire({ code: "KeyB", key: "b", ctrlKey: true });
-      setTimeout(() => {
-        fire({ code: "KeyM", key: "M", shiftKey: true });
-        setTimeout(() => {
-          // Press 2: nothing visible now, so the toggle creates a NEW session.
-          fire({ code: "KeyB", key: "b", ctrlKey: true });
-          setTimeout(() => {
-            fire({ code: "KeyM", key: "M", shiftKey: true });
-            const t0 = Date.now();
-            const check = () => {
-              const modals = document.querySelectorAll(".temp-terminal-backdrop");
-              // Two distinct session modals: the manager created a second one.
-              if (modals.length >= 2) { resolve({ count: modals.length }); return; }
-              if (Date.now() - t0 > 15000) { resolve({ count: modals.length, timeout: true }); return; }
-              setTimeout(check, 250);
-            };
-            check();
-          }, 150);
-        }, 400);
-      }, 150);
-    })`);
-    record(layout, "second temp session created (first minimized)",
-      secondOpen.count >= 2, `modals=${secondOpen.count}${secondOpen.timeout ? " timeout" : ""}`);
-
-    // Flip to light: the visible second session must repaint inline.
-    await setMode("light");
     await sleep(400);
-    const visibleBg = await evalExpr(`(() => {
-      const modals = Array.from(document.querySelectorAll(".temp-terminal-backdrop"));
-      for (const m of modals) {
-        if (m.style.display === "none") continue;
-        const host = m.querySelector(".terminal");
-        return host ? host.style.getPropertyValue("--term-bg") : null;
-      }
-      return null;
-    })()`);
-    record(layout, "theme flip repaints second (visible) session", visibleBg === LIGHT_BG,
-      `bg=${visibleBg}`);
+    after = await evalExpr(auxVarsExpr);
+    record(layout, "manual switch repaints open aux pane terminal", after.bg === DARK_BG,
+      `bg ${before.bg} -> ${after.bg}`);
+    const mainAfterAux = await evalExpr(mainVarsExpr);
+    record(layout, "manual switch repaints main terminal too", mainAfterAux.bg === DARK_BG,
+      `bg=${mainAfterAux.bg}`);
 
-    // The minimized first session was themed by the fan-out: its host var
-    // must already show the new theme (restore must not flash stale colors).
-    const minimizedBg = await evalExpr(`(() => {
-      const modals = Array.from(document.querySelectorAll(".temp-terminal-backdrop"));
-      for (const m of modals) {
-        if (m.style.display !== "none") continue;
-        const host = m.querySelector(".terminal");
-        return host ? host.style.getPropertyValue("--term-bg") : null;
-      }
-      return null;
-    })()`);
-    record(layout, "fan-out themed the minimized first session too",
-      minimizedBg === LIGHT_BG, `bg=${minimizedBg}`);
+    // 5. System flip while the aux pane is open, in auto mode.
+    await setMode("auto");
+    await sleep(300);
+    after = await evalExpr(auxVarsExpr);
+    record(layout, "auto mode returns aux pane terminal to system dark", after.bg === DARK_BG,
+      `bg=${after.bg}`);
+    await setScheme(cdp, "light");
+    await sleep(500);
+    after = await evalExpr(auxVarsExpr);
+    record(layout, "system flip repaints open aux pane terminal (auto mode)", after.bg === LIGHT_BG,
+      `bg=${after.bg}`);
 
-    // Restore the first session through the real restore bar: the oldest
-    // minimized session button. It must show the current theme immediately.
-    const restoredFirst = await evalExpr(`new Promise((resolve) => {
-      const bar = document.querySelector(".temp-terminal-restore-bar");
-      const btns = bar ? bar.querySelectorAll(".temp-terminal-restore") : [];
-      if (!btns.length) { resolve("no restore buttons"); return; }
-      btns[0].click();
+    // 6. Close through the pane close shortcut, the real keyboard path.
+    // Trusted CDP key events (synthetic KeyboardEvent cannot drive native
+    // activation paths). After the + click the route tab lives in the fresh
+    // pane and the route sync focuses it, so closePane acts on the fresh
+    // pane: its tab migrates to the original pane, the shell follows the
+    // route tab, and the aux surface in the original pane must dispose on
+    // that ownership change. Ctrl+B prefix, then E.
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, windowsVirtualKeyCode: 66, key: "b", code: "KeyB" });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, windowsVirtualKeyCode: 66, key: "b", code: "KeyB" });
+    await sleep(120);
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", windowsVirtualKeyCode: 69, key: "e", code: "KeyE" });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 69, key: "e", code: "KeyE" });
+    const closedByKey = await evalExpr(`new Promise((resolve) => {
       const t0 = Date.now();
       const check = () => {
-        const modals = Array.from(document.querySelectorAll(".temp-terminal-backdrop"));
-        const visible = modals.find((m) => m.style.display !== "none");
-        const host = visible && visible.querySelector(".terminal");
-        if (visible && host && host.querySelectorAll(".term-row").length > 0) {
-          resolve({ bg: host.style.getPropertyValue("--term-bg") });
-          return;
-        }
-        if (Date.now() - t0 > 8000) { resolve("no visible session"); return; }
-        setTimeout(check, 200);
+        const auxGone = !document.querySelector(".pane-terminal-aux");
+        const paneCount = document.querySelectorAll(".workspace-pane[data-pane-id]").length;
+        if (auxGone && paneCount <= 1) { resolve("closed"); return; }
+        if (Date.now() - t0 > 10000) { resolve("stuck:aux=" + (!auxGone) + "/panes=" + paneCount); return; }
+        setTimeout(check, 250);
       };
       check();
     })`);
-    record(layout, "restored first session shows current theme (no stale flash)",
-      restoredFirst && restoredFirst.bg === LIGHT_BG,
-      `bg=${restoredFirst && restoredFirst.bg}`);
+    record(layout, "closePane shortcut disposes the aux surface", closedByKey === "closed", `got ${closedByKey}`);
 
-    // Close the now-visible first session through the real close-confirm
-    // flow, leaving the minimized second session for the teardown below.
-    // The confirm's destructive button is .temp-terminal-confirm-close (the
-    // generic button selector would hit Cancel, the first button in the
-    // dialog).
-    const closedFirst = await evalExpr(`new Promise((resolve) => {
-      const modals = Array.from(document.querySelectorAll(".temp-terminal-backdrop"));
-      const visible = modals.find((m) => m.style.display !== "none");
-      if (!visible) { resolve("no visible session"); return; }
-      const closeBtn = visible.querySelector(".temp-terminal-close");
-      if (!closeBtn) { resolve("no close button"); return; }
-      closeBtn.click();
+    // 6b. Strip close round: the pointer path through the pane strip, with
+    // the aux surface open again. Both real-user paths must behave the same.
+    if (closedByKey === "closed") {
+      const reopenOk = await openAuxPane();
+      record(layout, "aux pane reopened for the strip close round", reopenOk === "split", `got ${reopenOk}`);
+      if (reopenOk !== "split") throw new Error(`aux pane did not reopen (${reopenOk})`);
+      await evalExpr(rowsPromise(null, `document.querySelector(".pane-terminal-aux")`));
+    }
+    const closedAux = await evalExpr(`new Promise((resolve) => {
+      const panes = Array.from(document.querySelectorAll(".workspace-pane[data-pane-id]"));
+      const aux = document.querySelector(".pane-terminal-aux");
+      const owner = aux && panes.find((p) => p.contains(aux));
+      if (!owner) { resolve("no owner pane"); return; }
+      const btn = owner.querySelector('.pane-strip-button[aria-label="Close pane and move tabs to the other pane"]');
+      if (!btn) { resolve("no close button"); return; }
+      btn.click();
       setTimeout(() => {
-        const confirmBtn = visible.querySelector(".temp-terminal-confirm-close");
-        if (!confirmBtn) { resolve("no confirm close"); return; }
-        confirmBtn.click();
-        resolve("closed");
-      }, 300);
+        resolve(document.querySelector(".pane-terminal-aux") ? "still open" : "closed");
+      }, 400);
     })`);
-    await sleep(700);
-    const remaining = await evalExpr(`new Promise((resolve) => {
-      const t0 = Date.now();
-      const check = () => {
-        const modals = document.querySelectorAll(".temp-terminal-backdrop").length;
-        if (modals <= 1) { resolve(modals); return; }
-        if (Date.now() - t0 > 3000) { resolve(modals); return; }
-        setTimeout(check, 200);
-      };
-      check();
-    })`);
-    record(layout, "first session closed, minimized second remains",
-      closedFirst === "closed" && remaining === 1,
-      `close=${closedFirst} remaining=${remaining}`);
+    record(layout, "aux pane closed through the strip", closedAux === "closed", `got ${closedAux}`);
+  } else {
+    // Structural single-surface check: mobile boots no desktop pane code
+    // (app_boot.js swaps the script list), so no pane tree and no aux
+    // surface can ever mount. If a future change breaks that contract,
+    // this fails loudly instead of the theme pass silently skipping the
+    // fan-out story.
+    const structure = await evalExpr(`(() => ({
+      paneNodes: document.querySelectorAll(".workspace-pane").length,
+      auxNodes: document.querySelectorAll(".pane-terminal-aux").length,
+      paneModule: typeof window.HerdrPaneTerminals,
+      splitFn: typeof splitPaneRight,
+    }))()`);
+    record(layout, "mobile has no pane or aux surface by construction",
+      structure.paneNodes === 0 && structure.auxNodes === 0 &&
+        structure.paneModule === "undefined" && structure.splitFn === "undefined",
+      `panes=${structure.paneNodes} aux=${structure.auxNodes} module=${structure.paneModule} split=${structure.splitFn}`);
   }
 
   // 7. The dead-var contract live: the selection background must sit on
@@ -744,16 +650,16 @@ async function runPass(layout, cdp) {
       `open=${reopened} rows=${bootRows.rows} bg=${bootVars.bg}`);
   }
 
-  // Teardown: close the temp terminal through its close confirmation flow.
-  await evalExpr(`(document.querySelector(".temp-terminal-backdrop .temp-terminal-close") || {}).click?.()`);
-  await sleep(400);
+  // Teardown: if a second pane still exists (a failed close above), merge
+  // the layout back to one pane so the next layout pass starts clean.
   await evalExpr(`(() => {
-    // The destructive button; a generic button selector would hit Cancel,
-    // the first button in the confirm card.
-    const confirm = document.querySelector(".temp-terminal-confirm-close");
-    if (confirm) confirm.click();
-    return !!confirm;
+    const panes = document.querySelectorAll(".workspace-pane[data-pane-id]");
+    if (panes.length < 2) return "single";
+    const pid = panes[panes.length - 1].dataset.paneId;
+    if (typeof closePaneFor === "function") closePaneFor(encodeURIComponent(pid));
+    return "merged";
   })()`);
+  await sleep(300);
 }
 
 async function main() {

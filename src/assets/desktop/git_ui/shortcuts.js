@@ -40,22 +40,41 @@
       if (!state.visible || !event) return;
       const view = active();
       if (!view) return;
-      // Git drawer owns keyboard while visible, so terminal/global shortcuts behind it do not receive input.
-      event.stopPropagation();
-      if (event.stopImmediatePropagation) event.stopImmediatePropagation();
-      if (handleDiffSearchShortcut(event, view)) return;
+      // Keys this handler consumes are stopped so terminal/global shortcuts
+      // behind the drawer do not double-fire. Keys aimed outside the git UI
+      // (terminal behind it, page body) are muted unconditionally, same as
+      // before. Keys inside the git UI propagate when unconsumed: tree rows,
+      // stash entries and log commits carry inline keydown handlers that
+      // only run at target phase, after this capture handler returns.
+      // The git UI has two hosting roots: the right-sidebar #gitUiPanel and
+      // the workspace pane .pane-git-container mount. Log rows render in
+      // whichever root hosts the current view.
+      const consume = () => {
+        event.stopPropagation();
+        if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+      };
+      const targetInGitUi = !!(
+        event.target &&
+        event.target.closest &&
+        (event.target.closest("#gitUiPanel") || event.target.closest(".pane-git-container"))
+      );
+      if (!targetInGitUi) consume();
+      if (handleDiffSearchShortcut(event, view)) { consume(); return; }
       if (isGitShortcutPrefix(event)) {
+        consume();
         state.shortcutPrefixUntil = Date.now() + 5000;
         event.preventDefault();
         return;
       }
-      if (handleGitShortcut(event, view)) return;
+      if (handleGitShortcut(event, view)) { consume(); return; }
       if (event.key === "Escape" && isDiffSearchTarget(event.target)) {
+        consume();
         event.preventDefault();
         getGitUi().clearDiffSearch();
         return;
       }
       if (event.key !== "Escape") return;
+      consume();
       event.preventDefault();
       if (state.contextMenu || state.logContextMenu || state.headerMenu) {
         state.contextMenu = null;
