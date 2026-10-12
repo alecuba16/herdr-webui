@@ -21,6 +21,7 @@ html {
 body {
   --bg: #11111b;
   --fg: #cdd6f4;
+  --fg-dim: #a6adc8;
   --panel: #181825;
   --panel2: #1e1e2e;
   --editor-bg: #1e1e2e;
@@ -64,6 +65,7 @@ body {
 body.light {
   --bg: #eff1f5;
   --fg: #363a4f;
+  --fg-dim: #525769;
   --panel: #e6e9ef;
   --panel2: #ccd0da;
   --editor-bg: #ccd0da;

@@ -895,11 +895,15 @@ describe("lens structured chat mode", () => {
     await settle();
     const lens = registry.get("terminalLens");
     const content = lens.querySelector(".terminal-lens-content");
-    ok(content.innerHTML.includes("running bash"), "pending tool renders as running");
+    // The pending row is a flat div (no toggle) whose name rides a
+    // lens-tool-name span so the cyan anchor survives while running.
+    match(content.innerHTML, /lens-tool-running/, "pending tool renders as running");
+    ok(content.innerHTML.includes('lens-tool-name">bash'),
+      "pending tool name keeps its color anchor span");
     fireTimers(ctx);
     await settle();
     ok(content.innerHTML.includes("done running"), "resolved tool shows its brief");
-    ok(!content.innerHTML.includes("running bash"), "running row replaced");
+    ok(!content.innerHTML.includes("lens-tool-running"), "running row replaced");
     ok(content.innerHTML.includes("all done"),
       "text part appended to the open turn at the same turn count");
   });

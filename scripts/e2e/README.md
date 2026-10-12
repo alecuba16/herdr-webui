@@ -52,6 +52,22 @@ including the copy toast via trusted input, the accent-2 selected-row
 tint, and the settings/terminal DOM hygiene audits (duplicate element
 ids, IME textarea id/name).
 
+## Chat lens segment colors (chat-colors-e2e)
+
+```sh
+just chat-colors-e2e  # or: scripts/e2e/run-chat-colors-e2e.sh
+```
+
+Same real-browser setup, plus an isolated HOME holding one fixture
+jcode session (thinking, tool, error, and running parts; a fake `jcode`
+script stamps its own pid into the fixture so session resolution works).
+Drives the theme through the settings select's real change handler so
+the inline `--bg` custom props follow. Covers the color mapping per
+token (thinking magenta, tool name cyan, failed tool danger, running row
+amber, prose stays `--fg`) in both themes via computed styles, WCAG AA
+contrast (>= 4.5:1) against the served background, and screenshots of
+both themes for the record.
+
 ## Pane strip rail (rail-e2e)
 
 ```sh
