@@ -371,7 +371,7 @@ other /api route (verified live: cookie-gated).
   Title and tokens publish as `null` when absent.
 - Render per the existing lens aesthetic: user turns as accent-bold bubbles
   (the bubble pattern already exists — `.lens-turn-user > span` in
-  `terminal.css:425`, right-aligned rounded panel; accent-bold color is
+  `terminal.css:434`, right-aligned rounded panel; accent-bold color is
   the one rendering addition), assistant text plain, thinking collapsed,
   tool calls as one-line summaries expandable to output.
   Segment colorization: one hue per part kind so a long turn scans
