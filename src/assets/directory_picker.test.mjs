@@ -3,7 +3,7 @@
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { equal, match } from "node:assert/strict";
+import { equal, match, ok } from "node:assert/strict";
 
 const pickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
 const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
@@ -250,6 +250,29 @@ test("directory picker rejects filesystem root as a configured default", async (
   equal(vm.runInContext("__pickerDebug.state.root", ctx), "~");
   equal(vm.runInContext("__pickerDebug.state.path", ctx), "");
   match(calls[calls.length - 1], /cwd=~/);
+});
+
+test("directory picker search requests folders only via search_kind=dir", async () => {
+  const searchCalls = [];
+  const { ctx } = loadPicker({
+    fetchImpl: async (url) => {
+      const text = String(url);
+      if (text.includes("q=")) searchCalls.push(text);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ entries: [{ name: "proj", path: "projects/proj", kind: "dir", level: 0 }], truncated: false }),
+      };
+    },
+  });
+  await vm.runInContext("HerdrDirectoryPicker.openInput('someInput')", ctx);
+  await vm.runInContext("HerdrDirectoryPicker.filter('proj')", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  equal(searchCalls.length, 1, "filter issues one search request");
+  match(searchCalls[0], /q=proj/);
+  match(searchCalls[0], /search_kind=dir/, "search must be folder-only, not the default mixed search");
+  ok(!searchCalls[0].includes("dirs_only"), "dirs_only does not apply to the search branch");
 });
 
 test("directory picker search paging resets when the filter changes", async () => {
