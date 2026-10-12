@@ -103,12 +103,16 @@ async function main() {
     await sleep(200);
   };
 
+  // Computed-color probe. One shared prelude injects the canvas-based
+  // color normalizer into every eval: colors arrive mixed-format (hex
+  // from tokens, rgb() from getComputedStyle) and must compare as one
+  // string form. Palette hues are read from document.BODY (the light
+  // overrides live on body.light, documentElement only carries the
+  // dark defaults), so token reads and row reads agree per theme.
+  const PRELUDE = 'const toRgb = (v) => { const c = document.createElement("canvas").getContext("2d"); c.fillStyle = "#000"; c.fillStyle = String(v); return c.fillStyle; };';
   const probe = (expr) => evalExpr(`(() => {
     const cs = getComputedStyle(document.body);
-    // Normalize any CSS color (hex, rgb(), named) to one rgb form so
-    // token reads and row reads compare as strings.
-    const ctx = document.createElement("canvas").getContext("2d");
-    const toRgb = (v) => { ctx.fillStyle = "#000"; ctx.fillStyle = String(v); return ctx.fillStyle; };
+    ${PRELUDE}
     const token = (name) => toRgb(cs.getPropertyValue(name).trim());
     const colorOf = (el) => el ? toRgb(getComputedStyle(el).color) : null;
     return (${expr});
@@ -137,16 +141,18 @@ async function main() {
   record("fixture renders two resolved tool rows", dark.toolCount === 2, `count ${dark.toolCount}`);
   record("fixture renders one failed tool row", dark.errorCount === 1, `count ${dark.errorCount}`);
 
-  // Theme checks: probe colors arrive pre-normalized to rgb() strings.
-  const rgb = (v) => v;
-  record("thinking toggle reads magenta (dark)",
-    rgb(dark.thinking) === rgb(dark.magenta), `${dark.thinking} vs ${dark.magenta}`);
-  record("tool name reads cyan (dark)",
-    rgb(dark.toolName) === rgb(dark.cyan), `${dark.toolName} vs ${dark.cyan}`);
-  record("failed tool name reads danger (dark)",
-    rgb(dark.errorName) === rgb(dark.danger), `${dark.errorName} vs ${dark.danger}`);
-  record("running tool row reads amber (dark)",
-    rgb(dark.runningRow) === rgb(dark.amber), `${dark.runningRow} vs ${dark.amber}`);
+  // Theme checks: probe colors arrive pre-normalized to hex strings.
+  const assertSegmentColors = (mode, snap) => {
+    record(`thinking toggle reads magenta (${mode})`,
+      snap.thinking === snap.magenta, `${snap.thinking} vs ${snap.magenta}`);
+    record(`tool name reads cyan (${mode})`,
+      snap.toolName === snap.cyan, `${snap.toolName} vs ${snap.cyan}`);
+    record(`failed tool name reads danger (${mode})`,
+      snap.errorName === snap.danger, `${snap.errorName} vs ${snap.danger}`);
+    record(`running tool row reads amber (${mode})`,
+      snap.runningRow === snap.amber, `${snap.runningRow} vs ${snap.amber}`);
+  };
+  assertSegmentColors("dark", dark);
   record("assistant prose stays at --fg (dark)",
     !!dark.text && dark.text !== dark.toolName && dark.text !== dark.magenta,
     `prose ${dark.text}`);
@@ -158,7 +164,7 @@ async function main() {
   // on the element itself: assert the body is NOT a label hue and
   // matches the element's own computed color (self-consistency).
   const expandedDark = await evalExpr(`(async () => {
-    const toRgb = (v) => { const c = document.createElement("canvas").getContext("2d"); c.fillStyle = "#000"; c.fillStyle = String(v); return c.fillStyle; };
+    ${PRELUDE}
     const cs = getComputedStyle(document.body);
     const click = (sel) => document.querySelector(sel).click();
     click(".lens-thinking-toggle");
@@ -208,14 +214,7 @@ async function main() {
     errorName: colorOf(document.querySelector(".lens-tool-error .lens-tool-name")),
     runningRow: colorOf(document.querySelector(".lens-tool-running")),
   }`);
-  record("thinking toggle reads magenta (light)",
-    rgb(light.thinking) === rgb(light.magenta), `${light.thinking} vs ${light.magenta}`);
-  record("tool name reads cyan (light)",
-    rgb(light.toolName) === rgb(light.cyan), `${light.toolName} vs ${light.cyan}`);
-  record("failed tool name reads danger (light)",
-    rgb(light.errorName) === rgb(light.danger), `${light.errorName} vs ${light.danger}`);
-  record("running tool row reads amber (light)",
-    rgb(light.runningRow) === rgb(light.amber), `${light.runningRow} vs ${light.amber}`);
+  assertSegmentColors("light", light);
 
   // Expanded states under light: this is the exact surface where the
   // undefined --fg-dim painted dark-theme gray at 1.97:1. The toggle
@@ -223,7 +222,7 @@ async function main() {
   // what is open; assert the thinking body matches the theme's
   // --fg-dim token (now defined per theme).
   const expandedLight = await evalExpr(`(async () => {
-    const toRgb = (v) => { const c = document.createElement("canvas").getContext("2d"); c.fillStyle = "#000"; c.fillStyle = String(v); return c.fillStyle; };
+    ${PRELUDE}
     const cs = getComputedStyle(document.body);
     const dimToken = toRgb(cs.getPropertyValue("--fg-dim").trim() || "#a6adc8");
     const bodyEl = document.querySelector(".lens-thinking-body");
