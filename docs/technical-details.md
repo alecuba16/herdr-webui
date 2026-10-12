@@ -288,6 +288,7 @@ Browser-local settings are stored in `localStorage` under `herdr-web-options` an
 | `shiftEnterNewline` | `true` | Terminal input newline behavior. |
 | `closeShortcut` | `off` | Optional close shortcut mode. |
 | `globalShortcutsEnabled` | `true` | Enables WebUI global shortcuts. |
+| `shortcutHintToasts` | `true` | Shows the shortcut hint toast after each prefix action. Normalizes any stored value except explicit `false` to on. |
 | `globalShortcutPrefix` | app default | Prefix for global shortcuts. |
 | `webuiShortcuts` | app default | User-overridable shortcut map. |
 | `gitShortcuts` | app default | Git UI shortcut map. |

@@ -191,6 +191,11 @@
       if (!action) return false;
       event.preventDefault();
       action();
+      // Same learn-by-use echo as the WebUI prefix dispatch; the toast
+      // helper is a desktop-bundle global, guarded because the git UI can
+      // outlive module reshuffles in tests.
+      if (typeof showShortcutHintToast === "function")
+        showShortcutHintToast("gitShortcuts", match[0]);
       return true;
     }
 

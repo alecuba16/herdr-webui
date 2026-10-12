@@ -64,6 +64,7 @@ document.addEventListener("visibilitychange", () => {
 let settingsBackdropDown = false,
   shortcutsBackdropDown = false;
 el("settingsToggle").onclick = () => {
+  showShortcutHintToast("webuiShortcuts", "settings");
   el("settingsModal").style.display = "grid";
   prepareSettingsModalOpen();
 };
@@ -79,6 +80,7 @@ el("settingsModal").addEventListener("click", (e) => {
   settingsBackdropDown = false;
 });
 el("shortcutsToggle").onclick = () => {
+  showShortcutHintToast("webuiShortcuts", "help");
   applyOptions();
   el("shortcutsModal").style.display = "grid";
 };
@@ -169,6 +171,11 @@ el("optGlobalShortcutsEnabled").onchange = () => {
   saveOptions();
   applyOptions();
 };
+el("optShortcutHintToasts").onchange = () => {
+  options.shortcutHintToasts = el("optShortcutHintToasts").checked;
+  saveOptions();
+  applyOptions();
+};
 el("optGlobalShortcutPrefixCapture").onclick = () => {
   const button = el("optGlobalShortcutPrefixCapture"),
     input = el("optGlobalShortcutPrefix");
@@ -188,8 +195,9 @@ el("optGlobalShortcutPrefixCapture").onclick = () => {
   };
   window.addEventListener("keydown", capture, { once: true, capture: true });
 };
-// Text-like settings only save on Enter or the yellow pencil confirm
-// button (settings_confirm chrome). oninput just repaints pending state.
+// Text-like settings commit through the settings_confirm chrome: Enter,
+// the pencil button, or the idle auto-commit after typing stops. Number
+// inputs never save per keystroke; range sliders save on release.
 function commitTerminalFontFamily() {
   options.terminalFontFamily = el("optTerminalFontFamily").value;
   saveOptions();
@@ -299,6 +307,12 @@ el("optWorkspaceOpenTerminal").onchange = () => {
   if (typeof flashSettingsApplied === "function")
     flashSettingsApplied(el("optWorkspaceOpenTerminal"));
 };
+el("optCloseWorkspaceOnLastTerminal").onchange = () => {
+  options.closeWorkspaceOnLastTerminal = el("optCloseWorkspaceOnLastTerminal").checked !== false;
+  saveOptions();
+  if (typeof flashSettingsApplied === "function")
+    flashSettingsApplied(el("optCloseWorkspaceOnLastTerminal"));
+};
 el("optStuckWorkingEnabled").onchange = () => {
   options.stuckWorkingEnabled = el("optStuckWorkingEnabled").checked;
   saveOptions();
@@ -346,9 +360,6 @@ function commitPaneTabMaxChars() {
   saveOptions();
   applyOptions();
 }
-el("optPaneTabMaxChars").oninput = () => {
-  commitPaneTabMaxChars();
-};
 registerSettingsCommit("optPaneTabMaxChars", commitPaneTabMaxChars, () => options.paneTabMaxChars);
 registerSettingsCommit("optScrollLines", () => {
   options.scrollLines = Math.max(1, Math.min(20, Number(el("optScrollLines").value) || 3));

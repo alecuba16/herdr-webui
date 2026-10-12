@@ -42,3 +42,55 @@
   max-width: 140px;
   text-align: center;
 }
+/* Shortcut-hint toast. One element for the app lifetime: hidden by class,
+ text swapped in place, never re-created. Same card language as the prefix
+ card so the chord echo reads as one system. */
+.shortcut-hint-toast {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  bottom: 16px;
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.35);
+  display: flex;
+  gap: 10px;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 9px 13px;
+  /* Passive echo: never intercept clicks over footer buttons. */
+  pointer-events: none;
+  position: fixed;
+  right: 16px;
+  transition: opacity 160ms ease-out, transform 160ms ease-out;
+  z-index: 1050;
+}
+.shortcut-hint-toast-hidden {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.shortcut-hint-toast-label {
+  color: var(--fg);
+  font-size: 12px;
+}
+.shortcut-hint-toast-keys {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+.shortcut-hint-toast-keys kbd {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-bottom-width: 2px;
+  border-radius: 7px;
+  font: 12px var(--mono-font);
+  padding: 3px 7px;
+}
+.shortcut-hint-toast-arrow {
+  color: var(--muted);
+  font-size: 11px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .shortcut-hint-toast {
+    transition: none;
+  }
+}

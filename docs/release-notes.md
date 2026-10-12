@@ -1,6 +1,19 @@
 # Release notes
 
 ## Next release
+- Prefix actions echo a shortcut hint toast now. Running any WebUI or Git
+  UI prefix action (prefix chords, settings/shortcuts toggles, header and
+  footer buttons, sidebar toggle, palette-routed actions, git prefix
+  actions) pops a small bottom-right toast naming the action and its
+  chord, `Settings` `Ctrl+B S`, so the prefix language is learned by
+  use. One toast element lives for the session: shows only swap text on
+  the three cached child nodes, nothing is created or removed per
+  action, and repeated triggers re-arm the single 2.6 s auto-hide
+  timer. The toast is role=status with aria-live off (an echo of what
+  the user just did, not new information), respects
+  prefers-reduced-motion, and hides immediately when
+  `Shortcut hint toasts` is turned off in Settings. Turning the option
+  off also hides a visible toast through applyOptions.
 - Workspaces close with their last terminal now. A new
   closeWorkspaceOnLastTerminal option (on by default; Settings →
   Workspace behavior) closes the workspace or worktree once its last
