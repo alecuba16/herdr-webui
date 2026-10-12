@@ -8,9 +8,13 @@
 //  1. Open the picker on the fixture workdir root (parent of all fixtures).
 //  2. Type a term that matches both a folder (repo-a) and nothing file-like
 //     in the same tree; assert every rendered row is a folder row.
-//  3. Type a term that matches a plain file (note.txt) exactly; assert the
+//  3. Collapse a result block by clicking its dir row: the search input must
+//     keep the term and descendant rows disappear while the folder row stays.
+//  4. Expand it back and double-click into the folder (filter clears, the
+//     picker navigates).
+//  5. Type a term that matches a plain file (note.txt) exactly; assert the
 //     tree shows no rows (the file must not leak into folder search).
-//  4. Backend contract check: same tree endpoint with q= and no kind param
+//  6. Backend contract check: same tree endpoint with q= and no kind param
 //     still returns mixed results, proving search_kind=dir is what filters
 //     (guards against the test passing vacuously).
 import { writeFileSync } from "node:fs";
@@ -97,8 +101,82 @@ async function main() {
   record("search 'repo' returns folder rows only", folderRows.count > 0 && folderRows.fileRowCount === 0, JSON.stringify({ count: folderRows.count, fileRowCount: folderRows.fileRowCount }));
   record("search 'repo' actually matched fixture folders", (folderRows.texts || []).some((t) => t.includes("repo-a")), JSON.stringify((folderRows.texts || []).slice(0, 6)));
 
-  // 3. Search for the plain fixture file by exact name; no rows at all.
+  // 3. Search 'nested': the only match is repo-a/nested-src, rendered with
+  // repo-a as its ancestor row. Collapsing repo-a must hide nested-src
+  // while keeping the term and the repo-a row itself.
+  const collapse = await evalExpr(`(async () => {
+    HerdrDirectoryPicker.filter("nested");
+    await new Promise((r) => setTimeout(r, 2500));
+    const tree = document.querySelector("#directoryPickerModal .directory-picker-tree");
+    if (!tree) return { error: "no tree" };
+    const before = document.getElementById("directoryPickerSearchInput").value;
+    // Row titles carry the full path from the picker root (state.root is "/"
+    // for an absolute seed), so derive the repo-a row path from its title.
+    const dirRow = Array.from(tree.querySelectorAll(".herdr-tree-row.dir")).find((row) => row.textContent.includes("repo-a"));
+    if (!dirRow) return { error: "no repo-a dir row" };
+    const rowPath = dirRow.getAttribute("title") || "";
+    const hadDescendant = Array.from(tree.querySelectorAll(".herdr-tree-row")).some((row) => (row.getAttribute("title") || "").startsWith(rowPath + "/"));
+    dirRow.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const input = document.getElementById("directoryPickerSearchInput");
+    // render() replaces modal.innerHTML, detaching every node captured
+    // before the click; re-query the tree from the fresh DOM.
+    const freshTree = document.querySelector("#directoryPickerModal .directory-picker-tree");
+    const afterRows = Array.from(freshTree.querySelectorAll(".herdr-tree-row"));
+    const stillVisible = afterRows.some((row) => row.textContent.includes("repo-a"));
+    const descendantsGone = !afterRows.some((row) => (row.getAttribute("title") || "").startsWith(rowPath + "/"));
+    const freshRow = afterRows.find((row) => row.textContent.includes("repo-a"));
+    const caretClosed = freshRow ? freshRow.getAttribute("aria-expanded") === "false" : false;
+    return { before, after: input.value, rowPath, hadDescendant, stillVisible, descendantsGone, caretClosed };
+  })()`);
+  record("search 'nested' shows a collapsible block (ancestor + descendant rows)", collapse.hadDescendant === true, JSON.stringify(collapse));
+  record("collapsing a search result keeps the search term", collapse.before === collapse.after && String(collapse.after).trim() !== "", JSON.stringify(collapse));
+  record("collapse hides descendant rows but keeps the folder row", collapse.stillVisible === true && collapse.descendantsGone === true && collapse.caretClosed === true, JSON.stringify(collapse));
+
+  // 4. Expand the block back, then double-click enters the folder (filter
+  // clears, picker navigates into it).
+  const reexpand = await evalExpr(`(async () => {
+    const tree = document.querySelector("#directoryPickerModal .directory-picker-tree");
+    const dirRow = Array.from(tree.querySelectorAll(".herdr-tree-row.dir")).find((row) => row.textContent.includes("repo-a"));
+    if (!dirRow) return { error: "no repo-a dir row" };
+    const rowPath = dirRow.getAttribute("title") || "";
+    dirRow.click();
+    await new Promise((r) => setTimeout(r, 400));
+    // Same detachment as above: query the post-render tree.
+    const freshTree = document.querySelector("#directoryPickerModal .directory-picker-tree");
+    const rows = Array.from(freshTree.querySelectorAll(".herdr-tree-row"));
+    const restored = rows.some((row) => (row.getAttribute("title") || "").startsWith(rowPath + "/"));
+    const freshRow = rows.find((row) => row.textContent.includes("repo-a"));
+    const caretOpen = freshRow ? freshRow.getAttribute("aria-expanded") === "true" : false;
+    return { restored, caretOpen };
+  })()`);
+  record("expand restores the collapsed descendant rows", reexpand.restored === true, JSON.stringify(reexpand));
+
+  const enterFolder = await evalExpr(`(async () => {
+    const tree = document.querySelector("#directoryPickerModal .directory-picker-tree");
+    const dirRow = Array.from(tree.querySelectorAll(".herdr-tree-row.dir")).find((row) => row.textContent.includes("repo-a"));
+    if (!dirRow) return { error: "no repo-a dir row" };
+    const dbl = new MouseEvent("dblclick", { bubbles: true });
+    dirRow.dispatchEvent(dbl);
+    await new Promise((r) => setTimeout(r, 1500));
+    const input = document.getElementById("directoryPickerSearchInput");
+    const freshTree = document.querySelector("#directoryPickerModal .directory-picker-tree");
+    const rows = freshTree ? Array.from(freshTree.querySelectorAll(".herdr-tree-row")) : [];
+    return { filter: input.value, rows: rows.length, error: "" };
+  })()`);
+  record("double-click enters the folder and clears the filter", String(enterFolder.filter || "").trim() === "" && !enterFolder.error, JSON.stringify(enterFolder));
+
+  // 5. Search for the plain fixture file by exact name; no rows at all.
+  // Re-open at the workdir root first: the double-click above navigated the
+  // picker into repo-a, and this check is about the root tree.
   const fileLeak = await evalExpr(`(async () => {
+    HerdrDirectoryPicker.close();
+    const input = document.createElement("input");
+    input.type = "text";
+    input.style.display = "none";
+    input.value = ${JSON.stringify(WORK_ROOT)};
+    HerdrDirectoryPicker.open(input);
+    await new Promise((r) => setTimeout(r, 2500));
     HerdrDirectoryPicker.filter(${JSON.stringify("note")});
     await new Promise((r) => setTimeout(r, 2500));
     const tree = document.querySelector("#directoryPickerModal .directory-picker-tree");
@@ -108,7 +186,7 @@ async function main() {
   })()`);
   record("search 'note' (file-only match) returns no rows", fileLeak.count === 0, JSON.stringify(fileLeak));
 
-  // 4. Anti-vacuity check against the real backend: unkinded q= search on
+  // 6. Anti-vacuity check against the real backend: unkinded q= search on
   // the same root must return the file too; the picker filters it only
   // through search_kind=dir.
   const mixed = await evalExpr(`fetch(${JSON.stringify(`/api/file-browser/tree?cwd=${encodeURIComponent(WORK_ROOT)}&path=&q=note&offset=0&limit=50`)}).then((r) => r.json()).catch((e) => "err:" + e)`);

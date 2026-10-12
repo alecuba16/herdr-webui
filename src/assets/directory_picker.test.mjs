@@ -303,6 +303,127 @@ test("directory picker search paging resets when the filter changes", async () =
   equal(vm.runInContext("__pickerDebug.state.entries.length", ctx), 1, "entries reset for the new term");
 });
 
+// Collapse in search results must not navigate or clear the filter:
+// click toggles the block in place, double-click enters the folder.
+test("directory picker search results collapse in place without clearing the filter", async () => {
+  const entries = [
+    { name: "alpha", path: "projects/alpha", kind: "dir", level: 1 },
+    { name: "nested", path: "projects/alpha/nested", kind: "dir", level: 2 },
+  ];
+  const calls = [];
+  const { ctx } = loadPicker({
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ entries, truncated: false }),
+      };
+    },
+  });
+  await vm.runInContext("HerdrDirectoryPicker.openInput('someInput')", ctx);
+  await vm.runInContext("HerdrDirectoryPicker.filter('alpha')", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const searchCallCount = calls.length;
+
+  // Collapse the projects block.
+  vm.runInContext("HerdrDirectoryPicker.toggleFilter('projects')", ctx);
+  equal(vm.runInContext("__pickerDebug.state.filter", ctx), "alpha", "filter survives the collapse click");
+  const modal = ctx.document.getElementById("directoryPickerModal");
+  ok(!modal.innerHTML.includes("projects/alpha"), "descendant rows hidden after collapse");
+  ok(modal.innerHTML.includes("HerdrDirectoryPicker.toggleFilter('projects')"), "dir rows toggle through toggleFilter while filtering");
+  equal(calls.length, searchCallCount, "collapse issues no new request");
+
+  // Expand again: rows come back.
+  vm.runInContext("HerdrDirectoryPicker.toggleFilter('projects')", ctx);
+  ok(ctx.document.getElementById("directoryPickerModal").innerHTML.includes("projects/alpha"), "descendant rows return after expand");
+});
+
+test("directory picker search collapse hides nested descendants and syncs carets", async () => {
+  const entries = [
+    { name: "alpha", path: "projects/alpha", kind: "dir", level: 1 },
+    { name: "nested", path: "projects/alpha/nested", kind: "dir", level: 2 },
+    { name: "deep", path: "projects/alpha/nested/deep", kind: "dir", level: 3 },
+  ];
+  const { ctx } = loadPicker({
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ entries, truncated: false }),
+    }),
+  });
+  await vm.runInContext("HerdrDirectoryPicker.openInput('someInput')", ctx);
+  await vm.runInContext("HerdrDirectoryPicker.filter('alpha')", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  vm.runInContext("HerdrDirectoryPicker.toggleFilter('projects%2Falpha')", ctx);
+  const modal = ctx.document.getElementById("directoryPickerModal");
+  ok(modal.innerHTML.includes("projects/alpha"), "the collapsed folder row stays visible");
+  ok(!modal.innerHTML.includes("nested"), "descendant rows hidden after collapse");
+  ok(modal.innerHTML.includes("HerdrDirectoryPicker.toggleFilter('projects%2Falpha')"), "the collapsed row can expand again");
+
+  // The nested caret must be a closed chevron once collapsed.
+  ok(modal.innerHTML.includes("aria-expanded=\"false\""), "collapsed dir row reports aria-expanded=false");
+});
+
+test("directory picker double-click on a search dir row enters the folder", async () => {
+  const entries = [
+    { name: "alpha", path: "projects/alpha", kind: "dir", level: 1 },
+    { name: "beta", path: "projects/beta", kind: "dir", level: 1 },
+  ];
+  const { ctx } = loadPicker({
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ entries, truncated: false }),
+    }),
+  });
+  await vm.runInContext("HerdrDirectoryPicker.openInput('someInput')", ctx);
+  await vm.runInContext("HerdrDirectoryPicker.filter('proj')", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const modal = ctx.document.getElementById("directoryPickerModal");
+  match(modal.innerHTML, /ondblclick="event\.preventDefault\(\);event\.stopPropagation\(\);HerdrDirectoryPicker\.select\('projects%2Falpha'\)"/, "double-click enters the folder");
+});
+
+test("directory picker new search term resets per-folder collapse choices", async () => {
+  const { ctx } = loadPicker({
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ entries: [{ name: "x", path: "x", kind: "dir", level: 0 }], truncated: false }),
+    }),
+  });
+  await vm.runInContext("HerdrDirectoryPicker.openInput('someInput')", ctx);
+  await vm.runInContext("HerdrDirectoryPicker.filter('a')", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  vm.runInContext("HerdrDirectoryPicker.toggleFilter('x')", ctx);
+  equal(vm.runInContext("__pickerDebug.state.filterCollapsed['x']", ctx), true);
+
+  // New term: previous collapse choices must be gone.
+  await vm.runInContext("HerdrDirectoryPicker.filter('b')", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  equal(vm.runInContext("Object.keys(__pickerDebug.state.filterCollapsed).length", ctx), 0, "collapse map resets per term");
+});
+
+test("directory picker toggle still navigates when no filter is active", async () => {
+  const calls = [];
+  const { ctx } = loadPicker({
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      return { ok: true, status: 200, json: async () => ({ path: "", entries: [], truncated: false }) };
+    },
+  });
+  await vm.runInContext("HerdrDirectoryPicker.openInput('someInput')", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const before = calls.length;
+  vm.runInContext("HerdrDirectoryPicker.toggle('some/dir')", ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  equal(vm.runInContext("__pickerDebug.state.filter", ctx), "", "toggle outside search clears the filter state");
+  ok(calls.length > before, "toggle issues a load request");
+  ok(calls.some((call) => call.includes("path=some%2Fdir")), "toggle loads the folder");
+});
+
 // The git path-title picker drives the directory picker through a hidden
 // input node (window.HerdrDirectoryPicker.open(input)), not through an id.
 // This pins the node-based export that shipped broken in 87ddc98 (the

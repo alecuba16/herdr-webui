@@ -1,7 +1,7 @@
 (function () {
   const Tree = window.HerdrFileTree;
   const SEARCH_PAGE_SIZE = 100;
-  const state = { input: null, root: "~", path: "", entries: [], error: "", permissionRequired: false, filter: "", filterTimer: null, filterOffset: 0, filterDone: true, filterLoading: false, gitStatus: null };
+  const state = { input: null, root: "~", path: "", entries: [], error: "", permissionRequired: false, filter: "", filterTimer: null, filterOffset: 0, filterDone: true, filterLoading: false, filterCollapsed: {}, gitStatus: null };
 
   function esc(value) { return Tree.esc(value); }
 
@@ -147,6 +147,9 @@
     const offset = append ? state.filterOffset : 0;
     if (append && state.filterLoading) return;
     state.filterLoading = true;
+    // A fresh term restarts the result tree, so per-folder collapse
+    // choices from the previous term must not leak into the new one.
+    if (!append) state.filterCollapsed = {};
     // Re-render before the fetch so the loading hint shows while paging in
     // more results; skip when appending so the scroll position survives.
     if (!append) render();
@@ -219,6 +222,40 @@
     load(target.path || "");
   }
 
+  function isFilterCollapsed(path) {
+    return !!state.filterCollapsed[String(path || "")];
+  }
+
+  // Hide descendants of collapsed folders in the filtered result tree;
+  // dir carets stay open only while a descendant row is still visible.
+  function applyFilterCollapse(rows) {
+    const list = rows || [];
+    const parents = new Set();
+    for (const row of list) {
+      const parts = String(row.path || "").split("/").filter(Boolean);
+      parts.pop();
+      let prefix = "";
+      for (const part of parts) {
+        prefix = prefix ? `${prefix}/${part}` : part;
+        parents.add(prefix);
+      }
+    }
+    return list.filter((row) => {
+      const parts = String(row.path || "").split("/").filter(Boolean);
+      for (let i = 1; i < parts.length; i++) {
+        if (isFilterCollapsed(parts.slice(0, i).join("/"))) return false;
+      }
+      return true;
+    }).map((row) => row.kind !== "dir" ? row : Object.assign({}, row, { expanded: parents.has(String(row.path || "")) && !isFilterCollapsed(row.path) }));
+  }
+
+  function toggleFilter(encodedPath) {
+    const path = decodeURIComponent(encodedPath);
+    // Only dir rows call this, and only while a filter term is active.
+    state.filterCollapsed[path] = !state.filterCollapsed[path];
+    render();
+  }
+
   function render() {
     let modal = document.getElementById("directoryPickerModal");
     if (!modal) {
@@ -237,7 +274,7 @@
     const previousScroll = appending && tree ? tree.scrollTop : null;
     const canGoUp = state.path || state.root !== "/";
     const entries = Tree.applyGitStatus(filtering
-      ? Tree.searchTreeEntries(state.entries)
+      ? applyFilterCollapse(Tree.searchTreeEntries(state.entries))
       : [
           ...(state.entries || []).map((entry) => Object.assign({}, entry, { expanded: false, level: Number(entry.level || 0) + 1 })),
         ], state.gitStatus);
@@ -252,7 +289,7 @@
     const moreRow = filtering && !state.filterDone
       ? `<div class="directory-picker-more"><button class="git-ui-btn" ${state.filterLoading ? "disabled" : ""} onclick="HerdrDirectoryPicker.loadMore()">${state.filterLoading ? "Loading…" : "Load more"}</button></div>`
       : "";
-    modal.innerHTML = `<div class="directory-picker"><div class="directory-picker-head"><strong>Choose folder</strong><button class="git-ui-btn" onclick="HerdrDirectoryPicker.close()">Close</button></div><div class="directory-picker-path">${esc(currentPath)}</div><div class="directory-picker-actions"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.home()">Home</button><button class="git-ui-btn" onclick="HerdrDirectoryPicker.defaultFolder()">Default dir</button><button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.selectCurrent()">Select this folder</button></div>${renderAccessError()}<div class="directory-picker-search"><input id="directoryPickerSearchInput" type="text" placeholder="Type to search..." value="${esc(state.filter)}"${inputAttrs("search")} oninput="HerdrDirectoryPicker.filter(this.value)"></div><div class="directory-picker-tree" onscroll="HerdrDirectoryPicker.treeScroll(this)">${currentRow}${Tree.renderEntries(entries, { callback: "HerdrDirectoryPicker", selectedPath: state.path })}${moreRow}</div></div>`;
+    modal.innerHTML = `<div class="directory-picker"><div class="directory-picker-head"><strong>Choose folder</strong><button class="git-ui-btn" onclick="HerdrDirectoryPicker.close()">Close</button></div><div class="directory-picker-path">${esc(currentPath)}</div><div class="directory-picker-actions"><button class="git-ui-btn" onclick="HerdrDirectoryPicker.home()">Home</button><button class="git-ui-btn" onclick="HerdrDirectoryPicker.defaultFolder()">Default dir</button><button class="git-ui-btn primary" onclick="HerdrDirectoryPicker.selectCurrent()">Select this folder</button></div>${renderAccessError()}<div class="directory-picker-search"><input id="directoryPickerSearchInput" type="text" placeholder="Type to search..." value="${esc(state.filter)}"${inputAttrs("search")} oninput="HerdrDirectoryPicker.filter(this.value)"></div><div class="directory-picker-tree" onscroll="HerdrDirectoryPicker.treeScroll(this)">${currentRow}${Tree.renderEntries(entries, { callback: "HerdrDirectoryPicker", selectedPath: state.path, toggleMethod: filtering ? "toggleFilter" : "toggle", dirDoubleClickMethod: filtering ? "select" : "" })}${moreRow}</div></div>`;
     if (refocus) {
       const input = document.getElementById("directoryPickerSearchInput");
       if (input) {
@@ -300,6 +337,9 @@
     selectCurrent,
     requestAccess,
     toggle(encodedPath) { load(decodeURIComponent(encodedPath)); },
+    // While filtering, dir rows collapse their block in the results instead
+    // of navigating; double-click still enters the folder (select).
+    toggleFilter,
     select(encodedPath) { load(decodeURIComponent(encodedPath)); },
     up(encodedPath) {
       const target = decodeURIComponent(encodedPath || "");
