@@ -940,9 +940,15 @@ test("closePaneMenu restores focus through the live button, not a stale ref", ()
   // behavioral check runs in the live CDP verify (real browser DOM).
   const panesSource = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
   assert.ok(panesSource.includes("paneButtonByPaneId"), "close resolves the live button by pane id");
-  const closeBody = panesSource.slice(panesSource.indexOf("function closePaneMenu"), panesSource.indexOf("function closePaneMenu") + 700);
+  const closeBody = panesSource.slice(panesSource.indexOf("function closePaneMenu"), panesSource.indexOf("function closePaneMenu") + 1300);
   assert.ok(closeBody.includes("paneButtonByPaneId(paneId)"), "closePaneMenu consults the re-query before the captured ref");
   assert.ok(closeBody.includes("(paneId && paneButtonByPaneId(paneId)) || captured"), "captured ref is only the fallback");
+  // Pane destroyed while its menu was open: both the re-query and the
+  // captured ref are detached, so focus must fall through to a surviving
+  // pane's button instead of a dead node (silent no-op would strand
+  // focus on body).
+  assert.ok(closeBody.includes('paneButtonByPaneId("*")'), "destroyed-pane fallback resolves a surviving pane's button");
+  assert.ok(closeBody.includes("isConnected === false"), "fallback triggers on detached button only");
 });
 
 // ---- Phase 5: tab drag between panes -----------------------------------

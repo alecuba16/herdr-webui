@@ -1189,7 +1189,7 @@ function closePaneMenu() {
   // focus go to that node, never to the stale one.
   const paneId = paneMenu && paneMenu.paneId;
   const captured = paneMenu && paneMenu.button;
-  const button = (paneId && paneButtonByPaneId(paneId)) || captured;
+  let button = (paneId && paneButtonByPaneId(paneId)) || captured;
   if (menu) detachDomNode(menu);
   if (button && button.setAttribute) button.setAttribute("aria-expanded", "false");
   paneMenu = null;
@@ -1197,6 +1197,11 @@ function closePaneMenu() {
   // (Escape cascade, outside click, re-toggle) must return focus to the
   // [⋮] button. Removing the menu drops focus on the closed item first,
   // so the live button is resolved before paneMenu is cleared above.
+  // A pane closed while its menu was open leaves both the re-query and
+  // the captured ref detached. Focusing a dead node is a silent no-op that
+  // strands the user on body, so hand focus to the surviving pane's
+  // button instead.
+  if (button && button.isConnected === false) button = paneButtonByPaneId("*") || null;
   if (button && typeof button.focus === "function") button.focus();
 }
 
@@ -1207,7 +1212,12 @@ function closePaneMenu() {
 // closePaneMenu falls back to the captured button ref.
 function paneButtonByPaneId(paneId) {
   if (typeof document.querySelector !== "function" || typeof CSS === "undefined" || !CSS.escape) return null;
-  const pane = document.querySelector(`.workspace-pane[data-pane-id="${CSS.escape(String(paneId))}"]`);
+  // "*" resolves any pane's button: the fallback for a menu whose own
+  // pane vanished while it was open (closePaneMenu hands focus to the
+  // survivor so it never lands on body).
+  const pane = paneId === "*"
+    ? document.querySelector(".workspace-pane[data-pane-id]")
+    : document.querySelector(`.workspace-pane[data-pane-id="${CSS.escape(String(paneId))}"]`);
   const button = pane && pane.querySelector(".pane-menu-button");
   return button || null;
 }
