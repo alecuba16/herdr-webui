@@ -1,5 +1,33 @@
 # Release notes
 
+## Next release
+- WebUI keyboard accessibility is first-class across every control. Span
+  actions (workspace close/remove, pane tab close), the question dialog,
+  and the pane menu are operable by keyboard: role=button tabindex=0 plus
+  a delegated Enter/Space activation, dialog semantics with the Escape
+  cascade and a Tab focus trap, arrow-key menu cycling that restores
+  focus to the [menu] button on close. File tree rows toggle expansion
+  on Enter/Space with aria-expanded, git stash entries and log rows
+  carry their own inline keys, and session lines and agent Undo/Dismiss
+  join the span-button delegation. When a pane is destroyed while its
+  menu is open, focus falls back to a surviving pane's button instead
+  of stranding on body.
+- Two e2e suites that broke on main were repaired. The git acceptance
+  script still called closeBranchList (dead code since the split-pane
+  rework) and now re-toggles openBranchList. The theme propagation
+  script still targeted the removed temp-terminal modal: it now splits
+  a pane, seeds a panel in the fresh leaf, and asserts the aux terminal
+  renders rows and follows both manual and system theme flips, closing
+  through the closePane shortcut (trusted key events) and the pane
+  strip. The mobile pass asserts its single-surface contract (no pane
+  nodes, no aux surfaces, no desktop pane modules) so a future boot
+  change fails loudly.
+- The directory picker search box hit the tree API with no kind filter,
+  so results included files. It now sends search_kind=dir and the
+  backend defaults dirs_only searches to folders, keeping the API
+  consistent for callers that forget the kind. Covered by a new
+  dir-picker-search acceptance check in the cwd-picker e2e run.
+
 ## 0.7.2 Release Notes
 - Jcode screen-scrape detection rewritten to mirror the real TUI output
   of both supported branches, upstream `master` (vanilla variant) and
