@@ -89,15 +89,21 @@ impl RecentAgentProcessExit {
 }
 
 /// Captures the latest OSC 9 progress payload from raw PTY bytes.
-/// Agents like jcode emit `ESC]9;jcode:<state> BEL` as a structured
+/// Some agents emit `ESC]9;<agent>:<state> BEL` as a structured
 /// side-channel for agent status detection, avoiding fragile screen-scraping.
+/// Real jcode (master) does not emit it; jcode status rides on the terminal
+/// title (` · work ~` / ` · last ~`, see `osc_title_status_for_agent`) plus
+/// the screen-scrape fallback. This tracker serves agents that do use the
+/// channel (amp, codex, hermes, qwen, grok, claude) and a hypothetical jcode
+/// build with the herdr_detectable side-channel.
 /// This is a minimal state machine that tracks the OSC body between
 /// `ESC ]` and `BEL` (0x07) or `ST` (`ESC \`).
 ///
 /// Matching upstream herdr's `AgentOscStateTracker`, the latest payload is
-/// retained without a TTL: agents emit on state change only (jcode dedups in
-/// `agent_osc_state`), so a timestamped staleness window would treat every
-/// long turn as "no recent status" and silently degrade to screen-scraping.
+/// retained without a TTL: agents on this channel emit on state change only
+/// (upstream jcode dedups in `agent_osc_state`), so a timestamped staleness
+/// window would treat every long turn as "no recent status" and silently
+/// degrade to screen-scraping.
 /// Staleness is handled structurally instead: `reset()` clears the payload
 /// when the terminal exits, and `notify_exited` clears it when the agent
 /// process disappears.
@@ -194,10 +200,11 @@ impl Osc9Tracker {
     }
 
     /// Extract a stable agent label from the OSC 9 progress payload when the
-    /// payload follows a `<agent>:<state>` convention (jcode emits
-    /// `jcode:working`, `jcode:idle`, `jcode:blocked`). This lets the backend
+    /// payload follows a `<agent>:<state>` convention (the herdr_detectable
+    /// jcode branch emits `jcode:working`, `jcode:idle`, `jcode:blocked`;
+    /// jcode master does not emit OSC 9). This lets the backend
     /// identify the agent from its side-channel even when argv and process-tree
-    /// detection fail (e.g. jcode launched through a wrapper script or shell
+    /// detection fail (e.g. an agent launched through a wrapper script or shell
     /// that hides the binary name).
     fn latest_agent_label(&self) -> Option<&'static str> {
         let payload = self.latest_payload.as_deref()?;
@@ -2342,7 +2349,8 @@ impl TerminalRuntime {
             }
         }
         // Feed raw bytes to the OSC 9 tracker so agent status can be detected
-        // via structured payloads (e.g. jcode emits `ESC]9;jcode:working BEL`).
+        // via structured payloads (e.g. `ESC]9;jcode:working BEL` on the
+        // herdr_detectable branch; jcode master never sends one).
         if let Ok(mut tracker) = self.osc9_tracker.lock() {
             tracker.observe(bytes);
         }
@@ -3921,7 +3929,8 @@ fn detect_agent_status_with_osc(
 /// Map an OSC 9 progress payload to an agent status string.
 ///
 /// Agents emit structured progress via OSC 9:
-/// - jcode: `jcode:working`, `jcode:idle`, `jcode:blocked`
+/// - jcode (herdr_detectable branch only; master never emits OSC 9):
+///   `jcode:working`, `jcode:idle`, `jcode:blocked`
 /// - Claude: OSC 9;4 `4;0` → idle only (no working rule in manifest)
 /// - Qwen: OSC 9;4 `4;3` → working only (no idle rule in manifest)
 /// - Grok: OSC 9;4 `4;1;-1` → working, `4;0;0` → idle
@@ -7670,8 +7679,8 @@ mod tests {
 
     #[test]
     fn osc9_tracker_retains_payload_without_ttl() {
-        // jcode emits on state change only, so a payload must remain
-        // authoritative for the whole pane lifetime (matching upstream
+        // Agents on this channel emit on state change only, so a payload must
+        // remain authoritative for the whole pane lifetime (matching upstream
         // herdr's no-TTL retention). There is no freshness window: a long
         // turn keeps reporting `jcode:working` and long idle keeps
         // reporting `jcode:idle`.

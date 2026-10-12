@@ -19,11 +19,12 @@
 //! Both branches are also natively detectable via the terminal title
 //! (` · work ~<dur>` while a turn runs, ` · last ~<dur>` after it ends;
 //! mapped in `osc_title_status_for_agent` upstream, `last` is the live
-//! post-turn idle signal), via OSC 9 progress payloads on the
-//! `herdr_detectable` branch (`ESC]9;jcode:<state> BEL`), and via the
-//! herdr CLI `pane report-agent` channel; those are handled in
-//! `detect_agent_status_with_osc` upstream and always win over this
-//! screen-scrape fallback.
+//! post-turn idle signal) and via OSC 9 progress payloads on the
+//! `herdr_detectable` branch (`ESC]9;jcode:<state> BEL`); those are
+//! handled in `detect_agent_status_with_osc` upstream and always win over
+//! this screen-scrape fallback. (Upstream herdr also accepts a CLI
+//! `pane report-agent` channel; the builtin backend in this repo does not
+//! implement it, so it plays no role here.)
 //!
 //! TEMPORARY SOLUTION: the variant selector exists only while the `fix/info_fields`
 //! Overview layout diverges from upstream master. Once jcode includes a final
