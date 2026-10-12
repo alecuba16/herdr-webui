@@ -289,17 +289,18 @@ async function runPass(layout, cdp) {
   after = await evalExpr(mainVarsExpr);
   if (after.bg !== LIGHT_BG) throw new Error(`expected light theme before aux pane pass, bg=${after.bg}`);
 
-  // 3-6. Aux pane terminal through the real user path. The split-pane
+  // 3-6b. Aux pane terminal through the real user path. The split-pane
   // rework (b3db27a) replaced the temp-terminal modal with pane terminals,
   // so the fan-out parity promise now lives on the aux pane surface.
-  // Mobile has no pane split: its single terminal keeps applying theme
-  // through its own applyTheme, already covered by steps 1-2.
+  // Mobile has no pane split: it loads no desktop scripts at all, so the
+  // structural check below pins that single-surface fact instead.
   if (layout === "desktop") {
     // Real user path: Ctrl+B prefix then D splits right (the fresh leaf
     // starts empty and takes focus). Its strip + button then creates the
     // terminal tab routed into that leaf (newTabForPane sets the pending
-    // placement), which mounts the aux terminal surface.
-    const splitOk = await evalExpr(`new Promise((resolve) => {
+    // placement), which mounts the aux terminal surface. Reused by the
+    // strip-close round in 6b.
+    const openAuxPane = () => evalExpr(`new Promise((resolve) => {
       const fire = (opts) => {
         const ev = new KeyboardEvent("keydown", Object.assign({ bubbles: true, cancelable: true }, opts));
         document.dispatchEvent(ev);
@@ -334,6 +335,7 @@ async function runPass(layout, cdp) {
         check();
       }, 150);
     })`);
+    const splitOk = await openAuxPane();
     record(layout, "aux pane terminal opened (split + new panel)", splitOk === "split", `got ${splitOk}`);
     if (splitOk !== "split") throw new Error(`aux pane did not split (${splitOk})`);
 
@@ -368,8 +370,39 @@ async function runPass(layout, cdp) {
     record(layout, "system flip repaints open aux pane terminal (auto mode)", after.bg === LIGHT_BG,
       `bg=${after.bg}`);
 
-    // 6. Close the aux pane through the strip close button, the real user
-    // path for the pane that just hosted the aux terminal.
+    // 6. Close through the pane close shortcut, the real keyboard path.
+    // Trusted CDP key events (synthetic KeyboardEvent cannot drive native
+    // activation paths). After the + click the route tab lives in the fresh
+    // pane and the route sync focuses it, so closePane acts on the fresh
+    // pane: its tab migrates to the original pane, the shell follows the
+    // route tab, and the aux surface in the original pane must dispose on
+    // that ownership change. Ctrl+B prefix, then E.
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, windowsVirtualKeyCode: 66, key: "b", code: "KeyB" });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, windowsVirtualKeyCode: 66, key: "b", code: "KeyB" });
+    await sleep(120);
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", windowsVirtualKeyCode: 69, key: "e", code: "KeyE" });
+    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 69, key: "e", code: "KeyE" });
+    const closedByKey = await evalExpr(`new Promise((resolve) => {
+      const t0 = Date.now();
+      const check = () => {
+        const auxGone = !document.querySelector(".pane-terminal-aux");
+        const paneCount = document.querySelectorAll(".workspace-pane[data-pane-id]").length;
+        if (auxGone && paneCount <= 1) { resolve("closed"); return; }
+        if (Date.now() - t0 > 10000) { resolve("stuck:aux=" + (!auxGone) + "/panes=" + paneCount); return; }
+        setTimeout(check, 250);
+      };
+      check();
+    })`);
+    record(layout, "closePane shortcut disposes the aux surface", closedByKey === "closed", `got ${closedByKey}`);
+
+    // 6b. Strip close round: the pointer path through the pane strip, with
+    // the aux surface open again. Both real-user paths must behave the same.
+    if (closedByKey === "closed") {
+      const reopenOk = await openAuxPane();
+      record(layout, "aux pane reopened for the strip close round", reopenOk === "split", `got ${reopenOk}`);
+      if (reopenOk !== "split") throw new Error(`aux pane did not reopen (${reopenOk})`);
+      await evalExpr(rowsPromise(null, `document.querySelector(".pane-terminal-aux")`));
+    }
     const closedAux = await evalExpr(`new Promise((resolve) => {
       const panes = Array.from(document.querySelectorAll(".workspace-pane[data-pane-id]"));
       const aux = document.querySelector(".pane-terminal-aux");
@@ -383,6 +416,22 @@ async function runPass(layout, cdp) {
       }, 400);
     })`);
     record(layout, "aux pane closed through the strip", closedAux === "closed", `got ${closedAux}`);
+  } else {
+    // Structural single-surface check: mobile boots no desktop pane code
+    // (app_boot.js swaps the script list), so no pane tree and no aux
+    // surface can ever mount. If a future change breaks that contract,
+    // this fails loudly instead of the theme pass silently skipping the
+    // fan-out story.
+    const structure = await evalExpr(`(() => ({
+      paneNodes: document.querySelectorAll(".workspace-pane").length,
+      auxNodes: document.querySelectorAll(".pane-terminal-aux").length,
+      paneModule: typeof window.HerdrPaneTerminals,
+      splitFn: typeof splitPaneRight,
+    }))()`);
+    record(layout, "mobile has no pane or aux surface by construction",
+      structure.paneNodes === 0 && structure.auxNodes === 0 &&
+        structure.paneModule === "undefined" && structure.splitFn === "undefined",
+      `panes=${structure.paneNodes} aux=${structure.auxNodes} module=${structure.paneModule} split=${structure.splitFn}`);
   }
 
   // 7. The dead-var contract live: the selection background must sit on
