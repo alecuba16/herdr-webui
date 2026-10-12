@@ -1,5 +1,47 @@
 # Release notes
 
+## 0.7.2 Release Notes
+- The jcode detector matches what the real TUI prints instead of
+  fabricated patterns. The old tests pinned ghost strings like
+  "session ready" and made-up permission dialogs; the detector now
+  matches the real bottom chrome read from the jcode repo source:
+  numbered prompts ("1> "), shell mode ("N$ "), braille spinner
+  status lines, the Permissions viewer with its approve/deny help
+  row, background-task progress boxes, and the fix/info_fields
+  Overview panels behind a variant selector.
+- Post-turn idle comes from the terminal title. jcode emits no OSC 9
+  progress side-channel, so status rides on a screen scrape of the
+  emulator-extracted tail plus the title. The scrape markers fall out
+  of the tail window once a turn ends, but jcode's title carries
+  ` · last ~<dur>` after a turn finishes, and that suffix now maps to
+  idle in the OSC title rules. The `work` suffix deliberately maps
+  to nothing so a live Permissions viewer (blocked) on screen still
+  outranks the title. One transient remains: a ~4s unknown blip can
+  appear right at turn start while the title is still bare and only
+  the scrape runs; it self-corrects as soon as the title picks up the
+  work segment.
+- Live e2e against the real binary. The suite now spawns the real
+  jcode TUI in a real PTY through the builtin backend and requires
+  pane.agent_status_changed events over real HTTP. That run exposed
+  and fixed a real detector bug (the 2% context bar renders only
+  empty spinner segments, so fresh sessions never showed the full
+  marker), a throttle double-gate that starved working flips, and
+  pane-child/zombie and scratch-dir leaks: detection commits reserve
+  a monotonic sequence before reading the tail so a stale pass
+  cannot regress a newer status, Drop reaps the pane child, and the
+  scratch sweeper respects a 60s grace window. The suite no longer
+  leaks scratch dirs or socket files (was ~45 artifacts per full
+  run).
+- The chat lens gained a server-side reader for jcode transcripts so
+  it renders a pane's own jcode session. Cursor paging over turns,
+  image parts with byte serving, ETag/304 polling, and title +
+  context_used metadata. Pane resolve walks PID evidence,
+  status-filtered cwd, then tail match, and excludes swarm worker
+  sessions by reading the registry jcode itself owns, so orphaned
+  subagents cannot claim the human's pane. Everything cross-checked
+  against the jcode source (the writers, not just observed files)
+  and the live store.
+
 ## 0.7.1 Release Notes
 - Dead code cleanup across the desktop and mobile bundles. A full
   corpus scan plus an empirical pass (each candidate removed against
