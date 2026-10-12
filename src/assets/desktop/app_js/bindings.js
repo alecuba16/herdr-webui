@@ -27,8 +27,10 @@ document.addEventListener("click", (e) => {
 });
 // Keyboard twin of the click delegation above: Enter/Space on a focused
 // span role=button (workspace close/remove actions, pane-tab ✕, agent
-// Undo/Dismiss) triggers its native click path. Native <button>/<a>
-// elements are excluded: they already synthesize a click on these keys.
+// Undo/Dismiss, session lines) triggers its native click path. Native
+// <button>/<a> elements are excluded: they already synthesize a click on
+// these keys. Git stash entries and log rows carry their own inline
+// keydown with stopPropagation, so they never reach this fallback.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
   const target = e.target;

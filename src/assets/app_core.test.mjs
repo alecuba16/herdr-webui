@@ -359,6 +359,13 @@ describe("Git log rendering", () => {
     // Legacy rows without lane still fall back to graph parsing.
     const legacy = render(undefined);
     assert.ok(legacy.includes(laneColor(0)), "legacy row without lane falls back to graph lane 0");
+
+    // Commit rows are tab stops: Enter/Space selects the same as a click,
+    // and the hover card opens on focus so its copy buttons stay reachable.
+    const rowMarkup = html.match(/<div class="git-ui-log-row[^"]*"[^>]*data-log-hash="h1"[^>]*>/);
+    assert.ok(rowMarkup, "commit row renders");
+    assert.match(rowMarkup[0], /role="button" tabindex="0"/, "commit row is a tab stop");
+    assert.match(rowMarkup[0], /onkeydown="[^"]*event\.preventDefault\(\);[^"]*selectLogCommit\(event,'h1'\)/, "Enter/Space selects the commit, Space does not scroll the log");
   });
 });
 

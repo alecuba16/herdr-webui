@@ -1218,6 +1218,10 @@ test("side tree stash tab renders stash list and file sections through the modul
   const html = ctxHtml(booted);
   assert.match(html, /git-ui-stash-list/);
   assert.match(html, /stash \(2\)/);
+  const stashEntry = html.match(/<div class="git-ui-stash-entry[^"]*"[^>]*data-stash-name="stash@\{0\}"[^>]*>/);
+  assert.ok(stashEntry, "stash entry renders with its data attribute");
+  assert.match(stashEntry[0], /role="button" tabindex="0"/, "stash entry is a tab stop");
+  assert.match(stashEntry[0], /onkeydown="[^"]*selectStash\('stash%40%7B0%7D'\)/, "Enter/Space selects the stash without a mouse");
   await ui.selectStash(encodeURIComponent("stash@{0}"));
   await new Promise((resolve) => setTimeout(resolve, 300));
   const stashHtml = ctxHtml(booted);

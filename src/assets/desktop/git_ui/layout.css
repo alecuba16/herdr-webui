@@ -1073,6 +1073,10 @@
 .git-ui-stash-entry:hover {
   background: var(--panel2);
 }
+.git-ui-stash-entry:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
 .git-ui-stash-entry.active {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);

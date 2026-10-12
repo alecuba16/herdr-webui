@@ -783,7 +783,7 @@ describe("app bundle load", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
     const html = ctx.shortcutsModalHtml();
-    match(html, /Activate the focused control: sidebar workspace close\/remove actions, agent Undo\/Dismiss, pane tab ✕, file tree rows, session lines, and the zero-terminal New terminal card/);
+    match(html, /Activate the focused control: sidebar workspace close\/remove actions, agent Undo\/Dismiss, pane tab ✕, file tree rows, session lines, Git stash entries, Git log commits, and the zero-terminal New terminal card/);
     match(html, /On file tree folder rows, Enter\/Space expands or collapses the folder in place\./);
     match(html, /Inside the menu, arrows move between items, Esc closes and returns focus to the \[⋮\] button/);
     match(html, /Cancel the confirmation dialog; Enter confirms it\./);
@@ -1036,7 +1036,11 @@ describe("app bundle load", () => {
   });
 
   it("keeps Git UI keyboard input away from the terminal", () => {
-    match(gitShortcutsSource, /Git drawer owns keyboard while visible/);
+    // The capture handler mutes keys aimed outside the git UI (terminal
+    // behind the drawer) while letting drawer-internal rows receive
+    // unconsumed keys for their inline activation handlers.
+    match(gitShortcutsSource, /Keys aimed outside the git UI/);
+    match(gitShortcutsSource, /Keys this handler consumes are stopped/);
     match(gitShortcutsSource, /event\.stopImmediatePropagation/);
     match(gitShortcutsSource, /function handleGitShortcut\(event, view\)/);
     match(gitShortcutsSource, /function isGitShortcutPrefix\(event\)/);
