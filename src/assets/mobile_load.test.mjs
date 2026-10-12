@@ -2254,6 +2254,39 @@ describe("mobile bundle load", () => {
     equal(ctx.HerdrMobile.currentSelection().pane, null);
   });
 
+  it("auto-close falls back to a surviving workspace selection", async () => {
+    // Desktop td9 pins the same contract: after the last panel closes its
+    // workspace, the selection must land on another open workspace, not
+    // point at the dead id.
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? [{ workspace_id: "w9", tab_id: "w9:t9", number: 1 }]
+          : [{ workspace_id: "w1", tab_id: "w1:t1", number: 1 }],
+      panes: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? [{ workspace_id: "w9", tab_id: "w9:t9", pane_id: "w9:p9", terminal_id: "term9" }]
+          : [{ workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
+      workspaces: ({ requests }) =>
+        requests.some((request) => request.url === "/api/workspaces/w1/close")
+          ? [{ workspace_id: "w9", label: "beta", pane_count: 1, cwd: "/tmp/beta" }]
+          : [
+              { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+              { workspace_id: "w9", label: "beta", pane_count: 1, cwd: "/tmp/beta" },
+            ],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    await ctx.HerdrMobile.closeCurrentPanel();
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/workspaces/w1/close" && request.opt.method === "POST",
+    ), "the emptied workspace must close");
+    equal(ctx.HerdrMobile.currentSelection().ws, "w9",
+      "the selection falls back to the surviving workspace");
+  });
+
   it("closes the real panel when a refresh re-scopes the selected id mid-flight", async () => {
     // Reproduces the builtin backend world: tabs carry bare ids (t1) while
     // parseRoute scopes the selected id to ws:id (w1:t1) at refresh start.
