@@ -2306,6 +2306,39 @@ describe("mobile bundle load", () => {
       "a real error must surface in the screen, not vanish");
   });
 
+  it("auto-closes the workspace after a sheet close empties it (non-current path)", async () => {
+    // closePanelFromSheet is the second path that can empty a workspace:
+    // closing a non-current tab while the current one is already gone or
+    // stale. maybeAutoCloseWorkspace must fire there too, default on.
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At2/close")
+          ? []
+          : [
+              { workspace_id: "w1", tab_id: "w1:t1", number: 1, label: "one" },
+              { workspace_id: "w1", tab_id: "w1:t2", number: 2, label: "two" },
+            ],
+      panes: [{ workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
+      workspaces: ({ requests }) =>
+        requests.some((request) => request.url === "/api/workspaces/w1/close")
+          ? []
+          : [{ workspace_id: "w1", label: "alpha", pane_count: 2, cwd: "/tmp/alpha" }],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    // Harness auto-resolves the confirm sheet with the ctx.confirm answer.
+    ctx.confirm = () => true;
+    await ctx.HerdrMobile.closePanelFromSheet("w1:t2");
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/tabs/w1%3At2/close" && request.opt.method === "POST",
+    ), "the sheet close POST must fire");
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/workspaces/w1/close" && request.opt.method === "POST",
+    ), "the last panel leaving via the sheet must auto-close the workspace");
+  });
+
   it("treats a not-found close from the tabs sheet as closed", async () => {
     // closePanelFromSheet closes a NON-current tab directly; the same
     // benign race applies (the tab may close elsewhere while the sheet
