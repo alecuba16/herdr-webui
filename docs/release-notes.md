@@ -32,12 +32,14 @@
   and closes the workspace through the real sheet.
 - Settings save themselves. Text-like settings inputs auto-commit
   ~800 ms after the last keystroke on both desktop and mobile, so
-  changes stick without pressing Enter or tapping the pencil. Enter,
-  the pencil, and rollback remain explicit commit paths; range sliders
-  still save on release, and mobile onchange commits any pending
-  debounce immediately so Android change-only IMEs still save without
-  double-writes. The green tick flashes on the row that saved, even
-  when the debounce lands after focus moved elsewhere; on mobile the
+  changes stick without pressing Enter or tapping the pencil. Desktop
+  keeps Enter, the pencil, and rollback as explicit commit paths;
+  mobile keeps its Enter-key (enterkeyhint done blurs the input and
+  commits through change) and the rollback arrow, with onchange
+  flushing any pending debounce immediately so Android change-only
+  IMEs still save without double-writes. Range sliders still save on
+  release. The green tick flashes on the row that saved, even when
+  the debounce lands after focus moved elsewhere; on mobile the
   flash and rollback chrome mutate in place so focus and the virtual
   keyboard survive the debounced commit. The desktop settings modal
   also reorders its sections by task: Appearance, Terminal input,
