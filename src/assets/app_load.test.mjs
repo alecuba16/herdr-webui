@@ -6731,13 +6731,16 @@ describe("lens chat mode segment colors", () => {
   it("colors the thinking toggle with the reasoning hue", () => {
     match(
       css,
-      /\.lens-thinking-toggle \{[\s\S]*?color: var\(--term-magenta, #cba6f7\);/,
+      // [^}]* keeps the match inside the rule block: a lazy [\s\S]*?
+      // can skip past a changed rule and land on a later one, so a
+      // token swap inside .lens-thinking-toggle would pass silently.
+      /\.lens-thinking-toggle \{[^}]*color: var\(--term-magenta, #cba6f7\);/,
       "thinking reads magenta",
     );
     // The body stays dim: color is a scan anchor, never a reading surface.
     match(
       css,
-      /\.lens-thinking-body \{[\s\S]*?color: var\(--fg-dim, #a6adc8\);/,
+      /\.lens-thinking-body \{[^}]*color: var\(--fg-dim, #a6adc8\);/,
       "thinking body keeps dim foreground",
     );
   });
@@ -6745,12 +6748,12 @@ describe("lens chat mode segment colors", () => {
   it("colors tool names cyan and failed tools danger", () => {
     match(
       css,
-      /\.lens-tool-name \{[\s\S]*?color: var\(--term-cyan, #94e2d5\);/,
+      /\.lens-tool-name \{[^}]*color: var\(--term-cyan, #94e2d5\);/,
       "tool name reads cyan",
     );
     match(
       css,
-      /\.lens-tool-error \.lens-tool-name \{[\s\S]*?color: var\(--danger, #f38ba8\);/,
+      /\.lens-tool-error \.lens-tool-name \{[^}]*color: var\(--danger, #f38ba8\);/,
       "failed tool name overrides with danger",
     );
     // Specificity pin: the error override must come AFTER the cyan rule
@@ -6763,12 +6766,12 @@ describe("lens chat mode segment colors", () => {
   it("colors running tools amber like the working chips", () => {
     match(
       css,
-      /\.lens-tool-running \{[\s\S]*?color: var\(--status-working, #f9e2af\);/,
+      /\.lens-tool-running \{[^}]*color: var\(--status-working, #f9e2af\);/,
       "running row reads amber",
     );
     match(
       css,
-      /\.lens-working-tool \{[\s\S]*?color: var\(--status-working, #f9e2af\);/,
+      /\.lens-working-tool \{[^}]*color: var\(--status-working, #f9e2af\);/,
       "working chip reads amber",
     );
   });
