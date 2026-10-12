@@ -176,6 +176,70 @@ body.light .chip.label {
 .settings-body {
   padding: 10px 20px 16px;
 }
+/* Merged Settings + Help modal: left rail of section anchors, accent on
+   the section the scroller is currently showing. Rail rides the same
+   --accent token as every active control so both themes stay correct. */
+.settings-shell {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  min-height: 0;
+}
+#settingsModal .modal {
+  width: min(720px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+}
+#settingsModal .modal > .settings-head {
+  flex: 0 0 auto;
+}
+#settingsModal .modal > .settings-shell {
+  flex: 1 1 auto;
+  overflow: auto;
+}
+.settings-nav {
+  border-right: 1px solid var(--border);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-self: stretch;
+}
+.settings-nav-item {
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 7px 10px;
+  text-align: left;
+}
+.settings-nav-item:hover {
+  background: var(--panel2);
+  color: var(--fg);
+}
+.settings-nav-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.settings-nav-item.settings-nav-current {
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+  font-weight: 600;
+}
+.settings-help-section .help-shortcut-mount .help-section {
+  padding: 0;
+  border-bottom: 0;
+}
+.settings-help-section .shortcut-section-title,
+.settings-help-section .shortcuts-list {
+  padding-left: 0;
+  padding-right: 0;
+}
+.settings-help-section .settings-section-head {
+  margin-bottom: 4px;
+}
 .settings-section {
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -192,6 +256,43 @@ body.light .chip.label {
   color: var(--muted);
   font-size: 12px;
   margin: 3px 0 0;
+}
+/* Phone-width desktop windows: the section rail collapses into a
+   horizontal chip strip so every section stays one tap away. 44px
+   targets, accent still marks the section in view. Kept after the
+   base rules above so the equal-specificity row wins the cascade.
+   app_boot hands sub-760px sessions to the mobile bundle, so this
+   media query only ever matters on forced-desktop narrow windows. */
+@media (max-width: 640px) {
+  #settingsModal .settings-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-nav {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 6px 10px;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+  }
+  .settings-nav-item {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    flex: 0 0 auto;
+    min-height: 44px;
+    padding: 10px 14px;
+    scroll-snap-align: start;
+    white-space: nowrap;
+  }
+  .settings-nav-item.settings-nav-current {
+    border-color: transparent;
+  }
+  .settings-nav-item.settings-nav-current:hover {
+    background: var(--accent);
+    color: var(--accent-fg, #fff);
+  }
 }
 .settings-section-head.settings-collapsible {
   cursor: pointer;

@@ -55,12 +55,15 @@ function closeShortcutKeydown(e) {
   return true;
 }
 function showShortcutsModal() {
-  applyOptions();
-  el("shortcutsModal").style.display = "grid";
+  // The shortcuts reference lives in the merged Settings modal now; open
+  // it straight at the Help & Shortcuts section when the module is
+  // installed, else the plain Settings modal.
+  const sections = window.HerdrSettingsSections;
+  if (sections) sections.openSettingsModalAt(sections.HELP_SECTION_SELECTOR);
+  else openSettingsModal();
 }
 function showSettingsModal() {
-  el("settingsModal").style.display = "grid";
-  prepareSettingsModalOpen();
+  openSettingsModal();
 }
 function currentWorkspace() {
   return state.workspaces.find((w) => w.workspace_id === state.ws) || null;

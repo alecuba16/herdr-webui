@@ -7,7 +7,7 @@ The browser UI provides workspace navigation, top panel tabs, agent status, term
 Sidebar:
 
 - The sidebar can collapse via the divider; state is stored in browser `localStorage` and collapsed mode keeps compact blocked/working/idle/done counters.
-- The header exposes unified Search, Theme, No-sleep, Worktree, New workspace, Git, and Files controls. The footer exposes session info, shortcut help, Settings, and backend status. Built-in backend mode is shown as `built-in` instead of the internal built-in version string.
+- The header exposes unified Search, Theme, No-sleep, Worktree, New workspace, Git, and Files controls. The footer exposes session info, Settings (the merged modal includes the Help & Shortcuts section), and backend status. Built-in backend mode is shown as `built-in` instead of the internal built-in version string.
 - The footer session button opens the session manager. It lists detected external Herdr sessions and built-in sessions together, shows the backend kind for each row, and can target or launch a session in either backend.
 - Theme colors are browser-local and shared with shell controls and embedded Git UI.
 - No-sleep supports Off, Auto, 1 hour, 2 hours, 4 hours, and Infinite from a compact dropdown.
@@ -15,6 +15,7 @@ Sidebar:
 
 Settings:
 
+- Help and Settings share one modal. The footer's old shortcuts button is gone: its reference (functionality map, keyboard shortcuts, shortcut editor) renders as the `Help & Shortcuts` first section of the Settings modal, and a left rail lists every section, highlighting the one in view with the accent color. Clicking a rail entry scrolls to that section; prefix then `?` (and the header `?` on the plain modal path) opens the modal at the help section. Settings search filters settings sections only, hiding the help section while typing; clearing the query brings it back. The feature lives in its own module (`src/assets/desktop/app_js/settings_sections.js`, exposing `window.HerdrSettingsSections` with an install/uninstall pattern) and is covered by `scripts/e2e/footer-modal-acceptance.mjs` (headless CDP acceptance drive).
 - The Settings modal includes a `Search settings` field in the header.
 - Settings search filters grouped settings sections and individual option rows locally in the browser.
 - Text-like settings (terminal font, directories, numeric fields) auto-commit ~800 ms after the last keystroke. Enter, the yellow pencil button, and the rollback arrow remain explicit commit paths on desktop; mobile commits through its Enter key (enterkeyhint done blurs the field, change fires) and keeps the rollback `↺` chip. On mobile, onchange also flushes any pending debounce so change-only Android IMEs save exactly once. While the on-screen value differs from the saved one, the row shows the pencil (hover: "Enter or press to confirm") together with a rollback arrow that restores the saved value; the green tick flashes on the row whose debounced save landed.
@@ -267,6 +268,7 @@ Search palette:
 
 Keyboard shortcuts:
 
+- Help and Settings share one modal. The footer keeps a single settings button; the header `?` and prefix then `?` jump straight to the modal's `Help & Shortcuts` section. A left rail lists every section and marks the section currently in view with the accent color; clicking a rail entry scrolls to that section. The rail becomes a horizontal chip strip at phone widths. The settings search filters settings sections only, so the help reference stays complete while searching.
 - Enable or disable from Settings under `Agents and alerts` with `Global keyboard shortcuts`.
 - Press configured prefix (`Ctrl+B` by default) to open the WebUI shortcut prefix overlay. The next shortcut key is handled by WebUI and not sent to the terminal; `Esc` cancels.
 - Change the prefix in Settings with `Shortcut prefix` → `Record`.

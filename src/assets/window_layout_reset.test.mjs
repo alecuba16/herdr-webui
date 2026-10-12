@@ -158,6 +158,7 @@ function loadSource() {
     "./shared/terminal_fit.js",
     "./desktop/search.js",
     "./desktop/app_js/core.js",
+    "./desktop/app_js/settings_sections.js",
     "./desktop/app_js/workspace_shell.js",
     "./desktop/app_js/right_sidebar.js",
     "./desktop/app_js/search_panel.js",
