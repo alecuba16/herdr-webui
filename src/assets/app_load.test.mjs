@@ -783,7 +783,8 @@ describe("app bundle load", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
     const html = ctx.shortcutsModalHtml();
-    match(html, /Activate the focused control: sidebar workspace close\/remove actions, pane tab ✕, file tree rows, and the zero-terminal New terminal card/);
+    match(html, /Activate the focused control: sidebar workspace close\/remove actions, agent Undo\/Dismiss, pane tab ✕, file tree rows, session lines, and the zero-terminal New terminal card/);
+    match(html, /On file tree folder rows, Enter\/Space expands or collapses the folder in place\./);
     match(html, /Inside the menu, arrows move between items, Esc closes and returns focus to the \[⋮\] button/);
     match(html, /Cancel the confirmation dialog; Enter confirms it\./);
   });

@@ -31,6 +31,10 @@
   background: var(--control-hover, var(--panel2));
   border-color: var(--border2);
 }
+.herdr-tree-row:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
 .herdr-file-tree-current {
   border-bottom: 1px solid var(--border);
   margin-bottom: 4px;

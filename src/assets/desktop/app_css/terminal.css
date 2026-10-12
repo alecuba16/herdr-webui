@@ -362,6 +362,10 @@ input {
   border-radius: 12px;
   padding: 14px;
 }
+.session-line:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
 .session-line strong {
   display: block;
 }

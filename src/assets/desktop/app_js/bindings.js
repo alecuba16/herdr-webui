@@ -26,15 +26,16 @@ document.addEventListener("click", (e) => {
   if (!e.target || !e.target.closest || !e.target.closest(".no-sleep-wrap")) closeNoSleepMenus();
 });
 // Keyboard twin of the click delegation above: Enter/Space on a focused
-// span role=button (workspace close/remove actions, pane-tab ✕) triggers
-// its native click path. Native <button>/<a> elements are excluded: they
-// already synthesize a click on these keys.
+// span role=button (workspace close/remove actions, pane-tab ✕, agent
+// Undo/Dismiss) triggers its native click path. Native <button>/<a>
+// elements are excluded: they already synthesize a click on these keys.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
   const target = e.target;
   if (!target || !target.closest) return;
   if (target.tagName === "BUTTON" || target.tagName === "A") return;
   const spanButton =
+    target.closest('[role="button"][tabindex="0"]') ||
     target.closest("[data-workspace-action]") ||
     target.closest(".pane-tab-close");
   if (!spanButton || spanButton.tagName === "BUTTON") return;

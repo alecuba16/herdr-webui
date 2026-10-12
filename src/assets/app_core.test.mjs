@@ -685,6 +685,40 @@ describe("HerdrFileTree search helpers", () => {
     assert.match(html, /herdr-tree-icon-filetype-rust" data-glyph="RS"/);
     assert.match(html, /herdr-tree-icon-file"/);
   });
+
+  it("gives click-silent dir rows a keyboard toggle and exposes aria-expanded", () => {
+    const tree = loadTree();
+    // Desktop file browser shape: dir rows carry no row onclick (double-click
+    // enters), so the keyboard path must call the toggle method directly.
+    const html = tree.renderEntries([
+      { kind: "dir", name: "src", path: "src", expanded: false },
+    ], { callback: "HerdrFileBrowser", dirClickMethod: "none" });
+
+    const dirRow = html.match(/<button class="herdr-tree-row dir[^"]*"[^>]*title="src"[^>]*>/);
+    assert.ok(dirRow, "dir row renders as a native button");
+    assert.doesNotMatch(dirRow[0], / onclick=/, "dir row stays click-silent");
+    assert.match(dirRow[0], /onkeydown="[^"]*HerdrFileBrowser\.toggle\('src'\)/, "Enter/Space falls back to the toggle method");
+    assert.match(dirRow[0], /aria-expanded="false"/, "collapsed dir row reports not expanded");
+    assert.match(html, /herdr-tree-caret" aria-hidden="true" onclick="[^"]*HerdrFileBrowser\.toggle\('src'\)/, "caret stays a mouse-only shortcut");
+  });
+
+  it("keeps button-row activation native except click-silent dirs", () => {
+    const tree = loadTree();
+    // renderEntry rows are native <button>s: the browser synthesizes the
+    // row click from Enter/Space, so only dirs without a click method need
+    // the inline toggle (see the click-silent test above).
+    const html = tree.renderEntries([
+      { kind: "dir", name: "src", path: "src", expanded: false },
+      { kind: "file", name: "app.js", path: "src/app.js" },
+    ], { callback: "HerdrFileBrowser", dirClickMethod: "toggle" });
+
+    const dirRow = html.match(/<button class="herdr-tree-row dir[^"]*"[^>]*title="src"[^>]*>/);
+    assert.match(dirRow[0], / onclick="HerdrFileBrowser\.toggle\('src'\)"/, "dir row keeps its click method");
+    assert.doesNotMatch(dirRow[0], / onkeydown=/, "click-carrying dirs rely on native Enter/Space synthesis");
+    const fileRow = html.match(/<button class="herdr-tree-row file[^"]*"[^>]*title="src\/app\.js"[^>]*>/);
+    assert.match(fileRow[0], / onclick="HerdrFileBrowser\.select\('src%2Fapp\.js'\)"/, "file row keeps its click method");
+    assert.doesNotMatch(fileRow[0], / onkeydown=/, "file rows rely on native Enter/Space synthesis");
+  });
 });
 
 describe("HerdrEditor line number helpers", () => {
