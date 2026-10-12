@@ -729,6 +729,63 @@ describe("app bundle load", () => {
     const actions = ctx.selectedWorkspaceActionButtons({ workspace_id: "w1", worktree: { checkout_path: "/tmp/wt", is_linked_worktree: true } });
     ok(actions.includes('Ctrl+Q then Shift+X'));
     ok(actions.includes('Ctrl+Q then Delete'));
+    // Span controls are keyboard-operable: role/tabindex ride every action.
+    ok(actions.includes('role="button" tabindex="0" data-workspace-action="close"'), "close action is a focusable span button");
+    ok(actions.includes('role="button" tabindex="0" data-workspace-action="remove-worktree"'), "remove action is a focusable span button");
+
+    // The zero-tab card and the dashboard pin the same hints: the empty
+    // leaf reuses newPanel, the dashboard reuses newWorkspace/search.
+    const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
+    vm.runInContext(
+      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
+      ctx,
+    );
+    ctx.syncWorkspaceEmptyLeaf();
+    ok(emptyLeaf.innerHTML.includes('title="New terminal (Ctrl+Q then P)"'), "empty-leaf button carries the newPanel shortcut");
+    ok(emptyLeaf.innerHTML.includes('aria-label="New terminal (Ctrl+Q then P)"'), "empty-leaf button aria-label carries the shortcut");
+
+    const dashboard = ctx.document.getElementById("projectDashboard");
+    vm.runInContext(
+      `state.workspaces = []; state.ws = null; state.tab = null;`,
+      ctx,
+    );
+    ctx.window.HerdrGitUi = null;
+    ctx.window.HerdrFileBrowser = { isVisible: () => false };
+    ctx.window.HerdrSearchPanel = null;
+    ctx.syncProjectDashboard();
+    equal(dashboard.hidden, false, "dashboard shows with no workspaces");
+    ok(dashboard.innerHTML.includes('title="Open workspace or worktree (Ctrl+Q then N)"'), "dashboard open button carries the newWorkspace shortcut");
+    ok(dashboard.innerHTML.includes("Actions menu (Ctrl+Q then /)"), "dashboard menu button carries the search shortcut");
+  });
+
+  it("wires the question dialog and span-button keyboard paths", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // Question dialog: dialog semantics, Escape cancel, Enter confirm,
+    // and modalOpen() counts it so global shortcuts pause while it is up.
+    match(source, /<div class="modal-backdrop question-modal" id="questionModal" role="dialog" aria-modal="true" aria-labelledby="questionTitle" aria-describedby="questionMessage">/);
+    match(source, /"questionModal",\n\s+\];\n\s+if \(staticModals\.some/, "modalOpen lists questionModal");
+    match(source, /else if \(el\("questionModal"\)\.style\.display === "grid"\) \{[\s\S]*?closeQuestion\(false\)/, "Escape cascade cancels the question dialog");
+    match(source, /el\("questionModal"\)\.addEventListener\("keydown", \(e\) => \{[\s\S]*?closeQuestion\(true\)/, "Enter confirms the question dialog");
+
+    // Span buttons: Enter/Space triggers the same click path through the
+    // delegated keydown; the question modal joins the Tab focus trap.
+    match(source, /document\.addEventListener\("keydown", \(e\) => \{[\s\S]*?target\.closest\("\[data-workspace-action\]\"\)[\s\S]*?spanButton\.click\(\)/, "Enter/Space delegation for span buttons");
+    match(source, /"searchPalette",\n\s+"questionModal",\n\s+\];\n\s+const modal = modalIds/, "Tab focus trap lists questionModal");
+    ok(source.includes('role="button" tabindex="0" data-workspace-action="close"'));
+    // Pane tab close spans stay reachable: tabindex rides the markup and
+    // the same delegated keydown covers them.
+    ok(source.includes('class="pane-tab-close" role="button" tabindex="0"'));
+  });
+
+  it("help modal documents the keyboard-operable surfaces", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const html = ctx.shortcutsModalHtml();
+    match(html, /Activate the focused control: sidebar workspace close\/remove actions, pane tab ✕, file tree rows, and the zero-terminal New terminal card/);
+    match(html, /Inside the menu, arrows move between items, Esc closes and returns focus to the \[⋮\] button/);
+    match(html, /Cancel the confirmation dialog; Enter confirms it\./);
   });
 
   it("workspace rows no longer render a panel field (Phase 5)", () => {

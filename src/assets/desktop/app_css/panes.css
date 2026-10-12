@@ -139,6 +139,12 @@
   color: var(--muted);
 }
 
+.pane-tab-close:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  color: var(--danger, #a51d3d);
+}
+
 .pane-tab-close:hover {
   background: var(--danger-tint, rgba(128, 20, 20, 0.12));
   color: var(--danger, #a51d3d);

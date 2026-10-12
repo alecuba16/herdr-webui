@@ -539,7 +539,7 @@ function insertMissingHtml(id, html) {
 }
 function questionModalHtml() {
   return `
-    <div class="modal-backdrop question-modal" id="questionModal">
+    <div class="modal-backdrop question-modal" id="questionModal" role="dialog" aria-modal="true" aria-labelledby="questionTitle" aria-describedby="questionMessage">
       <div class="modal question-modal-card">
         <div class="settings-head">
           <div>
@@ -737,7 +737,9 @@ function shortcutsModalHtml() {
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then E</kbd><span>Close the active pane and promote its sibling.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then M</kbd><span>Move the active editor or git tab to the next pane.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Shift+M</kbd><span>Maximize the active pane, or restore the layout when already maximized.</span></div>
-          <div class="shortcut-row"><kbd>F10</kbd><span>Open the pane actions menu for the active pane.</span></div>
+          <div class="shortcut-row"><kbd>F10</kbd><span>Open the pane actions menu for the active pane. Inside the menu, arrows move between items, Esc closes and returns focus to the [⋮] button.</span></div>
+          <div class="shortcut-row"><kbd>Enter/Space</kbd><span>Activate the focused control: sidebar workspace close/remove actions, pane tab ✕, file tree rows, and the zero-terminal New terminal card all respond to the focused key press.</span></div>
+          <div class="shortcut-row"><kbd>Esc</kbd><span>Cancel the confirmation dialog; Enter confirms it.</span></div>
           <div class="shortcut-row"><kbd>Shift+Enter</kbd><span>Send the configured newline sequence to the main terminal when Shift+Enter newline is enabled.</span></div>
           <div class="shortcut-row"><kbd>PageUp/PageDown</kbd><span>Scroll terminal output by one visible page in normal scrollback.</span></div>
           <div class="shortcut-row"><kbd>Wheel/trackpad/touch drag</kbd><span>Scroll terminal output; trackpad deltas accumulate by row height and line-wheel events use the configured Scroll speed.</span></div>

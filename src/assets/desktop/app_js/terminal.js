@@ -867,6 +867,7 @@ function modalOpen() {
     "worktreeOpenModal",
     "shortcutsModal",
     "searchPalette",
+    "questionModal",
   ];
   if (staticModals.some((id) => {
     const m = el(id);

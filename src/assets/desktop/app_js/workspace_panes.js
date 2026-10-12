@@ -1099,6 +1099,34 @@ function paneMenuHtml(items) {
     .join("");
 }
 
+// Menu-list key handling: ArrowUp/Down/Home/End move focus between
+// items, Escape closes. Escape focus restore lives in closePaneMenu, not
+// here: the document-level capture Escape cascade (bindings.js) closes the
+// menu before this bubble-phase listener can run, and its stopPropagation
+// prevents this handler entirely. Enter is left to the native button
+// behavior.
+function paneMenuKeydown(event) {
+  const menu = document.getElementById("paneMenu");
+  if (!menu) return;
+  const items = [...menu.querySelectorAll(".pane-menu-item")];
+  if (!items.length) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closePaneMenu();
+    return;
+  }
+  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const current = items.indexOf(document.activeElement);
+  let next = 0;
+  if (event.key === "ArrowDown") next = (current + 1 + items.length) % items.length;
+  else if (event.key === "ArrowUp") next = (current - 1 + items.length) % items.length;
+  else if (event.key === "Home") next = 0;
+  else next = items.length - 1;
+  if (items[next] && typeof items[next].focus === "function") items[next].focus();
+}
+
 function togglePaneMenu(button) {
   const existing = document.getElementById("paneMenu");
   if (existing) {
@@ -1132,6 +1160,7 @@ function togglePaneMenu(button) {
     closePaneMenu();
     item.action();
   });
+  menu.addEventListener("keydown", paneMenuKeydown);
   document.body.appendChild(menu);
   positionPaneMenu(menu, button);
   if (button.setAttribute) button.setAttribute("aria-expanded", "true");
@@ -1155,11 +1184,15 @@ function positionPaneMenu(menu, button) {
 
 function closePaneMenu() {
   const menu = document.getElementById("paneMenu");
+  const button = paneMenu && paneMenu.button;
   if (menu) detachDomNode(menu);
-  if (paneMenu && paneMenu.button && paneMenu.button.setAttribute) {
-    paneMenu.button.setAttribute("aria-expanded", "false");
-  }
+  if (button && button.setAttribute) button.setAttribute("aria-expanded", "false");
   paneMenu = null;
+  // Focus restore belongs here, not in paneMenuKeydown: every close path
+  // (Escape cascade, outside click, re-toggle) must return focus to the
+  // [⋮] button. Removing the menu drops focus on the closed item first;
+  // the button ref is captured before paneMenu is cleared.
+  if (button && typeof button.focus === "function") button.focus();
 }
 
 // ---- tab drag between panes (Phase 5) ----------------------------------

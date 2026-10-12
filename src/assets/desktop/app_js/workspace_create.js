@@ -63,6 +63,14 @@ el("workspaceCreateCancel").onclick = closeWorkspaceCreateModal;
 el("questionClose").onclick = () => closeQuestion(false);
 el("questionCancel").onclick = () => closeQuestion(false);
 el("questionConfirm").onclick = () => closeQuestion(true);
+// Enter confirms the focused question dialog (the confirm button already
+// takes focus on open); Escape cancels it via the bindings.js cascade.
+el("questionModal").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  e.stopPropagation();
+  closeQuestion(true);
+});
 el("workspaceCreateForm").onsubmit = (e) => {
   e.preventDefault();
   if (document.activeElement === el("workspaceCreatePath")) {

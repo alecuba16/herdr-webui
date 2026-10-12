@@ -836,6 +836,49 @@ test("pane menu items adapt to the active tab kind", () => {
   assert.ok(!freshItems.some((item) => item.id === "rename-tab"), "empty menu hides rename");
 });
 
+test("pane menu keydown: arrows move focus and Escape returns to the button", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-16");
+  const panes = ctx.HerdrWorkspacePanes;
+  panes.splitPaneRight();
+  const container = document.getElementById("workspacePanes");
+  const row = container.children.find((child) => child.className.split(/\s+/).includes("pane-row"));
+  const pane = row.children.find((child) => child.className.split(/\s+/).includes("workspace-pane"));
+  const button = makeNode("", "pane-strip-button pane-menu-button");
+  pane.appendChild(button);
+  ctx.togglePaneMenu(button);
+  const menu = document.getElementById("paneMenu");
+  assert.ok(menu, "menu opened");
+  // Fake DOM innerHTML never materializes children, so attach the menu
+  // items the same nodes the click handler would find.
+  const items = ["Split right", "Split down", "Maximize pane"].map((label, index) => {
+    const item = makeNode("", "pane-menu-item");
+    item.dataset.index = String(index);
+    item.label = label;
+    menu.appendChild(item);
+    return item;
+  });
+  let focused = null;
+  for (const item of items) item.focus = () => { focused = item; };
+  button.focus = () => { focused = button; };
+  document.activeElement = items[0];
+  const keydown = (key) => ctx.paneMenuKeydown({ key, preventDefault() {}, stopPropagation() {} });
+  keydown("ArrowDown");
+  assert.equal(focused, items[1], "ArrowDown moves to the second item");
+  document.activeElement = items[1];
+  keydown("ArrowUp");
+  assert.equal(focused, items[0], "ArrowUp wraps to the first item");
+  document.activeElement = items[1];
+  keydown("Home");
+  assert.equal(focused, items[0], "Home lands on the first item");
+  document.activeElement = items[0];
+  keydown("End");
+  assert.equal(focused, items[items.length - 1], "End lands on the last item");
+  keydown("Escape");
+  assert.equal(document.getElementById("paneMenu"), null, "Escape closes the menu");
+  assert.equal(focused, button, "Escape restores focus to the [⋮] button");
+});
+
 test("togglePaneMenu opens, re-click closes, and item actions dispatch", () => {
   const { document } = buildDom();
   const ctx = loadPanesModule(document, "ws-14");
