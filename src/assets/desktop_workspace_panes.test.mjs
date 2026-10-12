@@ -933,6 +933,18 @@ test("strip HTML includes the pane menu control and maximize shortcut defaults",
   assert.ok(shortcutsSource.includes("togglePaneMenu: () =>"), "menu shortcut dispatch wired");
 });
 
+test("closePaneMenu restores focus through the live button, not a stale ref", () => {
+  // Pane strips are innerHTML-swapped on re-renders, so the button ref
+  // captured at open time can be detached by close time. Source-level pin:
+  // closePaneMenu re-queries the button by pane id before focusing. The
+  // behavioral check runs in the live CDP verify (real browser DOM).
+  const panesSource = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
+  assert.ok(panesSource.includes("paneButtonByPaneId"), "close resolves the live button by pane id");
+  const closeBody = panesSource.slice(panesSource.indexOf("function closePaneMenu"), panesSource.indexOf("function closePaneMenu") + 700);
+  assert.ok(closeBody.includes("paneButtonByPaneId(paneId)"), "closePaneMenu consults the re-query before the captured ref");
+  assert.ok(closeBody.includes("(paneId && paneButtonByPaneId(paneId)) || captured"), "captured ref is only the fallback");
+});
+
 // ---- Phase 5: tab drag between panes -----------------------------------
 // The drag pipeline ends in movePaneTabTo: same semantics the drop
 // handler runs. Terminal tabs never move (singleton surface), editor

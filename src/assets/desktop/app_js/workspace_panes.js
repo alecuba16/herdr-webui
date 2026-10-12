@@ -1184,7 +1184,12 @@ function positionPaneMenu(menu, button) {
 
 function closePaneMenu() {
   const menu = document.getElementById("paneMenu");
-  const button = paneMenu && paneMenu.button;
+  // pane strips re-render on layout changes; the captured button ref can be
+  // detached by then, so resolve the live node by paneId. aria-expanded and
+  // focus go to that node, never to the stale one.
+  const paneId = paneMenu && paneMenu.paneId;
+  const captured = paneMenu && paneMenu.button;
+  const button = (paneId && paneButtonByPaneId(paneId)) || captured;
   if (menu) detachDomNode(menu);
   if (button && button.setAttribute) button.setAttribute("aria-expanded", "false");
   paneMenu = null;
@@ -1193,6 +1198,18 @@ function closePaneMenu() {
   // [⋮] button. Removing the menu drops focus on the closed item first;
   // the button ref is captured before paneMenu is cleared.
   if (button && typeof button.focus === "function") button.focus();
+}
+
+// The pane strip is innerHTML-swapped on re-renders; this resolves the
+// current [⋮] button for a pane so menu close restores focus to a live
+// node even after the strip that opened the menu was replaced. Returns
+// null where the host document cannot query (unit-test fake DOMs), so
+// closePaneMenu falls back to the captured button ref.
+function paneButtonByPaneId(paneId) {
+  if (typeof document.querySelector !== "function" || typeof CSS === "undefined" || !CSS.escape) return null;
+  const pane = document.querySelector(`.workspace-pane[data-pane-id="${CSS.escape(String(paneId))}"]`);
+  const button = pane && pane.querySelector(".pane-menu-button");
+  return button || null;
 }
 
 // ---- tab drag between panes (Phase 5) ----------------------------------
