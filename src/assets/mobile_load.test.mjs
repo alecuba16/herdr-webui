@@ -1308,6 +1308,40 @@ describe("mobile bundle load", () => {
     equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").worktreeDefaultDirectory, "../wt-deb");
   });
 
+  it("the debounced commit suppresses the full refresh so focus survives", async () => {
+    // The whole point of the mobile debounce chrome: while the user is
+    // still typing, the commit must not run refresh() (a refresh swaps
+    // the screen DOM and drops focus + keyboard). Only the row's chrome
+    // updates. Observable in the harness: refresh() issues the session
+    // snapshot request; a suppressed commit does not.
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.showScreen("settings");
+    const snapshotBefore = ctx.requests.filter(
+      (request) => request.url === "/api/session-snapshot",
+    ).length;
+    // Baseline: an explicit refresh does hit the snapshot endpoint.
+    await ctx.HerdrMobile.refresh();
+    const snapshotsFromRefresh = ctx.requests.filter(
+      (request) => request.url === "/api/session-snapshot",
+    ).length - snapshotBefore;
+    ok(snapshotsFromRefresh > 0, "baseline refresh issues the snapshot request");
+
+    const before = ctx.requests.length;
+    ctx.HerdrMobile.setSettingDebounced("worktreeDefaultDirectory", "../wt-focus");
+    await ctx.flushTimers();
+    equal(
+      JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").worktreeDefaultDirectory,
+      "../wt-focus",
+      "the debounced value still commits",
+    );
+    const snapshotBurst = ctx.requests
+      .slice(before)
+      .filter((request) => request.url === "/api/session-snapshot");
+    equal(snapshotBurst.length, 0,
+      "the debounced commit must not trigger a full refresh mid-typing");
+  });
+
   it("retyping resets the debounce and change commits flush it early", async () => {
     const ctx = context();
     vm.runInContext(source, ctx);
