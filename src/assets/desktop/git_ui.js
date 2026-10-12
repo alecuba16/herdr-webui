@@ -726,6 +726,11 @@
       if (!view.cwd || (previousWorkspaceCwd && samePath(view.cwd, previousWorkspaceCwd))) {
         view.cwd = nextWorkspaceCwd || view.cwd;
       }
+      // The workspace folder moved (default-folder change, worktree
+      // switch): a rail park from the old folder is stale, drop it.
+      if (nextWorkspaceCwd && !samePath(previousWorkspaceCwd, nextWorkspaceCwd)) {
+        view.railStatus = null;
+      }
       view.title = workspaceTitle(workspace);
       view.titleKind = workspace.worktree ? "Worktree" : "Branch";
     }
@@ -1388,19 +1393,40 @@
         view = { loading: false, tab: "changes", mode: "changes", file: "", navigationStack: [], cwd, workspaceCwd: cwd };
         state.cache[key] = view;
       }
-      // The __probed skip is only valid while the parked status still
-      // describes this folder. A default-folder change (settings) or a
-      // worktree switch can leave the park on the old cwd; the stale park
-      // (e.g. nogit) would then pin the rail disabled forever, because the
-      // disabled button blocks the open() that would refresh the view.
-      // Re-point the view and drop the stale park so this probe refetches;
-      // open() treats a statusless view as unloaded and does the real load.
-      if (view.status && view.status.__probed
-        && (!samePath(view.workspaceCwd || "", cwd) || (view.cwd && !samePath(view.cwd, cwd)))) {
+      // Picker divergence (openCwdPicker, worktree pick) is deliberate
+      // user state: probes must never touch the view, only warm the rail.
+      const diverged = !!(view.cwd && !samePath(view.cwd, cwd) && samePath(view.workspaceCwd || "", cwd));
+      if (diverged && view.railStatus && view.railStatus.__probed
+        && !samePath(view.railStatus.cwd || "", cwd)) {
+        view.railStatus = null;
+      }
+      // The __probed skip is valid only while the park describes this
+      // folder: a stale nogit park locks the rail off (it blocks open()).
+      if (view.status && view.status.__probed && !diverged
+        && !samePath(view.workspaceCwd || "", cwd)) {
         view.cwd = cwd;
         view.workspaceCwd = cwd;
         view.status = null;
         view.error = "";
+      }
+      if (diverged) {
+        // The rail tint must describe the workspace folder while the view
+        // shows the picked one, so a plain folder cannot nogit-lock the rail.
+        if (!view.railStatus || !view.railStatus.__probed) {
+          try {
+            const status = await api(`/api/git-ui/status?cwd=${encodeURIComponent(cwd)}`);
+            view.railStatus = Object.assign({}, status, { __probed: true, cwd });
+          } catch (err) {
+            if (isNotGitRepositoryMessage(err && err.message)) {
+              view.railStatus = { __probed: true, cwd, not_git_repository: true, state: "cleanup only" };
+            }
+          }
+          if (view.railStatus && view.railStatus.__probed) {
+            if (window.syncGitWorkspaceToggle) window.syncGitWorkspaceToggle();
+            else if (state.visible) render();
+          }
+        }
+        return;
       }
       if (!view.status || !view.status.__probed) {
         // The fetch is async: the drawer may have opened (refresh loaded a

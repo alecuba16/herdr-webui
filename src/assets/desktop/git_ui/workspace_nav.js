@@ -40,6 +40,9 @@
       view.cwd = cwd;
       view.file = "";
       view.status = null;
+      // The rail park describes the workspace folder: any Git folder
+      // move must drop it so the next probe refetches, not serves the old tint.
+      view.railStatus = null;
       view.diff = null;
       view.compareBase = "";
       view.compareTarget = "";
@@ -162,8 +165,11 @@
       if (!workspace || !workspaceCwd(workspace)) return "nogit";
       const view = state.cache[key || workspaceKey(workspace)];
       if (!view) return "unknown";
-      if (view.error) return "nogit";
-      const status = view.status || {};
+      // While the Git cwd is off the workspace folder, the rail reads
+      // the railStatus park, so a plain pick cannot nogit-lock it.
+      const railOwned = !gitCwdMatchesWorkspace(view) && !!view.railStatus;
+      if (view.error && !railOwned) return "nogit";
+      const status = railOwned ? view.railStatus : (view.status || {});
       // The rail button tints by the cached repo state: yellow while there
       // are changes to apply (staged/unstaged/untracked), red on conflicts.
       // The tint outranks "open": a commit made with the drawer visible
