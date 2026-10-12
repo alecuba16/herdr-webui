@@ -102,6 +102,11 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "same spawn-site scrub covers the child PTY; validated with worst-case inherited values in the PR #240 audit",
     ),
     (
+        "src/builtin_backend.rs",
+        "drop",
+        "RestoreEnvVar::drop restores JCODE_HOME/JCODE_NO_* while its creator (live_jcode_tui_detection_end_to_end) still holds crate::tests::lock_env(); the test drops the guards before releasing _guard, so the write is serialized under the shared lock",
+    ),
+    (
         "src/main.rs",
         "main",
         "runtime entry point: parses --verbose once at startup, never runs inside a cargo test binary",

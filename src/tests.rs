@@ -106,6 +106,155 @@ pub(crate) fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poison| poison.into_inner())
 }
 
+/// Create a unique temp dir for a test and remove it on scope exit, even
+/// when the test panics (guard drop runs during unwind). Tests that build
+/// a scratch tree must use this instead of a trailing remove_dir_all,
+/// which a failed assert skips; that pattern leaked hundreds of dirs
+/// into TMPDIR over repeated suite runs.
+pub(crate) fn temp_guard(prefix: &str) -> (PathBuf, TempDirGuard) {
+    sweep_dead_test_artifacts_once();
+    let dir = std::env::temp_dir().join(format!(
+        "{prefix}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    (dir.clone(), TempDirGuard(dir))
+}
+
+/// Retrying removal: pane children and language servers can hold handles
+/// briefly past the test body, and a single failed remove would leak the
+/// tree for good. 5s backstop mirrors the e2e RemoveTempDir guard.
+pub(crate) struct TempDirGuard(PathBuf);
+
+impl TempDirGuard {
+    /// Wrap an already-created dir for scope-exit removal.
+    pub(crate) fn new(path: PathBuf) -> Self {
+        sweep_dead_test_artifacts_once();
+        TempDirGuard(path)
+    }
+}
+
+/// One-time-per-process sweep of stale `herdr-*` test artifacts (scratch
+/// dirs and fake socket files) left in TMPDIR and /tmp by earlier runs.
+/// They accumulated from panic-skipped trailing cleanups and fake socket
+/// helpers whose accept threads never exit, reaching thousands of entries.
+/// An artifact is stale only when the pid embedded in its name is dead
+/// (one `ps ax -o pid=` batch), so artifacts owned by a concurrently
+/// running test binary are never touched. Names without a parseable pid
+/// (nanos-only) are skipped; pids are small, nanos are not.
+fn sweep_dead_test_artifacts_once() {
+    static SWEPT: OnceLock<()> = OnceLock::new();
+    if SWEPT.set(()).is_err() {
+        return;
+    }
+    let live: std::collections::HashSet<u32> = std::process::Command::new("ps")
+        .arg("ax")
+        .arg("-o")
+        .arg("pid=")
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|out| {
+            out.lines()
+                .filter_map(|line| line.trim().parse::<u32>().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    // When ps is unavailable, nothing is provably dead: skip the sweep
+    // entirely rather than guess.
+    if live.is_empty() {
+        return;
+    }
+    let current = std::process::id();
+    // Grace window: a test binary that started during this scan has not
+    // created minute-old artifacts, so its fresh dirs and sockets are
+    // never removed even if the ps snapshot raced its spawn.
+    const GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+    let sweep_dir = |base: &Path| {
+        let Ok(entries) = fs::read_dir(base) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !name.starts_with("herdr-") {
+                continue;
+            }
+            // fake_socket_dir names have no dash: herdr-wui-t<pid>.
+            if let Some(rest) = name.strip_prefix("herdr-wui-t") {
+                if let Ok(pid) = rest.parse::<u32>() {
+                    if pid != current && !live.contains(&pid) {
+                        let path = entry.path();
+                        let stale = entry
+                            .metadata()
+                            .and_then(|meta| meta.modified())
+                            .map(|mtime| mtime.elapsed().map(|age| age >= GRACE).unwrap_or(true))
+                            .unwrap_or(true);
+                        if stale {
+                            if path.is_dir() {
+                                let _ = fs::remove_dir_all(&path);
+                            } else {
+                                let _ = fs::remove_file(&path);
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
+            let Some(pid) = embedded_test_pid(name) else {
+                continue;
+            };
+            if pid == current || live.contains(&pid) {
+                continue;
+            }
+            let path = entry.path();
+            let stale = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .map(|mtime| mtime.elapsed().map(|age| age >= GRACE).unwrap_or(true))
+                .unwrap_or(true);
+            if !stale {
+                continue;
+            }
+            if path.is_dir() {
+                let _ = fs::remove_dir_all(&path);
+            } else {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    };
+    sweep_dir(&std::env::temp_dir());
+    // fake_socket_dir uses /tmp directly, not TMPDIR.
+    sweep_dir(Path::new("/tmp"));
+}
+
+/// Extract the owning pid from a herdr test artifact name: the first
+/// all-digits dash component below 10 million (pids are small; nanos
+/// timestamps never pass that bar).
+fn embedded_test_pid(name: &str) -> Option<u32> {
+    name.split('-')
+        .filter_map(|part| part.parse::<u32>().ok())
+        .find(|pid| *pid < 10_000_000)
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::fs::remove_dir_all(&self.0).is_err() && self.0.exists() {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
 /// Monotonic suffix for fake-socket names. Timestamps alone can collide
 /// when parallel tests start within the same clock tick on loaded CI
 /// runners; a collision makes the second create clobber the first
@@ -1081,13 +1230,7 @@ fn rejects_public_bind_without_credentials() {
 #[tokio::test]
 async fn server_settings_api_reports_and_updates_runtime_settings() {
     let _guard = lock_env();
-    let config_home = std::env::temp_dir().join(format!(
-        "herdr-webui-settings-api-test-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let (config_home, _config_guard) = temp_guard("herdr-webui-settings-api-test");
     std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let state = test_state();
     let app = test_app_with_state(state);
@@ -2857,13 +3000,7 @@ async fn login_route_sets_cookie_for_valid_credentials() {
     // redirect that write lands on the real ~/.config and destroys the
     // operator's live sessions with fixture tokens.
     let _guard = lock_env();
-    let config_home = std::env::temp_dir().join(format!(
-        "herdr-webui-login-route-test-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let (config_home, _config_guard) = temp_guard("herdr-webui-login-route-test");
     std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let state = test_state();
     let app = test_app_with_state(state.clone());
@@ -2928,13 +3065,7 @@ async fn login_route_rejects_invalid_credentials() {
 async fn logout_route_invalidates_session_and_requires_auth() {
     // Same isolation as the login route test: logout persists the sidecar.
     let _guard = lock_env();
-    let config_home = std::env::temp_dir().join(format!(
-        "herdr-webui-logout-route-test-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let (config_home, _config_guard) = temp_guard("herdr-webui-logout-route-test");
     std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let state = test_state();
     let app = test_app_with_state(state.clone());
@@ -7498,7 +7629,7 @@ async fn launch_session_returns_error_when_herdr_bin_not_found() {
 }
 
 #[cfg(unix)]
-fn fake_herdr_version_script() -> String {
+fn fake_herdr_version_script() -> (String, TempDirGuard) {
     use std::os::unix::fs::PermissionsExt;
     let root = std::env::temp_dir().join(format!(
         "herdr-webui-launch-test-{}-{}",
@@ -7507,6 +7638,7 @@ fn fake_herdr_version_script() -> String {
     ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
+    let guard = TempDirGuard::new(root.clone());
     let script = root.join("fake-herdr");
     std::fs::write(
         &script,
@@ -7516,7 +7648,7 @@ fn fake_herdr_version_script() -> String {
     let mut permissions = std::fs::metadata(&script).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).unwrap();
-    script.display().to_string()
+    (script.display().to_string(), guard)
 }
 
 #[tokio::test]
@@ -7524,7 +7656,8 @@ async fn launch_session_external_succeeds_with_true_command() {
     // A fake herdr reporting a compatible version; any launch args make it
     // exit 0 like /usr/bin/true so the launch handler sees success.
     let mut state = test_state();
-    state.herdr_bin = fake_herdr_version_script();
+    let (script, _script_guard) = fake_herdr_version_script();
+    state.herdr_bin = script;
     let app = test_app_with_state(state);
 
     let response = app
@@ -7547,7 +7680,8 @@ async fn launch_session_external_succeeds_with_true_command() {
 #[tokio::test]
 async fn launch_session_default_session_omits_env() {
     let mut state = test_state();
-    state.herdr_bin = fake_herdr_version_script();
+    let (script, _script_guard) = fake_herdr_version_script();
+    state.herdr_bin = script;
     let app = test_app_with_state(state);
 
     let response = app
@@ -8036,13 +8170,7 @@ fn web_event_kind_extracts_kind_from_wrapped_event() {
 #[tokio::test]
 async fn update_server_settings_saves_and_returns_updated_settings() {
     let _guard = lock_env();
-    let config_home = std::env::temp_dir().join(format!(
-        "herdr-webui-save-test-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let (config_home, _config_guard) = temp_guard("herdr-webui-save-test");
     std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let state = test_state();
     let app = test_app_with_state(state);
@@ -8089,13 +8217,7 @@ async fn update_server_settings_saves_and_returns_updated_settings() {
 #[allow(clippy::await_holding_lock)]
 async fn update_server_settings_policy_flip_adopts_new_lifetime() {
     let _guard = lock_env();
-    let config_home = std::env::temp_dir().join(format!(
-        "herdr-webui-policy-flip-test-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let (config_home, _config_guard) = temp_guard("herdr-webui-policy-flip-test");
     std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let state = test_state();
     let auth = Arc::clone(&state.auth);
@@ -8170,13 +8292,7 @@ async fn update_server_settings_policy_flip_adopts_new_lifetime() {
 #[allow(clippy::await_holding_lock)]
 async fn update_server_settings_policy_flip_never_to_timed_anchors_deadline() {
     let _guard = lock_env();
-    let config_home = std::env::temp_dir().join(format!(
-        "herdr-webui-policy-flip-rev-test-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let (config_home, _config_guard) = temp_guard("herdr-webui-policy-flip-rev-test");
     std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let state = test_state();
     let auth = Arc::clone(&state.auth);
@@ -9921,13 +10037,7 @@ async fn lsp_post(
 #[tokio::test]
 async fn lsp_config_api_reports_and_updates_settings() {
     let _guard = lock_env();
-    let config_home = std::env::temp_dir().join(format!(
-        "herdr-webui-lsp-config-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let (config_home, _config_guard) = temp_guard("herdr-webui-lsp-config");
     std::env::set_var("XDG_CONFIG_HOME", &config_home);
     let state = test_state();
     let app = test_app_with_state(state);
@@ -10280,13 +10390,7 @@ async fn events_socket_broadcasts_server_settings_changed() {
     use tokio_tungstenite::connect_async;
 
     let _guard = lock_env();
-    let config_home = std::env::temp_dir().join(format!(
-        "herdr-webui-settings-broadcast-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let (config_home, _config_guard) = temp_guard("herdr-webui-settings-broadcast");
     std::env::set_var("XDG_CONFIG_HOME", &config_home);
 
     let (socket, _handle) = fake_api_socket_events_streaming();
@@ -10400,13 +10504,7 @@ async fn events_socket_survives_backend_subscription_failure() {
     use tokio_tungstenite::connect_async;
 
     let _guard = lock_env();
-    let config_home = std::env::temp_dir().join(format!(
-        "herdr-webui-events-dead-backend-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let (config_home, _config_guard) = temp_guard("herdr-webui-events-dead-backend");
     std::env::set_var("XDG_CONFIG_HOME", &config_home);
 
     let mut state = test_state();
@@ -10519,8 +10617,12 @@ async fn events_socket_survives_backend_subscription_failure() {
 fn fake_api_socket_events_streaming() -> (PathBuf, thread::JoinHandle<()>) {
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 
+    // pid-keyed name: the dead-test-artifact sweeper can prove ownership
+    // from the embedded pid and unlink this socket on a later run even
+    // though the accept thread outlives the test that created it.
     let path = std::env::temp_dir().join(format!(
-        "herdr-webui-events-test-{}.sock",
+        "herdr-webui-events-test-{}-{}.sock",
+        std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

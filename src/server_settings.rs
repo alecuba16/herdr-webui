@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn isolation_guard_passes_and_save_targets_isolated_path() {
         let _guard = lock_env();
-        let xdg = std::env::temp_dir().join(format!("herdr-guard-pass-{}", std::process::id()));
+        let (xdg, _xdg_guard) = crate::tests::temp_guard("herdr-guard-pass");
         std::env::set_var("XDG_CONFIG_HOME", &xdg);
         assert_test_settings_isolation();
         let settings = valid_settings();
@@ -682,7 +682,6 @@ mod tests {
             "save landed at {}",
             written.display()
         );
-        let _ = std::fs::remove_dir_all(&xdg);
         std::env::remove_var("XDG_CONFIG_HOME");
     }
 
@@ -736,7 +735,7 @@ mod tests {
     #[test]
     fn persisted_session_token_roundtrip_and_cleanup() {
         let _guard = lock_env();
-        let dir = std::env::temp_dir().join(format!("herdr-token-test-{}", std::process::id()));
+        let (dir, _dir_guard) = crate::tests::temp_guard("herdr-token-test");
         std::env::set_var("XDG_CONFIG_HOME", &dir);
 
         // Missing file: no sessions, no panic.
@@ -979,14 +978,7 @@ mod tests {
     #[test]
     fn atomic_write_never_exposes_a_partial_file_to_readers() {
         use std::sync::Arc;
-        let dir = std::env::temp_dir().join(format!(
-            "herdr-webui-atomic-write-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&dir).unwrap();
+        let (dir, _dir_guard) = crate::tests::temp_guard("herdr-webui-atomic-write-test");
         let path = dir.join("sidecar.json");
         let payload = "{".to_string() + &"x".repeat(4096) + "}";
         // Pre-create so the reader only ever judges tearing, not the
@@ -1011,6 +1003,5 @@ mod tests {
         }
         writer.join().unwrap();
         assert_eq!(bad_reads, 0, "reader saw a torn or missing file");
-        let _ = fs::remove_dir_all(&dir);
     }
 }
