@@ -7162,4 +7162,30 @@ describe("shortcut hint toast", () => {
       "guard uses the reduce form",
     );
   });
+
+  it("stacks the toast above modal backdrops but below nested pickers", () => {
+    // The toast teaches the chord for actions that OPEN modals (settings,
+    // help, palette). If its z-index is below the modal backdrop (1100)
+    // the scrim paints over it and the hint is never seen. Nested flows
+    // (directory picker 1200, file browser 1500) are newer interaction
+    // contexts and stay above the toast.
+    const zIndex = (rule, source) => {
+      const m = source.match(
+        new RegExp(rule.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{[^}]*z-index:\\s*([0-9]+)"),
+      );
+      return m ? Number(m[1]) : null;
+    };
+    const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
+    const toast = zIndex(".shortcut-hint-toast", toastCssSource);
+    ok(toast !== null, "toast z-index pinned as a number");
+    const modalSource = read("./desktop/app_css/modals.css");
+    const backdrop = zIndex(".modal-backdrop", modalSource);
+    ok(backdrop !== null, "modal-backdrop z-index found");
+    ok(toast > backdrop, `toast z-index ${toast} must exceed modal backdrop ${backdrop}`);
+    const picker = Math.max(
+      zIndex(".directory-picker-backdrop", read("./desktop/directory_picker.css")) || 0,
+      zIndex(".file-browser-menu", read("./desktop/file_browser.css")) || 0,
+    );
+    ok(picker >= toast, `highest other layer ${picker} must not fall below the toast ${toast}`);
+  });
 });

@@ -61,7 +61,10 @@
   position: fixed;
   right: 16px;
   transition: opacity 160ms ease-out, transform 160ms ease-out;
-  z-index: 1050;
+  /* Above modal backdrops (1100) so opening actions still show their chord,
+   below newer contexts that should cover it: pickers (1200), file browser
+   menu (1500). */
+  z-index: 1150;
 }
 .shortcut-hint-toast-hidden {
   opacity: 0;
