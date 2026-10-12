@@ -608,6 +608,60 @@ input {
   overflow-wrap: anywhere;
   font-size: var(--fs-2xs, 11px);
 }
+/* Image parts (reference chat-user-image parity): a fixed thumbnail
+   box so a lazy image never grows the turn (and shifts the scroll)
+   when its bytes land; the full-size view is the browser's own image
+   view (open in new tab), so no lightbox here. */
+.lens-image {
+  margin: 6px 0;
+}
+.lens-image img {
+  display: block;
+  max-width: min(9rem, 38vw);
+  height: auto;
+  max-height: 7rem;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--panel);
+}
+/* The load-older row above the turns (reference chat-older / chat-endcap
+   parity): centered, quiet, one control in every state so its height
+   never shifts between idle/loading/failed. */
+.lens-older-load {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  color: var(--fg-dim, #a6adc8);
+  cursor: pointer;
+  display: block;
+  margin: 4px auto 10px;
+  padding: 3px 10px;
+  font-size: var(--fs-2xs, 11px);
+}
+.lens-older-load:hover {
+  color: var(--fg);
+  border-color: var(--fg-dim, #a6adc8);
+}
+.lens-older-load:focus-visible {
+  outline: var(--ring, 2px solid var(--accent, #89b4fa));
+  outline-offset: var(--ring-offset, 2px);
+}
+.lens-older-done {
+  color: var(--fg-dim, #a6adc8);
+  font-size: var(--fs-2xs, 11px);
+  margin: 4px auto 10px;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.lens-older-done::before,
+.lens-older-done::after {
+  content: "";
+  flex: 1 1 auto;
+  border-top: 1px solid var(--border);
+}
 .terminal-lens-new {
   position: absolute;
   bottom: 18px;

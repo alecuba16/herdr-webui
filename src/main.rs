@@ -1337,6 +1337,10 @@ fn app_router(state: WebState) -> Router {
         .route("/api/panes/{pane_id}/close", post(close_pane))
         .route("/api/panes/{pane_id}/submit", post(submit_pane))
         .route("/api/panes/{pane_id}/conversation", get(pane_conversation))
+        .route(
+            "/api/panes/{pane_id}/conversation/image",
+            get(pane_conversation_image),
+        )
         .route("/api/panes/{pane_id}/tool-output", get(pane_tool_output))
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/session-snapshot", get(session_snapshot))
@@ -1531,10 +1535,15 @@ async fn security_headers(request: axum::extract::Request, next: Next) -> Respon
         HeaderValue::from_static("no-referrer"),
     );
     if is_api && !is_upgrade {
-        headers.insert(
-            axum::http::header::CACHE_CONTROL,
-            HeaderValue::from_static("no-store"),
-        );
+        // A handler that set its own Cache-Control (the conversation
+        // image route: immutable bytes, a day-long private cache) owns
+        // the decision — the blanket no-store must not overwrite it.
+        if !headers.contains_key(axum::http::header::CACHE_CONTROL) {
+            headers.insert(
+                axum::http::header::CACHE_CONTROL,
+                HeaderValue::from_static("no-store"),
+            );
+        }
     }
     response
 }
@@ -5028,30 +5037,59 @@ fn conversation_error(message: &str) -> (StatusCode, String) {
         "unsupported_agent" => StatusCode::NOT_FOUND,
         "no_session_path" | "ambiguous" => StatusCode::NOT_FOUND,
         "transcript_missing" => StatusCode::NOT_FOUND,
+        // Design section 3: a cursor from another session or a
+        // superseded generation must not be served — 409 semantics
+        // (reference HistoryChanged parity).
+        "history_changed" => StatusCode::CONFLICT,
         _ => StatusCode::BAD_GATEWAY,
     };
     (status, code.to_string())
 }
 
-/// Chat-lens transcript for one pane. GET /api/panes/{pane_id}/conversation.
+/// Page cursors the chat lens sends (reference before/from parity):
+/// both optional, both opaque strings the backend validates against
+/// the same session + generation.
+#[derive(serde::Deserialize, Default)]
+struct PaneConversationQuery {
+    #[serde(default)]
+    before: Option<String>,
+    #[serde(default)]
+    from: Option<String>,
+}
+
+/// Chat-lens transcript for one pane. GET /api/panes/{pane_id}/conversation
+/// (optional ?before=…&from=… page cursors).
 /// Thin proxy to the backend `pane.conversation` method; the backend
 /// owns resolution, parsing, and the design's error codes. Rides the
 /// existing session-cookie auth like every other /api route.
+///
+/// ETag (reference parity): the response `version` is already the
+/// stat signature of both session files, so it serves as a strong
+/// ETag. A poll that carries a matching If-None-Match short-circuits
+/// with 304 — the common idle poll moves zero turn bytes.
 async fn pane_conversation(
     State(state): State<WebState>,
     headers: HeaderMap,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     AxumPath(pane_id): AxumPath<String>,
+    Query(query): Query<PaneConversationQuery>,
 ) -> Response {
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
+    }
+    let mut params = json!({ "pane_id": pane_id });
+    if let Some(before) = query.before.filter(|b| !b.is_empty()) {
+        params["before"] = serde_json::Value::String(before);
+    }
+    if let Some(from) = query.from.filter(|f| !f.is_empty()) {
+        params["from"] = serde_json::Value::String(from);
     }
     let api = api_for_headers_ensured(&state, &headers).await;
     let result = tokio::task::spawn_blocking(move || {
         api.request_value(json!({
             "id": "web:pane:conversation",
             "method": "pane.conversation",
-            "params": { "pane_id": pane_id },
+            "params": params,
         }))
     })
     .await;
@@ -5072,10 +5110,166 @@ async fn pane_conversation(
                 .pointer("/result/conversation")
                 .filter(|c| c.is_object())
             {
-                Some(conversation) => Json(conversation.clone()).into_response(),
+                Some(conversation) => {
+                    let version = conversation
+                        .get("version")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    // Weak ETag, reference parity: a restart may parse
+                    // the same files differently, so the tag is only
+                    // weak-comparable — and compare strips W/ so a
+                    // weak round trip still matches.
+                    let etag = format!("W/\"{version}\"");
+                    let bare = format!("\"{version}\"");
+                    // Reference index.ts:2407 strips the weak prefix
+                    // ONCE from the sent header (replace(/^W\//, "")),
+                    // so a malformed W/W/"…" never matches. A single
+                    // strip_prefix mirrors that; multiple W/ prefixes
+                    // stay and fail the compare.
+                    if headers
+                        .get(axum::http::header::IF_NONE_MATCH)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|v| v.strip_prefix("W/").unwrap_or(v) == bare)
+                        .unwrap_or(false)
+                    {
+                        return (
+                            StatusCode::NOT_MODIFIED,
+                            [
+                                (axum::http::header::ETAG, etag.as_str()),
+                                (axum::http::header::CACHE_CONTROL, "no-store"),
+                            ],
+                        )
+                            .into_response();
+                    }
+                    (
+                        StatusCode::OK,
+                        [
+                            (axum::http::header::ETAG, etag.as_str()),
+                            // no-store keeps the browser's own cache out
+                            // of it, so the chat sees the 304 (same call
+                            // as the reference).
+                            (axum::http::header::CACHE_CONTROL, "no-store"),
+                        ],
+                        Json(conversation.clone()),
+                    )
+                        .into_response()
+                }
                 None => (
                     StatusCode::BAD_GATEWAY,
                     Json(json!({ "error": "malformed backend response", "code": "error" })),
+                )
+                    .into_response(),
+            }
+        }
+        Ok(Err(err)) => {
+            let (status, code) = conversation_error(&err);
+            (status, Json(json!({ "error": err, "code": code }))).into_response()
+        }
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PaneConversationImageQuery {
+    #[serde(default)]
+    r#ref: Option<String>,
+}
+
+/// Image bytes the conversation's image part named. GET
+/// /api/panes/{pane_id}/conversation/image?ref=…
+/// Reference conversationImage parity: the page carried
+/// {kind:"image", media_type, ref} and this fetches the bytes from
+/// the same session (a ref can only name the session the page came
+/// from). Serves raw bytes with the stored media type — browsers
+/// render an <img src> here directly, no base64 detour.
+///
+/// Cache (reference parity): jcode transcript bytes are immutable —
+/// a ref names a message id in a signed session file — so the
+/// response is `private, max-age=86400, immutable` (the reference
+/// reserves no-store for backends whose bytes can change).
+async fn pane_conversation_image(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    AxumPath(pane_id): AxumPath<String>,
+    Query(query): Query<PaneConversationImageQuery>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let Some(reference) = query.r#ref.filter(|r| !r.is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "missing ref query parameter", "code": "bad_request" })),
+        )
+            .into_response();
+    };
+    let api = api_for_headers_ensured(&state, &headers).await;
+    let result = tokio::task::spawn_blocking(move || {
+        api.request_value(json!({
+            "id": "web:pane:conversation_image",
+            "method": "pane.conversation_image",
+            "params": { "pane_id": pane_id, "ref": reference },
+        }))
+    })
+    .await;
+    match result {
+        Ok(Ok(value)) => {
+            if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
+                let message = error
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("conversation image failed");
+                let (status, code) = conversation_error(message);
+                return (status, Json(json!({ "error": message, "code": code }))).into_response();
+            }
+            // Backend arm returns {type, image: {media_type, data}|null}.
+            // Null is not-found (rotation, /clear, or a bad ref) rather
+            // than a failure — the page drops back to its placeholder.
+            match value
+                .pointer("/result/image")
+                .filter(|i| i.is_object())
+                .and_then(|i| {
+                    let media_type = i.get("media_type")?.as_str()?.to_string();
+                    let data = i.get("data")?.as_str()?;
+                    Some((media_type, data.to_string()))
+                }) {
+                Some((media_type, data)) => match crate::jcode_transcript::base64_decode(&data) {
+                    Some(bytes) => (
+                        StatusCode::OK,
+                        [
+                            (axum::http::header::CONTENT_TYPE, media_type.as_str()),
+                            (
+                                axum::http::header::CACHE_CONTROL,
+                                "private, max-age=86400, immutable",
+                            ),
+                            (
+                                axum::http::HeaderName::from_static("x-content-type-options"),
+                                "nosniff",
+                            ),
+                        ],
+                        bytes,
+                    )
+                        .into_response(),
+                    None => (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({
+                            "error": "no such image in this pane's conversation",
+                            "code": "image_not_found",
+                        })),
+                    )
+                        .into_response(),
+                },
+                None => (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({
+                        "error": "no such image in this pane's conversation",
+                        "code": "image_not_found",
+                    })),
                 )
                     .into_response(),
             }
