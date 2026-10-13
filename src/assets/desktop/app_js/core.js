@@ -2024,7 +2024,7 @@ if (soundSetting && !el("optAgentSortMode"))
     .closest("label")
     .insertAdjacentHTML(
       "afterend",
-      `<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly${inputAttrs("done")}><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><input type="checkbox" id="optShortcutHintToasts"><span>Shortcut hint toasts<small>Show a small toast naming the shortcut each time an action runs, so the prefix keys are learned by use.</small></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly${inputAttrs("done")}><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal renderer<small>Ghostty is the default: it loads a larger WASM core for stronger VT compatibility and renders Kitty graphics inline. wterm is lightweight but shows an image placeholder. Stored wterm settings migrate to Ghostty once unless you re-choose wterm. Requires reload after switching.</small></span><select class="settings-select" id="optTerminalCore"><option value="ghostty">Ghostty VT core</option><option value="wterm">wterm VT core</option></select></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"${inputAttrs()}><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Terminal font size<small><span id="terminalFontSizeValue">14</span>px. Applied live; grid re-fits after the change.</small></span><input type="range" id="optTerminalFontSize" min="10" max="22" step="1"></label><label class="option"><input type="checkbox" id="optTerminalLinks"><span>Terminal links<small>Detect http/https URLs in terminal output and open them in a new tab when clicked.</small></span></label><label class="option"><input type="checkbox" id="optTerminalMouseReporting"><span>Terminal mouse reporting<small>Forward mouse clicks and movement to terminal apps. Disabled by default so pointer movement cannot type raw mouse codes into the shell; scrolling still works.</small></span></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Turn on status group sorting for the agents sidebar.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Custom group order</option><option value="attention_inverted">Working-first preset</option></select></label><div class="option agent-sort-order" id="optAgentStatusOrder"><div><strong>Agent group order</strong><small>Move status groups with arrows. Idle green, working yellow, blocked red, done blue, others gray. Saved in this browser.</small></div><div class="agent-sort-list" id="agentStatusOrderList"></div></div><label class="option"><span>Workspace panel size<small>Percent of sidebar height used by Workspaces. Drag separator or type a percent.</small></span><input id="optSidebarWorkspacePercent" type="number" min="20" max="80" step="1"${inputAttrs("done")}></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optWorkspaceOpenTerminal"><span>Open terminal with workspace<small>Start a terminal when a workspace opens. Off by default: the workspace opens empty and you add terminals from its surface.</small></span></label><label class="option"><input type="checkbox" id="optCloseWorkspaceOnLastTerminal"><span>Close workspace with last terminal<small>Close the workspace or worktree once its last terminal panel closes. On by default; turn off to keep workspaces open while empty.</small></span></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"${inputAttrs("done")}></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether alerts fire in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><span>Notification volume<small><span id="notificationVolumeValue">24</span>% for local attention tone.</small></span><input type="range" id="optNotificationVolume" min="0" max="100" step="1"></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Worktree default directory<small>Base directory for generated worktree checkout paths. Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"${inputAttrs()}></label><label class="option"><span>Exploration default directory<small>Prefills new/open workspace, worktree discovery, and Git cleanup scan paths.</small></span><input id="optExplorationDefaultDirectory" placeholder="~/Documents/code"${inputAttrs()}></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Panel tab width<small>Character budget before a tab label ellipsizes. Short labels stay their natural width.</small></span><input id="optPaneTabMaxChars" type="number" min="4" max="60" step="1"${inputAttrs("done")}></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"${inputAttrs("done")}></label>`,
+      `<label class="option"><input type="checkbox" id="optGlobalShortcutsEnabled"><span>Global keyboard shortcuts<small>Enable prefix WebUI navigation shortcuts listed under ?.</small></span></label><label class="option"><span>Shortcut prefix<small>Click Record, press desired key combination, then use it before WebUI shortcuts.</small></span><span class="shortcut-capture"><input id="optGlobalShortcutPrefix" readonly${inputAttrs("done")}><button type="button" class="tab add" id="optGlobalShortcutPrefixCapture">Record</button></span></label><label class="option"><input type="checkbox" id="optShortcutHintToasts"><span>Shortcut hint toasts<small>Show a small toast naming the shortcut each time an action runs, so the prefix keys are learned by use.</small></span></label><label class="option"><span>Search shortcut<small>Optional direct shortcut. Leave disabled if it conflicts with terminal apps.</small></span><span class="shortcut-capture"><input id="optSearchShortcut" readonly${inputAttrs("done")}><button type="button" class="tab add" id="optSearchShortcutCapture">Record</button><button type="button" class="tab add" id="optSearchShortcutClear">Clear</button></span></label><label class="option"><span>Terminal renderer<small>Ghostty is the default: it loads a larger WASM core for stronger VT compatibility and renders Kitty graphics inline. wterm is lightweight but shows an image placeholder. Stored wterm settings migrate to Ghostty once unless you re-choose wterm. Requires reload after switching.</small></span><select class="settings-select" id="optTerminalCore"><option value="ghostty">Ghostty VT core</option><option value="wterm">wterm VT core</option></select></label><label class="option"><span>Terminal font<small>Use installed monospaced font family, including Nerd Fonts used by Neovim.</small></span><input id="optTerminalFontFamily" list="terminalFontPresets" placeholder="&quot;MesloLGS Nerd Font Mono&quot;, monospace"${inputAttrs()}><datalist id="terminalFontPresets"><option value="&quot;MesloLGS Nerd Font Mono&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;MesloLGS Nerd Font&quot;, &quot;MesloLGS NF&quot;, monospace"><option value="&quot;JetBrainsMono Nerd Font Mono&quot;, &quot;JetBrainsMono Nerd Font&quot;, monospace"><option value="&quot;Hack Nerd Font Mono&quot;, &quot;Hack Nerd Font&quot;, monospace"><option value="&quot;FiraCode Nerd Font Mono&quot;, &quot;FiraCode Nerd Font&quot;, monospace"><option value="&quot;CaskaydiaCove Nerd Font Mono&quot;, &quot;CaskaydiaCove Nerd Font&quot;, monospace"><option value="ui-monospace,SFMono-Regular,Menlo,monospace"></datalist></label><label class="option"><span>Terminal font size<small><span id="terminalFontSizeValue">14</span>px. Applied live; grid re-fits after the change.</small></span><input type="range" id="optTerminalFontSize" min="10" max="22" step="1"></label><label class="option"><input type="checkbox" id="optTerminalLinks"><span>Terminal links<small>Detect http/https URLs in terminal output and open them in a new tab when clicked.</small></span></label><label class="option"><input type="checkbox" id="optTerminalMouseReporting"><span>Terminal mouse reporting<small>Forward mouse clicks and movement to terminal apps. Disabled by default so pointer movement cannot type raw mouse codes into the shell; scrolling still works.</small></span></label><label class="option"><span>Close panel shortcut<small>Stored in browser storage and available after reopening the tab.</small></span><select class="settings-select" id="optCloseShortcut"><option value="off">Disabled</option><option value="altw">Option+W</option><option value="shiftspacew">Shift+Space then W</option></select></label><label class="option"><span>Agent sorting<small>Turn on status group sorting for the agents sidebar.</small></span><select class="settings-select" id="optAgentSortMode"><option value="off">Default order</option><option value="attention">Custom group order</option><option value="attention_inverted">Working-first preset</option></select></label><div class="option agent-sort-order" id="optAgentStatusOrder"><div><strong>Agent group order</strong><small>Move status groups with arrows. Idle green, working yellow, blocked red, done blue, others gray. Saved in this browser.</small></div><div class="agent-sort-list" id="agentStatusOrderList"></div></div><label class="option"><span>Workspace panel size<small>Percent of sidebar height used by Workspaces. Drag separator or type a percent.</small></span><input id="optSidebarWorkspacePercent" type="number" min="20" max="80" step="1"${inputAttrs("done")}></label><label class="option"><span>Parent workspace close<small>Close panels only (keeps linked worktrees running) or full close with re-open (stops processes, re-opens worktrees with fresh shells).</small></span><select class="settings-select" id="optParentCloseMode"><option value="panels">Close panels only</option><option value="close">Full close + re-open worktrees</option></select></label><label class="option"><input type="checkbox" id="optWorkspaceOpenTerminal"><span>Open terminal with workspace<small>Start a terminal when a workspace opens. Off by default: the workspace opens empty and you add terminals from its surface.</small></span></label><label class="option"><input type="checkbox" id="optCloseWorkspaceOnLastTerminal"><span>Close workspace with last terminal<small>Close the workspace or worktree once its last terminal panel closes, after asking for confirmation. On by default; turn off to keep workspaces open while empty.</small></span></label><label class="option"><input type="checkbox" id="optStuckWorkingEnabled"><span>Ignore stuck working agents<small>Dismiss working agents that appear stuck. Clears automatically on status changes and terminal output.</small></span></label><label class="option"><span>Ignore stuck working for<small>Minutes to keep a local dismissed-working override before showing working again.</small></span><input id="optWorkingDismissMinutes" type="number" min="1" max="1440" step="1"${inputAttrs("done")}></label><label class="option"><span>Workspace sorting<small>Default tree order, shared drag-and-drop order, or attention state priority.</small></span><select class="settings-select" id="optWorkspaceSort"><option value="default">Default</option><option value="drag">Drag&drop</option><option value="state">State</option></select></label><label class="option"><span>Notification scope<small>Choose whether alerts fire in every open tab or only the tab viewing the agent panel.</small></span><select class="settings-select" id="optSoundScope"><option value="current">Current agent tab</option><option value="all">All tabs</option></select></label><label class="option"><span>Notification volume<small><span id="notificationVolumeValue">24</span>% for local attention tone.</small></span><input type="range" id="optNotificationVolume" min="0" max="100" step="1"></label><label class="option"><input type="checkbox" id="optGenerateWorktreeNames"><span>Generate worktree branch names<small>Allow blank Branch name in Worktrees modal. Herdr generates worktree/&lt;name&gt;.</small></span></label><label class="option"><span>Worktree default directory<small>Base directory for generated worktree checkout paths. Relative paths resolve from repo root. Example: ../worktrees.</small></span><input id="optWorktreeDefaultDirectory" placeholder="../worktrees"${inputAttrs()}></label><label class="option"><span>Exploration default directory<small>Prefills new/open workspace, worktree discovery, and Git cleanup scan paths.</small></span><input id="optExplorationDefaultDirectory" placeholder="~/Documents/code"${inputAttrs()}></label><label class="option"><span>Scroll speed<small><span id="scrollLinesValue">3</span> terminal lines per wheel step.</small></span><input type="range" id="optScrollLines" min="1" max="20" step="1"></label><label class="option"><span>Panel tab width<small>Character budget before a tab label ellipsizes. Short labels stay their natural width.</small></span><input id="optPaneTabMaxChars" type="number" min="4" max="60" step="1"${inputAttrs("done")}></label><label class="option"><span>Worktree autodiscover<small>Seconds to wait after path input stops. Set 0 for immediate.</small></span><input type="number" id="optWorktreeAutoDiscover" min="0" max="30" step="0.5"${inputAttrs("done")}></label>`,
     );
 const treeIndentSettingAnchor = el("optWorkingDismissMinutes");
 if (treeIndentSettingAnchor && !el("optTreeIndentPx"))
@@ -4508,26 +4508,31 @@ function forgetClosedSelection(kind, data) {
 }
 
 // closeWorkspaceOnLastTerminal: once a workspace's last terminal panel is
-// gone (client state already updated), close the workspace itself. Fires
-// from the tab.closed / pane.exited / pane.closed event paths and from the
-// local closeTab flow, which can overlap for one close; the in-flight set
-// keeps them from issuing two close POSTs. The workspace.closed event still
-// owns final state cleanup; the then() only reselects when the POST resolves
-// before the event lands, so the UI never points at a closed workspace.
+// gone (client state already updated), ask, then close the workspace
+// itself. Fires from the tab.closed / pane.exited / pane.closed event
+// paths and from the local closeTab flow, which can overlap for one
+// close; the in-flight set keeps them from issuing two modals or two
+// close POSTs. Confirm (Enter or the Close button) proceeds with the
+// close; Cancel (Escape or the button) keeps the empty workspace open.
+// The workspace.closed event still owns final state cleanup; the then()
+// only reselects when the POST resolves before the event lands, so the UI
+// never points at a closed workspace.
 const autoCloseInFlight = new Set();
-function maybeAutoCloseWorkspace(workspaceId) {
+async function maybeAutoCloseWorkspace(workspaceId) {
   if (!workspaceId) return;
   if (typeof closeWorkspaceById !== "function") return;
   if (!closeWorkspaceOnLastTerminalFlag()) return;
   if (autoCloseInFlight.has(workspaceId)) return;
-  const workspaceStillKnown = (state.workspaces || []).some(
-    (workspace) => workspace.workspace_id === workspaceId,
+  const workspace = (state.workspaces || []).find(
+    (candidate) => candidate.workspace_id === workspaceId,
   );
-  if (!workspaceStillKnown) return;
+  if (!workspace) return;
   // With server-filtered snapshots allTabs only holds the selected
   // workspace, so cross-workspace panel checks read the server-sent
   // per-workspace counts (workspace_counts); the allTabs concat stays as
   // the fallback for older servers and the legacy multi-call path.
+  // removeClosedTabFromState/removeClosedPaneFromState keep the counts
+  // in sync as panels go away, so this reads the post-close truth.
   const serverCount = (state.workspaceCounts || {})[workspaceId] || {};
   const hasPanels = Number.isFinite(serverCount.tabs)
     ? serverCount.tabs > 0
@@ -4535,20 +4540,35 @@ function maybeAutoCloseWorkspace(workspaceId) {
         .concat(state.tabs || [])
         .some((tab) => tab.workspace_id === workspaceId);
   if (hasPanels) return;
-  const wasSelected = state.ws === workspaceId;
   autoCloseInFlight.add(workspaceId);
-  Promise.resolve(closeWorkspaceById(workspaceId))
-    .then(() => {
-      if (!wasSelected) return;
-      resetTerminalConnection(true);
-      if (typeof selectFallbackWorkspaceAfterClosed === "function")
-        selectFallbackWorkspaceAfterClosed(workspaceId);
-      render();
-      replaceSelectionHistory();
-      if (window.HerdrTerminalRenderer) connectTerminal();
-    })
-    .catch(() => {})
-    .finally(() => autoCloseInFlight.delete(workspaceId));
+  try {
+    const kind =
+      typeof isLinkedWorktree === "function" && isLinkedWorktree(workspace)
+        ? "worktree"
+        : "workspace";
+    const name = typeof workspaceCloseName === "function"
+      ? workspaceCloseName(workspaceId)
+      : workspaceId;
+    const confirmed = await askQuestion({
+      title: `Close ${kind}?`,
+      message: `Close ${kind} "${name}"? Its last terminal panel just closed.`,
+      confirmText: "Close",
+      danger: true,
+    });
+    if (!confirmed) return;
+    const wasSelected = state.ws === workspaceId;
+    await closeWorkspaceById(workspaceId);
+    if (!wasSelected) return;
+    resetTerminalConnection(true);
+    if (typeof selectFallbackWorkspaceAfterClosed === "function")
+      selectFallbackWorkspaceAfterClosed(workspaceId);
+    render();
+    replaceSelectionHistory();
+    if (window.HerdrTerminalRenderer) connectTerminal();
+  } catch (_) {
+  } finally {
+    autoCloseInFlight.delete(workspaceId);
+  }
 }
 
 function forgetWorkspaceClientState(workspace) {
@@ -4561,16 +4581,35 @@ function forgetWorkspaceClientState(workspace) {
   if (typeof forgetWorkspaceShell === "function") forgetWorkspaceShell(workspace);
 }
 
+// workspace_counts mirrors the server snapshot, but panel removal is a
+// client-side operation between snapshots; without this adjustment the
+// auto-close guard would read the pre-close count forever.
+function adjustWorkspaceCount(workspaceId, field, delta) {
+  const counts = state.workspaceCounts;
+  if (!counts || !workspaceId || !counts[workspaceId]) return;
+  const entry = counts[workspaceId];
+  entry[field] = Math.max(0, (Number(entry[field]) || 0) + delta);
+}
+
 function removeClosedPaneFromState(paneId) {
+  const closedPane = (state.panes || []).find((pane) => pane.pane_id === paneId) || null;
   state.panes = (state.panes || []).filter((pane) => pane.pane_id !== paneId);
   state.agents = (state.agents || []).filter((agent) => agent.pane_id !== paneId);
+  if (closedPane && closedPane.workspace_id)
+    adjustWorkspaceCount(closedPane.workspace_id, "panes", -1);
 }
 
 function removeClosedTabFromState(tabId) {
+  const closedTab = (state.tabs || []).find((tab) => tab.tab_id === tabId) ||
+    (state.allTabs || []).find((tab) => tab.tab_id === tabId) || null;
+  const removedPanes = (state.panes || []).filter((pane) => pane.tab_id === tabId);
   state.tabs = (state.tabs || []).filter((tab) => tab.tab_id !== tabId);
   state.allTabs = (state.allTabs || []).filter((tab) => tab.tab_id !== tabId);
   state.panes = (state.panes || []).filter((pane) => pane.tab_id !== tabId);
   state.agents = (state.agents || []).filter((agent) => agent.tab_id !== tabId);
+  if (!closedTab || !closedTab.workspace_id) return;
+  adjustWorkspaceCount(closedTab.workspace_id, "tabs", -1);
+  adjustWorkspaceCount(closedTab.workspace_id, "panes", -removedPanes.length);
 }
 
 function removeClosedWorkspaceFromState(workspaceId) {
@@ -4582,6 +4621,8 @@ function removeClosedWorkspaceFromState(workspaceId) {
   state.workspaces = (state.workspaces || []).filter(
     (workspace) => workspace.workspace_id !== workspaceId,
   );
+  if (state.workspaceCounts && state.workspaceCounts[workspaceId])
+    delete state.workspaceCounts[workspaceId];
   state.agents = (state.agents || []).filter(
     (agent) => agent.workspace_id !== workspaceId,
   );

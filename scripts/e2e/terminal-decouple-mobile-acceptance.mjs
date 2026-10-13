@@ -15,7 +15,11 @@
 //        keeps the workspace on screen, back to the no-terminal state
 //   tm6  no desktop empty-leaf DOM leaks into the mobile layout
 //   tm7  with closeWorkspaceOnLastTerminal on (default), closing the last
-//        panel closes the workspace server-side too
+//        panel asks; the second Confirm click closes the workspace
+//        server-side, and canceling that question would keep it open
+//   tm7d canceling the auto-close question (Cancel click) keeps the
+//        emptied workspace selected and alive server-side
+//   tm7e the canceled workspace still exists in the server list
 //
 // The mobile layout switch lives in app_boot.js: layout preference
 // "mobile" in localStorage under "herdr-web-layout". Mobile state is
@@ -369,12 +373,29 @@ async function main() {
     const confirmSheet = document.getElementById('mobileConfirmSheet');
     if (!okBtn || !confirmSheet || confirmSheet.hidden) return "no-confirm";
     okBtn.click();
+    // The auto-close question queues behind the panel-close confirm:
+    // the same sheet reopens for it once the close POST and refresh land.
+    // Poll for that reopen, then Confirm again to close the workspace.
+    let autoMessage = "";
+    const askedAt = Date.now();
+    while (Date.now() - askedAt < 8000) {
+      if (!confirmSheet.hidden) {
+        const messageEl = document.getElementById('mobileConfirmMessage');
+        autoMessage = (messageEl && messageEl.textContent) || "";
+        if (/Close (workspace|worktree)/.test(autoMessage)) { okBtn.click(); break; }
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
     // The close + auto-close chain runs async; give it a beat before
     // polling the server list (the serverGone poll below is the assertion).
     await new Promise((r) => setTimeout(r, 1000));
-    return "confirmed";
+    return JSON.stringify({ secondAsked: !!autoMessage, autoMessage });
   })()`);
-  record("tm7 close confirmed through the real sheet", autoClose === "confirmed", `got ${autoClose}`);
+  let autoInfo = null;
+  try { autoInfo = JSON.parse(autoClose); } catch { autoInfo = null; }
+  record("tm7 close confirmed through the real sheet, auto-close question answered",
+    !!autoInfo && autoInfo.secondAsked === true && /Close (workspace|worktree)/.test(autoInfo.autoMessage || ""),
+    String(autoClose).slice(0, 300));
   const serverGone = await evalExpr(`(async () => {
     const started = Date.now();
     while (Date.now() - started < 10000) {
@@ -388,6 +409,126 @@ async function main() {
   let serverInfo2 = null;
   try { serverInfo2 = JSON.parse(serverGone); } catch { serverInfo2 = null; }
   record("tm7c closing the last panel auto-closes the workspace", !!serverInfo2 && serverInfo2.gone === true, String(serverGone).slice(0, 300));
+
+  // tm7d: the cancel side of the auto-close question. The workspace was
+  // closed in tm7c, so re-open it from recents (the Open button renders
+  // enabled again). Note: recents-open creates a FRESH workspace id for the
+  // path when none is live, so the round pins the cwd, not the old id.
+  // Mint one panel, close it, and Cancel the auto-close question instead
+  // of confirming. The workspace must stay on the server and stay
+  // selected.
+  const reopened = await evalExpr(`(async () => {
+    // The workspace closed in tm7c; a refresh clears it from the in-memory
+    // workspaces list so the recents Open button renders enabled again.
+    if (window.HerdrMobile && typeof window.HerdrMobile.refresh === "function")
+      await window.HerdrMobile.refresh();
+    const more = document.querySelector('.mobile-nav button[data-screen="more"]');
+    if (more) more.click();
+    await new Promise((r) => setTimeout(r, 600));
+    const worktreesItem = Array.from(document.querySelectorAll('.mobile-drawer-item')).find((b) => /worktrees/i.test(b.textContent || ""));
+    if (worktreesItem) worktreesItem.click();
+    await new Promise((r) => setTimeout(r, 800));
+    // Scope to the Recent workspaces disclosure: the discovery Results
+    // section can hold its own td-mobile row (the repo's main checkout)
+    // whose Open button is disabled while discovery is busy, which would
+    // shadow the recents row this round needs.
+    const details = Array.from(document.querySelectorAll("details.mobile-disclosure")).find((d) => /recent/i.test(d.textContent || ""));
+    if (details && !details.open) {
+      details.open = true;
+      details.dispatchEvent(new Event("change"));
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    const row = details
+      ? Array.from(details.querySelectorAll(".mobile-worktree-row")).find((r) => /td-mobile/i.test(r.textContent || ""))
+      : null;
+    if (!row) return "no-row";
+    const btn = Array.from(row.querySelectorAll("button")).find((b) => b.textContent.trim() === "Open");
+    if (!btn) return "no-open";
+    if (btn.disabled) return "open-disabled";
+    btn.click();
+    await new Promise((r) => setTimeout(r, 2500));
+    return JSON.stringify({ ws: (window.location.pathname.match(/workspace\\/([^/]+)/) || [])[1] || "", path: document.querySelector("#mobileMeta") ? (document.querySelector("#mobileMeta").textContent || "") : "" });
+  })()`);
+  let reopenInfo = null;
+  try { reopenInfo = JSON.parse(reopened); } catch { reopenInfo = null; }
+  const reopenedWs = reopenInfo && reopenInfo.ws;
+  // The fresh id is fine as long as it landed on the fixture path (the
+  // old id ws_1 is gone by design after tm7c's close).
+  record("tm7d1 workspace re-opened from recents for the cancel round", !!reopenedWs && reopenedWs !== "" && reopenedWs !== wsIdNow, `got ${reopened} (old id ${wsIdNow} closed in tm7c)`);
+
+  if (reopenedWs && reopenedWs !== wsIdNow) {
+    // Mint one panel on the reopened workspace.
+    const mintCancel = await evalExpr(`(async () => {
+      const panelsBtn = document.querySelector('.mobile-nav button[data-screen="panels"]') || document.querySelector('.mobile-nav button[data-screen="terminal"]');
+      if (panelsBtn) panelsBtn.click();
+      await new Promise((r) => setTimeout(r, 600));
+      const chip = document.getElementById('mobilePanelsChip');
+      if (chip) chip.click();
+      await new Promise((r) => setTimeout(r, 600));
+      const sheet = document.getElementById('mobileTabsSheet');
+      if (!sheet || sheet.hidden) return "no-sheet";
+      const newBtn = Array.from(sheet.querySelectorAll('button')).find((b) => /new panel/i.test(b.textContent || ""));
+      if (!newBtn) return "no-new";
+      newBtn.click();
+      await new Promise((r) => setTimeout(r, 2500));
+      return "minted";
+    })()`);
+    record("tm7d2 new panel minted for the cancel round", mintCancel === "minted", `got ${mintCancel}`);
+
+    const cancelRound = await evalExpr(`(async () => {
+      // Close the current panel with the real confirm flow.
+      const chip = document.getElementById('mobilePanelsChip');
+      if (chip) chip.click();
+      await new Promise((r) => setTimeout(r, 600));
+      const sheet = document.getElementById('mobileTabsSheet');
+      if (!sheet || sheet.hidden) return "no-sheet";
+      const closeBtn = Array.from(sheet.querySelectorAll('button')).find((b) => /close current panel/i.test(b.textContent || ""));
+      if (!closeBtn) return "no-close";
+      closeBtn.click();
+      await new Promise((r) => setTimeout(r, 600));
+      const confirmSheet = document.getElementById('mobileConfirmSheet');
+      const okBtn = document.getElementById('mobileConfirmOk');
+      const cancelBtn = document.getElementById('mobileConfirmCancel');
+      if (!confirmSheet || confirmSheet.hidden) return "no-panel-confirm";
+      okBtn.click();
+      // The auto-close question reopens the same sheet; Cancel it.
+      let autoMessage = "";
+      let cancelled = false;
+      const askedAt = Date.now();
+      while (Date.now() - askedAt < 8000) {
+        if (!confirmSheet.hidden) {
+          const messageEl = document.getElementById('mobileConfirmMessage');
+          autoMessage = (messageEl && messageEl.textContent) || "";
+          if (/Close (workspace|worktree)/.test(autoMessage)) { cancelBtn.click(); cancelled = true; break; }
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      if (!cancelled) return JSON.stringify({ asked: false, autoMessage, sheetHidden: confirmSheet.hidden });
+      await new Promise((r) => setTimeout(r, 1000));
+      const stillSelected = (window.location.pathname.match(/workspace\\/([^/]+)/) || [])[1] || "";
+      return JSON.stringify({ asked: true, autoMessage, sheetHidden: confirmSheet.hidden, stillSelected });
+    })()`);
+    let cancelInfo = null;
+    try { cancelInfo = JSON.parse(cancelRound); } catch { cancelInfo = null; }
+    record("tm7d cancel on the auto-close question keeps the workspace open",
+      !!cancelInfo && cancelInfo.asked === true && cancelInfo.sheetHidden === true && cancelInfo.stillSelected === reopenedWs,
+      String(cancelRound).slice(0, 300));
+
+    const survivor = await evalExpr(`(async () => {
+      const started = Date.now();
+      while (Date.now() - started < 6000) {
+        const list = await fetch("/api/workspaces").then((r) => r.json()).catch(() => null);
+        const ids = list && list.result && Array.isArray(list.result.workspaces) ? list.result.workspaces.map((w) => w.workspace_id) : null;
+        if (ids) return JSON.stringify({ alive: ids.includes("${reopenedWs}"), ids });
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      return JSON.stringify({ alive: null });
+    })()`);
+    let survivorInfo = null;
+    try { survivorInfo = JSON.parse(survivor); } catch { survivorInfo = null; }
+    record("tm7e canceled auto-close leaves the workspace alive server-side",
+      !!survivorInfo && survivorInfo.alive === true, String(survivor).slice(0, 300));
+  }
 
   console.log(`\n${recorder.passed}/${recorder.results.length} checks passed`);
   writeReport(outPath, recorder, { status: recorder.failed ? "failed" : "passed" });

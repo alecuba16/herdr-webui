@@ -4815,7 +4815,7 @@ describe("app bundle load", () => {
     match(source, /id="optCloseWorkspaceOnLastTerminal"/);
     match(source, /Close workspace with last terminal/);
     match(source, /function closeWorkspaceOnLastTerminalFlag\(\)/);
-    match(source, /function maybeAutoCloseWorkspace\(workspaceId\)/);
+    match(source, /async function maybeAutoCloseWorkspace\(workspaceId\)/);
     match(source, /title: "Shortcuts"/);
     match(source, /title: "Workspace behavior"/);
     const bindingsSource = readFileSync(new URL("./desktop/app_js/bindings.js", import.meta.url), "utf8");
@@ -4870,6 +4870,8 @@ describe("app bundle load", () => {
        forgetClosedSelection("tab.closed", { tab_id: "tab_1" });`,
       ctx,
     );
+    // The auto-close asks before POSTing: answer through the real modal.
+    await ctx.closeQuestion(true);
     await flushMicrotasks();
 
     const closeRequest = requests.find(
@@ -4960,6 +4962,7 @@ describe("app bundle load", () => {
        forgetClosedSelection("pane.exited", { pane_id: "pane_1" });`,
       ctx,
     );
+    await ctx.closeQuestion(true);
     await flushMicrotasks();
 
     ok(
@@ -4980,11 +4983,102 @@ describe("app bundle load", () => {
        forgetClosedSelection("pane.exited", { pane_id: "pane_1" });`,
       ctx,
     );
+    await ctx.closeQuestion(true);
     await flushMicrotasks();
 
     ok(
       requests.some((request) => request.url === "/api/workspaces/ws1/close"),
       "last pane exit cascades to workspace close",
+    );
+  });
+
+  it("cancel on the auto-close question keeps the emptied workspace open", async () => {
+    const { ctx, requests } = recordRequests();
+    vm.runInContext(
+      `state.ws = "ws1";
+       state.tab = "tab_1";
+       state.pane = "pane_1";
+       state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+       state.tabs = [{ workspace_id: "ws1", tab_id: "tab_1" }];
+       state.allTabs = state.tabs.slice();
+       state.panes = [{ workspace_id: "ws1", tab_id: "tab_1", pane_id: "pane_1" }];
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });`,
+      ctx,
+    );
+    // Escape/Cancel on the question must abort the close entirely.
+    await ctx.closeQuestion(false);
+    await flushMicrotasks();
+
+    equal(
+      requests.some((request) => request.url === "/api/workspaces/ws1/close"),
+      false,
+      "cancel must not POST the workspace close",
+    );
+    equal(vm.runInContext("state.ws", ctx), "ws1",
+      "the emptied workspace stays selected and open");
+    // The modal dismissed, no dangling promise resolution.
+    equal(vm.runInContext("state.questionResolve", ctx), null);
+  });
+
+  it("auto-close still fires with a stale server tab count", async () => {
+    // Regression for the shipped bug: the server snapshot's per-workspace
+    // counts stayed at their pre-close values because panel removal never
+    // adjusted them, so the guard read tabs=1 forever and the option never
+    // fired. The counts must track client-side panel removal.
+    const { ctx, requests } = recordRequests();
+    vm.runInContext(
+      `state.ws = "ws1";
+       state.tab = "tab_1";
+       state.pane = "pane_1";
+       state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+       state.workspaceCounts = { ws1: { tabs: 1, panes: 1 } };
+       state.tabs = [{ workspace_id: "ws1", tab_id: "tab_1" }];
+       state.allTabs = state.tabs.slice();
+       state.panes = [{ workspace_id: "ws1", tab_id: "tab_1", pane_id: "pane_1" }];
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });`,
+      ctx,
+    );
+    await flushMicrotasks(1);
+    // The count was adjusted by the panel removal, so the guard no longer
+    // sees a phantom panel and the question opens.
+    const message = vm.runInContext("document.getElementById('questionMessage').textContent", ctx);
+    match(message, /Close workspace "alpha"\? Its last terminal panel just closed\./);
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+
+    ok(
+      requests.some((request) => request.url === "/api/workspaces/ws1/close"),
+      "stale server counts must not block the auto-close",
+    );
+  });
+
+  it("auto-close question names a linked worktree as worktree", async () => {
+    const { ctx, requests } = recordRequests();
+    vm.runInContext(
+      `state.ws = "ws1";
+       state.tab = "tab_1";
+       state.pane = "pane_1";
+       state.workspaces = [{
+         workspace_id: "ws1",
+         label: "feat-x",
+         worktree: { is_linked_worktree: true, checkout_path: "/repo/wt/feat-x", branch: "feat-x" },
+       }];
+       state.tabs = [{ workspace_id: "ws1", tab_id: "tab_1" }];
+       state.allTabs = state.tabs.slice();
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });`,
+      ctx,
+    );
+    await flushMicrotasks(1);
+    const title = vm.runInContext("document.getElementById('questionTitle').textContent", ctx);
+    const message = vm.runInContext("document.getElementById('questionMessage').textContent", ctx);
+    equal(title, "Close worktree?");
+    match(message, /^Close worktree "feat-x"\? Its last terminal panel just closed\.$/);
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+
+    ok(
+      requests.some((request) => request.url === "/api/workspaces/ws1/close"),
+      "confirming the worktree question posts the close",
     );
   });
 

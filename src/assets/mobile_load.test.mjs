@@ -465,6 +465,11 @@ function context(pathname = "/", options = {}) {
                 },
               ],
               workspace_order: [],
+              // Per-workspace tab/pane counts the real wrapper stamps onto
+              // the snapshot (applySessionSnapshot trusts them over local
+              // derivation). Tests opt in via the workspaceCounts fixture;
+              // null keeps the legacy fallback path.
+              workspace_counts: optionValue("workspaceCounts", null),
             },
           }),
         };
@@ -2433,6 +2438,132 @@ describe("mobile bundle load", () => {
     ok(ctx.requests.some(
       (request) => request.url === "/api/workspaces/w1/close" && request.opt.method === "POST",
     ), "the last panel leaving via the sheet must auto-close the workspace");
+  });
+
+  it("cancel on the auto-close confirm keeps the emptied workspace open", async () => {
+    // The workspace auto-close must ask, not act: OK proceeds with the
+    // close, cancel aborts it entirely and the empty workspace stays.
+    // First confirm is the panel close (OK), the second is the
+    // auto-close question (cancel).
+    let confirmCalls = 0;
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ workspace_id: "w1", tab_id: "w1:t1", number: 1 }],
+      panes: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
+      workspaces: ({ requests }) =>
+        requests.some((request) => request.url === "/api/workspaces/w1/close")
+          ? []
+          : [{ workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" }],
+    });
+    vm.runInContext(source, ctx);
+    ctx.confirm = () => confirmCalls++ === 0;
+    await ctx.HerdrMobile.refresh();
+
+    await ctx.HerdrMobile.closeCurrentPanel();
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/tabs/w1%3At1/close" && request.opt.method === "POST",
+    ), "the panel close still proceeds after its own confirm");
+    ok(!ctx.requests.some(
+      (request) => request.url === "/api/workspaces/w1/close",
+    ), "cancel must not POST the workspace close");
+    equal(confirmCalls, 2, "panel close then auto-close question, both asked");
+    equal(ctx.HerdrMobile.currentSelection().ws, "w1",
+      "the emptied workspace stays selected and open");
+  });
+
+  it("auto-close confirm names a linked worktree as worktree", async () => {
+    // Same wording contract as desktop: a worktree-backed workspace is a
+    // worktree in the question, a plain one a workspace.
+    const confirmMessages = [];
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ workspace_id: "w1", tab_id: "w1:t1", number: 1 }],
+      panes: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
+      workspaces: ({ requests }) =>
+        requests.some((request) => request.url === "/api/workspaces/w1/close")
+          ? []
+          : [{
+              workspace_id: "w1",
+              label: "feat-x",
+              pane_count: 1,
+              cwd: "/repo/wt/feat-x",
+              worktree: { is_linked_worktree: true, checkout_path: "/repo/wt/feat-x", branch: "feat-x" },
+            }],
+    });
+    vm.runInContext(source, ctx);
+    ctx.confirm = () => true;
+    const confirmSheet = ctx.document.getElementById("mobileConfirmSheet");
+    confirmSheet.querySelector = (selector) =>
+      selector === "#mobileConfirmMessage"
+        ? { set textContent(value) { confirmMessages.push(value); } }
+        : null;
+    await ctx.HerdrMobile.refresh();
+
+    await ctx.HerdrMobile.closeCurrentPanel();
+
+    match(confirmMessages[1] || "", /^Close worktree "feat-x"\? Its last terminal panel just closed\.$/,
+      "the auto-close question must name the worktree");
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/workspaces/w1/close" && request.opt.method === "POST",
+    ), "confirming the worktree question posts the close");
+  });
+
+  it("auto-closes when stale workspace counts disagree with the live server", async () => {
+    // The events-race regression: the tab.closed fast refresh can supersede
+    // the close flow's own refresh (seq guard aborts it before the snapshot
+    // lands), so the gate reads pre-close workspace_counts (tabs: 1) while
+    // the panel is already gone. The gate must re-verify against the live
+    // workspaces list and still ask, not silently drop the offer.
+    let workspaceListReads = 0;
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ workspace_id: "w1", tab_id: "w1:t1", number: 1 }],
+      panes: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
+      workspaces: ({ requests }) => {
+        if (requests.some((request) => request.url === "/api/workspaces/w1/close")) return [];
+        // The gate's live re-verify GET lands after the close POST; from
+        // then on the server reports the post-close truth (tab_count: 0).
+        const afterClose = requests.some(
+          (request) => request.url === "/api/tabs/w1%3At1/close" && request.opt.method === "POST",
+        );
+        if (afterClose) workspaceListReads += 1;
+        return [afterClose
+          ? { workspace_id: "w1", label: "alpha", tab_count: 0, pane_count: 0, cwd: "/tmp/alpha" }
+          : { workspace_id: "w1", label: "alpha", tab_count: 1, pane_count: 1, cwd: "/tmp/alpha" }];
+      },
+      // Pre-close counts that the superseded refresh would have left
+      // behind in state.workspaceCounts.
+      workspaceCounts: { w1: { tabs: 1, panes: 1 } },
+    });
+    vm.runInContext(source, ctx);
+    ctx.confirm = () => true;
+    await ctx.HerdrMobile.refresh();
+
+    await ctx.HerdrMobile.closeCurrentPanel();
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/tabs/w1%3At1/close" && request.opt.method === "POST",
+    ), "the panel close still fires");
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/workspaces/w1/close" && request.opt.method === "POST",
+    ), "the gate must re-verify with the server and still offer the close");
+    ok(workspaceListReads >= 1, "the gate consulted the live workspaces list");
   });
 
   it("treats a not-found close from the tabs sheet as closed", async () => {

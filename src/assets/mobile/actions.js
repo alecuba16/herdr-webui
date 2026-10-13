@@ -12,6 +12,7 @@
     sameScopedId,
     currentWorkspaceCwd,
     tabTitle,
+    workspaceTitle,
     getMobileFileBrowser,
     getMobileTerminal,
     getMobileSearch,
@@ -154,11 +155,11 @@
     }
 
     // Desktop parity for closeWorkspaceOnLastTerminal: after a panel close
-    // lands, close the workspace too when the option is on (default), the
-    // workspace is still known, and it holds no panels anymore. The raw
-    // POST skips the close-workspace confirm sheet on purpose: the user
-    // just closed the panel deliberately, and refresh() reselects a
-    // surviving workspace through its normal fallback.
+    // lands, offer to close the workspace too when the option is on
+    // (default), the workspace is still known, and it holds no panels
+    // anymore. Confirm (the sheet's OK) proceeds with the close; cancel
+    // keeps the empty workspace open. refresh() reselects a surviving
+    // workspace through its normal fallback.
     const autoCloseInFlight = new Set();
     async function maybeAutoCloseWorkspace(workspaceId) {
       if (!workspaceId) return;
@@ -178,23 +179,56 @@
       }
       if (!enabled) return;
       if (autoCloseInFlight.has(workspaceId)) return;
-      const workspaceStillKnown = (state.workspaces || []).some(
-        (workspace) => workspace.workspace_id === workspaceId,
+      const workspace = (state.workspaces || []).find(
+        (candidate) => candidate.workspace_id === workspaceId,
       );
-      if (!workspaceStillKnown) return;
+      if (!workspace) return;
       // With server-filtered snapshots allTabs only holds the selected
       // workspace, so cross-workspace panel checks read the server-sent
       // per-workspace counts (workspace_counts); the allTabs concat stays
       // as the fallback for older servers and the legacy multi-call path.
+      // A stale positive here is the events-race window: the tab.closed
+      // fast refresh can supersede the close flow's own refresh (seq
+      // guard aborts it before the snapshot lands), leaving pre-close
+      // counts behind while the panel is already gone. Re-ask the server
+      // before dropping the offer; its tab_count is the post-close truth.
       const serverCount = (state.workspaceCounts || {})[workspaceId] || {};
-      const hasPanels = Number.isFinite(serverCount.tabs)
+      let hasPanels = Number.isFinite(serverCount.tabs)
         ? serverCount.tabs > 0
         : (state.allTabs || [])
             .concat(state.tabs || [])
             .some((tab) => tab.workspace_id === workspaceId);
+      if (hasPanels) {
+        try {
+          const list = await api("/api/workspaces");
+          const fresh = (list && list.result && Array.isArray(list.result.workspaces)
+            ? list.result.workspaces
+            : []
+          ).find((candidate) => candidate.workspace_id === workspaceId);
+          // Only a live row with a finite tab_count overrides the stale
+          // local read. A vanished workspace (closed elsewhere) or a
+          // count-less older server keeps the local answer, so the gate
+          // never offers on a workspace it cannot verify as empty.
+          if (fresh && Number.isFinite(Number(fresh.tab_count)))
+            hasPanels = Number(fresh.tab_count) > 0;
+        } catch (_) {
+          // Fetch failed: keep the local answer.
+        }
+      }
       if (hasPanels) return;
       autoCloseInFlight.add(workspaceId);
       try {
+        const kind =
+          workspace.worktree && workspace.worktree.is_linked_worktree
+            ? "worktree"
+            : "workspace";
+        const name = typeof workspaceTitle === "function"
+          ? workspaceTitle(workspace)
+          : workspace.label || workspaceId;
+        const proceed = await confirmFn(
+          `Close ${kind} "${name}"? Its last terminal panel just closed.`,
+        );
+        if (!proceed) return;
         await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/close`, {
           method: "POST",
         });

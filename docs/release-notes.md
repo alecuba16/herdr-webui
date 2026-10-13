@@ -1,5 +1,16 @@
 # Release notes
 
+## 0.7.8 Release Notes
+- Fixed `closeWorkspaceOnLastTerminal`: closing a workspace's last panel
+  left it open because the auto-close guard read server-sent per-workspace
+  tab counts that never reflected client-side panel removal. Panel close
+  now adjusts the counts, and the guard also falls back to local state,
+  so the option fires for plain workspaces and linked worktrees alike.
+- The auto-close is no longer silent. Desktop and mobile ask first (question
+  modal / confirm sheet), naming the workspace or worktree; Enter or OK
+  proceeds with the close, Escape or Cancel aborts it entirely and keeps
+  the emptied workspace open.
+
 ## 0.7.7 Release Notes
 - Wheel and PageUp/PageDown reach mouse-tracking programs on the normal
   buffer now. The old gates keyed on alternate-screen mode, but jcode and
