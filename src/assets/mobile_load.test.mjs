@@ -1355,7 +1355,7 @@ describe("mobile bundle load", () => {
     ctx.HerdrMobile.commitSettingFromChange("explorationDefaultDirectory", "~/third");
     equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").explorationDefaultDirectory, "~/third");
     await ctx.flushTimers();
-    // The cancelled debounce never writes a second time.
+    // The cancelled debounce does not fire again after the change commit.
     equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").explorationDefaultDirectory, "~/third");
   });
 
