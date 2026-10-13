@@ -1,5 +1,36 @@
 # Release notes
 
+## 0.7.8 Release Notes
+- Prompt cards now cover the jcode Permissions viewer. The viewer
+  answers with letters (`a approve · d deny · A approve all · D deny
+  all`), a shape none of the old parser branches matched, so a blocked
+  jcode pane flipped the badge but never showed a card. All three
+  parser copies (TUI, desktop prompt_cards.js, mobile composer.js)
+  recognize the viewer through the same two markers the backend block
+  detector scrapes (help row + `⏳ Agent is waiting for this decision`),
+  render Approve/Deny/Approve all/Deny all, and answer by sending the
+  letter + Enter into the pane. The TUI card also takes `a`/`d`/`A`/`D`
+  as direct answer keys. A transcript or docs quote of either marker
+  alone never floats a card.
+- The numbered-dialog false positive is tightened. A numbered list
+  containing a permission word (allow/deny/yes/cancel) used to parse
+  as a dialog even when newer output followed it, so during the
+  sub-second stale-blocked window after an episode a transcript list
+  could flash a card. The no-nav-hint branch now requires the option
+  block to sit at the tail end or carry a confirm hint line below
+  (press enter to confirm, enter to select, and friends).
+- Settings gains a `promptCardsEnabled` toggle (desktop: Agents and
+  alerts section; mobile: Agents group). Default on. Turned off,
+  blocked agents still flip the badge and play alerts, but the card
+  never renders; answers are typed inside the terminal. The TUI card
+  is unaffected.
+- The mobile prompt sheet reads the server-side `/api/panes/{id}/prompt`
+  payload like the desktop card does. The jcode Permissions viewer
+  paints the alt screen, where the local terminal grid reads blank, so
+  the mobile local-only parse could never see it; the server parse
+  covers that case now, with the same sticky-off fallback behavior for
+  older servers.
+
 ## 0.7.7 Release Notes
 - Wheel and PageUp/PageDown reach mouse-tracking programs on the normal
   buffer now. The old gates keyed on alternate-screen mode, but jcode and

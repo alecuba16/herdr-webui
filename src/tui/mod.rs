@@ -3423,6 +3423,26 @@ impl TuiApp {
                 }
                 true
             }
+            KeyCode::Char(letter)
+                if matches!(letter, 'a' | 'd' | 'A' | 'D')
+                    && card.kind == crate::tui::prompt_cards::PromptCardKind::Options
+                    && card
+                        .options
+                        .iter()
+                        .any(|o| o.key == letter.to_string()) =>
+            {
+                // Letter-key jump for the jcode Permissions viewer card:
+                // same direct-answer shortcut as the digit keys, using
+                // the viewer's own a/d/A/D keys.
+                let index = card
+                    .options
+                    .iter()
+                    .position(|o| o.key == letter.to_string())
+                    .unwrap_or(0);
+                self.prompt_card_cursor = index;
+                self.answer_prompt_card_option();
+                true
+            }
             _ => false,
         }
     }

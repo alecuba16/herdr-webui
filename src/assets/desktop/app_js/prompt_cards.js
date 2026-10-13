@@ -8,7 +8,8 @@
 // cases (old server without the route, the frame before the first fetch
 // lands). Both shapes match the dialogs the backend's blocked detectors
 // already recognize (numbered option lists, ↑↓ select hints, "enter your
-// response" free-text prompts).
+// response" free-text prompts), plus the jcode Permissions viewer
+// (letter options a/d/A/D), which the numbered branch alone would miss.
 //
 // Answering synthesizes keypresses through the same sendInputData path the
 // terminal uses: option N -> "N\r", free text -> typed text + "\r". No new
@@ -37,6 +38,14 @@
   const NAV_HINT = /↑↓\s*select|↑\/↓/;
   const FREE_TEXT = /enter your response|type your answer|enter send/i;
   const QUESTION_LINE = /^\s*(?:❯|›|➜|\$)\s*(.+?)(?:\?+)?\s*$|^\s*\?+\s*(.+)$/;
+  // jcode Permissions viewer markers (jcode-tui-permissions), the same
+  // lines the backend's jcode_blocked detector scrapes. Both the help row
+  // and the waiting line must be present: transcript or docs text quoting
+  // one of them is not a live viewer.
+  const JCODE_VIEWER_HELP = /a approve.*d deny.*A approve all.*D deny all/i;
+  const JCODE_VIEWER_WAITING = /agent is waiting for this decision/i;
+  const JCODE_VIEWER_TITLE = /permissions?\s*\((\d+)\s*pending\)/i;
+  const CONFIRM_HINT = /enter (?:to )?(?:confirm|select|choose|submit)|press enter|return to (?:confirm|select)/i;
 
   function shellElement() {
     return document.getElementById("terminalShell");
@@ -94,6 +103,23 @@
     if (current.length) blocks.push(current);
     const options = blocks.length ? blocks[blocks.length - 1] : [];
     let title = "";
+    // jcode Permissions viewer: letter options go straight to the viewer
+    // (a approve, d deny, A/D bulk). Checked first: its tail also contains
+    // "approve"/"deny" words that would otherwise fall through to the
+    // weaker numbered branch.
+    if (JCODE_VIEWER_HELP.test(joined) && JCODE_VIEWER_WAITING.test(joined)) {
+      const pending = (joined.match(JCODE_VIEWER_TITLE) || [])[1] || "?";
+      return {
+        kind: "options",
+        title: `jcode permissions (${pending} pending)`,
+        options: [
+          { key: "a", label: "Approve" },
+          { key: "d", label: "Deny" },
+          { key: "A", label: "Approve all" },
+          { key: "D", label: "Deny all" },
+        ],
+      };
+    }
     // Free-text prompt: a question line + "enter your response" hint.
     if (FREE_TEXT.test(joined)) {
       title = questionTitle(lines);
@@ -108,15 +134,38 @@
       }
       return null;
     }
-    // Numbered confirmation without nav hint (permission dialogs).
+    // Numbered confirmation without nav hint (permission dialogs). The
+    // option block must sit at the tail end or carry a confirm hint below:
+    // a numbered transcript list followed by newer output must not open a
+    // card during the sub-second stale-blocked window.
     if (options.length >= 2) {
       const lower = joined.toLowerCase();
-      if (/(allow|approve|yes|proceed|deny|reject|no|cancel)/.test(lower)) {
+      if (/(allow|approve|yes|proceed|deny|reject|no|cancel)/.test(lower) && optionsAtTailOrConfirmed(lines, options)) {
         title = questionTitle(lines) || "Confirm action";
         return { kind: "options", title, options };
       }
     }
     return null;
+  }
+
+  // Tightening helper for the no-nav-hint numbered branch: the block must
+  // be at the tail end (only blank lines after it) or followed by a
+  // confirm-hint line a real dialog prints under its options.
+  function optionsAtTailOrConfirmed(lines, options) {
+    const lastKey = String(options[options.length - 1].key);
+    let lastOptionIdx = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const m = lines[i].match(OPTION_LINE);
+      if (m && m[1] === lastKey) { lastOptionIdx = i; break; }
+    }
+    if (lastOptionIdx < 0) return false;
+    for (let i = lastOptionIdx + 1; i < lines.length; i++) {
+      if (CONFIRM_HINT.test(lines[i])) return true;
+    }
+    for (let i = lastOptionIdx + 1; i < lines.length; i++) {
+      if (lines[i].trim()) return false;
+    }
+    return true;
   }
 
   function questionTitle(lines) {
@@ -206,6 +255,13 @@
   function evaluate() {
     const node = overlay();
     if (!node) return null;
+    // User toggle (Settings > Agents and alerts): off means no card, ever.
+    // Also reset episode state so re-enabling starts clean.
+    if (typeof options !== "undefined" && options && options.promptCardsEnabled === false) {
+      node.hidden = true;
+      lastCardKey = "";
+      return null;
+    }
     const blocked = paneBlocked();
     // Blocked-episode tracking: a fresh transition INTO blocked means a
     // new question (even with identical text) — clear any dismissal so the
