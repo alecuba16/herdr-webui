@@ -6177,7 +6177,19 @@ async fn pane_prompt_endpoint_tail_window_keeps_last_16_lines() {
         ]}
     });
 
-    let inside = viewer.join("\n");
+    let inside = {
+        // Exactly 16 lines: the title sits at the window's top edge. Any
+        // smaller window would truncate the title and the parse must
+        // fail, so this pins the boundary from BOTH sides.
+        let mut lines: Vec<String> = vec!["│ Permissions (1 pending) │".to_string()];
+        lines.push("│ Tool: Bash (git push) │".to_string());
+        lines.push("│ a approve · d deny · A approve all · D deny all │".to_string());
+        lines.push("│ ⏳ Agent is waiting for this decision │".to_string());
+        for i in 0..12 {
+            lines.push(format!("│ filler row {i} │"));
+        }
+        lines.join("\n")
+    };
     let (socket, handle) = fake_api_socket_multi(vec![
         json!({
             "id": "web:pane:read:prompt",
@@ -6278,6 +6290,53 @@ async fn pane_prompt_endpoint_survives_raw_crlf_bytes() {
         "CRLF rows still parse as one card"
     );
     assert_eq!(body["blocked"], json!(true));
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+
+    // Sixteen CRLF rows fill the tail window exactly in Drop mode. Newline
+    // mode would double them to 31 lines and push the help row and the
+    // waiting marker out of the last-16 window, killing the parse: this
+    // leg catches a strip-mode regression the short dialog above cannot.
+    let mut rows: Vec<String> = vec![
+        "│ Permissions (1 pending) │".to_string(),
+        "│ Tool: Bash (git push) │".to_string(),
+        "│ a approve · d deny · A approve all · D deny all │".to_string(),
+        "│ ⏳ Agent is waiting for this decision │".to_string(),
+    ];
+    for i in 0..12 {
+        rows.push(format!("│ filler row {i} │"));
+    }
+    let full = rows.join("\r\n") + "\r\n";
+    let (socket, handle) = fake_api_socket_multi(vec![
+        json!({
+            "id": "web:pane:read:prompt",
+            "result": { "read": { "pane_id": "pane_1", "text": full, "format": "text" } }
+        }),
+        json!({
+            "id": "web:agent:list:prompt",
+            "result": { "agents": [
+                { "pane_id": "pane_1", "agent_status": "blocked" }
+            ]}
+        }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/prompt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(
+        body["kind"],
+        json!("options"),
+        "a full-window CRLF dialog still parses"
+    );
     handle.join().unwrap();
     let _ = fs::remove_file(socket);
 }

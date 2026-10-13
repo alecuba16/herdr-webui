@@ -7803,6 +7803,7 @@ fn prompt_card_opens_from_raw_ansi_viewer_bytes() {
          \u{1b}[90m│ ⏳ Agent is waiting for this decision                                     │\u{1b}[0m\r\n";
     let mut app = app_with_blocked_pane();
     app.set_pane_tail_from_text(&strip_ansi_lossy(raw));
+    assert_eq!(app.pane_tail.len(), 4, "Drop mode keeps CRLF rows single");
     assert!(app.prompt_card.visible, "raw viewer bytes open the card");
     // The card is the viewer: the first option answers Approve and the
     // status names it, proving which card the raw bytes produced.
@@ -7820,6 +7821,44 @@ fn prompt_card_opens_from_raw_ansi_viewer_bytes() {
         .recv_timeout(Duration::from_secs(2))
         .expect("letter answers through the raw-byte tail");
     assert_eq!(sent, b"d\r");
+}
+
+#[test]
+fn prompt_card_tail_window_keeps_last_240_lines() {
+    // The TUI keeps the last TAIL_LINES (240) rows. A dialog sitting at
+    // the window's top edge must still parse; one row further out must
+    // not: a stale transcript dialog never floats a card. This is the
+    // TUI twin of the endpoint's 16-line window test.
+    let viewer = [
+        "│ Permissions (1 pending) │",
+        "│ Tool: Bash (git push) │",
+        "│ a approve · d deny · A approve all · D deny all │",
+        "│ ⏳ Agent is waiting for this decision │",
+    ];
+    let mut app = app_with_blocked_pane();
+
+    // Inside: dialog at rows 237-240 of a 240-row tail. Every marker
+    // survives the window, and any smaller window would eat the title.
+    let mut inside: Vec<String> = viewer.iter().map(|s| s.to_string()).collect();
+    for i in 0..236 {
+        inside.push(format!("│ filler row {i} │"));
+    }
+    app.set_pane_tail_from_text(&inside.join("\n"));
+    assert!(
+        app.prompt_card.visible,
+        "dialog at the 240-line window edge parses"
+    );
+
+    // Outside: 240 newer rows push the dialog out entirely.
+    let mut outside: Vec<String> = viewer.iter().map(|s| s.to_string()).collect();
+    for i in 0..240 {
+        outside.push(format!("│ newer log line {i} │"));
+    }
+    app.set_pane_tail_from_text(&outside.join("\n"));
+    assert!(
+        !app.prompt_card.visible,
+        "dialog pushed past the window never parses"
+    );
 }
 
 #[test]

@@ -501,6 +501,30 @@ describe("mobile composer + prompt cards module", () => {
     assert.equal(calls.api.length, 1, "still one call after pane switch");
   });
 
+  it("not-blocked status means no poll and no card on mobile", async () => {
+    // Deliberate divergence from desktop (see the desktop behavior test):
+    // mobile gates on the agent pill. Not blocked means evaluatePrompt
+    // returns before fetchServerPrompt, so the endpoint is never hit.
+    const { module, calls } = composerContext({
+      status: "working",
+      apiResponses: [
+        {
+          urlPart: "/api/panes/pane-1/prompt",
+          response: {
+            blocked: true,
+            kind: "options",
+            title: "never fetched",
+            options: [{ key: "1", label: "no" }],
+          },
+        },
+      ],
+    });
+    assert.equal(module.evaluatePrompt(), null, "not blocked: no card");
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(calls.api.length, 0, "the pill gate stops the poll entirely");
+  });
+
   it("stale server payload (older than 15s) stops masking and falls back cleanly", async () => {
     // Freshness gate: a cached payload older than SERVER_PROMPT_FRESH_MS
     // must stop answering (serverPromptFresh -> null), so the card can
@@ -664,6 +688,18 @@ describe("prompt card settings wiring", () => {
     assert.match(desktop, /SETTINGS_CONFIRM_IDS/);
     const bindings = read("./desktop/app_js/bindings.js");
     assert.match(bindings, /promptCardsEnabled/);
+  });
+
+  it("prompt poll constants match across desktop and mobile copies", () => {
+    // Both JS copies must agree on the poll rhythm and the freshness
+    // window: fetch at least 750ms apart, cache trusted for 15s. No Rust
+    // twin exists for these constants, so the JS pair is what keeps the
+    // desktop and mobile cards in lockstep.
+    const desktopPromptCards = read("./desktop/app_js/prompt_cards.js");
+    for (const source of [desktopPromptCards, composerSource]) {
+      assert.match(source, /SERVER_PROMPT_FRESH_MS = 15000/);
+      assert.match(source, /SERVER_PROMPT_FETCH_MS = 750/);
+    }
   });
 });
 
