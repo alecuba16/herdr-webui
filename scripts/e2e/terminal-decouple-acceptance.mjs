@@ -9,13 +9,15 @@
 //   td5  the workspace still renders its empty-leaf body after the close
 //   td6  worktree.open with open_terminal:false mints no tab either
 //   td7  settings exposes workspaceOpenTerminal and the checkbox persists
-//   td8  with closeWorkspaceOnLastTerminal on, closing the last tab closes the workspace
-//   td9  the selection falls back to another open workspace after the auto-close
+//   td8  with closeWorkspaceOnLastTerminal on, closing the last tab asks; Escape cancels the close, Confirm proceeds
+//   td9  the selection falls back to another open workspace after the confirmed auto-close
 //   td10 the zero-tab body answers Enter with a minted Shell tab (CDP key event)
 //
 // window.confirm is auto-accepted for the tab close (Page.setBypassCSP is
 // not needed; the app overrides confirm with confirmCloseTab semantics
-// wired through Page.javascriptDialogOpening auto-accept).
+// wired through Page.javascriptDialogOpening auto-accept). The workspace
+// auto-close asks through the in-app question modal: td8 drives a real
+// Escape (cancel) round and a real Confirm click (proceed) round.
 import { writeFileSync } from "node:fs";
 import { fetchJson, attach, sleep, makeRecorder, writeReport, writeCrashReport } from "./cdp-driver-helpers.mjs";
 
@@ -215,9 +217,11 @@ async function main() {
   record("td7 settings checkbox exists, default off, flag follows it", !!settings && settings.checked === false && settings.inOptions === "boolean" && settings.flag === false, settingsInfo.slice(0, 300));
 
   // td8: flip closeWorkspaceOnLastTerminal on through the real checkbox,
-  // then close the last tab on the focused workspace and assert the
-  // workspace itself closes server-side. td6 left the app with only the
-  // td1 workspace open (zero tabs after td4), so mint one tab first.
+  // then close the last tab on the focused workspace. The auto-close now
+  // asks first: Escape must cancel it (workspace survives), a real click
+  // on the question's Confirm button must close it. td6 left the app with
+  // only the td1 workspace open (zero tabs after td4), so mint one tab
+  // first.
   const flipInfo = await evalExpr(`(async () => {
     document.getElementById("settingsToggle").click();
     const started = Date.now();
@@ -266,10 +270,10 @@ async function main() {
   try { mint2Info = JSON.parse(mint2); } catch { mint2Info = null; }
   record("td8b last-tab fixture mints one tab on the target workspace", !!mint2Info && mint2Info.ws === wsId && mint2Info.tab && mint2Info.tabs === 1, mint2.slice(0, 300));
 
-  // Close the only tab through the real pane-tab close control and assert
-  // the workspace is gone: server list, client list, and selection.
-  const autoCloseInfo = await (async () => {
-    for (let attempt = 0; attempt < 4; attempt += 1) {
+  // Close the only tab through the real pane-tab close control and wait
+  // for the auto-close question modal to appear.
+  const clickLastTabClose = async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       const pt = await evalExpr(`(() => {
         const strip = document.getElementById("workspacePanes");
         if (!strip) return "no-strip";
@@ -290,27 +294,108 @@ async function main() {
       await sleep(150);
       await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", buttons: 1, clickCount: 1 });
       await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", buttons: 0, clickCount: 1 });
-      const outcome = await evalExpr(`(async () => {
+      const asked = await evalExpr(`(async () => {
         const started = Date.now();
         while (Date.now() - started < 6000) {
+          const modal = document.getElementById("questionModal");
+          if (modal && modal.style.display === "grid") return "asked";
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        return "no-modal";
+      })()`);
+      if (asked === "asked") return "asked";
+    }
+    return "no-modal";
+  };
+
+  // Round 1: Escape must abort the close entirely; the emptied workspace
+  // stays open client-side and server-side.
+  const escapeRound = await clickLastTabClose();
+  const escapeInfo = escapeRound === "asked"
+    ? await evalExpr(`(async () => {
+        const modal = document.getElementById("questionModal");
+        const title = document.getElementById("questionTitle").textContent;
+        const message = document.getElementById("questionMessage").textContent;
+        modal.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await new Promise((r) => setTimeout(r, 600));
+        const list = await fetch("/api/workspaces").then((r) => r.json()).catch(() => null);
+        const ids = list && list.result && Array.isArray(list.result.workspaces) ? list.result.workspaces.map((w) => w.workspace_id) : null;
+        return JSON.stringify({
+          title,
+          message,
+          modalClosed: modal.style.display !== "grid",
+          wsAlive: (state.workspaces || []).some((x) => x.workspace_id === "${wsId}"),
+          tabsLen: (state.tabs || []).filter((t) => t.workspace_id === "${wsId}").length,
+          serverIds: ids,
+        });
+      })()`)
+    : JSON.stringify({ click: escapeRound });
+  let escapeResult = null;
+  try { escapeResult = JSON.parse(escapeInfo); } catch { escapeResult = null; }
+  record("td8c Escape cancels the auto-close question and the workspace survives",
+    !!escapeResult && escapeResult.modalClosed === true && escapeResult.wsAlive === true &&
+    escapeResult.tabsLen === 0 && Array.isArray(escapeResult.serverIds) && escapeResult.serverIds.includes(wsId),
+    escapeInfo.slice(0, 300));
+
+  // Round 2: the Escape round left the workspace empty, so re-mint its
+  // last tab, close it again, and click the question's Confirm button.
+  const mint3 = await evalExpr(`(async () => {
+    const started = Date.now();
+    while (Date.now() - started < 10000) {
+      const card = document.getElementById("workspaceEmptyLeaf");
+      const btn = card && card.querySelector("button.workspace-empty-leaf-new");
+      if (btn) {
+        btn.click();
+        await new Promise((r) => setTimeout(r, 2000));
+        return JSON.stringify({ tab: state.tab, tabs: (state.tabs || []).filter((t) => t.workspace_id === "${wsId}").length });
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    return "no-button";
+  })()`);
+  let mint3Info = null;
+  try { mint3Info = JSON.parse(mint3); } catch { mint3Info = null; }
+  record("td8d the workspace re-mints a last tab after the Escape round",
+    !!mint3Info && mint3Info.tab && mint3Info.tabs === 1, mint3.slice(0, 300));
+
+  const confirmRound = await clickLastTabClose();
+  let autoCloseInfo = confirmRound;
+  if (confirmRound === "asked") {
+    const confirmPt = await evalExpr(`(() => {
+      const btn = document.getElementById("questionConfirm");
+      if (!btn) return "no-confirm";
+      const r = btn.getBoundingClientRect();
+      if (!r.width || !r.height) return "zero-rect";
+      return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+    })()`);
+    if (confirmPt && confirmPt !== "no-confirm" && confirmPt !== "zero-rect") {
+      const point = JSON.parse(confirmPt);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "none", buttons: 0 });
+      await sleep(150);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", buttons: 1, clickCount: 1 });
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", buttons: 0, clickCount: 1 });
+      autoCloseInfo = await evalExpr(`(async () => {
+        const started = Date.now();
+        while (Date.now() - started < 8000) {
           const tabs = (state.tabs || []).filter((t) => t.workspace_id === "${wsId}");
           const wsGone = !(state.workspaces || []).some((x) => x.workspace_id === "${wsId}");
-          if (tabs.length === 0 && wsGone) return "closed";
+          if (tabs.length === 0 && wsGone) break;
           await new Promise((r) => setTimeout(r, 300));
         }
-        return "still-open";
+        const list = await fetch("/api/workspaces").then((r) => r.json()).catch(() => null);
+        const ids = list && list.result && Array.isArray(list.result.workspaces) ? list.result.workspaces.map((w) => w.workspace_id) : null;
+        return JSON.stringify({ wsAlive: (state.workspaces || []).some((x) => x.workspace_id === "${wsId}"), tabsLen: (state.tabs || []).filter((t) => t.workspace_id === "${wsId}").length, serverIds: ids, selected: state.ws });
       })()`);
-      if (outcome === "closed") break;
+    } else {
+      autoCloseInfo = JSON.stringify({ confirmButton: confirmPt });
     }
-    return await evalExpr(`(async () => {
-      const list = await fetch("/api/workspaces").then((r) => r.json()).catch(() => null);
-      const ids = list && list.result && Array.isArray(list.result.workspaces) ? list.result.workspaces.map((w) => w.workspace_id) : null;
-      return JSON.stringify({ wsAlive: (state.workspaces || []).some((x) => x.workspace_id === "${wsId}"), tabsLen: (state.tabs || []).filter((t) => t.workspace_id === "${wsId}").length, serverIds: ids, selected: state.ws });
-    })()`);
-  })();
+  }
   let autoClosed = null;
   try { autoClosed = JSON.parse(autoCloseInfo); } catch { autoClosed = null; }
-  record("td8c closing the last tab auto-closes the workspace with the option on", !!autoClosed && !autoClosed.wsAlive && autoClosed.tabsLen === 0 && Array.isArray(autoClosed.serverIds) && !autoClosed.serverIds.includes(wsId), autoCloseInfo.slice(0, 300));
+  record("td8e confirming the auto-close question closes the workspace",
+    !!autoClosed && !autoClosed.wsAlive && autoClosed.tabsLen === 0 &&
+    Array.isArray(autoClosed.serverIds) && !autoClosed.serverIds.includes(wsId),
+    String(autoCloseInfo).slice(0, 300));
 
   // td9: the selection falls back after the auto-close. td6 opened a second
   // workspace from REPO2 (zero tabs); it should now be the selected one.

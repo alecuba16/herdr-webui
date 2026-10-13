@@ -1,6 +1,17 @@
 # Release notes
 
 ## 0.7.8 Release Notes
+- Fixed `closeWorkspaceOnLastTerminal`: closing a workspace's last panel
+  left it open because the auto-close guard read server-sent per-workspace
+  tab counts that never reflected client-side panel removal. Panel close
+  now adjusts the counts, and the guard also falls back to local state,
+  so the option fires for plain workspaces and linked worktrees alike.
+  On mobile the guard re-verifies the live workspace list when local
+  counts disagree, so the events-race window cannot drop the close.
+- The auto-close is no longer silent. Desktop and mobile ask first (question
+  modal / confirm sheet), naming the workspace or worktree; Enter or OK
+  proceeds with the close, Escape or Cancel aborts it entirely and keeps
+  the emptied workspace open.
 - Prompt cards now cover the jcode Permissions viewer. The viewer
   answers with letters (`a approve · d deny · A approve all · D deny
   all`), a shape none of the old parser branches matched, so a blocked

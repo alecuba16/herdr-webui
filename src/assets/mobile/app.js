@@ -1242,6 +1242,7 @@
     saveSessionSelection,
     currentWorkspaceCwd,
     tabTitle,
+    workspaceTitle,
     getMobileFileBrowser: () => mobileFileBrowser,
     getMobileTerminal: () => mobileTerminal,
     getMobileSearch: () => mobileSearch,
