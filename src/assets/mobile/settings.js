@@ -173,6 +173,7 @@
       const soundScope = readOptions().soundScope === "all" ? "all" : "current";
       const agentSortMode = readOptions().agentSortMode || "off";
       const stuckWorking = readOptions().stuckWorkingEnabled !== false;
+      const promptCards = readOptions().promptCardsEnabled !== false;
       const dismissMinutes = workingDismissMinutesValue();
       const noSleep = state.noSleep || { mode: "off", error: null, supported: true };
       const links = terminalLinksEnabled();
@@ -189,7 +190,7 @@
         { title: "Files and search", keywords: "files search browser content line numbers regex", html: filesSection(depth, lineNumbers, headerSearch, searchOrder, pathSearchPageSize, minChars, contentPageSize, contextLines, autoCollapse, defaultExpanded, matchesPerFile, matchCase, regex) },
         { title: "Workspaces", keywords: "workspace worktree exploration default directory terminal open close last", html: workspacesSection(worktreeDirectory, explorationDirectory, workspaceOpenTerminal, closeOnLastTerminal) },
         { title: "Alerts", keywords: "alerts notifications sound volume scope", html: alertsSection(notifications, volume, soundScope) },
-        { title: "Agents", keywords: "agents sorting stuck working dismiss blocked done idle", html: agentsSection(agentSortMode, stuckWorking, dismissMinutes) },
+        { title: "Agents", keywords: "agents sorting stuck working dismiss blocked done idle prompt cards", html: agentsSection(agentSortMode, stuckWorking, promptCards, dismissMinutes) },
         { title: "Energy", keywords: "no sleep energy coffee awake power", html: energySection(noSleep.mode, noSleep.error, noSleep.supported === false) },
         { title: "Terminal", keywords: "terminal renderer core ghostty font links mouse reporting", html: terminalSection(font, core, links, mouseReporting) },
         { title: "Data", keywords: "refresh reload data logout sign out", html: dataSection() },
@@ -249,8 +250,8 @@
       return `<div class="mobile-settings-group"><h3>Alerts</h3><label data-settings-id="browserNotifications">${rollbackHtml("browserNotifications")}${appliedFlashHtml("browserNotifications")}<input type="checkbox" ${notifications ? "checked" : ""} onchange="HerdrMobile.setBrowserNotifications(this.checked)"><span>Browser notifications</span><small>Show system notifications when an agent is blocked or done.</small></label><label data-settings-id="notificationVolume">${rollbackHtml("notificationVolume")}${appliedFlashHtml("notificationVolume")}<span>Notification volume (${volume}%)</span><input type="range" min="0" max="100" step="1" value="${volume}" onchange="HerdrMobile.setNotificationVolume(this.value)"></label><label data-settings-id="soundScope">${rollbackHtml("soundScope")}${appliedFlashHtml("soundScope")}<span>Notification scope</span><select onchange="HerdrMobile.setSoundScope(this.value)"><option value="current" ${soundScope !== "all" ? "selected" : ""}>Current agent tab</option><option value="all" ${soundScope === "all" ? "selected" : ""}>All tabs</option></select><small>Play the attention tone in every open tab or only in the tab viewing the agent.</small></label><small>Controls the local attention tone volume.</small></div>`;
     }
 
-    function agentsSection(agentSortMode, stuckWorking, dismissMinutes) {
-      return `<div class="mobile-settings-group"><h3>Agents</h3><label data-settings-id="agentSortMode">${rollbackHtml("agentSortMode")}${appliedFlashHtml("agentSortMode")}<span>Agent sorting</span><select onchange="HerdrMobile.setAgentSortMode(this.value)"><option value="off" ${agentSortMode !== "attention" && agentSortMode !== "attention_inverted" ? "selected" : ""}>Attention rank (blocked first)</option><option value="attention" ${agentSortMode === "attention" ? "selected" : ""}>Custom group order</option><option value="attention_inverted" ${agentSortMode === "attention_inverted" ? "selected" : ""}>Working-first preset</option></select><small>Blocked and done agents always float up; custom order follows the desktop agent group order.</small></label><label data-settings-id="stuckWorkingEnabled">${rollbackHtml("stuckWorkingEnabled")}${appliedFlashHtml("stuckWorkingEnabled")}<input type="checkbox" ${stuckWorking ? "checked" : ""} onchange="HerdrMobile.setStuckWorkingEnabled(this.checked)"><span>Ignore stuck working agents</span><small>Dismiss working agents that appear stuck. Clears automatically on status changes.</small></label><label data-settings-id="workingDismissMinutes">${rollbackHtml("workingDismissMinutes")}${appliedFlashHtml("workingDismissMinutes")}<span>Ignore stuck working for (minutes)</span><input type="number" min="1" max="1440" step="1"${inputAttrs("done")} value="${dismissMinutes}" oninput="HerdrMobile.setSettingDebounced('workingDismissMinutes', this.value)" onchange="HerdrMobile.commitSettingFromChange('workingDismissMinutes', this.value)"></label></div>`;
+    function agentsSection(agentSortMode, stuckWorking, promptCards, dismissMinutes) {
+      return `<div class="mobile-settings-group"><h3>Agents</h3><label data-settings-id="agentSortMode">${rollbackHtml("agentSortMode")}${appliedFlashHtml("agentSortMode")}<span>Agent sorting</span><select onchange="HerdrMobile.setAgentSortMode(this.value)"><option value="off" ${agentSortMode !== "attention" && agentSortMode !== "attention_inverted" ? "selected" : ""}>Attention rank (blocked first)</option><option value="attention" ${agentSortMode === "attention" ? "selected" : ""}>Custom group order</option><option value="attention_inverted" ${agentSortMode === "attention_inverted" ? "selected" : ""}>Working-first preset</option></select><small>Blocked and done agents always float up; custom order follows the desktop agent group order.</small></label><label data-settings-id="stuckWorkingEnabled">${rollbackHtml("stuckWorkingEnabled")}${appliedFlashHtml("stuckWorkingEnabled")}<input type="checkbox" ${stuckWorking ? "checked" : ""} onchange="HerdrMobile.setStuckWorkingEnabled(this.checked)"><span>Ignore stuck working agents</span><small>Dismiss working agents that appear stuck. Clears automatically on status changes.</small></label><label data-settings-id="promptCardsEnabled">${rollbackHtml("promptCardsEnabled")}${appliedFlashHtml("promptCardsEnabled")}<input type="checkbox" ${promptCards ? "checked" : ""} onchange="HerdrMobile.setPromptCardsEnabled(this.checked)"><span>Prompt cards in terminal</span><small>Show a tappable question card when the agent is blocked on a dialog. Turn off to answer only inside the terminal.</small></label><label data-settings-id="workingDismissMinutes">${rollbackHtml("workingDismissMinutes")}${appliedFlashHtml("workingDismissMinutes")}<span>Ignore stuck working for (minutes)</span><input type="number" min="1" max="1440" step="1"${inputAttrs("done")} value="${dismissMinutes}" oninput="HerdrMobile.setSettingDebounced('workingDismissMinutes', this.value)" onchange="HerdrMobile.commitSettingFromChange('workingDismissMinutes', this.value)"></label></div>`;
     }
 
     function energySection(noSleepMode, noSleepError, noSleepUnsupported) {
@@ -629,6 +630,14 @@
       if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
     }
 
+    function setPromptCardsEnabled(value) {
+      const parsed = readOptions();
+      parsed.promptCardsEnabled = value !== false;
+      writeOptions(parsed);
+      queueAppliedFlash("promptCardsEnabled");
+      if (globalThis.HerdrMobile) globalThis.HerdrMobile.refresh();
+    }
+
     function setWorkingDismissMinutes(value) {
       const parsed = readOptions();
       parsed.workingDismissMinutes = Math.max(
@@ -884,6 +893,7 @@
       setSoundScope,
       setStuckWorkingEnabled,
       setWorkingDismissMinutes,
+      setPromptCardsEnabled,
       setFileBrowserDepth,
       setFileBrowserLineNumbers,
       setFileBrowserSearchPageSize,

@@ -6,7 +6,9 @@
 //! chat lens reads. Protocol 22 is frozen, so there is no structured
 //! prompt payload: the shapes match the dialogs the backend's blocked
 //! detectors already recognize (numbered option lists, ↑↓ select
-//! hints, "enter your response" free-text prompts).
+//! hints, "enter your response" free-text prompts), plus the jcode
+//! Permissions viewer (`a approve · d deny · A approve all · D deny all`),
+//! whose options are letters, not numbers.
 //!
 //! Answering is hybrid (user decision on the port):
 //! - Numbered options always synthesize raw keystrokes through the
@@ -63,6 +65,20 @@ static NAV_CANCEL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)esc cancel|esc dismiss").unwrap());
 static PERMISSION_WORDS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)allow|approve|yes|proceed|deny|reject|no|cancel").unwrap());
+// jcode Permissions viewer markers, the same lines jcode_blocked
+// (builtin_detection/jcode.rs) scrapes: the bordered help row and the
+// waiting line. Both must be present so transcript text quoting the
+// help row format (release notes, docs) does not trigger a card.
+static JCODE_VIEWER_HELP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)a approve.*d deny.*A approve all.*D deny all").unwrap());
+static JCODE_VIEWER_WAITING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)agent is waiting for this decision").unwrap());
+static JCODE_VIEWER_TITLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)permissions? \((\d+) pending\)").unwrap());
+static CONFIRM_HINT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)enter (?:to )?(?:confirm|select|choose|submit)|press enter|return to (?:confirm|select)")
+        .unwrap()
+});
 
 /// Strip a leading prompt marker / question marks from a title candidate.
 fn clean_title(raw: &str) -> String {
@@ -121,6 +137,22 @@ pub fn parse_prompt(lines: &[String]) -> Option<PromptCard> {
     if lines.is_empty() {
         return None;
     }
+    // Unicode whitespace parity: JS `\s` and Rust regex `\s` disagree on
+    // BOM and NEL, and `trim()` sets differ too. Normalize the exotic
+    // spaces to plain space so all three parser copies match identically
+    // on terminals that emit NBSP/NEL/U+3000/BOM/LS/PS.
+    let normalized: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.chars()
+                .map(|c| match c {
+                    '\u{a0}' | '\u{85}' | '\u{3000}' | '\u{feff}' | '\u{2028}' | '\u{2029}' => ' ',
+                    other => other,
+                })
+                .collect()
+        })
+        .collect();
+    let lines = &normalized[..];
     let joined = lines.join("\n");
     // Take the LAST contiguous numbered block: an older dialog may still
     // be on screen above; the active one is the newest.
@@ -141,6 +173,42 @@ pub fn parse_prompt(lines: &[String]) -> Option<PromptCard> {
         blocks.push(current);
     }
     let options = blocks.last().cloned().unwrap_or_default();
+
+    // jcode Permissions viewer: help row + waiting line (fullscreen alt
+    // screen; the tail arrives via the server-side pane.read path). Letter
+    // options go straight to the viewer: `a` approve, `d` deny, `A`/`D`
+    // bulk approve/deny. Checked first: the viewer's tail also contains
+    // "approve" and "deny" words that would otherwise fall through to
+    // the weaker numbered branch.
+    if JCODE_VIEWER_HELP.is_match(&joined) && JCODE_VIEWER_WAITING.is_match(&joined) {
+        let pending = JCODE_VIEWER_TITLE
+            .captures(&joined)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_else(|| "?".to_string());
+        return Some(PromptCard {
+            kind: PromptCardKind::Options,
+            title: format!("jcode permissions ({pending} pending)"),
+            options: vec![
+                PromptOption {
+                    key: "a".to_string(),
+                    label: "Approve".to_string(),
+                },
+                PromptOption {
+                    key: "d".to_string(),
+                    label: "Deny".to_string(),
+                },
+                PromptOption {
+                    key: "A".to_string(),
+                    label: "Approve all".to_string(),
+                },
+                PromptOption {
+                    key: "D".to_string(),
+                    label: "Deny all".to_string(),
+                },
+            ],
+        });
+    }
 
     // Free-text prompt: a question line + "enter your response" hint.
     if FREE_TEXT.is_match(&joined) {
@@ -171,8 +239,15 @@ pub fn parse_prompt(lines: &[String]) -> Option<PromptCard> {
         }
         return None;
     }
-    // Numbered confirmation without nav hint (permission dialogs).
-    if options.len() >= 2 && PERMISSION_WORDS.is_match(&joined) {
+    // Numbered confirmation without nav hint (permission dialogs). The
+    // option block must sit at the tail end or be followed by a confirm
+    // hint line: a numbered transcript list above newer output must not
+    // open a card during the sub-second stale-blocked window (the only
+    // real false positive found by the FP simulation).
+    if options.len() >= 2
+        && PERMISSION_WORDS.is_match(&joined)
+        && options_at_tail_or_confirmed(lines, &options)
+    {
         let title = question_title(lines);
         let title = if title.is_empty() {
             "Confirm action".to_string()
@@ -186,6 +261,40 @@ pub fn parse_prompt(lines: &[String]) -> Option<PromptCard> {
         });
     }
     None
+}
+
+/// Tightening for the no-nav-hint numbered branch: the option block
+/// must sit at the tail end (its last option is one of the final
+/// non-empty lines) or be followed by a confirm-hint line. A numbered
+/// transcript list with permission words followed by newer output
+/// must not open a card during the stale-blocked window.
+fn options_at_tail_or_confirmed(lines: &[String], options: &[PromptOption]) -> bool {
+    let last_key = match options.last() {
+        Some(option) => option.key.as_str(),
+        None => return false,
+    };
+    // Index of the line carrying the block's last option.
+    let last_option_idx = match lines.iter().rposition(|line| {
+        OPTION_LINE
+            .captures(line)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str() == last_key)
+            .unwrap_or(false)
+    }) {
+        Some(idx) => idx,
+        None => return false,
+    };
+    // Confirm-hint lines a real dialog may print under its options.
+    for line in lines.iter().skip(last_option_idx + 1) {
+        if CONFIRM_HINT.is_match(line) {
+            return true;
+        }
+    }
+    // Tail-end check: nothing but blank lines after the block.
+    lines
+        .iter()
+        .skip(last_option_idx + 1)
+        .all(|l| l.trim().is_empty())
 }
 
 /// Live state of the prompt-card overlay. Owned by `TuiApp`; the render
@@ -533,6 +642,85 @@ mod tests {
         assert!(!free_text_via_composer(true), "blocked -> raw keystrokes");
     }
 
+    #[test]
+    fn parse_jcode_permissions_viewer() {
+        // The real jcode Permissions viewer tail (jcode-tui-permissions):
+        // letter options, waiting line, pending count in the title.
+        let tail = lines(&[
+            "│ Permissions (2 pending)                                                    │",
+            "│ a approve · d deny · A approve all · D deny all · s skip                    │",
+            "│ ⏳ Agent is waiting for this decision                                        │",
+            "│ Tool: Bash (rm -rf work)                                                  │",
+        ]);
+        let card = parse_prompt(&tail).expect("jcode viewer parses");
+        assert_eq!(card.kind, PromptCardKind::Options);
+        assert!(card.title.contains("jcode permissions"));
+        assert!(card.title.contains("2"));
+        let keys: Vec<&str> = card.options.iter().map(|o| o.key.as_str()).collect();
+        assert_eq!(keys, ["a", "d", "A", "D"]);
+        assert_eq!(card.options[0].label, "Approve");
+        assert_eq!(card.options[3].label, "Deny all");
+    }
+
+    #[test]
+    fn parse_jcode_viewer_requires_both_markers() {
+        // Help row without the waiting line (docs quoting the row
+        // format) is not a live viewer: no card.
+        let help_only = lines(&[
+            "a approve · d deny · A approve all · D deny all",
+            "Release notes mention the shortcuts above.",
+        ]);
+        assert!(parse_prompt(&help_only).is_none());
+        // Waiting line alone (transcript quote) is not a viewer either.
+        // The numbered list below also sits above newer output, so the
+        // tightened branch rejects it too.
+        let waiting_only = lines(&[
+            "earlier: ⏳ Agent is waiting for this decision",
+            "1. do not parse this",
+            "2. yes",
+            "task finished, exit 0",
+        ]);
+        assert!(parse_prompt(&waiting_only).is_none());
+    }
+
+    #[test]
+    fn stale_window_numbered_list_above_newer_output_is_not_a_card() {
+        // The FP simulation case: a numbered transcript list containing
+        // permission words, followed by newer output, during the
+        // sub-second stale-blocked window. Tightened branch says no.
+        let tail = lines(&[
+            "plan:",
+            "1. allow port",
+            "2. deny stale entry",
+            "done, task finished",
+        ]);
+        assert!(parse_prompt(&tail).is_none());
+    }
+
+    #[test]
+    fn numbered_block_at_tail_still_parses() {
+        // Tightening must not break real dialogs: options at the very
+        // end of the tail (with trailing blank lines) still parse.
+        let tail = lines(&["❯ Run it?", "1. Yes, allow once", "2. No, deny", "", ""]);
+        let card = parse_prompt(&tail).expect("tail-end options parse");
+        assert_eq!(card.title, "Run it");
+    }
+
+    #[test]
+    fn numbered_block_with_confirm_hint_below_parses() {
+        // Dialogs that print a confirm hint under the options.
+        let tail = lines(&[
+            "❯ Apply migration?",
+            "1. yes, allow",
+            "2. no, cancel",
+            "press enter to confirm",
+            "(applying soon)",
+        ]);
+        let card = parse_prompt(&tail).expect("confirm-hint options parse");
+        assert_eq!(card.title, "Apply migration");
+        assert_eq!(card.options.len(), 2);
+    }
+
     // Parity cases pinned against the webui oracle (prompt_cards.js
     // run under node for the same tails). The exact outputs are the
     // contract; if either side changes, the card behavior diverges.
@@ -581,5 +769,26 @@ mod tests {
         let card =
             parse_prompt(&lines(&["", "1. allow", "2. deny"])).expect("permission dialog parses");
         assert_eq!(card.title, "Confirm action");
+    }
+
+    #[test]
+    fn exotic_unicode_whitespace_parses_like_plain_spaces() {
+        // NBSP/NEL/U+3000/BOM inside the title and option rows must read
+        // as plain spaces: JS `\s` and Rust `\s` disagree on BOM and
+        // NEL, so both sides normalize before matching.
+        let nbsp = "\u{a0}pick\u{a0}one\u{a0}";
+        let card = parse_prompt(&lines(&[nbsp, "1.\u{85}allow", "2.\u{3000}deny"]))
+            .expect("permission dialog parses");
+        assert_eq!(card.title, "pick one");
+        assert_eq!(card.options[0].label, "allow");
+        assert_eq!(card.options[1].label, "deny");
+        // A BOM before the title must not survive into the card title.
+        let card = parse_prompt(&lines(&["\u{feff}ALLOW now?", "enter your response"]))
+            .expect("free-text permission parses");
+        assert_eq!(card.title, "ALLOW now");
+        // LS/PS in a title row also collapse.
+        let card = parse_prompt(&lines(&["allow\u{2028}it?", "enter your response"]))
+            .expect("free-text parses");
+        assert_eq!(card.title, "allow it");
     }
 }

@@ -341,6 +341,14 @@ el("optStuckWorkingEnabled").onchange = () => {
   applyOptions();
   render();
 };
+el("optPromptCardsEnabled").onchange = () => {
+  options.promptCardsEnabled = el("optPromptCardsEnabled").checked;
+  saveOptions();
+  if (typeof flashSettingsApplied === "function")
+    flashSettingsApplied(el("optPromptCardsEnabled"));
+  if (typeof HerdrPromptCards !== "undefined" && HerdrPromptCards.evaluate)
+    HerdrPromptCards.evaluate();
+};
 function commitWorkingDismissMinutes() {
   options.workingDismissMinutes = Math.max(
     1,

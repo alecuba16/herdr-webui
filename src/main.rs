@@ -5350,17 +5350,24 @@ fn pane_prompt_payload(
             .unwrap_or("pane read failed");
         return Err((StatusCode::BAD_GATEWAY, message.to_string()));
     }
+    // `request_value` returns the raw wire object, so the text lives
+    // under /result/read/text (builtin and external herdr wrap the same
+    // way; the TUI's read_pane unwraps `result` before its get("read")).
+    // The unwrapped fallbacks keep hypothetical flat backends working.
     let text = read
-        .pointer("/read/text")
+        .pointer("/result/read/text")
+        .or_else(|| read.pointer("/read/text"))
         .or_else(|| read.get("text"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
     // Same strip the TUI tail applies (tui/mod.rs strip_ansi_lossy feeds
     // set_pane_tail_from_text): dialog lines must read like the grid
-    // text the JS parser sees.
+    // text the JS parser sees. Drop mode, like every production strip:
+    // a bare CR separates grid rows in raw pty history, and CRLF row
+    // ends must not double-space the tail.
     let stripped = crate::terminal_text::strip_ansi_lossy(
         text,
-        crate::terminal_text::StripCarriageReturn::Newline,
+        crate::terminal_text::StripCarriageReturn::Drop,
     );
     let mut lines: Vec<String> = stripped.lines().map(str::to_string).collect();
     // prompt_cards.js tailLines() drops trailing blank rows then takes the

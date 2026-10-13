@@ -11,7 +11,10 @@
 (function () {
   const PILL_STATUSES = ["blocked", "done", "idle", "working"];
 
-  function createMobileComposer({ state, render, escapeHtml, inputAttrs, statusClassFn, getTerminal }) {
+  function createMobileComposer({ state, render, escapeHtml, inputAttrs, statusClassFn, getTerminal, api }) {
+    // `api` is optional: the live app injects it; older callers fall
+    // back to the global HerdrMobileApi that app.js publishes.
+
     // ---- Terminal tail reading (wterm bridge grid, same as desktop) ----
 
     function bridge() {
@@ -50,6 +53,12 @@
     const NAV_HINT = /↑↓\s*select|↑\/↓/;
     const FREE_TEXT = /enter your response|type your answer|enter send/i;
     const QUESTION_LINE = /^\s*(?:❯|›|➜|\$)\s*(.+?)(?:\?+)?\s*$|^\s*\?+\s*(.+)$/;
+    // jcode Permissions viewer markers, same as desktop prompt_cards.js.
+    // Help row AND waiting line must both be present.
+    const JCODE_VIEWER_HELP = /a approve.*d deny.*A approve all.*D deny all/i;
+    const JCODE_VIEWER_WAITING = /agent is waiting for this decision/i;
+    const JCODE_VIEWER_TITLE = /permissions?\s*\((\d+)\s*pending\)/i;
+    const CONFIRM_HINT = /enter (?:to )?(?:confirm|select|choose|submit)|press enter|return to (?:confirm|select)/i;
 
     function questionTitle(lines) {
       const clean = (s) => s.replace(/^[❯›➜$?]+\s*/, "").replace(/[?]+$/, "").trim();
@@ -73,6 +82,13 @@
 
     function parsePrompt(lines) {
       if (!lines.length) return null;
+      // Unicode whitespace parity with the Rust parser: JS `\s` and Rust
+      // regex `\s` disagree on BOM and NEL. Normalize the exotic spaces
+      // to plain space so both parser copies match identically on
+      // terminals that emit NBSP/NEL/U+3000/BOM/LS/PS.
+      lines = lines.map((line) =>
+        line.replace(/[\u00a0\u0085\u3000\ufeff\u2028\u2029]/g, " "),
+      );
       const joined = lines.join("\n");
       const blocks = [];
       let current = [];
@@ -87,6 +103,23 @@
       if (current.length) blocks.push(current);
       const options = blocks.length ? blocks[blocks.length - 1] : [];
       let title = "";
+      // jcode Permissions viewer: letter options go straight to the
+      // viewer (a approve, d deny, A/D bulk). Checked first: its tail
+      // also contains "approve"/"deny" words that would otherwise fall
+      // through to the weaker numbered branch.
+      if (JCODE_VIEWER_HELP.test(joined) && JCODE_VIEWER_WAITING.test(joined)) {
+        const pending = (joined.match(JCODE_VIEWER_TITLE) || [])[1] || "?";
+        return {
+          kind: "options",
+          title: `jcode permissions (${pending} pending)`,
+          options: [
+            { key: "a", label: "Approve" },
+            { key: "d", label: "Deny" },
+            { key: "A", label: "Approve all" },
+            { key: "D", label: "Deny all" },
+          ],
+        };
+      }
       if (FREE_TEXT.test(joined)) {
         title = questionTitle(lines);
         if (title) return { kind: "text", title };
@@ -101,12 +134,31 @@
       }
       if (options.length >= 2) {
         const lower = joined.toLowerCase();
-        if (/(allow|approve|yes|proceed|deny|reject|no|cancel)/.test(lower)) {
+        if (/(allow|approve|yes|proceed|deny|reject|no|cancel)/.test(lower) && optionsAtTailOrConfirmed(lines, options)) {
           title = questionTitle(lines) || "Confirm action";
           return { kind: "options", title, options };
         }
       }
       return null;
+    }
+
+    // Tightening helper: the block must sit at the tail end or carry a
+    // confirm hint below (same rule as desktop prompt_cards.js).
+    function optionsAtTailOrConfirmed(lines, options) {
+      const lastKey = String(options[options.length - 1].key);
+      let lastOptionIdx = -1;
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const m = lines[i].match(OPTION_LINE);
+        if (m && m[1] === lastKey) { lastOptionIdx = i; break; }
+      }
+      if (lastOptionIdx < 0) return false;
+      for (let i = lastOptionIdx + 1; i < lines.length; i++) {
+        if (CONFIRM_HINT.test(lines[i])) return true;
+      }
+      for (let i = lastOptionIdx + 1; i < lines.length; i++) {
+        if (lines[i].trim()) return false;
+      }
+      return true;
     }
 
     // ---- Blocked detection ----
@@ -124,19 +176,43 @@
     let dismissedFor = null;
     let lastCardKey = "";
 
+    // Shared options store (same as desktop settings; HerdrOptions is
+    // the shared reader, localStorage fallback for old sessions).
+    function readOptions() {
+      try {
+        if (globalThis.HerdrOptions) return globalThis.HerdrOptions.read();
+        return JSON.parse(localStorage.getItem("herdr-web-options") || "{}");
+      } catch (_) {
+        return {};
+      }
+    }
+
     function promptDismissKey(prompt) {
       return prompt.title + "|" + (prompt.options || []).map((o) => o.key).join(",");
     }
 
     function evaluatePrompt() {
+      // User toggle (Settings > Agents): off means no card, ever.
+      try {
+        if (readOptions().promptCardsEnabled === false) {
+          dismissedFor = null;
+          lastCardKey = "";
+          return null;
+        }
+      } catch (_) {
+        // readOptions failure falls through to normal evaluation.
+      }
       const status = currentAgentStatus();
       if (status !== "blocked") {
         dismissedFor = null;
         lastCardKey = "";
         return null;
       }
-      const lines = tailLines();
-      const prompt = parsePrompt(lines);
+      // Poll on every evaluate (rate-limited): the payload's per-pane
+      // blocked flag from agent.list is sharper than the agent pill.
+      fetchServerPrompt();
+      const server = serverPromptFresh();
+      const prompt = promptFromServer(server) || parsePrompt(tailLines());
       if (!prompt) {
         lastCardKey = "";
         return null;
@@ -150,10 +226,64 @@
       render();
     }
 
+    // ---- Server prompt payload (desktop fetchServerPrompt parity) ----
+
+    let promptApiUsable = true;
+    let serverPrompt = null; // { at, payload } from the last endpoint hit
+    let promptFetchInFlight = false;
+    let promptFetchAt = 0;
+    const SERVER_PROMPT_FRESH_MS = 15000;
+    const SERVER_PROMPT_FETCH_MS = 750;
+
+    function fetchServerPrompt() {
+      if (!promptApiUsable || promptFetchInFlight) return;
+      if (Date.now() - promptFetchAt < SERVER_PROMPT_FETCH_MS) return;
+      const paneId = state && state.pane;
+      const request = typeof api === "function" ? api : globalThis.HerdrMobileApi;
+      if (!paneId || typeof request !== "function") return;
+      promptFetchAt = Date.now();
+      promptFetchInFlight = true;
+      Promise.resolve(
+        request("/api/panes/" + encodeURIComponent(paneId) + "/prompt"),
+      ).then(
+        (res) => {
+          const payload = res && (res.result || res);
+          serverPrompt =
+            payload && typeof payload === "object"
+              ? { at: Date.now(), payload }
+              : null;
+        },
+        () => {
+          // Sticky-off: one failure (old server without the route,
+          // transport error) disables the endpoint for the session.
+          promptApiUsable = false;
+          serverPrompt = null;
+        },
+      ).then(() => {
+        promptFetchInFlight = false;
+      });
+    }
+
+    function serverPromptFresh() {
+      if (!promptApiUsable || !serverPrompt) return null;
+      if (Date.now() - serverPrompt.at > SERVER_PROMPT_FRESH_MS) return null;
+      return serverPrompt.payload;
+    }
+
+    function promptFromServer(server) {
+      if (!server || !server.blocked || !server.kind) return null;
+      return {
+        kind: server.kind,
+        title: server.title || "",
+        options: Array.isArray(server.options) ? server.options : [],
+      };
+    }
+
     function answerPrompt(prompt, value) {
-      // Re-parse the CURRENT tail before sending: if the dialog moved on,
-      // do nothing rather than typing into a different prompt.
-      const fresh = parsePrompt(tailLines());
+      // Re-parse the CURRENT tail (or the fresh server payload for the
+      // alt-screen case) before sending: if the dialog moved on, do
+      // nothing rather than typing into a different prompt.
+      const fresh = parsePrompt(tailLines()) || promptFromServer(serverPromptFresh());
       if (!fresh || fresh.title !== prompt.title) return;
       const term = getTerminal && getTerminal();
       if (!term || !term.sendPasteToTerminal) return;
@@ -201,8 +331,7 @@
     // Prompt answers need the prompt object; resolve by title at call time
     // so a stale card can never answer a stale question.
     function findPromptByTitle(title) {
-      const lines = tailLines();
-      const prompt = parsePrompt(lines);
+      const prompt = parsePrompt(tailLines()) || promptFromServer(serverPromptFresh());
       return prompt && prompt.title === title ? prompt : null;
     }
 
@@ -238,6 +367,14 @@
       parsePrompt,
       tailLines,
       currentAgentStatus,
+      fetchServerPrompt,
+      _serverUsable: () => promptApiUsable,
+      _resetServer: () => {
+        promptApiUsable = true;
+        serverPrompt = null;
+        promptFetchInFlight = false;
+        promptFetchAt = 0;
+      },
       _reset() { dismissedFor = null; lastCardKey = ""; state.composerNote = ""; },
     };
   }
