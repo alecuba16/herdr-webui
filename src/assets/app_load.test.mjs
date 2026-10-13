@@ -4882,6 +4882,61 @@ describe("app bundle load", () => {
     equal(vm.runInContext("state.ws", ctx), null);
   });
 
+  it("auto-closes with the server count mirror in place", async () => {
+    // Production always carries state.workspaceCounts (the poll mirror);
+    // removeClosedTabFromState must decrement it or the stale count blocks
+    // the auto-close that runs right after the local close.
+    const { ctx, requests } = recordRequests();
+    vm.runInContext(
+      `state.ws = "ws1";
+       state.tab = "tab_1";
+       state.pane = "pane_1";
+       state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+       state.tabs = [{ workspace_id: "ws1", tab_id: "tab_1" }];
+       state.allTabs = state.tabs.slice();
+       state.workspaceCounts = { ws1: { tabs: 1, panes: 1 } };
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });`,
+      ctx,
+    );
+    await flushMicrotasks();
+
+    ok(
+      requests.some((request) => request.url === "/api/workspaces/ws1/close"),
+      "workspace close POST fired with the mirror present",
+    );
+  });
+
+  it("keeps the workspace when the mirror still counts panels", async () => {
+    // The mirror is authoritative while it says panels remain: closing one
+    // tab of two must not take the workspace down.
+    const { ctx, requests } = recordRequests();
+    const outcome = vm.runInContext(
+      `state.ws = "ws1";
+       state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+       state.tabs = [
+         { workspace_id: "ws1", tab_id: "tab_1" },
+         { workspace_id: "ws1", tab_id: "tab_2" },
+       ];
+       state.allTabs = state.tabs.slice();
+       state.workspaceCounts = { ws1: { tabs: 2, panes: 2 } };
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });
+       JSON.stringify({ closedTabs: state.workspaceCounts.ws1.tabs, closedPanes: state.workspaceCounts.ws1.panes });`,
+      ctx,
+    );
+    // The decrement is synchronous; read it before the microtask flush so
+    // a stubbed refresh cannot rewrite the mirror yet.
+    const mirror = JSON.parse(outcome);
+    equal(mirror.closedTabs, 1, "mirror tab count follows the local close");
+    equal(mirror.closedPanes, 2, "pane count untouched when the tab had no panes");
+    await flushMicrotasks();
+
+    equal(
+      requests.some((request) => request.url === "/api/workspaces/ws1/close"),
+      false,
+      "mirror count above zero keeps the workspace open",
+    );
+  });
+
   it("keeps the workspace when a sibling panel stays open", async () => {
     const { ctx, requests } = recordRequests();
     vm.runInContext(

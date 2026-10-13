@@ -4566,11 +4566,29 @@ function removeClosedPaneFromState(paneId) {
   state.agents = (state.agents || []).filter((agent) => agent.pane_id !== paneId);
 }
 
+// The snapshot mirror (workspace_counts) is a poll tick stale whenever a
+// close lands locally: maybeAutoCloseWorkspace reads it right after
+// removeClosedTabFromState, so it must follow the local removals or a
+// workspace whose last panel just closed never auto-closes.
+function decrementWorkspaceCount(workspaceId, field, by) {
+  const counts = state.workspaceCounts;
+  if (!counts || !workspaceId) return;
+  const entry = counts[workspaceId];
+  if (!entry || typeof entry[field] !== "number") return;
+  entry[field] = Math.max(0, entry[field] - by);
+}
+
 function removeClosedTabFromState(tabId) {
+  const closedTab = (state.tabs || []).find((tab) => tab.tab_id === tabId) ||
+    (state.allTabs || []).find((tab) => tab.tab_id === tabId) || null;
+  const closedPaneCount = (state.panes || []).filter((pane) => pane.tab_id === tabId).length;
   state.tabs = (state.tabs || []).filter((tab) => tab.tab_id !== tabId);
   state.allTabs = (state.allTabs || []).filter((tab) => tab.tab_id !== tabId);
   state.panes = (state.panes || []).filter((pane) => pane.tab_id !== tabId);
   state.agents = (state.agents || []).filter((agent) => agent.tab_id !== tabId);
+  const closedWorkspaceId = closedTab && closedTab.workspace_id;
+  decrementWorkspaceCount(closedWorkspaceId, "tabs", 1);
+  decrementWorkspaceCount(closedWorkspaceId, "panes", closedPaneCount);
 }
 
 function removeClosedWorkspaceFromState(workspaceId) {

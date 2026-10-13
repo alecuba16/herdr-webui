@@ -146,7 +146,12 @@ async function main() {
         if (!r.width || !r.height) return "zero-rect";
         return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
       })()`);
-      if (!pt || pt === "no-strip" || pt === "no-close" || pt === "zero-rect") return pt || "no-point";
+      // A missing or zero-sized control is a transient render state, not a
+      // verdict: the strip repaints on poll ticks, so retry inside the loop.
+      if (!pt || pt === "no-strip" || pt === "no-close" || pt === "zero-rect") {
+        await sleep(400);
+        continue;
+      }
       const point = JSON.parse(pt);
       await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "none", buttons: 0 });
       await sleep(150);
@@ -271,7 +276,12 @@ async function main() {
         if (!r.width || !r.height) return "zero-rect";
         return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
       })()`);
-      if (!pt || pt === "no-strip" || pt === "no-close" || pt === "zero-rect") return pt || "no-point";
+      // Same transience rule as td4: retry a missing control inside the
+      // loop; only the final state dump below is the verdict.
+      if (!pt || pt === "no-strip" || pt === "no-close" || pt === "zero-rect") {
+        await sleep(400);
+        continue;
+      }
       const point = JSON.parse(pt);
       await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "none", buttons: 0 });
       await sleep(150);
