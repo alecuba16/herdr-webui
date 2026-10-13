@@ -7823,7 +7823,6 @@ fn prompt_card_opens_from_raw_ansi_viewer_bytes() {
     assert_eq!(sent, b"d\r");
 }
 
-
 #[test]
 fn prompt_card_viewer_markers_above_newer_output_still_parse() {
     // Pins CURRENT behavior, an asymmetry with the numbered branch: the
