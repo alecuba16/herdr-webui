@@ -19,8 +19,8 @@
 import { writeFileSync } from "node:fs";
 import { fetchJson, attach, sleep, makeRecorder, writeReport } from "./cdp-driver-helpers.mjs";
 
-const CDP_HTTP = "http://127.0.0.1:9223";
-const APP_URL = "http://127.0.0.1:8899/";
+const CDP_HTTP = process.env.CDP_HTTP || "http://127.0.0.1:9223";
+const APP_URL = process.env.APP_URL || "http://127.0.0.1:8899/";
 const outPath =
   process.argv[2] || `${process.env.JCODE_SCRATCH_DIR || "."}/term_overlap_repro_result.json`;
 

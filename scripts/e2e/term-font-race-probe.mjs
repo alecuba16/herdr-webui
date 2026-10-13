@@ -3,8 +3,8 @@
 // the fallback font, then unblock, force-load the real font (warm, no adapter
 // recreate), and measure again. Answers: does wterm re-measure when the font
 // swap lands after init? Any horizontal overlap?
-const CDP_HTTP = "http://127.0.0.1:9223";
-const APP_URL = "http://127.0.0.1:8899/";
+const CDP_HTTP = process.env.CDP_HTTP || "http://127.0.0.1:9223";
+const APP_URL = process.env.APP_URL || "http://127.0.0.1:8899/";
 
 async function fetchJson(url) { const r = await fetch(url); return r.json(); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
