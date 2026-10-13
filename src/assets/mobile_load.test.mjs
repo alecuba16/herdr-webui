@@ -702,6 +702,23 @@ describe("mobile bundle load", () => {
     ok(!/minCols: 40/.test(sizeBody), "mobile terminal must not clamp cols to 40");
   });
 
+  it("contains terminal overscroll so scroll gestures never chain to the document", () => {
+    // Regression (live Android Chrome repro 2026-10): the terminal scroller
+    // had no overscroll-behavior, so a scroll gesture at a scrollback edge
+    // chained up to the document scroller and Chrome fired its
+    // pull-down-to-reload. The root rule kills the reload affordance for the
+    // whole shell (each screen owns one scroll surface); the terminal rules
+    // keep the edge glow local to the terminal so a fling cannot move an
+    // outer scroller either.
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    match(mobileCss, /html\s*\{[^}]*overscroll-behavior:\s*none;/);
+    match(mobileCss, /\.mobile-terminal-shell\s*\{[^}]*overscroll-behavior:\s*contain;/);
+    match(
+      mobileCss,
+      /\.mobile-terminal\.wterm,\s*\.mobile-terminal \.wterm\s*\{[^}]*overscroll-behavior:\s*contain;/,
+    );
+  });
+
   it("has mobile CSS parity for CodeMirror Zed-like editor enhancements", () => {
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     match(mobileCss, /\.cm-foldGutter/);
