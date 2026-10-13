@@ -15,6 +15,13 @@
 html {
   height: 100%;
   overflow: hidden;
+  /* Android Chrome fires pull-to-reload from the document scroller even
+     when every app surface scrolls in its own container: without this the
+     terminal's overscroll chains up and a scroll gesture at a scroll edge
+     reloads the page. Desktop chrome.css contains its scrollers too; the
+     mobile shell has exactly one scroll surface per screen, so the root
+     containment covers all of them. */
+  overscroll-behavior: none;
 }
 body {
   --herdr-mobile-viewport-height: 100dvh;
@@ -580,6 +587,10 @@ body.light {
   min-height: 0;
   min-width: 0;
   overflow: auto;
+  /* Keep the terminal's edge-overscroll from chaining to the shell and
+     beyond; the root rule blocks pull-to-reload, this keeps the glow local
+     so a fling at the scrollback edge never moves an outer scroller. */
+  overscroll-behavior: contain;
   padding: 8px;
 }
 .mobile-terminal-loading {
@@ -650,6 +661,7 @@ body.light {
   color: var(--fg);
   font-family: var(--term-font-family, "Herdr JetBrainsMono Nerd Font Mono", ui-monospace, monospace);
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 0;
 }
 .mobile-terminal.wterm .term-grid,
