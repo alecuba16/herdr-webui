@@ -968,16 +968,25 @@ impl BuiltinState {
     ) -> Result<Value, String> {
         let cwd =
             cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let mut data = self
-            .data
-            .lock()
-            .map_err(|_| "state unavailable".to_string())?;
-        let workspace_id = next_id(&mut data, "ws");
-        let label = label.unwrap_or_else(|| workspace_label(&cwd));
-        if open_terminal {
+        let (workspace_id, tab_id, pane_id, terminal_id, has_focus_target) = {
+            let mut data = self
+                .data
+                .lock()
+                .map_err(|_| "state unavailable".to_string())?;
+            let workspace_id = next_id(&mut data, "ws");
             let tab_id = next_id(&mut data, "tab");
             let pane_id = next_id(&mut data, "pane");
             let terminal_id = next_id(&mut data, "term");
+            // Focus resolution reads the pre-spawn state; the insert pass
+            // below applies the same rule against the same snapshot values.
+            let has_focus_target = focus || data.focused_workspace_id.is_none();
+            (workspace_id, tab_id, pane_id, terminal_id, has_focus_target)
+        };
+        let label = label.unwrap_or_else(|| workspace_label(&cwd));
+        if open_terminal {
+            // Spawn outside the lock: openpty can retry with sleeps and
+            // process spawn can stall on slow disks; every other request
+            // would wait on `data` for the whole duration.
             let terminal = TerminalRuntime::spawn(
                 terminal_id.clone(),
                 cwd.clone(),
@@ -994,6 +1003,10 @@ impl BuiltinState {
                 self.jcode_detection_variant,
             )
             .map_err(|err| err.to_string())?;
+            let mut data = self
+                .data
+                .lock()
+                .map_err(|_| "state unavailable".to_string())?;
             data.workspaces.insert(
                 workspace_id.clone(),
                 WorkspaceRecord {
@@ -1025,12 +1038,16 @@ impl BuiltinState {
                 },
             );
             data.terminals.insert(terminal_id, terminal);
-            if focus || data.focused_workspace_id.is_none() {
+            if has_focus_target {
                 data.focused_workspace_id = Some(workspace_id.clone());
                 data.focused_tab_id = Some(tab_id);
                 data.focused_pane_id = Some(pane_id);
             }
         } else {
+            let mut data = self
+                .data
+                .lock()
+                .map_err(|_| "state unavailable".to_string())?;
             // Zero-tab workspace: open_terminal=false skips the Shell tab
             // and root pane entirely. Focus lands on the workspace itself;
             // normalize_focus resolves tab/pane to None until a terminal is
@@ -1050,6 +1067,10 @@ impl BuiltinState {
                 data.focused_pane_id = None;
             }
         }
+        let data = self
+            .data
+            .lock()
+            .map_err(|_| "state unavailable".to_string())?;
         let workspace = data
             .workspaces
             .get(&workspace_id)
@@ -1064,21 +1085,33 @@ impl BuiltinState {
         label: Option<String>,
         focus: bool,
     ) -> Result<(Value, Value), String> {
-        let mut data = self
-            .data
-            .lock()
-            .map_err(|_| "state unavailable".to_string())?;
-        let workspace_id = workspace_id
-            .or_else(|| data.focused_workspace_id.clone())
-            .ok_or_else(|| "no workspace".to_string())?;
-        let cwd = data
-            .workspaces
-            .get(&workspace_id)
-            .map(|workspace| workspace.cwd.clone())
-            .ok_or_else(|| format!("workspace {workspace_id} not found"))?;
-        let tab_id = next_id(&mut data, "tab");
-        let pane_id = next_id(&mut data, "pane");
-        let terminal_id = next_id(&mut data, "term");
+        let (workspace_id, cwd) = {
+            let data = self
+                .data
+                .lock()
+                .map_err(|_| "state unavailable".to_string())?;
+            let workspace_id = workspace_id
+                .or_else(|| data.focused_workspace_id.clone())
+                .ok_or_else(|| "no workspace".to_string())?;
+            let cwd = data
+                .workspaces
+                .get(&workspace_id)
+                .map(|workspace| workspace.cwd.clone())
+                .ok_or_else(|| format!("workspace {workspace_id} not found"))?;
+            (workspace_id, cwd)
+        };
+        let (tab_id, pane_id, terminal_id) = {
+            let mut data = self
+                .data
+                .lock()
+                .map_err(|_| "state unavailable".to_string())?;
+            (
+                next_id(&mut data, "tab"),
+                next_id(&mut data, "pane"),
+                next_id(&mut data, "term"),
+            )
+        };
+        // Spawn outside the lock, same reason as create_workspace.
         let terminal = TerminalRuntime::spawn(
             terminal_id.clone(),
             cwd.clone(),
@@ -1095,6 +1128,15 @@ impl BuiltinState {
             self.jcode_detection_variant,
         )
         .map_err(|err| err.to_string())?;
+        let mut data = self
+            .data
+            .lock()
+            .map_err(|_| "state unavailable".to_string())?;
+        // The workspace can be closed while the spawn ran; fail instead of
+        // resurrecting a workspace row the close already removed.
+        if !data.workspaces.contains_key(&workspace_id) {
+            return Err(format!("workspace {workspace_id} not found"));
+        }
         data.tabs.insert(
             tab_id.clone(),
             TabRecord {
@@ -1147,14 +1189,19 @@ impl BuiltinState {
         };
         let cwd =
             cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let mut data = self
-            .data
-            .lock()
-            .map_err(|_| "state unavailable".to_string())?;
-        let workspace_id = next_id(&mut data, "ws");
-        let tab_id = next_id(&mut data, "tab");
-        let pane_id = next_id(&mut data, "pane");
-        let terminal_id = next_id(&mut data, "term");
+        let (workspace_id, tab_id, pane_id, terminal_id) = {
+            let mut data = self
+                .data
+                .lock()
+                .map_err(|_| "state unavailable".to_string())?;
+            (
+                next_id(&mut data, "ws"),
+                next_id(&mut data, "tab"),
+                next_id(&mut data, "pane"),
+                next_id(&mut data, "term"),
+            )
+        };
+        // Spawn outside the lock, same reason as create_workspace.
         let terminal = TerminalRuntime::spawn(
             terminal_id.clone(),
             cwd.clone(),
@@ -1171,6 +1218,10 @@ impl BuiltinState {
             self.jcode_detection_variant,
         )
         .map_err(|err| err.to_string())?;
+        let mut data = self
+            .data
+            .lock()
+            .map_err(|_| "state unavailable".to_string())?;
         data.workspaces.insert(
             workspace_id.clone(),
             WorkspaceRecord {

@@ -630,19 +630,34 @@ fn resolve_child(root: &Path, path: &str) -> Result<PathBuf, String> {
 
 /// Like `resolve_child`, but for write targets that may introduce new
 /// intermediate directories (file-browser new-file/new-directory flow):
-/// missing components are created with `create_dir_all` before resolving,
-/// so `a/new/dir/.gitkeep` works in one request. Each created level is
-/// still confined to `root` because the walk never leaves it.
+/// each intermediate component is created, canonicalized, and checked
+/// against `root` before the next mkdir runs. The final component is
+/// resolved but never created; the caller writes the file itself.
+/// `create_dir_all` on the joined path would walk an in-root symlink
+/// out of the tree before any containment check could see it.
 fn resolve_child_create(root: &Path, path: &str) -> Result<PathBuf, String> {
-    let joined = root.join(path);
-    if !joined.exists() {
-        // Create every missing intermediate directory up to the final
-        // component's parent; the caller writes the file itself.
-        if let Some(parent) = joined.parent() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let mut current = root.to_path_buf();
+    let parts: Vec<&str> = path
+        .split('/')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
+    for (index, part) in parts.iter().enumerate() {
+        if *part == ".." {
+            return Err("invalid path".to_string());
+        }
+        current.push(part);
+        let last = index + 1 == parts.len();
+        if !last && !current.exists() {
+            fs::create_dir(&current).map_err(|err| err.to_string())?;
+        }
+        if current.exists() {
+            current = current.canonicalize().map_err(|err| err.to_string())?;
+            if !current.starts_with(root) {
+                return Err("path escapes root".to_string());
+            }
         }
     }
-    resolve_child(root, path)
+    Ok(current)
 }
 
 fn unresolved_child_path(cwd: &str, path: Option<&str>) -> Result<PathBuf, String> {
@@ -2357,6 +2372,53 @@ mod tests {
         // the root-containment check for symlinked paths.
         assert!(clean_relative_path(Some("../outside/x")).is_err());
         assert!(resolve_child(&root, "../outside/x").is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resolve_child_create_rejects_symlink_escape_without_writing_outside() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-resolve-symlink-{}",
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let outside = std::env::temp_dir().join(format!(
+            "herdr-resolve-outside-{}",
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&outside).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let result = resolve_child_create(&root, "link/evil/.gitkeep");
+        assert!(result.is_err());
+        assert!(!outside.join("evil").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn resolve_child_create_walks_existing_symlinked_dirs_inside_root() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-resolve-inside-{}",
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        let root = root.canonicalize().unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("real"), root.join("alias")).unwrap();
+        let file = resolve_child_create(&root, "alias/sub/.gitkeep").unwrap();
+        assert!(file.starts_with(&root));
+        assert!(root.join("real/sub").is_dir());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
