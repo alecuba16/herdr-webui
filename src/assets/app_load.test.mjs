@@ -893,6 +893,134 @@ describe("app bundle load", () => {
     equal(shell.hidden, false, "shell frees up once a terminal tab exists");
   });
 
+  it("focuses the empty-leaf card once per show, not under modals or user focus", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
+    vm.runInContext(
+      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
+      ctx,
+    );
+
+    let focusCalls = 0;
+    emptyLeaf.focus = () => {
+      focusCalls += 1;
+    };
+    const body = ctx.document.body;
+    const inputFocus = { closest: () => null, tagName: "INPUT" };
+
+    // First show with body-level focus claims the leaf once, and the
+    // card carries the Enter hint.
+    ctx.document.activeElement = body;
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(focusCalls, 1, "first sync with body focus claims the leaf");
+    ok(emptyLeaf.innerHTML.includes('class="workspace-empty-leaf-hint"'), "card carries the hint paragraph");
+    ok(emptyLeaf.innerHTML.includes("<kbd>Enter</kbd>"), "hint wraps the key in kbd");
+
+    // Poll-tick re-syncs never steal focus back, even at body-level
+    // focus: only the per-show tracker blocks this claim.
+    ctx.document.activeElement = body;
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(focusCalls, 1, "second sync does not re-focus");
+
+    // User focus elsewhere also blocks, and hides nothing.
+    ctx.document.activeElement = inputFocus;
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(focusCalls, 1, "sync leaves user focus alone");
+
+    // Hiding resets the tracker, so each guard below is the only thing
+    // standing between a fresh show and a focus claim.
+    vm.runInContext(`state.tab = "tab_1";`, ctx);
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, true, "leaf hides once a tab exists");
+    vm.runInContext(`state.tab = null;`, ctx);
+
+    // Modal up: the leaf still shows under the scrim but claims nothing.
+    const settingsModal = ctx.document.getElementById("settingsModal");
+    settingsModal.style.display = "grid";
+    ctx.document.activeElement = body;
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(focusCalls, 1, "no focus claim while a modal is up");
+    equal(emptyLeaf.hidden, false, "leaf still shows under the modal scrim");
+    settingsModal.style.display = "none";
+
+    // Modal closed but the user focused a real control: no claim.
+    ctx.document.activeElement = inputFocus;
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(focusCalls, 1, "no focus claim while user focus sits elsewhere");
+
+    // Back at body-level focus the claim lands and the tracker re-arms.
+    ctx.document.activeElement = body;
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(focusCalls, 2, "focus claimed once body focus returns");
+  });
+
+  it("fires the zero-tab Enter handler across its guard matrix", () => {
+    // The fake document drops listeners on the floor, so record them
+    // before the bundle runs and drive the real handler by hand.
+    const keydowns = [];
+    const ctx = context();
+    ctx.document.addEventListener = (type, fn) => {
+      if (type === "keydown") keydowns.push(fn);
+    };
+    vm.runInContext(source, ctx);
+    vm.runInContext(
+      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
+      ctx,
+    );
+
+    let newTabCalls = 0;
+    ctx.newTab = () => {
+      newTabCalls += 1;
+    };
+
+    const fire = (target) => {
+      const e = {
+        key: "Enter",
+        target,
+        preventDefault() {},
+        stopPropagation() {},
+      };
+      for (const fn of keydowns) fn(e);
+    };
+
+    // The element factory's closest() returns itself for any selector,
+    // which would fake a span-button hit on body; answer selectors
+    // honestly instead.
+    const body = ctx.document.body;
+    body.closest = (sel) => (sel === "#workspacePanes" ? body : null);
+    fire(body);
+    equal(newTabCalls, 1, "Enter with body focus mints the first terminal");
+
+    const inPanes = {
+      tagName: "SECTION",
+      closest: (sel) => (sel === "#workspacePanes" ? {} : null),
+    };
+    fire(inPanes);
+    equal(newTabCalls, 2, "Enter inside the pane column mints a terminal");
+
+    const outside = { tagName: "SECTION", closest: () => null };
+    fire(outside);
+    equal(newTabCalls, 2, "Enter outside the pane column is ignored");
+
+    const editable = {
+      tagName: "INPUT",
+      closest: (sel) => ((sel === "#workspacePanes" || sel.includes("input")) ? {} : null),
+    };
+    fire(editable);
+    equal(newTabCalls, 2, "Enter on an editable target is ignored");
+
+    const settingsModal = ctx.document.getElementById("settingsModal");
+    settingsModal.style.display = "grid";
+    fire(inPanes);
+    equal(newTabCalls, 2, "Enter under an open modal is ignored");
+    settingsModal.style.display = "none";
+
+    vm.runInContext(`state.tab = "tab_1";`, ctx);
+    fire(inPanes);
+    equal(newTabCalls, 2, "Enter with a live terminal tab is ignored");
+  });
+
   it("keeps file history header scoped to selected files", () => {
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /function renderFileToolbar\(activeTab\) \{\n\s+const view = active\(\) \|\| \{\};/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const history = view\.file \? `<button class="git-ui-btn \$\{activeTab === "history" \? "active" : ""\}" title="\$\{esc\(titleWithGitShortcut\("File history", "history"\)\)\}" onclick="HerdrGitUi\.tab\('history'\)">History<\/button>` : "";/);
@@ -4882,6 +5010,61 @@ describe("app bundle load", () => {
     equal(vm.runInContext("state.ws", ctx), null);
   });
 
+  it("auto-closes with the server count mirror in place", async () => {
+    // Production always carries state.workspaceCounts (the poll mirror);
+    // removeClosedTabFromState must decrement it or the stale count blocks
+    // the auto-close that runs right after the local close.
+    const { ctx, requests } = recordRequests();
+    vm.runInContext(
+      `state.ws = "ws1";
+       state.tab = "tab_1";
+       state.pane = "pane_1";
+       state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+       state.tabs = [{ workspace_id: "ws1", tab_id: "tab_1" }];
+       state.allTabs = state.tabs.slice();
+       state.workspaceCounts = { ws1: { tabs: 1, panes: 1 } };
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });`,
+      ctx,
+    );
+    await flushMicrotasks();
+
+    ok(
+      requests.some((request) => request.url === "/api/workspaces/ws1/close"),
+      "workspace close POST fired with the mirror present",
+    );
+  });
+
+  it("keeps the workspace when the mirror still counts panels", async () => {
+    // The mirror is authoritative while it says panels remain: closing one
+    // tab of two must not take the workspace down.
+    const { ctx, requests } = recordRequests();
+    const outcome = vm.runInContext(
+      `state.ws = "ws1";
+       state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+       state.tabs = [
+         { workspace_id: "ws1", tab_id: "tab_1" },
+         { workspace_id: "ws1", tab_id: "tab_2" },
+       ];
+       state.allTabs = state.tabs.slice();
+       state.workspaceCounts = { ws1: { tabs: 2, panes: 2 } };
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });
+       JSON.stringify({ closedTabs: state.workspaceCounts.ws1.tabs, closedPanes: state.workspaceCounts.ws1.panes });`,
+      ctx,
+    );
+    // The decrement is synchronous; read it before the microtask flush so
+    // a stubbed refresh cannot rewrite the mirror yet.
+    const mirror = JSON.parse(outcome);
+    equal(mirror.closedTabs, 1, "mirror tab count follows the local close");
+    equal(mirror.closedPanes, 2, "pane count untouched when the tab had no panes");
+    await flushMicrotasks();
+
+    equal(
+      requests.some((request) => request.url === "/api/workspaces/ws1/close"),
+      false,
+      "mirror count above zero keeps the workspace open",
+    );
+  });
+
   it("keeps the workspace when a sibling panel stays open", async () => {
     const { ctx, requests } = recordRequests();
     vm.runInContext(
@@ -7323,18 +7506,18 @@ describe("lens terminal toggle force redraw", () => {
   });
 });
 
-// ---- welcome-tab Enter creates the first terminal ----
-// The empty-workspace leaf is a div, so Enter has no native semantics;
+// ---- zero-tab Enter creates the first terminal ----
+// The pane body is not a button, so Enter has no native semantics there;
 // the bindings keydown fallback must route it to newTab(). Pin the
 // guards too: without modalOpen() and the input/textarea exclusion a
 // stray Enter would spawn terminals behind open forms.
-describe("welcome tab enter creates terminal", () => {
+describe("zero-tab enter creates terminal", () => {
   const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
 
-  it("routes Enter on the welcome leaf to newTab", () => {
+  it("routes Enter on the zero-tab pane body to newTab", () => {
     const bindingsSource = read("./desktop/app_js/bindings.js");
-    match(bindingsSource, /#workspaceEmptyLeaf/);
-    match(bindingsSource, /target === document\.body \|\|\n\s+target === document\.documentElement \|\|\n\s+!!target\.closest\("#workspaceEmptyLeaf"\)/);
+    match(bindingsSource, /#workspacePanes/);
+    match(bindingsSource, /target === document\.body \|\|\n\s+target === document\.documentElement \|\|\n\s+!!target\.closest\("#workspacePanes"\)/);
     // The guard chain: workspace open, no tab, no modal, no editable
     // target: mirrors syncWorkspaceEmptyLeaf's show condition.
     match(
@@ -7344,13 +7527,39 @@ describe("welcome tab enter creates terminal", () => {
     match(bindingsSource, /newTab\(\);\n\s+return;/);
   });
 
-  it("keeps span-button Enter semantics ahead of the welcome branch", () => {
+  it("keeps span-button Enter semantics ahead of the zero-tab branch", () => {
     const bindingsSource = read("./desktop/app_js/bindings.js");
     // The spanButton click path must stay in front: sidebar rows and
-    // pane-tab closes own their Enter presses before the welcome
+    // pane-tab closes own their Enter presses before the zero-tab
     // fallback can claim them.
     const spanIdx = bindingsSource.indexOf('spanButton.click();');
-    const welcomeIdx = bindingsSource.indexOf('#workspaceEmptyLeaf');
-    ok(spanIdx !== -1 && welcomeIdx !== -1 && spanIdx < welcomeIdx, "spanButton handling precedes the welcome-Enter fallback");
+    const zeroTabIdx = bindingsSource.indexOf('#workspacePanes');
+    ok(spanIdx !== -1 && zeroTabIdx !== -1 && spanIdx < zeroTabIdx, "spanButton handling precedes the zero-tab Enter fallback");
+  });
+});
+
+// ---- empty-leaf hint and focus handling ----
+// Static pins for the hint markup, styles, and focusability. The runtime
+// focus and Enter-dispatch behavior lives inside the app bundle load
+// describe above, next to the other empty-leaf sync tests.
+describe("empty leaf hint and focus", () => {
+  const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
+
+  it("renders the Enter hint on the empty-leaf card", () => {
+    const renderSource = read("./desktop/app_js/render.js");
+    match(renderSource, /<p class="workspace-empty-leaf-hint">Press <kbd>Enter<\/kbd> to open a terminal\.<\/p>/, "hint markup minted by syncWorkspaceEmptyLeaf");
+    match(renderSource, /let emptyLeafFocused = false;/, "focus tracker exists");
+    match(renderSource, /emptyLeafFocused = false;\n\s+return;\n\s+\}/, "tracker resets when the leaf hides");
+  });
+
+  it("styles the hint and kbd under the empty-leaf card", () => {
+    const baseCss = read("./desktop/app_css/base.css");
+    match(baseCss, /\.workspace-empty-leaf-card \.workspace-empty-leaf-hint \{/, "hint rule exists");
+    match(baseCss, /\.workspace-empty-leaf-card \.workspace-empty-leaf-hint kbd \{[^}]*background: var\(--panel2\);[^}]*border-bottom-width: 2px;/s, "kbd rule mirrors the shortcut-row recipe");
+  });
+
+  it("makes the empty leaf programmatically focusable", () => {
+    const appHtml = read("./app.html");
+    match(appHtml, /<section class="workspace-empty-leaf" id="workspaceEmptyLeaf" tabindex="-1" hidden><\/section>/, "leaf carries tabindex=-1");
   });
 });

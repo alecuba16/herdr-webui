@@ -23,9 +23,18 @@
   paused while the lens covers the pane, so same-length rewrites
   (spinner frames, clock redraws) left the last pre-lens paint on
   screen; the surface now matches the PTY state on return.
-- Enter on the welcome (empty-workspace) leaf creates the first
-  terminal tab, same as the card's New terminal button. Sidebar rows and
-  pane tab close buttons keep their own Enter semantics.
+- Closing a workspace's last panel closes the workspace again. The
+  snapshot's per-workspace counts are a poll tick stale after a local
+  close, and the auto-close check read that stale mirror, so the
+  workspace stayed open forever; local closes now decrement the
+  mirror too.
+- Enter on the zero-tab workspace body creates the first terminal
+  tab, same as the card's New terminal button. The card now says so
+  (Press Enter hint) and claims focus once per show, and the handler
+  scope is the whole pane column, so the key lands after the
+  open-workspace modal closes, after the last tab closes, or on a
+  plain background click. Sidebar rows and pane tab close buttons
+  keep their own Enter semantics.
 - Browser logic moved into the Rust backend: blame parsing, markdown
   and outline rendering, git log parsing, side-by-side diff rows,
   worktree workmeta, ETag/Cache-Control responses, content matching,
