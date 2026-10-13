@@ -501,6 +501,112 @@ describe("mobile composer + prompt cards module", () => {
     assert.equal(calls.api.length, 1, "still one call after pane switch");
   });
 
+  it("stale server payload (older than 15s) stops masking and falls back cleanly", async () => {
+    // Freshness gate: a cached payload older than SERVER_PROMPT_FRESH_MS
+    // must stop answering (serverPromptFresh -> null), so the card can
+    // never come from a dialog the pane has already moved past. The
+    // local tail fallback keeps working in every cache state: the card
+    // the user sees on screen is always answerable.
+    const term = {
+      wterm: {
+        bridge: {
+          usingAltScreen: () => false,
+          getCols: () => 40,
+          getRows: () => 6,
+          getCell: (r, c) => {
+            const rows = [
+              "Allow network access to example.com? ",
+              "",
+              "1. Allow once",
+              "2. Allow always",
+              "3. Deny",
+              "",
+            ];
+            const line = rows[r] || "";
+            return { width: 1, chars: line[c] || " " };
+          },
+        },
+      },
+      sendPasteToTerminal: () => {},
+    };
+    let clock = 1000;
+    const { module, calls } = composerContext({
+      status: "blocked",
+      term,
+      apiResponses: [
+        {
+          urlPart: "/api/panes/pane-1/prompt",
+          response: {
+            blocked: true,
+            kind: "options",
+            title: "server says",
+            options: [{ key: "1", label: "server option" }],
+          },
+        },
+      ],
+      dateNow: () => clock,
+    });
+    module.renderPromptCard();
+    await Promise.resolve();
+    await Promise.resolve();
+    // Fresh server card wins over the local tail.
+    let card = module.renderPromptCard();
+    assert.match(card, /server says/, "fresh server card wins");
+    assert.equal(calls.api.length, 1);
+    // 16s later the cache is stale: the poll re-arms and the OLD payload
+    // must not keep answering while the new one is in flight.
+    clock += 16000;
+    card = module.renderPromptCard();
+    assert.ok(calls.api.length > 1, "stale cache triggers a new poll");
+    assert.ok(
+      !card.includes("server says") || calls.api.length === 1,
+      "the stale payload does not keep answering",
+    );
+    // The fetch resolves (same canned response): the server card returns.
+    await Promise.resolve();
+    await Promise.resolve();
+    card = module.renderPromptCard();
+    assert.match(card, /server says/, "refreshed payload answers again");
+  });
+
+  it("wrapped result shape also feeds the card", async () => {
+    // Some api() layers return the raw wire body, others unwrap `result`.
+    // The composer accepts both: `res.result || res`.
+    const term = {
+      wterm: {
+        bridge: {
+          usingAltScreen: () => true,
+          getCols: () => 40,
+          getRows: () => 6,
+          getCell: () => ({ width: 1, chars: " " }),
+        },
+      },
+      sendPasteToTerminal: () => {},
+    };
+    const { module } = composerContext({
+      status: "blocked",
+      term,
+      apiResponses: [
+        {
+          urlPart: "/api/panes/pane-1/prompt",
+          response: {
+            result: {
+              blocked: true,
+              kind: "options",
+              title: "wrapped shape",
+              options: [{ key: "a", label: "Approve" }],
+            },
+          },
+        },
+      ],
+    });
+    module.renderPromptCard();
+    await Promise.resolve();
+    await Promise.resolve();
+    const card = module.renderPromptCard();
+    assert.match(card, /wrapped shape/, "result-wrapped payload parses");
+  });
+
   it("jcode viewer tail parses into letter options on mobile", () => {
     const { module } = composerContext();
     const prompt = module.parsePrompt([
@@ -536,6 +642,28 @@ describe("mobile composer + prompt cards module", () => {
     ]);
     assert.ok(bomPrompt, "BOM-led free-text parses");
     assert.equal(bomPrompt.title, "ALLOW now", "BOM does not survive into the title");
+  });
+});
+
+describe("prompt card settings wiring", () => {
+  it("mobile settings expose the promptCardsEnabled row and setter chain", () => {
+    // Three pieces must stay in sync: the Agents-group row in the
+    // settings sheet, the setter in settings.js, and the HerdrMobile
+    // bridge export in app.js. The composer reads the value through
+    // HerdrOptions (same store as desktop).
+    assert.match(settingsSource, /data-settings-id="promptCardsEnabled"/);
+    assert.match(settingsSource, /onchange="HerdrMobile\.setPromptCardsEnabled\(this\.checked\)"/);
+    assert.match(settingsSource, /function setPromptCardsEnabled\(value\)/);
+    assert.match(settingsSource, /parsed\.promptCardsEnabled = value !== false/);
+    assert.match(appSource, /setPromptCardsEnabled: mobileSettings\.setPromptCardsEnabled/);
+  });
+
+  it("desktop settings expose the promptCardsEnabled row and live re-evaluate", () => {
+    const desktop = read("./desktop/app_js/core.js");
+    assert.match(desktop, /promptCardsEnabled/);
+    assert.match(desktop, /SETTINGS_CONFIRM_IDS/);
+    const bindings = read("./desktop/app_js/bindings.js");
+    assert.match(bindings, /promptCardsEnabled/);
   });
 });
 

@@ -7791,6 +7791,38 @@ fn prompt_card_jk_moves_the_cursor_and_k_clamps_at_zero() {
 }
 
 #[test]
+fn prompt_card_opens_from_raw_ansi_viewer_bytes() {
+    // The live tail path: a pane.read payload with raw terminal bytes
+    // (SGR colors, OSC title, cursor addressing, CRLF row ends) runs
+    // through the TUI's strip_ansi_lossy (Drop mode) before
+    // set_pane_tail_from_text. The card must survive the real bytes
+    // exactly like the pre-stripped fixture does.
+    let raw = "\u{1b}]0;jcode\u{7}\u{1b}[2J\u{1b}[H\u{1b}[1;36m│ Permissions (2 pending)                                                  │\u{1b}[0m\r\n\
+         \u{1b}[36m│ Tool: Bash (rm -rf work)                                                  │\u{1b}[0m\r\n\
+         \u{1b}[33m│ a approve · d deny · A approve all · D deny all                          │\u{1b}[0m\r\n\
+         \u{1b}[90m│ ⏳ Agent is waiting for this decision                                     │\u{1b}[0m\r\n";
+    let mut app = app_with_blocked_pane();
+    app.set_pane_tail_from_text(&strip_ansi_lossy(raw));
+    assert!(app.prompt_card.visible, "raw viewer bytes open the card");
+    // The card is the viewer: the first option answers Approve and the
+    // status names it, proving which card the raw bytes produced.
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert_eq!(app.status, "answered: Approve");
+    assert!(!app.prompt_card.visible, "answered card collapses");
+
+    // The same raw bytes answer through the LIVE socket: the strip
+    // must not disturb the letter-key routing.
+    let (mut app, rx) = app_with_fake_terminal_socket();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.set_pane_tail_from_text(&strip_ansi_lossy(raw));
+    app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+    let sent = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("letter answers through the raw-byte tail");
+    assert_eq!(sent, b"d\r");
+}
+
+#[test]
 fn prompt_card_free_text_refuses_stale_and_empty_answers() {
     let mut app = app_with_blocked_pane();
     app.set_pane_tail_from_text("❯ What database should I use?\nenter your response below:\n");

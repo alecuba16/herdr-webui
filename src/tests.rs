@@ -6129,6 +6129,118 @@ async fn pane_prompt_endpoint_returns_null_kind_when_no_dialog() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn pane_prompt_endpoint_returns_bad_gateway_on_backend_error() {
+    let (socket, handle) = fake_api_socket_multi(vec![json!({
+        "id": "web:pane:read:prompt",
+        "error": { "code": "not_found", "message": "pane gone" }
+    })]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/prompt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response_json(response).await;
+    assert_eq!(
+        body["error"],
+        json!("pane gone"),
+        "backend message surfaces"
+    );
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn pane_prompt_endpoint_tail_window_keeps_last_16_lines() {
+    // The payload takes the last 16 non-trailing-blank lines, mirroring
+    // prompt_cards.js tailLines(). The same dialog must parse when it
+    // sits inside that window and stop parsing once newer output pushes
+    // it out: a stale transcript dialog must never float a card.
+    let viewer = [
+        "│ Permissions (1 pending) │",
+        "│ Tool: Bash (git push) │",
+        "│ a approve · d deny · A approve all · D deny all │",
+        "│ ⏳ Agent is waiting for this decision │",
+    ];
+    let agents = json!({
+        "id": "web:agent:list:prompt",
+        "result": { "agents": [
+            { "pane_id": "pane_1", "agent_status": "blocked" }
+        ]}
+    });
+
+    let inside = viewer.join("\n");
+    let (socket, handle) = fake_api_socket_multi(vec![
+        json!({
+            "id": "web:pane:read:prompt",
+            "result": { "read": { "pane_id": "pane_1", "text": inside, "format": "text" } }
+        }),
+        agents.clone(),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/prompt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["kind"], json!("options"), "dialog at the tail parses");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+
+    // Sixteen newer lines push the dialog out of the window: no card.
+    let newer: Vec<String> = (0..16).map(|i| format!("build log line {i}")).collect();
+    let outside = format!("{}\n{}", viewer.join("\n"), newer.join("\n"));
+    let (socket, handle) = fake_api_socket_multi(vec![
+        json!({
+            "id": "web:pane:read:prompt",
+            "result": { "read": { "pane_id": "pane_1", "text": outside, "format": "text" } }
+        }),
+        agents.clone(),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/prompt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(
+        body["kind"],
+        serde_json::Value::Null,
+        "dialog outside the window never parses"
+    );
+    assert_eq!(
+        body["blocked"],
+        json!(true),
+        "blocked flag still rides through"
+    );
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn pane_prompt_endpoint_survives_raw_crlf_bytes() {
     // Some backends hand back grid text with CRLF row ends; the strip
     // must not turn every row into a blank-separated double row. This
