@@ -2138,17 +2138,23 @@ async fn run_auto_no_sleep_loop(state: WebState, api: ApiClient, generation: u64
         if !should_continue {
             break;
         }
-        match api.request_value(
-            json!({ "id": "web:agent:list:no-sleep-auto", "method": "agent.list", "params": {} }),
-        ) {
-            Ok(agents) => sync_auto_no_sleep_from_agents(&state, &agents),
-            Err(err) => {
+        let request =
+            json!({ "id": "web:agent:list:no-sleep-auto", "method": "agent.list", "params": {} });
+        let api_loop = api.clone();
+        let result = tokio::task::spawn_blocking(move || api_loop.request_value(request)).await;
+        match result {
+            Ok(Ok(agents)) => sync_auto_no_sleep_from_agents(&state, &agents),
+            Ok(Err(err)) => {
                 if let Ok(mut no_sleep) = state.no_sleep.lock() {
                     if no_sleep.mode == "auto" && no_sleep.auto_generation == generation {
                         no_sleep.guard = None;
                         no_sleep.error = Some(err);
                     }
                 }
+            }
+            Err(_) => {
+                // The blocking task was cancelled; the loop's next tick
+                // re-checks the generation and stops if no longer active.
             }
         }
     }
@@ -2217,13 +2223,17 @@ async fn update_no_sleep(
         Some(unix_ms_now() + duration_ms)
     };
     let auto_api = api_for_headers(&state, &headers);
-    let auto_agents = (body.mode == "auto")
-        .then(|| {
-            auto_api
-                .request_value(json!({ "id": "web:agent:list:no-sleep", "method": "agent.list", "params": {} }))
-                .ok()
-        })
-        .flatten();
+    let auto_agents = if body.mode == "auto" {
+        let request =
+            json!({ "id": "web:agent:list:no-sleep", "method": "agent.list", "params": {} });
+        let probe_api = auto_api.clone();
+        tokio::task::spawn_blocking(move || probe_api.request_value(request))
+            .await
+            .ok()
+            .and_then(|result| result.ok())
+    } else {
+        None
+    };
     let mut auto_generation = None;
     let (response_json, timer_active) = {
         let cooldown = state
@@ -4113,14 +4123,19 @@ async fn worktrees(
     }
     let cwd = query.cwd.as_deref().map(expand_user_path_string);
     let api = api_for_headers_ensured(&state, &headers).await;
-    match api.request_value(
-        json!({ "id": "web:worktree:list", "method": "worktree.list", "params": { "workspace_id": query.workspace_id, "cwd": cwd } }),
-    ) {
-        Ok(mut value) => {
+    let request = json!({ "id": "web:worktree:list", "method": "worktree.list", "params": { "workspace_id": query.workspace_id, "cwd": cwd } });
+    let result = tokio::task::spawn_blocking(move || api.request_value(request)).await;
+    match result {
+        Ok(Ok(mut value)) => {
             normalize_worktree_response(&mut value);
             Json(value).into_response()
         }
-        Err(err) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+        Ok(Err(err)) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": err }))).into_response(),
+        Err(join_err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": join_err.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -6335,9 +6350,8 @@ async fn terminal_socket(
         tokio::time::sleep(PROMOTE_GRACE).await;
         if should_auto_close_temporary_tab(release_armed, close_tab_id, &promoted_temporary_tabs) {
             if let Some(tab_id) = close_tab_id {
-                let _ = api.request_value(
-                    json!({ "id": "web:temp-terminal:close", "method": "tab.close", "params": { "tab_id": tab_id } }),
-                );
+                let request = json!({ "id": "web:temp-terminal:close", "method": "tab.close", "params": { "tab_id": tab_id } });
+                let _ = tokio::task::spawn_blocking(move || api.request_value(request)).await;
             }
         }
     }
