@@ -967,6 +967,13 @@ describe("app bundle load", () => {
     ok(!desktopTerminalSource.includes("attachCustomWheelEventHandler"));
     match(desktopTerminalSource, /e\.key === "PageUp" \|\| e\.key === "PageDown"/);
     match(desktopTerminalSource, /scrollTerminalLines\(e\.key === "PageUp"/);
+    // Wheel routing is keyed on mouse mode, not buffer: an inline TUI that
+    // tracks the mouse (jcode, tmux `mouse on`) owns the wheel, so both the
+    // capture-phase handler and scrollTerminalLines must yield to the
+    // adapter's SGR forwarding instead of scrolling stale repaint history.
+    match(desktopTerminalSource, /state\.backendMode === "builtin" &&\n\s+\(termWheelForwardedToProgram\(\) \|\| !terminalUsesNormalBuffer\(\)\)\n\s+\)/);
+    match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?if \(termWheelForwardedToProgram\(\) \|\| !terminalUsesNormalBuffer\(\)\) return false;/);
+    match(desktopTerminalSource, /function termWheelForwardedToProgram\(\) \{[\s\S]*?term\.wheelForwardedToProgram\(\)\);[\s\S]*?\n\}/);
     ok(!desktopTerminalSource.includes("scrollBrowserOverflow"));
     ok(!source.includes("Option+Wheel"));
     match(desktopTerminalSource, /const stepLines = Math\.max\(1, Number\(options\.scrollLines\) \|\| 1\);/);

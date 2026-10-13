@@ -338,13 +338,70 @@ describe("chat lens module", () => {
     // Now the pane switches: follow/unread and the baseline must reset.
     // follow=true + the re-render snaps the scroller back to the tail.
     scroller.scrollTop = 0;
-    ctx.HerdrLens.onPaneChanged();
+    ctx.HerdrLens.onPaneChanged("session|builtin|ws_1|tab_1|pane_A|term_1");
     const after = ctx.HerdrLens.lensState();
     equal(after.follow, true, "pane switch resumes following");
     equal(after.unread, false, "pane switch clears unread");
     equal(content.dataset.dirty, "0",
       "the forced re-render already consumed the dirty flag");
     equal(scroller.scrollTop, scroller.scrollHeight, "re-render scrolls to the tail");
+  });
+
+  it("onPaneChanged keeps follow off for a same-pane poll reconnect", () => {
+    // Growable transcript: new output pushes rows into scrollback so
+    // readTranscript sees more lines than the last render (the real
+    // detector keys on line-count growth, not on DOM scrollHeight).
+    const grid = ["one", "two"];
+    let rows = 2;
+    const bridge = makeBridge({
+      getCols: () => 5,
+      getRows: () => rows,
+      getScrollbackCount: () => grid.length - rows,
+      getScrollbackLineLen: (index) => (grid[index] ? grid[index].length : 0),
+      getScrollbackCell: (index, col) => ({
+        chars: (grid[index] && grid[index][col]) || " ",
+        width: 1,
+        spacerHead: false,
+      }),
+      getCell: (row, col) => ({
+        chars: (grid[row + grid.length - rows] && grid[row + grid.length - rows][col]) || " ",
+        width: 1,
+        spacerHead: false,
+      }),
+    });
+    const { ctx } = context();
+    loadLens(ctx, bridge);
+    ctx.HerdrLens.setLens(true);
+    const overlayNode = ctx.document.getElementById("terminalLens");
+    const scroller = overlayNode.querySelector("#terminalLensScroller");
+    // First connect establishes the pane key.
+    ctx.HerdrLens.onPaneChanged("session|builtin|ws_1|tab_1|pane_A|term_1");
+    // Reader scrolls up: follow must go off and STAY off.
+    scroller.scrollTop = 0;
+    scroller.scrollHeight = 200;
+    scroller.clientHeight = 100;
+    for (const fn of scroller.listeners.scroll || []) fn();
+    equal(ctx.HerdrLens.lensState().follow, false, "scrolled up stops follow");
+    // refresh() poll tick: connectTerminal re-runs on the SAME pane.
+    ctx.HerdrLens.onPaneChanged("session|builtin|ws_1|tab_1|pane_A|term_1");
+    const state1 = ctx.HerdrLens.lensState();
+    equal(state1.follow, false,
+      "same-pane reconnect must not resume following");
+    // And it must not clear unread either: the pill survives the poll.
+    // Simulate growth the scrollback detector can see: two more lines
+    // land in the transcript, then a frame forces the re-read and
+    // lines.length > lastRenderedLineCount flags unread.
+    grid.push("three", "four");
+    ctx.HerdrLens.onTerminalFrame();
+    equal(ctx.HerdrLens.lensState().unread, true, "new output while scrolled up flags unread");
+    ctx.HerdrLens.onPaneChanged("session|builtin|ws_1|tab_1|pane_A|term_1");
+    equal(ctx.HerdrLens.lensState().unread, true,
+      "same-pane reconnect keeps the unread pill armed");
+    // A REAL pane switch still resets everything.
+    ctx.HerdrLens.onPaneChanged("session|builtin|ws_1|tab_2|pane_B|term_2");
+    const state2 = ctx.HerdrLens.lensState();
+    equal(state2.follow, true, "real pane switch resumes following");
+    equal(state2.unread, false, "real pane switch clears unread");
   });
 
   it("onPaneChanged is a no-op while the lens is closed", () => {

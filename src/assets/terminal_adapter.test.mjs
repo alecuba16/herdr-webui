@@ -472,27 +472,60 @@ describe("terminal adapter wheel-to-SGR forwarding", () => {
   it("resets to local scrollback scrolling when tracking is disabled again", async () => {
     const { adapter, container, reports } = await createAdapter({ normalBuffer: true, wheelReports: true });
 
-    // Normal buffer: local scroll even with tracking on
+    // Normal buffer + SGR tracking: the program owns the wheel even inline
+    // (jcode, tmux `mouse on`), so the wheel forwards, no local scroll.
     adapter.write("\x1b[?1000;1006h");
     let listener = container.listeners.get("wheel");
     let event = wheelEvent(40);
     listener(event);
-    equal(reports.length, 0);
-    equal(container.scrollTop, 440);
+    equal(reports.length, 1);
+    equal(container.scrollTop, 400, "no local scroll while the program tracks the mouse");
 
-    // Simulate switch to alt screen by the program
+    // Simulate switch to alt screen by the program: still forwarded.
     adapter.wterm.bridge.usingAltScreen = () => true;
     event = wheelEvent(40);
     listener(event);
-    equal(reports.length, 1);
-    equal(container.scrollTop, 440, "no local scroll on alt screen");
+    equal(reports.length, 2);
+    equal(container.scrollTop, 400, "no local scroll on alt screen");
 
-    // Program disables tracking: back to no-op wheel (alt screen, no tracking)
+    // Program disables tracking on the alt screen: back to no-op wheel
+    // (alt screen, no tracking: neither local scroll nor reports apply).
     adapter.write("\x1b[?1000l");
     event = wheelEvent(40);
     listener(event);
+    equal(reports.length, 2);
+    equal(container.scrollTop, 400);
+  });
+
+  it("forwards SGR wheel reports on the normal buffer while tracking is on", async () => {
+    const { adapter, container, reports } = await createAdapter({ normalBuffer: true, wheelReports: true });
+
+    // Inline TUI contract (jcode): normal buffer + 1000/1006 tracking.
+    adapter.write("\x1b[?1000;1006h");
+    const listener = container.listeners.get("wheel");
+    const event = wheelEvent(-40);
+    listener(event);
+
+    equal(event.defaultPrevented, true);
+    equal(event.immediatePropagationStopped, true);
     equal(reports.length, 1);
-    equal(container.scrollTop, 440);
+    equal(reports[0], "\x1b[<64;1;1M", "up wheel forwards even without the alt screen");
+    equal(container.scrollTop, 400, "local repaint history must not scroll");
+  });
+
+  it("resumes local scrollback scrolling when tracking is disabled on the normal buffer", async () => {
+    const { adapter, container, reports } = await createAdapter({ normalBuffer: true, wheelReports: true });
+
+    adapter.write("\x1b[?1003;1006h");
+    let listener = container.listeners.get("wheel");
+    listener(wheelEvent(40));
+    equal(reports.length, 1);
+
+    // Program exits (e.g. jcode quits): tracking off, local scrolling returns.
+    adapter.write("\x1b[?1003l");
+    listener(wheelEvent(40));
+    equal(reports.length, 1);
+    equal(container.scrollTop, 440, "local scrollback scrolling resumes");
   });
 
   it("uses the tracked pointer cell for report coordinates", async () => {

@@ -1845,6 +1845,10 @@ describe("mobile bundle load", () => {
     ok(source.includes('terminal.addEventListener("wheel", handleWheel, { passive: false })'));
     ok(source.includes("term.usesNormalBuffer"));
     ok(source.includes("term.scrollLines"));
+    // Wheel routing keys on mouse mode, not buffer: inline TUIs (jcode,
+    // tmux `mouse on`) track the mouse on the normal buffer, so the local
+    // wheel handler must yield to the adapter's SGR forwarding there too.
+    match(source, /typeof term\.wheelForwardedToProgram === "function" && term\.wheelForwardedToProgram\(\)/);
     equal(typeof ctx.HerdrMobile.scrollTerminalToBottom, "function");
     ok(source.includes('onclick="HerdrMobile.scrollTerminalToBottom(false)"'));
     ctx.lastTerminal._atBottom = false;

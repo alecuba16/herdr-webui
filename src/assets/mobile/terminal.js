@@ -325,9 +325,16 @@
 
     function handleWheel(event) {
       if (event.ctrlKey || event.metaKey || !term) return;
-      // Alt screen + mouse tracking: the adapter already forwarded the wheel as
-      // SGR mouse reports, so local scrollback scrolling must not happen.
-      if (!term.usesNormalBuffer || !term.usesNormalBuffer()) return;
+      // Mouse tracking (SGR) or alt screen: the adapter already forwarded
+      // the wheel as SGR mouse reports, so local scrollback scrolling must
+      // not happen. The SGR check covers normal buffer too: inline TUIs
+      // (jcode, tmux `mouse on`) never enter the alt screen.
+      if (
+        (typeof term.wheelForwardedToProgram === "function" && term.wheelForwardedToProgram()) ||
+        !term.usesNormalBuffer ||
+        !term.usesNormalBuffer()
+      )
+        return;
       event.preventDefault();
       const lines = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, term.rowHeight ? term.rowHeight() : 17)));
       term.scrollLines(event.deltaY < 0 ? -lines : lines);

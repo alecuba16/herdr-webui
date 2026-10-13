@@ -166,9 +166,12 @@ async function connectTerminal(fitOverride = null) {
   if (globalThis.HerdrComposer) globalThis.HerdrComposer.sync();
   // The lens resets its scroll/reading state for the pane now in view, and
   // re-renders from the (still old) bridge so a mid-switch flip never shows
-  // the previous pane's transcript as if it were current.
+  // the previous pane's transcript as if it were current. The target keys
+  // the lens's same-pane guard: refresh() polls land here with an
+  // unchanged pane and must NOT reset follow (the reader stays scrolled
+  // up with the New output pill instead of being snapped to the tail).
   if (globalThis.HerdrLens && globalThis.HerdrLens.onPaneChanged)
-    globalThis.HerdrLens.onPaneChanged();
+    globalThis.HerdrLens.onPaneChanged(target);
   if (
     termWs &&
     termWs.readyState === 1 &&
@@ -303,10 +306,19 @@ async function connectTerminal(fitOverride = null) {
           !e.metaKey &&
           (e.key === "PageUp" || e.key === "PageDown")
         ) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          scrollTerminalLines(e.key === "PageUp" ? -Math.max(1, (state.termRows || rows) - 1) : Math.max(1, (state.termRows || rows) - 1));
-          return;
+          // When the program owns the viewport (SGR mouse tracking on either
+          // buffer, or alt screen), PageUp/PageDown must reach the program
+          // through the pty: jcode scrolls its chat 10 lines natively on
+          // PageUp. Only local-scrollback panes consume the key here.
+          if (
+            state.backendMode !== "builtin" ||
+            (!termWheelForwardedToProgram() && terminalUsesNormalBuffer())
+          ) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            scrollTerminalLines(e.key === "PageUp" ? -Math.max(1, (state.termRows || rows) - 1) : Math.max(1, (state.termRows || rows) - 1));
+            return;
+          }
         }
         if (
           options.shiftEnterNewline !== false &&
@@ -701,6 +713,12 @@ function terminalCellHeight() {
 function terminalUsesNormalBuffer() {
   return !term || typeof term.usesNormalBuffer !== "function" || term.usesNormalBuffer();
 }
+// True when the attached program owns the wheel via SGR mouse tracking,
+// regardless of buffer. Mirrors the adapter's own gate so both wheel
+// listeners stay in agreement about who owns the event.
+function termWheelForwardedToProgram() {
+  return !!(term && typeof term.wheelForwardedToProgram === "function" && term.wheelForwardedToProgram());
+}
 function terminalWheelLines(e) {
   const rowHeight = terminalCellHeight();
   const stepLines = Math.max(1, Number(options.scrollLines) || 1);
@@ -715,7 +733,11 @@ function terminalWheelLines(e) {
 function scrollTerminalLines(lines) {
   if (!term || !Number.isFinite(lines) || lines === 0) return false;
   if (state.backendMode === "builtin") {
-    if (!terminalUsesNormalBuffer()) return false;
+    // The program owns the viewport when it tracks the mouse (SGR) or holds
+    // the alt screen. Local scrollback would show stale repaint history
+    // instead of the program's own viewport, so yield: touch scroll relies
+    // on this too, and the adapter forwards wheel events to the program.
+    if (termWheelForwardedToProgram() || !terminalUsesNormalBuffer()) return false;
     try {
       term.scrollLines(Math.trunc(lines));
       setTerminalFollowPaused(!terminalAtBottom());
@@ -769,10 +791,18 @@ function sendBackendTail() {
 }
 function handleTerminalWheel(e) {
   if (e.ctrlKey || e.metaKey) return;
-  // Builtin + alt screen: the shared adapter owns wheel behavior there (SGR
-  // mouse forwarding when the program tracks the mouse), so never consume.
-  // External backends still scroll through their server-side buffer.
-  if (state.backendMode === "builtin" && !terminalUsesNormalBuffer()) return;
+  // Builtin backend: the shared adapter owns wheel behavior whenever the
+  // program enabled SGR mouse tracking (either buffer) or the alt screen
+  // holds the viewport, so never consume. External backends still scroll
+  // through their server-side buffer.
+  // The SGR check must run on the NORMAL buffer too: inline TUIs (jcode,
+  // tmux `mouse on`) never enter the alt screen, and before this gate they
+  // scrolled stale local repaint history instead of the program viewport.
+  if (
+    state.backendMode === "builtin" &&
+    (termWheelForwardedToProgram() || !terminalUsesNormalBuffer())
+  )
+    return;
   const lines = terminalWheelLines(e);
   if (!lines) {
     e.preventDefault();
