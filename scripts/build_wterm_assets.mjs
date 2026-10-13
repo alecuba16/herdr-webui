@@ -60,6 +60,22 @@ patchedJs = applyPatch(
 // aria-hidden="true" ever returns on the IME textarea, the live CDP audits
 // will flag it and a patch can be re-added with an applyPatch assert.
 
+// Scroll oscillation guard (2026-10 live Arc repro): after window drags
+// the app follow writer (adapter.scrollToBottom) pins the host to the
+// bottom while renderer spacer heights can briefly disagree with the
+// bridge scrollback count. The upstream "no scrollback => pin scrollTop to
+// 0" branch then fought the follow writer frame after frame (scrollTop
+// flipping 0<->maxScroll for tens of seconds). Only pin to 0 when the host
+// is genuinely unscrollable; a transient DOM overflow means the position
+// is owned by whoever is following, not by the reset branch.
+patchedJs = applyPatch(
+  patchedJs,
+  "else!l&&this.element.scrollTop!==0&&this._setScrollTop(0)",
+  "else!l&&this.element.scrollHeight-this.element.clientHeight<=4&&" +
+    "this.element.scrollTop!==0&&this._setScrollTop(0)",
+  "scroll-reset overflow guard",
+);
+
 // The hidden textarea must not trigger mobile keyboard autocorrect, grammar
 // suggestions, or capitalization. Upstream ships autocapitalize="off" but
 // Gboard ignores that on some layers and respects writingsuggestions, and

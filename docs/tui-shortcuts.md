@@ -79,16 +79,18 @@ terminal. Answer it first.`) and the draft stays.
 ## Prompt cards (blocked panes)
 
 When the selected pane's agent status is `blocked` and the tail parses
-as a question dialog (numbered option list, ↑↓ nav hints, or an
-"enter your response" free-text shape), a card floats at the
-bottom-right of the terminal pane: no backdrop dim, it slides under
-open modals, webui anchor parity.
+as a question dialog (numbered option list, ↑↓ nav hints, an
+"enter your response" free-text shape, or the jcode Permissions
+viewer with its `a approve · d deny · A approve all · D deny all`
+help row), a card floats at the bottom-right of the terminal pane: no
+backdrop dim, it slides under open modals, webui anchor parity.
 
 | Key | Action |
 | --- | --- |
 | `j` / `k` (arrows) | move the option cursor |
 | `Enter` | answer the highlighted option (raw `N` + Enter into the pane) |
 | `1`-`9` | jump to option N and answer in one key (like a button click) |
+| `a` / `d` / `A` / `D` | jcode viewer card: jump to that option and answer in one key |
 | `Esc` | dismiss the card until the question or blocked episode changes |
 | `q` | NOT consumed: plain q stays the TUI quit key, card never steals it |
 
@@ -98,6 +100,15 @@ when the pane is unblocked, raw typed text + Enter when still blocked
 (the composer route refuses blocked panes by design). Every raw send
 re-parses the tail first: if the dialog moved on, nothing is sent and
 the status says `question changed, not sent`.
+
+The jcode Permissions viewer parses from both markers the backend
+block detector uses (help row + waiting line), so a transcript or
+doc quote of either line alone never floats a card. Its letter
+options reach the viewer verbatim: `a` + Enter approve, `d` + Enter
+deny, `A`/`D` bulk. Webui parity: the desktop card and the mobile
+sheet render the same four options, and Settings carries a
+`promptCardsEnabled` toggle to turn the cards off (TUI cards stay;
+the TUI has its own `Esc`).
 
 ## Prefix shortcuts (`Ctrl+B` then key)
 

@@ -112,6 +112,10 @@ let terminalShellResizeObserverActive = false;
 // Last innerHTML written to #themeToggleHead, so render() can skip the
 // write when the theme icon did not change.
 let lastThemeHeadIcon = null;
+// Whether the empty-leaf card already claimed focus during its current
+// show. render() reruns on every poll tick; the flag stops each sync
+// from stealing focus back from whatever the user opened meanwhile.
+let emptyLeafFocused = false;
 
 function panesByTabIndex() {
   const map = new Map();
@@ -151,11 +155,26 @@ function syncWorkspaceEmptyLeaf() {
   if (shell) shell.hidden = show;
   if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.mountEmptyLeafInPane)
     window.HerdrWorkspacePanes.mountEmptyLeafInPane(show);
-  if (!show) return;
+  if (!show) {
+    emptyLeafFocused = false;
+    return;
+  }
   const workspace = (state.workspaces || []).find((w) => w.workspace_id === state.ws);
   const name = workspace ? (workspace.worktree ? worktreeDisplayName(workspace) : workspace.label) : "";
   const newTitle = titleWithWebuiShortcut("New terminal", "newPanel");
-  emptyLeaf.innerHTML = `<div class="workspace-empty-leaf-card"><h1>${escapeHtml(name || "Workspace")}</h1><p>No terminal in this workspace yet. Files, Git, and Search still work.</p><button class="workspace-empty-leaf-new" title="${escapeAttr(newTitle)}" aria-label="${escapeAttr(newTitle)}" onclick="event.preventDefault();newTab()">New terminal</button></div>`;
+  emptyLeaf.innerHTML = `<div class="workspace-empty-leaf-card"><h1>${escapeHtml(name || "Workspace")}</h1><p>No terminal in this workspace yet. Files, Git, and Search still work.</p><p class="workspace-empty-leaf-hint">Press <kbd>Enter</kbd> to open a terminal.</p><button class="workspace-empty-leaf-new" title="${escapeAttr(newTitle)}" aria-label="${escapeAttr(newTitle)}" onclick="event.preventDefault();newTab()">New terminal</button></div>`;
+  // Claim focus once per show so the pane body has a concrete Enter
+  // target instead of relying on body-level focus alone. A modal holds
+  // its own focus (open-workspace dialog, question modal), and so does
+  // anything the user actually focused; only the body-level default
+  // is up for grabs.
+  if (!emptyLeafFocused && !modalOpen()) {
+    const active = document.activeElement;
+    if ((!active || active === document.body || active === document.documentElement) && emptyLeaf.focus) {
+      emptyLeaf.focus();
+      emptyLeafFocused = true;
+    }
+  }
 }
 function drawerSurfaceVisible() {
   // All three rail surfaces count, not just Files/Git: the search panel

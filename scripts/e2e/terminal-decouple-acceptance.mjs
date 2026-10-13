@@ -11,6 +11,7 @@
 //   td7  settings exposes workspaceOpenTerminal and the checkbox persists
 //   td8  with closeWorkspaceOnLastTerminal on, closing the last tab asks; Escape cancels the close, Confirm proceeds
 //   td9  the selection falls back to another open workspace after the confirmed auto-close
+//   td10 the zero-tab body answers Enter with a minted Shell tab (CDP key event)
 //
 // window.confirm is auto-accepted for the tab close (Page.setBypassCSP is
 // not needed; the app overrides confirm with confirmCloseTab semantics
@@ -102,6 +103,8 @@ async function main() {
           visible: !card.hidden,
           name: (card.querySelector("h1") || {}).textContent || "",
           hasButton: !!card.querySelector("button.workspace-empty-leaf-new"),
+          hasHint: !!card.querySelector(".workspace-empty-leaf-hint"),
+          hasKbd: !!card.querySelector(".workspace-empty-leaf-hint kbd"),
           text: (card.textContent || "").slice(0, 200),
         });
       }
@@ -111,7 +114,7 @@ async function main() {
   })()`);
   let leaf = null;
   try { leaf = JSON.parse(leafInfo); } catch { /* handled below */ }
-  record("td2 empty-leaf body renders for the zero-tab workspace", !!leaf && leaf.visible && leaf.hasButton, leafInfo.slice(0, 300));
+  record("td2 empty-leaf body renders for the zero-tab workspace", !!leaf && leaf.visible && leaf.hasButton && leaf.hasHint && leaf.hasKbd, leafInfo.slice(0, 300));
 
   // td3: the New terminal button mints a live Shell tab.
   const minted = await evalExpr(`(async () => {
@@ -148,7 +151,12 @@ async function main() {
         if (!r.width || !r.height) return "zero-rect";
         return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
       })()`);
-      if (!pt || pt === "no-strip" || pt === "no-close" || pt === "zero-rect") return pt || "no-point";
+      // A missing or zero-sized control is a transient render state, not a
+      // verdict: the strip repaints on poll ticks, so retry inside the loop.
+      if (!pt || pt === "no-strip" || pt === "no-close" || pt === "zero-rect") {
+        await sleep(400);
+        continue;
+      }
       const point = JSON.parse(pt);
       await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "none", buttons: 0 });
       await sleep(150);
@@ -275,7 +283,12 @@ async function main() {
         if (!r.width || !r.height) return "zero-rect";
         return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
       })()`);
-      if (!pt || pt === "no-strip" || pt === "no-close" || pt === "zero-rect") return pt || "no-point";
+      // Same transience rule as td4: retry a missing control inside the
+      // loop; only the final state dump below is the verdict.
+      if (!pt || pt === "no-strip" || pt === "no-close" || pt === "zero-rect") {
+        await sleep(400);
+        continue;
+      }
       const point = JSON.parse(pt);
       await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "none", buttons: 0 });
       await sleep(150);
@@ -393,6 +406,46 @@ async function main() {
   let sel = null;
   try { sel = JSON.parse(selInfo); } catch { sel = null; }
   record("td9 selection falls back to a surviving workspace after auto-close", !!sel && sel.fallbackIsOther && sel.wsCount >= 1, selInfo.slice(0, 300));
+
+  // td10: after the auto-close, focus sits at body level on the pane
+  // column with zero tabs on the selected workspace. A plain Enter must
+  // mint a Shell tab through the global keydown handler, with no button
+  // click involved: the post-last-tab-close flow in its purest form.
+  await sleep(400);
+  const enterInfo = await (async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const pre = await evalExpr(`(() => {
+        const card = document.getElementById("workspaceEmptyLeaf");
+        return JSON.stringify({
+          ws: state.ws,
+          tab: state.tab,
+          leafShown: !!(card && !card.hidden && card.querySelector(".workspace-empty-leaf-card")),
+          active: (document.activeElement && (document.activeElement.id || document.activeElement.tagName)) || "none",
+        });
+      })()`);
+      let preInfo = null;
+      try { preInfo = JSON.parse(pre); } catch { preInfo = null; }
+      if (!preInfo || !preInfo.leafShown || !preInfo.ws || preInfo.tab) {
+        await sleep(600);
+        continue;
+      }
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 13, key: "Enter", code: "Enter" });
+      const outcome = await evalExpr(`(async () => {
+        const started = Date.now();
+        while (Date.now() - started < 8000) {
+          if (state.tab) return JSON.stringify({ ws: state.ws, tab: state.tab });
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        return JSON.stringify({ ws: state.ws, tab: state.tab, active: (document.activeElement && (document.activeElement.id || document.activeElement.tagName)) || "none" });
+      })()`);
+      return outcome;
+    }
+    return "no-leaf";
+  })();
+  let enterMint = null;
+  try { enterMint = JSON.parse(enterInfo); } catch { enterMint = null; }
+  record("td10 Enter on the zero-tab body mints a Shell tab", !!enterMint && !!enterMint.ws && !!enterMint.tab, enterInfo.slice(0, 300));
 
   console.log(`\n${recorder.passed}/${recorder.results.length} checks passed`);
   writeReport(outPath, recorder, { status: recorder.failed ? "failed" : "passed" });

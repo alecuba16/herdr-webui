@@ -7559,6 +7559,20 @@ fn blocked_dialog_tail() -> Vec<String> {
     .collect()
 }
 
+/// The real jcode Permissions viewer tail (jcode-tui-permissions render
+/// shape): letter options, waiting line, pending count.
+fn jcode_viewer_tail() -> Vec<String> {
+    [
+        "│ Permissions (2 pending)                                                    │",
+        "│ Tool: Bash (rm -rf work)                                                  │",
+        "│ a approve · d deny · A approve all · D deny all · s skip                    │",
+        "│ ⏳ Agent is waiting for this decision                                        │",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 fn app_with_blocked_pane() -> TuiApp {
     let mut app = app_with_snapshot();
     // The fixture pane is "idle"; a blocked pane with a question dialog
@@ -7711,6 +7725,47 @@ fn prompt_card_digits_jump_and_answer_in_one_key() {
 }
 
 #[test]
+fn prompt_card_letters_jump_and_answer_jcode_viewer_card() {
+    // The jcode Permissions viewer card: `a`/`d`/`A`/`D` jump to that
+    // letter option and answer in one key, exactly like digits do on
+    // numbered cards (webui clickable-button parity). Keys that are not
+    // card options fall through: nothing is sent, the card survives.
+    let (mut app, rx) = app_with_fake_terminal_socket();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.set_pane_tail_from_text(&jcode_viewer_tail().join("\n"));
+    assert!(app.prompt_card.visible, "viewer card opens");
+    // `D` (deny all) answers immediately.
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    let sent = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("letter answers immediately");
+    assert_eq!(sent, b"D\r", "viewer letter + Enter goes raw");
+    assert_eq!(app.status, "answered: Deny all");
+    assert!(!app.prompt_card.visible, "answered card collapses");
+    // Fresh episode re-arms the card; a lowercase `a` answers too.
+    app.snapshot.panes[0].agent_status = "idle".to_string();
+    app.evaluate_prompt_card();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.set_pane_tail_from_text(&jcode_viewer_tail().join("\n"));
+    assert!(app.prompt_card.visible);
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    let sent = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("lowercase letter answers");
+    assert_eq!(sent, b"a\r");
+    assert_eq!(app.status, "answered: Approve");
+    // `b` is not a viewer option: falls through, sends nothing.
+    app.snapshot.panes[0].agent_status = "idle".to_string();
+    app.evaluate_prompt_card();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.set_pane_tail_from_text(&jcode_viewer_tail().join("\n"));
+    assert!(app.prompt_card.visible);
+    app.handle_key(KeyEvent::from(KeyCode::Char('b')));
+    assert!(rx.try_recv().is_err(), "non-option letter sends nothing");
+    assert!(app.prompt_card.visible, "card survives an ignored letter");
+}
+
+#[test]
 fn prompt_card_jk_moves_the_cursor_and_k_clamps_at_zero() {
     let mut app = app_with_blocked_pane();
     app.set_pane_tail_from_text(&blocked_dialog_tail().join("\n"));
@@ -7733,6 +7788,125 @@ fn prompt_card_jk_moves_the_cursor_and_k_clamps_at_zero() {
     // status proves which option was picked.
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert_eq!(app.status, "answered: Cancel");
+}
+
+#[test]
+fn prompt_card_opens_from_raw_ansi_viewer_bytes() {
+    // The live tail path: a pane.read payload with raw terminal bytes
+    // (SGR colors, OSC title, cursor addressing, CRLF row ends) runs
+    // through the TUI's strip_ansi_lossy (Drop mode) before
+    // set_pane_tail_from_text. The card must survive the real bytes
+    // exactly like the pre-stripped fixture does.
+    let raw = "\u{1b}]0;jcode\u{7}\u{1b}[2J\u{1b}[H\u{1b}[1;36m│ Permissions (2 pending)                                                  │\u{1b}[0m\r\n\
+         \u{1b}[36m│ Tool: Bash (rm -rf work)                                                  │\u{1b}[0m\r\n\
+         \u{1b}[33m│ a approve · d deny · A approve all · D deny all                          │\u{1b}[0m\r\n\
+         \u{1b}[90m│ ⏳ Agent is waiting for this decision                                     │\u{1b}[0m\r\n";
+    let mut app = app_with_blocked_pane();
+    app.set_pane_tail_from_text(&strip_ansi_lossy(raw));
+    assert_eq!(app.pane_tail.len(), 4, "Drop mode keeps CRLF rows single");
+    assert!(app.prompt_card.visible, "raw viewer bytes open the card");
+    // The card is the viewer: the first option answers Approve and the
+    // status names it, proving which card the raw bytes produced.
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert_eq!(app.status, "answered: Approve");
+    assert!(!app.prompt_card.visible, "answered card collapses");
+
+    // The same raw bytes answer through the LIVE socket: the strip
+    // must not disturb the letter-key routing.
+    let (mut app, rx) = app_with_fake_terminal_socket();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.set_pane_tail_from_text(&strip_ansi_lossy(raw));
+    app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+    let sent = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("letter answers through the raw-byte tail");
+    assert_eq!(sent, b"d\r");
+}
+
+#[test]
+fn prompt_card_viewer_markers_above_newer_output_still_parse() {
+    // Pins CURRENT behavior, an asymmetry with the numbered branch: the
+    // round-2 tail-end tightening applies to numbered lists only, not
+    // the viewer branch. A transcript or docs quote carrying BOTH
+    // markers (release notes quote both) above newer output still
+    // floats a viewer card while the pane status reads blocked. Left
+    // as is deliberately: a tail-end rule could break real viewer
+    // layouts that carry content below the waiting line, and the live
+    // viewer keeps the alt screen so its markers cannot sit above
+    // newer output in the real flow. If this ever needs tightening,
+    // update all three parser copies and the parity corpus together.
+    let tail = [
+        "\u{2502} Permissions (1 pending) \u{2502}",
+        "\u{2502} a approve \u{b7} d deny \u{b7} A approve all \u{b7} D deny all \u{2502}",
+        "\u{2502} \u{23f3} Agent is waiting for this decision \u{2502}",
+        "build log line 1",
+        "build log line 2",
+    ];
+    let mut app = app_with_blocked_pane();
+    app.set_pane_tail_from_text(&tail.join("\n"));
+    assert!(
+        app.prompt_card.visible,
+        "viewer branch has no tail-end rule (pinned; see comment)"
+    );
+}
+
+#[test]
+fn prompt_card_opens_from_cursor_addressed_viewer_repaints() {
+    // The live viewer does not print rows top to bottom: it repaints
+    // with CSI cursor addressing (row;col H) and CRLF separators. The
+    // strip must leave exactly the four marker rows and the parser
+    // must still see the viewer.
+    let raw = "\u{1b}[?1049h\u{1b}[H\u{1b}[2J\u{1b}[1;1H\u{1b}[1;36m\u{2502} Permissions (2 pending) \u{1b}[0m\r\n\u{1b}[2;1H\u{1b}[36m\u{2502} Tool: Bash (rm -rf work) \u{1b}[0m\r\n\u{1b}[3;1H\u{1b}[33m\u{2502} a approve \u{b7} d deny \u{b7} A approve all \u{b7} D deny all \u{1b}[0m\r\n\u{1b}[4;1H\u{1b}[90m\u{2502} \u{23f3} Agent is waiting for this decision \u{1b}[0m\r\n";
+    let mut app = app_with_blocked_pane();
+    app.set_pane_tail_from_text(&strip_ansi_lossy(raw));
+    assert_eq!(
+        app.pane_tail.len(),
+        4,
+        "cursor-addressed repaints strip to the marker rows"
+    );
+    assert!(app.prompt_card.visible, "repainted viewer opens the card");
+    // Answering through the letter keys must still route: the card is
+    // the viewer, so `d` denies.
+    app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+    assert_eq!(app.status, "answered: Deny");
+}
+
+#[test]
+fn prompt_card_tail_window_keeps_last_240_lines() {
+    // The TUI keeps the last TAIL_LINES (240) rows. A dialog sitting at
+    // the window's top edge must still parse; one row further out must
+    // not: a stale transcript dialog never floats a card. This is the
+    // TUI twin of the endpoint's 16-line window test.
+    let viewer = [
+        "│ Permissions (1 pending) │",
+        "│ Tool: Bash (git push) │",
+        "│ a approve · d deny · A approve all · D deny all │",
+        "│ ⏳ Agent is waiting for this decision │",
+    ];
+    let mut app = app_with_blocked_pane();
+
+    // Inside: dialog at rows 237-240 of a 240-row tail. Every marker
+    // survives the window, and any smaller window would eat the title.
+    let mut inside: Vec<String> = viewer.iter().map(|s| s.to_string()).collect();
+    for i in 0..236 {
+        inside.push(format!("│ filler row {i} │"));
+    }
+    app.set_pane_tail_from_text(&inside.join("\n"));
+    assert!(
+        app.prompt_card.visible,
+        "dialog at the 240-line window edge parses"
+    );
+
+    // Outside: 240 newer rows push the dialog out entirely.
+    let mut outside: Vec<String> = viewer.iter().map(|s| s.to_string()).collect();
+    for i in 0..240 {
+        outside.push(format!("│ newer log line {i} │"));
+    }
+    app.set_pane_tail_from_text(&outside.join("\n"));
+    assert!(
+        !app.prompt_card.visible,
+        "dialog pushed past the window never parses"
+    );
 }
 
 #[test]

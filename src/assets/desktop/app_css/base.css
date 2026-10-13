@@ -745,6 +745,22 @@ body.light .agent-status.done {
   filter: brightness(1.08);
   outline: none;
 }
+/* Scoped under the card because .workspace-empty-leaf-card p (class plus
+   type) would otherwise out-specific a bare class and re-apply its
+   margins to the hint. */
+.workspace-empty-leaf-card .workspace-empty-leaf-hint {
+  font-size: 13px;
+  margin: -12px 0 22px;
+}
+.workspace-empty-leaf-card .workspace-empty-leaf-hint kbd {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-bottom-width: 2px;
+  border-radius: 7px;
+  padding: 3px 7px;
+  font: 12px var(--mono-font);
+  color: var(--fg);
+}
 
 /* Sidebar workspace/agent rows: skip layout/paint for offscreen rows in the
    scrollable section. Rows are single-line height; the intrinsic size keeps

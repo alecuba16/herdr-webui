@@ -6,10 +6,59 @@
   tab counts that never reflected client-side panel removal. Panel close
   now adjusts the counts, and the guard also falls back to local state,
   so the option fires for plain workspaces and linked worktrees alike.
+  On mobile the guard re-verifies the live workspace list when local
+  counts disagree, so the events-race window cannot drop the close.
 - The auto-close is no longer silent. Desktop and mobile ask first (question
   modal / confirm sheet), naming the workspace or worktree; Enter or OK
   proceeds with the close, Escape or Cancel aborts it entirely and keeps
   the emptied workspace open.
+- Prompt cards now cover the jcode Permissions viewer. The viewer
+  answers with letters (`a approve · d deny · A approve all · D deny
+  all`), a shape none of the old parser branches matched, so a blocked
+  jcode pane flipped the badge but never showed a card. All three
+  parser copies (TUI, desktop prompt_cards.js, mobile composer.js)
+  recognize the viewer through the same two markers the backend block
+  detector scrapes (help row + `⏳ Agent is waiting for this decision`),
+  render Approve/Deny/Approve all/Deny all, and answer by sending the
+  letter + Enter into the pane. The TUI card also takes `a`/`d`/`A`/`D`
+  as direct answer keys. A transcript or docs quote of either marker
+  alone never floats a card.
+- The numbered-dialog false positive is tightened. A numbered list
+  containing a permission word (allow/deny/yes/cancel) used to parse
+  as a dialog even when newer output followed it, so during the
+  sub-second stale-blocked window after an episode a transcript list
+  could flash a card. The no-nav-hint branch now requires the option
+  block to sit at the tail end or carry a confirm hint line below
+  (press enter to confirm, enter to select, and friends).
+- Settings gains a `promptCardsEnabled` toggle (desktop: Agents and
+  alerts section; mobile: Agents group). Default on. Turned off,
+  blocked agents still flip the badge and play alerts, but the card
+  never renders; answers are typed inside the terminal. The TUI card
+  is unaffected.
+- The mobile prompt sheet reads the server-side `/api/panes/{id}/prompt`
+  payload like the desktop card does. The jcode Permissions viewer
+  paints the alt screen, where the local terminal grid reads blank, so
+  the mobile local-only parse could never see it; the server parse
+  covers that case now, with the same sticky-off fallback behavior for
+  older servers.
+- The prompt parsers normalize exotic unicode whitespace. Terminal
+  output sometimes carries NBSP, NEL, U+3000, BOM, or LS/PS where a
+  plain space belongs (CJK terminals, pasted docs, byte-level NEL
+  escapes). JS and Rust whitespace classes disagree on BOM and NEL,
+  which made the three parser copies read the same dialog differently;
+  a fuzz corpus of 400 unicode tails found 112 divergences. All three
+  copies now map those six codepoints to a plain space before matching:
+  the same corpus re-runs with zero divergences, and dialogs written
+  with exotic spaces parse (and render titles) exactly like plain
+  ones.
+- Fixed two bugs in that `/prompt` endpoint found while testing it
+  end to end. It read the pane text from the wrong JSON pointer (the
+  raw wire shape nests it under `result`, so every real backend hit
+  returned an empty parse: the mobile fallback could never have
+  worked), and its ANSI strip used the CR-to-newline mode, so grid
+  text with CRLF row ends came back double-spaced and stopped
+  parsing. It now unwraps the pointer and strips CR like every other
+  production tail path.
 
 ## 0.7.7 Release Notes
 - Wheel and PageUp/PageDown reach mouse-tracking programs on the normal
@@ -34,9 +83,18 @@
   paused while the lens covers the pane, so same-length rewrites
   (spinner frames, clock redraws) left the last pre-lens paint on
   screen; the surface now matches the PTY state on return.
-- Enter on the welcome (empty-workspace) leaf creates the first
-  terminal tab, same as the card's New terminal button. Sidebar rows and
-  pane tab close buttons keep their own Enter semantics.
+- Closing a workspace's last panel closes the workspace again. The
+  snapshot's per-workspace counts are a poll tick stale after a local
+  close, and the auto-close check read that stale mirror, so the
+  workspace stayed open forever; local closes now decrement the
+  mirror too.
+- Enter on the zero-tab workspace body creates the first terminal
+  tab, same as the card's New terminal button. The card now says so
+  (Press Enter hint) and claims focus once per show, and the handler
+  scope is the whole pane column, so the key lands after the
+  open-workspace modal closes, after the last tab closes, or on a
+  plain background click. Sidebar rows and pane tab close buttons
+  keep their own Enter semantics.
 - Browser logic moved into the Rust backend: blame parsing, markdown
   and outline rendering, git log parsing, side-by-side diff rows,
   worktree workmeta, ETag/Cache-Control responses, content matching,
