@@ -1,5 +1,16 @@
 # Release notes
 
+## 0.7.6 Release Notes
+- Documentation and comments only; no runtime changes. The 0.7.4
+  release-notes section had swallowed two items that shipped in
+  0.7.4's own notes (chat colors, git drawer picker); the stray
+  heading that duplicated the 0.7.4 section is gone. The mobile
+  settings comment above commitSettingFromChange claimed a change
+  landing after the debounce fired never writes a second time; the
+  code commits unconditionally and stays correct because the setters
+  are idempotent, and the comment (plus the matching test comment)
+  now says exactly that.
+
 ## 0.7.5 Release Notes
 - Help and Settings share one modal now. The footer's shortcuts button
   merged into the settings button, and the shortcuts reference (functionality
@@ -59,31 +70,6 @@
   also reorders its sections by task: Appearance, Terminal input,
   Shortcuts, Workspace behavior, Worktrees, File browser, Editor,
   Agents and alerts, Server.
-
-## 0.7.4 Release Notes
-- Chat mode text segments carry meaning by color now. The thinking
-  toggle reads magenta (reasoning), tool names cyan (machine action),
-  running tool rows and the working chip amber (in flight), failed parts
-  red (error). Colors live in CSS only; lens.js wraps the pending tool
-  name in a span and nothing else. The failed red overrides the amber
-  by cascade specificity, not force: zero !important in the shipped
-  rules. Every painted surface passes AA contrast in both themes,
-  checked by a real-browser e2e that resolves colors and computes
-  WCAG ratios in Node, plus unit and contract pins. The colors e2e
-  also exposed a pre-existing bug: --fg-dim was never defined, so all
-  20 var(--fg-dim, #a6adc8) call sites painted the dark-theme gray in
-  light theme at 1.97:1. It is now defined per theme: dark keeps
-  #a6adc8, light gets #525769 (6.35:1).
-- The git drawer picker keeps its state under status probes. A
-  picker-diverged cwd used to read as stale and snap the view back to
-  the workspace folder, killing the return button and blocking the
-  cleanup-only view. Divergence is now deliberate state the probe
-  never touches: while diverged the probe parks a rail-only status
-  for the workspace folder, and any git folder move or workspace
-  change drops the park so the next probe refetches. Collapsing a
-  folder row mid-search no longer clears the search term: dir rows
-  toggle a per-search collapsed map while a term is active, the caret
-  flips, descendants hide, and the term survives Load more paging.
 
 ## 0.7.4 Release Notes
 - Chat mode text segments carry meaning by color now. The thinking
