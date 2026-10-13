@@ -551,8 +551,9 @@
     }
     // onchange path for debounced rows: cancel any pending debounce and
     // commit now, so a keyboard that only fires change (some Android IMEs)
-    // still saves, and a change that lands after the debounce fired never
-    // writes a second time for the same value.
+    // still saves. A change landing after the debounce fired rewrites the
+    // same value; the setters are idempotent (assign + write), so the
+    // stored value and the committed state stay correct either way.
     function commitSettingFromChange(settingsId, value) {
       flushSettingCommit(settingsId);
       const commit = settingCommitPaths[settingsId];
