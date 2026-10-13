@@ -100,6 +100,25 @@ async function main() {
     return recorder.failed ? 1 : 0;
   }
 
+  // The webfont can land after first paint (font-display swap). Sampling
+  // mid-swap sees fallback metrics: fewer rows and a different cell width,
+  // which is exactly the overlap signature the probe hunts for, so a real
+  // late swap must be a finding, not a flake. Gate the sampling on the font
+  // being loaded; if the swap is still pending give it a moment and resample.
+  await evalExpr(`document.fonts.ready.then(() => new Promise((r) => requestAnimationFrame(() => r("fonts-settled"))))`).catch(() => {});
+  const fontOk = await evalExpr(`document.fonts.check('14px "Herdr JetBrainsMono Nerd Font Mono"')`);
+  if (!fontOk) {
+    await sleep(1500);
+    const retry = await evalExpr(`document.fonts.check('14px "Herdr JetBrainsMono Nerd Font Mono"')`);
+    recorder.record(
+      "terminal webfont loaded",
+      !!retry,
+      `fontCheck=${!!retry}`,
+    );
+  } else {
+    recorder.record("terminal webfont loaded", true, "fontCheck=true");
+  }
+
   // Helper expression body reused by scenario probes.
   const geometry = () => `(() => {
     const host = document.getElementById("terminal");
@@ -108,8 +127,26 @@ async function main() {
     const hostRect = host.getBoundingClientRect();
     const styles = getComputedStyle(host);
     const grid = host.querySelector(".term-grid");
+    const hostTop = hostRect.top;
+    const hostBottom = hostRect.bottom;
+    let visibleRows = 0;
+    let misaligned = 0;
+    const rowH = rect ? rect.height : 0;
+    if (rowH > 0) {
+      for (const r of host.querySelectorAll(".term-row")) {
+        const rr = r.getBoundingClientRect();
+        if (rr.bottom <= hostTop || rr.top >= hostBottom) continue;
+        visibleRows += 1;
+        const offTop = (rr.top - hostTop) % rowH;
+        const offBottom = (rr.bottom - hostTop) % rowH;
+        // A row tiles when its edges sit on rowH multiples of the viewport.
+        if ((offTop > 0.5 && Math.abs(offTop - rowH) > 0.5) || (offBottom > 0.5 && Math.abs(offBottom - rowH) > 0.5)) misaligned += 1;
+      }
+    }
     return {
       rows: host.querySelectorAll(".term-row").length,
+      visibleRows,
+      misaligned,
       gridRows: term && term.rows,
       gridCols: term && term.cols,
       appCols: state && state.termCols,
@@ -219,9 +256,13 @@ async function main() {
   })`).catch((e) => console.log("visibility err:", e.message));
   await sleep(400);
   const afterHidden = await evalExpr(geometry());
+  // With scrollback present the DOM keeps offscreen rows on purpose, so
+  // total .term-row count legitimately exceeds the logical grid rows. What
+  // must hold: every viewport-intersecting row tiles on the same row height,
+  // and the visible row count matches the grid.
   recorder.record(
     "geometry intact after hidden/restore",
-    afterHidden.gridRows === afterHidden.rows && afterHidden.rows > 0,
+    afterHidden.visibleRows === afterHidden.gridRows && afterHidden.gridRows > 0 && afterHidden.misaligned === 0,
     JSON.stringify(afterHidden),
   );
 
@@ -229,21 +270,40 @@ async function main() {
   const resized = await evalExpr(`new Promise((resolve) => {
     const shell = document.getElementById("terminalShell");
     const host = document.getElementById("terminal");
-    const prev = shell.style.height;
     shell.style.height = (shell.clientHeight - 37) + "px";
     requestAnimationFrame(() => requestAnimationFrame(() => {
       requestAnimationFrame(() => requestAnimationFrame(() => {
+        // Scrollback keeps offscreen rows mounted; the contract is that the
+        // rows intersecting the resized viewport still tile exactly and the
+        // grid re-fit to the new height (visible count == logical rows).
+        const hostRect = host.getBoundingClientRect();
+        let visibleRows = 0;
+        let misaligned = 0;
+        const first = host.querySelector(".term-row");
+        const rowH = first ? first.getBoundingClientRect().height : 0;
+        if (rowH > 0) {
+          for (const r of host.querySelectorAll(".term-row")) {
+            const rr = r.getBoundingClientRect();
+            if (rr.bottom <= hostRect.top || rr.top >= hostRect.bottom) continue;
+            visibleRows += 1;
+            const offTop = (rr.top - hostRect.top) % rowH;
+            const offBottom = (rr.bottom - hostRect.top) % rowH;
+            if ((offTop > 0.5 && Math.abs(offTop - rowH) > 0.5) || (offBottom > 0.5 && Math.abs(offBottom - rowH) > 0.5)) misaligned += 1;
+          }
+        }
         resolve({
           height: shell.clientHeight,
           hostH: host.getBoundingClientRect().height,
           rows: host.querySelectorAll(".term-row").length,
+          visibleRows,
+          misaligned,
           gridRows: (window.term || term) && (window.term || term).rows,
           appRows: state.termRows,
         });
       }));
     }));
   })`);
-  const resizeOk = resized.gridRows === resized.rows && resized.rows > 0;
+  const resizeOk = resized.visibleRows === resized.gridRows && resized.gridRows > 0 && resized.misaligned === 0;
   recorder.record(
     "rows retile after shell resize",
     resizeOk,

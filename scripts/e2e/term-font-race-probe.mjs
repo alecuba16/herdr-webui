@@ -20,7 +20,11 @@ async function main() {
     const m = JSON.parse(ev.data);
     if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); return; }
     if (m.method === "Fetch.requestPaused") {
-      ws.send(JSON.stringify({ id: ++id, method: "Fetch.failRequest", params: { requestId: m.params.requestId, errorReason: "Failed" } }));
+      // Fail only the webfont; every other paused request must continue or
+      // the page load dies on chrome-error://chromewebdata/.
+      const url = m.params.request && m.params.request.url || "";
+      const isFont = url.includes("JetBrainsMono");
+      ws.send(JSON.stringify({ id: ++id, method: isFont ? "Fetch.failRequest" : "Fetch.continueRequest", params: { requestId: m.params.requestId, ...(isFont ? { errorReason: "Failed" } : {}) } }));
     }
   };
   const send = (m, p) => { id += 1; ws.send(JSON.stringify({ id, method: m, params: p || {} })); return id; };
@@ -67,10 +71,21 @@ async function main() {
   const blocked = await evalx(measure);
   console.log("blocked-font:", JSON.stringify(blocked));
 
-  // Phase 2: unblock, load the font warm (no reload, no adapter recreate).
+  // Phase 2: the blocked page's FontFace is stuck in the error state (Chrome
+  // rethrows without a network retry), so a warm swap cannot happen in this
+  // context. Reload the page with interception off and let the font load
+  // naturally; then measure. Answers the same question for the realistic
+  // path: normal boot with the webfont available.
   await call("Fetch.disable", {});
-  await evalx(`document.fonts.load("14px \\"Herdr JetBrainsMono Nerd Font Mono\\"").then(() => document.fonts.ready.then(() => "loaded"))`).catch((e) => console.log("fontload:", e.message));
-  await sleep(800);
+  await sleep(300); // let Fetch.disable take effect before the reload
+  await evalx(`location.href = "${APP_URL}"`);
+  await sleep(3500);
+  await evalx(`new Promise((resolve) => {
+    const link = document.querySelector("a.item[data-workspace-id]");
+    if (link) link.click();
+    resolve("clicked");
+  })`).catch(() => {});
+  await sleep(2500);
   const afterSwap = await evalx(measure);
   console.log("after-warm-swap:", JSON.stringify(afterSwap));
 
