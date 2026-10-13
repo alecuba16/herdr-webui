@@ -175,6 +175,7 @@ describe("app bundle load", () => {
     appBootSource = readFileSync(new URL("./app_boot.js", import.meta.url), "utf8");
     const desktopAppSource = [
       "./desktop/app_js/core.js",
+      "./desktop/app_js/settings_sections.js",
       "./desktop/app_js/workspace_shell.js",
       "./desktop/app_js/right_sidebar.js",
       "./desktop/app_js/search_panel.js",
@@ -717,7 +718,7 @@ describe("app bundle load", () => {
     vm.runInContext(source, ctx);
     ctx.applyOptions();
 
-    equal(ctx.document.getElementById("shortcutsToggle").title, "Shortcuts (Ctrl+Q then Shift+/)");
+    equal(ctx.document.getElementById("shortcutsToggle").title, "Help & Shortcuts (Ctrl+Q then Shift+/)");
     equal(ctx.document.getElementById("settingsToggle").title, "Settings (Ctrl+Q then S)");
     equal(ctx.document.getElementById("headerActionsButton").title, "Search and actions (Ctrl+Q then /)");
     equal(ctx.document.getElementById("sidebarToggle").title, "Hide sidebar (Ctrl+Q then B)");
@@ -782,7 +783,9 @@ describe("app bundle load", () => {
   it("help modal documents the keyboard-operable surfaces", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
-    const html = ctx.shortcutsModalHtml();
+    // The shortcuts reference renders into the merged Settings modal's
+    // Help & Shortcuts section now, not its own modal.
+    const html = ctx.helpAndShortcutsBodyHtml();
     match(html, /Activate the focused control: sidebar workspace close\/remove actions, agent Undo\/Dismiss, pane tab ✕, file tree rows, session lines, Git stash entries, Git log commits, and the zero-terminal New terminal card/);
     match(html, /On file tree folder rows, Enter\/Space expands or collapses the folder in place\./);
     match(html, /Inside the menu, arrows move between items, Esc closes and returns focus to the \[⋮\] button/);
@@ -1058,10 +1061,9 @@ describe("app bundle load", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
-    const html = ctx.shortcutsModalHtml();
+    const html = ctx.helpAndShortcutsBodyHtml();
 
     match(html, /id="shortcutEditor"/);
-    match(html, /Help &amp; Shortcuts/);
     match(html, /Functionality map/);
     match(html, /Keyboard shortcuts/);
     match(html, /Workspaces show open roots\/worktrees; agents list status/);
@@ -5534,8 +5536,14 @@ describe("app bundle load", () => {
     match(ctx.worktreeOpenModalHtml(), /id="worktreeDiscoverPath"/);
     ok(!ctx.worktreeOpenModalHtml().includes("worktreePathOptions"));
     match(ctx.worktreeOpenModalHtml(), /id="worktreeBranchOptions"/);
-    match(ctx.shortcutsModalHtml(), /id="shortcutsModal"/);
-    match(ctx.shortcutsModalHtml(), /id="closeShortcutCurrent"/);
+    // The shortcuts reference lives in the merged Settings modal's Help &
+    // Shortcuts section; the editor and current-close kbd ship inside it.
+    // The merged modal is a module (HerdrSettingsSections) with an
+    // install/uninstall toggle; in the harness it registers but cannot
+    // build DOM chrome, so the section html is pinned through the api.
+    match(ctx.HerdrSettingsSections.helpAndShortcutsSectionHtml(), /Help &amp; Shortcuts/);
+    match(ctx.helpAndShortcutsBodyHtml(), /id="shortcutEditor"/);
+    match(ctx.helpAndShortcutsBodyHtml(), /id="closeShortcutCurrent"/);
   });
 
   it("prefills workspace label from final folder segment", () => {
@@ -6039,7 +6047,8 @@ describe("app bundle load", () => {
     ok(!source.includes('el("optExplorationDefaultDirectory").oninput'));
     ok(!source.includes('el("optWorktreeDefaultDirectory").oninput'));
     // Rows are watched when the settings modal opens, and Enter commits.
-    match(source, /watchSettingsConfirmRows\(\);\s*\n\s*const input = el\("settingsSearch"\)/);
+    // The merged-modal module syncs its section rail on the same open.
+    match(source, /watchSettingsConfirmRows\(\);\s*\n\s*if \(window\.HerdrSettingsSections\)\s*\n\s*window\.HerdrSettingsSections\.syncSettingsNav\(\);\s*\n\s*const input = el\("settingsSearch"\)/);
     match(source, /window\.HerdrSettingsCommit = \{/);
     // Reopening Settings must re-read baselines so rollback targets the
     // value saved at the latest open, not the first-ever visit.
@@ -6719,7 +6728,7 @@ describe("a11y audit contract", () => {
   });
 
   it("labels icon-only close buttons in dynamic modals", () => {
-    for (const id of ["settingsCloseTop", "questionClose", "worktreeCreateClose", "worktreeOpenClose", "workspaceCreateClose", "shortcutsCloseTop"]) {
+    for (const id of ["settingsCloseTop", "questionClose", "worktreeCreateClose", "worktreeOpenClose", "workspaceCreateClose"]) {
       const re = new RegExp(`id="${id}"[^>]*aria-label=`);
       match(coreSource, re, `${id} needs aria-label`);
     }
@@ -6974,6 +6983,7 @@ describe("shortcut hint toast", () => {
   beforeEach(() => {
     const desktopAppSource = [
       "./desktop/app_js/core.js",
+      "./desktop/app_js/settings_sections.js",
       "./desktop/app_js/workspace_shell.js",
       "./desktop/app_js/right_sidebar.js",
       "./desktop/app_js/search_panel.js",
@@ -7121,8 +7131,11 @@ describe("shortcut hint toast", () => {
     match(toastBindingsSource, /el\("settingsToggle"\)\.onclick = \(\) => \{\s*showShortcutHintToast\("webuiShortcuts", "settings"\);/, "settings toggle");
     match(toastBindingsSource, /el\("shortcutsToggle"\)\.onclick = \(\) => \{\s*showShortcutHintToast\("webuiShortcuts", "help"\);/, "shortcuts toggle");
     match(toastBindingsSource, /el\("optShortcutHintToasts"\)\.onchange/, "settings checkbox binding");
-    match(toastCoreSource, /el\("footerShortcutsButton"\)\.onclick = \(\) => \{ showShortcutHintToast\("webuiShortcuts", "help"\);/, "footer shortcuts");
-    match(toastCoreSource, /el\("footerSettingsButton"\)\.onclick = \(\) => \{ showShortcutHintToast\("webuiShortcuts", "settings"\);/, "footer settings");
+    // The footer shortcuts button merged into the settings button: both
+    // entry points toast through the modal open, the help shortcut keeps
+    // its own toast via showShortcutsModal.
+    match(toastCoreSource, /el\("footerSettingsButton"\)\.onclick = \(\) => \{ showShortcutHintToast\("webuiShortcuts", "settings"\); openSettingsModal\(\); \};/, "footer settings");
+    ok(!toastCoreSource.includes("footerShortcutsButton"), "footer shortcuts button merged away");
     match(toastCoreSource, /headerActions\.onclick = \(\) => \{\s*showShortcutHintToast\("webuiShortcuts", "search"\);/, "header actions");
     match(toastCoreSource, /sidebarToggle\.onclick = \(\) => \{\s*showShortcutHintToast\("webuiShortcuts", "sidebar"\);/, "sidebar toggle");
     match(toastSearchSource, /const hintAction = \{[\s\S]*?"toggle-sidebar": "sidebar",[\s\S]*?\}\[action\];\s*\n\s*if \(hintAction\) showShortcutHintToast\("webuiShortcuts", hintAction\);/, "palette routing");

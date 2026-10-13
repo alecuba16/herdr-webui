@@ -1,6 +1,20 @@
 # Release notes
 
 ## Next release
+- Help and Settings share one modal now. The footer's shortcuts button
+  merged into the settings button, and the shortcuts reference (functionality
+  map, keyboard shortcuts, shortcut editor) renders as the first section of
+  the Settings modal. A left rail lists every section and highlights the one
+  currently in view with the accent color; clicking an entry scrolls to that
+  section, and in phone-width desktop windows the rail becomes a horizontal
+  chip strip with 44px targets. The header `?` and prefix then `?` open the
+  modal straight at the Help & Shortcuts section. Settings search filters
+  settings sections only so the reference stays intact while searching. Esc
+  closes the modal. The feature ships as its own module
+  (`src/assets/desktop/app_js/settings_sections.js`, `window.HerdrSettingsSections`
+  with install/uninstall) and a 9-check headless acceptance drive covers it:
+  `scripts/e2e/run-footer-modal-e2e.sh` (isolated server + chrome-headless,
+  same runner lib as the other e2e scripts).
 - Prefix actions echo a shortcut hint toast now. Running any WebUI or Git
   UI prefix action (prefix chords, settings/shortcuts toggles, header and
   footer buttons, sidebar toggle, palette-routed actions, git prefix

@@ -16,7 +16,10 @@
 }
 /* Bottom-sheet modals at phone widths: shared markup, mobile geometry.
    Desktop keeps the centered card. Search palette opens its own overlay
-   (fullscreen search surface), so exclude it. */
+   (fullscreen search surface), so exclude it. Settings nav chip rules
+   live in workspaces.css next to their base rules: workspaces.css
+   concatenates after this file, so overrides left here would lose the
+   equal-specificity source-order race. */
 @media (max-width: 640px) {
   .modal-backdrop:not(.search-palette) {
     place-items: end stretch;

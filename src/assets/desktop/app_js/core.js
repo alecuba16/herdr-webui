@@ -511,7 +511,6 @@ if (sectionEl && !el("workspacePane")) {
 insertMissingHtml("worktreeCreateModal", worktreeCreateModalHtml());
 insertMissingHtml("worktreeOpenModal", worktreeOpenModalHtml());
 insertMissingHtml("workspaceCreateModal", workspaceCreateModalHtml());
-insertMissingHtml("shortcutsModal", shortcutsModalHtml());
 insertMissingHtml("questionModal", questionModalHtml());
 const settingsModal = el("settingsModal");
 if (settingsModal && !settingsModal.dataset.ux) {
@@ -528,13 +527,18 @@ if (settingsModal && !settingsModal.dataset.ux) {
     [...modal.querySelectorAll("label.option")].forEach((node) =>
       body.appendChild(node),
     );
-    modal.insertBefore(body, modal.querySelector(".modal-actions"));
+    const actions = modal.querySelector(":scope > .modal-actions");
+    if (actions) modal.insertBefore(body, actions);
+    else modal.appendChild(body);
     el("settingsCloseTop").onclick = () => {
       settingsModal.style.display = "none";
     };
   }
   settingsModal.dataset.ux = "1";
 }
+// The merged modal (section rail + in-modal Help & Shortcuts) lives in
+// settings_sections.js, which loads after this file and installs itself.
+// core.js only builds the plain modal chrome above.
 function insertMissingHtml(id, html) {
   if (!el(id)) document.body.insertAdjacentHTML("beforeend", html);
 }
@@ -683,23 +687,15 @@ function workspaceCreateModalHtml() {
       </div>
     </div>`;
 }
-function shortcutsModalHtml() {
+function helpAndShortcutsBodyHtml() {
   return `
-    <div class="modal-backdrop" id="shortcutsModal">
-      <div class="modal">
-        <div class="settings-head">
-          <div>
-            <h2>Help &amp; Shortcuts</h2>
-            <p>Quick functionality map and browser/WebUI shortcuts. Terminal apps may handle their own keybindings inside the pane.</p>
-          </div>
-          <button class="mini settings-close" id="shortcutsCloseTop" title="Close" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
-        </div>
+        <div class="help-shortcut-mount-inner">
         <section class="help-section">
           <h3>Functionality map</h3>
           <p class="settings-note">Main Herdr areas and what each control does.</p>
           <div class="help-grid">
             <div class="help-row"><strong>Sidebar</strong><span>Workspaces show open roots/worktrees; agents list status. Click to open; double-click names to rename. Drag the workspace/agents separator to resize by percent. Colored badges show blocked, done, working, and idle.</span></div>
-            <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? opens this help; gear opens Settings; moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
+            <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? jumps to Help &amp; Shortcuts; gear opens Settings (both live in one modal); moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
             <div class="help-row"><strong>Panels/Tabs</strong><span>Each pane has a tab strip: click a tab to activate it, double-click a terminal tab to rename, ✕ closes the tab, + creates a terminal panel in that pane. Editor and git tabs open from the sidebar and can sit beside terminal tabs in any pane.</span></div>
             <div class="help-row"><strong>Panes</strong><span>Split the active pane right or down from the strip ◫/⊟ buttons or shortcuts; drag the divider to resize; close a pane with ✕-promoting its sibling. Editor and git tabs drag between panes with a caret marking the drop slot, or move with a shortcut. The [⋮] menu offers split, maximize/restore, rename, move, and close for the pane's active tab. Maximize hides the layout and shows one pane; toggle again to restore, and the layout survives reloads.</span></div>
             <div class="help-row"><strong>Terminal</strong><span>Desktop and mobile terminals use the shared renderer adapter. Settings → Terminal → Renderer switches between the default Ghostty core and the lightweight wterm core and reconnects the current terminal; the Ghostty core renders Kitty graphics images inline, wterm shows a placeholder summary. Wheel, trackpad, touch, and PageUp/PageDown scroll normal scrollback; external Herdr sessions try backend scroll first, built-in sessions use local renderer scrollback, and alternate-screen apps keep their own scroll keys. Tail appears after scrolling up and jumps back to latest output. Links are enabled by default, mouse reporting is opt-in, paste uses bounded WebSocket chunks, and scroll speed is configurable in Settings → Terminal.</span></div>
@@ -749,9 +745,8 @@ function shortcutsModalHtml() {
           <div class="shortcut-row"><kbd>Double-click</kbd><span>Rename workspaces and panels.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Middle-click</kbd><span>Open workspace, agent, or panel link using browser tab behavior.</span></div>
         </div>
-        <div class="modal-actions"><button class="btn" id="shortcutsClose">Close</button></div>
-      </div>
-    </div>`;
+        </div>
+      `;
 }
 
 const shortcutEditorGroups = [
@@ -878,8 +873,7 @@ function setShortcutTooltip(id, title, action) {
 }
 
 function syncShortcutTooltips() {
-  setShortcutTooltip("shortcutsToggle", "Shortcuts", "help");
-  setShortcutTooltip("footerShortcutsButton", "Shortcuts", "help");
+  setShortcutTooltip("shortcutsToggle", "Help & Shortcuts", "help");
   setShortcutTooltip("settingsToggle", "Settings", "settings");
   setShortcutTooltip("footerSettingsButton", "Settings", "settings");
   setShortcutTooltip("headerActionsButton", "Search and actions", "search");
@@ -1596,6 +1590,9 @@ function normalizeOptions(value) {
   return next;
 }
 let options = normalizeOptions(loadOptions());
+// The merged-modal module (settings_sections.js, loaded after this file)
+// renders the in-settings Help & Shortcuts body once it installs, so the
+// editor targets exist before the first applyOptions() pass.
 // Single source for the open_terminal body flag the workspace-open endpoints
 // take: every frontend entry (create modal, worktree open, recents, file
 // browser, search) sends this value so a workspace opens with a terminal
@@ -2223,6 +2220,8 @@ function groupSettingsSections() {
   for (const section of Array.from(settingsBody.querySelectorAll(":scope > .settings-section"))) {
     decorateSettingsSectionHead(section);
   }
+  if (window.HerdrSettingsSections)
+    window.HerdrSettingsSections.syncSettingsNav();
   if (typeof filterSettings === "function") filterSettings();
 }
 function setupSettingsSearch() {
@@ -2237,10 +2236,25 @@ function setupSettingsSearch() {
   body.dataset.search = "1";
   filterSettings();
 }
+function openSettingsModal() {
+  // Plain open; the merged-modal module layers the section rail and the
+  // Help & Shortcuts target on top through its own openSettingsModalAt.
+  const sections = window.HerdrSettingsSections;
+  if (sections) {
+    sections.openSettingsModalAt();
+    return;
+  }
+  const m = el("settingsModal");
+  if (!m) return;
+  m.style.display = "grid";
+  prepareSettingsModalOpen();
+}
 function prepareSettingsModalOpen() {
   applyOptions();
   loadServerSettings();
   watchSettingsConfirmRows();
+  if (window.HerdrSettingsSections)
+    window.HerdrSettingsSections.syncSettingsNav();
   const input = el("settingsSearch");
   if (!input) return;
   input.value = "";
@@ -2260,6 +2274,14 @@ function filterSettings() {
     node.classList.contains("settings-section"),
   );
   for (const section of sections) {
+    // Help & Shortcuts (a merged-modal section) holds a reference
+    // document, not settings rows; the search filters settings sections
+    // only. The merged-modal module owns that section — when it is not
+    // installed there is no help section in the loop.
+    if (section.classList.contains("settings-help-section")) {
+      section.classList.toggle("settings-filter-hidden", searching);
+      continue;
+    }
     const sectionHead = section.querySelector(".settings-section-head");
     const sectionMatches =
       !query ||
@@ -2886,20 +2908,14 @@ function setupSessionChrome() {
     footer.appendChild(versionsEl);
   }
   if (versionsEl) versionsEl.classList.add("side-footer", "footer-meta");
-  if (!el("footerShortcutsButton")) {
+  if (!el("footerSettingsButton")) {
     const actions = document.createElement("span");
     actions.className = "footer-actions";
-    actions.innerHTML = `<button class="mini footer-icon-button" id="footerShortcutsButton" title="${escapeAttr(titleWithWebuiShortcut("Shortcuts", "help"))}" aria-label="${escapeAttr(titleWithWebuiShortcut("Shortcuts", "help"))}">${appIcon("help")}</button><button class="mini footer-icon-button" id="footerSettingsButton" title="${escapeAttr(titleWithWebuiShortcut("Settings", "settings"))}" aria-label="${escapeAttr(titleWithWebuiShortcut("Settings", "settings"))}">${appIcon("settings")}</button>`;
+    actions.innerHTML = `<button class="mini footer-icon-button" id="footerSettingsButton" title="${escapeAttr(titleWithWebuiShortcut("Settings", "settings"))}" aria-label="${escapeAttr(titleWithWebuiShortcut("Settings", "settings"))}">${appIcon("settings")}</button>`;
     (head || footer).appendChild(actions);
-    el("footerShortcutsButton").onclick = () => { showShortcutHintToast("webuiShortcuts", "help"); applyOptions(); el("shortcutsModal").style.display = "grid"; };
-    el("footerSettingsButton").onclick = () => { showShortcutHintToast("webuiShortcuts", "settings"); el("settingsModal").style.display = "grid"; prepareSettingsModalOpen(); };
+    el("footerSettingsButton").onclick = () => { showShortcutHintToast("webuiShortcuts", "settings"); openSettingsModal(); };
   }
-  const footerShortcutsButton = el("footerShortcutsButton");
   const footerSettingsButton = el("footerSettingsButton");
-  if (footerShortcutsButton) {
-    footerShortcutsButton.classList.add("footer-icon-button");
-    footerShortcutsButton.innerHTML = appIcon("help");
-  }
   if (footerSettingsButton) {
     footerSettingsButton.classList.add("footer-icon-button");
     footerSettingsButton.innerHTML = appIcon("settings");

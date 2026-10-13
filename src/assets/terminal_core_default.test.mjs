@@ -52,6 +52,7 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
   it("desktop bundle migrates a legacy wterm blob on boot and honors explicit re-choice", () => {
     const desktopAppSource = [
       "./desktop/app_js/core.js",
+      "./desktop/app_js/settings_sections.js",
       "./desktop/app_js/workspace_shell.js",
       "./desktop/app_js/workspace_panes.js",
       "./desktop/app_js/render.js",

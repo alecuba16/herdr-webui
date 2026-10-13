@@ -61,16 +61,27 @@ if (window.matchMedia) {
 document.addEventListener("visibilitychange", () => {
   syncBrowserFavicon();
 });
-let settingsBackdropDown = false,
-  shortcutsBackdropDown = false;
+let settingsBackdropDown = false;
 el("settingsToggle").onclick = () => {
   showShortcutHintToast("webuiShortcuts", "settings");
-  el("settingsModal").style.display = "grid";
-  prepareSettingsModalOpen();
+  openSettingsModal();
+};
+el("shortcutsToggle").onclick = () => {
+  showShortcutHintToast("webuiShortcuts", "help");
+  const sections = window.HerdrSettingsSections;
+  if (sections) sections.openSettingsModalAt(sections.HELP_SECTION_SELECTOR);
+  else openSettingsModal();
 };
 el("settingsClose").onclick = () => {
   el("settingsModal").style.display = "none";
 };
+const settingsModalScrollSync = () => {
+  const sections = window.HerdrSettingsSections;
+  if (sections) sections.updateSettingsNavCurrent();
+};
+// The merged-modal module owns the scroll sync (it knows the real scroll
+// container: the settings shell, not the .modal card). No fallback here:
+// without the module there is no rail to sync.
 el("settingsModal").addEventListener("pointerdown", (e) => {
   settingsBackdropDown = e.target === el("settingsModal");
 });
@@ -79,33 +90,19 @@ el("settingsModal").addEventListener("click", (e) => {
     el("settingsModal").style.display = "none";
   settingsBackdropDown = false;
 });
-el("shortcutsToggle").onclick = () => {
-  showShortcutHintToast("webuiShortcuts", "help");
-  applyOptions();
-  el("shortcutsModal").style.display = "grid";
-};
-el("shortcutsClose").onclick = () => {
-  el("shortcutsModal").style.display = "none";
-};
-el("shortcutsCloseTop").onclick = () => {
-  el("shortcutsModal").style.display = "none";
-};
 el("searchPaletteClose").onclick = closeSearchPalette;
 el("searchPaletteInput").oninput = scheduleSearch;
 el("searchPaletteInput").onkeydown = searchPaletteKeydown;
 el("searchPalette").addEventListener("click", (e) => {
   if (e.target === el("searchPalette")) closeSearchPalette();
 });
-el("shortcutsModal").addEventListener("pointerdown", (e) => {
-  shortcutsBackdropDown = e.target === el("shortcutsModal");
-});
-el("shortcutsModal").addEventListener("click", (e) => {
+el("settingsModal").addEventListener("click", (e) => {
   const record = e.target && e.target.closest && e.target.closest("[data-shortcut-record]");
   if (record) {
     e.preventDefault();
     const [scope, action] = record.dataset.shortcutRecord.split(":");
     recordShortcut(scope, action, record);
-    shortcutsBackdropDown = false;
+    settingsBackdropDown = false;
     return;
   }
   const reset = e.target && e.target.closest && e.target.closest("[data-shortcut-reset]");
@@ -113,12 +110,8 @@ el("shortcutsModal").addEventListener("click", (e) => {
     e.preventDefault();
     const [scope, action] = reset.dataset.shortcutReset.split(":");
     resetShortcut(scope, action);
-    shortcutsBackdropDown = false;
-    return;
+    settingsBackdropDown = false;
   }
-  if (shortcutsBackdropDown && e.target === el("shortcutsModal"))
-    el("shortcutsModal").style.display = "none";
-  shortcutsBackdropDown = false;
 });
 el("optTheme").onchange = () => {
   themeMode = normalizeThemeMode(el("optTheme").value);
@@ -554,6 +547,10 @@ document.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       closeSearchPalette();
+    } else if (el("settingsModal").style.display === "grid") {
+      e.preventDefault();
+      e.stopPropagation();
+      el("settingsModal").style.display = "none";
     }
   },
   true,
@@ -579,7 +576,6 @@ document.addEventListener("keydown", (e) => {
     "worktreeCreateModal",
     "worktreeOpenModal",
     "workspaceCreateModal",
-    "shortcutsModal",
     "searchPalette",
     "questionModal",
   ];
