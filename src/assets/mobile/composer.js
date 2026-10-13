@@ -11,7 +11,10 @@
 (function () {
   const PILL_STATUSES = ["blocked", "done", "idle", "working"];
 
-  function createMobileComposer({ state, render, escapeHtml, inputAttrs, statusClassFn, getTerminal }) {
+  function createMobileComposer({ state, render, escapeHtml, inputAttrs, statusClassFn, getTerminal, api }) {
+    // `api` is optional: the live app injects it; older callers fall
+    // back to the global HerdrMobileApi that app.js publishes.
+
     // ---- Terminal tail reading (wterm bridge grid, same as desktop) ----
 
     function bridge() {
@@ -79,6 +82,13 @@
 
     function parsePrompt(lines) {
       if (!lines.length) return null;
+      // Unicode whitespace parity with the Rust parser: JS `\s` and Rust
+      // regex `\s` disagree on BOM and NEL. Normalize the exotic spaces
+      // to plain space so both parser copies match identically on
+      // terminals that emit NBSP/NEL/U+3000/BOM/LS/PS.
+      lines = lines.map((line) =>
+        line.replace(/[\u00a0\u0085\u3000\ufeff\u2028\u2029]/g, " "),
+      );
       const joined = lines.join("\n");
       const blocks = [];
       let current = [];
@@ -229,7 +239,7 @@
       if (!promptApiUsable || promptFetchInFlight) return;
       if (Date.now() - promptFetchAt < SERVER_PROMPT_FETCH_MS) return;
       const paneId = state && state.pane;
-      const request = globalThis.HerdrMobileApi;
+      const request = typeof api === "function" ? api : globalThis.HerdrMobileApi;
       if (!paneId || typeof request !== "function") return;
       promptFetchAt = Date.now();
       promptFetchInFlight = true;

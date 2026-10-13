@@ -69,9 +69,8 @@ static PERMISSION_WORDS: LazyLock<Regex> =
 // (builtin_detection/jcode.rs) scrapes: the bordered help row and the
 // waiting line. Both must be present so transcript text quoting the
 // help row format (release notes, docs) does not trigger a card.
-static JCODE_VIEWER_HELP: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)a approve.*d deny.*A approve all.*D deny all").unwrap()
-});
+static JCODE_VIEWER_HELP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)a approve.*d deny.*A approve all.*D deny all").unwrap());
 static JCODE_VIEWER_WAITING: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)agent is waiting for this decision").unwrap());
 static JCODE_VIEWER_TITLE: LazyLock<Regex> =
@@ -138,6 +137,22 @@ pub fn parse_prompt(lines: &[String]) -> Option<PromptCard> {
     if lines.is_empty() {
         return None;
     }
+    // Unicode whitespace parity: JS `\s` and Rust regex `\s` disagree on
+    // BOM and NEL, and `trim()` sets differ too. Normalize the exotic
+    // spaces to plain space so all three parser copies match identically
+    // on terminals that emit NBSP/NEL/U+3000/BOM/LS/PS.
+    let normalized: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.chars()
+                .map(|c| match c {
+                    '\u{a0}' | '\u{85}' | '\u{3000}' | '\u{feff}' | '\u{2028}' | '\u{2029}' => ' ',
+                    other => other,
+                })
+                .collect()
+        })
+        .collect();
+    let lines = &normalized[..];
     let joined = lines.join("\n");
     // Take the LAST contiguous numbered block: an older dialog may still
     // be on screen above; the active one is the newest.
@@ -276,7 +291,10 @@ fn options_at_tail_or_confirmed(lines: &[String], options: &[PromptOption]) -> b
         }
     }
     // Tail-end check: nothing but blank lines after the block.
-    lines.iter().skip(last_option_idx + 1).all(|l| l.trim().is_empty())
+    lines
+        .iter()
+        .skip(last_option_idx + 1)
+        .all(|l| l.trim().is_empty())
 }
 
 /// Live state of the prompt-card overlay. Owned by `TuiApp`; the render
@@ -683,13 +701,7 @@ mod tests {
     fn numbered_block_at_tail_still_parses() {
         // Tightening must not break real dialogs: options at the very
         // end of the tail (with trailing blank lines) still parse.
-        let tail = lines(&[
-            "❯ Run it?",
-            "1. Yes, allow once",
-            "2. No, deny",
-            "",
-            "",
-        ]);
+        let tail = lines(&["❯ Run it?", "1. Yes, allow once", "2. No, deny", "", ""]);
         let card = parse_prompt(&tail).expect("tail-end options parse");
         assert_eq!(card.title, "Run it");
     }
@@ -757,5 +769,26 @@ mod tests {
         let card =
             parse_prompt(&lines(&["", "1. allow", "2. deny"])).expect("permission dialog parses");
         assert_eq!(card.title, "Confirm action");
+    }
+
+    #[test]
+    fn exotic_unicode_whitespace_parses_like_plain_spaces() {
+        // NBSP/NEL/U+3000/BOM inside the title and option rows must read
+        // as plain spaces: JS `\s` and Rust `\s` disagree on BOM and
+        // NEL, so both sides normalize before matching.
+        let nbsp = "\u{a0}pick\u{a0}one\u{a0}";
+        let card = parse_prompt(&lines(&[nbsp, "1.\u{85}allow", "2.\u{3000}deny"]))
+            .expect("permission dialog parses");
+        assert_eq!(card.title, "pick one");
+        assert_eq!(card.options[0].label, "allow");
+        assert_eq!(card.options[1].label, "deny");
+        // A BOM before the title must not survive into the card title.
+        let card = parse_prompt(&lines(&["\u{feff}ALLOW now?", "enter your response"]))
+            .expect("free-text permission parses");
+        assert_eq!(card.title, "ALLOW now");
+        // LS/PS in a title row also collapse.
+        let card = parse_prompt(&lines(&["allow\u{2028}it?", "enter your response"]))
+            .expect("free-text parses");
+        assert_eq!(card.title, "allow it");
     }
 }

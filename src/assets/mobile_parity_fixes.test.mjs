@@ -16,13 +16,21 @@ const backendSource = read("./mobile/backend.js");
 const layoutSettingsSource = read("./desktop/layout_settings.js");
 const assetsRsSource = read("../assets.rs");
 
-function composerContext({ status = "blocked", term = null } = {}) {
+function composerContext({ status = "blocked", term = null, options = null, apiResponses = null, apiFails = false, dateNow = null } = {}) {
   const calls = { api: [], paste: [], renders: 0 };
+  const storage = new Map();
+  if (options) storage.set("herdr-web-options", JSON.stringify(options));
   const sandbox = {
     console,
     setTimeout,
     clearTimeout,
-    Date,
+    Date: dateNow
+      ? class extends Date {
+          static now() {
+            return dateNow();
+          }
+        }
+      : Date,
     JSON,
     Object,
     Array,
@@ -35,6 +43,11 @@ function composerContext({ status = "blocked", term = null } = {}) {
     Promise,
     RegExp,
     encodeURIComponent,
+    localStorage: {
+      getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+      setItem: (k, v) => storage.set(k, String(v)),
+      removeItem: (k) => storage.delete(k),
+    },
   };
   sandbox.globalThis = sandbox;
   const ctx = vm.createContext(sandbox);
@@ -51,6 +64,11 @@ function composerContext({ status = "blocked", term = null } = {}) {
     state,
     api: async (url, opts) => {
       calls.api.push({ url, opts });
+      if (apiFails) throw new Error("route missing");
+      if (apiResponses) {
+        const entry = apiResponses.find((r) => url.includes(r.urlPart));
+        if (entry) return entry.response;
+      }
       return {};
     },
     render: () => {
@@ -61,7 +79,7 @@ function composerContext({ status = "blocked", term = null } = {}) {
     statusClassFn: () => status,
     getTerminal: () => term,
   });
-  return { module, state, calls };
+  return { module, state, calls, storage };
 }
 
 describe("mobile composer + prompt cards module", () => {
@@ -323,6 +341,201 @@ describe("mobile composer + prompt cards module", () => {
     };
     const { module } = composerContext({ status: "blocked", term });
     assert.equal(module.renderPromptCard(), "");
+  });
+
+  it("server /prompt payload covers the alt-screen jcode viewer", async () => {
+    // The jcode Permissions viewer paints the alt screen, where the local
+    // grid reads blank: the server payload is the only source that can
+    // see it. Blocked pane + server card => the sheet renders.
+    const term = {
+      wterm: {
+        bridge: {
+          usingAltScreen: () => true,
+          getCols: () => 40,
+          getRows: () => 6,
+          getCell: () => ({ width: 1, chars: " " }),
+        },
+      },
+      sendPasteToTerminal: () => {},
+    };
+    const { module, calls } = composerContext({
+      status: "blocked",
+      term,
+      apiResponses: [
+        {
+          urlPart: "/api/panes/pane-1/prompt",
+          response: {
+            blocked: true,
+            kind: "options",
+            title: "jcode permissions (2 pending)",
+            options: [
+              { key: "a", label: "Approve" },
+              { key: "d", label: "Deny" },
+              { key: "A", label: "Approve all" },
+              { key: "D", label: "Deny all" },
+            ],
+          },
+        },
+      ],
+    });
+    assert.equal(module.renderPromptCard(), "", "first render: fetch still in flight");
+    assert.equal(calls.api.length, 1, "the /prompt endpoint was polled");
+    await Promise.resolve();
+    await Promise.resolve();
+    const card = module.renderPromptCard();
+    assert.match(card, /jcode permissions/, "server-parsed viewer card renders");
+    assert.match(card, /mobile-prompt-card/);
+    // Letter options render with their keys like the numbered ones.
+    assert.match(card, /HerdrMobile\.promptAnswer\(/);
+  });
+
+  it("answering a viewer letter from the server payload sends letter + Enter", async () => {
+    const pasted = [];
+    const term = {
+      wterm: {
+        bridge: {
+          usingAltScreen: () => true,
+          getCols: () => 40,
+          getRows: () => 6,
+          getCell: () => ({ width: 1, chars: " " }),
+        },
+      },
+      sendPasteToTerminal: (text) => pasted.push(text),
+    };
+    const { module } = composerContext({
+      status: "blocked",
+      term,
+      apiResponses: [
+        {
+          urlPart: "/api/panes/pane-1/prompt",
+          response: {
+            blocked: true,
+            kind: "options",
+            title: "jcode permissions (3 pending)",
+            options: [
+              { key: "a", label: "Approve" },
+              { key: "d", label: "Deny" },
+              { key: "A", label: "Approve all" },
+              { key: "D", label: "Deny all" },
+            ],
+          },
+        },
+      ],
+    });
+    module.renderPromptCard();
+    await Promise.resolve();
+    await Promise.resolve();
+    module.promptAnswer("jcode permissions (3 pending)", "D");
+    assert.equal(pasted.length, 1, "one paste");
+    assert.equal(pasted[0], "D\r", "letter + Enter through the terminal path");
+    // Answered prompt stays collapsed afterwards.
+    assert.equal(module.renderPromptCard(), "");
+  });
+
+  it("promptCardsEnabled=false suppresses the card even when blocked", () => {
+    const term = {
+      wterm: {
+        bridge: {
+          usingAltScreen: () => false,
+          getCols: () => 40,
+          getRows: () => 6,
+          getCell: (r, c) => {
+            const rows = [
+              "Allow network access to example.com? ",
+              "",
+              "1. Allow once",
+              "2. Allow always",
+              "3. Deny",
+              "",
+            ];
+            const line = rows[r] || "";
+            return { width: 1, chars: line[c] || " " };
+          },
+        },
+      },
+      sendPasteToTerminal: () => {},
+    };
+    const off = composerContext({ status: "blocked", term, options: { promptCardsEnabled: false } });
+    assert.equal(off.module.renderPromptCard(), "", "toggle off means no card");
+    assert.equal(off.module.evaluatePrompt(), null, "evaluate returns null too");
+    // Default (no stored option) keeps cards working.
+    const on = composerContext({ status: "blocked", term });
+    assert.match(on.module.renderPromptCard(), /mobile-prompt-card/);
+  });
+
+  it("one failed /prompt call disables the endpoint for the session", async () => {
+    // Sticky-off: an old server without the route (or a transport
+    // error) must stop the polling instead of hammering it every render.
+    const term = {
+      wterm: {
+        bridge: {
+          usingAltScreen: () => true,
+          getCols: () => 40,
+          getRows: () => 6,
+          getCell: () => ({ width: 1, chars: " " }),
+        },
+      },
+      sendPasteToTerminal: () => {},
+    };
+    let clock = 1000;
+    const { module, calls, state } = composerContext({
+      status: "blocked",
+      term,
+      apiFails: true,
+      dateNow: () => clock,
+    });
+    assert.equal(module.renderPromptCard(), "");
+    assert.equal(calls.api.length, 1, "first render polls once");
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // Jump past the 750ms rate limit: a healthy flow would poll again,
+    // the sticky-off flag must prevent it.
+    clock += 2000;
+    assert.equal(module.renderPromptCard(), "", "failed fetch still means no card");
+    assert.equal(calls.api.length, 1, "sticky-off: no second poll past the rate limit");
+    // Even after switching panes the endpoint stays disabled.
+    state.pane = "pane-2";
+    state.agents = [{ pane_id: "pane-2", workspace_id: "w1", tab_id: "t1", agent_status: "blocked" }];
+    assert.equal(module.renderPromptCard(), "");
+    assert.equal(calls.api.length, 1, "still one call after pane switch");
+  });
+
+  it("jcode viewer tail parses into letter options on mobile", () => {
+    const { module } = composerContext();
+    const prompt = module.parsePrompt([
+      "│ Permissions (2 pending)                             │",
+      "│ a approve · d deny · A approve all · D deny all     │",
+      "│ ⏳ Agent is waiting for this decision               │",
+    ]);
+    assert.ok(prompt, "viewer parses");
+    assert.equal(prompt.kind, "options");
+    assert.match(prompt.title, /jcode permissions/);
+    assert.equal(
+      JSON.stringify(prompt.options.map((o) => o.key)),
+      JSON.stringify(["a", "d", "A", "D"]),
+    );
+  });
+
+  it("exotic unicode whitespace parses like plain spaces on mobile", () => {
+    const { module } = composerContext();
+    const prompt = module.parsePrompt([
+      "\u00a0pick\u00a0one\u00a0",
+      "1.\u0085allow",
+      "2.\u3000deny",
+    ]);
+    assert.ok(prompt, "NBSP/NEL/U+3000 dialog parses");
+    assert.equal(prompt.title, "pick one");
+    assert.equal(
+      JSON.stringify(prompt.options.map((o) => o.label)),
+      JSON.stringify(["allow", "deny"]),
+    );
+    const bomPrompt = module.parsePrompt([
+      "\ufeffALLOW now?",
+      "enter your response",
+    ]);
+    assert.ok(bomPrompt, "BOM-led free-text parses");
+    assert.equal(bomPrompt.title, "ALLOW now", "BOM does not survive into the title");
   });
 });
 

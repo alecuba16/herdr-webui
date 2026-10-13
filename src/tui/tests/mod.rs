@@ -7559,6 +7559,20 @@ fn blocked_dialog_tail() -> Vec<String> {
     .collect()
 }
 
+/// The real jcode Permissions viewer tail (jcode-tui-permissions render
+/// shape): letter options, waiting line, pending count.
+fn jcode_viewer_tail() -> Vec<String> {
+    [
+        "│ Permissions (2 pending)                                                    │",
+        "│ Tool: Bash (rm -rf work)                                                  │",
+        "│ a approve · d deny · A approve all · D deny all · s skip                    │",
+        "│ ⏳ Agent is waiting for this decision                                        │",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 fn app_with_blocked_pane() -> TuiApp {
     let mut app = app_with_snapshot();
     // The fixture pane is "idle"; a blocked pane with a question dialog
@@ -7708,6 +7722,47 @@ fn prompt_card_digits_jump_and_answer_in_one_key() {
         app.prompt_card_cursor, 0,
         "fresh episode resets the cursor to the first option"
     );
+}
+
+#[test]
+fn prompt_card_letters_jump_and_answer_jcode_viewer_card() {
+    // The jcode Permissions viewer card: `a`/`d`/`A`/`D` jump to that
+    // letter option and answer in one key, exactly like digits do on
+    // numbered cards (webui clickable-button parity). Keys that are not
+    // card options fall through: nothing is sent, the card survives.
+    let (mut app, rx) = app_with_fake_terminal_socket();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.set_pane_tail_from_text(&jcode_viewer_tail().join("\n"));
+    assert!(app.prompt_card.visible, "viewer card opens");
+    // `D` (deny all) answers immediately.
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    let sent = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("letter answers immediately");
+    assert_eq!(sent, b"D\r", "viewer letter + Enter goes raw");
+    assert_eq!(app.status, "answered: Deny all");
+    assert!(!app.prompt_card.visible, "answered card collapses");
+    // Fresh episode re-arms the card; a lowercase `a` answers too.
+    app.snapshot.panes[0].agent_status = "idle".to_string();
+    app.evaluate_prompt_card();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.set_pane_tail_from_text(&jcode_viewer_tail().join("\n"));
+    assert!(app.prompt_card.visible);
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    let sent = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("lowercase letter answers");
+    assert_eq!(sent, b"a\r");
+    assert_eq!(app.status, "answered: Approve");
+    // `b` is not a viewer option: falls through, sends nothing.
+    app.snapshot.panes[0].agent_status = "idle".to_string();
+    app.evaluate_prompt_card();
+    app.snapshot.panes[0].agent_status = "blocked".to_string();
+    app.set_pane_tail_from_text(&jcode_viewer_tail().join("\n"));
+    assert!(app.prompt_card.visible);
+    app.handle_key(KeyEvent::from(KeyCode::Char('b')));
+    assert!(rx.try_recv().is_err(), "non-option letter sends nothing");
+    assert!(app.prompt_card.visible, "card survives an ignored letter");
 }
 
 #[test]

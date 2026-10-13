@@ -6036,6 +6036,142 @@ async fn tabs_handler_proxies_tab_list() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn pane_prompt_endpoint_parses_jcode_viewer_from_raw_terminal_bytes() {
+    // End-to-end for the mobile card fallback: raw terminal bytes from
+    // pane.read (SGR colors, OSC title, cursor addressing, box drawing)
+    // must parse into the letter-key options card, and the blocked flag
+    // must ride through from agent.list.
+    let viewer = "\u{1b}]0;jcode\u{7}\u{1b}[2J\u{1b}[H\u{1b}[1;36m│ Permissions (2 pending)                                                  │\u{1b}[0m\n\
+         \u{1b}[36m│ Tool: Bash (rm -rf work)                                                  │\u{1b}[0m\n\
+         \u{1b}[33m│ a approve · d deny · A approve all · D deny all                          │\u{1b}[0m\n\
+         \u{1b}[90m│ ⏳ Agent is waiting for this decision                                     │\u{1b}[0m\n\n\n";
+    let agents = json!({
+        "id": "web:agent:list:prompt",
+        "result": { "agents": [
+            { "pane_id": "pane_1", "agent_status": "blocked" },
+            { "pane_id": "pane_2", "agent_status": "working" }
+        ]}
+    });
+    let (socket, handle) = fake_api_socket_multi(vec![
+        json!({
+            "id": "web:pane:read:prompt",
+            "result": { "read": { "pane_id": "pane_1", "text": viewer, "format": "text" } }
+        }),
+        agents,
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/prompt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["blocked"], json!(true), "blocked flag from agent.list");
+    assert_eq!(body["kind"], json!("options"));
+    assert_eq!(body["title"], json!("jcode permissions (2 pending)"));
+    let options = body["options"].as_array().unwrap();
+    assert_eq!(options.len(), 4);
+    assert_eq!(options[0]["key"], json!("a"));
+    assert_eq!(options[0]["label"], json!("Approve"));
+    assert_eq!(options[1]["key"], json!("d"));
+    assert_eq!(options[1]["label"], json!("Deny"));
+    assert_eq!(options[2]["key"], json!("A"));
+    assert_eq!(options[2]["label"], json!("Approve all"));
+    assert_eq!(options[3]["key"], json!("D"));
+    assert_eq!(options[3]["label"], json!("Deny all"));
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn pane_prompt_endpoint_returns_null_kind_when_no_dialog() {
+    let (socket, handle) = fake_api_socket_multi(vec![
+        json!({
+            "id": "web:pane:read:prompt",
+            "result": { "read": { "pane_id": "pane_1", "text": "$ ls\nsrc tests Cargo.toml\n$ ", "format": "text" } }
+        }),
+        json!({
+            "id": "web:agent:list:prompt",
+            "result": { "agents": [
+                { "pane_id": "pane_1", "agent_status": "idle" }
+            ]}
+        }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/prompt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["blocked"], json!(false));
+    assert_eq!(body["kind"], serde_json::Value::Null);
+    assert_eq!(body["title"], serde_json::Value::Null);
+    assert_eq!(body["options"], json!([]));
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn pane_prompt_endpoint_survives_raw_crlf_bytes() {
+    // Some backends hand back grid text with CRLF row ends; the strip
+    // must not turn every row into a blank-separated double row. This
+    // pins the current behavior so a regression cannot slip in silently.
+    let viewer = "│ Permissions (1 pending) │\r\n│ Tool: Bash (git push) │\r\n│ a approve · d deny · A approve all · D deny all │\r\n│ ⏳ Agent is waiting for this decision │\r\n";
+    let (socket, handle) = fake_api_socket_multi(vec![
+        json!({
+            "id": "web:pane:read:prompt",
+            "result": { "read": { "pane_id": "pane_1", "text": viewer, "format": "text" } }
+        }),
+        json!({
+            "id": "web:agent:list:prompt",
+            "result": { "agents": [
+                { "pane_id": "pane_1", "agent_status": "blocked" }
+            ]}
+        }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/panes/pane_1/prompt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(
+        body["kind"],
+        json!("options"),
+        "CRLF rows still parse as one card"
+    );
+    assert_eq!(body["blocked"], json!(true));
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn panes_handler_proxies_pane_list() {
     let (socket, handle) = fake_api_socket_for_method(
         "pane.list",

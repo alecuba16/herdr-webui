@@ -3426,10 +3426,7 @@ impl TuiApp {
             KeyCode::Char(letter)
                 if matches!(letter, 'a' | 'd' | 'A' | 'D')
                     && card.kind == crate::tui::prompt_cards::PromptCardKind::Options
-                    && card
-                        .options
-                        .iter()
-                        .any(|o| o.key == letter.to_string()) =>
+                    && card.options.iter().any(|o| o.key == letter.to_string()) =>
             {
                 // Letter-key jump for the jcode Permissions viewer card:
                 // same direct-answer shortcut as the digit keys, using

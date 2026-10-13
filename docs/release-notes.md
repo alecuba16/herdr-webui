@@ -30,6 +30,24 @@
   the mobile local-only parse could never see it; the server parse
   covers that case now, with the same sticky-off fallback behavior for
   older servers.
+- The prompt parsers normalize exotic unicode whitespace. Terminal
+  output sometimes carries NBSP, NEL, U+3000, BOM, or LS/PS where a
+  plain space belongs (CJK terminals, pasted docs, byte-level NEL
+  escapes). JS and Rust whitespace classes disagree on BOM and NEL,
+  which made the three parser copies read the same dialog differently;
+  a fuzz corpus of 400 unicode tails found 112 divergences. All three
+  copies now map those six codepoints to a plain space before matching:
+  the same corpus re-runs with zero divergences, and dialogs written
+  with exotic spaces parse (and render titles) exactly like plain
+  ones.
+- Fixed two bugs in that `/prompt` endpoint found while testing it
+  end to end. It read the pane text from the wrong JSON pointer (the
+  raw wire shape nests it under `result`, so every real backend hit
+  returned an empty parse: the mobile fallback could never have
+  worked), and its ANSI strip used the CR-to-newline mode, so grid
+  text with CRLF row ends came back double-spaced and stopped
+  parsing. It now unwraps the pointer and strips CR like every other
+  production tail path.
 
 ## 0.7.7 Release Notes
 - Wheel and PageUp/PageDown reach mouse-tracking programs on the normal

@@ -583,4 +583,36 @@ describe("prompt cards module", () => {
     ok(html.includes("&lt;img"), "escaped entities present");
     ok(html.includes("&lt;script&gt;"), "script escaped to entities");
   });
+
+  it("exotic unicode whitespace parses like plain spaces", () => {
+    // JS `\s` and Rust regex `\s` disagree on BOM and NEL (and the two
+    // `trim()` sets differ too). All exotic spaces normalize to plain
+    // space before matching, so the JS parser reads NBSP/NEL/U+3000/
+    // BOM/LS/PS dialogs exactly like the Rust one.
+    const { ctx } = loadModule();
+    const nbsp = "\u00a0pick\u00a0one\u00a0";
+    const prompt = ctx.HerdrPromptCards.parsePrompt([
+      nbsp,
+      "1.\u0085allow",
+      "2.\u3000deny",
+    ]);
+    ok(prompt, "NBSP/NEL/U+3000 dialog parses");
+    equal(prompt.title, "pick one");
+    equal(prompt.options[0].label, "allow");
+    equal(prompt.options[1].label, "deny");
+
+    const bomPrompt = ctx.HerdrPromptCards.parsePrompt([
+      "\ufeffALLOW now?",
+      "enter your response",
+    ]);
+    ok(bomPrompt, "BOM-led free-text parses");
+    equal(bomPrompt.title, "ALLOW now", "BOM does not survive into the title");
+
+    const lsPrompt = ctx.HerdrPromptCards.parsePrompt([
+      "allow\u2028it?",
+      "enter your response",
+    ]);
+    ok(lsPrompt, "LS title parses");
+    equal(lsPrompt.title, "allow it");
+  });
 });

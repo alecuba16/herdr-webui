@@ -1365,6 +1365,7 @@
 
   mobileComposer = globalThis.HerdrMobileComposerModule.create({
     state,
+    api,
     render,
     escapeHtml,
     inputAttrs,

@@ -87,6 +87,13 @@
   // not match any known blocked-question shape.
   function parsePrompt(lines) {
     if (!lines.length) return null;
+    // Unicode whitespace parity with the Rust parser: JS `\s` and Rust
+    // regex `\s` disagree on BOM and NEL. Normalize the exotic spaces to
+    // plain space so both parser copies match identically on terminals
+    // that emit NBSP/NEL/U+3000/BOM/LS/PS.
+    lines = lines.map((line) =>
+      line.replace(/[\u00a0\u0085\u3000\ufeff\u2028\u2029]/g, " "),
+    );
     const joined = lines.join("\n");
     // Take the LAST contiguous numbered block: an older dialog may still be
     // on screen above; the active one is the newest.
