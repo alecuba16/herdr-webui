@@ -76,6 +76,24 @@ patchedJs = applyPatch(
   "scroll-reset overflow guard",
 );
 
+// Touch focus must not steal the scroll position (2026-10 Android Chrome
+// repro): wterm wires the 5th input-constructor argument (prepareComposition)
+// as cancel-selection + clear-selection + _scrollToBottom, and X.focus()
+// calls it on every focus. On a coarse-pointer device every finger-down is a
+// pointerdown that reaches adapter.enableInput -> wterm.focus(), so each new
+// scroll gesture snapped the terminal to the bottom before the drag started
+// (the "second gesture resets to the original position" report). The same
+// jump fired from wterm's own _onClickFocus after tap. Reveal-on-input stays
+// intact: real key delivery goes through the input onData wrapper which
+// calls _scrollToBottom before onData, so typing still reveals newest output.
+// Only the focus/composition-start path loses the jump.
+patchedJs = applyPatch(
+  patchedJs,
+  "()=>{this._rectangleDrag.cancel(),this._historySelection.clear(),this._scrollToBottom()},A=>",
+  "()=>{this._rectangleDrag.cancel(),this._historySelection.clear()},A=>",
+  "touch focus scroll preservation",
+);
+
 // The hidden textarea must not trigger mobile keyboard autocorrect, grammar
 // suggestions, or capitalization. Upstream ships autocapitalize="off" but
 // Gboard ignores that on some layers and respects writingsuggestions, and

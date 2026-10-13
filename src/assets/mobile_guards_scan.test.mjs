@@ -294,4 +294,26 @@ describe("static mobile keyboard-guard scan", () => {
       "wterm bundle lost the scroll-reset overflow guard; rebuild with scripts/build_wterm_assets.mjs",
     );
   });
+
+  it("wterm bundle keeps the terminal scroll position when touch focus lands", () => {
+    const bundle = readFileSync(new URL("./vendor/wterm.bundle.js", import.meta.url), "utf8");
+    // Touch-focus scroll preservation (live Android Chrome repro 2026-10):
+    // X.focus runs prepareComposition on every focus, and on a coarse-pointer
+    // device every finger-down reaches it (adapter.enableInput on pointerdown,
+    // wterm _onClickFocus on tap). With _scrollToBottom in that lambda each
+    // new scroll gesture snapped to the bottom before the drag started.
+    // Real key delivery keeps its reveal through the input onData wrapper.
+    ok(
+      bundle.includes(
+        "()=>{this._rectangleDrag.cancel(),this._historySelection.clear()},A=>",
+      ),
+      "wterm bundle lost the touch focus scroll preservation patch; rebuild with scripts/build_wterm_assets.mjs",
+    );
+    ok(
+      !bundle.includes(
+        "()=>{this._rectangleDrag.cancel(),this._historySelection.clear(),this._scrollToBottom()},A=>",
+      ),
+      "wterm bundle focus path jumps to bottom again; rebuild with scripts/build_wterm_assets.mjs",
+    );
+  });
 });
