@@ -7823,6 +7823,55 @@ fn prompt_card_opens_from_raw_ansi_viewer_bytes() {
     assert_eq!(sent, b"d\r");
 }
 
+
+#[test]
+fn prompt_card_viewer_markers_above_newer_output_still_parse() {
+    // Pins CURRENT behavior, an asymmetry with the numbered branch: the
+    // round-2 tail-end tightening applies to numbered lists only, not
+    // the viewer branch. A transcript or docs quote carrying BOTH
+    // markers (release notes quote both) above newer output still
+    // floats a viewer card while the pane status reads blocked. Left
+    // as is deliberately: a tail-end rule could break real viewer
+    // layouts that carry content below the waiting line, and the live
+    // viewer keeps the alt screen so its markers cannot sit above
+    // newer output in the real flow. If this ever needs tightening,
+    // update all three parser copies and the parity corpus together.
+    let tail = [
+        "\u{2502} Permissions (1 pending) \u{2502}",
+        "\u{2502} a approve \u{b7} d deny \u{b7} A approve all \u{b7} D deny all \u{2502}",
+        "\u{2502} \u{23f3} Agent is waiting for this decision \u{2502}",
+        "build log line 1",
+        "build log line 2",
+    ];
+    let mut app = app_with_blocked_pane();
+    app.set_pane_tail_from_text(&tail.join("\n"));
+    assert!(
+        app.prompt_card.visible,
+        "viewer branch has no tail-end rule (pinned; see comment)"
+    );
+}
+
+#[test]
+fn prompt_card_opens_from_cursor_addressed_viewer_repaints() {
+    // The live viewer does not print rows top to bottom: it repaints
+    // with CSI cursor addressing (row;col H) and CRLF separators. The
+    // strip must leave exactly the four marker rows and the parser
+    // must still see the viewer.
+    let raw = "\u{1b}[?1049h\u{1b}[H\u{1b}[2J\u{1b}[1;1H\u{1b}[1;36m\u{2502} Permissions (2 pending) \u{1b}[0m\r\n\u{1b}[2;1H\u{1b}[36m\u{2502} Tool: Bash (rm -rf work) \u{1b}[0m\r\n\u{1b}[3;1H\u{1b}[33m\u{2502} a approve \u{b7} d deny \u{b7} A approve all \u{b7} D deny all \u{1b}[0m\r\n\u{1b}[4;1H\u{1b}[90m\u{2502} \u{23f3} Agent is waiting for this decision \u{1b}[0m\r\n";
+    let mut app = app_with_blocked_pane();
+    app.set_pane_tail_from_text(&strip_ansi_lossy(raw));
+    assert_eq!(
+        app.pane_tail.len(),
+        4,
+        "cursor-addressed repaints strip to the marker rows"
+    );
+    assert!(app.prompt_card.visible, "repainted viewer opens the card");
+    // Answering through the letter keys must still route: the card is
+    // the viewer, so `d` denies.
+    app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+    assert_eq!(app.status, "answered: Deny");
+}
+
 #[test]
 fn prompt_card_tail_window_keeps_last_240_lines() {
     // The TUI keeps the last TAIL_LINES (240) rows. A dialog sitting at

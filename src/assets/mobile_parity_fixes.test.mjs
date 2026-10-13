@@ -647,6 +647,22 @@ describe("mobile composer + prompt cards module", () => {
     );
   });
 
+  it("jcode viewer markers above newer output still parse on mobile (pinned)", () => {
+    // Same pinned asymmetry as desktop and TUI: the viewer branch has
+    // no tail-end rule. Kept identical across copies on purpose; see
+    // the desktop test for the full rationale.
+    const { module } = composerContext();
+    const prompt = module.parsePrompt([
+      "\u2502 Permissions (1 pending) \u2502",
+      "\u2502 a approve \u00b7 d deny \u00b7 A approve all \u00b7 D deny all \u2502",
+      "\u2502 \u23f3 Agent is waiting for this decision \u2502",
+      "build log line 1",
+      "build log line 2",
+    ]);
+    assert.ok(prompt, "viewer card floats with newer output below (pinned)");
+    assert.match(prompt.title, /jcode permissions \(1 pending\)/);
+  });
+
   it("exotic unicode whitespace parses like plain spaces on mobile", () => {
     const { module } = composerContext();
     const prompt = module.parsePrompt([

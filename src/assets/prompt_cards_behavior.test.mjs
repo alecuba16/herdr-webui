@@ -448,6 +448,27 @@ describe("prompt cards module", () => {
     equal(prompt.options[3].label, "Deny all");
   });
 
+  it("jcode viewer markers above newer output still parse (pinned asymmetry)", () => {
+    // Pins CURRENT behavior: the round-2 tail-end tightening applies to
+    // the numbered branch only. The viewer branch parses both markers
+    // wherever they sit in the window, because real viewer layouts can
+    // carry content below the waiting line (tool rows, the deny-reason
+    // input state) and the live viewer holds the alt screen so its
+    // markers never sit above newer output while it is active. If this
+    // ever gets tightened, change all three parser copies and the
+    // parity corpus together.
+    const { ctx } = loadModule();
+    const prompt = ctx.HerdrPromptCards.parsePrompt([
+      "│ Permissions (1 pending) │",
+      "│ a approve · d deny · A approve all · D deny all │",
+      "│ ⏳ Agent is waiting for this decision │",
+      "build log line 1",
+      "build log line 2",
+    ]);
+    ok(prompt, "viewer card floats even with newer output below (pinned)");
+    equal(prompt.title, "jcode permissions (1 pending)");
+  });
+
   it("jcode viewer needs both markers; transcript quotes do not parse", () => {
     const { ctx } = loadModule();
     equal(

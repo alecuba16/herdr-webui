@@ -6343,6 +6343,66 @@ async fn pane_prompt_endpoint_survives_raw_crlf_bytes() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn pane_prompt_endpoint_accepts_all_pane_read_shapes() {
+    // The wire shape is `{"result": {"read": ...}}` on both backends, but
+    // the payload keeps unwrapped fallbacks for flat backends
+    // (bare `read` object, or a top-level `text`). All three must parse
+    // the same viewer dialog; a fallback that silently reads the wrong
+    // field would return kind: null in production.
+    let viewer = "│ Permissions (3 pending) │\n│ a approve · d deny · A approve all · D deny all │\n│ ⏳ Agent is waiting for this decision │";
+    let agents = json!({
+        "id": "web:agent:list:prompt",
+        "result": { "agents": [
+            { "pane_id": "pane_1", "agent_status": "blocked" }
+        ]}
+    });
+    for (name, read) in [
+        (
+            "wrapped result",
+            json!({
+                "id": "web:pane:read:prompt",
+                "result": { "read": { "pane_id": "pane_1", "text": viewer, "format": "text" } }
+            }),
+        ),
+        (
+            "unwrapped read",
+            json!({
+                "id": "web:pane:read:prompt",
+                "read": { "pane_id": "pane_1", "text": viewer, "format": "text" }
+            }),
+        ),
+        (
+            "flat text",
+            json!({ "id": "web:pane:read:prompt", "text": viewer, "format": "text" }),
+        ),
+    ] {
+        let (socket, handle) = fake_api_socket_multi(vec![read.clone(), agents.clone()]);
+        let mut state = test_state();
+        state.api_socket = Some(socket.clone());
+        let app = test_app_with_state(state);
+        let response = app
+            .oneshot(
+                authed_request(Method::GET, "/api/panes/pane_1/prompt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{name}: status");
+        let body = response_json(response).await;
+        assert_eq!(body["kind"], json!("options"), "{name}: viewer parses");
+        assert_eq!(
+            body["title"],
+            json!("jcode permissions (3 pending)"),
+            "{name}: title"
+        );
+        handle.join().unwrap();
+        let _ = fs::remove_file(socket);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn panes_handler_proxies_pane_list() {
     let (socket, handle) = fake_api_socket_for_method(
         "pane.list",
