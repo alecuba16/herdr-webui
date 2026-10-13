@@ -678,13 +678,32 @@
       return this._cellMetricCache;
     }
 
+    // Route programmatic scrolls through wterm's own writers when present.
+    // Direct element.scrollTop writes skip wterm's _programmaticScrollTop
+    // bookkeeping, so the resulting scroll event looks like a user gesture:
+    // wterm cancels its follow state and its render loop starts fighting
+    // the app follow writer (live Arc repro 2026-10: scrollTop flipping
+    // 0<->maxScroll at frame rate after window drags, visible as the
+    // terminal blinking between two scroll positions). _scrollToBottom and
+    // _setScrollTop set _programmaticScrollTop, so the scroll event is
+    // consumed as programmatic and follow state stays coherent. The mock
+    // adapters used in tests have no wterm, hence the fallback.
     scrollLines(lines) {
       const count = Math.trunc(Number(lines) || 0);
       if (!count) return;
-      this.element.scrollTop += count * this.rowHeight();
+      const target = this.element.scrollTop + count * this.rowHeight();
+      if (this.wterm && typeof this.wterm._setScrollTop === "function") {
+        this.wterm._setScrollTop(target);
+        return;
+      }
+      this.element.scrollTop = target;
     }
 
     scrollToBottom() {
+      if (this.wterm && typeof this.wterm._scrollToBottom === "function") {
+        this.wterm._scrollToBottom();
+        return;
+      }
       this.element.scrollTop = this.element.scrollHeight || 0;
     }
 

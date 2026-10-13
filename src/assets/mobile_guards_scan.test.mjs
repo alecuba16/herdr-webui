@@ -281,4 +281,17 @@ describe("static mobile keyboard-guard scan", () => {
       ok(bundle.includes(`this.textarea.setAttribute(${attr})`), `wterm bundle missing textarea guard ${attr}`);
     }
   });
+
+  it("wterm bundle pins scrollTop to 0 only when the host cannot scroll", () => {
+    const bundle = readFileSync(new URL("./vendor/wterm.bundle.js", import.meta.url), "utf8");
+    // Scroll-oscillation guard (live Arc repro 2026-10): without the overflow
+    // check the no-scrollback reset branch fought the app follow writer
+    // frame after frame whenever the DOM kept a transient overflow.
+    ok(
+      bundle.includes(
+        "else!l&&this.element.scrollHeight-this.element.clientHeight<=4&&this.element.scrollTop!==0&&this._setScrollTop(0)",
+      ),
+      "wterm bundle lost the scroll-reset overflow guard; rebuild with scripts/build_wterm_assets.mjs",
+    );
+  });
 });

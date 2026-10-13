@@ -122,6 +122,41 @@ function lastWrite(adapter) {
   return writes && writes[writes.length - 1];
 }
 
+describe("terminal adapter programmatic scroll bookkeeping", () => {
+  it("delegates scrollLines to wterm._setScrollTop so the write is attributed", async () => {
+    const { adapter, container } = await createAdapter();
+    const calls = [];
+    adapter.wterm._setScrollTop = (value) => { calls.push(value); container.scrollTop = value; };
+
+    adapter.scrollLines(3);
+
+    equal(calls.length, 1);
+    equal(calls[0], 460, "target is current scrollTop plus 3 row heights");
+    equal(container.scrollTop, 460);
+  });
+
+  it("delegates scrollToBottom to wterm._scrollToBottom when present", async () => {
+    const { adapter, container } = await createAdapter();
+    let bottom = 0;
+    adapter.wterm._scrollToBottom = () => { bottom += 1; container.scrollTop = 1000; };
+
+    adapter.scrollToBottom();
+
+    equal(bottom, 1);
+    equal(container.scrollTop, 800, "mock scrollHeight then clamps to max scroll");
+  });
+
+  it("falls back to direct scrollTop writes without wterm writers", async () => {
+    const { adapter, container } = await createAdapter();
+
+    adapter.scrollLines(-2);
+    equal(container.scrollTop, 360);
+
+    adapter.scrollToBottom();
+    equal(container.scrollTop, 800, "clamped to scrollHeight - clientHeight");
+  });
+});
+
 describe("terminal adapter wheel scrolling", () => {
   it("scrolls local wterm scrollback by wheel rows", async () => {
     const { container } = await createAdapter();
