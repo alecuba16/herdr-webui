@@ -654,15 +654,22 @@ async function discoverWorktrees() {
       state.openWorktreeBranchSourceKey = "";
       syncWorktreeBranchOptions([]);
     }
+    // Rows arrive pre-stamped server-side (normalize_worktree_response
+    // copies source_workspace_id / source_repo_name / source_repo_root /
+    // source_cwd onto each row). Only normalize the text fields; the
+    // envelope merge fills any rows an older server sent unstamped.
     state.openWorktreeAllRows = ((r.result || {}).worktrees || []).map((w) =>
       Object.assign({}, w, {
         path: textValue(w.path),
         label: textValue(w.label),
         branch: textValue(w.branch),
-        source_workspace_id: source.source_workspace_id,
-        source_repo_name: textValue(source.repo_name),
-        source_repo_root: textValue(source.repo_root),
-        source_cwd: sourceCwd,
+        source_workspace_id:
+          textValue(w.source_workspace_id) || source.source_workspace_id,
+        source_repo_name:
+          textValue(w.source_repo_name) || textValue(source.repo_name),
+        source_repo_root:
+          textValue(w.source_repo_root) || textValue(source.repo_root),
+        source_cwd: textValue(w.source_cwd) || sourceCwd,
       }),
     );
     state.openWorktreeRows = state.openWorktreeAllRows;

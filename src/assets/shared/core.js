@@ -280,6 +280,67 @@
     };
   }
 
+  // Per-session storage keys, shared by desktop core and mobile core. The
+  // backend pin used to be a single global `herdr-session-backend` value,
+  // which leaked the last-used backend into every other session: reopening
+  // session A after using external Herdr in session B made A's first
+  // /api/versions request run against Herdr while its URL said builtin. Each
+  // session keeps its own pin, and each session+backend pair keeps its own
+  // last selection (workspace/tab/pane) so Back and session rows restore the
+  // exact surface the user left, per the no-auto-open-on-startup rule
+  // (fresh boot starts clean).
+  function sessionBackendKey(session) {
+    return "herdr-session-backend:" + (session || "default");
+  }
+  function sessionStateKey(backend, session) {
+    return (
+      "herdr-session-state:" + (backend || "builtin") + ":" + (session || "default")
+    );
+  }
+  function readSessionBackend(session) {
+    try {
+      return localStorage.getItem(sessionBackendKey(session)) || "builtin";
+    } catch (e) {
+      return "builtin";
+    }
+  }
+  function writeSessionBackend(session, backend) {
+    try {
+      localStorage.setItem(sessionBackendKey(session), backend || "builtin");
+    } catch (e) {}
+  }
+  // Closed means closed: forget the stored backend pin and the saved
+  // selections so no reopen path resurrects the closed surface.
+  function forgetSessionState(session) {
+    try {
+      localStorage.removeItem(sessionBackendKey(session));
+      localStorage.removeItem(sessionStateKey("builtin", session));
+      localStorage.removeItem(sessionStateKey("external-herdr", session));
+    } catch (e) {}
+  }
+  // Saved per-session selection: {ws, tab, pane} raw backend ids (desktop
+  // ids are unscoped; the mobile core parses route paths that keep them
+  // scoped, see parseRoutePath there).
+  function saveSessionSelection(session, backend, { ws, tab, pane }) {
+    try {
+      localStorage.setItem(
+        sessionStateKey(backend, session),
+        JSON.stringify({ ws: ws || null, tab: tab || null, pane: pane || null }),
+      );
+    } catch (e) {}
+  }
+  function readSessionSelection(session, backend) {
+    try {
+      const raw = localStorage.getItem(sessionStateKey(backend, session));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return null;
+      return { ws: parsed.ws || null, tab: parsed.tab || null, pane: parsed.pane || null };
+    } catch (e) {
+      return null;
+    }
+  }
+
   const faviconUrls = {
     normal: "/favicon.svg",
     attention: "/favicon-attention.svg",
@@ -461,6 +522,13 @@
     inputAttrs,
     pathBasename,
     hashId,
+    sessionBackendKey,
+    sessionStateKey,
+    readSessionBackend,
+    writeSessionBackend,
+    forgetSessionState,
+    saveSessionSelection,
+    readSessionSelection,
     readTerminalThemeTokens,
     TERMINAL_TOKEN_KEYS,
     terminalThemeColors,

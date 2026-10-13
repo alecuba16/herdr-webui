@@ -625,36 +625,7 @@ impl FileExplorer {
     }
 }
 
-/// Markdown header outline (gap 22): every ATX heading (`#`…`######`)
-/// as `(level, line_number, text)`, indented by level when rendered.
-/// Fenced code blocks are skipped so `#` inside them is not a heading.
-pub fn parse_markdown_outline(content: &str) -> Vec<(usize, usize, String)> {
-    let mut out = Vec::new();
-    let mut in_fence = false;
-    for (index, line) in content.lines().enumerate() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
-            continue;
-        }
-        let Some(after) = trimmed.strip_prefix('#') else {
-            continue;
-        };
-        let level = after.len() - after.trim_start_matches('#').len() + 1;
-        if level > 6 {
-            continue;
-        }
-        let text = after.trim_start_matches('#').trim();
-        if text.is_empty() && level > 1 {
-            continue;
-        }
-        out.push((level, index + 1, text.to_string()));
-    }
-    out
-}
+pub use crate::markdown::parse_markdown_outline;
 
 /// Join a typed name under the current root, stripping leading slashes
 /// (webui mobile `joinPath`).

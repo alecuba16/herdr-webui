@@ -72,7 +72,12 @@
         const lines = previewChunkLines(chunk.lines || [], remaining);
         if (!lines.length) break;
         remaining -= lines.length;
-        chunks.push(Object.assign({}, chunk, { lines }));
+        // Server-decorated rows only match the full chunk, so drop them
+        // and rebuild from the previewed lines (old path when the server
+        // sends no rows at all).
+        const previewChunk = Object.assign({}, chunk, { lines });
+        delete previewChunk.rows;
+        chunks.push(previewChunk);
       }
       return Object.assign({}, file, { chunks, preview_large_diff: true });
     }

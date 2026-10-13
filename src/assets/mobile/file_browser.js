@@ -23,45 +23,27 @@
       return local.cwdOverride || deps.currentWorkspaceCwd() || "";
     }
 
-    function gitStatusEnabled() {
-      try {
-        const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
-        return parsed.fileBrowserGitStatus !== false;
-      } catch (_) { return true; }
-    }
-
-    function lineNumbersEnabled() {
-      try {
-        const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
-        return parsed.fileBrowserLineNumbers !== false;
-      } catch (_) { return true; }
-    }
-
+    // Option readers and the depth clamp live in shared/workspace_search.js
+    // (HerdrWorkspaceSearch); both file browsers read the same keys with the
+    // same defaults.
+    const searchHelpers = globalThis.HerdrWorkspaceSearch || {};
+    const gitStatusEnabled = searchHelpers.fileBrowserGitStatusEnabled
+      ? searchHelpers.fileBrowserGitStatusEnabled
+      : () => true;
+    const lineNumbersEnabled = searchHelpers.fileBrowserLineNumbersEnabled
+      ? searchHelpers.fileBrowserLineNumbersEnabled
+      : () => true;
     // Desktop parity (B4): the same editor options the desktop file browser
     // applies, so word wrap / tab size / folding behave identically on mobile.
-    function editorOptions() {
-      try {
-        const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
-        return {
-          editorEnabled: parsed.editorEnabled !== false,
-          wordWrap: parsed.editorEnabled !== false && parsed.editorWordWrap !== false,
-          tabSize: Math.max(1, Math.min(8, Number(parsed.editorTabSize) || 2)),
-          bracketMatching: parsed.editorEnabled !== false && parsed.editorBracketMatching !== false,
-          folding: parsed.editorEnabled !== false && parsed.editorFolding !== false,
-          activeLine: parsed.editorEnabled !== false && parsed.editorActiveLine !== false,
-          whitespace: parsed.editorEnabled === true && parsed.editorWhitespace === true,
-        };
-      } catch (_) {
-        return { editorEnabled: true, wordWrap: true, tabSize: 2, bracketMatching: true, folding: true, activeLine: true, whitespace: false };
-      }
-    }
-
-    function parentFoldersEnabled() {
-      try {
-        const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
-        return parsed.fileBrowserAllowParent === true;
-      } catch (_) { return false; }
-    }
+    const editorOptions = searchHelpers.fileBrowserEditorOptions
+      ? searchHelpers.fileBrowserEditorOptions
+      : () => ({ editorEnabled: true, wordWrap: true, tabSize: 2, bracketMatching: true, folding: true, activeLine: true, whitespace: false });
+    const parentFoldersEnabled = searchHelpers.fileBrowserParentFoldersEnabled
+      ? searchHelpers.fileBrowserParentFoldersEnabled
+      : () => false;
+    const fileBrowserDepthDefault = searchHelpers.fileBrowserDepth
+      ? searchHelpers.fileBrowserDepth
+      : () => 3;
 
     // ---- Language server integration (IDE-review B4) ----
     // Desktop parity: opt-in LSP diagnostics rendered under the mobile editor.
@@ -766,13 +748,7 @@
     }
 
     function fileBrowserDepth() {
-      try {
-        const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
-        const value = Number(parsed.fileBrowserDepth);
-        return Math.max(0, Math.min(8, Number.isFinite(value) ? value : 3));
-      } catch (_) {
-        return 3;
-      }
+      return fileBrowserDepthDefault();
     }
 
     function renderPreview() {

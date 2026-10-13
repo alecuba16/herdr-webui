@@ -72,8 +72,11 @@
       const scope = state.gitKind === "S" ? "staged" : "working";
       try {
         state.gitDiffError = "";
+        // layout=side-by-side asks the backend to pair chunk lines into
+        // rows server-side; the renderer falls back to the raw lines when
+        // the field is absent.
         state.gitDiff = await api(
-          `/api/git-ui/diff?cwd=${encodeURIComponent(cwd)}&file=${encodeURIComponent(state.gitFile)}&scope=${encodeURIComponent(scope)}&context=3`,
+          `/api/git-ui/diff?cwd=${encodeURIComponent(cwd)}&file=${encodeURIComponent(state.gitFile)}&scope=${encodeURIComponent(scope)}&context=3&layout=side-by-side`,
         );
       } catch (error) {
         state.gitDiffError = error.message || String(error);
@@ -315,7 +318,25 @@
     function renderGitDiffFile(file) {
       const chunks = file.chunks || [];
       if (!chunks.length) return `<div class="mobile-loading">No diff hunks</div>`;
-      return `<div class="mobile-diff">${chunks.map((chunk) => `<article class="mobile-hunk"><header><span>${escapeHtml(chunk.header || "hunk")}</header></header><pre>${(chunk.lines || []).map(renderGitDiffLine).join("\n")}</pre></article>`).join("")}</div>`;
+      return `<div class="mobile-diff">${chunks.map((chunk) => `<article class="mobile-hunk"><header><span>${escapeHtml(chunk.header || "hunk")}</header></header><pre>${renderGitDiffLines(chunk).join("\n")}</pre></article>`).join("")}</div>`;
+    }
+
+    // Backend layout=side-by-side pairs chunk.lines into rows server-side
+    // (chunk.rows with old_line/new_line); when the field is absent
+    // (older backend, unified-only response) fall back to rendering the
+    // raw lines client-side, same as before the server-side pairing.
+    function renderGitDiffLines(chunk) {
+      if (Array.isArray(chunk.rows) && chunk.rows.length) {
+        return chunk.rows.map((row) => {
+          const oldLine = row && row.old_line ? row.old_line : null;
+          const newLine = row && row.new_line ? row.new_line : null;
+          return [
+            oldLine ? renderGitDiffLine(oldLine) : renderGitDiffLine({ line_type: "normal", content: "" }),
+            newLine ? renderGitDiffLine(newLine) : renderGitDiffLine({ line_type: "normal", content: "" }),
+          ].join("\n");
+        });
+      }
+      return (chunk.lines || []).map(renderGitDiffLine);
     }
 
     function renderGitDiffLine(line) {

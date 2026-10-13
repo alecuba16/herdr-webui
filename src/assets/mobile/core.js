@@ -1,12 +1,44 @@
 (function () {
-  function escapeHtml(value) {
-    return String(value == null ? "" : value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
+  // Mobile core delegates the escape helpers and the per-session storage
+  // helpers to the shared core (HerdrAppHelpers): both bundles concat the
+  // shared file first (see assets.rs / app_boot.js load order), so the local
+  // copies here were byte-level duplicates of shared/core.js.
+  const shared = globalThis.HerdrAppHelpers || {};
+  const escapeHtml = shared.escapeHtml
+    ? shared.escapeHtml
+    : (value) => String(value == null ? "" : value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+  const pathBasename = shared.pathBasename
+    ? shared.pathBasename
+    : (path) => {
+        const parts = String(path || "").split("/").filter(Boolean);
+        return parts[parts.length - 1] || String(path || "");
+      };
+  const sessionBackendKey = shared.sessionBackendKey
+    ? shared.sessionBackendKey
+    : (session) => "herdr-session-backend:" + (session || "default");
+  const sessionStateKey = shared.sessionStateKey
+    ? shared.sessionStateKey
+    : (backend, session) =>
+        "herdr-session-state:" + (backend || "builtin") + ":" + (session || "default");
+  const readSessionBackend = shared.readSessionBackend
+    ? shared.readSessionBackend
+    : () => "builtin";
+  const writeSessionBackend = shared.writeSessionBackend
+    ? shared.writeSessionBackend
+    : () => {};
+  const forgetSessionState = shared.forgetSessionState
+    ? shared.forgetSessionState
+    : () => {};
+  const saveSessionSelection = shared.saveSessionSelection
+    ? shared.saveSessionSelection
+    : () => {};
+  const readSessionSelection = shared.readSessionSelection
+    ? shared.readSessionSelection
+    : () => null;
 
   function jsArg(value) {
     return escapeHtml(JSON.stringify(String(value == null ? "" : value)));
@@ -45,61 +77,6 @@
     return compactScopedId(ws, String(left)) === compactScopedId(ws, String(right));
   }
 
-  // Per-session storage keys (mobile parity with the desktop core helpers).
-  // The backend pin used to be a single global `herdr-session-backend` value,
-  // which leaked the last-used backend into every other session; each session
-  // keeps its own pin now, and each session+backend pair keeps its own last
-  // selection (workspace/tab/pane) so session rows restore the exact surface
-  // the user left, per the no-auto-open-on-startup rule.
-  function sessionBackendKey(session) {
-    return "herdr-session-backend:" + (session || "default");
-  }
-  function sessionStateKey(backend, session) {
-    return (
-      "herdr-session-state:" + (backend || "builtin") + ":" + (session || "default")
-    );
-  }
-  function readSessionBackend(session) {
-    try {
-      return localStorage.getItem(sessionBackendKey(session)) || "builtin";
-    } catch (e) {
-      return "builtin";
-    }
-  }
-  function writeSessionBackend(session, backend) {
-    try {
-      localStorage.setItem(sessionBackendKey(session), backend || "builtin");
-    } catch (e) {}
-  }
-  // Closed means closed: forget the stored backend pin and the saved
-  // selections so no reopen path resurrects the closed surface.
-  function forgetSessionState(session) {
-    try {
-      localStorage.removeItem(sessionBackendKey(session));
-      localStorage.removeItem(sessionStateKey("builtin", session));
-      localStorage.removeItem(sessionStateKey("external-herdr", session));
-    } catch (e) {}
-  }
-  function saveSessionSelection(session, backend, { ws, tab, pane }) {
-    try {
-      localStorage.setItem(
-        sessionStateKey(backend, session),
-        JSON.stringify({ ws: ws || null, tab: tab || null, pane: pane || null }),
-      );
-    } catch (e) {}
-  }
-  function readSessionSelection(session, backend) {
-    try {
-      const raw = localStorage.getItem(sessionStateKey(backend, session));
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object") return null;
-      return { ws: parsed.ws || null, tab: parsed.tab || null, pane: parsed.pane || null };
-    } catch (e) {
-      return null;
-    }
-  }
-
   function sessionPrefix(session) {
     return "/session/" + encodeURIComponent(session || "default");
   }
@@ -135,14 +112,6 @@
           ? expandScopedId(ws, parts[index + 5])
           : null,
     };
-  }
-
-  function pathBasename(path) {
-    const parts = String(path || "")
-      .replace(/\/+$/, "")
-      .split("/")
-      .filter(Boolean);
-    return parts.length ? parts[parts.length - 1] : "";
   }
 
   function samePath(a, b) {

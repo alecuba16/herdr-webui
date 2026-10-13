@@ -500,12 +500,15 @@ fn handle_client_connection(
                                         .lock()
                                         .map(|size| *size)
                                         .unwrap_or((cols, rows));
+                                    // TerminalFrame serializes owned bytes on the
+                                    // wire; move out of the shared Arc (the last
+                                    // writer to touch the chunk pays the copy).
                                     let frame = ServerMessage::Terminal(TerminalFrame {
                                         seq,
                                         width,
                                         height,
                                         full: false,
-                                        bytes,
+                                        bytes: (*bytes).clone(),
                                     });
                                     seq += 1;
                                     if write_message(&mut writer, &frame).is_err() {
@@ -2071,7 +2074,11 @@ struct TerminalRuntime {
 
 #[derive(Clone)]
 enum TerminalSubscriberMessage {
-    Output(Vec<u8>),
+    // Arc so append_output allocates the chunk once and every subscriber
+    // shares it; cloning the message is a refcount bump, not a Vec copy.
+    // (Before: each subscriber got its own to_vec() copy per chunk, which
+    // multiplied PTY output volume by the subscriber count.)
+    Output(Arc<Vec<u8>>),
     Exited,
 }
 
@@ -2355,7 +2362,7 @@ impl TerminalRuntime {
             tracker.observe(bytes);
         }
         if let Ok(mut subscribers) = self.subscribers.lock() {
-            let payload = TerminalSubscriberMessage::Output(bytes.to_vec());
+            let payload = TerminalSubscriberMessage::Output(Arc::new(bytes.to_vec()));
             subscribers.retain(|tx| match tx.try_send(payload.clone()) {
                 Ok(()) => true,
                 Err(mpsc::TrySendError::Full(_)) => false,
@@ -3023,14 +3030,42 @@ fn pane_agent_session(
 }
 
 fn pane_agent_presentation(pane: &PaneRecord, data: &BuiltinData) -> PaneAgentPresentation {
-    // Note: we intentionally do NOT cache the result here. The cache introduced
-    // in v0.2.84 was never properly invalidated (invalidate_agent_presentation_cache
-    // is a no-op because TerminalRuntime has no access to BuiltinData). Caching
-    // a `None` agent result meant that once a pane was seen as "no agent" (e.g.
-    // a shell before the user launches jcode), it would never be re-checked, so
-    // the agent would never appear in the list. The 500ms throttle in
-    // publish_agent_status_if_changed already limits how often detection runs.
+    // Cache design (the removed v0.2.84 cache, for contrast, snapshotted
+    // pane_agent_presentation results with no invalidation hook and could
+    // stick at a stale "no agent" forever): the output-driven detector
+    // (detect_and_publish_agent_status, 500ms throttle + trailing-edge
+    // sweeper) already recomputes the agent state on every append and stores
+    // it in last_agent_state with seq-staleness protection. Serving THAT
+    // value here is exactly as fresh as the throttled path guarantees, and
+    // skips the 64KB tail copy, the screen scrape and the `ps` fork on every
+    // poll. This is not a second cache: it reads the detector's own state,
+    // which output invalidates by construction, so the old "stuck None"
+    // failure mode cannot recur (any append re-runs the detector). The
+    // fallback below runs only when the detector has never produced a
+    // result (no output observed yet), and the exited path is excluded on
+    // purpose: exit clears last_agent_state (notify_exited) but must still
+    // report the agent label + "done" derived from argv and the final tail.
+    // An active RecentAgentProcessExit record also bypasses the cache: the
+    // record can flip while a stale cached agent is still committed (the
+    // agent process disappeared, but the last detector pass saw it live),
+    // and serving the cached label would resurrect exactly the ghost the
+    // suppression exists to kill.
     let terminal = data.terminals.get(&pane.terminal_id);
+    if let Some(terminal) = terminal {
+        if !terminal.exited.load(Ordering::Acquire) && !terminal.recent_agent_exit_active() {
+            if let Some((agent, status, _)) = terminal
+                .last_agent_state
+                .lock()
+                .ok()
+                .and_then(|state| state.clone())
+            {
+                return PaneAgentPresentation {
+                    agent: agent.as_deref().and_then(agent_label_to_static),
+                    status: agent_status_to_static(&status),
+                };
+            }
+        }
+    }
     // Mirror upstream herdr's RecentAgentProcessExit suppression: when the
     // pane's agent process exited (jcode quit inside the shell) the pane must
     // stop reporting that agent even if stale screen text or OSC payloads
@@ -3143,6 +3178,52 @@ fn strongest_agent_status(statuses: impl IntoIterator<Item = &'static str>) -> &
         }
     }
     best
+}
+
+// last_agent_state stores owned Strings (it is also handed to event JSON),
+// but PaneAgentPresentation and the aggregate fns work in &'static str to
+// avoid clones on the hot poll path. Both conversions are total over the
+// value sets the detector can produce, so they can never fall back on
+// unknown input. An unrecognized value (future detector version, corrupt
+// state) maps to None/"unknown", which keeps the API contract stable.
+fn agent_label_to_static(label: &str) -> Option<&'static str> {
+    const LABELS: &[&str] = &[
+        "pi",
+        "jcode",
+        "claude",
+        "codex",
+        "gemini",
+        "cursor",
+        "devin",
+        "agy",
+        "cline",
+        "omp",
+        "mastracode",
+        "opencode",
+        "copilot",
+        "kimi",
+        "kiro",
+        "droid",
+        "amp",
+        "grok",
+        "hermes",
+        "kilo",
+        "qodercli",
+        "maki",
+        "claurst",
+        "qwen",
+    ];
+    LABELS.iter().copied().find(|candidate| *candidate == label)
+}
+
+fn agent_status_to_static(status: &str) -> &'static str {
+    match status {
+        "working" => "working",
+        "blocked" => "blocked",
+        "done" => "done",
+        "idle" => "idle",
+        _ => "unknown",
+    }
 }
 
 fn close_tab_locked(data: &mut BuiltinData, tab_id: &str) {
@@ -6434,10 +6515,47 @@ mod tests {
         let home = temp.join("jcode-home");
         std::fs::create_dir_all(&home).unwrap();
         let _restore_home = restore_env_var("JCODE_HOME");
+        // The promoted jcode build binds its daemon socket under its own
+        // runtime dir (observed ~/.jcode/scratch/jcode.sock on this build,
+        // NOT relocated by JCODE_HOME isolation). A live jcode server from
+        // another session can own that path, the spawned TUI then times out
+        // waiting for the socket and exits rc=1, and the detector
+        // correctly reports done, failing the "clean boot" assert. JCODE_SOCKET
+        // (jcode-app-core server/socket.rs: socket_path() checks it first)
+        // relocates the daemon socket into the test's temp dir so the
+        // spawned jcode owns its own, uncontended socket.
+        let _restore_socket = restore_env_var("JCODE_SOCKET");
         let _restore_selfdev = restore_env_var("JCODE_NO_SELFDEV");
         let _restore_menubar = restore_env_var("JCODE_NO_MENUBAR");
         let _restore_telemetry = restore_env_var("JCODE_NO_TELEMETRY");
         std::env::set_var("JCODE_HOME", &home);
+        std::env::set_var("JCODE_SOCKET", temp.join("jcode-e2e.sock"));
+        // The isolated home has no provider profiles, but a jcode-launched
+        // test process (this very binary can run under jcode) exports
+        // JCODE_PROVIDER_PROFILE_NAME / JCODE_PROVIDER_PROFILE_ACTIVE; the
+        // spawned jcode server then fails "Unknown provider profile" and the
+        // TUI dies waiting for the socket. Scrub the profile vars so the
+        // fresh home boots with its own defaults.
+        let _restore_profile_name = restore_env_var("JCODE_PROVIDER_PROFILE_NAME");
+        let _restore_profile_active = restore_env_var("JCODE_PROVIDER_PROFILE_ACTIVE");
+        let _restore_provider = restore_env_var("JCODE_PROVIDER");
+        std::env::remove_var("JCODE_PROVIDER_PROFILE_NAME");
+        std::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
+        std::env::remove_var("JCODE_PROVIDER");
+        // The scrubbed home has no provider config at all, so any submitted
+        // turn immediately fails auth and jcode reports `blocked` (observed:
+        // the working flip fires, then a single status event `blocked`, no
+        // return to idle). The e2e loop needs a real working->idle cycle,
+        // which needs a working provider. Seed the developer's real
+        // config.toml (auth + provider profiles) into the temp home; API
+        // keys still come from the inherited env, and session storage under
+        // the temp home stays isolated from the real one.
+        let real_config = default_home_dir()
+            .map(|h| format!("{h}/.jcode/config.toml"))
+            .filter(|p| std::path::Path::new(p).exists());
+        if let Some(real_config) = real_config {
+            let _ = std::fs::copy(&real_config, home.join("config.toml"));
+        }
         std::env::set_var("JCODE_NO_SELFDEV", "1");
         std::env::set_var("JCODE_NO_MENUBAR", "1");
         std::env::set_var("JCODE_NO_TELEMETRY", "1");
@@ -7534,6 +7652,93 @@ mod tests {
         let presentation = pane_agent_presentation(pane, &data);
         assert_eq!(presentation.agent, None);
         assert_eq!(presentation.status, "unknown");
+    }
+
+    #[test]
+    fn pane_agent_presentation_serves_cached_state_and_falls_back() {
+        // Poll path: once the output-driven detector has committed a state,
+        // pane_agent_presentation must serve it without re-reading the tail
+        // or forking ps (the 500ms-throttled detector keeps it fresh on
+        // every append). Before any detector run, and after exit cleared
+        // the cache, the full-detection fallback and the exited branch
+        // apply respectively.
+        let hub = BuiltinEventHub::new();
+        let context = PaneEventContext {
+            workspace_id: "ws_cache".to_string(),
+            tab_id: "tab_cache".to_string(),
+            pane_id: "pane_cache".to_string(),
+            terminal_id: "term_cache".to_string(),
+        };
+        let terminal = TerminalRuntime::spawn(
+            "term_cache".to_string(),
+            std::env::current_dir().unwrap(),
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "sleep 30".to_string(),
+            ],
+            24,
+            80,
+            hub,
+            context,
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+
+        let data = BuiltinData {
+            workspaces: HashMap::new(),
+            tabs: HashMap::new(),
+            panes: HashMap::from([(
+                "pane_cache".to_string(),
+                PaneRecord {
+                    pane_id: "pane_cache".to_string(),
+                    terminal_id: "term_cache".to_string(),
+                    workspace_id: "ws_cache".to_string(),
+                    tab_id: "tab_cache".to_string(),
+                    cwd: std::env::current_dir().unwrap(),
+                    label: None,
+                    argv: vec!["/bin/zsh".to_string()],
+                },
+            )]),
+            terminals: HashMap::from([("term_cache".to_string(), terminal.clone())]),
+            focused_workspace_id: None,
+            focused_tab_id: None,
+            focused_pane_id: None,
+            next_id: 0,
+        };
+        let pane = data.panes.get("pane_cache").unwrap();
+
+        // No detector run yet: full-detection fallback runs (plain shell,
+        // no agent text anywhere) and reports unknown.
+        let presentation = pane_agent_presentation(pane, &data);
+        assert_eq!(presentation.agent, None);
+        assert_eq!(presentation.status, "unknown");
+
+        // Detector commits a state: subsequent polls serve it verbatim,
+        // even if the tail would now scrape differently (the detector
+        // invalidates by output, not by reads).
+        {
+            let mut previous = terminal.last_agent_state.lock().unwrap();
+            *previous = Some((Some("jcode".to_string()), "blocked".to_string(), 1));
+        }
+        let presentation = pane_agent_presentation(pane, &data);
+        assert_eq!(presentation.agent, Some("jcode"));
+        assert_eq!(presentation.status, "blocked");
+
+        // The cached status flows through the aggregates the same way.
+        let statuses =
+            strongest_agent_status(std::iter::once(pane_agent_presentation(pane, &data).status));
+        assert_eq!(statuses, "blocked");
+
+        // An unknown cached agent label (state written by hand) must degrade
+        // to None rather than a made-up label.
+        {
+            let mut previous = terminal.last_agent_state.lock().unwrap();
+            *previous = Some((Some("not-an-agent".to_string()), "idle".to_string(), 2));
+        }
+        let presentation = pane_agent_presentation(pane, &data);
+        assert_eq!(presentation.agent, None);
+        assert_eq!(presentation.status, "idle");
     }
 
     #[test]

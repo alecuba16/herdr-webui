@@ -23,24 +23,38 @@ pub(super) struct GitUiDiffQuery {
     pub(super) target: Option<String>,
     pub(super) merge_base: Option<bool>,
     pub(super) context: Option<usize>,
+    // layout=side-by-side attaches paired rows to each chunk; anything
+    // else (or absence) keeps the response shape unchanged.
+    pub(super) layout: Option<String>,
+    pub(super) q: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub(super) struct GitDiffLine {
     pub(super) line_type: String,
-    content: String,
+    pub(super) content: String,
     old_line_number: Option<usize>,
     new_line_number: Option<usize>,
 }
 
 #[derive(Serialize)]
 pub(super) struct GitDiffChunk {
-    header: String,
+    pub(super) header: String,
     old_start: usize,
     old_lines: usize,
     new_start: usize,
     new_lines: usize,
     pub(super) lines: Vec<GitDiffLine>,
+    // Present only with layout=side-by-side: paired old/new rows the
+    // client renders directly (mobile re-parses chunks independently).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) rows: Vec<GitDiffRow>,
+}
+
+#[derive(Serialize)]
+pub(super) struct GitDiffRow {
+    old_line: Option<GitDiffLine>,
+    new_line: Option<GitDiffLine>,
 }
 
 #[derive(Serialize)]
@@ -51,6 +65,10 @@ pub(super) struct GitDiffFile {
     pub(super) additions: usize,
     pub(super) deletions: usize,
     pub(super) chunks: Vec<GitDiffChunk>,
+    // Present only with q=: case-insensitive match count over the file's
+    // chunk lines, same semantics as the webui countTextMatches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) match_count: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -114,7 +132,82 @@ pub(super) fn socket_diff(
         Err(err) if is_not_git_repository(&err) => return Ok(json!({ "files": [] })),
         Err(err) => return Err(err),
     };
-    Ok(json!({ "files": parse_unified_diff(&text) }))
+    Ok(json!({ "files": decorate_diff_files(
+        parse_unified_diff(&text),
+        query.layout.as_deref(),
+        query.q.as_deref(),
+    ) }))
+}
+
+/// Pair a chunk's lines into side-by-side rows, mirroring the webui
+/// `sideBySideRows`/`markChangeGroups` semantics: a deleted row pairs
+/// with the following added row (positionally, first delete with first
+/// add), lone adds pair with an empty old side, context rows pair with
+/// themselves.
+pub(super) fn side_by_side_rows(lines: &[GitDiffLine]) -> Vec<GitDiffRow> {
+    let mut rows = Vec::new();
+    let mut index = 0usize;
+    while index < lines.len() {
+        let line = &lines[index];
+        if line.line_type == "delete" {
+            let mut deletes = Vec::new();
+            let mut adds = Vec::new();
+            while index < lines.len() && lines[index].line_type == "delete" {
+                deletes.push(lines[index].clone());
+                index += 1;
+            }
+            while index < lines.len() && lines[index].line_type == "add" {
+                adds.push(lines[index].clone());
+                index += 1;
+            }
+            for pair_index in 0..deletes.len().max(adds.len()) {
+                rows.push(GitDiffRow {
+                    old_line: deletes.get(pair_index).cloned(),
+                    new_line: adds.get(pair_index).cloned(),
+                });
+            }
+        } else if line.line_type == "add" {
+            rows.push(GitDiffRow {
+                old_line: None,
+                new_line: Some(line.clone()),
+            });
+            index += 1;
+        } else {
+            rows.push(GitDiffRow {
+                old_line: Some(line.clone()),
+                new_line: Some(line.clone()),
+            });
+            index += 1;
+        }
+    }
+    rows
+}
+
+/// Case-insensitive contains count over a file's chunk lines, same
+/// semantics as the webui `countTextMatches` (non-overlapping, per line).
+pub(super) fn count_chunk_matches(chunks: &[GitDiffChunk], needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    chunks
+        .iter()
+        .flat_map(|chunk| chunk.lines.iter())
+        .map(|line| line.content.to_lowercase())
+        .map(|content| count_occurrences(&content, needle))
+        .sum()
+}
+
+fn count_occurrences(haystack: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    let mut count = 0usize;
+    let mut index = 0usize;
+    while let Some(found) = haystack[index..].find(needle) {
+        count += 1;
+        index += found + needle.len();
+    }
+    count
 }
 
 pub(super) fn parse_unified_diff(text: &str) -> Vec<GitDiffFile> {
@@ -196,6 +289,7 @@ pub(super) fn parse_unified_diff(text: &str) -> Vec<GitDiffFile> {
                     new_start,
                     new_lines,
                     lines: Vec::new(),
+                    rows: Vec::new(),
                 });
             } else if let Some(chunk) = current.as_mut() {
                 let Some(prefix) = line.chars().next() else {
@@ -243,6 +337,7 @@ pub(super) fn parse_unified_diff(text: &str) -> Vec<GitDiffFile> {
             additions,
             deletions,
             chunks,
+            match_count: None,
         });
     }
     files
@@ -340,6 +435,8 @@ async fn git_ui_diff_common(query: GitUiDiffQuery, compare: bool) -> Response {
     } else {
         None
     };
+    let layout = query.layout.clone();
+    let q = query.q.clone();
     let cwd = cwd.to_string();
     match tokio::task::spawn_blocking(move || {
         let mut args = args;
@@ -361,7 +458,12 @@ async fn git_ui_diff_common(query: GitUiDiffQuery, compare: bool) -> Response {
     })
     .await
     {
-        Ok(Ok(text)) => Json(json!({ "files": parse_unified_diff(&text) })).into_response(),
+        Ok(Ok(text)) => Json(json!({ "files": decorate_diff_files(
+                parse_unified_diff(&text),
+                layout.as_deref(),
+                q.as_deref(),
+            ) }))
+        .into_response(),
         // The drawer requests a diff right after a status that said
         // not_git_repository (open() on a non-git folder). An error status
         // here would log a console 400 for a state the client already
@@ -370,6 +472,31 @@ async fn git_ui_diff_common(query: GitUiDiffQuery, compare: bool) -> Response {
         Ok(Err(err)) => git_json_error(StatusCode::BAD_GATEWAY, err),
         Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
+}
+
+/// Shared response shaping for the HTTP diff routes and the socket
+/// transport: attach side-by-side rows (layout=side-by-side) and per-file
+/// match counts (q=) on top of the parsed files. Without those params the
+/// payload shape is byte-identical to the old response.
+pub(super) fn decorate_diff_files(
+    mut files: Vec<GitDiffFile>,
+    layout: Option<&str>,
+    q: Option<&str>,
+) -> Vec<GitDiffFile> {
+    if layout == Some("side-by-side") {
+        for file in &mut files {
+            for chunk in &mut file.chunks {
+                chunk.rows = side_by_side_rows(&chunk.lines);
+            }
+        }
+    }
+    if let Some(q) = q.map(str::trim).filter(|q| !q.is_empty()) {
+        let needle = q.to_lowercase();
+        for file in &mut files {
+            file.match_count = Some(count_chunk_matches(&file.chunks, &needle));
+        }
+    }
+    files
 }
 
 pub(super) async fn git_ui_diff(

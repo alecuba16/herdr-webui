@@ -2,6 +2,8 @@ mod protocol;
 mod terminal_text;
 
 pub mod backend_client;
+pub mod blame;
+pub mod markdown;
 pub mod socket_paths;
 pub mod tui;
 

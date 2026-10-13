@@ -12,6 +12,7 @@
     diffFileLineCount,
     diffFileKey,
     largeFileDiffLineLimit,
+    diffLayoutMode,
   }) {
     async function renderStash(version) {
       const view = active();
@@ -63,7 +64,10 @@
       if (current.name === name && (current.loading || current.diff)) return;
       view.selectedStashDiff = { name, loading: true, error: "", diff: null };
       const context = Math.max(0, Math.min(200, Number(view.diffContext || 3)));
-      api(`/api/git-ui/stash-show?cwd=${encodeURIComponent(view.cwd)}&stash=${encodeURIComponent(name)}&context=${context}`)
+      // Rows/match counts are server-decorated, same as loadDiff.
+      const layout = diffLayoutMode() === "unified" ? "unified" : "side-by-side";
+      const q = String(view.diffSearchQuery || "").trim();
+      api(`/api/git-ui/stash-show?cwd=${encodeURIComponent(view.cwd)}&stash=${encodeURIComponent(name)}&context=${context}&layout=${encodeURIComponent(layout)}` + (q ? `&q=${encodeURIComponent(q)}` : ""))
         .then((diff) => {
           if (!view.selectedStashDiff || view.selectedStashDiff.name !== name) return;
           view.selectedStashDiff = { name, loading: false, error: "", diff };

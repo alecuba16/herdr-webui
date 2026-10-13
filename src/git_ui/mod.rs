@@ -58,6 +58,7 @@ where
 pub(crate) fn routes() -> Router<WebState> {
     Router::new()
         .route("/api/git-ui/status", get(git_ui_status))
+        .route("/api/git-ui/rail-status", post(git_ui_rail_status))
         .route("/api/git-ui/diff", get(diff::git_ui_diff))
         .route("/api/git-ui/compare", get(diff::git_ui_compare))
         .route("/api/git-ui/branches", get(branch::git_ui_branches))
@@ -125,6 +126,10 @@ pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, Stri
         "git.status" => {
             let cwd = optional_cwd(&params)?;
             map_status(git_status_blocking(cwd))
+        }
+        "git.rail_status" => {
+            let body: GitUiRailStatusRequest = decode(&params)?;
+            Ok(json!({ "items": git_rail_status_blocking(body.workspaces) }))
         }
         "git.diff" => diff::socket_diff(params, false),
         "git.compare" => diff::socket_diff(params, true),
@@ -226,6 +231,8 @@ pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, Stri
                 cwd.to_string(),
                 stash,
                 body.context.unwrap_or(3),
+                body.layout.clone(),
+                body.q.clone(),
             ))
         }
         "git.conflicts" => {
@@ -380,12 +387,21 @@ pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, Stri
         }
         "git.apply_patch" => {
             let body: log::GitUiApplyPatchRequest = decode(&params)?;
-            if body.patch.trim().is_empty() {
-                return Err("patch is required".to_string());
-            }
+            let patch = match body.patch.as_deref() {
+                Some(patch) if !patch.trim().is_empty() => patch.to_string(),
+                _ => match log::chunk_patch(&body) {
+                    Ok(Some(patch)) => patch,
+                    Ok(None) => {
+                        return Err(
+                            "patch or chunk selector (file, chunk_index) is required".to_string()
+                        )
+                    }
+                    Err(err) => return Err(err),
+                },
+            };
             map_status(log::git_ui_apply_patch_blocking(
                 body.cwd,
-                body.patch,
+                patch,
                 body.reverse.unwrap_or(false),
                 body.cached.unwrap_or(false),
             ))
@@ -502,6 +518,15 @@ struct GitUiPathsRequest {
 
 pub(super) fn git_json_error(status: StatusCode, error: impl Into<String>) -> Response {
     (status, Json(json!({ "error": error.into() }))).into_response()
+}
+
+/// Validate + expand a cwd without spawning git. `git_ui_repo` adds a
+/// `git rev-parse --show-toplevel` round trip whose only consumer-facing
+/// effect here is the error message; the status call itself answers the
+/// same errors, so /status answers with one fewer spawn.
+pub(super) fn git_ui_cwd(cwd: &str) -> Result<String, String> {
+    let validated = safe_git_token(cwd, "repository path")?;
+    Ok(expand_user_path_string(validated))
 }
 
 pub(super) fn git_ui_repo(cwd: &str) -> Result<String, String> {
@@ -838,21 +863,47 @@ fn git_remote_url(cwd: &str, upstream: &str) -> Option<String> {
         .map(|(remote, _)| remote)
         .filter(|remote| !remote.trim().is_empty())
         .unwrap_or("origin");
-    git_ui_text(cwd, &["config", "--get", &format!("remote.{remote}.url")])
+    // Remote URLs are effectively immutable repo config and /status asks
+    // on every drawer load. Cache per (cwd, remote) so repeated loads skip
+    // the `git config` spawn. Only found URLs are cached: a miss (no remote
+    // yet) stays uncached so `git remote add` is picked up on the next load.
+    static REMOTE_URLS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<(String, String), String>>,
+    > = std::sync::OnceLock::new();
+    let cache = REMOTE_URLS.get_or_init(std::sync::Mutex::default);
+    let key = (cwd.to_string(), remote.to_string());
+    if let Ok(guard) = cache.lock() {
+        if let Some(url) = guard.get(&key) {
+            return Some(url.clone());
+        }
+    }
+    let url = git_ui_text(cwd, &["config", "--get", &format!("remote.{remote}.url")])
         .ok()
         .map(|url| url.trim().to_string())
-        .filter(|url| !url.is_empty())
+        .filter(|url| !url.is_empty());
+    if let (Some(url), Ok(mut guard)) = (url.as_ref(), cache.lock()) {
+        guard.insert(key, url.clone());
+    }
+    url
 }
 
 fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
-    let repo = match git_ui_repo(&cwd) {
+    // /status is the hottest git-ui endpoint (drawer open, refresh, every
+    // mutation). git_ui_repo would add a rev-parse spawn just to validate
+    // the cwd; the status call itself fails with the same not-a-repo error
+    // vocabulary, so run everything against the expanded cwd directly.
+    let repo = match git_ui_cwd(&cwd) {
         Ok(repo) => repo,
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
+    };
+    let status = match git_ui_text(&repo, &["status", "--porcelain=v2", "--branch"]) {
+        Ok(text) => text,
+        // A non-git folder is a normal state the drawer and the rail ask
+        // about on every boot (default folder, home). Answer it as a
+        // payload, not an error status: browsers log 4xx fetches as console
+        // errors, and the client parks the same shape from
+        // markNoGitRepository (cleanup-only view, nogit rail tint).
         Err(err) if is_not_git_repository(&err) => {
-            // A non-git folder is a normal state the rail probe asks about
-            // on every boot (default folder, home). Answer it as a payload,
-            // not an error status: browsers log 4xx fetches as console
-            // errors, and the client parks the same shape from
-            // markNoGitRepository (cleanup-only view, nogit rail tint).
             return Ok(json!({
                 "state": "cleanup only",
                 "repo_path": cwd,
@@ -871,10 +922,6 @@ fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, St
                 "warnings": [],
             }));
         }
-        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
-    };
-    let status = match git_ui_text(&repo, &["status", "--porcelain=v2", "--branch"]) {
-        Ok(text) => text,
         Err(err) => return Err((StatusCode::BAD_GATEWAY, err)),
     };
     let mut branch = String::new();
@@ -1009,6 +1056,125 @@ fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, St
         "stashes": stashes,
         "warnings": warnings,
     }))
+}
+
+/// Rail tint per workspace: the same repo state the full status derives,
+/// from a single `git status --porcelain=v2 --branch` per unique cwd.
+/// The rail only colors a button, so the payload carries just state plus
+/// the non-git marker and the branch name; file lists, numstat summaries
+/// and stash counts stay in the full /status payload the drawer loads.
+/// Duplicated cwds (several workspaces on one checkout) share one spawn.
+fn git_rail_status_blocking(cwds: Vec<GitUiRailStatusItem>) -> Vec<serde_json::Value> {
+    // Computed payload keyed by cwd: duplicate cwds (several workspaces on
+    // one checkout) reuse the first result. Items echo their own
+    // workspace_id so the client can key results without path math.
+    let mut by_cwd: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    cwds.into_iter()
+        .filter(|item| !item.cwd.trim().is_empty())
+        .map(|item| {
+            let cached = by_cwd.get(&item.cwd).cloned();
+            if let Some(mut status) = cached {
+                status["workspace_id"] = item.workspace_id.clone().into();
+                return status;
+            }
+            let cwd = item.cwd.clone();
+            let workspace_id = item.workspace_id.clone();
+            let status = match git_ui_text(&cwd, &["status", "--porcelain=v2", "--branch"]) {
+                Ok(text) => text,
+                // Same contract as git_status_blocking: a non-git folder is
+                // a normal rail state, not an error the client logs as 4xx.
+                Err(err) if is_not_git_repository(&err) => {
+                    return json!({
+                        "workspace_id": workspace_id,
+                        "cwd": cwd,
+                        "state": "cleanup only",
+                        "not_git_repository": true,
+                    })
+                }
+                Err(_) => {
+                    return json!({ "workspace_id": workspace_id, "cwd": cwd, "state": "unknown" })
+                }
+            };
+            let state = rail_state_from_status(&status);
+            let status = json!({ "workspace_id": workspace_id, "cwd": cwd, "branch": rail_branch_from_status(&status), "state": state });
+            by_cwd.insert(item.cwd, status.clone());
+            status
+        })
+        .collect()
+}
+
+/// Dirty/conflicts/clean derivation from porcelain v2 output, shared by
+/// the rail endpoint. Conflict rows outrank dirty for the red tint, same
+/// order the full status applies. XY is AA/DD (both-added/deleted) or any
+/// U combination; `u ` rows are unmerged.
+fn rail_state_from_status(status: &str) -> &'static str {
+    let mut conflicted = false;
+    let mut has_changes = false;
+    for line in status.lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        // ? entries are untracked; 1/2/u entries are conflicts or
+        // staged/unstaged changes. Any entry at all means not clean.
+        match line.chars().next() {
+            Some('u') => {
+                conflicted = true;
+                has_changes = true;
+            }
+            Some('?') | Some('1') | Some('2') => {
+                has_changes = true;
+                let fields: Vec<&str> = line.splitn(3, ' ').collect();
+                if matches!(fields.get(1), Some(xy)
+                    if xy.starts_with('U')
+                        || xy.ends_with('U')
+                        || *xy == "AA"
+                        || *xy == "DD")
+                {
+                    conflicted = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    if conflicted {
+        "conflicts"
+    } else if has_changes {
+        "dirty"
+    } else {
+        "clean"
+    }
+}
+
+fn rail_branch_from_status(status: &str) -> &str {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("# branch.head "))
+        .unwrap_or("")
+}
+
+#[derive(Deserialize)]
+struct GitUiRailStatusRequest {
+    workspaces: Vec<GitUiRailStatusItem>,
+}
+
+#[derive(Deserialize)]
+struct GitUiRailStatusItem {
+    workspace_id: Option<String>,
+    cwd: String,
+}
+
+async fn git_ui_rail_status(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Json(body): Json<GitUiRailStatusRequest>,
+) -> Response {
+    check_auth!(&state, &headers, remote);
+    match tokio::task::spawn_blocking(move || git_rail_status_blocking(body.workspaces)).await {
+        Ok(items) => Json(json!({ "items": items })).into_response(),
+        Err(err) => git_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
 }
 
 async fn git_ui_status(
@@ -1192,6 +1358,8 @@ mod tests {
             target: None,
             merge_base: None,
             context: None,
+            layout: None,
+            q: None,
         }
     }
 
@@ -1212,6 +1380,7 @@ mod tests {
             closed_builtin_sessions: Arc::new(Mutex::new(HashSet::new())),
             promoted_temporary_tabs: Arc::new(Mutex::new(HashMap::new())),
             builtin_start_lock: Arc::new(Mutex::new(())),
+            herdr_install_cache: Arc::new(Mutex::new(None)),
             herdr_bin: "herdr".to_string(),
             auth: Arc::new(Mutex::new(AuthConfig {
                 user: None,
@@ -1334,6 +1503,79 @@ mod tests {
     }
 
     #[test]
+    fn rail_status_derives_states_with_one_spawn_per_cwd() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        repo.write("tracked.txt", "two\n"); // working-tree edit makes it dirty
+        let cwd = repo.path.to_str().unwrap().to_string();
+        let clean = TempRepo::new();
+        clean.commit_initial();
+        let clean_cwd = clean.path.to_str().unwrap().to_string();
+
+        // Clean repo, dirty repo, non-git folder, duplicated cwd.
+        // A real non-git folder: "cannot change to" is a different error
+        // than "not a git repository", so the fixture must be a dir that
+        // exists but has no .git.
+        let plain = std::env::temp_dir().join(format!(
+            "herdr-webui-rail-plain-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&plain).unwrap();
+        let items = vec![
+            GitUiRailStatusItem {
+                workspace_id: Some("clean".to_string()),
+                cwd: clean_cwd,
+            },
+            GitUiRailStatusItem {
+                workspace_id: Some("dirty".to_string()),
+                cwd: cwd.clone(),
+            },
+            GitUiRailStatusItem {
+                workspace_id: Some("nogit".to_string()),
+                cwd: plain.to_string_lossy().to_string(),
+            },
+            GitUiRailStatusItem {
+                workspace_id: Some("dup".to_string()),
+                cwd: cwd.clone(),
+            },
+        ];
+        let out = git_rail_status_blocking(items);
+        fs::remove_dir_all(&plain).unwrap();
+
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0]["state"].as_str().unwrap(), "clean");
+        assert_eq!(out[1]["state"].as_str().unwrap(), "dirty");
+        assert_eq!(out[1]["branch"].as_str().unwrap(), "main");
+        assert_eq!(out[2]["state"].as_str().unwrap(), "cleanup only");
+        assert!(out[2]["not_git_repository"].as_bool().unwrap());
+        // The duplicate answers the SAME derived state with its own id,
+        // not a dedupe marker the rail cannot tint by.
+        assert_eq!(out[3]["state"].as_str().unwrap(), "dirty");
+        assert_eq!(out[3]["workspace_id"].as_str().unwrap(), "dup");
+    }
+
+    #[test]
+    fn rail_status_flags_conflicts() {
+        // Porcelain parse through the real helper: an unmerged `u ` row
+        // must outrank dirty, AA/DD both-sides rows count as conflicts too.
+        let conflicted =
+            "# branch.oid abc\n# branch.head main\n1 .M N... 0 file.txt\nu UU N... 0 both.txt\n";
+        assert_eq!(rail_state_from_status(conflicted), "conflicts");
+        let both_added = "# branch.head main\n2 AA N... 0 0 0 x y rz both.txt\torig.txt\n";
+        assert_eq!(rail_state_from_status(both_added), "conflicts");
+        let dirty = "# branch.head main\n1 .M N... 0 file.txt\n";
+        assert_eq!(rail_state_from_status(dirty), "dirty");
+        let untracked_only = "# branch.head main\n? new.txt\n";
+        assert_eq!(rail_state_from_status(untracked_only), "dirty");
+        let clean = "# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n";
+        assert_eq!(rail_state_from_status(clean), "clean");
+    }
+
+    #[test]
     fn rejects_unsafe_repo_paths() {
         assert!(safe_repo_path("src/main.rs").is_ok());
         assert_eq!(safe_repo_path(" src/main.rs ").unwrap(), "src/main.rs");
@@ -1370,6 +1612,34 @@ mod tests {
             Some("https://github.com/team/repo")
         );
         assert!(normalize_git_remote_url("/Users/me/repo").is_none());
+    }
+
+    #[test]
+    fn git_remote_url_caches_found_urls_per_cwd() {
+        // /status asks for the remote URL on every drawer load; the cache
+        // must serve the second call without re-reading git config. Removing
+        // the remote after the first lookup proves the answer came from the
+        // cache, and a fresh repo (different cwd key) must not inherit it.
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        let cwd = repo.path.to_str().unwrap().to_string();
+        let url = "https://example.com/team/repo.git";
+        repo.git(&["remote", "add", "origin", url]);
+        assert_eq!(git_remote_url(&cwd, "origin/main").as_deref(), Some(url));
+        repo.git(&["remote", "remove", "origin"]);
+        assert_eq!(
+            git_remote_url(&cwd, "origin/main").as_deref(),
+            Some(url),
+            "the second lookup is served from the cache, not git config"
+        );
+        let other = TempRepo::new();
+        other.commit_initial();
+        let other_cwd = other.path.to_str().unwrap().to_string();
+        assert_eq!(
+            git_remote_url(&other_cwd, "origin/main"),
+            None,
+            "a repo without the remote still answers uncached"
+        );
     }
 
     #[test]
@@ -2513,9 +2783,16 @@ mod tests {
                 ConnectInfo(remote()),
                 Json(GitUiApplyPatchRequest {
                     cwd,
-                    patch: "  ".to_string(),
+                    patch: Some("  ".to_string()),
                     reverse: None,
                     cached: None,
+                    scope: None,
+                    context: None,
+                    base: None,
+                    target: None,
+                    file: None,
+                    chunk_index: None,
+                    merge_base: None,
                 }),
             )
             .await;
@@ -2584,9 +2861,16 @@ mod tests {
                 ConnectInfo(remote()),
                 Json(GitUiApplyPatchRequest {
                     cwd: cwd.clone(),
-                    patch: patch.to_string(),
+                    patch: Some(patch.to_string()),
                     reverse: None,
                     cached: None,
+                    scope: None,
+                    context: None,
+                    base: None,
+                    target: None,
+                    file: None,
+                    chunk_index: None,
+                    merge_base: None,
                 }),
             )
             .await;
@@ -2599,9 +2883,16 @@ mod tests {
                 ConnectInfo(remote()),
                 Json(GitUiApplyPatchRequest {
                     cwd,
-                    patch: patch.to_string(),
+                    patch: Some(patch.to_string()),
                     reverse: Some(true),
                     cached: None,
+                    scope: None,
+                    context: None,
+                    base: None,
+                    target: None,
+                    file: None,
+                    chunk_index: None,
+                    merge_base: None,
                 }),
             )
             .await;
@@ -2740,6 +3031,8 @@ mod tests {
                     cwd: Some(cwd),
                     stash: Some("stash@{0}".to_string()),
                     context: Some(3),
+                    layout: None,
+                    q: None,
                 }),
             )
             .await;
@@ -2765,6 +3058,8 @@ mod tests {
                     cwd: None,
                     stash: Some("stash@{0}".to_string()),
                     context: Some(3),
+                    layout: None,
+                    q: None,
                 }),
             )
             .await;
@@ -2787,6 +3082,8 @@ mod tests {
                     cwd: Some(cwd),
                     stash: Some("--evil".to_string()),
                     context: Some(3),
+                    layout: None,
+                    q: None,
                 }),
             )
             .await;
@@ -2824,6 +3121,8 @@ mod tests {
                     cwd: Some(cwd),
                     stash: None,
                     context: None,
+                    layout: None,
+                    q: None,
                 }),
             )
             .await;
@@ -2854,6 +3153,8 @@ mod tests {
                     cwd: Some(cwd),
                     stash: Some("stash@{999}".to_string()),
                     context: Some(3),
+                    layout: None,
+                    q: None,
                 }),
             )
             .await;

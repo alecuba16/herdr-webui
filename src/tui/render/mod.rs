@@ -820,7 +820,7 @@ fn render_file_preview(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         // Header outline: level-indented headings with source line
         // numbers; an empty state explains the toggle when the file has
         // no ATX headings.
-        let outline = crate::tui::panels::files::parse_markdown_outline(&preview.content);
+        let outline = crate::markdown::parse_markdown_outline(&preview.content);
         if outline.is_empty() {
             lines.push(Line::from(Span::styled(
                 "no headings (M shows the source)",

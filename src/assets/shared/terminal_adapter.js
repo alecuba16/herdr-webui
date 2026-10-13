@@ -453,6 +453,29 @@
       this.wterm.focus();
     }
 
+    // Full repaint of every row, including scrollback. wterm's
+    // setRenderingPaused(false) only resumes the rAF loop: rows painted
+    // while paused stay as-is, and a same-length rewrite under the lens
+    // (spinner frames) leaves the last paint on screen. Re-running the
+    // renderer's setup flag forces the next frame to rebuild all rows.
+    // Mirrors the bundle's own recovery path (_setupRenderer), just from
+    // outside: requestSetup + a zero-byte write that schedules a render.
+    forceRedraw() {
+      if (this._destroyed || !this.wterm) return;
+      const renderer = this.wterm.renderer;
+      if (renderer && typeof renderer.requestSetup === "function")
+        renderer.requestSetup();
+      if (
+        this.wterm &&
+        typeof this.wterm.write === "function" &&
+        this.wterm.bridge
+      ) {
+        try {
+          this.wterm.write("");
+        } catch (_) {}
+      }
+    }
+
     removeInputGate() {
       if (!this._inputGate) return;
       const container = this.element;

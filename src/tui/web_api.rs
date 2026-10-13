@@ -477,6 +477,16 @@ impl WebApiClient {
         self.post(&format!("/api/panes/{}/submit", urlencode(pane_id)), &body)
     }
 
+    /// `GET /api/panes/{pane_id}/prompt`: the server-side parse of the
+    /// pane's question dialog (same tail source and parser the server
+    /// already runs for the web prompt card). HTTP-only like the
+    /// recent-workspaces calls: the parse lives in the WebUI server,
+    /// not the backend socket dispatch. Not wired into the TUI UI yet;
+    /// kept for the prompt-card parity work that will consume it.
+    pub fn pane_prompt(&self, pane_id: &str) -> Result<Value, WebApiError> {
+        self.get(&format!("/api/panes/{}/prompt", urlencode(pane_id)))
+    }
+
     fn get(&self, path_and_query: &str) -> Result<Value, WebApiError> {
         self.request_json("GET", path_and_query, None)
     }

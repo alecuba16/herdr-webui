@@ -1,11 +1,13 @@
 // Prompt cards: interactive answer surface for blocked agents (backlog 3/3).
 //
 // When the selected pane's agent is blocked on a question dialog, the card
-// renders the question title plus clickable options (or a free-text input)
-// parsed from the terminal tail — the same bridge source the chat lens
-// reads. Protocol 22 is frozen, so there is no structured prompt payload:
-// the shapes match the dialogs the backend's blocked detectors already
-// recognize (numbered option lists, ↑↓ select hints, "enter your
+// renders the question title plus clickable options (or a free-text input).
+// Two sources: the wrapper's GET /api/panes/{pane_id}/prompt returns a
+// structured payload parsed server-side from the pane tail (preferred; see
+// fetchServerPrompt), and the local grid parse below covers the fallback
+// cases (old server without the route, the frame before the first fetch
+// lands). Both shapes match the dialogs the backend's blocked detectors
+// already recognize (numbered option lists, ↑↓ select hints, "enter your
 // response" free-text prompts).
 //
 // Answering synthesizes keypresses through the same sendInputData path the
@@ -17,6 +19,19 @@
   let dismissedFor = null; // question title+options the user collapsed/answered
   let lastCardKey = "";
   let wasBlocked = false; // blocked-episode tracking
+
+  // Server-side prompt parse (GET /api/panes/{pane_id}/prompt): the backend
+  // reads the pane tail and runs the same parser the TUI prompt cards use,
+  // returning {blocked, kind, title, options}. Preferred while available;
+  // the local grid parse stays as the fallback (old server, the frame
+  // before the first fetch lands, and after a failed request sticks the
+  // endpoint off for the session: the snapshotBootstrap pattern).
+  let promptApiUsable = true;
+  let serverPrompt = null; // { at, payload } from the last endpoint hit
+  let promptFetchInFlight = false;
+  let promptFetchAt = 0;
+  const SERVER_PROMPT_FRESH_MS = 15000;
+  const SERVER_PROMPT_FETCH_MS = 750;
 
   const OPTION_LINE = /^[>\s]*([0-9]+)[.)]\s+(.+)$/;
   const NAV_HINT = /↑↓\s*select|↑\/↓/;
@@ -138,6 +153,52 @@
     }
   }
 
+  function fetchServerPrompt() {
+    if (!promptApiUsable || promptFetchInFlight) return;
+    if (Date.now() - promptFetchAt < SERVER_PROMPT_FETCH_MS) return;
+    const paneId = (typeof state !== "undefined" && state && state.pane) || null;
+    if (!paneId || typeof api !== "function") return;
+    promptFetchAt = Date.now();
+    promptFetchInFlight = true;
+    Promise.resolve(
+      api("/api/panes/" + encodeURIComponent(paneId) + "/prompt"),
+    ).then(
+      (res) => {
+        const payload = res && (res.result || res);
+        serverPrompt =
+          payload && typeof payload === "object"
+            ? { at: Date.now(), payload }
+            : null;
+      },
+      () => {
+        // Sticky-off: one failure (old server without the route, transport
+        // error) disables the endpoint for the session; local parsing only.
+        promptApiUsable = false;
+        serverPrompt = null;
+      },
+    ).then(() => {
+      promptFetchInFlight = false;
+    });
+  }
+
+  // Fresh server payload, or null when absent/stale/endpoint disabled.
+  function serverPromptFresh() {
+    if (!promptApiUsable || !serverPrompt) return null;
+    if (Date.now() - serverPrompt.at > SERVER_PROMPT_FRESH_MS) return null;
+    return serverPrompt.payload;
+  }
+
+  // Prompt object from a server payload, or null when the payload says
+  // the pane is not blocked or carries no dialog.
+  function promptFromServer(server) {
+    if (!server || !server.blocked || !server.kind) return null;
+    return {
+      kind: server.kind,
+      title: server.title || "",
+      options: Array.isArray(server.options) ? server.options : [],
+    };
+  }
+
   function cardKey(prompt, tailSignature) {
     return (prompt ? prompt.title + "|" + (prompt.options || []).map((o) => o.key).join(",") : "") + "@" + tailSignature;
   }
@@ -154,8 +215,17 @@
       lastCardKey = "";
     }
     wasBlocked = blocked;
+    // Poll on every evaluate (rate-limited): the payload's per-pane
+    // blocked flag from agent.list is sharper than the workspace status,
+    // so the fetch runs even when the workspace says not blocked.
+    fetchServerPrompt();
     const lines = tailLines();
-    const prompt = blocked ? parsePrompt(lines) : null;
+    // Server parse first (its per-pane blocked flag from agent.list is
+    // sharper than the workspace status); local grid parse is the
+    // fallback. Server "not blocked" also hides the card.
+    const prompt = blocked || serverPromptFresh()
+      ? promptFromServer(serverPromptFresh()) || (blocked ? parsePrompt(lines) : null)
+      : null;
     if (!prompt) {
       node.hidden = true;
       lastCardKey = "";
@@ -218,8 +288,9 @@
   // same dialog text is still on screen (real TUIs repaint it away; a
   // plain shell keeps the text).
   function answer(node, prompt, value) {
-    const lines = tailLines();
-    const fresh = parsePrompt(lines);
+    // Prefer the CURRENT local grid when it parses (strictest check);
+    // server payloads cover the alt-screen case where the grid is blank.
+    const fresh = parsePrompt(tailLines()) || promptFromServer(serverPromptFresh());
     if (!fresh || fresh.title !== prompt.title) return;
     const payload = String(value) + "\r";
     if (typeof sendInputData !== "function") return;
@@ -251,5 +322,12 @@
     // Test surface.
     _dismissed: () => dismissedFor,
     _reset: () => { dismissedFor = null; lastCardKey = ""; },
+    _resetServer: () => {
+      promptApiUsable = true;
+      serverPrompt = null;
+      promptFetchInFlight = false;
+      promptFetchAt = 0;
+    },
+    _serverUsable: () => promptApiUsable,
   };
 })();

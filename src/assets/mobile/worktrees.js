@@ -82,8 +82,14 @@
     }
 
     function renderRecentRow(item) {
-      const title = item.label || pathBasename(item.path) || item.path;
-      const kind = item.kind === "worktree" ? "worktree" : "workspace";
+      // The server stamps title/kind_label on recent rows (the wrapper's
+      // recent-workspaces enrichment); the local derivations stay as the
+      // fallback for rows from an older server.
+      const title =
+        item.title || item.label || pathBasename(item.path) || item.path;
+      const kind =
+        item.kind_label ||
+        (item.kind === "worktree" ? "worktree" : "workspace");
       const meta = [kind, item.branch, item.path].filter(Boolean).join(" · ");
       const open = !!item.isOpen;
       return `<div class="mobile-worktree-row${open ? " mobile-recent-open" : ""}"><span><strong>${escapeHtml(title)}${open ? " (already open)" : ""}</strong><small>${escapeHtml(meta)}</small></span><span class="mobile-recent-actions"><button class="mobile-btn primary"${open ? ' title="This workspace is already open" disabled' : ""} onclick="HerdrMobile.openRecentWorkspace(${jsArg(item.path)})">Open</button><button class="mobile-btn" title="Remove from recent list" onclick="HerdrMobile.removeRecentWorkspace(${jsArg(item.path)})">✕</button></span></div>`;
@@ -212,13 +218,20 @@
       const result = (response && response.result) || {};
       const source = result.source || {};
       state.worktreeSource = source;
+      // Rows arrive pre-stamped server-side (normalize_worktree_response
+      // copies source_workspace_id / source_repo_name / source_cwd onto
+      // each row). The envelope merge below only fills rows an older
+      // server sent unstamped.
+      const envelopeStamps = {
+        source_workspace_id: source.source_workspace_id || null,
+        source_cwd: source.source_checkout_path || source.repo_root || null,
+        source_repo_name:
+          source.repo_name || source.repo_key || source.repo_root || "",
+      };
       state.worktreeRows = (result.worktrees || []).map((row) =>
-        Object.assign({}, row, {
-          source_workspace_id: source.source_workspace_id || null,
-          source_cwd: source.source_checkout_path || source.repo_root || null,
-          source_repo_name:
-            source.repo_name || source.repo_key || source.repo_root || "",
-        }),
+        row.source_workspace_id != null || row.source_cwd != null
+          ? row
+          : Object.assign({}, row, envelopeStamps),
       );
     }
 

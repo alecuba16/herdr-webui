@@ -1871,6 +1871,12 @@
       // on the next open).
       pendingBubble = null;
       setCoveredRendering(false);
+      // Unpause alone leaves the last painted frame on screen: while the
+      // lens covered the pane, same-length rewrites (spinner frames, clock
+      // redraws) never triggered a repaint because rendering was paused.
+      // Force a full repaint so the grid the user returns to matches the
+      // PTY state, not the stale pre-lens paint.
+      forceTerminalRedraw();
       // Returning to the terminal view must restore typing: the lens
       // scroller held focus while open, so hand it back explicitly.
       if (typeof focusTerminal === "function") {
@@ -1893,6 +1899,19 @@
       const renderer = adapter && adapter.wterm ? adapter.wterm : null;
       if (renderer && typeof renderer.setRenderingPaused === "function")
         renderer.setRenderingPaused(paused);
+    } catch (_) {}
+  }
+
+  // Full repaint of the covered grid after the lens closes. Same
+  // adapter lookup as setCoveredRendering: `term` is the shared
+  // terminal adapter created by HerdrTerminalRenderer.create, and its
+  // forceRedraw() is best-effort (older bundles without renderer
+  // access keep the last paint, same as before).
+  function forceTerminalRedraw() {
+    try {
+      const adapter = typeof term !== "undefined" && term ? term : null;
+      if (adapter && typeof adapter.forceRedraw === "function")
+        adapter.forceRedraw();
     } catch (_) {}
   }
 

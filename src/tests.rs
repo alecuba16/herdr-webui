@@ -31,6 +31,7 @@ fn test_state() -> WebState {
         promoted_temporary_tabs: Arc::new(Mutex::new(HashMap::new())),
         builtin_start_lock: Arc::new(Mutex::new(())),
         herdr_bin: "herdr".to_string(),
+        herdr_install_cache: Arc::new(Mutex::new(None)),
         auth: Arc::new(Mutex::new(AuthConfig {
             user: Some("user".to_string()),
             password: Some("pass".to_string()),
@@ -1378,7 +1379,11 @@ async fn every_response_carries_security_headers_and_api_responses_are_no_store(
         Some(&HeaderValue::from_static("no-store"))
     );
 
-    // Static assets carry the hardening headers but keep normal caching.
+    // Static assets carry the hardening headers and now also the
+    // revalidation pair (ETag + no-cache): asset URLs are versionless, so
+    // no-cache forces a conditional revalidation that collapses to a 304
+    // on unchanged binaries. The exact ETag value is build-dependent; pin
+    // the presence and shape, not the hash.
     let asset = app
         .oneshot(
             request(Method::GET, "/assets/login.css")
@@ -1392,7 +1397,19 @@ async fn every_response_carries_security_headers_and_api_responses_are_no_store(
         asset.headers().get(header::X_CONTENT_TYPE_OPTIONS),
         Some(&HeaderValue::from_static("nosniff"))
     );
-    assert_eq!(asset.headers().get(header::CACHE_CONTROL), None);
+    assert_eq!(
+        asset.headers().get(header::CACHE_CONTROL),
+        Some(&HeaderValue::from_static("no-cache"))
+    );
+    let etag = asset
+        .headers()
+        .get(header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .expect("assets carry an ETag");
+    assert!(
+        etag.starts_with('\"') && etag.ends_with('\"'),
+        "ETag is quoted: {etag}"
+    );
 }
 
 #[allow(clippy::await_holding_lock)]
@@ -6503,6 +6520,64 @@ async fn session_snapshot_tolerates_worktree_transport_errors() {
     );
     handle.join().unwrap();
     let _ = fs::remove_file(&path);
+}
+
+// ?workspace_id= filters the snapshot's tabs/panes to that workspace while
+// the derived maps (workspaces_by_id, workspace_counts) still cover every
+// workspace: the frontend deletes its local filter and cross-workspace
+// count derivation on top of this contract.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_filters_rows_by_workspace_and_derives_maps() {
+    let (socket, handle) = fake_api_socket_multi(vec![json!({
+        "result": {
+            "snapshot": {
+                "workspaces": [
+                    { "workspace_id": "ws_1", "label": "one", "cwd": "/tmp/repo-a" },
+                    { "workspace_id": "ws_2", "label": "two", "cwd": "/tmp/repo-b" }
+                ],
+                "tabs": [
+                    { "workspace_id": "ws_1", "tab_id": "tab_1", "number": 1 },
+                    { "workspace_id": "ws_2", "tab_id": "tab_2", "number": 2 }
+                ],
+                "panes": [
+                    { "workspace_id": "ws_1", "tab_id": "tab_1", "pane_id": "pane_1" },
+                    { "workspace_id": "ws_1", "tab_id": "tab_1", "pane_id": "pane_2" },
+                    { "workspace_id": "ws_2", "tab_id": "tab_2", "pane_id": "pane_3" }
+                ],
+                "agents": []
+            }
+        }
+    })]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot?workspace_id=ws_1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    // Only ws_1's rows survive the filter.
+    let tabs = body["result"]["snapshot"]["tabs"].as_array().unwrap();
+    assert_eq!(tabs.len(), 1);
+    assert_eq!(tabs[0]["workspace_id"], "ws_1");
+    let panes = body["result"]["snapshot"]["panes"].as_array().unwrap();
+    assert_eq!(panes.len(), 2);
+    assert!(panes.iter().all(|pane| pane["workspace_id"] == "ws_1"));
+    // The maps cover both workspaces regardless of the filter.
+    assert_eq!(body["result"]["workspaces_by_id"]["ws_2"]["label"], "two");
+    assert_eq!(
+        body["result"]["workspace_counts"],
+        json!({ "ws_1": { "tabs": 1, "panes": 2 }, "ws_2": { "tabs": 1, "panes": 1 } })
+    );
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
 }
 
 // A backend result that is not a session-snapshot envelope (no result object

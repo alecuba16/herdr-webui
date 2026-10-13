@@ -182,9 +182,16 @@
         (workspace) => workspace.workspace_id === workspaceId,
       );
       if (!workspaceStillKnown) return;
-      const hasPanels = (state.allTabs || [])
-        .concat(state.tabs || [])
-        .some((tab) => tab.workspace_id === workspaceId);
+      // With server-filtered snapshots allTabs only holds the selected
+      // workspace, so cross-workspace panel checks read the server-sent
+      // per-workspace counts (workspace_counts); the allTabs concat stays
+      // as the fallback for older servers and the legacy multi-call path.
+      const serverCount = (state.workspaceCounts || {})[workspaceId] || {};
+      const hasPanels = Number.isFinite(serverCount.tabs)
+        ? serverCount.tabs > 0
+        : (state.allTabs || [])
+            .concat(state.tabs || [])
+            .some((tab) => tab.workspace_id === workspaceId);
       if (hasPanels) return;
       autoCloseInFlight.add(workspaceId);
       try {

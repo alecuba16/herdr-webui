@@ -1465,11 +1465,13 @@ function wsUrl(path) {
     suffix
   );
 }
+// escapeHtml/escapeAttr come from the shared core (HerdrAppHelpers), which
+// app_boot.js loads before the desktop bundle; the local copies here were
+// byte-level duplicates.
 function escapeHtml(s) {
-  return String(s || "").replace(
-    /[&<>"]/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
-  );
+  return globalThis.HerdrAppHelpers
+    ? globalThis.HerdrAppHelpers.escapeHtml(s)
+    : String(s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 }
 function escapeAttr(s) {
   return escapeHtml(s).replace(/'/g, "&#39;");

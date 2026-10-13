@@ -93,29 +93,36 @@
       });
     }
 
-    function mobileTextParts(...values) {
-      const out = [];
-      for (const value of values) {
-        if (Array.isArray(value)) out.push(...mobileTextParts(...value));
-        else if (value && typeof value === "object") out.push(...mobileTextParts(...Object.values(value)));
-        else if (value != null && String(value).trim()) out.push(String(value).trim());
-      }
-      return out;
-    }
+    // Text-part helpers live in shared/workspace_search.js
+    // (HerdrWorkspaceSearch); the mobile copies were prefixed clones.
+    const sharedSearchHelpers = globalThis.HerdrWorkspaceSearch || {};
+    const mobileTextParts = sharedSearchHelpers.textParts
+      ? sharedSearchHelpers.textParts
+      : (...values) => {
+          const out = [];
+          for (const value of values) {
+            if (Array.isArray(value)) out.push(...mobileTextParts(...value));
+            else if (value && typeof value === "object") out.push(...mobileTextParts(...Object.values(value)));
+            else if (value != null && String(value).trim()) out.push(String(value).trim());
+          }
+          return out;
+        };
 
     function mobileSearchText(...values) {
       return mobileTextParts(...values).join(" ");
     }
 
-    function mobileUniqueTextParts(...values) {
-      const seen = new Set();
-      return mobileTextParts(...values).filter((value) => {
-        const key = value.toLowerCase();
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-    }
+    const mobileUniqueTextParts = sharedSearchHelpers.uniqueTextParts
+      ? sharedSearchHelpers.uniqueTextParts
+      : (...values) => {
+          const seen = new Set();
+          return mobileTextParts(...values).filter((value) => {
+            const key = value.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+        };
 
     function mobileWorkspaceRepoFields(workspace) {
       const wt = workspace && workspace.worktree;

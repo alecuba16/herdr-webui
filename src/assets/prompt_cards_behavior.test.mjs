@@ -374,6 +374,59 @@ describe("prompt cards module", () => {
     equal(sent.length, 0, "stale click must not send");
   });
 
+  it("prefers the server prompt endpoint and sticks local-only after a failure", async () => {
+    // GET /api/panes/{pane_id}/prompt returns the backend parse of the pane
+    // tail: {blocked, kind, title, options}. While it answers, the card
+    // renders from it even when the local grid is blank (alt screen), and
+    // the first failure disables the endpoint for the session (sticky-off
+    // like snapshotBootstrap) so evaluate falls back to the local parse.
+    const state = {
+      ws: "ws_1",
+      pane: "p1",
+      workspaces: [{ workspace_id: "ws_1", agent_status: "working" }],
+    };
+    const calls = [];
+    let failNext = false;
+    const { ctx, card } = loadModule({
+      state,
+      bridge: makeBridge([]),
+      extra: {
+        api: async (url) => {
+          calls.push(String(url));
+          if (failNext) throw new Error("route missing");
+          return {
+            blocked: true,
+            kind: "options",
+            title: "Server-side question?",
+            options: [
+              { key: "1", label: "Approve" },
+              { key: "2", label: "Deny" },
+            ],
+          };
+        },
+      },
+    });
+    // The workspace status is not blocked, but the server payload says the
+    // pane is: the server flag is the sharper source.
+    ctx.HerdrPromptCards.evaluate();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ctx.HerdrPromptCards.evaluate();
+    equal(card.hidden, false);
+    match(card.innerHTML, /Server-side question\?/);
+    match(card.innerHTML, /Approve/);
+    ok(calls.some((url) => url === "/api/panes/p1/prompt"), "prompt endpoint hit");
+
+    // Failure sticks: the endpoint is off for the session and the local
+    // grid (blank) yields no card.
+    failNext = true;
+    ctx.HerdrPromptCards._resetServer();
+    ctx.HerdrPromptCards.evaluate();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ctx.HerdrPromptCards.evaluate();
+    equal(ctx.HerdrPromptCards._serverUsable(), false);
+    equal(card.hidden, true, "local fallback finds no dialog in a blank grid");
+  });
+
   it("escapes hostile terminal text in every rendered slot", () => {
     // Terminal output is attacker-influenceable: a malicious agent or
     // program can print a dialog whose title/labels carry markup. Every

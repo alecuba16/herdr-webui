@@ -57,28 +57,36 @@ function closeSearchPalette() {
   searchPaletteState = createSearchPaletteState();
 }
 
-function textParts(...values) {
-  const out = [];
-  for (const value of values) {
-    if (Array.isArray(value)) out.push(...textParts(...value));
-    else if (value && typeof value === "object") out.push(...textParts(...Object.values(value)));
-    else {
-      const text = textValue(value);
-      if (text) out.push(text);
-    }
-  }
-  return out;
-}
-
-function uniqueTextParts(...values) {
-  const seen = new Set();
-  return textParts(...values).filter((value) => {
-    const key = value.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
+// Field-extraction helpers live in shared/workspace_search.js
+// (HerdrWorkspaceSearch); the local copies were byte-level duplicates.
+// textValue keeps desktop's richer fallbacks (path/display/label/name)
+// via the shared core helper.
+const sharedSearch = window.HerdrWorkspaceSearch || {};
+const textParts = sharedSearch.textParts
+  ? sharedSearch.textParts
+  : (...values) => {
+      const out = [];
+      for (const value of values) {
+        if (Array.isArray(value)) out.push(...textParts(...value));
+        else if (value && typeof value === "object") out.push(...textParts(...Object.values(value)));
+        else {
+          const text = textValue(value);
+          if (text) out.push(text);
+        }
+      }
+      return out;
+    };
+const uniqueTextParts = sharedSearch.uniqueTextParts
+  ? sharedSearch.uniqueTextParts
+  : (...values) => {
+      const seen = new Set();
+      return textParts(...values).filter((value) => {
+        const key = value.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
 
 function workspaceRepoFields(w) {
   const wt = w && w.worktree;

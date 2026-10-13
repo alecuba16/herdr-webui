@@ -18,32 +18,15 @@
       const ref = currentMode() === "changes" || currentMode() === "current-compare" ? "working" : (view.compareTarget || "HEAD");
       api(`/api/git-ui/blame?cwd=${encodeURIComponent(view.cwd)}&file=${encodeURIComponent(path)}&ref_name=${encodeURIComponent(ref)}`)
         .then((data) => {
-          view.blame[path] = parseBlame(data.text || "");
+          // The endpoint returns the parsed authors map (final-line →
+          // author) alongside the raw porcelain text; no client parsing.
+          view.blame[path] = data.authors || {};
           if (state.visible) render();
         })
         .catch((err) => {
           view.blame[path] = { __error: err.message || String(err) };
           if (state.visible) render();
         });
-    }
-
-    function parseBlame(text) {
-      const byLine = {};
-      let author = "";
-      let finalLine = 0;
-      for (const line of String(text || "").split("\n")) {
-        const header = line.match(/^[0-9a-f]{40}\s+\d+\s+(\d+)/);
-        if (header) {
-          finalLine = Number(header[1]) || 0;
-          author = "";
-          continue;
-        }
-        if (line.startsWith("author ")) {
-          author = line.slice(7).trim();
-          if (finalLine) byLine[finalLine] = author;
-        }
-      }
-      return byLine;
     }
 
     function blameName(path, lineNumber) {
@@ -69,7 +52,11 @@
       const actions = canMutateDiff()
         ? `<span class="git-ui-hunk-actions">${hunkButton}</span>`
         : `<span class="git-ui-muted">read only</span>`;
-      const rows = markChangeGroups(diffLayoutMode() === "unified" ? unifiedRows(chunk) : sideBySideRows(chunk));
+      // Rows come from the server: {line} entries in unified mode,
+      // {old_line,new_line} pairs in side-by-side mode. The server only
+      // decorates chunks for the requested layout, so a layout flip must
+      // refetch before render (loadDiff handles that).
+      const rows = chunk.rows && chunk.rows.length ? markChangeGroups(chunk.rows) : [];
       const contextArrows = contextArrowsForChunk(file.chunks || [], index);
       const body = diffLayoutMode() === "unified"
         ? rows.map((row, rowIndex) => renderUnifiedLine(row, path, index, rows, rowIndex, contextArrows, !!file.preview_large_diff)).join("")
@@ -98,37 +85,18 @@
       return (start || 0) + Math.max(0, (count || 0) - 1);
     }
 
-    function unifiedRows(chunk) {
-      return (chunk.lines || []).map((line) => ({ line }));
-    }
-
-    function sideBySideRows(chunk) {
-      const lines = chunk.lines || [];
-      const rows = [];
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.line_type === "delete") {
-          const deletes = [];
-          const adds = [];
-          while (lines[i] && lines[i].line_type === "delete") deletes.push(lines[i++]);
-          while (lines[i] && lines[i].line_type === "add") adds.push(lines[i++]);
-          i--;
-          const count = Math.max(deletes.length, adds.length);
-          for (let j = 0; j < count; j++) rows.push({ oldLine: deletes[j] || null, newLine: adds[j] || null });
-        } else if (line.line_type === "add") {
-          rows.push({ oldLine: null, newLine: line });
-        } else {
-          rows.push({ oldLine: line, newLine: line });
-        }
-      }
-      return rows;
+    // Rows are server-provided ({line} unified, {old_line,new_line}
+    // side-by-side); markChangeGroups still runs client-side to tag
+    // group starts/ends for the change-borders CSS.
+    function rowsFromChunk(chunk) {
+      return (chunk && chunk.rows) || [];
     }
 
     function renderLine(row, path, hunkIndex, rows, rowIndex, contextArrows, previewLargeDiff) {
       const view = active() || {};
       const scope = view.diffScope || "all";
-      const oldLine = row.oldLine;
-      const newLine = row.newLine;
+      const oldLine = row.old_line || null;
+      const newLine = row.new_line || null;
       const add = newLine && newLine.line_type === "add";
       const del = oldLine && oldLine.line_type === "delete";
       let cls = add && del ? "git-ui-change" : add ? "git-ui-add" : del ? "git-ui-del" : "";
@@ -246,7 +214,7 @@
     }
 
     function isChangedRow(row) {
-      return !!(row && ((row.oldLine && row.oldLine.line_type === "delete") || (row.newLine && row.newLine.line_type === "add") || (row.line && (row.line.line_type === "add" || row.line.line_type === "delete"))));
+      return !!(row && ((row.old_line && row.old_line.line_type === "delete") || (row.new_line && row.new_line.line_type === "add") || (row.line && (row.line.line_type === "add" || row.line.line_type === "delete"))));
     }
 
     function isFirstChange(rows, rowIndex) {
@@ -255,14 +223,12 @@
 
     return {
       ensureBlame,
-      parseBlame,
       blameName,
       renderChunk,
       contextArrowsForChunk,
       hiddenGap,
       hunkEnd,
-      unifiedRows,
-      sideBySideRows,
+      rowsFromChunk,
       renderLine,
       renderUnifiedLine,
       renderUnifiedDiffCode,

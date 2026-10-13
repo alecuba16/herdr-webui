@@ -18,6 +18,10 @@ pub(super) struct GitUiStashShowQuery {
     pub(super) cwd: Option<String>,
     pub(super) stash: Option<String>,
     pub(super) context: Option<usize>,
+    // Same decoration params as the diff routes: layout=side-by-side
+    // attaches paired rows, q= attaches per-file match counts.
+    pub(super) layout: Option<String>,
+    pub(super) q: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +78,8 @@ pub(super) fn git_ui_stash_show_blocking(
     cwd: String,
     stash: String,
     context: usize,
+    layout: Option<String>,
+    q: Option<String>,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     let ctx = context.clamp(0, 200).to_string();
     let args = [
@@ -89,7 +95,11 @@ pub(super) fn git_ui_stash_show_blocking(
     match git_ui_text(&cwd, &args) {
         Ok(text) => {
             let files = parse_unified_diff(&text);
-            Ok(json!({ "files": files }))
+            Ok(json!({ "files": super::diff::decorate_diff_files(
+                files,
+                layout.as_deref(),
+                q.as_deref(),
+            ) }))
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
@@ -110,8 +120,13 @@ pub(super) async fn git_ui_stash_show(
         Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
     };
     let context = query.context.unwrap_or(3);
+    let layout = query.layout.clone();
+    let q = query.q.clone();
     let cwd = cwd.to_string();
-    match tokio::task::spawn_blocking(move || git_ui_stash_show_blocking(cwd, stash, context)).await
+    match tokio::task::spawn_blocking(move || {
+        git_ui_stash_show_blocking(cwd, stash, context, layout, q)
+    })
+    .await
     {
         Ok(Ok(value)) => Json(value).into_response(),
         Ok(Err((status, msg))) => git_json_error(status, msg),
