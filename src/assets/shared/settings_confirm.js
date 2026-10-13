@@ -1,10 +1,12 @@
 // Settings confirm / rollback chrome.
 //
 // Local settings rows get explicit confirmation affordances:
-// - Text-like inputs (text, number, range) only save after Enter or the
-//   yellow pencil button. While the on-screen value differs from the saved
-//   value, the row shows the pencil (hover hint: "Enter or press to
-//   confirm") and a rollback arrow that restores the saved value.
+// - Text-like inputs (text, number, range) auto-commit a debounced save
+//   shortly after the last keystroke or delete, so typing alone persists
+//   the change. Enter and the pencil button commit immediately; while the
+//   on-screen value differs from the saved value the row shows the pencil
+//   (hover hint: "Apply now") and a rollback arrow that restores the saved
+//   value. Typing the saved value back cancels the pending commit.
 // - Selects and checkboxes still apply immediately through their own change
 //   handlers, but the row shows a rollback arrow that restores the value
 //   saved when the settings screen was opened (or last confirmed).
@@ -12,7 +14,8 @@
 // The module is layout-agnostic: desktop passes `.option` rows, mobile
 // passes label rows. It never performs the save itself; it calls back into
 // the host's save and read functions so each layout keeps its own option
-// pipeline (HerdrOptions storage, normalize, apply).
+// pipeline (HerdrOptions storage, normalize, apply). Hosts without timers
+// (node:test stubs) keep the Enter/pencil-only behavior.
 (function (root) {
   const PENCIL_CLASS = "settings-confirm-pencil";
   const ROLLBACK_CLASS = "settings-rollback";
@@ -23,9 +26,23 @@
     save,
     read,
     onRollback,
+    setTimeout: setTimer,
+    clearTimeout: clearTimer,
+    debounceMs,
   }) {
     const doc = document;
-    const rows = new Map(); // row -> { control, pencil, rollback, savedValue, selectLike }
+    const rows = new Map(); // row -> { control, pencil, rollback, savedValue, selectLike, debounceTimer }
+    const armTimer = typeof setTimer === "function"
+      ? setTimer
+      : typeof root.setTimeout === "function"
+        ? root.setTimeout.bind(root)
+        : null;
+    const cancelTimer = typeof clearTimer === "function"
+      ? clearTimer
+      : typeof root.clearTimeout === "function"
+        ? root.clearTimeout.bind(root)
+        : null;
+    const debounceDelay = Number(debounceMs) > 0 ? Number(debounceMs) : 800;
 
     function controlValue(control) {
       if (!control) return "";
@@ -81,8 +98,8 @@
         pencil = doc.createElement("button");
         pencil.type = "button";
         pencil.className = PENCIL_CLASS;
-        pencil.setAttribute("aria-label", "Enter or press to confirm");
-        pencil.title = "Enter or press to confirm";
+        pencil.setAttribute("aria-label", "Apply now");
+        pencil.title = "Apply now (Enter)";
         pencil.textContent = "✎";
         pencil.onclick = (event) => {
           event.preventDefault();
@@ -133,7 +150,30 @@
       }
     }
 
+    function cancelDebounce(info) {
+      if (info.debounceTimer == null) return;
+      if (cancelTimer) cancelTimer(info.debounceTimer);
+      info.debounceTimer = null;
+    }
+
+    // Idle auto-commit: fire one save shortly after the last edit. Retyping
+    // resets the timer; reverting to the saved value cancels it so a no-op
+    // edit never writes.
+    function armDebounce(row, info) {
+      if (!armTimer) return;
+      if (valuesEqual(controlValue(info.control), displayValue(info))) {
+        cancelDebounce(info);
+        return;
+      }
+      cancelDebounce(info);
+      info.debounceTimer = armTimer(() => {
+        info.debounceTimer = null;
+        commit(row, info);
+      }, debounceDelay);
+    }
+
     function commit(row, info) {
+      cancelDebounce(info);
       save(info.control, controlValue(info.control));
       info.savedValue = read(info.control);
       if (!info.selectLike) {
@@ -151,6 +191,7 @@
     }
 
     function rollbackRow(row, info) {
+      cancelDebounce(info);
       const target = info.savedValue;
       if (info.control && info.control.type === "checkbox") {
         info.control.checked = target === true;
@@ -207,6 +248,7 @@
       }
       info.control = control;
       info.selectLike = isSelectLike(control);
+      if (!info.debounceTimer) info.debounceTimer = null;
       // Baseline is re-read on every watch call: hosts sync controls from
       // saved options right before watching, so this captures the value
       // saved when the settings screen was opened.
@@ -219,7 +261,10 @@
           // until the user rolls back or reopens the settings screen.
           control.addEventListener("change", () => paint(row, info));
         } else {
-          control.addEventListener("input", () => paint(row, info));
+          control.addEventListener("input", () => {
+            paint(row, info);
+            armDebounce(row, info);
+          });
           wireKeydown(row, info);
         }
       }
@@ -228,6 +273,10 @@
 
     function refreshAll() {
       for (const [row, info] of rows) {
+        // Re-watching re-baselines rows (host re-synced controls from saved
+        // options); a stale idle commit would write the re-synced value, so
+        // drop pending timers with the old baseline.
+        cancelDebounce(info);
         info.savedValue = read(info.control);
         paint(row, info);
       }
@@ -248,6 +297,7 @@
         const info = rows.get(row);
         if (!info) return watch(row, control);
         info.control = control || info.control;
+        cancelDebounce(info);
         info.savedValue = read(info.control);
         paint(row, info);
       },

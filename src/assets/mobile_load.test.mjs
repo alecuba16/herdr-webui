@@ -1284,6 +1284,81 @@ describe("mobile bundle load", () => {
     match(backendSource, /state\.backendMode = settings\.backend_mode/);
   });
 
+  it("settings rows expose the close-workspace checkbox and default it on", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.showScreen("settings");
+    const settingsHtml = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(settingsHtml.includes("Close workspace with last terminal"));
+    ok(settingsHtml.includes("HerdrMobile.setCloseWorkspaceOnLastTerminal"));
+    equal(typeof ctx.HerdrMobile.setCloseWorkspaceOnLastTerminal, "function");
+    // Default on: the row ships checked without any stored options.
+    ok(settingsHtml.includes('data-settings-id="closeWorkspaceOnLastTerminal"'));
+    const row = settingsHtml.split('data-settings-id="closeWorkspaceOnLastTerminal"')[1] || "";
+    ok(row.slice(0, 400).includes("checked"), "checkbox renders checked by default");
+  });
+
+  it("text-like settings save through the debounced input path", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.setSettingDebounced("worktreeDefaultDirectory", "../wt-deb");
+    // Nothing saved before the debounce fires.
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").worktreeDefaultDirectory, undefined);
+    await ctx.flushTimers();
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").worktreeDefaultDirectory, "../wt-deb");
+  });
+
+  it("the debounced commit suppresses the full refresh so focus survives", async () => {
+    // The whole point of the mobile debounce chrome: while the user is
+    // still typing, the commit must not run refresh() (a refresh swaps
+    // the screen DOM and drops focus + keyboard). Only the row's chrome
+    // updates. Observable in the harness: refresh() issues the session
+    // snapshot request; a suppressed commit does not.
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.showScreen("settings");
+    const snapshotBefore = ctx.requests.filter(
+      (request) => request.url === "/api/session-snapshot",
+    ).length;
+    // Baseline: an explicit refresh does hit the snapshot endpoint.
+    await ctx.HerdrMobile.refresh();
+    const snapshotsFromRefresh = ctx.requests.filter(
+      (request) => request.url === "/api/session-snapshot",
+    ).length - snapshotBefore;
+    ok(snapshotsFromRefresh > 0, "baseline refresh issues the snapshot request");
+
+    const before = ctx.requests.length;
+    ctx.HerdrMobile.setSettingDebounced("worktreeDefaultDirectory", "../wt-focus");
+    await ctx.flushTimers();
+    equal(
+      JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").worktreeDefaultDirectory,
+      "../wt-focus",
+      "the debounced value still commits",
+    );
+    const snapshotBurst = ctx.requests
+      .slice(before)
+      .filter((request) => request.url === "/api/session-snapshot");
+    equal(snapshotBurst.length, 0,
+      "the debounced commit must not trigger a full refresh mid-typing");
+  });
+
+  it("retyping resets the debounce and change commits flush it early", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    ctx.HerdrMobile.setSettingDebounced("explorationDefaultDirectory", "~/first");
+    ctx.HerdrMobile.setSettingDebounced("explorationDefaultDirectory", "~/second");
+    await ctx.flushTimers();
+    // Only the last value commits.
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").explorationDefaultDirectory, "~/second");
+    ctx.HerdrMobile.setSettingDebounced("explorationDefaultDirectory", "~/third");
+    // A change event (blur / Android IME) commits now and cancels the timer.
+    ctx.HerdrMobile.commitSettingFromChange("explorationDefaultDirectory", "~/third");
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").explorationDefaultDirectory, "~/third");
+    await ctx.flushTimers();
+    // The cancelled debounce never writes a second time.
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").explorationDefaultDirectory, "~/third");
+  });
+
   it("renders settings and worktrees screens without browser automation", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
@@ -1297,7 +1372,8 @@ describe("mobile bundle load", () => {
     ok(settingsHtml.includes("Terminal mouse reporting"));
     match(source, /stripTerminalQueryReplies\(data, terminalQueryReplyState\)/);
     ok(settingsHtml.includes("Line numbers"));
-    ok(settingsHtml.includes("HerdrMobile.setTerminalFontFamily"));
+    ok(settingsHtml.includes("HerdrMobile.setSettingDebounced('terminalFontFamily'"));
+    ok(settingsHtml.includes("HerdrMobile.commitSettingFromChange('terminalFontFamily'"));
     ok(settingsHtml.includes("HerdrMobile.setFileBrowserLineNumbers"));
     ok(settingsHtml.includes("HerdrMobile.setTerminalLinks"));
     ok(settingsHtml.includes("HerdrMobile.setTerminalMouseReporting"));
@@ -1610,7 +1686,8 @@ describe("mobile bundle load", () => {
     ok(settingsHtml.includes("Editor tab size"));
     ok(settingsHtml.includes("LSP diagnostics"));
     ok(settingsHtml.includes("HerdrMobile.setEditorWordWrap"));
-    ok(settingsHtml.includes("HerdrMobile.setEditorTabSize"));
+    ok(settingsHtml.includes("HerdrMobile.setSettingDebounced('editorTabSize'"));
+    ok(settingsHtml.includes("HerdrMobile.commitSettingFromChange('editorTabSize'"));
     ok(settingsHtml.includes("HerdrMobile.setLspEnabled"));
     equal(typeof ctx.HerdrMobile.setEditorEnabled, "function");
     equal(typeof ctx.HerdrMobile.setEditorWordWrap, "function");
@@ -2110,7 +2187,42 @@ describe("mobile bundle load", () => {
     equal(ctx.history.calls.at(-1).path, "/session/default/workspace/w1/tab/t2/pane/p2");
   });
 
-  it("closing the last mobile panel keeps the workspace on screen", async () => {
+  it("closing the last mobile panel auto-closes the workspace (default on)", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ workspace_id: "w1", tab_id: "w1:t1", number: 1 }],
+      panes: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? []
+          : [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
+      workspaces: ({ requests }) =>
+        requests.some((request) => request.url === "/api/workspaces/w1/close")
+          ? []
+          : [{ workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" }],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    await ctx.HerdrMobile.closeCurrentPanel();
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/tabs/w1%3At1/close" && request.opt.method === "POST",
+    ));
+    // closeWorkspaceOnLastTerminal defaults on: the workspace follows its
+    // last panel down.
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/workspaces/w1/close" && request.opt.method === "POST",
+    ));
+    // With no surviving workspace the selection clears; the next refresh
+    // would offer the workspace-open flow.
+    equal(ctx.HerdrMobile.currentSelection().ws, null);
+    equal(ctx.HerdrMobile.currentSelection().tab, null);
+    equal(ctx.HerdrMobile.currentSelection().pane, null);
+  });
+
+  it("closing the last mobile panel keeps the workspace when the option is off", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
       tabs: ({ requests }) =>
         requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
@@ -2122,6 +2234,10 @@ describe("mobile bundle load", () => {
           : [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
     });
     vm.runInContext(source, ctx);
+    ctx.localStorage.setItem(
+      "herdr-web-options",
+      JSON.stringify({ closeWorkspaceOnLastTerminal: false }),
+    );
     await ctx.HerdrMobile.refresh();
 
     await ctx.HerdrMobile.closeCurrentPanel();
@@ -2136,6 +2252,39 @@ describe("mobile bundle load", () => {
     equal(ctx.HerdrMobile.currentSelection().ws, "w1");
     equal(ctx.HerdrMobile.currentSelection().tab, null);
     equal(ctx.HerdrMobile.currentSelection().pane, null);
+  });
+
+  it("auto-close falls back to a surviving workspace selection", async () => {
+    // Desktop td9 pins the same contract: after the last panel closes its
+    // workspace, the selection must land on another open workspace, not
+    // point at the dead id.
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? [{ workspace_id: "w9", tab_id: "w9:t9", number: 1 }]
+          : [{ workspace_id: "w1", tab_id: "w1:t1", number: 1 }],
+      panes: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At1/close")
+          ? [{ workspace_id: "w9", tab_id: "w9:t9", pane_id: "w9:p9", terminal_id: "term9" }]
+          : [{ workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
+      workspaces: ({ requests }) =>
+        requests.some((request) => request.url === "/api/workspaces/w1/close")
+          ? [{ workspace_id: "w9", label: "beta", pane_count: 1, cwd: "/tmp/beta" }]
+          : [
+              { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+              { workspace_id: "w9", label: "beta", pane_count: 1, cwd: "/tmp/beta" },
+            ],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    await ctx.HerdrMobile.closeCurrentPanel();
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/workspaces/w1/close" && request.opt.method === "POST",
+    ), "the emptied workspace must close");
+    equal(ctx.HerdrMobile.currentSelection().ws, "w9",
+      "the selection falls back to the surviving workspace");
   });
 
   it("closes the real panel when a refresh re-scopes the selected id mid-flight", async () => {
@@ -2222,6 +2371,39 @@ describe("mobile bundle load", () => {
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(html.includes("state unavailable"),
       "a real error must surface in the screen, not vanish");
+  });
+
+  it("auto-closes the workspace after a sheet close empties it (non-current path)", async () => {
+    // closePanelFromSheet is the second path that can empty a workspace:
+    // closing a non-current tab while the current one is already gone or
+    // stale. maybeAutoCloseWorkspace must fire there too, default on.
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: ({ requests }) =>
+        requests.some((request) => request.url === "/api/tabs/w1%3At2/close")
+          ? []
+          : [
+              { workspace_id: "w1", tab_id: "w1:t1", number: 1, label: "one" },
+              { workspace_id: "w1", tab_id: "w1:t2", number: 2, label: "two" },
+            ],
+      panes: [{ workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
+      workspaces: ({ requests }) =>
+        requests.some((request) => request.url === "/api/workspaces/w1/close")
+          ? []
+          : [{ workspace_id: "w1", label: "alpha", pane_count: 2, cwd: "/tmp/alpha" }],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    // Harness auto-resolves the confirm sheet with the ctx.confirm answer.
+    ctx.confirm = () => true;
+    await ctx.HerdrMobile.closePanelFromSheet("w1:t2");
+
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/tabs/w1%3At2/close" && request.opt.method === "POST",
+    ), "the sheet close POST must fire");
+    ok(ctx.requests.some(
+      (request) => request.url === "/api/workspaces/w1/close" && request.opt.method === "POST",
+    ), "the last panel leaving via the sheet must auto-close the workspace");
   });
 
   it("treats a not-found close from the tabs sheet as closed", async () => {

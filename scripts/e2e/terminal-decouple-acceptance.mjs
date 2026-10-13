@@ -9,6 +9,8 @@
 //   td5  the workspace still renders its empty-leaf body after the close
 //   td6  worktree.open with open_terminal:false mints no tab either
 //   td7  settings exposes workspaceOpenTerminal and the checkbox persists
+//   td8  with closeWorkspaceOnLastTerminal on, closing the last tab closes the workspace
+//   td9  the selection falls back to another open workspace after the auto-close
 //
 // window.confirm is auto-accepted for the tab close (Page.setBypassCSP is
 // not needed; the app overrides confirm with confirmCloseTab semantics
@@ -56,7 +58,17 @@ async function main() {
 
   await reload();
 
-  // td1: workspace.create with open_terminal:false must answer zero tabs.
+  // The fixture must opt out of the default-on closeWorkspaceOnLastTerminal:
+  // td4/td5 assert the workspace survives a last-tab close. td8 flips the
+  // option on through the real checkbox to cover the auto-close path.
+  await evalExpr(`(() => {
+    const raw = localStorage.getItem("herdr-web-options");
+    const blob = raw ? JSON.parse(raw) : {};
+    blob.closeWorkspaceOnLastTerminal = false;
+    localStorage.setItem("herdr-web-options", JSON.stringify(blob));
+    return "seeded";
+  })()`);
+  await reload();
   const made = await evalExpr(`fetch("/api/workspaces", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({cwd: ${JSON.stringify(REPO)}, label: "td-e2e", open_terminal: false})}).then((r) => r.json()).catch((e) => "err:" + e)`);
   const wsId = made && made.result && made.result.workspace ? made.result.workspace.workspace_id : null;
   const tabId0 = made && made.result && made.result.tab ? made.result.tab.tab_id : null;
@@ -193,6 +205,109 @@ async function main() {
   let settings = null;
   try { settings = JSON.parse(settingsInfo); } catch { settings = null; }
   record("td7 settings checkbox exists, default off, flag follows it", !!settings && settings.checked === false && settings.inOptions === "boolean" && settings.flag === false, settingsInfo.slice(0, 300));
+
+  // td8: flip closeWorkspaceOnLastTerminal on through the real checkbox,
+  // then close the last tab on the focused workspace and assert the
+  // workspace itself closes server-side. td6 left the app with only the
+  // td1 workspace open (zero tabs after td4), so mint one tab first.
+  const flipInfo = await evalExpr(`(async () => {
+    document.getElementById("settingsToggle").click();
+    const started = Date.now();
+    while (Date.now() - started < 8000) {
+      const box = document.getElementById("optCloseWorkspaceOnLastTerminal");
+      if (box) {
+        if (!box.checked) box.click();
+        await new Promise((r) => setTimeout(r, 400));
+        document.getElementById("settingsClose").click();
+        return JSON.stringify({ checked: box.checked, inOptions: typeof options.closeWorkspaceOnLastTerminal, flag: closeWorkspaceOnLastTerminalFlag() });
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    return "no-checkbox";
+  })()`);
+  let flipped = null;
+  try { flipped = JSON.parse(flipInfo); } catch { flipped = null; }
+  record("td8a settings checkbox for close-on-last-terminal exists and turns on", !!flipped && flipped.checked === true && flipped.inOptions === "boolean" && flipped.flag === true, flipInfo.slice(0, 300));
+
+  // Focus the zero-tab workspace from td1 so the minted tab belongs to it.
+  await reload(`${APP_URL}session/default/workspace/${wsId}`);
+  await evalExpr(`new Promise((resolve) => {
+    const started = Date.now();
+    const check = () => {
+      if (state && state.workspaces && state.workspaces.length) { resolve("loaded"); return; }
+      if (Date.now() - started > 30000) resolve("timeout");
+      else setTimeout(check, 400);
+    };
+    check();
+  })`);
+  const mint2 = await evalExpr(`(async () => {
+    const started = Date.now();
+    while (Date.now() - started < 10000) {
+      const card = document.getElementById("workspaceEmptyLeaf");
+      const btn = card && card.querySelector("button.workspace-empty-leaf-new");
+      if (btn) {
+        btn.click();
+        await new Promise((r) => setTimeout(r, 2000));
+        return JSON.stringify({ ws: state.ws, tab: state.tab, tabs: (state.tabs || []).filter((t) => t.workspace_id === state.ws).length });
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    return "no-button";
+  })()`);
+  let mint2Info = null;
+  try { mint2Info = JSON.parse(mint2); } catch { mint2Info = null; }
+  record("td8b last-tab fixture mints one tab on the target workspace", !!mint2Info && mint2Info.ws === wsId && mint2Info.tab && mint2Info.tabs === 1, mint2.slice(0, 300));
+
+  // Close the only tab through the real pane-tab close control and assert
+  // the workspace is gone: server list, client list, and selection.
+  const autoCloseInfo = await (async () => {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const pt = await evalExpr(`(() => {
+        const strip = document.getElementById("workspacePanes");
+        if (!strip) return "no-strip";
+        const ctrl = strip.querySelector(".pane-tab-close[aria-label='Close panel']");
+        if (!ctrl) return "no-close";
+        const r = ctrl.getBoundingClientRect();
+        if (!r.width || !r.height) return "zero-rect";
+        return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+      })()`);
+      if (!pt || pt === "no-strip" || pt === "no-close" || pt === "zero-rect") return pt || "no-point";
+      const point = JSON.parse(pt);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "none", buttons: 0 });
+      await sleep(150);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", buttons: 1, clickCount: 1 });
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", buttons: 0, clickCount: 1 });
+      const outcome = await evalExpr(`(async () => {
+        const started = Date.now();
+        while (Date.now() - started < 6000) {
+          const tabs = (state.tabs || []).filter((t) => t.workspace_id === "${wsId}");
+          const wsGone = !(state.workspaces || []).some((x) => x.workspace_id === "${wsId}");
+          if (tabs.length === 0 && wsGone) return "closed";
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        return "still-open";
+      })()`);
+      if (outcome === "closed") break;
+    }
+    return await evalExpr(`(async () => {
+      const list = await fetch("/api/workspaces").then((r) => r.json()).catch(() => null);
+      const ids = list && list.result && Array.isArray(list.result.workspaces) ? list.result.workspaces.map((w) => w.workspace_id) : null;
+      return JSON.stringify({ wsAlive: (state.workspaces || []).some((x) => x.workspace_id === "${wsId}"), tabsLen: (state.tabs || []).filter((t) => t.workspace_id === "${wsId}").length, serverIds: ids, selected: state.ws });
+    })()`);
+  })();
+  let autoClosed = null;
+  try { autoClosed = JSON.parse(autoCloseInfo); } catch { autoClosed = null; }
+  record("td8c closing the last tab auto-closes the workspace with the option on", !!autoClosed && !autoClosed.wsAlive && autoClosed.tabsLen === 0 && Array.isArray(autoClosed.serverIds) && !autoClosed.serverIds.includes(wsId), autoCloseInfo.slice(0, 300));
+
+  // td9: the selection falls back after the auto-close. td6 opened a second
+  // workspace from REPO2 (zero tabs); it should now be the selected one.
+  await sleep(1200);
+  const selInfo = await evalExpr(`(() => {
+    return JSON.stringify({ ws: state.ws, wsCount: (state.workspaces || []).length, fallbackIsOther: !!(state.ws && state.ws !== "${wsId}") });
+  })()`);
+  let sel = null;
+  try { sel = JSON.parse(selInfo); } catch { sel = null; }
+  record("td9 selection falls back to a surviving workspace after auto-close", !!sel && sel.fallbackIsOther && sel.wsCount >= 1, selInfo.slice(0, 300));
 
   console.log(`\n${recorder.passed}/${recorder.results.length} checks passed`);
   writeReport(outPath, recorder, { status: recorder.failed ? "failed" : "passed" });

@@ -1,6 +1,50 @@
 # Release notes
 
 ## Next release
+- Prefix actions echo a shortcut hint toast now. Running any WebUI or Git
+  UI prefix action (prefix chords, settings/shortcuts toggles, header and
+  footer buttons, sidebar toggle, palette-routed actions, git prefix
+  actions) pops a small bottom-right toast naming the action and its
+  chord, `Settings` `Ctrl+B S`, so the prefix language is learned by
+  use. One toast element lives for the session: shows only swap text on
+  the three cached child nodes, nothing is created or removed per
+  action, and repeated triggers re-arm the single 2.6 s auto-hide
+  timer. The toast is role=status with aria-live off (an echo of what
+  the user just did, not new information), respects
+  prefers-reduced-motion, and hides immediately when
+  `Shortcut hint toasts` is turned off in Settings. Turning the option
+  off also hides a visible toast through applyOptions.
+- Workspaces close with their last terminal now. A new
+  closeWorkspaceOnLastTerminal option (on by default; Settings →
+  Workspace behavior on desktop, Workspaces section on mobile) closes
+  the workspace or worktree once its last terminal panel closes,
+  instead of leaving an empty shell behind. Desktop routes the
+  pane-exit/pane-close/tab-close paths and mobile routes the
+  panel-close and tab-sheet-close paths through one
+  maybeAutoCloseWorkspace guard (option on, workspace known, no tabs
+  left, not already closing); mobile skips its workspace-close confirm
+  sheet since the user just deliberately closed the panel. The
+  selection falls back to another open workspace instead of pointing at
+  a dead id. Terminal-decouple e2e proves both sides on both bundles:
+  desktop td4/td5 still assert survival with the option off, td8/td9
+  assert the close and the selection fallback with it on; mobile tm5
+  keeps the workspace with the option off, tm7 flips the checkbox on
+  and closes the workspace through the real sheet.
+- Settings save themselves. Text-like settings inputs auto-commit
+  ~800 ms after the last keystroke on both desktop and mobile, so
+  changes stick without pressing Enter or tapping the pencil. Desktop
+  keeps Enter, the pencil, and rollback as explicit commit paths;
+  mobile keeps its Enter-key (enterkeyhint done blurs the input and
+  commits through change) and the rollback arrow, with onchange
+  flushing any pending debounce immediately so Android change-only
+  IMEs still save without double-writes. Range sliders still save on
+  release. The green tick flashes on the row that saved, even when
+  the debounce lands after focus moved elsewhere; on mobile the
+  flash and rollback chrome mutate in place so focus and the virtual
+  keyboard survive the debounced commit. The desktop settings modal
+  also reorders its sections by task: Appearance, Terminal input,
+  Shortcuts, Workspace behavior, Worktrees, File browser, Editor,
+  Agents and alerts, Server.
 - Chat mode text segments carry meaning by color now. The thinking
   toggle reads magenta (reasoning), tool names cyan (machine action),
   running tool rows and the working chip amber (in flight), failed parts

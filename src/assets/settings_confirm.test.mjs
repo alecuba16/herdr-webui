@@ -147,6 +147,154 @@ function createContext() {
   return { api, saves, reads, rollbacks, document };
 }
 
+function createTimers() {
+  const pending = new Map();
+  let seq = 0;
+  return {
+    fired: [],
+    setTimeout(fn, delay) {
+      seq += 1;
+      const id = seq;
+      pending.set(id, { fn, delay });
+      return id;
+    },
+    clearTimeout(id) {
+      pending.delete(id);
+    },
+    tick(id) {
+      const entry = pending.get(id);
+      if (!entry) return false;
+      pending.delete(id);
+      entry.fn();
+      this.fired.push(entry.delay);
+      return true;
+    },
+    onlyTimer() {
+      equal(pending.size, 1, "exactly one pending timer");
+      const [id] = pending.keys();
+      return id;
+    },
+    get size() {
+      return pending.size;
+    },
+  };
+}
+
+function createContextWithTimers() {
+  const saves = [];
+  const reads = new Map();
+  const timers = createTimers();
+  const api = loadConfirm().create({
+    document: { createElement: () => createNodeStub() },
+    save: (control, value) => saves.push({ control, value }),
+    read: (control) => reads.get(control),
+    onRollback: () => {},
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    debounceMs: 800,
+  });
+  return { api, saves, reads, timers };
+}
+
+function watchedTextRow(api, reads, value, saved) {
+  const row = createNodeStub({ className: "option" });
+  const control = createNodeStub({ type: "text" });
+  control.value = value;
+  row.appendChild(control);
+  reads.set(control, saved);
+  api.watch(row, control);
+  return { row, control };
+}
+
+describe("HerdrSettingsConfirm idle auto-commit", () => {
+  it("saves once after typing stops", () => {
+    const { api, saves, reads, timers } = createContextWithTimers();
+    const { row, control } = watchedTextRow(api, reads, "saved", "saved");
+
+    control.value = "edited";
+    fire(control, "input");
+    equal(timers.size, 1, "input armed the idle timer");
+    equal(saves.length, 0, "no save before idle delay");
+
+    ok(timers.tick(timers.onlyTimer()), "timer fired");
+    equal(saves.length, 1, "idle commit saved");
+    equal(saves[0].value, "edited", "committed the typed value");
+    ok(
+      !String(row.className).includes("settings-pending"),
+      "pending cleared after idle commit",
+    );
+  });
+
+  it("re-arming on more typing cancels the previous timer", () => {
+    const { api, saves, reads, timers } = createContextWithTimers();
+    const { control } = watchedTextRow(api, reads, "saved", "saved");
+
+    control.value = "ed";
+    fire(control, "input");
+    const firstTimer = timers.onlyTimer();
+    control.value = "edited";
+    fire(control, "input");
+    const secondTimer = timers.onlyTimer();
+    ok(firstTimer !== secondTimer, "retyping replaced the timer");
+
+    // The cancelled first timer must never fire.
+    ok(!timers.tick(firstTimer), "stale timer was cleared");
+    timers.tick(secondTimer);
+    equal(saves.length, 1, "one save for the whole typing burst");
+    equal(saves[0].value, "edited", "saved the final value");
+  });
+
+  it("Enter or pencil commit cancels the pending idle save", () => {
+    const { api, saves, reads, timers } = createContextWithTimers();
+    const { row, control } = watchedTextRow(api, reads, "saved", "saved");
+
+    control.value = "edited";
+    fire(control, "input");
+    const pendingTimer = timers.onlyTimer();
+    api.commit(row);
+    equal(saves.length, 1, "explicit commit saved");
+    ok(!timers.tick(pendingTimer), "idle timer cancelled by explicit commit");
+    equal(saves.length, 1, "no double save");
+  });
+
+  it("rollback cancels the pending idle save", () => {
+    const { api, saves, reads, timers } = createContextWithTimers();
+    const { row, control } = watchedTextRow(api, reads, "saved", "saved");
+
+    control.value = "edited";
+    fire(control, "input");
+    const pendingTimer = timers.onlyTimer();
+    api.rollback(row);
+    equal(control.value, "saved", "rollback restored the saved value");
+    ok(!timers.tick(pendingTimer), "idle timer cancelled by rollback");
+    equal(saves.length, 0, "no save after rollback");
+  });
+
+  it("typing back the saved value cancels the pending save", () => {
+    const { api, saves, reads, timers } = createContextWithTimers();
+    const { control } = watchedTextRow(api, reads, "saved", "saved");
+
+    control.value = "edited";
+    fire(control, "input");
+    equal(timers.size, 1, "timer armed after edit");
+    control.value = "saved";
+    fire(control, "input");
+    equal(timers.size, 0, "reverting to saved value disarmed the timer");
+    equal(saves.length, 0, "no-op edit never saves");
+  });
+
+  it("without timers the idle commit stays off and Enter/pencil still work", () => {
+    const { api, saves, reads } = createContext();
+    const { row, control } = watchedTextRow(api, reads, "saved", "saved");
+
+    control.value = "edited";
+    fire(control, "input");
+    equal(saves.length, 0, "no timer, no save");
+    api.commit(row);
+    equal(saves.length, 1, "explicit commit still saves");
+  });
+});
+
 describe("HerdrSettingsConfirm", () => {
   it("shows pencil and rollback only while a text input differs from saved", () => {
     const { api, reads } = createContext();
@@ -172,7 +320,7 @@ describe("HerdrSettingsConfirm", () => {
     const pencil = findChip(row, "settings-confirm-pencil");
     equal(
       pencil.getAttribute("aria-label"),
-      "Enter or press to confirm",
+      "Apply now",
       "pencil hover hint",
     );
   });

@@ -14,6 +14,8 @@
 //   tm5  Close current panel (custom confirm sheet, real Confirm click)
 //        keeps the workspace on screen, back to the no-terminal state
 //   tm6  no desktop empty-leaf DOM leaks into the mobile layout
+//   tm7  with closeWorkspaceOnLastTerminal on (default), closing the last
+//        panel closes the workspace server-side too
 //
 // The mobile layout switch lives in app_boot.js: layout preference
 // "mobile" in localStorage under "herdr-web-layout". Mobile state is
@@ -73,6 +75,16 @@ async function main() {
   } catch { /* degrade */ }
 
   await evalExpr(`localStorage.setItem("herdr-web-layout", "mobile")`);
+  // The fixture opts out of the default-on closeWorkspaceOnLastTerminal so
+  // tm5 keeps its meaning (workspace survives its last panel). tm7 flips
+  // the option on through the real settings checkbox to cover the close.
+  await evalExpr(`(() => {
+    const raw = localStorage.getItem("herdr-web-options");
+    const blob = raw ? JSON.parse(raw) : {};
+    blob.closeWorkspaceOnLastTerminal = false;
+    localStorage.setItem("herdr-web-options", JSON.stringify(blob));
+    return "seeded";
+  })()`);
   await cdp.send("Page.navigate", { url: APP_URL });
   await sleep(4000);
 
@@ -290,6 +302,92 @@ async function main() {
   let domInfo = null;
   try { domInfo = JSON.parse(domCheck); } catch { domInfo = null; }
   record("tm6 desktop empty-leaf DOM stays out of mobile", !!domInfo && !domInfo.emptyLeaf && !domInfo.desktopPanes, String(domCheck).slice(0, 300));
+
+  // tm7: flip closeWorkspaceOnLastTerminal on through the real settings
+  // checkbox, mint one panel on the zero-tab workspace, close it with the
+  // sheet + real Confirm click, and assert the workspace closes too.
+  const flipped = await evalExpr(`(async () => {
+    // Settings screen: More drawer -> Settings drawer item.
+    const more = document.querySelector('.mobile-nav button[data-screen="more"]');
+    if (more) more.click();
+    await new Promise((r) => setTimeout(r, 500));
+    const settingsItem = Array.from(document.querySelectorAll('.mobile-drawer-item')).find((b) => /settings/i.test(b.textContent || ""));
+    if (settingsItem) settingsItem.click();
+    await new Promise((r) => setTimeout(r, 800));
+    const started = Date.now();
+    while (Date.now() - started < 8000) {
+      const row = document.querySelector('[data-settings-id="closeWorkspaceOnLastTerminal"]');
+      if (row) {
+        const box = row.querySelector('input[type="checkbox"]');
+        if (box) {
+          const wasChecked = box.checked;
+          if (!wasChecked) box.click();
+          return JSON.stringify({ checked: box.checked, flippedOn: !wasChecked && box.checked });
+        }
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    return "no-checkbox";
+  })()`);
+  let flipInfo = null;
+  try { flipInfo = JSON.parse(flipped); } catch { flipInfo = null; }
+  record("tm7a settings checkbox flips close-on-last-terminal on", !!flipInfo && flipInfo.checked === true && flipInfo.flippedOn === true, String(flipped).slice(0, 200));
+
+  // Mint one panel on the zero-tab workspace from tm5, then close it.
+  const wsIdNow = await evalExpr(`(window.location.pathname.match(/workspace\\/([^/]+)/) || [])[1] || ""`);
+  const reMint = await evalExpr(`(async () => {
+    // Back to the panels screen.
+    const panelsBtn = document.querySelector('.mobile-nav button[data-screen="panels"]') || document.querySelector('.mobile-nav button[data-screen="terminal"]');
+    if (panelsBtn) panelsBtn.click();
+    await new Promise((r) => setTimeout(r, 600));
+    const chip = document.getElementById('mobilePanelsChip');
+    if (chip) chip.click();
+    await new Promise((r) => setTimeout(r, 600));
+    const sheet = document.getElementById('mobileTabsSheet');
+    if (!sheet || sheet.hidden) return "no-sheet";
+    const newBtn = Array.from(sheet.querySelectorAll('button')).find((b) => /new panel/i.test(b.textContent || ""));
+    if (!newBtn) return "no-new";
+    newBtn.click();
+    await new Promise((r) => setTimeout(r, 2500));
+    return "minted";
+  })()`);
+  record("tm7b new panel minted on the zero-tab workspace", reMint === "minted", `got ${reMint} ws=${wsIdNow}`);
+
+  const autoClose = await evalExpr(`(async () => {
+    // Open the panels sheet again and close the current panel with the
+    // real confirm flow.
+    const chip = document.getElementById('mobilePanelsChip');
+    if (chip) chip.click();
+    await new Promise((r) => setTimeout(r, 600));
+    const sheet = document.getElementById('mobileTabsSheet');
+    if (!sheet || sheet.hidden) return "no-sheet";
+    const closeBtn = Array.from(sheet.querySelectorAll('button')).find((b) => /close current panel/i.test(b.textContent || ""));
+    if (!closeBtn) return "no-close";
+    closeBtn.click();
+    await new Promise((r) => setTimeout(r, 600));
+    const okBtn = document.getElementById('mobileConfirmOk');
+    const confirmSheet = document.getElementById('mobileConfirmSheet');
+    if (!okBtn || !confirmSheet || confirmSheet.hidden) return "no-confirm";
+    okBtn.click();
+    // The close + auto-close chain runs async; give it a beat before
+    // polling the server list (the serverGone poll below is the assertion).
+    await new Promise((r) => setTimeout(r, 1000));
+    return "confirmed";
+  })()`);
+  record("tm7 close confirmed through the real sheet", autoClose === "confirmed", `got ${autoClose}`);
+  const serverGone = await evalExpr(`(async () => {
+    const started = Date.now();
+    while (Date.now() - started < 10000) {
+      const list = await fetch("/api/workspaces").then((r) => r.json()).catch(() => null);
+      const ids = list && list.result && Array.isArray(list.result.workspaces) ? list.result.workspaces.map((w) => w.workspace_id) : null;
+      if (ids && !ids.includes("${wsIdNow}")) return JSON.stringify({ gone: true, ids });
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    return JSON.stringify({ gone: false });
+  })()`);
+  let serverInfo2 = null;
+  try { serverInfo2 = JSON.parse(serverGone); } catch { serverInfo2 = null; }
+  record("tm7c closing the last panel auto-closes the workspace", !!serverInfo2 && serverInfo2.gone === true, String(serverGone).slice(0, 300));
 
   console.log(`\n${recorder.passed}/${recorder.results.length} checks passed`);
   writeReport(outPath, recorder, { status: recorder.failed ? "failed" : "passed" });

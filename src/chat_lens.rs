@@ -1480,7 +1480,7 @@ mod tests {
 
     #[test]
     fn transcript_cache_serves_the_same_parse_while_files_are_unchanged() {
-        let (_dir, index, session_id) = fixture_store("cache_hit");
+        let (_dir, _guard, index, session_id) = fixture_store("cache_hit");
         let page = ConversationPage::default();
         let first = conversation_payload_with(&index, &fixture_context(), &page).unwrap();
         let (messages_a, turns_a) = index.session_transcript_cached(&session_id);
@@ -1498,7 +1498,7 @@ mod tests {
 
     #[test]
     fn transcript_cache_invalidates_on_journal_append() {
-        let (dir, index, session_id) = fixture_store("cache_inval");
+        let (dir, _guard, index, session_id) = fixture_store("cache_inval");
         let page = ConversationPage::default();
         let first = conversation_payload_with(&index, &fixture_context(), &page).unwrap();
         assert_eq!(first["turns"].as_array().unwrap().len(), 3);

@@ -195,6 +195,19 @@
       }
     }
 
+    // Desktop parity: close the workspace once its last terminal panel
+    // closes. Default on; only an explicit false opts out.
+    function closeWorkspaceOnLastTerminalFlag() {
+      try {
+        const parsed = globalThis.HerdrOptions
+          ? globalThis.HerdrOptions.read()
+          : {};
+        return parsed.closeWorkspaceOnLastTerminal !== false;
+      } catch (_) {
+        return true;
+      }
+    }
+
     function applyResult(response) {
       const result = (response && response.result) || {};
       const source = result.source || {};
@@ -376,7 +389,7 @@
       refresh();
     }
 
-    return { applyResult, clearRecent, create, load, loadRecent, open, openFolderAsWorkspace, openRecent, removeRecent, renderScreen, setCreateExpanded, updateField };
+    return { applyResult, clearRecent, closeWorkspaceOnLastTerminalFlag, create, load, loadRecent, open, openFolderAsWorkspace, openRecent, removeRecent, renderScreen, setCreateExpanded, updateField };
   }
 
   globalThis.HerdrMobileWorktrees = { create: createMobileWorktrees };

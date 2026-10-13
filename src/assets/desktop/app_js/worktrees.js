@@ -1146,6 +1146,11 @@ async function closeTab(id) {
   // (the second would close the next panel too).
   if (closeTabInFlight) return;
   if (!confirm(`Close panel "${panelCloseName(id)}"?`)) return;
+  // Capture the workspace before the close: with
+  // closeWorkspaceOnLastTerminal the workspace follows its last panel down.
+  const closingTab = (state.tabs || []).find((tab) => tab.tab_id === id) ||
+    (state.allTabs || []).find((tab) => tab.tab_id === id) || null;
+  const closingWorkspaceId = closingTab && closingTab.workspace_id;
   closeTabInFlight = true;
   showBlocking("Closing panel...");
   try {
@@ -1160,6 +1165,8 @@ async function closeTab(id) {
       if (!String(error.message || error).includes("not found")) throw error;
     }
     if (typeof removeClosedTabFromState === "function") removeClosedTabFromState(id);
+    if (closingWorkspaceId && typeof maybeAutoCloseWorkspace === "function")
+      maybeAutoCloseWorkspace(closingWorkspaceId);
     if (state.tab === id && typeof selectFallbackTabAfterClosed === "function") {
       resetTerminalConnection(true);
       selectFallbackTabAfterClosed(id);

@@ -240,6 +240,105 @@ function hideShortcutPrefixOverlay() {
   const overlay = el("shortcutPrefixOverlay");
   if (overlay) overlay.hidden = true;
 }
+// Shortcut-hint toast: names the action just triggered and the prefix
+// chord that reaches it, so the prefix language is learned by use.
+// One element for the app lifetime: showShortcutHintToast() only swaps
+// text and re-arms one timer. Nothing is created or removed per action.
+let shortcutHintToastNode = null;
+let shortcutHintToastTimer = null;
+// Child node references kept at creation so showing the toast only swaps
+// textContent on three known nodes; no DOM queries at action time.
+let shortcutHintToastLabelNode = null;
+let shortcutHintToastKeysNode = null;
+let shortcutHintToastPrefixNode = null;
+let shortcutHintToastKeyNode = null;
+function shortcutHintToastsEnabled() {
+  try {
+    return !options || options.shortcutHintToasts !== false;
+  } catch (_) {
+    return true;
+  }
+}
+function ensureShortcutHintToastNode() {
+  if (shortcutHintToastNode && shortcutHintToastNode.isConnected !== false)
+    return shortcutHintToastNode;
+  const host = document.body;
+  if (!host) return null;
+  const toast = document.createElement("div");
+  toast.className = "shortcut-hint-toast";
+  toast.setAttribute("role", "status");
+  // aria-live off: the toast is a transient echo of an action the user just
+  // performed, not new information a screen reader must announce.
+  toast.setAttribute("aria-live", "off");
+  const label = document.createElement("span");
+  label.className = "shortcut-hint-toast-label";
+  const keys = document.createElement("span");
+  keys.className = "shortcut-hint-toast-keys";
+  const prefix = document.createElement("kbd");
+  prefix.className = "shortcut-hint-toast-prefix";
+  const arrow = document.createElement("span");
+  arrow.className = "shortcut-hint-toast-arrow";
+  arrow.textContent = "then";
+  const key = document.createElement("kbd");
+  key.className = "shortcut-hint-toast-key";
+  keys.appendChild(prefix);
+  keys.appendChild(arrow);
+  keys.appendChild(key);
+  toast.appendChild(label);
+  toast.appendChild(keys);
+  host.appendChild(toast);
+  shortcutHintToastNode = toast;
+  shortcutHintToastLabelNode = label;
+  shortcutHintToastKeysNode = keys;
+  shortcutHintToastPrefixNode = prefix;
+  shortcutHintToastKeyNode = key;
+  return toast;
+}
+function showShortcutHintToast(scope, action) {
+  if (!shortcutHintToastsEnabled()) return;
+  let label;
+  let key;
+  let prefix;
+  try {
+    label = action;
+    key = shortcutMapFor(scope)[action];
+    // The git UI shares the one global prefix option; normalize it the
+    // same way its own helper does, without reaching into its closure.
+    prefix = normalizeShortcutPrefix(
+      options && options.globalShortcutPrefix,
+      DEFAULT_GLOBAL_SHORTCUT_PREFIX,
+    );
+  } catch (_) {
+    return;
+  }
+  if (!key || !prefix) return;
+  const group = shortcutEditorGroups.find((entry) => entry.scope === scope);
+  const item = group && group.items.find(([id]) => id === action);
+  if (item) label = item[1];
+  const toast = ensureShortcutHintToastNode();
+  if (!toast) return;
+  shortcutHintToastLabelNode.textContent = label;
+  shortcutHintToastPrefixNode.textContent = prefix;
+  shortcutHintToastKeyNode.textContent = shortcutDisplay(key);
+  // Restart the CSS entrance transition only when the toast was hidden;
+  // repeated triggers just extend the dwell, no class churn.
+  const wasHidden = toast.classList.contains("shortcut-hint-toast-hidden");
+  if (wasHidden) toast.classList.remove("shortcut-hint-toast-hidden");
+  clearTimeout(shortcutHintToastTimer);
+  shortcutHintToastTimer = setTimeout(() => {
+    shortcutHintToastTimer = null;
+    if (shortcutHintToastNode)
+      shortcutHintToastNode.classList.add("shortcut-hint-toast-hidden");
+  }, 2600);
+}
+function hideShortcutHintToast() {
+  if (shortcutHintToastTimer) {
+    clearTimeout(shortcutHintToastTimer);
+    shortcutHintToastTimer = null;
+  }
+  if (shortcutHintToastNode)
+    shortcutHintToastNode.classList.add("shortcut-hint-toast-hidden");
+}
 function runPrefixedShortcut(e) {
   const actions = {
     search: () => {
@@ -346,7 +445,11 @@ function runPrefixedShortcut(e) {
   };
   const key = shortcutKey(e);
   const entry = Object.entries(options.webuiShortcuts || {}).find(([, value]) => value === key);
-  if (entry && actions[entry[0]]) return actions[entry[0]]();
+  if (entry && actions[entry[0]]) {
+    const ran = actions[entry[0]]();
+    if (ran) showShortcutHintToast("webuiShortcuts", entry[0]);
+    return ran;
+  }
   return false;
 }
 function consumeShortcutEvent(e) {

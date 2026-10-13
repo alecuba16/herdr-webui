@@ -708,6 +708,16 @@ async function openRecentWorkspace(path, label) {
 
 function runSearchAction(action) {
   closeSearchPalette();
+  // Palette rows mirror prefix actions; echo the matching chord so the
+  // same learn-by-use toast covers palette-triggered actions.
+  const hintAction = {
+    "open-workspace": "newWorkspace",
+    "discover-worktrees": "openWorktrees",
+    "create-worktree": "createWorktree",
+    settings: "settings",
+    "toggle-sidebar": "sidebar",
+  }[action];
+  if (hintAction) showShortcutHintToast("webuiShortcuts", hintAction);
   if (action === "open-workspace" || action === "discover-worktrees") openWorktreeOpenModal(selectedWorkspaceRepoPath(), true);
   else if (action === "create-worktree") {
     if (state.ws) openWorktreeCreateModal(state.ws);

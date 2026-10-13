@@ -696,7 +696,7 @@ describe("app bundle load", () => {
     ok(html.includes(">Actions<"));
     equal(html.includes('id="newWs"'), false);
     equal(html.includes('id="tempTerminalToggle"'), false);
-    match(source, /headerActions\.onclick = \(\) => openSearchPalette\(\);/);
+    match(source, /headerActions\.onclick = \(\) => \{[\s\S]*?showShortcutHintToast\("webuiShortcuts", "search"\);[\s\S]*?openSearchPalette\(\);[\s\S]*?\};/);
     ok(!source.includes('id="tempTerminalToggle"'));
 
     ctx.setupSessionChrome();
@@ -4723,6 +4723,185 @@ describe("app bundle load", () => {
     equal(closeRequest.method, "POST");
   });
 
+  it("defines the closeWorkspaceOnLastTerminal option and its settings row", () => {
+    match(source, /closeWorkspaceOnLastTerminal: true/);
+    match(source, /next\.closeWorkspaceOnLastTerminal = next\.closeWorkspaceOnLastTerminal !== false/);
+    match(source, /id="optCloseWorkspaceOnLastTerminal"/);
+    match(source, /Close workspace with last terminal/);
+    match(source, /function closeWorkspaceOnLastTerminalFlag\(\)/);
+    match(source, /function maybeAutoCloseWorkspace\(workspaceId\)/);
+    match(source, /title: "Shortcuts"/);
+    match(source, /title: "Workspace behavior"/);
+    const bindingsSource = readFileSync(new URL("./desktop/app_js/bindings.js", import.meta.url), "utf8");
+    match(bindingsSource, /el\("optCloseWorkspaceOnLastTerminal"\)\.onchange = \(\) => \{/);
+    match(bindingsSource, /options\.closeWorkspaceOnLastTerminal = el\("optCloseWorkspaceOnLastTerminal"\)\.checked !== false/);
+  });
+
+  it("normalizes closeWorkspaceOnLastTerminal with a default-on flag", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // Default-on: absent stored value and explicit false both normalize.
+    equal(vm.runInContext("normalizeOptions({}).closeWorkspaceOnLastTerminal", ctx), true);
+    equal(
+      vm.runInContext("normalizeOptions({ closeWorkspaceOnLastTerminal: false }).closeWorkspaceOnLastTerminal", ctx),
+      false,
+    );
+    equal(
+      vm.runInContext("normalizeOptions({ closeWorkspaceOnLastTerminal: true }).closeWorkspaceOnLastTerminal", ctx),
+      true,
+    );
+    equal(vm.runInContext("closeWorkspaceOnLastTerminalFlag()", ctx), true);
+    vm.runInContext("options.closeWorkspaceOnLastTerminal = false;", ctx);
+    equal(vm.runInContext("closeWorkspaceOnLastTerminalFlag()", ctx), false);
+  });
+
+  async function flushMicrotasks(ticks = 25) {
+    for (let i = 0; i < ticks; i += 1) await Promise.resolve();
+  }
+
+  function recordRequests() {
+    const requests = [];
+    const ctx = context();
+    ctx.fetch = async (url, opt) => {
+      requests.push({ url, method: (opt && opt.method) || "GET" });
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    ctx.history.replaceState = () => {};
+    vm.runInContext(source, ctx);
+    return { ctx, requests };
+  }
+
+  it("auto-closes the workspace when its last panel closes", async () => {
+    const { ctx, requests } = recordRequests();
+    vm.runInContext(
+      `state.ws = "ws1";
+       state.tab = "tab_1";
+       state.pane = "pane_1";
+       state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+       state.tabs = [{ workspace_id: "ws1", tab_id: "tab_1" }];
+       state.allTabs = state.tabs.slice();
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });`,
+      ctx,
+    );
+    await flushMicrotasks();
+
+    const closeRequest = requests.find(
+      (request) => request.url === "/api/workspaces/ws1/close",
+    );
+    ok(closeRequest, "workspace close POST fired");
+    equal(closeRequest.method, "POST");
+    // No fallback workspace exists, so the selection drops to empty instead
+    // of pointing at the closed workspace.
+    equal(vm.runInContext("state.ws", ctx), null);
+  });
+
+  it("keeps the workspace when a sibling panel stays open", async () => {
+    const { ctx, requests } = recordRequests();
+    vm.runInContext(
+      `state.ws = "ws1";
+       state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+       state.tabs = [
+         { workspace_id: "ws1", tab_id: "tab_1" },
+         { workspace_id: "ws1", tab_id: "tab_2" },
+       ];
+       state.allTabs = state.tabs.slice();
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });`,
+      ctx,
+    );
+    await flushMicrotasks();
+
+    equal(
+      requests.some((request) => request.url === "/api/workspaces/ws1/close"),
+      false,
+      "no workspace close while a panel remains",
+    );
+  });
+
+  it("keeps the workspace when the option is off", async () => {
+    const { ctx, requests } = recordRequests();
+    vm.runInContext(
+      `options.closeWorkspaceOnLastTerminal = false;
+       state.ws = "ws1";
+       state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+       state.tabs = [{ workspace_id: "ws1", tab_id: "tab_1" }];
+       state.allTabs = state.tabs.slice();
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });`,
+      ctx,
+    );
+    await flushMicrotasks();
+
+    equal(
+      requests.some((request) => request.url === "/api/workspaces/ws1/close"),
+      false,
+      "option off means no workspace close",
+    );
+  });
+
+  it("skips the auto-close when the workspace is already gone client-side", async () => {
+    const { ctx, requests } = recordRequests();
+    vm.runInContext(
+      `state.ws = "ws1";
+       state.tabs = [{ workspace_id: "ws1", tab_id: "tab_1" }];
+       state.allTabs = state.tabs.slice();
+       forgetClosedSelection("tab.closed", { tab_id: "tab_1" });`,
+      ctx,
+    );
+    await flushMicrotasks();
+
+    equal(
+      requests.some((request) => request.url === "/api/workspaces/ws1/close"),
+      false,
+      "unknown workspace never closes again",
+    );
+  });
+
+  it("auto-closes a background workspace without touching the selection", async () => {
+    const { ctx, requests } = recordRequests();
+    vm.runInContext(
+      `state.ws = "ws2";
+       state.tab = "tab_2";
+       state.workspaces = [
+         { workspace_id: "ws1", label: "alpha" },
+         { workspace_id: "ws2", label: "beta" },
+       ];
+       state.tabs = [
+         { workspace_id: "ws1", tab_id: "tab_1" },
+         { workspace_id: "ws2", tab_id: "tab_2", focused: true },
+       ];
+       state.allTabs = state.tabs.slice();
+       state.panes = [{ workspace_id: "ws1", tab_id: "tab_1", pane_id: "pane_1" }];
+       forgetClosedSelection("pane.exited", { pane_id: "pane_1" });`,
+      ctx,
+    );
+    await flushMicrotasks();
+
+    ok(
+      requests.some((request) => request.url === "/api/workspaces/ws1/close"),
+      "background workspace close POST fired",
+    );
+    equal(vm.runInContext("state.ws", ctx), "ws2", "selection untouched");
+  });
+
+  it("pane exit that empties the last tab closes the workspace too", async () => {
+    const { ctx, requests } = recordRequests();
+    vm.runInContext(
+      `state.ws = "ws1";
+       state.workspaces = [{ workspace_id: "ws1", label: "alpha" }];
+       state.tabs = [{ workspace_id: "ws1", tab_id: "tab_1" }];
+       state.allTabs = state.tabs.slice();
+       state.panes = [{ workspace_id: "ws1", tab_id: "tab_1", pane_id: "pane_1" }];
+       forgetClosedSelection("pane.exited", { pane_id: "pane_1" });`,
+      ctx,
+    );
+    await flushMicrotasks();
+
+    ok(
+      requests.some((request) => request.url === "/api/workspaces/ws1/close"),
+      "last pane exit cascades to workspace close",
+    );
+  });
+
   it("switches workspace when workspace.closed event fires for selected workspace", () => {
     const ctx = context();
     const replaced = [];
@@ -6781,5 +6960,232 @@ describe("lens chat mode segment colors", () => {
     // content, coloring it would flatten hierarchy, not add it.
     match(css, /\.lens-text \{[\s\S]*?color: var\(--fg\);/);
     match(css, /\.lens-tool-output \{[\s\S]*?color: var\(--fg\);/);
+  });
+});
+
+describe("shortcut hint toast", () => {
+  let toastSource;
+  let toastBindingsSource;
+  let toastCoreSource;
+  let toastSearchSource;
+  let toastGitShortcutsSource;
+  let toastCssSource;
+
+  beforeEach(() => {
+    const desktopAppSource = [
+      "./desktop/app_js/core.js",
+      "./desktop/app_js/workspace_shell.js",
+      "./desktop/app_js/right_sidebar.js",
+      "./desktop/app_js/search_panel.js",
+      "./desktop/app_js/workspace_panes.js",
+      "./desktop/app_js/render.js",
+      "./desktop/app_js/terminal.js",
+      "./desktop/app_js/worktrees.js",
+      "./desktop/app_js/shortcuts.js",
+      "./desktop/app_js/workspace_create.js",
+      "./desktop/app_js/bindings.js",
+    ]
+      .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
+      .join("");
+    toastSource =
+      readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") +
+      "\n" +
+      readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") +
+      "\n" +
+      desktopAppSource;
+    toastBindingsSource = readFileSync(new URL("./desktop/app_js/bindings.js", import.meta.url), "utf8");
+    toastCoreSource = readFileSync(new URL("./desktop/app_js/core.js", import.meta.url), "utf8");
+    toastSearchSource = readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8");
+    toastGitShortcutsSource = readFileSync(new URL("./desktop/git_ui/shortcuts.js", import.meta.url), "utf8");
+    toastCssSource = readFileSync(new URL("./desktop/shortcuts.css", import.meta.url), "utf8");
+  });
+
+  // The harness setTimeout never fires, so the 2600ms auto-hide lands
+  // only when the test drives the captured callback by hand.
+  function toastContext() {
+    const timers = [];
+    const base = context();
+    base.setTimeout = (fn, ms) => {
+      timers.push({ fn, ms });
+      return timers.length;
+    };
+    base.clearTimeout = (id) => {
+      timers.splice(Number(id) - 1, 1);
+    };
+    base.timers = timers;
+    return base;
+  }
+
+  it("reuses one toast node across actions and only swaps text", () => {
+    const ctx = toastContext();
+    vm.runInContext(toastSource, ctx);
+    let created = 0;
+    const realCreate = ctx.document.createElement;
+    ctx.document.createElement = (tag) => {
+      created += 1;
+      return realCreate(tag);
+    };
+    const first = vm.runInContext("ensureShortcutHintToastNode()", ctx);
+    equal(created, 6, "one toast with five children on first ensure");
+    vm.runInContext('showShortcutHintToast("webuiShortcuts", "settings")', ctx);
+    vm.runInContext('showShortcutHintToast("webuiShortcuts", "help")', ctx);
+    const second = vm.runInContext("ensureShortcutHintToastNode()", ctx);
+    equal(first, second, "same node object returned across shows");
+    equal(created, 6, "showing swaps text only, no createElement on later shows");
+    const label = vm.runInContext("shortcutHintToastLabelNode.textContent", ctx);
+    equal(label, "Shortcut window", "label follows the latest action");
+    ok(
+      vm.runInContext("shortcutHintToastKeyNode.textContent.length > 0", ctx),
+      "key text populated",
+    );
+  });
+
+  it("builds the toast with status semantics and no live announcement", () => {
+    const ctx = toastContext();
+    vm.runInContext(toastSource, ctx);
+    vm.runInContext('showShortcutHintToast("webuiShortcuts", "settings")', ctx);
+    const toast = vm.runInContext("shortcutHintToastNode", ctx);
+    equal(toast.getAttribute("role"), "status");
+    equal(toast.getAttribute("aria-live"), "off", "echo of a user action, not new info");
+  });
+
+  it("stays silent when the option is off", () => {
+    const ctx = toastContext();
+    vm.runInContext(toastSource, ctx);
+    vm.runInContext("options.shortcutHintToasts = false;", ctx);
+    vm.runInContext('showShortcutHintToast("webuiShortcuts", "settings")', ctx);
+    equal(vm.runInContext("shortcutHintToastNode", ctx), null, "no toast created when disabled");
+    equal(ctx.timers.length, 0, "no auto-hide timer armed");
+  });
+
+  it("hides after 2600ms and coalesces repeated shows into one timer", () => {
+    const ctx = toastContext();
+    vm.runInContext(toastSource, ctx);
+    vm.runInContext('showShortcutHintToast("webuiShortcuts", "settings")', ctx);
+    equal(ctx.timers.length, 1, "one timer armed");
+    equal(ctx.timers[0].ms, 2600, "dwell is 2600ms");
+    vm.runInContext('showShortcutHintToast("webuiShortcuts", "help")', ctx);
+    equal(ctx.timers.length, 1, "repeat show re-arms, not stacks");
+    const toast = vm.runInContext("shortcutHintToastNode", ctx);
+    ok(!toast.classList.contains("shortcut-hint-toast-hidden"), "visible while timer pending");
+    ctx.timers[0].fn();
+    ok(toast.classList.contains("shortcut-hint-toast-hidden"), "hidden after the dwell fires");
+  });
+
+  it("hideShortcutHintToast cancels the pending timer immediately", () => {
+    const ctx = toastContext();
+    vm.runInContext(toastSource, ctx);
+    vm.runInContext('showShortcutHintToast("webuiShortcuts", "settings")', ctx);
+    const toast = vm.runInContext("shortcutHintToastNode", ctx);
+    vm.runInContext("hideShortcutHintToast()", ctx);
+    equal(ctx.timers.length, 0, "timer cleared");
+    ok(toast.classList.contains("shortcut-hint-toast-hidden"), "hidden right away");
+  });
+
+  it("renders the custom prefix chord when one is set", () => {
+    const ctx = toastContext();
+    vm.runInContext(toastSource, ctx);
+    vm.runInContext('options.globalShortcutPrefix = "Alt+Z";', ctx);
+    vm.runInContext('showShortcutHintToast("webuiShortcuts", "settings")', ctx);
+    equal(
+      vm.runInContext("shortcutHintToastPrefixNode.textContent", ctx),
+      "Alt+Z",
+      "prefix follows the user option",
+    );
+  });
+
+  it("resolves git actions through the gitShortcuts scope", () => {
+    const ctx = toastContext();
+    vm.runInContext(toastSource, ctx);
+    vm.runInContext('showShortcutHintToast("gitShortcuts", "commit")', ctx);
+    equal(vm.runInContext("shortcutHintToastLabelNode.textContent", ctx), "Commit");
+    ok(vm.runInContext('shortcutHintToastKeyNode.textContent.length > 0', ctx));
+  });
+
+  it("stays silent for actions with no bound key", () => {
+    const ctx = toastContext();
+    vm.runInContext(toastSource, ctx);
+    vm.runInContext('showShortcutHintToast("webuiShortcuts", "madeUpAction")', ctx);
+    equal(vm.runInContext("shortcutHintToastNode", ctx), null, "no toast for unknown ids");
+    equal(ctx.timers.length, 0, "no timer armed");
+  });
+
+  it("wires toast hooks into every action entry point", () => {
+    match(toastSource, /if \(ran\) showShortcutHintToast\("webuiShortcuts", entry\[0\]\);/, "prefix-run hook");
+    match(toastBindingsSource, /el\("settingsToggle"\)\.onclick = \(\) => \{\s*showShortcutHintToast\("webuiShortcuts", "settings"\);/, "settings toggle");
+    match(toastBindingsSource, /el\("shortcutsToggle"\)\.onclick = \(\) => \{\s*showShortcutHintToast\("webuiShortcuts", "help"\);/, "shortcuts toggle");
+    match(toastBindingsSource, /el\("optShortcutHintToasts"\)\.onchange/, "settings checkbox binding");
+    match(toastCoreSource, /el\("footerShortcutsButton"\)\.onclick = \(\) => \{ showShortcutHintToast\("webuiShortcuts", "help"\);/, "footer shortcuts");
+    match(toastCoreSource, /el\("footerSettingsButton"\)\.onclick = \(\) => \{ showShortcutHintToast\("webuiShortcuts", "settings"\);/, "footer settings");
+    match(toastCoreSource, /headerActions\.onclick = \(\) => \{\s*showShortcutHintToast\("webuiShortcuts", "search"\);/, "header actions");
+    match(toastCoreSource, /sidebarToggle\.onclick = \(\) => \{\s*showShortcutHintToast\("webuiShortcuts", "sidebar"\);/, "sidebar toggle");
+    match(toastSearchSource, /const hintAction = \{[\s\S]*?"toggle-sidebar": "sidebar",[\s\S]*?\}\[action\];\s*\n\s*if \(hintAction\) showShortcutHintToast\("webuiShortcuts", hintAction\);/, "palette routing");
+    match(
+      toastGitShortcutsSource,
+      /if \(typeof showShortcutHintToast === "function"\)\s*showShortcutHintToast\("gitShortcuts", match\[0\]\);/,
+      "git prefix actions",
+    );
+  });
+
+  it("plumbs the option end to end", () => {
+    match(toastCoreSource, /shortcutHintToasts: true,/, "default on");
+    match(toastCoreSource, /next\.shortcutHintToasts = next\.shortcutHintToasts !== false;/, "normalize");
+    match(toastCoreSource, /"optShortcutHintToasts",/, "settings confirm id");
+    match(toastCoreSource, /id="optShortcutHintToasts"/, "settings row markup");
+    match(toastCoreSource, /shortcutHintToasts\.checked = options\.shortcutHintToasts !== false;/, "applyOptions sync");
+    match(toastCoreSource, /options\.shortcutHintToasts === false && typeof hideShortcutHintToast === "function"/, "hide on disable");
+  });
+
+  it("styles the toast as a sibling of the prefix-card language", () => {
+    match(toastCssSource, /\.shortcut-hint-toast \{/, "base rule");
+    match(toastCssSource, /\.shortcut-hint-toast-hidden \{/, "hidden state");
+    // Passive echo: the toast floats over footer buttons and must never
+    // eat their clicks, visible or hidden.
+    match(
+      toastCssSource,
+      /\.shortcut-hint-toast \{[^}]*pointer-events: none;/,
+      "click-through in the base rule",
+    );
+    ok(
+      !/\.shortcut-hint-toast-hidden \{[^}]*pointer-events/.test(toastCssSource),
+      "hidden state inherits click-through from the base rule",
+    );
+    match(toastCssSource, /@media \(prefers-reduced-motion: reduce\) \{\s*\.shortcut-hint-toast \{[^}]*transition: none;/, "reduced motion");
+    ok(
+      !toastCssSource.includes("prefers-reduced-motion: no-preference"),
+      "guard uses the reduce form",
+    );
+  });
+
+  it("stacks the toast above modal backdrops but below nested pickers", () => {
+    // The toast teaches the chord for actions that OPEN modals (settings,
+    // help, palette). If its z-index is below the modal backdrop (1100)
+    // the scrim paints over it and the hint is never seen. Nested flows
+    // (directory picker 1200, file browser 1500) are newer interaction
+    // contexts and stay above the toast.
+    const zIndex = (rule, source) => {
+      const m = source.match(
+        new RegExp(rule.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{[^}]*z-index:\\s*([0-9]+)"),
+      );
+      return m ? Number(m[1]) : null;
+    };
+    const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
+    const toast = zIndex(".shortcut-hint-toast", toastCssSource);
+    ok(toast !== null, "toast z-index pinned as a number");
+    const modalSource = read("./desktop/app_css/modals.css");
+    const backdrop = zIndex(".modal-backdrop", modalSource);
+    ok(backdrop !== null, "modal-backdrop z-index found");
+    ok(toast > backdrop, `toast z-index ${toast} must exceed modal backdrop ${backdrop}`);
+    const picker = Math.max(
+      zIndex(".directory-picker-backdrop", read("./desktop/directory_picker.css")) || 0,
+      zIndex(".file-browser-menu", read("./desktop/file_browser.css")) || 0,
+    );
+    ok(picker >= toast, `highest other layer ${picker} must not fall below the toast ${toast}`);
   });
 });

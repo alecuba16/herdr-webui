@@ -128,13 +128,15 @@
       const current = state.tabs.find((item) => sameScopedId(state.ws, item.tab_id, state.tab));
       if (!current) return;
       const tabId = current.tab_id;
+      const workspaceId = current.workspace_id || state.ws;
       const label = tabTitle(current);
       if (!(await confirmFn(`Close panel "${label}"?`))) return;
       try {
-        // One close call: the workspace survives its last panel, the
-        // terminal screen falls back to its no-terminal state. A
-        // not-found race (the tab closed elsewhere while the sheet was
-        // open) is the outcome we wanted: keep the post-close flow.
+        // One close call: with closeWorkspaceOnLastTerminal off the
+        // workspace survives its last panel and the terminal screen falls
+        // back to its no-terminal state. A not-found race (the tab closed
+        // elsewhere while the sheet was open) is the outcome we wanted:
+        // keep the post-close flow.
         try {
           await api(`/api/tabs/${encodeURIComponent(tabId)}/close`, { method: "POST" });
         } catch (error) {
@@ -144,9 +146,57 @@
         state.pane = null;
         getMobileTerminal().destroy(true);
         await refresh();
+        await maybeAutoCloseWorkspace(workspaceId);
       } catch (error) {
         state.error = error.message || String(error);
         render();
+      }
+    }
+
+    // Desktop parity for closeWorkspaceOnLastTerminal: after a panel close
+    // lands, close the workspace too when the option is on (default), the
+    // workspace is still known, and it holds no panels anymore. The raw
+    // POST skips the close-workspace confirm sheet on purpose: the user
+    // just closed the panel deliberately, and refresh() reselects a
+    // surviving workspace through its normal fallback.
+    const autoCloseInFlight = new Set();
+    async function maybeAutoCloseWorkspace(workspaceId) {
+      if (!workspaceId) return;
+      // Read the flag through the worktrees module; fall back to the shared
+      // options blob.
+      let enabled = true;
+      try {
+        const worktrees = getMobileWorktrees();
+        if (worktrees && typeof worktrees.closeWorkspaceOnLastTerminalFlag === "function")
+          enabled = worktrees.closeWorkspaceOnLastTerminalFlag();
+        else {
+          const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
+          enabled = parsed.closeWorkspaceOnLastTerminal !== false;
+        }
+      } catch (_) {
+        enabled = true;
+      }
+      if (!enabled) return;
+      if (autoCloseInFlight.has(workspaceId)) return;
+      const workspaceStillKnown = (state.workspaces || []).some(
+        (workspace) => workspace.workspace_id === workspaceId,
+      );
+      if (!workspaceStillKnown) return;
+      const hasPanels = (state.allTabs || [])
+        .concat(state.tabs || [])
+        .some((tab) => tab.workspace_id === workspaceId);
+      if (hasPanels) return;
+      autoCloseInFlight.add(workspaceId);
+      try {
+        await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/close`, {
+          method: "POST",
+        });
+        await refresh();
+      } catch (_) {
+        // The workspace close raced a server-side close or failed; the
+        // next refresh shows the truth either way.
+      } finally {
+        autoCloseInFlight.delete(workspaceId);
       }
     }
 
@@ -197,6 +247,7 @@
       selectTab,
       createPanel,
       closeCurrentPanel,
+      maybeAutoCloseWorkspace,
       currentScreen,
       currentSelection,
       runMobileAction,
