@@ -1,5 +1,38 @@
 # Release notes
 
+## 0.7.7 Release Notes
+- Wheel and PageUp/PageDown reach mouse-tracking programs on the normal
+  buffer now. The old gates keyed on alternate-screen mode, but jcode and
+  tmux with mouse on render inline while tracking SGR mouse, so their
+  wheel and page keys were eaten by local browser scrollback. SGR
+  tracking now owns the wheel and PageUp/PageDown on either buffer,
+  forwarded to the pty as mouse reports; local scrollback only runs when
+  no program tracks the mouse. Mobile terminal follows the same routing.
+- The chat lens autoscroll disconnect survives the refresh poll.
+  connectTerminal runs on every 2s refresh tick and reset the lens
+  reading state, snapping a scrolled-up reader back to the tail over and
+  over. onPaneChanged now takes the connect target and only resets when
+  the pane actually moved, so scrolling up keeps the position while new
+  turns stream in; a New output pill arms on new turns and clicking it
+  jumps to the tail and re-arms follow.
+- The lens scroller never overlaps the docked chat composer: its bottom
+  padding tracks the composer's live height through a ResizeObserver, so
+  a resized textarea (up to 40vh) or a toggled note/session row keeps
+  the clearance locked.
+- Closing the lens force-redraws the covered terminal grid. Rendering is
+  paused while the lens covers the pane, so same-length rewrites
+  (spinner frames, clock redraws) left the last pre-lens paint on
+  screen; the surface now matches the PTY state on return.
+- Enter on the welcome (empty-workspace) leaf creates the first
+  terminal tab, same as the card's New terminal button. Sidebar rows and
+  pane tab close buttons keep their own Enter semantics.
+- Browser logic moved into the Rust backend: blame parsing, markdown
+  and outline rendering, git log parsing, side-by-side diff rows,
+  worktree workmeta, ETag/Cache-Control responses, content matching,
+  PTY Arc sharing, and detection cache gating are server-owned now.
+  Frontend dedup removed repeated adapter and state code across desktop
+  and mobile. No visible behavior change apart from the items above.
+
 ## 0.7.6 Release Notes
 - Documentation and comments only; no runtime changes. The 0.7.4
   release-notes section had swallowed two items that shipped in
