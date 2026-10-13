@@ -25,6 +25,10 @@
   let follow = true;
   let unread = false;
   let lastRenderedLineCount = -1;
+  // Connect target of the pane the reading state belongs to. It keys the
+  // same-pane guard in onPaneChanged: refresh() polls re-run
+  // connectTerminal on the unchanged pane and must not reset follow.
+  let lastPaneKey = null;
 
   // ---- structured mode state (all keyed by pane id) ----
   // One poll loop, one rendered conversation, one pending bubble: the
@@ -1755,7 +1759,33 @@
       node.addEventListener("keydown", onLensKeydown);
       node.addEventListener("submit", onLensSubmit);
     }
+    syncComposerClearance();
     return node;
+  }
+
+  // Composer clearance: the scroller's bottom padding must always clear
+  // the docked composer (never overlap chat output). The composer is
+  // user-resizable (textarea up to 40vh) and its note/session rows toggle,
+  // so a static pad cannot guarantee it. A ResizeObserver keeps the
+  // clearance locked to the live height; attachComposerClearance is
+  // idempotent and re-run from render() because the composer node may be
+  // created after the lens overlay (both lazily materialize on first use).
+  let composerClearObserved = false;
+  function composerClearance() {
+    const scroller = document.querySelector("#terminalLensScroller");
+    if (!scroller) return;
+    const composer = document.getElementById("terminalComposer");
+    // Hidden composer (Terminal view): fall back to the static pad.
+    const pad = composer && !composer.hidden ? composer.offsetHeight + 12 : 120;
+    scroller.style.paddingBottom = Math.max(48, pad) + "px";
+  }
+  function syncComposerClearance() {
+    if (composerClearObserved) return;
+    const composerNode = document.getElementById("terminalComposer");
+    if (!composerNode || typeof ResizeObserver === "undefined") return;
+    composerClearObserved = true;
+    new ResizeObserver(composerClearance).observe(composerNode);
+    composerClearance();
   }
 
   function structuredMode() {
@@ -1871,6 +1901,12 @@
       // on the next open).
       pendingBubble = null;
       setCoveredRendering(false);
+      // Unpause alone leaves the last painted frame on screen: while the
+      // lens covered the pane, same-length rewrites (spinner frames, clock
+      // redraws) never triggered a repaint because rendering was paused.
+      // Force a full repaint so the grid the user returns to matches the
+      // PTY state, not the stale pre-lens paint.
+      forceTerminalRedraw();
       // Returning to the terminal view must restore typing: the lens
       // scroller held focus while open, so hand it back explicitly.
       if (typeof focusTerminal === "function") {
@@ -1896,10 +1932,40 @@
     } catch (_) {}
   }
 
-  function onPaneChanged() {
+  // Full repaint of the covered grid after the lens closes. Same
+  // adapter lookup as setCoveredRendering: `term` is the shared
+  // terminal adapter created by HerdrTerminalRenderer.create, and its
+  // forceRedraw() is best-effort (older bundles without renderer
+  // access keep the last paint, same as before).
+  function forceTerminalRedraw() {
+    try {
+      const adapter = typeof term !== "undefined" && term ? term : null;
+      if (adapter && typeof adapter.forceRedraw === "function")
+        adapter.forceRedraw();
+    } catch (_) {}
+  }
+
+  function onPaneChanged(paneKey) {
     // Called from connectTerminal on every pane/terminal switch: reading
     // state is per-pane. Without the reset, follow/unread and the change
     // detection baseline leaked from the previous pane.
+    //
+    // BUT connectTerminal also runs on every refresh() poll tick with the
+    // SAME pane (core.js re-connects idempotently when the target string
+    // is unchanged). Resetting follow there broke the autoscroll
+    // disconnect: a reader scrolled up was force-snapped back to the tail
+    // by the next poll render, over and over, exactly the bug this change
+    // set fixes on the wheel side. So the reset runs only when the pane
+    // actually moved: the caller passes the connect target
+    // (session|backend|ws|tab|pane|terminal) and a repeat of the current
+    // pane's key is a no-op. The first call (no key yet) resets as before.
+    if (
+      typeof paneKey === "string" &&
+      paneKey === lastPaneKey
+    ) {
+      return;
+    }
+    lastPaneKey = typeof paneKey === "string" ? paneKey : null;
     follow = true;
     unread = false;
     lastRenderedLineCount = -1;

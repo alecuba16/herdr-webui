@@ -68,6 +68,16 @@
     opacity: 0.35;
   }
 }
+/* Single shared spin: mobile app.css and desktop terminal.css had
+   byte-identical rotate(360deg) copies under three different names
+   (mobile-spin, herdr-mobile-terminal-spin, settings-saving-spin, spin,
+   lens-spin, app-refresh-spin keep their size/duration variants in their
+   own files; only the keyframe itself lives here). */
+@keyframes herdr-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 /* ---- buttons: one family, four variants, one size modifier ---- */
 .btn,

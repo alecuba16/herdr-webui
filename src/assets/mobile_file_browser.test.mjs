@@ -9,6 +9,7 @@ import vm from "node:vm";
 const source = readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8");
 const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
 const optionsSource = readFileSync(new URL("./shared/options.js", import.meta.url), "utf8");
+const workspaceSearchSource = readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8");
 
 function createModule({ fileContent = "print('hello')", writeResult = {}, writeError = "", renameError = "", deleteError = "", confirmAnswer = true, optionsJson = null, lsp = null, api = null } = {}) {
   const requests = [];
@@ -99,6 +100,7 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
   };
   vm.runInNewContext(optionsSource, context);
   vm.runInNewContext(treeSource, context);
+  vm.runInNewContext(workspaceSearchSource, context);
   vm.runInNewContext(source, context);
   const deps = {
     api: api || (async (url, opt = {}) => {

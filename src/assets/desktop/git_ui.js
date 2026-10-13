@@ -51,8 +51,7 @@
     active,
     Syntax: () => Syntax,
     diffLayoutMode,
-    unifiedRows: (chunk) => unifiedRows(chunk),
-    sideBySideRows: (chunk) => sideBySideRows(chunk),
+    rowsFromChunk: (chunk) => rowsFromChunk(chunk),
   });
   const diffSearchQuery = diffSearch.diffSearchQuery;
   const highlight = (code, path) => Syntax.highlight(code, path);
@@ -141,6 +140,7 @@
     diffFileLineCount,
     diffFileKey,
     largeFileDiffLineLimit: () => LARGE_FILE_DIFF_LINE_LIMIT,
+    diffLayoutMode,
   });
   const renderStash = stash.renderStash;
   const renderStashDiff = stash.renderStashDiff;
@@ -187,14 +187,12 @@
     highlightDiffText,
   });
   const ensureBlame = diffRender.ensureBlame;
-  const parseBlame = diffRender.parseBlame;
   const blameName = diffRender.blameName;
   const renderChunk = diffRender.renderChunk;
   const contextArrowsForChunk = diffRender.contextArrowsForChunk;
   const hiddenGap = diffRender.hiddenGap;
   const hunkEnd = diffRender.hunkEnd;
-  const unifiedRows = diffRender.unifiedRows;
-  const sideBySideRows = diffRender.sideBySideRows;
+  const rowsFromChunk = diffRender.rowsFromChunk;
   const renderLine = diffRender.renderLine;
   const renderUnifiedLine = diffRender.renderUnifiedLine;
   const renderUnifiedDiffCode = diffRender.renderUnifiedDiffCode;
@@ -863,6 +861,11 @@
       view.file || "",
       view.cwd || "",
       diffContextOf(view),
+      // Rows/match counts are server-decorated per layout and query, so
+      // the cache key must cover both or a cached diff from another
+      // layout/search state renders wrong.
+      diffLayoutMode(),
+      String(view.diffSearchQuery || "").trim(),
     ].join("|");
   }
 
@@ -907,6 +910,17 @@
     return true;
   }
 
+  // Rows and match counts come from the server, so every diff fetch
+  // carries the current layout and search query. layout=unified is not
+  // sent: the server only decorates side-by-side rows and the unified
+  // renderer walks chunk.lines-derived rows, which the server emits as
+  // {line} entries.
+  function diffFetchParams(view) {
+    const layout = diffLayoutMode() === "unified" ? "unified" : "side-by-side";
+    const q = String(view.diffSearchQuery || "").trim();
+    return `&layout=${encodeURIComponent(layout)}` + (q ? `&q=${encodeURIComponent(q)}` : "");
+  }
+
   async function loadDiff() {
     const view = active();
     if (!view) return;
@@ -914,7 +928,7 @@
     if (currentMode() !== "changes") {
       const mergeBase = currentMode() === "current-compare" ? "&merge_base=true" : "";
       const file = view.file ? `&file=${encodeURIComponent(view.file)}` : "";
-      view.diff = await api(`/api/git-ui/compare?cwd=${encodeURIComponent(view.cwd)}&base=${encodeURIComponent(view.compareBase || "HEAD")}&target=${encodeURIComponent(view.compareTarget || "HEAD")}&context=${context}${mergeBase}${file}`);
+      view.diff = await api(`/api/git-ui/compare?cwd=${encodeURIComponent(view.cwd)}&base=${encodeURIComponent(view.compareBase || "HEAD")}&target=${encodeURIComponent(view.compareTarget || "HEAD")}&context=${context}${mergeBase}${file}${diffFetchParams(view)}`);
       view.diffSignature = diffSignatureFor(view);
       if (!view.file) view.compareFilePaths = ((view.diff && view.diff.files) || []).map((file) => file.path);
       saveFocusedDiff(view);
@@ -930,7 +944,7 @@
       if (state.visible) render();
       return;
     }
-    const url = `/api/git-ui/diff?cwd=${encodeURIComponent(view.cwd)}&scope=${encodeURIComponent(scope)}&context=${context}` + (view.file ? `&file=${encodeURIComponent(view.file)}` : "");
+    const url = `/api/git-ui/diff?cwd=${encodeURIComponent(view.cwd)}&scope=${encodeURIComponent(scope)}&context=${context}` + (view.file ? `&file=${encodeURIComponent(view.file)}` : "") + diffFetchParams(view);
     view.diff = await api(url);
     view.diffSignature = diffSignatureFor(view);
     saveFocusedDiff(view);
@@ -1338,27 +1352,24 @@
       });
   }
 
-  function hunkPatch(path, index) {
-    const file = diffFile(path);
-    if (!file || !file.chunks || !file.chunks[index]) return "";
-    const chunk = file.chunks[index];
-    const oldPath = file.old_path || file.path;
-    const lines = [];
-    lines.push(`diff --git a/${oldPath} b/${file.path}`);
-    lines.push(`--- a/${oldPath}`);
-    lines.push(`+++ b/${file.path}`);
-    lines.push(chunk.header);
-    for (const line of chunk.lines || []) {
-      const prefix = line.line_type === "add" ? "+" : line.line_type === "delete" ? "-" : " ";
-      lines.push(prefix + (line.content || ""));
+  // Chunk selector for apply-patch: the server regenerates the diff with
+  // the SAME args the client rendered it with, so the hunk that gets
+  // applied is the one the user clicked. Mirrors loadDiff's URL shape.
+  function hunkPatchBody(path, index) {
+    const view = active() || {};
+    const body = { cwd: view.cwd || "", file: path, chunk_index: index, context: diffContextOf(view) };
+    if (currentMode() !== "changes") {
+      body.base = view.compareBase || "HEAD";
+      body.target = view.compareTarget || "HEAD";
+      if (currentMode() === "current-compare") body.merge_base = true;
+    } else {
+      body.scope = view.file ? (view.diffScope || "all") : "all";
     }
-    return lines.join("\n") + "\n";
+    return body;
   }
 
   async function applyHunk(path, index, options) {
-    const patch = hunkPatch(path, index);
-    if (!patch) return;
-    await post("/api/git-ui/apply-patch", Object.assign({ cwd: active().cwd, patch }, options || {}), options && options.reverse ? "Restoring hunk" : "Applying hunk");
+    await post("/api/git-ui/apply-patch", Object.assign(hunkPatchBody(path, index), options || {}), options && options.reverse ? "Restoring hunk" : "Applying hunk");
   }
 
   window.HerdrGitUi = {
@@ -1377,10 +1388,10 @@
       delete state.cache[key];
     },
     refresh,
-    // Background prober for the rail tint: fetches /api/git-ui/status for
-    // the workspace cwd into the view cache WITHOUT opening the drawer
-    // (render stays untouched when the drawer is hidden). The shell calls
-    // this per selected workspace; workspaceStatus then tints the rail.
+    // Background prober for the rail tint: one /api/git-ui/rail-status
+    // POST per cwd warms the rail without opening the drawer (render
+    // stays untouched while hidden). The shell calls this per selected
+    // workspace; workspaceStatus then tints the rail.
     async probeWorkspaceStatus(workspace) {
       const key = workspaceKey(workspace);
       const cwd = workspaceCwd(workspace);
@@ -1396,12 +1407,11 @@
       // Picker divergence (openCwdPicker, worktree pick) is deliberate
       // user state: probes must never touch the view, only warm the rail.
       const diverged = !!(view.cwd && !samePath(view.cwd, cwd) && samePath(view.workspaceCwd || "", cwd));
-      if (diverged && view.railStatus && view.railStatus.__probed
-        && !samePath(view.railStatus.cwd || "", cwd)) {
+      if (diverged && view.railStatus && !samePath(view.railStatus.cwd || "", cwd)) {
         view.railStatus = null;
       }
-      // The __probed skip is valid only while the park describes this
-      // folder: a stale nogit park locks the rail off (it blocks open()).
+      // A parked probe is only valid while it describes this folder: a
+      // stale park keeps tinting the rail after a folder move otherwise.
       if (view.status && view.status.__probed && !diverged
         && !samePath(view.workspaceCwd || "", cwd)) {
         view.cwd = cwd;
@@ -1409,70 +1419,55 @@
         view.status = null;
         view.error = "";
       }
-      if (diverged) {
-        // The rail tint must describe the workspace folder while the view
-        // shows the picked one, so a plain folder cannot nogit-lock the rail.
-        if (!view.railStatus || !view.railStatus.__probed) {
-          try {
-            const status = await api(`/api/git-ui/status?cwd=${encodeURIComponent(cwd)}`);
-            view.railStatus = Object.assign({}, status, { __probed: true, cwd });
-          } catch (err) {
-            if (isNotGitRepositoryMessage(err && err.message)) {
-              view.railStatus = { __probed: true, cwd, not_git_repository: true, state: "cleanup only" };
-            }
-          }
-          if (view.railStatus && view.railStatus.__probed) {
-            if (window.syncGitWorkspaceToggle) window.syncGitWorkspaceToggle();
-            else if (state.visible) render();
-          }
-        }
+      // The parked status is authoritative while it matches the workspace
+      // folder: refresh()/markNoGitRepository keep it __probed, so the
+      // probe never refetches behind a loaded view.
+      if (!diverged && view.status && view.status.__probed
+        && samePath(view.workspaceCwd || "", cwd)) return;
+      if (diverged && view.railStatus && view.railStatus.cwd
+        && samePath(view.railStatus.cwd, cwd)) return;
+      // rail-status answers all requested cwds in one round trip; the
+      // endpoint itself dedupes the git spawns, the client just parks.
+      let item = null;
+      try {
+        const payload = await api("/api/git-ui/rail-status", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ workspaces: [{ workspace_id: workspace.workspace_id || null, cwd }] }),
+        });
+        item = (payload.items || []).find((entry) => entry && samePath(entry.cwd || "", cwd));
+      } catch (err) {
+        item = null;
+      }
+      // The POST is async: the drawer may have opened (refresh loaded a
+      // full status), the cwd may have changed (worktree switch), or the
+      // diverged pick was resolved while it was in flight. Park only when
+      // the rail park is still wanted for this folder; otherwise drop it.
+      if (!item) return;
+      if (diverged && (!view.railStatus || !view.railStatus.cwd)) {
+        view.railStatus = { cwd, state: item.state, not_git_repository: !!item.not_git_repository };
+        if (window.syncGitWorkspaceToggle) window.syncGitWorkspaceToggle();
+        else if (state.visible) render();
         return;
       }
-      if (!view.status || !view.status.__probed) {
-        // The fetch is async: the drawer may have opened (refresh loaded a
-        // full status) or the cwd may have changed (worktree switch) while
-        // it was in flight. Either way the probe is now stale. Park only
-        // when the view is still probe-only and points at the same folder:
-        // overwriting a real load would stale the cache, re-mark
-        // __probedOnly (redundant reload on next open), or park the old
-        // folder's result into the new folder's view (wrong tint).
-        const probeCwd = cwd;
-        const landedUnloaded = () => !view.status || view.status.__probedOnly;
-        const landedSameFolder = () => view.workspaceCwd === probeCwd && samePath(view.cwd || "", probeCwd);
-        let parked = false;
-        try {
-          const status = await api(`/api/git-ui/status?cwd=${encodeURIComponent(probeCwd)}`);
-          // __probedOnly: this status only warms the rail tint. It never went
-          // through refresh(), so open() must still do the real load (status
-          // + diff) when the drawer actually opens.
-          if (!landedUnloaded() || !landedSameFolder()) return;
-          view.status = Object.assign({}, status, { __probed: true, __probedOnly: true });
-          // A probe that proves this cwd serves status also clears any error
-          // parked earlier (nogit probe, failed refresh): workspaceStatus
-          // reads view.error before the status, a stale error would keep the
-          // rail on nogit even with a repo status parked. A non-git folder
-          // answers a not_git_repository payload here (not an error), so the
-          // park carries the nogit marker and the tint reads it below.
-          view.error = "";
-          parked = true;
-        } catch (err) {
-          if (isNotGitRepositoryMessage(err && err.message)) {
-            // Same landing guard as the success path.
-            if (landedUnloaded() && landedSameFolder()) {
-              view.error = err.message;
-              // Park the probe result so a non-git folder is not refetched on
-              // every shell render: the failure is permanent until something
-              // calls refresh() (which clears the error and marks the view).
-              view.status = Object.assign({}, view.status, { __probed: true, __probedOnly: true });
-              parked = true;
-            }
-          }
-          // A parked failure changed the rail inputs (nogit tint); sync it.
-          // Unparked errors (transient network failure) leave the rail alone.
-          if (!parked) return;
-        }
-        if (parked && window.syncGitWorkspaceToggle) window.syncGitWorkspaceToggle();
-        else if (parked && state.visible) render();
+      if (!diverged && (!view.status || view.status.__probedOnly)
+        && view.workspaceCwd === cwd && samePath(view.cwd || "", cwd)) {
+        // __probedOnly: this status only warms the rail tint. It never went
+        // through refresh(), so open() must still do the real load (status
+        // + diff) when the drawer actually opens.
+        view.status = Object.assign({}, view.status, {
+          __probed: true,
+          __probedOnly: true,
+          state: item.state,
+          not_git_repository: !!item.not_git_repository,
+        });
+        // A probe that answers this cwd also clears any error parked
+        // earlier (failed refresh): workspaceStatus reads view.error
+        // before the status, a stale error would keep the rail on nogit
+        // even with a rail answer parked.
+        view.error = "";
+        if (window.syncGitWorkspaceToggle) window.syncGitWorkspaceToggle();
+        else if (state.visible) render();
       }
     },
     refreshWithSpin() {
@@ -1778,6 +1773,9 @@
     toggleBlame() { const view = active(); if (!view) return; view.showBlame = !view.showBlame; render(); },
     setDiffLayout(layout) {
       setGitUiOption("gitUiDiffLayout", layout === "unified" ? "unified" : "side-by-side");
+      // Rows are server-decorated per layout, so a flip needs a refetch
+      // before the next render shows the other layout.
+      loadDiff().catch((e) => { const view = active(); if (view) view.error = e.message; render(); });
       render();
     },
     async editFile() {
@@ -2021,6 +2019,14 @@
       view.diffSearchQuery = String(value || "");
       state.focusDiffSearch = true;
       render();
+      // Match counts come from the server, so a changed query needs a
+      // refetch. Keystrokes collapse to the latest call: pending fetches
+      // resolve out of order, so ignore anything but the current view+
+      // query pair.
+      const query = view.diffSearchQuery;
+      loadDiff()
+        .then(() => { if (active() === view && view.diffSearchQuery === query) render(); })
+        .catch((e) => { if (active() === view) view.error = e.message; render(); });
     },
     clearDiffSearch() {
       const view = active();
@@ -2028,6 +2034,11 @@
       view.diffSearchOpen = false;
       view.diffSearchQuery = "";
       render();
+      // Clearing drops q= from the fetch so counts and payload return to
+      // the undecorated shape.
+      loadDiff()
+        .then(() => { if (active() === view && !view.diffSearchQuery) render(); })
+        .catch((e) => { if (active() === view) view.error = e.message; render(); });
     },
     toggleCleanupSelection(key, checked) {
       const view = active();

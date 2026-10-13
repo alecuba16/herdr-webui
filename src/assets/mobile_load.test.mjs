@@ -321,6 +321,12 @@ function context(pathname = "/", options = {}) {
                       { line_type: "delete", content: "old" },
                       { line_type: "add", content: "new" },
                     ],
+                    // layout=side-by-side pairing from the backend:
+                    // the mobile renderer prefers these rows and keeps the
+                    // lines only as the older-backend fallback.
+                    rows: [
+                      { old_line: { line_type: "delete", content: "old" }, new_line: { line_type: "add", content: "new" } },
+                    ],
                   },
                 ],
               },
@@ -394,7 +400,9 @@ function context(pathname = "/", options = {}) {
       // Single-request bootstrap: assemble the snapshot from the same
       // optionValue fixtures the legacy endpoints use, plus the wrapper's
       // bootstrap-only fields (per-workspace worktree_results, drag order).
-      if (url === "/api/session-snapshot")
+      // The refresh passes ?workspace_id= when a workspace is selected, so
+      // match the endpoint by prefix rather than exact string.
+      if (String(url).startsWith("/api/session-snapshot"))
         return {
           ok: true,
           status: 200,
@@ -833,7 +841,9 @@ describe("mobile bundle load", () => {
       // The snapshot bootstrap carries the backend header for the whole
       // refresh; the legacy per-endpoint calls are the fallback path.
       const bootstrapRequest = ctx.requests.find(
-        (request) => request.url === "/api/session-snapshot" || request.url === "/api/workspaces",
+        (request) =>
+          request.url.startsWith("/api/session-snapshot") ||
+          request.url === "/api/workspaces",
       );
       equal(bootstrapRequest.opt.headers["x-herdr-backend"], expected);
       ok(ctx.lastSocket.url.includes(`backend=${encodeURIComponent(expected)}`));
@@ -898,7 +908,7 @@ describe("mobile bundle load", () => {
     equal(launch.opt.body, JSON.stringify({ session: "revolut", backend: "builtin" }));
     // The browser target switched: header stamping and route follow.
     const refreshRequest = ctx.requests.find(
-      (r) => r.url === "/api/session-snapshot" || r.url === "/api/workspaces",
+      (r) => r.url.startsWith("/api/session-snapshot") || r.url === "/api/workspaces",
     );
     ok(refreshRequest, "refresh after switch missing");
     equal(refreshRequest.opt.headers["x-herdr-backend"], "builtin");
@@ -1041,7 +1051,7 @@ describe("mobile bundle load", () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     const originalFetch = ctx.fetch;
     ctx.fetch = async (url, opt = {}) => {
-      if (String(url) === "/api/session-snapshot")
+      if (String(url).startsWith("/api/session-snapshot"))
         return { ok: false, status: 500, json: async () => ({ error: "down" }) };
       return originalFetch(url, opt);
     };
@@ -1058,7 +1068,9 @@ describe("mobile bundle load", () => {
     const before = ctx.requests.length;
     await ctx.HerdrMobile.refresh();
     equal(
-      ctx.requests.slice(before).filter((r) => r.url === "/api/session-snapshot").length,
+      ctx.requests
+        .slice(before)
+        .filter((r) => r.url.startsWith("/api/session-snapshot")).length,
       0,
     );
     ok(ctx.requests.slice(before).some((r) => r.url === "/api/workspaces"));
@@ -1076,7 +1088,9 @@ describe("mobile bundle load", () => {
       // Flat result.* shape plus a worktree entry with no source stamp:
       // the current-workspace lookup misses, and the fallback to the
       // first non-null entry must still show rows.
-      if (text === "/api/session-snapshot")
+      // The refresh passes ?workspace_id= when a workspace is selected,
+      // so match the endpoint by prefix.
+      if (text.startsWith("/api/session-snapshot"))
         return {
           ok: true,
           status: 200,
@@ -1318,12 +1332,12 @@ describe("mobile bundle load", () => {
     vm.runInContext(source, ctx);
     ctx.HerdrMobile.showScreen("settings");
     const snapshotBefore = ctx.requests.filter(
-      (request) => request.url === "/api/session-snapshot",
+      (request) => request.url.startsWith("/api/session-snapshot"),
     ).length;
     // Baseline: an explicit refresh does hit the snapshot endpoint.
     await ctx.HerdrMobile.refresh();
     const snapshotsFromRefresh = ctx.requests.filter(
-      (request) => request.url === "/api/session-snapshot",
+      (request) => request.url.startsWith("/api/session-snapshot"),
     ).length - snapshotBefore;
     ok(snapshotsFromRefresh > 0, "baseline refresh issues the snapshot request");
 
@@ -1337,7 +1351,7 @@ describe("mobile bundle load", () => {
     );
     const snapshotBurst = ctx.requests
       .slice(before)
-      .filter((request) => request.url === "/api/session-snapshot");
+      .filter((request) => request.url.startsWith("/api/session-snapshot"));
     equal(snapshotBurst.length, 0,
       "the debounced commit must not trigger a full refresh mid-typing");
   });
@@ -1831,6 +1845,10 @@ describe("mobile bundle load", () => {
     ok(source.includes('terminal.addEventListener("wheel", handleWheel, { passive: false })'));
     ok(source.includes("term.usesNormalBuffer"));
     ok(source.includes("term.scrollLines"));
+    // Wheel routing keys on mouse mode, not buffer: inline TUIs (jcode,
+    // tmux `mouse on`) track the mouse on the normal buffer, so the local
+    // wheel handler must yield to the adapter's SGR forwarding there too.
+    match(source, /typeof term\.wheelForwardedToProgram === "function" && term\.wheelForwardedToProgram\(\)/);
     equal(typeof ctx.HerdrMobile.scrollTerminalToBottom, "function");
     ok(source.includes('onclick="HerdrMobile.scrollTerminalToBottom(false)"'));
     ctx.lastTerminal._atBottom = false;
@@ -1870,6 +1888,17 @@ describe("mobile bundle load", () => {
     ok(html.includes("mobile-hunk"));
     ok(html.includes("@@ -1 +1 @@"));
     ok(html.includes("+new"));
+    // layout=side-by-side rows arrive from the backend and the renderer
+    // consumes them: the paired row renders once (not once per raw line).
+    const oldSpans = (html.match(/<span class="delete">-old<\/span>/g) || []).length;
+    const newSpans = (html.match(/<span class="add">\+new<\/span>/g) || []).length;
+    ok(oldSpans === 1 && newSpans === 1, "paired rows render each side exactly once");
+    ok(
+      ctx.requests.some((request) =>
+        String(request.url).includes("layout=side-by-side"),
+      ),
+      "diff fetch requests the side-by-side layout",
+    );
     const css = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     ok(css.includes(".mobile-hunk pre"));
     ok(css.includes("overflow-x: auto"));

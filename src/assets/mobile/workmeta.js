@@ -13,6 +13,10 @@
     }
 
     function workspacesById() {
+      // Prefer the server-derived map sent on the snapshot; with
+      // server-filtered tabs the local derivation still works, but the
+      // server already did it, so skip the rebuild when present.
+      if (state.workspacesById) return state.workspacesById;
       return Object.fromEntries(state.workspaces.map((w) => [w.workspace_id, w]));
     }
 
@@ -23,6 +27,15 @@
     }
 
     function tabCountsByWorkspace() {
+      // Server-sent counts cover every workspace even when the snapshot
+      // tabs array is filtered to the selected one; fall back to the
+      // local count when the maps are absent (legacy path, old server).
+      if (state.workspaceCounts) {
+        const counts = new Map();
+        for (const [id, value] of Object.entries(state.workspaceCounts))
+          counts.set(id, (value && value.tabs) || 0);
+        return counts;
+      }
       const counts = new Map();
       for (const tab of state.allTabs)
         counts.set(tab.workspace_id, (counts.get(tab.workspace_id) || 0) + 1);

@@ -40,10 +40,38 @@ document.addEventListener("keydown", (e) => {
     target.closest('[role="button"][tabindex="0"]') ||
     target.closest("[data-workspace-action]") ||
     target.closest(".pane-tab-close");
-  if (!spanButton || spanButton.tagName === "BUTTON") return;
-  e.preventDefault();
-  e.stopPropagation();
-  spanButton.click();
+  if (spanButton) {
+    // Elements with their own Enter semantics (sidebar rows, pane tab
+    // close buttons) keep them; the welcome-Enter branch below must
+    // never hijack a press aimed at one of them.
+    if (spanButton.tagName !== "BUTTON") {
+      e.preventDefault();
+      e.stopPropagation();
+      spanButton.click();
+    }
+    return;
+  }
+  // Welcome (empty-workspace) leaf: Enter creates the first terminal
+  // panel, same as the card's "New terminal" button. The leaf is a div,
+  // so no native Enter semantics exist for it; after the open-workspace
+  // modal closes, focus falls to <body>, so accept body focus too.
+  // state.ws && !state.tab mirrors syncWorkspaceEmptyLeaf's show
+  // condition in render.js: the leaf is on screen exactly then.
+  if (
+    e.key === "Enter" &&
+    state.ws &&
+    !state.tab &&
+    !modalOpen() &&
+    !target.closest("input, select, textarea, [contenteditable='true']") &&
+    (target === document.body ||
+      target === document.documentElement ||
+      !!target.closest("#workspaceEmptyLeaf"))
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+    newTab();
+    return;
+  }
 });
 if (window.matchMedia) {
   try {

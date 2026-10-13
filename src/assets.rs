@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::http::{header, HeaderValue};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 
 pub(crate) const LOGIN_HTML: &str = include_str!("assets/login.html");
@@ -159,385 +159,629 @@ const ICON_EYE: &str = include_str!("assets/icons/eye.svg");
 const ICON_EYE_OFF: &str = include_str!("assets/icons/eye-off.svg");
 
 pub(crate) fn app_html() -> Response {
-    Html(APP_HTML).into_response()
+    // Served through `index` in main.rs, which decides auth before calling
+    // this, so the zero-arg signature is fixed; that means no conditional
+    // 304 here, only unconditional ETag + no-cache so reloads revalidate.
+    let mut response = Html(APP_HTML).into_response();
+    attach_asset_cache_headers(&mut response, asset_etag(APP_HTML.as_bytes()));
+    response
 }
 
 pub(crate) fn login_html() -> Response {
-    Html(LOGIN_HTML).into_response()
+    let mut response = Html(LOGIN_HTML).into_response();
+    attach_asset_cache_headers(&mut response, asset_etag(LOGIN_HTML.as_bytes()));
+    response
 }
 
-pub(crate) async fn jetbrains_mono_nerd_font() -> Response {
-    static_bytes(JETBRAINS_MONO_NERD_FONT, "font/ttf")
+pub(crate) async fn jetbrains_mono_nerd_font(headers: HeaderMap) -> Response {
+    static_bytes(&headers, JETBRAINS_MONO_NERD_FONT, "font/ttf")
 }
 
-pub(crate) async fn vendor_wterm_js() -> Response {
-    static_text(VENDOR_WTERM_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn vendor_wterm_css() -> Response {
-    static_text(VENDOR_WTERM_CSS, "text/css; charset=utf-8")
-}
-
-pub(crate) async fn vendor_ghostty_wasm() -> Response {
-    static_bytes(VENDOR_GHOSTTY_WASM, "application/wasm")
-}
-
-pub(crate) async fn desktop_js() -> Response {
-    static_text(DESKTOP_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn desktop_git_ui_js() -> Response {
-    static_text(DESKTOP_GIT_UI_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn app_boot_js() -> Response {
-    static_text(APP_BOOT_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn shared_core_js() -> Response {
-    static_text(SHARED_CORE_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn shared_http_js() -> Response {
-    static_text(SHARED_HTTP_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn shared_skeleton_js() -> Response {
-    static_text(SHARED_SKELETON_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn shared_skeleton_css() -> Response {
-    static_text(SHARED_SKELETON_CSS, "text/css; charset=utf-8")
-}
-
-pub(crate) async fn shared_attention_js() -> Response {
-    static_text(SHARED_ATTENTION_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn shared_alert_card_js() -> Response {
+pub(crate) async fn vendor_wterm_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
+        VENDOR_WTERM_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn vendor_wterm_css(headers: HeaderMap) -> Response {
+    static_text(&headers, VENDOR_WTERM_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn vendor_ghostty_wasm(headers: HeaderMap) -> Response {
+    static_bytes(&headers, VENDOR_GHOSTTY_WASM, "application/wasm")
+}
+
+pub(crate) async fn desktop_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        DESKTOP_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn desktop_git_ui_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        DESKTOP_GIT_UI_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn app_boot_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        APP_BOOT_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_core_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_CORE_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_http_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_HTTP_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_skeleton_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_SKELETON_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_skeleton_css(headers: HeaderMap) -> Response {
+    static_text(&headers, SHARED_SKELETON_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn shared_attention_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_ATTENTION_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_alert_card_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
         SHARED_ALERT_CARD_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn shared_alert_card_css() -> Response {
-    static_text(SHARED_ALERT_CARD_CSS, "text/css; charset=utf-8")
+pub(crate) async fn shared_alert_card_css(headers: HeaderMap) -> Response {
+    static_text(&headers, SHARED_ALERT_CARD_CSS, "text/css; charset=utf-8")
 }
 
-pub(crate) async fn shared_options_js() -> Response {
-    static_text(SHARED_OPTIONS_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn shared_actions_js() -> Response {
-    static_text(SHARED_ACTIONS_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn shared_file_icons_js() -> Response {
+pub(crate) async fn shared_options_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
+        SHARED_OPTIONS_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_actions_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_ACTIONS_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_file_icons_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
         SHARED_FILE_ICONS_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn shared_file_icons_css() -> Response {
-    static_text(SHARED_FILE_ICONS_CSS, "text/css; charset=utf-8")
+pub(crate) async fn shared_file_icons_css(headers: HeaderMap) -> Response {
+    static_text(&headers, SHARED_FILE_ICONS_CSS, "text/css; charset=utf-8")
 }
 
-pub(crate) async fn shared_file_tree_css() -> Response {
-    static_text(SHARED_FILE_TREE_CSS, "text/css; charset=utf-8")
+pub(crate) async fn shared_file_tree_css(headers: HeaderMap) -> Response {
+    static_text(&headers, SHARED_FILE_TREE_CSS, "text/css; charset=utf-8")
 }
 
-pub(crate) async fn shared_colors_css() -> Response {
-    static_text(SHARED_COLORS_CSS, "text/css; charset=utf-8")
+pub(crate) async fn shared_colors_css(headers: HeaderMap) -> Response {
+    static_text(&headers, SHARED_COLORS_CSS, "text/css; charset=utf-8")
 }
 
-pub(crate) async fn shared_tokens_css() -> Response {
-    static_text(SHARED_TOKENS_CSS, "text/css; charset=utf-8")
+pub(crate) async fn shared_tokens_css(headers: HeaderMap) -> Response {
+    static_text(&headers, SHARED_TOKENS_CSS, "text/css; charset=utf-8")
 }
 
-pub(crate) async fn shared_primitives_css() -> Response {
-    static_text(SHARED_PRIMITIVES_CSS, "text/css; charset=utf-8")
+pub(crate) async fn shared_primitives_css(headers: HeaderMap) -> Response {
+    static_text(&headers, SHARED_PRIMITIVES_CSS, "text/css; charset=utf-8")
 }
 
-pub(crate) async fn shared_content_search_css() -> Response {
-    static_text(SHARED_CONTENT_SEARCH_CSS, "text/css; charset=utf-8")
-}
-
-pub(crate) async fn shared_file_tree_js() -> Response {
-    static_text(SHARED_FILE_TREE_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn shared_file_content_search_js() -> Response {
+pub(crate) async fn shared_content_search_css(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
+        SHARED_CONTENT_SEARCH_CSS,
+        "text/css; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_file_tree_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_FILE_TREE_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_file_content_search_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
         SHARED_FILE_CONTENT_SEARCH_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn shared_line_context_js() -> Response {
+pub(crate) async fn shared_line_context_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
         SHARED_LINE_CONTEXT_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn shared_workspace_search_js() -> Response {
+pub(crate) async fn shared_workspace_search_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
         SHARED_WORKSPACE_SEARCH_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn shared_settings_feedback_js() -> Response {
+pub(crate) async fn shared_settings_feedback_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
         SHARED_SETTINGS_FEEDBACK_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn shared_settings_confirm_js() -> Response {
+pub(crate) async fn shared_settings_confirm_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
         SHARED_SETTINGS_CONFIRM_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn shared_editor_js() -> Response {
-    static_text(SHARED_EDITOR_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn shared_lsp_js() -> Response {
-    static_text(SHARED_LSP_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn shared_markdown_preview_js() -> Response {
+pub(crate) async fn shared_editor_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
+        SHARED_EDITOR_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_lsp_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_LSP_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn shared_markdown_preview_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
         SHARED_MARKDOWN_PREVIEW_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn shared_markdown_preview_css() -> Response {
-    static_text(SHARED_MARKDOWN_PREVIEW_CSS, "text/css; charset=utf-8")
+pub(crate) async fn shared_markdown_preview_css(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        SHARED_MARKDOWN_PREVIEW_CSS,
+        "text/css; charset=utf-8",
+    )
 }
 
-pub(crate) async fn shared_terminal_scroll_js() -> Response {
+pub(crate) async fn shared_terminal_scroll_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
         SHARED_TERMINAL_SCROLL_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn shared_terminal_fit_js() -> Response {
+pub(crate) async fn shared_terminal_fit_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
         SHARED_TERMINAL_FIT_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn shared_terminal_adapter_js() -> Response {
+pub(crate) async fn shared_terminal_adapter_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
         SHARED_TERMINAL_ADAPTER_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn shared_graphics_bridge_js() -> Response {
+pub(crate) async fn shared_graphics_bridge_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
         SHARED_GRAPHICS_BRIDGE_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn vendor_codemirror_js() -> Response {
+pub(crate) async fn vendor_codemirror_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
         VENDOR_CODEMIRROR_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn vendor_marked_js() -> Response {
-    static_text(VENDOR_MARKED_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn vendor_dompurify_js() -> Response {
-    static_text(VENDOR_DOMPURIFY_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn vendor_mermaid_js() -> Response {
-    static_text(VENDOR_MERMAID_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn desktop_search_js() -> Response {
-    static_text(DESKTOP_SEARCH_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn desktop_file_browser_js() -> Response {
+pub(crate) async fn vendor_marked_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
+        VENDOR_MARKED_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn vendor_dompurify_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        VENDOR_DOMPURIFY_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn vendor_mermaid_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        VENDOR_MERMAID_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn desktop_search_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        DESKTOP_SEARCH_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn desktop_file_browser_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
         DESKTOP_FILE_BROWSER_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn desktop_directory_picker_js() -> Response {
+pub(crate) async fn desktop_directory_picker_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
         DESKTOP_DIRECTORY_PICKER_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn desktop_css() -> Response {
-    static_text(DESKTOP_CSS, "text/css; charset=utf-8")
+pub(crate) async fn desktop_css(headers: HeaderMap) -> Response {
+    static_text(&headers, DESKTOP_CSS, "text/css; charset=utf-8")
 }
 
-pub(crate) async fn desktop_git_ui_css() -> Response {
-    static_text(DESKTOP_GIT_UI_CSS, "text/css; charset=utf-8")
+pub(crate) async fn desktop_git_ui_css(headers: HeaderMap) -> Response {
+    static_text(&headers, DESKTOP_GIT_UI_CSS, "text/css; charset=utf-8")
 }
 
-pub(crate) async fn desktop_search_css() -> Response {
-    static_text(DESKTOP_SEARCH_CSS, "text/css; charset=utf-8")
+pub(crate) async fn desktop_search_css(headers: HeaderMap) -> Response {
+    static_text(&headers, DESKTOP_SEARCH_CSS, "text/css; charset=utf-8")
 }
 
-pub(crate) async fn desktop_file_browser_css() -> Response {
-    static_text(DESKTOP_FILE_BROWSER_CSS, "text/css; charset=utf-8")
-}
-
-pub(crate) async fn desktop_directory_picker_css() -> Response {
-    static_text(DESKTOP_DIRECTORY_PICKER_CSS, "text/css; charset=utf-8")
-}
-
-pub(crate) async fn desktop_shortcuts_css() -> Response {
-    static_text(DESKTOP_SHORTCUTS_CSS, "text/css; charset=utf-8")
-}
-
-pub(crate) async fn mobile_js() -> Response {
-    static_text(MOBILE_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_core_js() -> Response {
-    static_text(MOBILE_CORE_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_attention_js() -> Response {
-    static_text(MOBILE_ATTENTION_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_settings_js() -> Response {
-    static_text(MOBILE_SETTINGS_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_search_js() -> Response {
-    static_text(MOBILE_SEARCH_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_git_js() -> Response {
-    static_text(MOBILE_GIT_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_composer_js() -> Response {
-    static_text(MOBILE_COMPOSER_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_sessions_js() -> Response {
-    static_text(MOBILE_SESSIONS_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_events_js() -> Response {
-    static_text(MOBILE_EVENTS_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_screens_js() -> Response {
-    static_text(MOBILE_SCREENS_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_panels_js() -> Response {
-    static_text(MOBILE_PANELS_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_workmeta_js() -> Response {
-    static_text(MOBILE_WORKMETA_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_theme_js() -> Response {
-    static_text(MOBILE_THEME_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_actions_js() -> Response {
-    static_text(MOBILE_ACTIONS_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_backend_js() -> Response {
-    static_text(MOBILE_BACKEND_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_terminal_js() -> Response {
-    static_text(MOBILE_TERMINAL_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_worktrees_js() -> Response {
-    static_text(MOBILE_WORKTREES_JS, "application/javascript; charset=utf-8")
-}
-
-pub(crate) async fn mobile_directory_picker_js() -> Response {
+pub(crate) async fn desktop_file_browser_css(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
+        DESKTOP_FILE_BROWSER_CSS,
+        "text/css; charset=utf-8",
+    )
+}
+
+pub(crate) async fn desktop_directory_picker_css(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        DESKTOP_DIRECTORY_PICKER_CSS,
+        "text/css; charset=utf-8",
+    )
+}
+
+pub(crate) async fn desktop_shortcuts_css(headers: HeaderMap) -> Response {
+    static_text(&headers, DESKTOP_SHORTCUTS_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn mobile_js(headers: HeaderMap) -> Response {
+    static_text(&headers, MOBILE_JS, "application/javascript; charset=utf-8")
+}
+
+pub(crate) async fn mobile_core_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_CORE_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_attention_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_ATTENTION_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_settings_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_SETTINGS_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_search_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_SEARCH_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_git_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_GIT_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_composer_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_COMPOSER_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_sessions_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_SESSIONS_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_events_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_EVENTS_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_screens_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_SCREENS_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_panels_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_PANELS_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_workmeta_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_WORKMETA_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_theme_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_THEME_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_actions_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_ACTIONS_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_backend_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_BACKEND_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_terminal_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_TERMINAL_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_worktrees_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_WORKTREES_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_directory_picker_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
         MOBILE_DIRECTORY_PICKER_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn mobile_file_browser_js() -> Response {
+pub(crate) async fn mobile_file_browser_js(headers: HeaderMap) -> Response {
     static_text(
+        &headers,
         MOBILE_FILE_BROWSER_JS,
         "application/javascript; charset=utf-8",
     )
 }
 
-pub(crate) async fn mobile_css() -> Response {
-    static_text(MOBILE_CSS, "text/css; charset=utf-8")
+pub(crate) async fn mobile_css(headers: HeaderMap) -> Response {
+    static_text(&headers, MOBILE_CSS, "text/css; charset=utf-8")
 }
 
-pub(crate) async fn login_js() -> Response {
-    static_text(LOGIN_JS, "application/javascript; charset=utf-8")
+pub(crate) async fn login_js(headers: HeaderMap) -> Response {
+    static_text(&headers, LOGIN_JS, "application/javascript; charset=utf-8")
 }
 
-pub(crate) async fn login_css() -> Response {
-    static_text(LOGIN_CSS, "text/css; charset=utf-8")
+pub(crate) async fn login_css(headers: HeaderMap) -> Response {
+    static_text(&headers, LOGIN_CSS, "text/css; charset=utf-8")
 }
 
-fn static_text(body: &'static str, content_type: &'static str) -> Response {
+// FNV-1a 64-bit over the embedded bytes. No hash-crate dependency needed;
+// assets are baked into the binary at compile time, so any content change
+// flips the ETag, which is exactly the property we want: a different binary
+// build always produces a different (or content-equal) tag.
+fn fnv64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+fn asset_etag(body: &[u8]) -> String {
+    format!("\"{:016x}\"", fnv64(body))
+}
+
+// Asset URLs are versionless (/assets/desktop/app.css and friends carry no
+// build hash in the path), so a long max-age would keep serving stale files
+// after a binary upgrade. `no-cache` keeps the response cacheable but forces
+// a conditional revalidation on every use; with the ETag that collapses to a
+// 304 with an empty body when nothing changed, which is the cheap path.
+fn if_none_match_hits(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(',').any(|candidate| {
+                let candidate = candidate.trim();
+                // Browsers echo the exact tag back; some proxies may prefix a
+                // weak validator marker, and `*` means "anything held".
+                candidate == etag || candidate == "*" || candidate == format!("W/{etag}")
+            })
+        })
+}
+
+fn attach_asset_cache_headers(response: &mut Response, etag: String) {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&etag).expect("hex etag is a valid header value"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+}
+
+fn not_modified_response(etag: String) -> Response {
+    Response::builder()
+        .status(StatusCode::NOT_MODIFIED)
+        .header(header::ETAG, etag)
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::empty())
+        .expect("static asset 304 response should be valid")
+}
+
+fn static_text(headers: &HeaderMap, body: &'static str, content_type: &'static str) -> Response {
+    let etag = asset_etag(body.as_bytes());
+    if if_none_match_hits(headers, &etag) {
+        return not_modified_response(etag);
+    }
     let mut response = body.into_response();
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    attach_asset_cache_headers(&mut response, etag);
     response
 }
 
-fn static_bytes(body: &'static [u8], content_type: &'static str) -> Response {
-    Response::builder()
+fn static_bytes(headers: &HeaderMap, body: &'static [u8], content_type: &'static str) -> Response {
+    let etag = asset_etag(body);
+    if if_none_match_hits(headers, &etag) {
+        return not_modified_response(etag);
+    }
+    let mut response = Response::builder()
         .header(header::CONTENT_TYPE, content_type)
         .body(Body::from(body))
-        .expect("static asset response should be valid")
+        .expect("static asset response should be valid");
+    attach_asset_cache_headers(&mut response, etag);
+    response
 }
 
-pub(crate) async fn favicon_svg() -> Response {
+pub(crate) async fn favicon_svg(headers: HeaderMap) -> Response {
+    let etag = asset_etag(HERDR_LOGO.as_bytes());
+    if if_none_match_hits(&headers, &etag) {
+        return not_modified_response(etag);
+    }
     let mut response = HERDR_LOGO.into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("image/svg+xml; charset=utf-8"),
     );
+    attach_asset_cache_headers(&mut response, etag);
     response
 }
 
-pub(crate) async fn favicon_attention_svg() -> Response {
-    themed_favicon_svg("#fff7ed", "#fed7aa", "#f97316")
+pub(crate) async fn favicon_attention_svg(headers: HeaderMap) -> Response {
+    themed_favicon_svg(&headers, "#fff7ed", "#fed7aa", "#f97316")
 }
 
-pub(crate) async fn favicon_error_svg() -> Response {
-    themed_favicon_svg("#fef2f2", "#fecaca", "#ef4444")
+pub(crate) async fn favicon_error_svg(headers: HeaderMap) -> Response {
+    themed_favicon_svg(&headers, "#fef2f2", "#fecaca", "#ef4444")
 }
 
-fn themed_favicon_svg(background: &str, chrome: &str, accent: &str) -> Response {
+fn themed_favicon_svg(
+    headers: &HeaderMap,
+    background: &str,
+    chrome: &str,
+    accent: &str,
+) -> Response {
     let body = HERDR_LOGO
         .replace("#e0e0e0", background)
         .replace("#f5f5f5", background)
@@ -545,117 +789,127 @@ fn themed_favicon_svg(background: &str, chrome: &str, accent: &str) -> Response 
         .replace("#a0a0a0", accent)
         .replace("#808080", accent)
         .replace("#606060", accent);
+    let etag = asset_etag(body.as_bytes());
+    if if_none_match_hits(headers, &etag) {
+        return not_modified_response(etag);
+    }
     let mut response = body.into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("image/svg+xml; charset=utf-8"),
     );
+    attach_asset_cache_headers(&mut response, etag);
     response
 }
 
-fn static_svg(body: &'static str) -> Response {
+fn static_svg(headers: &HeaderMap, body: &'static str) -> Response {
+    let etag = asset_etag(body.as_bytes());
+    if if_none_match_hits(headers, &etag) {
+        return not_modified_response(etag);
+    }
     let mut response = body.into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("image/svg+xml; charset=utf-8"),
     );
+    attach_asset_cache_headers(&mut response, etag);
     response
 }
 
-pub(crate) async fn icon_help_svg() -> Response {
-    static_svg(ICON_HELP)
+pub(crate) async fn icon_help_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_HELP)
 }
 
-pub(crate) async fn icon_settings_svg() -> Response {
-    static_svg(ICON_SETTINGS)
+pub(crate) async fn icon_settings_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_SETTINGS)
 }
 
-pub(crate) async fn icon_theme_auto_svg() -> Response {
-    static_svg(ICON_THEME_AUTO)
+pub(crate) async fn icon_theme_auto_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_THEME_AUTO)
 }
 
-pub(crate) async fn icon_git_svg() -> Response {
-    static_svg(ICON_GIT)
+pub(crate) async fn icon_git_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_GIT)
 }
 
-pub(crate) async fn icon_terminal_svg() -> Response {
-    static_svg(ICON_TERMINAL)
+pub(crate) async fn icon_terminal_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_TERMINAL)
 }
 
-pub(crate) async fn icon_chevron_right_svg() -> Response {
-    static_svg(ICON_CHEVRON_RIGHT)
+pub(crate) async fn icon_chevron_right_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_CHEVRON_RIGHT)
 }
 
-pub(crate) async fn icon_chevron_down_svg() -> Response {
-    static_svg(ICON_CHEVRON_DOWN)
+pub(crate) async fn icon_chevron_down_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_CHEVRON_DOWN)
 }
 
-pub(crate) async fn icon_folder_svg() -> Response {
-    static_svg(ICON_FOLDER)
+pub(crate) async fn icon_folder_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_FOLDER)
 }
 
-pub(crate) async fn icon_folder_up_svg() -> Response {
-    static_svg(ICON_FOLDER_UP)
+pub(crate) async fn icon_folder_up_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_FOLDER_UP)
 }
 
-pub(crate) async fn icon_file_svg() -> Response {
-    static_svg(ICON_FILE)
+pub(crate) async fn icon_file_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_FILE)
 }
 
-pub(crate) async fn icon_trash_svg() -> Response {
-    static_svg(ICON_TRASH)
+pub(crate) async fn icon_trash_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_TRASH)
 }
 
-pub(crate) async fn icon_search_svg() -> Response {
-    static_svg(ICON_SEARCH)
+pub(crate) async fn icon_search_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_SEARCH)
 }
 
-pub(crate) async fn icon_refresh_svg() -> Response {
-    static_svg(ICON_REFRESH)
+pub(crate) async fn icon_refresh_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_REFRESH)
 }
 
-pub(crate) async fn icon_lock_svg() -> Response {
-    static_svg(ICON_LOCK)
+pub(crate) async fn icon_lock_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_LOCK)
 }
 
-pub(crate) async fn icon_lock_open_svg() -> Response {
-    static_svg(ICON_LOCK_OPEN)
+pub(crate) async fn icon_lock_open_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_LOCK_OPEN)
 }
 
-pub(crate) async fn icon_columns_svg() -> Response {
-    static_svg(ICON_COLUMNS)
+pub(crate) async fn icon_columns_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_COLUMNS)
 }
 
-pub(crate) async fn icon_save_svg() -> Response {
-    static_svg(ICON_SAVE)
+pub(crate) async fn icon_save_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_SAVE)
 }
 
-pub(crate) async fn icon_clock_svg() -> Response {
-    static_svg(ICON_CLOCK)
+pub(crate) async fn icon_clock_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_CLOCK)
 }
 
-pub(crate) async fn icon_copy_svg() -> Response {
-    static_svg(ICON_COPY)
+pub(crate) async fn icon_copy_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_COPY)
 }
 
-pub(crate) async fn icon_x_svg() -> Response {
-    static_svg(ICON_X)
+pub(crate) async fn icon_x_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_X)
 }
 
-pub(crate) async fn icon_link_svg() -> Response {
-    static_svg(ICON_LINK)
+pub(crate) async fn icon_link_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_LINK)
 }
 
-pub(crate) async fn icon_pencil_svg() -> Response {
-    static_svg(ICON_PENCIL)
+pub(crate) async fn icon_pencil_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_PENCIL)
 }
 
-pub(crate) async fn icon_eye_svg() -> Response {
-    static_svg(ICON_EYE)
+pub(crate) async fn icon_eye_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_EYE)
 }
 
-pub(crate) async fn icon_eye_off_svg() -> Response {
-    static_svg(ICON_EYE_OFF)
+pub(crate) async fn icon_eye_off_svg(headers: HeaderMap) -> Response {
+    static_svg(&headers, ICON_EYE_OFF)
 }
 
 #[cfg(test)]
@@ -676,77 +930,164 @@ mod tests {
         let javascript = "application/javascript; charset=utf-8";
         let css = "text/css; charset=utf-8";
 
-        assert_eq!(content_type(&desktop_git_ui_js().await), javascript);
-        assert_eq!(content_type(&desktop_file_browser_js().await), javascript);
         assert_eq!(
-            content_type(&desktop_directory_picker_js().await),
+            content_type(&desktop_git_ui_js(HeaderMap::new()).await),
             javascript
         );
-        assert_eq!(content_type(&shared_actions_js().await), javascript);
-        assert_eq!(content_type(&shared_file_tree_js().await), javascript);
-        assert_eq!(content_type(&shared_file_tree_css().await), css);
         assert_eq!(
-            content_type(&shared_workspace_search_js().await),
+            content_type(&desktop_file_browser_js(HeaderMap::new()).await),
             javascript
         );
-        assert_eq!(content_type(&shared_terminal_scroll_js().await), javascript);
-        assert_eq!(content_type(&shared_terminal_fit_js().await), javascript);
         assert_eq!(
-            content_type(&shared_terminal_adapter_js().await),
+            content_type(&desktop_directory_picker_js(HeaderMap::new()).await),
             javascript
         );
-        assert_eq!(content_type(&shared_editor_js().await), javascript);
         assert_eq!(
-            content_type(&shared_markdown_preview_js().await),
+            content_type(&shared_actions_js(HeaderMap::new()).await),
             javascript
         );
-        assert_eq!(content_type(&shared_markdown_preview_css().await), css);
-        assert_eq!(content_type(&vendor_codemirror_js().await), javascript);
-        assert_eq!(content_type(&vendor_marked_js().await), javascript);
-        assert_eq!(content_type(&vendor_dompurify_js().await), javascript);
-        assert_eq!(content_type(&vendor_mermaid_js().await), javascript);
-        assert_eq!(content_type(&vendor_wterm_js().await), javascript);
-        assert_eq!(content_type(&vendor_wterm_css().await), css);
         assert_eq!(
-            content_type(&vendor_ghostty_wasm().await),
+            content_type(&shared_file_tree_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&shared_file_tree_css(HeaderMap::new()).await),
+            css
+        );
+        assert_eq!(
+            content_type(&shared_workspace_search_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&shared_terminal_scroll_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&shared_terminal_fit_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&shared_terminal_adapter_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&shared_editor_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&shared_markdown_preview_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&shared_markdown_preview_css(HeaderMap::new()).await),
+            css
+        );
+        assert_eq!(
+            content_type(&vendor_codemirror_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&vendor_marked_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&vendor_dompurify_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&vendor_mermaid_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&vendor_wterm_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(content_type(&vendor_wterm_css(HeaderMap::new()).await), css);
+        assert_eq!(
+            content_type(&vendor_ghostty_wasm(HeaderMap::new()).await),
             "application/wasm"
         );
-        assert_eq!(content_type(&mobile_file_browser_js().await), javascript);
         assert_eq!(
-            content_type(&mobile_directory_picker_js().await),
+            content_type(&mobile_file_browser_js(HeaderMap::new()).await),
             javascript
         );
-        assert_eq!(content_type(&login_js().await), javascript);
-        assert_eq!(content_type(&shared_skeleton_js().await), javascript);
-        assert_eq!(content_type(&shared_skeleton_css().await), css);
-        assert_eq!(content_type(&shared_colors_css().await), css);
-        assert_eq!(content_type(&shared_content_search_css().await), css);
-        assert_eq!(content_type(&desktop_git_ui_css().await), css);
-        assert_eq!(content_type(&desktop_file_browser_css().await), css);
-        assert_eq!(content_type(&desktop_directory_picker_css().await), css);
-        assert_eq!(content_type(&login_css().await), css);
+        assert_eq!(
+            content_type(&mobile_directory_picker_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(content_type(&login_js(HeaderMap::new()).await), javascript);
+        assert_eq!(
+            content_type(&shared_skeleton_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&shared_skeleton_css(HeaderMap::new()).await),
+            css
+        );
+        assert_eq!(
+            content_type(&shared_colors_css(HeaderMap::new()).await),
+            css
+        );
+        assert_eq!(
+            content_type(&shared_content_search_css(HeaderMap::new()).await),
+            css
+        );
+        assert_eq!(
+            content_type(&desktop_git_ui_css(HeaderMap::new()).await),
+            css
+        );
+        assert_eq!(
+            content_type(&desktop_file_browser_css(HeaderMap::new()).await),
+            css
+        );
+        assert_eq!(
+            content_type(&desktop_directory_picker_css(HeaderMap::new()).await),
+            css
+        );
+        assert_eq!(content_type(&login_css(HeaderMap::new()).await), css);
     }
 
     #[tokio::test]
     async fn serves_icon_assets_as_svg() {
         let svg = "image/svg+xml; charset=utf-8";
 
-        assert_eq!(content_type(&icon_help_svg().await), svg);
-        assert_eq!(content_type(&icon_settings_svg().await), svg);
-        assert_eq!(content_type(&icon_theme_auto_svg().await), svg);
-        assert_eq!(content_type(&icon_git_svg().await), svg);
-        assert_eq!(content_type(&icon_terminal_svg().await), svg);
-        assert_eq!(content_type(&icon_chevron_right_svg().await), svg);
-        assert_eq!(content_type(&icon_chevron_down_svg().await), svg);
-        assert_eq!(content_type(&icon_folder_svg().await), svg);
-        assert_eq!(content_type(&icon_folder_up_svg().await), svg);
-        assert_eq!(content_type(&icon_file_svg().await), svg);
-        assert_eq!(content_type(&icon_trash_svg().await), svg);
-        assert_eq!(content_type(&icon_search_svg().await), svg);
-        assert_eq!(content_type(&icon_lock_svg().await), svg);
-        assert_eq!(content_type(&icon_lock_open_svg().await), svg);
-        assert_eq!(content_type(&icon_eye_svg().await), svg);
-        assert_eq!(content_type(&icon_eye_off_svg().await), svg);
+        assert_eq!(content_type(&icon_help_svg(HeaderMap::new()).await), svg);
+        assert_eq!(
+            content_type(&icon_settings_svg(HeaderMap::new()).await),
+            svg
+        );
+        assert_eq!(
+            content_type(&icon_theme_auto_svg(HeaderMap::new()).await),
+            svg
+        );
+        assert_eq!(content_type(&icon_git_svg(HeaderMap::new()).await), svg);
+        assert_eq!(
+            content_type(&icon_terminal_svg(HeaderMap::new()).await),
+            svg
+        );
+        assert_eq!(
+            content_type(&icon_chevron_right_svg(HeaderMap::new()).await),
+            svg
+        );
+        assert_eq!(
+            content_type(&icon_chevron_down_svg(HeaderMap::new()).await),
+            svg
+        );
+        assert_eq!(content_type(&icon_folder_svg(HeaderMap::new()).await), svg);
+        assert_eq!(
+            content_type(&icon_folder_up_svg(HeaderMap::new()).await),
+            svg
+        );
+        assert_eq!(content_type(&icon_file_svg(HeaderMap::new()).await), svg);
+        assert_eq!(content_type(&icon_trash_svg(HeaderMap::new()).await), svg);
+        assert_eq!(content_type(&icon_search_svg(HeaderMap::new()).await), svg);
+        assert_eq!(content_type(&icon_lock_svg(HeaderMap::new()).await), svg);
+        assert_eq!(
+            content_type(&icon_lock_open_svg(HeaderMap::new()).await),
+            svg
+        );
+        assert_eq!(content_type(&icon_eye_svg(HeaderMap::new()).await), svg);
+        assert_eq!(content_type(&icon_eye_off_svg(HeaderMap::new()).await), svg);
     }
 
     #[test]
@@ -754,6 +1095,99 @@ mod tests {
         assert!(LOGIN_HTML.contains(r#"id="passwordToggle""#));
         assert!(LOGIN_HTML.contains(r#"aria-label="Show password""#));
         assert!(LOGIN_HTML.contains(r#"aria-pressed="false""#));
+    }
+
+    #[tokio::test]
+    async fn assets_set_etag_and_no_cache_headers() {
+        let response = desktop_css(HeaderMap::new()).await;
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .expect("desktop css carries an ETag")
+            .to_string();
+        assert!(etag.starts_with('"') && etag.ends_with('"'));
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default(),
+            "no-cache"
+        );
+
+        // Same bytes must produce the same tag, so If-None-Match round-trips.
+        let replay = static_text(&HeaderMap::new(), DESKTOP_CSS, "text/css; charset=utf-8");
+        assert_eq!(
+            replay
+                .headers()
+                .get(header::ETAG)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default(),
+            etag
+        );
+
+        // Binary assets go through the same helpers.
+        let wasm = vendor_ghostty_wasm(HeaderMap::new()).await;
+        assert!(wasm.headers().get(header::ETAG).is_some());
+        assert_eq!(
+            wasm.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default(),
+            "no-cache"
+        );
+
+        // The app HTML shell is cached too, even without conditional support.
+        let html = app_html();
+        assert!(html.headers().get(header::ETAG).is_some());
+        assert_eq!(
+            html.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default(),
+            "no-cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn matching_if_none_match_returns_304_empty_body() {
+        let fresh = desktop_css(HeaderMap::new()).await;
+        let etag = fresh
+            .headers()
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .expect("etag present")
+            .to_string();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_str(&etag).expect("etag header value"),
+        );
+        let cached = desktop_css(headers).await;
+        assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+        // 304 must not carry the asset bytes; axum's Body has no size probe
+        // without http_body traits in scope, so assert on the status and the
+        // stripped content type instead.
+        assert!(cached.headers().get(header::CONTENT_TYPE).is_none());
+        assert_eq!(
+            cached
+                .headers()
+                .get(header::ETAG)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default(),
+            etag
+        );
+
+        // A stale tag must serve the full body again.
+        let mut stale = HeaderMap::new();
+        stale.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_static("\"deadbeef\""),
+        );
+        let full = desktop_css(stale).await;
+        assert_eq!(full.status(), StatusCode::OK);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 (function () {
-  function createGitUiDiffSearch({ active, Syntax, diffLayoutMode, unifiedRows, sideBySideRows }) {
+  function createGitUiDiffSearch({ active, Syntax, diffLayoutMode, rowsFromChunk }) {
     function highlight(code, path) {
       return Syntax().highlight(code, path);
     }
@@ -48,18 +48,26 @@
       return count;
     }
 
+    // Server counts matches per file (file.match_count) when the diff was
+    // fetched with q=. Fall back to local counting when the payload predates
+    // that (no match_count and no rows), so an old cached diff still shows
+    // a count instead of a silent zero.
     function diffSearchMatchCount(view, query) {
       const needle = String(query || "").trim();
       if (!needle) return 0;
+      const files = (view && view.diff && view.diff.files) || [];
+      const counted = files.map((file) => file.match_count);
+      const everyFileHasCount = counted.every((value) => typeof value === "number");
+      if (everyFileHasCount) return counted.reduce((total, value) => total + value, 0);
       const unified = diffLayoutMode() === "unified";
-      return (((view && view.diff && view.diff.files) || [])).reduce((total, file) => {
+      return files.reduce((total, file) => {
         return total + ((file.chunks || []).reduce((fileTotal, chunk) => {
-          const rows = unified ? unifiedRows(chunk) : sideBySideRows(chunk);
+          const rows = rowsFromChunk(chunk);
           return fileTotal + rows.reduce((lineTotal, row) => {
             if (unified) return lineTotal + countTextMatches((row.line || {}).content || "", needle);
             return lineTotal
-              + countTextMatches((row.oldLine || {}).content || "", needle)
-              + countTextMatches((row.newLine || {}).content || "", needle);
+              + countTextMatches((row.old_line || {}).content || "", needle)
+              + countTextMatches((row.new_line || {}).content || "", needle);
           }, 0);
         }, 0));
       }, 0);

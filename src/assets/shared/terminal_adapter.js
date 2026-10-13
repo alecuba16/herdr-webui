@@ -453,6 +453,29 @@
       this.wterm.focus();
     }
 
+    // Full repaint of every row, including scrollback. wterm's
+    // setRenderingPaused(false) only resumes the rAF loop: rows painted
+    // while paused stay as-is, and a same-length rewrite under the lens
+    // (spinner frames) leaves the last paint on screen. Re-running the
+    // renderer's setup flag forces the next frame to rebuild all rows.
+    // Mirrors the bundle's own recovery path (_setupRenderer), just from
+    // outside: requestSetup + a zero-byte write that schedules a render.
+    forceRedraw() {
+      if (this._destroyed || !this.wterm) return;
+      const renderer = this.wterm.renderer;
+      if (renderer && typeof renderer.requestSetup === "function")
+        renderer.requestSetup();
+      if (
+        this.wterm &&
+        typeof this.wterm.write === "function" &&
+        this.wterm.bridge
+      ) {
+        try {
+          this.wterm.write("");
+        } catch (_) {}
+      }
+    }
+
     removeInputGate() {
       if (!this._inputGate) return;
       const container = this.element;
@@ -587,19 +610,29 @@
         if (this._destroyed || event.defaultPrevented) return;
         const deltaY = Number(event.deltaY) || 0;
         if (!deltaY) return;
-        if (!this.usesNormalBuffer()) {
-          // Alt screen: a TUI owns the viewport, so local scrolling cannot work.
-          // Only forward when the program requested SGR mouse encoding (1006);
-          // other encodings cannot carry wheel events safely. This mirrors how
-          // xterm.js forwards wheel events as SGR mouse reports.
-          if (this._mouseMode.tracking && this._mouseMode.sgrMouse && this._onWheelMouseReport) {
-            const report = sgrWheelReport(deltaY < 0, this._pointerCell.column, this._pointerCell.row);
-            if (report) {
-              event.preventDefault();
-              event.stopImmediatePropagation();
-              this._onWheelMouseReport(report);
-            }
+        // A program that enables SGR mouse tracking owns the wheel, on
+        // EITHER buffer. Ratatui-style TUIs (jcode) and tmux with `mouse on`
+        // render inline on the normal buffer while still requesting mouse
+        // bytes, so keying the gate on alt-screen alone left their wheel
+        // dead: local scrollback scrolled stale repaint history instead of
+        // reaching the program. xterm.js routes the same way: tracking first,
+        // buffer never. Only forward when the program asked for SGR (1006);
+        // X10/normal encodings cannot carry wheel events safely.
+        if (this._mouseMode.tracking && this._mouseMode.sgrMouse && this._onWheelMouseReport) {
+          const report = sgrWheelReport(deltaY < 0, this._pointerCell.column, this._pointerCell.row);
+          if (report) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            this._onWheelMouseReport(report);
           }
+          return;
+        }
+        if (!this.usesNormalBuffer()) {
+          // Alt screen without SGR mouse tracking: a TUI owns the viewport
+          // but cannot receive wheel bytes, so local scrolling cannot work
+          // either. Drop the event rather than scrolling stale repaint
+          // history. This mirrors how the alt screen always owned the wheel
+          // before mouse-mode gating was introduced.
           return;
         }
         const maxScroll = Math.max(0, (this.element.scrollHeight || 0) - (this.element.clientHeight || 0));
@@ -666,6 +699,21 @@
       } catch (_) {
         return true;
       }
+    }
+
+    // True when the attached program asked for SGR (1006) mouse tracking
+    // (1000/1002/1003) and therefore owns the wheel on either buffer.
+    // Callers that intercept wheel events in an earlier phase use this to
+    // yield: the adapter will forward the event as an SGR report to the
+    // program, which is the only correct target (inline TUIs like jcode
+    // and tmux `mouse on` never enter the alt screen).
+    wheelForwardedToProgram() {
+      return !!(
+        this._mouseMode &&
+        this._mouseMode.tracking &&
+        this._mouseMode.sgrMouse &&
+        this._onWheelMouseReport
+      );
     }
 
     // Track the pointer cell for wheel reports. wterm reports pointer cell

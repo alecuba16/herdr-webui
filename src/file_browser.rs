@@ -12,12 +12,15 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use regex::{Regex, RegexBuilder};
+use regex::{escape, Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{expand_user_path_string, home_folder_path, require_auth, WebState};
+// Shared markdown parser lives in the lib so the TUI (in-lib) and this bin
+// module can never drift apart.
+use herdr_webui::markdown::parse_markdown_outline;
 
 const MAX_ENTRIES: usize = 1000;
 const MAX_SEARCH_VISITS: usize = 20_000;
@@ -48,6 +51,7 @@ pub(crate) fn routes() -> Router<WebState> {
             "/api/file-browser/content-search/file",
             get(file_browser_content_search_file),
         )
+        .route("/api/file-browser/outline", get(file_browser_outline))
         .route(
             "/api/file-browser/rename",
             axum::routing::post(file_browser_rename),
@@ -95,6 +99,10 @@ pub(crate) fn socket_dispatch(method: &str, params: Value) -> Result<Value, Stri
         "file.content_search_file" => {
             let query: FileContentSearchQuery = decode(&params)?;
             map_status(file_browser_content_search_file_payload(query))
+        }
+        "file.outline" => {
+            let query: FileBrowserQuery = decode(&params)?;
+            map_status(file_browser_outline_payload(query))
         }
         "file.rename" => {
             let body: FileBrowserRenameRequest = decode(&params)?;
@@ -434,8 +442,18 @@ struct ContentSearchBuild {
     truncated: bool,
 }
 
+// The plain-needle arms search the ORIGINAL line, never a case-folded copy:
+// byte offsets returned by `find` must index into the line we send to the
+// browser, otherwise highlighting would slice at UTF-16/ASCII offsets of a
+// transformed string and panic or mis-highlight on multibyte text. Case
+// folding both sides (needle + haystack) is only a cheap approximation of
+// Unicode case-insensitive matching anyway; regexes go through RegexBuilder
+// which applies full Unicode case folding, so for case-insensitive plain
+// queries we reuse that same builder instead of lowercasing.
 enum ContentMatcher {
-    Plain { needle: String, match_case: bool },
+    // `match_case` is not kept: Plain is only constructed for the exact-match
+    // (match_case=true) path; case-insensitive queries compile a regex above.
+    Plain { needle: String },
     Regex(Regex),
 }
 
@@ -444,35 +462,35 @@ impl ContentMatcher {
         if query.is_empty() {
             return Err("empty query".to_string());
         }
-        if regex {
-            let compiled = RegexBuilder::new(query)
+        if regex || !match_case {
+            // Same builder for regex and case-insensitive plain queries: the
+            // regex crate's case-insensitive mode does proper Unicode folding
+            // (e.g. 'i' matching 'İ'), which naive to_lowercase() on both
+            // sides gets wrong. Escaping is applied below for plain queries so
+            // the needle is matched literally.
+            let pattern = if regex {
+                query.to_string()
+            } else {
+                escape(query)
+            };
+            let compiled = RegexBuilder::new(&pattern)
                 .case_insensitive(!match_case)
                 .build()
                 .map_err(|err| format!("invalid regex: {err}"))?;
             return Ok(Self::Regex(compiled));
         }
         Ok(Self::Plain {
-            needle: if match_case {
-                query.to_string()
-            } else {
-                query.to_lowercase()
-            },
-            match_case,
+            needle: query.to_string(),
         })
     }
 
     fn find(&self, line: &str) -> Option<(usize, usize)> {
         match self {
-            Self::Plain { needle, match_case } => {
-                let haystack = if *match_case {
-                    line.to_string()
-                } else {
-                    line.to_lowercase()
-                };
-                haystack
-                    .find(needle)
-                    .map(|start| (start, start + needle.len()))
-            }
+            // str::find on the original line: zero allocation, and byte
+            // offsets are directly valid for slicing the original line.
+            Self::Plain { needle, .. } => line
+                .find(needle.as_str())
+                .map(|start| (start, start + needle.len())),
             Self::Regex(regex) => regex
                 .find(line)
                 .filter(|matched| matched.end() > matched.start())
@@ -940,6 +958,17 @@ fn basename_string(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
 }
 
+// Slice the line that starts at `offset` (recorded during pass 1) out of the
+// already-read file content: up to the next '\n' or end of content. Borrowed,
+// so context/snippet extraction only allocates the strings actually returned.
+fn line_at(content: &str, offset: usize) -> &str {
+    let rest = &content[offset..];
+    match rest.find('\n') {
+        Some(nl) => &rest[..nl],
+        None => rest,
+    }
+}
+
 fn content_search_file(
     root: &Path,
     file: &Path,
@@ -961,23 +990,54 @@ fn content_search_file(
         Err(_) => return Ok(None),
     };
     let rel = relative_to_root(root, file);
-    let lines = content.lines().map(str::to_string).collect::<Vec<_>>();
-    let mut matches = Vec::new();
-    let mut match_count = 0usize;
     let qhash = query_hash(query);
-    for (index, line) in lines.iter().enumerate() {
-        let Some((match_start, match_end)) = matcher.find(line) else {
+    // Pass 1 only records byte ranges of matching lines; pass 2 re-slices the
+    // already-read `content` for the (few) matches that survive the per-file
+    // cap. This avoids materializing every line as a Vec<String> (the old
+    // `content.lines().map(str::to_string).collect()`), which duplicated the
+    // whole file in memory for every scanned file, even files with zero hits.
+    let mut matched_ranges: Vec<(usize, Option<(usize, usize)>)> = Vec::new();
+    let mut line_start = 0usize;
+    let mut line_end;
+    let mut match_count = 0usize;
+    for line in content.lines() {
+        let range = matcher.find(line);
+        if range.is_some() {
+            match_count += 1;
+        }
+        matched_ranges.push((line_start, range));
+        line_end = line_start + line.len();
+        line_start = if line_end < content.len() {
+            line_end + 1
+        } else {
+            line_end
+        };
+    }
+    if match_count == 0 {
+        return Ok(None);
+    }
+    let total_lines = matched_ranges.len();
+    let mut matches = Vec::new();
+    for (index, (offset, range)) in matched_ranges.iter().enumerate() {
+        let Some((match_start, match_end)) = *range else {
             continue;
         };
-        match_count += 1;
         if matches.len() >= max_matches {
-            continue;
+            break;
         }
+        let line = line_at(&content, *offset);
         let start = index.saturating_sub(context_lines);
-        let end = (index + context_lines + 1).min(lines.len());
-        let before = lines[start..index].to_vec();
-        let after = lines[(index + 1)..end].to_vec();
-        let snippet = lines[start..end].join("\n");
+        let end = (index + context_lines + 1).min(total_lines);
+        let before = (start..index)
+            .map(|i| line_at(&content, matched_ranges[i].0).to_string())
+            .collect::<Vec<_>>();
+        let after = (index + 1..end)
+            .map(|i| line_at(&content, matched_ranges[i].0).to_string())
+            .collect::<Vec<_>>();
+        let snippet = (start..end)
+            .map(|i| line_at(&content, matched_ranges[i].0))
+            .collect::<Vec<_>>()
+            .join("\n");
         let line_number = index + 1;
         let start_line = start + 1;
         let end_line = end.max(start + 1);
@@ -991,12 +1051,9 @@ fn content_search_file(
             end_line,
             content: snippet,
             before,
-            text: line.clone(),
+            text: line.to_string(),
             after,
         });
-    }
-    if match_count == 0 {
-        return Ok(None);
     }
     let hash = file_hash(file)?;
     let chunks = build_content_search_chunks(&matches, query);
@@ -1728,6 +1785,76 @@ async fn file_browser_file(
     }
 }
 
+/// Blocking body of the outline endpoint (parity with the TUI `M` toggle,
+/// gap 22): same root confinement and size caps as the file read path, but
+/// it only returns the heading list, never the file content. Markdown is
+/// parsed with the shared `herdr_webui::markdown` module so TUI and webui
+/// outlines can never drift.
+#[allow(clippy::result_large_err)]
+fn file_browser_outline_payload(
+    query: FileBrowserQuery,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let root = match resolve_root(&query.cwd) {
+        Ok(root) => root,
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
+    };
+    let rel = match clean_relative_path(query.path.as_deref()) {
+        Ok(rel) if !rel.is_empty() => rel,
+        Ok(_) => return Err((StatusCode::BAD_REQUEST, "path is required".to_string())),
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
+    };
+    let file = match resolve_child(&root, &rel) {
+        Ok(file) => file,
+        Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
+    };
+    if !file.is_file() {
+        return Err((StatusCode::BAD_REQUEST, "path is not a file".to_string()));
+    }
+    let metadata = match fs::metadata(&file) {
+        Ok(metadata) => metadata,
+        Err(err) => return Err((StatusCode::BAD_GATEWAY, err.to_string())),
+    };
+    // Same cap as the read path: an oversized file cannot be outlined because
+    // its full content would have to be parsed to know the headings.
+    if metadata.len() > MAX_FILE_BYTES {
+        return Err((StatusCode::BAD_REQUEST, "file too large".to_string()));
+    }
+    let bytes = match fs::read(&file) {
+        Ok(bytes) => bytes,
+        Err(err) => return Err((StatusCode::BAD_GATEWAY, err.to_string())),
+    };
+    let content = match String::from_utf8(bytes) {
+        Ok(content) => content,
+        // Binary files have no headings; empty outline instead of an error so
+        // clients can treat it like "no headings found".
+        Err(_) => return Ok(json!({ "outline": [] })),
+    };
+    let outline: Vec<serde_json::Value> = parse_markdown_outline(&content)
+        .into_iter()
+        .map(|(level, line_number, text)| json!([level, line_number, text]))
+        .collect();
+    Ok(json!({
+        "path": rel,
+        "outline": outline,
+    }))
+}
+
+async fn file_browser_outline(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<FileBrowserQuery>,
+) -> Response {
+    if let Err(response) = file_browser_auth(&state, &headers, remote) {
+        return response;
+    }
+    match tokio::task::spawn_blocking(move || file_browser_outline_payload(query)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err((status, msg))) => file_browser_json_error(status, msg),
+        Err(err) => file_browser_json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
 // Builds the two <pre> bodies used by the fallback numbered preview: the
 // gutter (one <span> per line number) and the escaped code. The browser
 // injects these strings directly; escaping happened here.
@@ -2098,6 +2225,100 @@ mod tests {
         assert!(clean_relative_path(Some("../secret")).is_err());
         assert!(clean_relative_path(Some("a/../secret")).is_err());
         assert_eq!(clean_relative_path(Some("/a/b")).unwrap(), "a/b");
+    }
+
+    #[test]
+    fn file_browser_outline_payload_parses_headings() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-outline-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("doc.md"),
+            "# Title\n\ntext\n```rust\n# not a heading\n```\n## Sub\n",
+        )
+        .unwrap();
+        let root = root.canonicalize().unwrap();
+
+        let payload = file_browser_outline_payload(FileBrowserQuery {
+            cwd: root.to_string_lossy().into_owned(),
+            path: Some("doc.md".to_string()),
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        })
+        .unwrap();
+        let outline = payload["outline"].as_array().unwrap();
+        assert_eq!(outline.len(), 2);
+        assert_eq!(outline[0][0], 1);
+        assert_eq!(outline[0][1], 1);
+        assert_eq!(outline[0][2], "Title");
+        assert_eq!(outline[1][0], 2);
+        assert_eq!(outline[1][1], 7);
+        assert_eq!(outline[1][2], "Sub");
+        assert_eq!(payload["path"], "doc.md");
+
+        // Path escape is rejected exactly like the read path.
+        let escape = file_browser_outline_payload(FileBrowserQuery {
+            cwd: root.to_string_lossy().into_owned(),
+            path: Some("../secret.md".to_string()),
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        });
+        assert!(escape.is_err());
+
+        // Missing path is a 400, not an empty outline.
+        let missing = file_browser_outline_payload(FileBrowserQuery {
+            cwd: root.to_string_lossy().into_owned(),
+            path: None,
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        });
+        assert!(matches!(missing, Err((StatusCode::BAD_REQUEST, _))));
+
+        // Non-markdown files simply return an empty outline.
+        fs::write(root.join("plain.txt"), "no headings here").unwrap();
+        let plain = file_browser_outline_payload(FileBrowserQuery {
+            cwd: root.to_string_lossy().into_owned(),
+            path: Some("plain.txt".to_string()),
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        })
+        .unwrap();
+        assert_eq!(plain["outline"].as_array().unwrap().len(), 0);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2850,6 +3071,68 @@ mod tests {
         let invalid = collect_content_search(&root, &root, "[", false, true, 0, 10, 0, 5);
         assert!(matches!(invalid, Err(message) if message.starts_with("invalid regex")));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn content_matcher_multibyte_offsets_are_into_the_original_line() {
+        // Byte offsets must index the ORIGINAL line, not a case-folded copy:
+        // highlight_line_html slices the line with them and would panic
+        // (char boundary) or highlight the wrong span otherwise. CJK chars are
+        // 3 bytes in UTF-8, so a latin prefix shifts offsets by 3 bytes per char.
+        let line = "日本語 needle おわり";
+        let matcher = ContentMatcher::new("needle", true, false).unwrap();
+        let (start, end) = matcher.find(line).unwrap();
+        assert_eq!(&line[start..end], "needle");
+        assert!(line.is_char_boundary(start));
+        assert!(line.is_char_boundary(end));
+
+        // Case-insensitive plain needle on a multibyte line: the regex-builder
+        // path reports offsets into the original line as well.
+        let ci = ContentMatcher::new("NEEDLE", false, false).unwrap();
+        let (start, end) = ci.find(line).unwrap();
+        assert_eq!(&line[start..end], "needle");
+
+        // No match -> None, not a panic.
+        let none = ContentMatcher::new("absent", true, false).unwrap();
+        assert!(none.find(line).is_none());
+    }
+
+    #[test]
+    fn content_matcher_case_insensitive_multibyte_needles() {
+        // 'İ' (U+0130) lowercases to a two-code-point sequence ("i\u{307}"), so
+        // neither the old to_lowercase() hack nor the regex crate's simple case
+        // folding can ever equate it with plain 'i'. What must hold: a 'İ'
+        // needle case-insensitively still matches itself in the haystack, and
+        // the reported offsets are byte offsets into the ORIGINAL multibyte
+        // line (2 bytes per 'İ'), not into any transformed copy.
+        let dotted = ContentMatcher::new("İ", false, false).unwrap();
+        let (start, end) = dotted.find("başında İ bulunur").expect("matches itself");
+        assert_eq!(&"başında İ bulunur"[start..end], "İ");
+
+        // ASCII needle inside a CJK line, case-insensitive: offsets must slice
+        // the original line exactly (3 bytes per CJK char).
+        let line = "日本語 needle おわり";
+        let ascii_ci = ContentMatcher::new("nEeDlE", false, false).unwrap();
+        let (start, end) = ascii_ci.find(line).unwrap();
+        assert_eq!(&line[start..end], "needle");
+
+        // Case-sensitive plain matching must stay exact, not folded.
+        let exact = ContentMatcher::new("İ", true, false).unwrap();
+        assert!(exact.find("istanbul").is_none());
+        assert!(exact.find("İstanbul").is_some());
+    }
+
+    #[test]
+    fn content_matcher_plain_needle_escapes_regex_metacharacters() {
+        // Plain (non-regex) queries must match literally, even when the needle
+        // contains regex metacharacters, because the case-insensitive path now
+        // routes through RegexBuilder too.
+        let matcher = ContentMatcher::new("a.b*c", false, false).unwrap();
+        assert!(matcher.find("xxa.b*cyy").is_some());
+        assert!(matcher.find("aabbcc").is_none());
+
+        let brackets = ContentMatcher::new("[not-a-class]", false, false).unwrap();
+        assert!(brackets.find("see [not-a-class] here").is_some());
     }
 
     #[test]

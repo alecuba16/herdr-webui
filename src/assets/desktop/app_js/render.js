@@ -1,18 +1,32 @@
 function render() {
   cleanupWorkingDismissals();
-  const wsById = Object.fromEntries(
-    state.workspaces.map((w) => [w.workspace_id, w]),
-  );
+  // Prefer the server-derived maps sent on the snapshot
+  // (workspaces_by_id / workspace_counts). With server-filtered tabs the
+  // local derivations undercount background workspaces, so they only run
+  // when the server maps are absent (legacy multi-call path, old server).
+  const wsById =
+    state.workspacesById ||
+    Object.fromEntries(state.workspaces.map((w) => [w.workspace_id, w]));
   const tabById = Object.fromEntries(
     state.allTabs.concat(state.tabs).map((t) => [t.tab_id, t]),
   );
   const panesByTab = panesByTabIndex();
-  const tabCountsByWorkspace = new Map();
-  for (const tab of state.allTabs)
-    tabCountsByWorkspace.set(
-      tab.workspace_id,
-      (tabCountsByWorkspace.get(tab.workspace_id) || 0) + 1,
+  let tabCountsByWorkspace = null;
+  if (state.workspaceCounts) {
+    tabCountsByWorkspace = new Map(
+      Object.entries(state.workspaceCounts).map(([id, counts]) => [
+        id,
+        (counts && counts.tabs) || 0,
+      ]),
     );
+  } else {
+    tabCountsByWorkspace = new Map();
+    for (const tab of state.allTabs)
+      tabCountsByWorkspace.set(
+        tab.workspace_id,
+        (tabCountsByWorkspace.get(tab.workspace_id) || 0) + 1,
+      );
+  }
   const workspacesHtml = renderSpacesCached();
   // The rename-input queries only matter while a rename is in flight; skip
   // the two querySelector calls on every poll when nothing is being edited.
@@ -876,6 +890,11 @@ function agentTabLabel(wsId, t, tabCountsByWorkspace) {
   return isDefaultPanelTitle(label) ? `#${panelNumberLabel(t)}` : label;
 }
 function pathBasename(path) {
+  // Shared core helper; the local copy was a byte-level duplicate. The
+  // fallback keeps render.js usable in vm tests that load it standalone
+  // without the shared bundle.
+  if (globalThis.HerdrAppHelpers && globalThis.HerdrAppHelpers.pathBasename)
+    return globalThis.HerdrAppHelpers.pathBasename(path);
   const parts = String(path || "")
     .replace(/\/+$/, "")
     .split("/")

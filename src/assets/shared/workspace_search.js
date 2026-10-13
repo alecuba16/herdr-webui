@@ -22,6 +22,72 @@
     }
   }
 
+  // ---- File-browser option readers (shared desktop/mobile) ----
+  // Both file browsers read the same HerdrOptions keys with the same
+  // defaults and clamps; the local copies were byte-level duplicates.
+
+  function fileBrowserGitStatusEnabled() {
+    return storedOptions().fileBrowserGitStatus !== false;
+  }
+
+  function fileBrowserLineNumbersEnabled() {
+    return storedOptions().fileBrowserLineNumbers !== false;
+  }
+
+  // Editor options the file browsers apply to previews, so word wrap /
+  // tab size / folding behave identically on desktop and mobile.
+  function fileBrowserEditorOptions() {
+    const parsed = storedOptions();
+    return {
+      editorEnabled: parsed.editorEnabled !== false,
+      wordWrap: parsed.editorEnabled !== false && parsed.editorWordWrap !== false,
+      tabSize: Math.max(1, Math.min(8, Number(parsed.editorTabSize) || 2)),
+      bracketMatching: parsed.editorEnabled !== false && parsed.editorBracketMatching !== false,
+      folding: parsed.editorEnabled !== false && parsed.editorFolding !== false,
+      activeLine: parsed.editorEnabled !== false && parsed.editorActiveLine !== false,
+      whitespace: parsed.editorEnabled === true && parsed.editorWhitespace === true,
+    };
+  }
+
+  function fileBrowserParentFoldersEnabled() {
+    return storedOptions().fileBrowserAllowParent === true;
+  }
+
+  function fileBrowserDepth() {
+    const value = Number(storedOptions().fileBrowserDepth);
+    return Math.max(0, Math.min(8, Number.isFinite(value) ? value : 3));
+  }
+
+  // ---- Search field-extraction helpers (shared desktop/mobile) ----
+  // Flatten arbitrary values into searchable text parts. Objects are
+  // flattened through Object.values so tag/label maps participate in
+  // search; both bundles had prefixed clones of these.
+
+  function textParts(...values) {
+    const out = [];
+    for (const value of values) {
+      if (Array.isArray(value)) out.push(...textParts(...value));
+      else if (value && typeof value === "object") out.push(...textParts(...Object.values(value)));
+      else {
+        const text = globalThis.HerdrAppHelpers
+          ? globalThis.HerdrAppHelpers.textValue(value)
+          : (value != null && String(value).trim() ? String(value).trim() : "");
+        if (text) out.push(text);
+      }
+    }
+    return out;
+  }
+
+  function uniqueTextParts(...values) {
+    const seen = new Set();
+    return textParts(...values).filter((value) => {
+      const key = value.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
   function normalizeSectionOrder(value) {
     return globalThis.HerdrAppHelpers.normalizeOrder(value, [
       "workspaces",
@@ -222,6 +288,13 @@
     pathSearchAvailable,
     normalizePathKind,
     workspaceCwd,
+    fileBrowserGitStatusEnabled,
+    fileBrowserLineNumbersEnabled,
+    fileBrowserEditorOptions,
+    fileBrowserParentFoldersEnabled,
+    fileBrowserDepth,
+    textParts,
+    uniqueTextParts,
     searchPaths,
     searchContent,
     searchContentFile,

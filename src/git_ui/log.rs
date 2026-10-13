@@ -9,6 +9,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::diff::{git_ui_diff_args, GitUiDiffQuery};
 use super::log_graph::{parse_log_row_json, reconstruct_log_line, LOG_FORMAT};
 use super::{
     check_auth, git_json_error, git_spawn, git_ui_output, git_ui_repo, git_ui_text,
@@ -99,9 +100,19 @@ pub(super) struct GitUiPullPushRequest {
 #[derive(Deserialize)]
 pub(super) struct GitUiApplyPatchRequest {
     pub(super) cwd: String,
-    pub(super) patch: String,
+    pub(super) patch: Option<String>,
     pub(super) reverse: Option<bool>,
     pub(super) cached: Option<bool>,
+    // Chunk-based body: regenerate the patch server-side from the same
+    // diff args the client rendered, so what gets applied is
+    // bit-identical to what the user clicked on.
+    pub(super) scope: Option<String>,
+    pub(super) context: Option<usize>,
+    pub(super) base: Option<String>,
+    pub(super) target: Option<String>,
+    pub(super) file: Option<String>,
+    pub(super) chunk_index: Option<usize>,
+    pub(super) merge_base: Option<bool>,
 }
 
 fn git_log_args(
@@ -728,14 +739,85 @@ pub(super) async fn git_ui_apply_patch(
     Json(body): Json<GitUiApplyPatchRequest>,
 ) -> Response {
     check_auth!(&state, &headers, remote);
-    if body.patch.trim().is_empty() {
-        return git_json_error(StatusCode::BAD_REQUEST, "patch is required");
-    }
+    // Two body shapes share the handler: the explicit {patch} text and
+    // the chunk selector ({file, chunk_index, scope/context/base/target})
+    // that regenerates the same patch server-side. Exactly one applies.
+    let patch = if let Some(patch) = body.patch.as_deref() {
+        if patch.trim().is_empty() {
+            return git_json_error(StatusCode::BAD_REQUEST, "patch is required");
+        }
+        patch.to_string()
+    } else {
+        match chunk_patch(&body) {
+            Ok(Some(patch)) => patch,
+            Ok(None) => {
+                return git_json_error(
+                    StatusCode::BAD_REQUEST,
+                    "patch or chunk selector (file, chunk_index) is required",
+                )
+            }
+            Err(err) => return git_json_error(StatusCode::BAD_REQUEST, err),
+        }
+    };
     let cwd = body.cwd;
-    let patch = body.patch;
     let reverse = body.reverse.unwrap_or(false);
     let cached = body.cached.unwrap_or(false);
     git_spawn(move || git_ui_apply_patch_blocking(cwd, patch, reverse, cached)).await
+}
+
+/// Build the single-chunk patch for a chunk-based apply request. The diff
+/// is regenerated with the SAME args builder the diff handler uses
+/// (git_ui_diff_args), so the chunk the client rendered by index is the
+/// chunk this patch contains. Returns Ok(None) when the selector fields
+/// are absent (caller should have sent {patch} instead) and an error when
+/// they point at a chunk that does not exist.
+pub(super) fn chunk_patch(body: &GitUiApplyPatchRequest) -> Result<Option<String>, String> {
+    let (Some(file), Some(chunk_index)) = (body.file.as_deref(), body.chunk_index) else {
+        return Ok(None);
+    };
+    let query = GitUiDiffQuery {
+        cwd: Some(body.cwd.clone()),
+        scope: body.scope.clone(),
+        file: Some(file.to_string()),
+        base: body.base.clone(),
+        target: body.target.clone(),
+        merge_base: body.merge_base,
+        context: body.context,
+        layout: None,
+        q: None,
+    };
+    // Compare mode (base/target present) vs changes mode (scope), same
+    // as the diff handler picks between /api/git-ui/diff and /compare.
+    let compare = body.base.is_some() || body.target.is_some();
+    let args = git_ui_diff_args(&query, compare)?;
+    let text = git_ui_text_strings(&body.cwd, &args)?;
+    let files = super::diff::parse_unified_diff(&text);
+    let file_entry = files
+        .iter()
+        .find(|candidate| candidate.path == file)
+        .ok_or_else(|| format!("no diff found for {file}"))?;
+    let chunk = file_entry
+        .chunks
+        .get(chunk_index)
+        .ok_or_else(|| format!("chunk {chunk_index} does not exist for {file}"))?;
+    // Mirror the old client-side hunkPatch builder: diff --git header,
+    // ---/+++ lines, chunk header, prefixed body lines.
+    let old_path = file_entry.old_path.as_deref().unwrap_or(&file_entry.path);
+    let mut lines = vec![
+        format!("diff --git a/{old_path} b/{}", file_entry.path),
+        format!("--- a/{old_path}"),
+        format!("+++ b/{}", file_entry.path),
+        chunk.header.clone(),
+    ];
+    for line in &chunk.lines {
+        let prefix = match line.line_type.as_str() {
+            "add" => '+',
+            "delete" => '-',
+            _ => ' ',
+        };
+        lines.push(format!("{prefix}{}", line.content));
+    }
+    Ok(Some(lines.join("\n") + "\n"))
 }
 
 #[cfg(test)]
@@ -744,6 +826,157 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn chunk_patch_regenerates_the_client_chunk_server_side() {
+        let repo = temp_repo("herdr-chunk-patch");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(repo.join("file.txt"), "one\ntwo\nthree\nfour\nfive\nsix\n").unwrap();
+        run_git(&repo, &["add", "file.txt"]);
+        run_git(&repo, &["commit", "-m", "base"]);
+        // Two separated hunks so chunk_index selection is observable. Git
+        // merges edits closer than one context line even with -U0, so the
+        // middle lines must stay untouched between the two edits.
+        std::fs::write(repo.join("file.txt"), "one\nTWO\nthree\nfour\nfive\nSIX\n").unwrap();
+        let cwd = repo.to_string_lossy().to_string();
+
+        let body = GitUiApplyPatchRequest {
+            cwd: cwd.clone(),
+            patch: None,
+            reverse: None,
+            cached: None,
+            scope: Some("working".to_string()),
+            context: Some(0),
+            base: None,
+            target: None,
+            file: Some("file.txt".to_string()),
+            chunk_index: Some(0),
+            merge_base: None,
+        };
+        let patch = chunk_patch(&body)
+            .unwrap()
+            .expect("chunk selector should build a patch");
+        assert!(patch.starts_with("diff --git a/file.txt b/file.txt\n"));
+        assert!(patch.contains("--- a/file.txt\n+++ b/file.txt"));
+        assert_eq!(
+            patch.lines().filter(|l| l.starts_with("@@")).count(),
+            1,
+            "exactly one hunk in the patch"
+        );
+        assert!(
+            patch.contains("-two\n+TWO"),
+            "patch carries chunk 0: {patch}"
+        );
+        assert!(
+            !patch.contains("SIX"),
+            "chunk 1 stays out of chunk 0: {patch}"
+        );
+
+        // Chunk 1 is the second hunk.
+        let body = GitUiApplyPatchRequest {
+            chunk_index: Some(1),
+            ..body
+        };
+        let patch = chunk_patch(&body)
+            .unwrap()
+            .expect("chunk 1 selector should build a patch");
+        assert!(
+            patch.contains("-six\n+SIX"),
+            "patch carries chunk 1: {patch}"
+        );
+        assert!(
+            !patch.contains("two") && !patch.contains("TWO"),
+            "chunk 0 stays out of chunk 1: {patch}"
+        );
+
+        // Missing chunk answers an error, not a panic or an empty patch.
+        let body = GitUiApplyPatchRequest {
+            chunk_index: Some(9),
+            ..body
+        };
+        assert!(chunk_patch(&body).is_err(), "out-of-range chunk must error");
+
+        // No selector at all: Ok(None) so the handler can demand {patch}.
+        let body = GitUiApplyPatchRequest {
+            file: None,
+            chunk_index: None,
+            ..body
+        };
+        assert!(chunk_patch(&body).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn chunk_based_apply_patch_stages_and_restores_a_hunk() {
+        let repo = temp_repo("herdr-chunk-apply");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(repo.join("file.txt"), "one\ntwo\n").unwrap();
+        run_git(&repo, &["add", "file.txt"]);
+        run_git(&repo, &["commit", "-m", "base"]);
+        std::fs::write(repo.join("file.txt"), "one\nTWO\n").unwrap();
+        let cwd = repo.to_string_lossy().to_string();
+
+        // Stage hunk 0 from the working tree (scope=working, cached).
+        let staged = git_ui_apply_patch_blocking(
+            cwd.clone(),
+            chunk_patch(&GitUiApplyPatchRequest {
+                cwd: cwd.clone(),
+                patch: None,
+                reverse: None,
+                cached: Some(true),
+                scope: Some("working".to_string()),
+                context: Some(0),
+                base: None,
+                target: None,
+                file: Some("file.txt".to_string()),
+                chunk_index: Some(0),
+                merge_base: None,
+            })
+            .unwrap()
+            .expect("chunk patch"),
+            false,
+            true,
+        )
+        .expect("staging chunk 0 should succeed");
+        assert_eq!(staged["ok"], serde_json::json!(true));
+        let staged_diff = git_text(&repo, &["diff", "--cached"]);
+        assert!(staged_diff.contains("+TWO"), "hunk staged: {staged_diff}");
+
+        // Restore the same hunk in the index (reverse + cached).
+        let restored = git_ui_apply_patch_blocking(
+            cwd.clone(),
+            chunk_patch(&GitUiApplyPatchRequest {
+                cwd,
+                patch: None,
+                reverse: None,
+                cached: Some(true),
+                scope: Some("staged".to_string()),
+                context: Some(0),
+                base: None,
+                target: None,
+                file: Some("file.txt".to_string()),
+                chunk_index: Some(0),
+                merge_base: None,
+            })
+            .unwrap()
+            .expect("chunk patch"),
+            true,
+            true,
+        )
+        .expect("un-staging chunk 0 should succeed");
+        assert_eq!(restored["ok"], serde_json::json!(true));
+        let staged_diff = git_text(&repo, &["diff", "--cached"]);
+        assert_eq!(staged_diff.trim(), "", "index is back to HEAD");
+
+        let _ = std::fs::remove_dir_all(repo);
+    }
 
     #[test]
     fn log_refs_show_configured_base_before_head_when_available() {

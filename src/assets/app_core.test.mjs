@@ -66,6 +66,118 @@ describe("createFaviconNotifier", () => {
   });
 });
 
+describe("session storage helpers (shared core)", () => {
+  // The seven per-session helpers live in shared/core.js and both bundles'
+  // cores delegate to them; this vm test exercises them against a real
+  // localStorage backing like the mobile bundle would see it.
+  const loadInVm = () => {
+    const store = new Map();
+    const sandbox = {
+      localStorage: {
+        getItem: (k) => (store.has(k) ? store.get(k) : null),
+        setItem: (k, v) => store.set(String(k), String(v)),
+        removeItem: (k) => store.delete(String(k)),
+      },
+    };
+    sandbox.globalThis = sandbox;
+    const context = vm.createContext(sandbox);
+    vm.runInContext(
+      readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"),
+      context,
+    );
+    return {
+      helpers: vm.runInContext("HerdrAppHelpers", context),
+      store,
+    };
+  };
+
+  it("keys scope the backend pin and the selection per session+backend", () => {
+    const { helpers } = loadInVm();
+    assert.equal(helpers.sessionBackendKey("revolut"), "herdr-session-backend:revolut");
+    assert.equal(helpers.sessionBackendKey(), "herdr-session-backend:default");
+    assert.equal(
+      helpers.sessionStateKey("external-herdr", "revolut"),
+      "herdr-session-state:external-herdr:revolut",
+    );
+    assert.equal(
+      helpers.sessionStateKey(null, null),
+      "herdr-session-state:builtin:default",
+    );
+  });
+
+  it("reads default to builtin and null when nothing is stored", () => {
+    const { helpers } = loadInVm();
+    assert.equal(helpers.readSessionBackend("anything"), "builtin");
+    assert.equal(helpers.readSessionSelection("anything", "builtin"), null);
+  });
+
+  it("write/read round-trips the backend pin and the selection", () => {
+    const { helpers, store } = loadInVm();
+    helpers.writeSessionBackend("revolut", "external-herdr");
+    assert.equal(helpers.readSessionBackend("revolut"), "external-herdr");
+    helpers.writeSessionBackend("revolut", null);
+    assert.equal(helpers.readSessionBackend("revolut"), "builtin");
+
+    helpers.saveSessionSelection("revolut", "external-herdr", {
+      ws: "ws-1",
+      tab: "tab-2",
+      pane: "pane-3",
+    });
+    assert.equal(
+      JSON.stringify(helpers.readSessionSelection("revolut", "external-herdr")),
+      JSON.stringify({ ws: "ws-1", tab: "tab-2", pane: "pane-3" }),
+    );
+    // Selections are per session+backend: the builtin slot stays empty.
+    assert.equal(helpers.readSessionSelection("revolut", "builtin"), null);
+    assert.equal(
+      store.get("herdr-session-state:external-herdr:revolut"),
+      JSON.stringify({ ws: "ws-1", tab: "tab-2", pane: "pane-3" }),
+    );
+  });
+
+  it("corrupt stored selection parses to null instead of throwing", () => {
+    const { helpers, store } = loadInVm();
+    store.set("herdr-session-state:builtin:default", "{not json");
+    assert.equal(helpers.readSessionSelection("default", "builtin"), null);
+    // A non-object payload (bare number) survives the typeof guard nowhere:
+    // parse it as the normalized all-null selection.
+    store.set("herdr-session-state:builtin:default", "5");
+    assert.equal(helpers.readSessionSelection("default", "builtin"), null);
+  });
+
+  it("forgetSessionState drops the pin and both backend selection slots", () => {
+    const { helpers, store } = loadInVm();
+    helpers.writeSessionBackend("revolut", "external-herdr");
+    helpers.saveSessionSelection("revolut", "builtin", { ws: "a", tab: "b", pane: null });
+    helpers.saveSessionSelection("revolut", "external-herdr", { ws: "c", tab: "d", pane: null });
+    helpers.forgetSessionState("revolut");
+    assert.equal(store.size, 0, "closed means closed: every stored key for the session is gone");
+    assert.equal(helpers.readSessionBackend("revolut"), "builtin");
+  });
+
+  it("storage failures fall back instead of throwing", () => {
+    const sandbox = {
+      localStorage: {
+        getItem: () => { throw new Error("quota"); },
+        setItem: () => { throw new Error("quota"); },
+        removeItem: () => { throw new Error("quota"); },
+      },
+    };
+    sandbox.globalThis = sandbox;
+    const context = vm.createContext(sandbox);
+    vm.runInContext(
+      readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"),
+      context,
+    );
+    const helpers = vm.runInContext("HerdrAppHelpers", context);
+    assert.equal(helpers.readSessionBackend("x"), "builtin");
+    assert.equal(helpers.readSessionSelection("x", "builtin"), null);
+    assert.doesNotThrow(() => helpers.writeSessionBackend("x", "builtin"));
+    assert.doesNotThrow(() => helpers.saveSessionSelection("x", "builtin", { ws: "w" }));
+    assert.doesNotThrow(() => helpers.forgetSessionState("x"));
+  });
+});
+
 describe("hashId", () => {
   it("hashes short stable base36 ids (shared editor-mount key helper)", () => {
     const { hashId } = require("./shared/core.js");

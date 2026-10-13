@@ -239,6 +239,28 @@ fn detect_herdr_install(herdr_bin: &str) -> HerdrInstall {
     }
 }
 
+/// `detect_herdr_install` behind a 60s WebState cache: /api/sessions is
+/// polled frequently and the spawn is pure overhead once the answer is
+/// known. A fresh install/upgrade flips the answer, so the entry expires
+/// rather than living forever. Blocking (process spawn on miss); call
+/// from a blocking context.
+const HERDR_INSTALL_CACHE_TTL: Duration = Duration::from_secs(60);
+
+fn cached_herdr_install(state: &WebState) -> HerdrInstall {
+    if let Ok(guard) = state.herdr_install_cache.lock() {
+        if let Some((at, install)) = guard.as_ref() {
+            if at.elapsed() < HERDR_INSTALL_CACHE_TTL {
+                return install.clone();
+            }
+        }
+    }
+    let install = detect_herdr_install(&state.herdr_bin);
+    if let Ok(mut guard) = state.herdr_install_cache.lock() {
+        *guard = Some((std::time::Instant::now(), install.clone()));
+    }
+    install
+}
+
 #[derive(Clone, Debug)]
 struct WebConfig {
     bind: SocketAddr,
@@ -603,6 +625,10 @@ pub(crate) struct WebState {
     /// and the loser would fail with AddrInUse.
     builtin_start_lock: Arc<Mutex<()>>,
     herdr_bin: String,
+    /// 60s cache of `herdr --version` (Task P7: /api/sessions spawned
+    /// the binary on every call). Bounded by Instant because an install
+    /// or upgrade changes the answer.
+    herdr_install_cache: Arc<Mutex<Option<(std::time::Instant, HerdrInstall)>>>,
     auth: Arc<Mutex<AuthConfig>>,
     /// Per-IP failed-login throttle backing the /api/login guard.
     login_limiter: Arc<LoginRateLimiter>,
@@ -965,6 +991,7 @@ async fn main() -> io::Result<()> {
         promoted_temporary_tabs,
         builtin_start_lock,
         herdr_bin: std::env::var("HERDR_WEB_HERDR_BIN").unwrap_or_else(|_| "herdr".to_string()),
+        herdr_install_cache: Arc::new(Mutex::new(None)),
         auth,
         login_limiter: Arc::new(LoginRateLimiter::new()),
         server_settings,
@@ -1341,6 +1368,7 @@ fn app_router(state: WebState) -> Router {
             "/api/panes/{pane_id}/conversation/image",
             get(pane_conversation_image),
         )
+        .route("/api/panes/{pane_id}/prompt", get(pane_prompt))
         .route("/api/panes/{pane_id}/tool-output", get(pane_tool_output))
         .route("/api/pane-layout", get(pane_layout))
         .route("/api/session-snapshot", get(session_snapshot))
@@ -2504,9 +2532,10 @@ async fn sessions(
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
     }
-    // herdr --version is a blocking process spawn; offload it.
-    let herdr_bin = state.herdr_bin.clone();
-    let herdr_install = tokio::task::spawn_blocking(move || detect_herdr_install(&herdr_bin))
+    // herdr --version is a blocking process spawn (cached 60s in
+    // WebState); offload the miss path. The state clone rides the move.
+    let install_state = state.clone();
+    let herdr_install = tokio::task::spawn_blocking(move || cached_herdr_install(&install_state))
         .await
         .unwrap_or_default();
     // known_sessions() probes every candidate session with a blocking
@@ -3405,10 +3434,57 @@ fn enrich_workspace_cwds(workspaces: &mut serde_json::Value, panes: &serde_json:
     }
 }
 
+/// Tab (or pane) count per workspace_id from a snapshot array. Built from
+/// the UNFILTERED arrays so every workspace keeps its totals even when a
+/// workspace_id filter narrows the payload arrays.
+fn snapshot_counts_by_workspace(
+    rows: Option<&serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut counts = serde_json::Map::new();
+    let Some(rows) = rows.and_then(serde_json::Value::as_array) else {
+        return counts;
+    };
+    for row in rows {
+        let Some(id) = row.get("workspace_id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let entry = counts
+            .entry(id.to_string())
+            .or_insert_with(|| serde_json::Value::from(0));
+        if let Some(count) = entry.as_i64() {
+            *entry = serde_json::Value::from(count + 1);
+        }
+    }
+    counts
+}
+
+/// Keep only one workspace's rows in a snapshot array (tabs/panes). This
+/// is the filtering both JS clients used to run locally (mobile app.js
+/// applySessionSnapshot, desktop core.js applySessionSnapshot); the
+/// server now does it so the payload shrinks to the selected workspace.
+fn filter_snapshot_rows_by_workspace(
+    value: &mut serde_json::Value,
+    pointer: &str,
+    workspace_id: &str,
+) {
+    let Some(rows) = value
+        .pointer_mut(pointer)
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    rows.retain(|row| {
+        row.get("workspace_id").and_then(serde_json::Value::as_str) == Some(workspace_id)
+    });
+}
+
 /// Adds the WebUI-only bootstrap fields to a raw backend `session.snapshot`
 /// response. Mutates `result` in place, keeping the backend envelope
 /// (including `result.snapshot` for protocol 16+ backends) untouched:
 /// - `workspace_order`: drag-sort order, a WebUI concept no backend knows.
+/// - `workspaces_by_id` / `workspace_counts`: derived maps the JS clients
+///   used to build locally (Object.fromEntries + per-workspace tab/pane
+///   counting); the server ships them so the clients stop re-deriving.
 /// - `workspace_cwds`: reuses the snapshot's own panes so external daemons
 ///   without per-workspace `cwd` still get enriched workspace rows. The
 ///   builtin already sets `cwd`/`foreground_cwd` directly, and enrichment
@@ -3425,6 +3501,7 @@ fn enrich_workspace_cwds(workspaces: &mut serde_json::Value, panes: &serde_json:
 fn enrich_session_snapshot(
     value: &mut serde_json::Value,
     workspace_order: &[String],
+    workspace_id: Option<&str>,
     api: &ApiClient,
 ) {
     if value
@@ -3550,10 +3627,62 @@ fn enrich_session_snapshot(
         // each entry unchanged.
         worktree_results.push(response);
     }
+    // Derived maps from the UNFILTERED arrays (computed before the
+    // workspace_id filter narrows them): workspaces_by_id replaces the
+    // clients' Object.fromEntries(workspaces.map(...)), and
+    // workspace_counts replaces their per-workspace tab/pane loops.
+    // shape: {id: {tabs: n, panes: n}}.
+    let tab_counts = snapshot_counts_by_workspace(value.pointer(&format!("{base}/tabs")));
+    let pane_counts = snapshot_counts_by_workspace(value.pointer(&format!("{base}/panes")));
+    let mut workspace_counts = serde_json::Map::new();
+    for id in tab_counts.keys() {
+        workspace_counts.insert(
+            id.clone(),
+            json!({
+                "tabs": tab_counts.get(id).cloned().unwrap_or(json!(0)),
+                "panes": pane_counts.get(id).cloned().unwrap_or(json!(0)),
+            }),
+        );
+    }
+    for id in pane_counts.keys() {
+        workspace_counts.entry(id.clone()).or_insert_with(|| {
+            json!({
+                "tabs": tab_counts.get(id).cloned().unwrap_or(json!(0)),
+                "panes": pane_counts.get(id).cloned().unwrap_or(json!(0)),
+            })
+        });
+    }
+    let workspaces_by_id = value
+        .pointer(&format!("{base}/workspaces"))
+        .and_then(serde_json::Value::as_array)
+        .map(|workspaces| {
+            let mut map = serde_json::Map::new();
+            for workspace in workspaces {
+                if let Some(id) = workspace
+                    .get("workspace_id")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    map.insert(id.to_string(), workspace.clone());
+                }
+            }
+            serde_json::Value::Object(map)
+        })
+        .unwrap_or(serde_json::Value::Object(Default::default()));
+    // Server-side per-workspace filtering: with a workspace_id param
+    // only that workspace's tabs/panes ride the payload (what both
+    // clients computed locally after the full snapshot). Counts and
+    // workspaces_by_id above already captured the full picture, so the
+    // clients keep cross-workspace totals without the full arrays.
+    if let Some(workspace_id) = workspace_id {
+        filter_snapshot_rows_by_workspace(value, &format!("{base}/tabs"), workspace_id);
+        filter_snapshot_rows_by_workspace(value, &format!("{base}/panes"), workspace_id);
+    }
     let result = value.get_mut("result").filter(|result| result.is_object());
     if let Some(result) = result {
         result["workspace_order"] = json!(workspace_order);
         result["worktree_results"] = json!(worktree_results);
+        result["workspace_counts"] = serde_json::Value::Object(workspace_counts);
+        result["workspaces_by_id"] = workspaces_by_id;
     }
 }
 
@@ -3669,6 +3798,35 @@ async fn recent_workspaces(
                 .into_response();
         }
     }
+    // Derived display fields both clients computed locally (mobile
+    // worktrees.js recentCandidates/renderRecentRow, desktop search.js
+    // recentWorkspaceCandidates): title = label or path basename, and
+    // kind_label = the "worktree"/"workspace" meta word. Additive keys;
+    // old clients ignore them.
+    let recent = recent
+        .into_iter()
+        .map(|item| {
+            let title = item
+                .label
+                .clone()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| path_basename(&expand_user_path_string(&item.path)));
+            let kind_label = if item.kind.as_deref() == Some("worktree") {
+                "worktree"
+            } else {
+                "workspace"
+            };
+            json!({
+                "path": item.path,
+                "label": item.label,
+                "branch": item.branch,
+                "kind": item.kind,
+                "opened_at": item.opened_at,
+                "title": title,
+                "kind_label": kind_label,
+            })
+        })
+        .collect::<Vec<_>>();
     Json(json!({ "recent": recent })).into_response()
 }
 
@@ -3967,6 +4125,37 @@ async fn worktrees(
 }
 
 fn normalize_worktree_response(value: &mut serde_json::Value) {
+    // The source envelope holds fields every JS consumer used to stamp
+    // onto rows client-side (desktop core.js flatMap, worktrees.js
+    // discoverWorktrees, mobile worktrees.js applyResult). Stamping them
+    // here covers /api/worktrees and the snapshot's worktree_results in
+    // one place; the row-level keys are additive so old clients ignore
+    // them. Missing source fields fall back exactly like the JS did
+    // (repo_name -> repo_key -> repo_root; source_checkout_path ->
+    // repo_root).
+    let source = value
+        .pointer("/result/source")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let str_field = |key: &str| source.get(key).and_then(serde_json::Value::as_str);
+    let source_workspace_id = str_field("source_workspace_id").map(str::to_string);
+    let repo_name = str_field("repo_name")
+        .or_else(|| str_field("repo_key"))
+        .or_else(|| str_field("repo_root"))
+        .map(str::to_string);
+    let source_cwd = str_field("source_checkout_path")
+        .or_else(|| str_field("repo_root"))
+        .map(str::to_string);
+    let repo_root = str_field("repo_root").map(str::to_string);
+    let repo_key = str_field("repo_key").map(str::to_string);
+    let default_dir = str_field("default_worktree_directory").map(str::to_string);
+    let repo_label = repo_name
+        .as_deref()
+        .map(path_basename)
+        .filter(|label| !label.is_empty())
+        .or_else(|| repo_root.as_deref().map(path_basename))
+        .unwrap_or_default();
     let Some(rows) = value
         .pointer_mut("/result/worktrees")
         .and_then(serde_json::Value::as_array_mut)
@@ -3975,10 +4164,57 @@ fn normalize_worktree_response(value: &mut serde_json::Value) {
     };
     for row in rows.iter_mut() {
         enrich_worktree_activity(row);
+        if let Some(object) = row.as_object_mut() {
+            if let Some(value) = &source_workspace_id {
+                object
+                    .entry("source_workspace_id".to_string())
+                    .or_insert_with(|| json!(value));
+            }
+            if let Some(value) = &repo_name {
+                object
+                    .entry("source_repo_name".to_string())
+                    .or_insert_with(|| json!(value));
+            }
+            if let Some(value) = &repo_key {
+                object
+                    .entry("source_repo_key".to_string())
+                    .or_insert_with(|| json!(value));
+            }
+            if let Some(value) = &repo_root {
+                object
+                    .entry("source_repo_root".to_string())
+                    .or_insert_with(|| json!(value));
+            }
+            if let Some(value) = &source_cwd {
+                object
+                    .entry("source_cwd".to_string())
+                    .or_insert_with(|| json!(value));
+            }
+            if let Some(value) = &default_dir {
+                object
+                    .entry("default_worktree_directory".to_string())
+                    .or_insert_with(|| json!(value));
+            }
+            if !repo_label.is_empty() {
+                object
+                    .entry("repo_label".to_string())
+                    .or_insert_with(|| json!(repo_label));
+            }
+        }
     }
     rows.sort_by(|left, right| {
         worktree_activity_sort_key(right).cmp(&worktree_activity_sort_key(left))
     });
+}
+
+/// Basename of a path, the JS `pathBasename` parity: strip trailing
+/// slashes, split, take the last non-empty segment.
+fn path_basename(path: &str) -> String {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 fn enrich_worktree_activity(row: &mut serde_json::Value) {
@@ -4735,10 +4971,19 @@ async fn pane_layout(
 /// per-workspace `cwd`/`foreground_cwd` enrichment, and one enriched
 /// `worktree.list` result per workspace. All additions are siblings of
 /// `result.snapshot`, so the backend envelope itself stays untouched.
+#[derive(Deserialize)]
+struct SessionSnapshotQuery {
+    /// When set, the snapshot's tabs/panes arrays carry only this
+    /// workspace's rows (the filtering the JS clients used to do).
+    #[serde(default)]
+    workspace_id: Option<String>,
+}
+
 async fn session_snapshot(
     State(state): State<WebState>,
     headers: HeaderMap,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    Query(query): Query<SessionSnapshotQuery>,
 ) -> Response {
     if let Err(response) = require_auth(&state, &headers, remote) {
         return response;
@@ -4750,12 +4995,16 @@ async fn session_snapshot(
         .ok()
         .and_then(|orders| orders.get(&key).cloned())
         .unwrap_or_default();
+    let workspace_id = query
+        .workspace_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
     let api = api_for_headers_ensured(&state, &headers).await;
     let response = tokio::task::spawn_blocking(move || {
         let mut value = api.request_value(
             json!({ "id": "web:session:snapshot", "method": "session.snapshot", "params": {} }),
         )?;
-        enrich_session_snapshot(&mut value, &order, &api);
+        enrich_session_snapshot(&mut value, &order, workspace_id.as_deref(), &api);
         Ok::<_, String>(value)
     })
     .await;
@@ -5044,6 +5293,126 @@ fn conversation_error(message: &str) -> (StatusCode, String) {
         _ => StatusCode::BAD_GATEWAY,
     };
     (status, code.to_string())
+}
+
+/// Parsed question dialog for one pane. GET /api/panes/{pane_id}/prompt.
+/// Reuses the same server-side tail the TUI parses over its transport
+/// (`pane.read`), ANSI-stripped to the last 16 non-empty-bottom lines
+/// (the same window the desktop's prompt_cards.js reads from its local
+/// terminal grid), and runs the shared parser (tui/prompt_cards.rs
+/// `parse_prompt`, the Rust port of the JS one). Returns the parse, not
+/// the tail, so the wire carries only the card shape. `blocked` mirrors
+/// the pane's live agent status so an offline fallback client can gate
+/// exactly like prompt_cards.js paneBlocked() does.
+async fn pane_prompt(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    AxumPath(pane_id): AxumPath<String>,
+) -> Response {
+    if let Err(response) = require_auth(&state, &headers, remote) {
+        return response;
+    }
+    let api = api_for_headers_ensured(&state, &headers).await;
+    let result = tokio::task::spawn_blocking(move || pane_prompt_payload(&api, &pane_id)).await;
+    match result {
+        Ok(Ok(payload)) => Json(payload).into_response(),
+        Ok(Err((status, message))) => (status, Json(json!({ "error": message }))).into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// Blocking core of /api/panes/{pane_id}/prompt: read the tail, parse
+/// the dialog. The blocked flag rides from agent.list, the same status
+/// source the JS paneBlocked() consults through state.agents.
+const PANE_PROMPT_TAIL_LINES: usize = 16;
+
+fn pane_prompt_payload(
+    api: &ApiClient,
+    pane_id: &str,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let read = api
+        .request_value(json!({
+            "id": "web:pane:read:prompt",
+            "method": "pane.read",
+            "params": { "pane_id": pane_id },
+        }))
+        .map_err(|err| (StatusCode::BAD_GATEWAY, err))?;
+    if read.get("error").is_some() {
+        let message = read
+            .pointer("/error/message")
+            .or_else(|| read.get("error"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("pane read failed");
+        return Err((StatusCode::BAD_GATEWAY, message.to_string()));
+    }
+    let text = read
+        .pointer("/read/text")
+        .or_else(|| read.get("text"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    // Same strip the TUI tail applies (tui/mod.rs strip_ansi_lossy feeds
+    // set_pane_tail_from_text): dialog lines must read like the grid
+    // text the JS parser sees.
+    let stripped = crate::terminal_text::strip_ansi_lossy(
+        text,
+        crate::terminal_text::StripCarriageReturn::Newline,
+    );
+    let mut lines: Vec<String> = stripped.lines().map(str::to_string).collect();
+    // prompt_cards.js tailLines() drops trailing blank rows then takes the
+    // last 16; mirror that so an identical screen parses identically.
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    let tail: Vec<String> = if lines.len() > PANE_PROMPT_TAIL_LINES {
+        lines.split_off(lines.len() - PANE_PROMPT_TAIL_LINES)
+    } else {
+        lines
+    };
+    let prompt = herdr_webui::tui::prompt_cards::parse_prompt(&tail);
+    let agents = api
+        .request_value(json!({
+            "id": "web:agent:list:prompt",
+            "method": "agent.list",
+            "params": {},
+        }))
+        .map_err(|err| (StatusCode::BAD_GATEWAY, err))?;
+    let blocked = agents
+        .pointer("/result/agents")
+        .or_else(|| agents.get("agents"))
+        .and_then(serde_json::Value::as_array)
+        .map(|rows| {
+            rows.iter().any(|row| {
+                row.get("pane_id").and_then(serde_json::Value::as_str) == Some(pane_id)
+                    && row.get("agent_status").and_then(serde_json::Value::as_str)
+                        == Some("blocked")
+            })
+        })
+        .unwrap_or(false);
+    Ok(match prompt {
+        Some(card) => {
+            use herdr_webui::tui::prompt_cards::PromptCardKind;
+            let kind = match card.kind {
+                PromptCardKind::Options => "options",
+                PromptCardKind::Text => "text",
+            };
+            json!({
+                "blocked": blocked,
+                "kind": kind,
+                "title": card.title,
+                "options": card
+                    .options
+                    .iter()
+                    .map(|option| json!({ "key": option.key, "label": option.label }))
+                    .collect::<Vec<_>>(),
+            })
+        }
+        None => json!({ "blocked": blocked, "kind": null, "title": null, "options": [] }),
+    })
 }
 
 /// Page cursors the chat lens sends (reference before/from parity):

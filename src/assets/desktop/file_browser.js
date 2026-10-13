@@ -25,43 +25,21 @@
   const hashId = HerdrAppHelpers.hashId;
   function arg(value) { return Tree.arg(value); }
 
-  function gitStatusEnabled() {
-    try {
-      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
-      return parsed.fileBrowserGitStatus !== false;
-    } catch (_) { return true; }
-  }
-
-  function lineNumbersEnabled() {
-    try {
-      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
-      return parsed.fileBrowserLineNumbers !== false;
-    } catch (_) { return true; }
-  }
-
-  function editorOptions() {
-    try {
-      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
-      return {
-        editorEnabled: parsed.editorEnabled !== false,
-        wordWrap: parsed.editorEnabled !== false && parsed.editorWordWrap !== false,
-        tabSize: Math.max(1, Math.min(8, Number(parsed.editorTabSize) || 2)),
-        bracketMatching: parsed.editorEnabled !== false && parsed.editorBracketMatching !== false,
-        folding: parsed.editorEnabled !== false && parsed.editorFolding !== false,
-        activeLine: parsed.editorEnabled !== false && parsed.editorActiveLine !== false,
-        whitespace: parsed.editorEnabled === true && parsed.editorWhitespace === true,
-      };
-    } catch (_) {
-      return { editorEnabled: true, wordWrap: true, tabSize: 2, bracketMatching: true, folding: true, activeLine: true, whitespace: false };
-    }
-  }
-
-  function parentFoldersEnabled() {
-    try {
-      const parsed = window.HerdrOptions ? window.HerdrOptions.read() : {};
-      return parsed.fileBrowserAllowParent === true;
-    } catch (_) { return false; }
-  }
+  // Option readers live in shared/workspace_search.js (HerdrWorkspaceSearch);
+  // both file browsers read the same keys with the same defaults.
+  const searchHelpers = window.HerdrWorkspaceSearch || {};
+  const gitStatusEnabled = searchHelpers.fileBrowserGitStatusEnabled
+    ? searchHelpers.fileBrowserGitStatusEnabled
+    : () => true;
+  const lineNumbersEnabled = searchHelpers.fileBrowserLineNumbersEnabled
+    ? searchHelpers.fileBrowserLineNumbersEnabled
+    : () => true;
+  const editorOptions = searchHelpers.fileBrowserEditorOptions
+    ? searchHelpers.fileBrowserEditorOptions
+    : () => ({ editorEnabled: true, wordWrap: true, tabSize: 2, bracketMatching: true, folding: true, activeLine: true, whitespace: false });
+  const parentFoldersEnabled = searchHelpers.fileBrowserParentFoldersEnabled
+    ? searchHelpers.fileBrowserParentFoldersEnabled
+    : () => false;
 
   function cacheTreeRoots(target, data) {
     if (!target || !data) return;

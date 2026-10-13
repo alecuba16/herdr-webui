@@ -151,14 +151,30 @@ function appRefreshIconButton() { return ""; }
 
 async function bootGitUi(responses) {
   const calls = [];
+  // Mirrors the backend rail-status endpoint: one {items:[...]} answer
+  // for the posted workspaces, each item carrying its own cwd.
+  const railStatusHandler = () => (params, init) => {
+    const body = JSON.parse((init && init.body) || "{}");
+    const items = ((body.workspaces || []).map((w) => ({
+      workspace_id: w.workspace_id || null,
+      cwd: w.cwd,
+      state: "clean",
+    })));
+    return { items };
+  };
   const fetchImpl = async (url, init) => {
     const raw = String(url);
     const path = raw.split("?")[0];
     const params = new URLSearchParams(raw.split("?")[1] || "");
     calls.push({ path, params, raw, init });
-    const handler = responses[path];
+    let handler = responses[path];
+    // The rail probe posts rail-status instead of the full status call.
+    // A default clean answer keeps unconfigured probes working like the
+    // old status-probe fixtures did; tests override per cwd when the
+    // tint matters.
+    if (!handler && path === "/api/git-ui/rail-status") handler = railStatusHandler();
     if (handler) {
-      const body = typeof handler === "function" ? handler(params) : handler;
+      const body = typeof handler === "function" ? handler(params, init) : handler;
       return { ok: true, status: 200, json: async () => body };
     }
     return { ok: true, status: 200, json: async () => ({}) };
@@ -730,8 +746,8 @@ test("open() after a rail probe still loads the view: probe-parked status is not
   // The shell warms the rail before the drawer ever opens.
   await ui.probeWorkspaceStatus({ cwd: "/tmp/demo-repo", title: "demo" });
   await settle();
-  const probedFetches = calls.filter((call) => call.path === "/api/git-ui/status").length;
-  assert.equal(probedFetches, 1, "the probe fetched the status once");
+  const probedFetches = calls.filter((call) => call.path === "/api/git-ui/rail-status").length;
+  assert.equal(probedFetches, 1, "the probe fired the rail call once");
   const before = calls.length;
   // Opening the drawer must do the real load: a fresh status plus the diff.
   // The probe-parked status must not satisfy open()'s guard, or the drawer
@@ -1351,7 +1367,7 @@ test("diff_search module is registered and wired before git_ui.js consumes it", 
   const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
   assert.match(gitUiSource, /globalThis\.HerdrGitUiDiffSearchModule\.create\(\{/);
   assert.match(gitUiSource, /const highlightDiffText = diffSearch\.highlightDiffText;/);
-  assert.match(gitUiSource, /unifiedRows: \(chunk\) => unifiedRows\(chunk\)/);
+  assert.match(gitUiSource, /rowsFromChunk: \(chunk\) => rowsFromChunk\(chunk\)/);
   const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
   const diffSearchIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/diff_search.js")');
   const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
@@ -1369,8 +1385,7 @@ test("diff search counts matches and wraps hits in marks", () => {
     active: () => activeView,
     Syntax: () => fakeSyntax,
     diffLayoutMode: () => "unified",
-    unifiedRows: (chunk) => chunk.lines.map((line) => ({ line })),
-    sideBySideRows: (chunk) => chunk.lines.map((line) => ({ oldLine: line, newLine: null })),
+    rowsFromChunk: (chunk) => chunk.rows || chunk.lines.map((line) => ({ line })),
   });
   assert.equal(mod.diffSearchQuery(), "todo");
   assert.equal(mod.countTextMatches("todo TODO todo", "todo"), 3);
@@ -1389,13 +1404,24 @@ test("diff search counts matches and wraps hits in marks", () => {
   assert.equal(mod.canSearchDiff({ tab: "changes", diff: { files: [{ path: "a" }] } }), true);
   assert.equal(mod.canSearchDiff({ tab: "changes", file: "a.js", diff: { files: [] } }), true);
   assert.equal(mod.canSearchDiff(null), false);
-  // diffSearchMatchCount over unified rows.
+  // diffSearchMatchCount: server-provided match_count wins when present.
   activeView = { diffSearchQuery: "todo" };
+  const serverCounted = {
+    diff: {
+      files: [
+        { match_count: 2, chunks: [{ lines: [{ content: "todo fix" }] }] },
+        { match_count: 0, chunks: [{ lines: [{ content: "clean" }] }] },
+      ],
+    },
+  };
+  assert.equal(mod.diffSearchMatchCount(serverCounted, "todo"), 2);
+  // Legacy payload without match_count falls back to local counting over
+  // server rows ({line} in unified mode).
   const view = {
     diff: {
       files: [
-        { chunks: [{ lines: [{ content: "todo fix" }, { content: "clean" }] }] },
-        { chunks: [{ lines: [{ content: "todo todo" }] }] },
+        { chunks: [{ rows: [{ line: { content: "todo fix" } }, { line: { content: "clean" } }], lines: [{ content: "todo fix" }, { content: "clean" }] }] },
+        { chunks: [{ rows: [{ line: { content: "todo todo" } }], lines: [{ content: "todo todo" }] }] },
       ],
     },
   };
@@ -1579,23 +1605,29 @@ test("restoreNavigationSnapshot reloads diff and clamps log scope", async () => 
 
 test("probeWorkspaceStatus warms the rail tint without opening the drawer", async () => {
   const booted = await bootGitUi({
-    "/api/git-ui/status": { branch: "main", state: "dirty", staged: ["a.js"], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/rail-status": (params, init) => {
+      const body = JSON.parse(init.body);
+      return { items: body.workspaces.map((w) => ({ workspace_id: w.workspace_id, cwd: w.cwd, state: "dirty" })) };
+    },
   });
   const { ui, calls } = booted;
   const workspace = { workspace_id: "w1", cwd: "/tmp/demo-repo" };
   // Before probing: unknown, and the drawer has not been opened.
   assert.equal(ui.workspaceStatus("w1", workspace), "unknown");
-  assert.ok(!calls.some((call) => call.path === "/api/git-ui/status"), "no status call before the probe");
+  assert.ok(!calls.some((call) => call.path === "/api/git-ui/rail-status"), "no rail call before the probe");
   await ui.probeWorkspaceStatus(workspace);
-  const statusCall = calls.find((call) => call.path === "/api/git-ui/status");
-  assert.ok(statusCall, "probe fires the status endpoint");
-  assert.equal(statusCall.params.get("cwd"), "/tmp/demo-repo", "probe passes the workspace cwd");
+  const railCall = calls.find((call) => call.path === "/api/git-ui/rail-status");
+  assert.ok(railCall, "probe fires the rail-status endpoint");
+  assert.deepEqual(JSON.parse(railCall.init.body).workspaces, [{ workspace_id: "w1", cwd: "/tmp/demo-repo" }],
+    "probe posts the workspace cwd");
   assert.equal(ui.workspaceStatus("w1", workspace), "dirty", "rail reads dirty after the probe");
-  // The drawer stays hidden the whole time: no diff/compare/log fetches fired.
+  // The drawer stays hidden the whole time: no diff/compare/log fetches fired,
+  // and the full status endpoint was never touched.
   assert.ok(!calls.some((call) => call.path === "/api/git-ui/diff"), "probe does not open the drawer");
-  // Second probe is cached: no extra status call.
+  assert.ok(!calls.some((call) => call.path === "/api/git-ui/status"), "probe avoids the full status call");
+  // Second probe is cached: no extra rail call.
   await ui.probeWorkspaceStatus(workspace);
-  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, 1, "probe caches the status");
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/rail-status").length, 1, "probe caches the rail answer");
 });
 
 test("diff_view module is registered and wired before git_ui.js consumes it", () => {
@@ -2213,12 +2245,16 @@ test("reload restore with a probe-parked view loads the restored compare tab", a
   assert.equal(compareFetches.length, 1, "the restored compare tab fetches its compare exactly once");
   assert.match(compareContainerHtml(booted), /compared\.txt/, "the restored compare renders its result");
   assert.ok(!compareContainerHtml(booted).includes("work.txt"), "the working diff does not leak into the restored compare");
-  assert.ok(calls.filter((call) => call.path === "/api/git-ui/status").length >= 2,
-    "open() refetched the status after the probe-parked one");
+  assert.ok(calls.filter((call) => call.path === "/api/git-ui/rail-status").length === 1
+    && calls.filter((call) => call.path === "/api/git-ui/status").length >= 1,
+    "open() refetched the status after the probe-parked rail answer");
 });
 
 test("non-git workspace: probe failure is parked, rail stays consistent through open and hide", async () => {
   const booted = await bootGitUi({
+    // The rail endpoint answers a non-git folder as a payload, not an
+    // error; the full status call still errors (the old drawer-open path).
+    "/api/git-ui/rail-status": { items: [{ workspace_id: null, cwd: "/tmp/plain-folder", state: "cleanup only", not_git_repository: true }] },
     "/api/git-ui/status": { error: "not a git repository (or any of the parent directories): .git" },
     "/api/git-ui/diff": { files: [] },
     "/api/git-ui/compare": { files: [] },
@@ -2228,14 +2264,14 @@ test("non-git workspace: probe failure is parked, rail stays consistent through 
   const workspace = { cwd: "/tmp/plain-folder", title: "demo" };
   await ui.probeWorkspaceStatus(workspace);
   await settle();
-  assert.equal(ui.workspaceStatus(null, workspace), "nogit", "a failed probe tints the rail nogit");
-  // Shell renders re-probe; the parked failure must not refetch.
-  const afterProbe = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  assert.equal(ui.workspaceStatus(null, workspace), "nogit", "a nogit rail answer tints the rail nogit");
+  // Shell renders re-probe; the parked nogit answer must not refetch.
+  const afterProbe = calls.filter((call) => call.path === "/api/git-ui/rail-status").length;
   await ui.probeWorkspaceStatus(workspace);
   await ui.probeWorkspaceStatus(workspace);
   await settle();
-  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, afterProbe,
-    "a parked probe failure is not refetched on later renders");
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/rail-status").length, afterProbe,
+    "a parked nogit rail answer is not refetched on later renders");
   // Opening the drawer keeps the rail clickable (close contract) and the
   // view flips to the cleanup surface.
   await ui.open(workspace, { forceOpen: true });
@@ -2248,15 +2284,15 @@ test("non-git workspace: probe failure is parked, rail stays consistent through 
   await settle();
   assert.equal(ui.workspaceStatus(null, workspace), "nogit", "the hidden drawer on a non-git folder tints nogit again");
   // The drawer-open nogit load is also fresh: shell renders must not refetch
-  // the failing endpoint while the drawer sits open on the non-git folder.
+  // the rail while the drawer sits open on the non-git folder.
   await ui.open(workspace, { forceOpen: true });
   await settle();
-  const openFetches = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  const openFetches = calls.filter((call) => call.path === "/api/git-ui/rail-status").length;
   await ui.probeWorkspaceStatus(workspace);
   await ui.probeWorkspaceStatus(workspace);
   await settle();
-  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, openFetches,
-    "a drawer open on a non-git folder does not refetch status per render");
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/rail-status").length, openFetches,
+    "a drawer open on a non-git folder does not refetch the rail per render");
   assert.equal(ui.workspaceStatus(null, workspace), "open", "the rail stays clickable to close the drawer");
 });
 
@@ -2280,6 +2316,7 @@ test("non-git workspace: status payload (not an error) parks nogit through probe
     stashes: [],
   };
   const booted = await bootGitUi({
+    "/api/git-ui/rail-status": { items: [{ workspace_id: null, cwd: "/tmp/plain-folder", state: "cleanup only", not_git_repository: true }] },
     "/api/git-ui/status": nogitStatus,
     "/api/git-ui/diff": { files: [] },
     "/api/git-ui/compare": { files: [] },
@@ -2315,15 +2352,16 @@ test("a probe landing after a real load is discarded, not parked over it", async
   const probeStatus = { state: "clean", branch: "probe-only", ahead: 9, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
   let gateResolve = null;
   const booted = await bootGitUi({
-    "/api/git-ui/status": (params) => {
-      // The first status fetch belongs to the probe and hangs on the gate;
-      // every later fetch (the open() load, its refresh) resolves at once.
+    "/api/git-ui/rail-status": () => {
+      // The first rail call belongs to the probe and hangs on the gate;
+      // every later call resolves at once.
       if (!gateResolve) {
         return new Promise((resolve) => { gateResolve = resolve; })
-          .then(() => probeStatus);
+          .then(() => ({ items: [{ workspace_id: null, cwd: "/tmp/demo-repo", state: probeStatus.state }] }));
       }
-      return realStatus;
+      return { items: [{ workspace_id: null, cwd: "/tmp/demo-repo", state: "dirty" }] };
     },
+    "/api/git-ui/status": realStatus,
     "/api/git-ui/diff": { files: [{ path: "work.txt", chunks: [] }] },
     "/api/git-ui/compare": { files: [] },
     "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
@@ -2332,7 +2370,7 @@ test("a probe landing after a real load is discarded, not parked over it", async
   const workspace = { cwd: "/tmp/demo-repo", title: "demo" };
   const probePromise = ui.probeWorkspaceStatus(workspace);
   await settle();
-  // The real load lands while the probe fetch is still gated.
+  // The real load lands while the probe call is still gated.
   await ui.open(workspace, { forceOpen: true });
   await settle();
   const statusFetches = calls.filter((call) => call.path === "/api/git-ui/status").length;
@@ -2356,13 +2394,14 @@ test("a probe landing after a worktree switch is discarded for the new folder", 
   const newStatus = { state: "clean", branch: "new-folder", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
   let gateResolve = null;
   const booted = await bootGitUi({
-    "/api/git-ui/status": (params) => {
+    "/api/git-ui/rail-status": () => {
       if (!gateResolve) {
         return new Promise((resolve) => { gateResolve = resolve; })
-          .then(() => oldStatus);
+          .then(() => ({ items: [{ workspace_id: "w1", cwd: "/tmp/repo-old", state: "dirty" }] }));
       }
-      return params.get("cwd") === "/tmp/repo-old" ? oldStatus : newStatus;
+      return { items: [{ workspace_id: "w1", cwd: "/tmp/repo-new", state: "clean" }] };
     },
+    "/api/git-ui/status": (params) => (params.get("cwd") === "/tmp/repo-old" ? oldStatus : newStatus),
     "/api/git-ui/diff": { files: [] },
     "/api/git-ui/compare": { files: [] },
     "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
@@ -2460,6 +2499,10 @@ test("picker divergence survives shell-render probes and keeps the rail on the w
   const wsStatus = { state: "dirty", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["ws.txt"], untracked: [], conflicted: [] };
   const pickedStatus = { state: "clean", branch: "picked", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
   const booted = await bootGitUi({
+    "/api/git-ui/rail-status": (params, init) => {
+      const body = JSON.parse(init.body);
+      return { items: body.workspaces.map((w) => ({ workspace_id: w.workspace_id || null, cwd: w.cwd, state: "dirty" })) };
+    },
     "/api/git-ui/status": (params) => (params.get("cwd") === "/tmp/picked-repo" ? pickedStatus : wsStatus),
     "/api/git-ui/diff": { files: [] },
     "/api/git-ui/compare": { files: [] },
@@ -2501,16 +2544,17 @@ test("picker divergence survives shell-render probes and keeps the rail on the w
   await settle();
   html = ctxHtml(booted).split("git-ui-side-bottom-head")[1] || "";
   assert.ok(html.includes("returnToWorkspaceCwd"), "the divergence survives the probe");
-  const statusCalls = calls.filter((call) => call.path === "/api/git-ui/status");
-  assert.equal(statusCalls[statusCalls.length - 1].params.get("cwd"), "/tmp/ws-repo",
+  const railCalls = calls.filter((call) => call.path === "/api/git-ui/rail-status");
+  assert.deepEqual(JSON.parse(railCalls[railCalls.length - 1].init.body).workspaces,
+    [{ workspace_id: null, cwd: "/tmp/ws-repo" }],
     "the probe warms the rail for the workspace folder, not the picked one");
   assert.equal(ui.workspaceStatus(null, workspace), "dirty",
     "the rail tint describes the workspace folder while diverged");
   // A second probe parks nothing new: the rail park is fresh.
-  const warmFetches = statusCalls.length;
+  const warmFetches = railCalls.length;
   await ui.probeWorkspaceStatus(workspace);
   await settle();
-  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, warmFetches,
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/rail-status").length, warmFetches,
     "a parked rail status is not refetched per render");
 });
 

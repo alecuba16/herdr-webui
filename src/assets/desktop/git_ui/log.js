@@ -84,48 +84,10 @@
     return "All";
   }
 
+  // The log endpoint returns authoritative structured `rows`; the legacy
+  // `lines` fallback (client-side porcelain parsing) is gone.
   function rowsFromData(data) {
-    if (Array.isArray(data.rows) && data.rows.length) return data.rows;
-    return (data.lines || []).map(rowFromLegacyLine).filter(Boolean);
-  }
-
-  function rowFromLegacyLine(line) {
-    const parsed = parseLegacyLine(line);
-    if (!parsed) return null;
-    const detail = splitDecorations(parsed.message || "");
-    return {
-      graph: parsed.graph,
-      hash: parsed.hash,
-      title: detail.title,
-      labels: detail.labels,
-      date: "",
-      exact_date: "",
-      author: "",
-      lane: graphLane(parsed.graph),
-      current: detail.labels.some((label) => label === "HEAD" || label.startsWith("HEAD -> ")),
-    };
-  }
-
-  function parseLegacyLine(line) {
-    const raw = String(line || "");
-    const match = raw.match(/[a-f0-9]{7,}/i);
-    if (!match) return /^[|\\/ *._-]+$/.test(raw) ? { graph: raw, hash: "", message: "" } : null;
-    const hash = match[0];
-    return {
-      graph: raw.slice(0, match.index),
-      hash,
-      message: raw.slice((match.index || 0) + hash.length).replace(/^[\s|\\/_.*-]+/, "").trim(),
-    };
-  }
-
-  function splitDecorations(value) {
-    const text = String(value || "").trim();
-    const match = text.match(/^\(([^)]+)\)\s*(.*)$/);
-    if (!match) return { labels: [], title: text };
-    return {
-      labels: match[1].split(",").map((label) => label.trim()).filter(Boolean),
-      title: match[2].trim(),
-    };
+    return Array.isArray(data && data.rows) ? data.rows : [];
   }
 
   function renderRow(row, selected, filters, options, baseBranch) {
@@ -137,7 +99,7 @@
     const isCurrent = row.current || (Array.isArray(row.labels) && row.labels.some((label) => normalizeLabel(label) === "HEAD" || normalizeLabel(label).startsWith("HEAD -> ")));
     const currentClass = isCurrent ? " current" : "";
     const upstreamTip = isUpstreamTip(row, options.upstreamRef) ? " origin-tip" : "";
-    const lane = Number.isFinite(Number(row.lane)) ? Number(row.lane) : graphLane(row.graph);
+    const lane = row.lane;
     const color = laneColor(lane);
     const title = row.title || row.message || "";
     const filterText = filterFields(row);
@@ -290,14 +252,6 @@
       cells.unshift(`<span class="git-ui-lane commit" style="--lane:var(--accent)"><i${dotClass}></i></span>`);
     }
     return `<span class="git-ui-log-graph" aria-hidden="true">${cells.join("")}</span>`;
-  }
-
-  function graphLane(graph) {
-    const chars = String(graph || "").split("");
-    const star = chars.indexOf("*");
-    if (star >= 0) return star;
-    const line = chars.indexOf("|");
-    return line >= 0 ? line : 0;
   }
 
   function laneColor(index) {

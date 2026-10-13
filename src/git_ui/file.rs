@@ -13,7 +13,10 @@ use serde_json::json;
 use super::check_auth;
 use super::git_spawn;
 use super::{git_json_error, git_ui_repo, git_ui_text, safe_git_token, safe_repo_path};
+// blame parsing lives in the lib crate (shared with the TUI); the bin
+// reaches it through the herdr_webui dependency.
 use crate::{git_failure, require_auth, WebState};
+use herdr_webui::blame::parse_blame_authors;
 
 #[derive(Deserialize)]
 pub(super) struct GitUiBlameQuery {
@@ -50,7 +53,19 @@ pub(super) fn git_ui_blame_blocking(
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     let args = git_blame_args(&file, &ref_name);
     match git_ui_text(&cwd, &args) {
-        Ok(text) => Ok(json!({ "text": text })),
+        // `text` stays the raw --line-porcelain stream (payload
+        // compatibility); `authors` is the parsed final-line → author map
+        // built by the same shared parser the TUI uses (crate::blame),
+        // so the JS client no longer parses porcelain in the browser.
+        Ok(text) => {
+            let authors = parse_blame_authors(&text);
+            let authors = serde_json::Map::from_iter(
+                authors
+                    .into_iter()
+                    .map(|(line, author)| (line.to_string(), serde_json::Value::String(author))),
+            );
+            Ok(json!({ "text": text, "authors": authors }))
+        }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }

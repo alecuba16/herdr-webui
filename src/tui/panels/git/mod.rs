@@ -32,9 +32,12 @@ use crate::tui::web_api::{WebApiClient, WebApiError};
 use super::files::move_index;
 
 pub use parse::GitDiffLineMeta;
+// The blame parser is shared lib-wide (crate::blame); the tui git module
+// re-exports it so panel callers keep their existing path.
+pub use crate::blame::parse_blame_authors;
 pub(super) use parse::{
-    parse_blame_authors, parse_branch, parse_commit, parse_diff_lines_with_meta,
-    parse_diff_old_path, parse_git_files, parse_stash,
+    parse_branch, parse_commit, parse_diff_lines_with_meta, parse_diff_old_path, parse_git_files,
+    parse_stash,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

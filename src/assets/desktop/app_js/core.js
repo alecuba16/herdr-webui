@@ -58,6 +58,10 @@ let state = {
   session: "default",
   sessions: [],
   workspaces: [],
+  // Server-derived snapshot maps (see applySessionSnapshot); null until
+  // the first snapshot arrives, and null on servers that predate them.
+  workspacesById: null,
+  workspaceCounts: null,
   worktrees: [],
   workspaceBranches: {},
   workspaceOrder: [],
@@ -4050,7 +4054,15 @@ async function refreshOnline(seq) {
   if (state.snapshotBootstrap) {
     let snap = null;
     try {
-      snap = await api("/api/session-snapshot");
+      // Ask the server to filter tabs/panes to the selected workspace
+      // (the local filter applySessionSnapshot used to run). No ws yet
+      // means the full snapshot; the server returns per-workspace maps
+      // either way.
+      snap = await api(
+        state.ws
+          ? "/api/session-snapshot?workspace_id=" + encodeURIComponent(state.ws)
+          : "/api/session-snapshot",
+      );
       if (seq !== refreshSeq) return;
     } catch (e) {
       state.snapshotBootstrap = false;
@@ -4062,7 +4074,10 @@ async function refreshOnline(seq) {
     }
   }
   // Legacy multi-call path: kept verbatim for servers without the
-  // snapshot bootstrap and for the first failed-snapshot refresh.
+  // snapshot bootstrap and for the first failed-snapshot refresh. It has
+  // no server maps, so clear any stale ones from an earlier snapshot.
+  state.workspacesById = null;
+  state.workspaceCounts = null;
   const w = await api("/api/workspaces");
   if (seq !== refreshSeq) return;
   state.workspaces = w.result.workspaces || [];
@@ -4078,20 +4093,13 @@ async function refreshOnline(seq) {
     ),
   );
   if (seq !== refreshSeq) return;
-  state.worktrees = worktreeResults.flatMap((r) => {
-    const result = (r || {}).result || {},
-      source = result.source || {};
-    return (result.worktrees || []).map((wt) =>
-      Object.assign({}, wt, {
-        source_workspace_id: source.source_workspace_id,
-        source_repo_name: source.repo_name,
-        source_repo_key: source.repo_key,
-        source_repo_root: source.repo_root,
-        source_cwd: source.source_checkout_path,
-        default_worktree_directory: source.default_worktree_directory,
-      }),
-    );
-  });
+  // Rows arrive pre-stamped server-side (normalize_worktree_response);
+  // null entries (failed fetch) drop out. Branch attribution still reads
+  // the source envelope, which carries the checkout path even when a row
+  // list is empty.
+  state.worktrees = worktreeResults.flatMap(
+    (r) => ((r || {}).result || {}).worktrees || [],
+  );
   state.workspaceBranches = {};
   for (const r of worktreeResults) {
     const result = (r || {}).result || {},
@@ -4165,10 +4173,16 @@ function applySessionSnapshot(response) {
   const snap = result.snapshot || result;
   const workspaces = snap.workspaces;
   if (!Array.isArray(workspaces)) return false;
+  const requestedWs = state.ws;
   state.workspaces = workspaces;
   pruneWorkspaceShellStates();
   creatingDefaultWorkspace = false;
   fixVanishedWorkspaceSelection();
+  // The request asked the server to filter tabs/panes to the workspace we
+  // had THEN. If the selection just moved (vanished workspace), the
+  // filtered arrays describe the wrong workspace: bail to the legacy
+  // path, which re-fetches per the new selection.
+  if (requestedWs && requestedWs !== state.ws) return false;
   // Session-wide fields below apply regardless of the workspace selection;
   // the legacy path set them before its own !state.ws block, and a cold
   // boot at "/" must still restore the drag order and worktree rows.
@@ -4181,31 +4195,23 @@ function applySessionSnapshot(response) {
         state.layouts[layout.workspace_id + "/" + layout.tab_id] = layout;
     }
   }
-  // Per-workspace worktree results: same envelope per entry as one
-  // /api/worktrees call, so the flatMap matches the legacy path verbatim.
+  // Per-workspace worktree results: rows arrive pre-stamped server-side
+  // (normalize_worktree_response copies the source envelope onto each row:
+  // source_workspace_id, source_repo_*, source_cwd,
+  // default_worktree_directory, repo_label), so no local enrichment here;
+  // flatten the per-workspace arrays into one list. Null entries (failed
+  // per-workspace fetch) drop out.
   const worktreeResults = Array.isArray(result.worktree_results)
     ? result.worktree_results
     : [];
-  state.worktrees = worktreeResults.flatMap((r) => {
-    const result = (r || {}).result || {},
-      source = result.source || {};
-    return (result.worktrees || []).map((wt) =>
-      Object.assign({}, wt, {
-        source_workspace_id: source.source_workspace_id,
-        source_repo_name: source.repo_name,
-        source_repo_key: source.repo_key,
-        source_repo_root: source.repo_root,
-        source_cwd: source.source_checkout_path,
-        default_worktree_directory: source.default_worktree_directory,
-      }),
-    );
-  });
+  state.worktrees = worktreeResults.flatMap(
+    (r) => ((r || {}).result || {}).worktrees || [],
+  );
   state.workspaceBranches = {};
   for (const r of worktreeResults) {
     const result = (r || {}).result || {},
-      source = result.source || {},
-      sourceId = source.source_workspace_id,
-      sourcePath = source.source_checkout_path;
+      sourceId = result.source ? result.source.source_workspace_id : null,
+      sourcePath = result.source ? result.source.source_checkout_path : null;
     if (!sourceId || !sourcePath) continue;
     const match = (result.worktrees || []).find((wt) => samePath(wt.path, sourcePath));
     if (match && (match.branch || match.is_detached))
@@ -4215,6 +4221,11 @@ function applySessionSnapshot(response) {
   state.workspaceOrder = Array.isArray(result.workspace_order)
     ? result.workspace_order
     : [];
+  // Server-derived maps (workspacesById + per-workspace tab/pane counts).
+  // Present since the same wrapper build that filters tabs/panes; null on
+  // an older server, and every consumer falls back to local derivation.
+  state.workspacesById = result.workspaces_by_id || null;
+  state.workspaceCounts = result.workspace_counts || null;
   if (!state.ws) {
     state.allTabs = [];
     state.tabs = [];
@@ -4225,8 +4236,17 @@ function applySessionSnapshot(response) {
     return true;
   }
   state.allTabs = snap.tabs || [];
-  state.tabs = state.allTabs.filter((t) => t.workspace_id === state.ws);
-  state.panes = (snap.panes || []).filter((p) => p.workspace_id === state.ws);
+  // The server already filtered tabs/panes to state.ws (the request carried
+  // ?workspace_id=). workspace_counts present means the server build is new
+  // enough to have done it; without it (old server proxying the snapshot)
+  // fall back to the local filter the request path can't rely on.
+  const serverFiltered = !!state.workspaceCounts;
+  state.tabs = serverFiltered
+    ? state.allTabs
+    : state.allTabs.filter((t) => t.workspace_id === state.ws);
+  state.panes = serverFiltered
+    ? snap.panes || []
+    : (snap.panes || []).filter((p) => p.workspace_id === state.ws);
   state.agents = snap.agents || [];
   handleAttentionSound();
   return true;
@@ -4504,9 +4524,16 @@ function maybeAutoCloseWorkspace(workspaceId) {
     (workspace) => workspace.workspace_id === workspaceId,
   );
   if (!workspaceStillKnown) return;
-  const hasPanels = (state.allTabs || [])
-    .concat(state.tabs || [])
-    .some((tab) => tab.workspace_id === workspaceId);
+  // With server-filtered snapshots allTabs only holds the selected
+  // workspace, so cross-workspace panel checks read the server-sent
+  // per-workspace counts (workspace_counts); the allTabs concat stays as
+  // the fallback for older servers and the legacy multi-call path.
+  const serverCount = (state.workspaceCounts || {})[workspaceId] || {};
+  const hasPanels = Number.isFinite(serverCount.tabs)
+    ? serverCount.tabs > 0
+    : (state.allTabs || [])
+        .concat(state.tabs || [])
+        .some((tab) => tab.workspace_id === workspaceId);
   if (hasPanels) return;
   const wasSelected = state.ws === workspaceId;
   autoCloseInFlight.add(workspaceId);

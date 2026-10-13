@@ -60,6 +60,10 @@
     herdrCompatible: null,
     herdrVersion: null,
     workspaces: [],
+    // Server-derived snapshot maps (see applySessionSnapshot); null until
+    // the first snapshot arrives, and null on servers that predate them.
+    workspacesById: null,
+    workspaceCounts: null,
     tabs: [],
     allTabs: [],
     panes: [],
@@ -902,7 +906,15 @@
       if (state.snapshotBootstrap) {
         let snap = null;
         try {
-          snap = await api("/api/session-snapshot");
+          // Ask the server to filter tabs/panes to the selected workspace
+          // (the local filter applySessionSnapshot used to run). No ws yet
+          // means the full snapshot; the server returns per-workspace maps
+          // either way.
+          snap = await api(
+            state.ws
+              ? "/api/session-snapshot?workspace_id=" + encodeURIComponent(state.ws)
+              : "/api/session-snapshot",
+          );
           if (seq !== refreshSeq) return;
         } catch (e) {
           state.snapshotBootstrap = false;
@@ -913,6 +925,10 @@
           return;
         }
       }
+      // Legacy multi-call path: no server maps here, so clear any stale
+      // ones from an earlier snapshot.
+      state.workspacesById = null;
+      state.workspaceCounts = null;
       const workspaces = await api("/api/workspaces");
       if (seq !== refreshSeq) return;
       state.workspaces = workspaces.result.workspaces || [];
@@ -967,6 +983,7 @@
     const snap = result.snapshot || result;
     const workspaces = snap.workspaces;
     if (!Array.isArray(workspaces)) return false;
+    const requestedWs = state.ws;
     state.workspaces = workspaces;
     if (state.ws && !workspaces.some((workspace) => workspace.workspace_id === state.ws)) {
       state.ws = null;
@@ -974,6 +991,16 @@
       state.pane = null;
     }
     if (!state.ws && workspaces[0]) state.ws = workspaces[0].workspace_id;
+    // Server-derived maps (workspacesById + per-workspace tab/pane counts).
+    // Null on an older server; consumers fall back to local derivation.
+    state.workspacesById = result.workspaces_by_id || null;
+    state.workspaceCounts = result.workspace_counts || null;
+    // The request asked the server to filter tabs/panes to the workspace we
+    // had THEN. If the selection just moved (vanished workspace, or the
+    // auto-pick of the first workspace), the filtered arrays describe the
+    // wrong workspace: bail to the legacy path, which re-fetches per the
+    // new selection.
+    if (requestedWs && requestedWs !== state.ws) return false;
     if (!state.ws) {
       state.allTabs = [];
       state.tabs = [];
@@ -983,8 +1010,18 @@
       return true;
     }
     state.allTabs = snap.tabs || [];
-    state.tabs = state.allTabs.filter((tab) => tab.workspace_id === state.ws);
-    state.panes = (snap.panes || []).filter((pane) => pane.workspace_id === state.ws);
+    // The server already filtered tabs/panes when the request carried
+    // ?workspace_id= for the selection that survived (requestedWs still
+    // current). An unfiltered request (no ws at call time, auto-picked
+    // here) needs the local filter even on a new server. Without
+    // workspace_counts (old server) always filter locally.
+    const serverFiltered = !!(requestedWs && state.workspaceCounts);
+    state.tabs = serverFiltered
+      ? state.allTabs
+      : state.allTabs.filter((tab) => tab.workspace_id === state.ws);
+    state.panes = serverFiltered
+      ? snap.panes || []
+      : (snap.panes || []).filter((pane) => pane.workspace_id === state.ws);
     state.agents = snap.agents || [];
     browserFaviconError = false;
     mobileAttention.handleSound();

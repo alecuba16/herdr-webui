@@ -967,6 +967,13 @@ describe("app bundle load", () => {
     ok(!desktopTerminalSource.includes("attachCustomWheelEventHandler"));
     match(desktopTerminalSource, /e\.key === "PageUp" \|\| e\.key === "PageDown"/);
     match(desktopTerminalSource, /scrollTerminalLines\(e\.key === "PageUp"/);
+    // Wheel routing is keyed on mouse mode, not buffer: an inline TUI that
+    // tracks the mouse (jcode, tmux `mouse on`) owns the wheel, so both the
+    // capture-phase handler and scrollTerminalLines must yield to the
+    // adapter's SGR forwarding instead of scrolling stale repaint history.
+    match(desktopTerminalSource, /state\.backendMode === "builtin" &&\n\s+\(termWheelForwardedToProgram\(\) \|\| !terminalUsesNormalBuffer\(\)\)\n\s+\)/);
+    match(desktopTerminalSource, /function scrollTerminalLines\(lines\) \{[\s\S]*?if \(termWheelForwardedToProgram\(\) \|\| !terminalUsesNormalBuffer\(\)\) return false;/);
+    match(desktopTerminalSource, /function termWheelForwardedToProgram\(\) \{[\s\S]*?term\.wheelForwardedToProgram\(\)\);[\s\S]*?\n\}/);
     ok(!desktopTerminalSource.includes("scrollBrowserOverflow"));
     ok(!source.includes("Option+Wheel"));
     match(desktopTerminalSource, /const stepLines = Math\.max\(1, Number\(options\.scrollLines\) \|\| 1\);/);
@@ -2069,7 +2076,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /state\.focusDiffSearch = true/);
     match(readFileSync(new URL("./desktop/git_ui/diff_search.js", import.meta.url), "utf8"), /function highlightDiffText\(code, path\)/);
     const gitDiffRenderRowsSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
-    match(gitDiffRenderRowsSource, /const rows = markChangeGroups\(diffLayoutMode\(\) === "unified" \? unifiedRows\(chunk\) : sideBySideRows\(chunk\)\)/);
+    match(gitDiffRenderRowsSource, /const rows = chunk\.rows && chunk\.rows\.length \? markChangeGroups\(chunk\.rows\) : \[\];/);
     match(readFileSync(new URL("./desktop/git_ui/diff_search.js", import.meta.url), "utf8"), /<mark class="git-ui-search-match">/);
     match(gitDiffRenderRowsSource, /renderDiffCode\(oldLine, newLine, path, "old"\)/);
     match(gitDiffRenderRowsSource, /renderDiffCode\(oldLine, newLine, path, "new"\)/);
@@ -4156,7 +4163,9 @@ describe("app bundle load", () => {
       calls.push(text);
       // Only the snapshot endpoint answers with bootstrap data; the legacy
       // endpoints answer boot only. The refresh itself must never call them.
-      if (text === "/api/session-snapshot")
+      // The refresh passes ?workspace_id= when a workspace is selected, so
+      // match the endpoint by prefix rather than exact string.
+      if (text.startsWith("/api/session-snapshot"))
         return {
           ok: true,
           status: 200,
@@ -4168,8 +4177,10 @@ describe("app bundle load", () => {
                   { workspace_id: "ws2", label: "other", cwd: "/other" },
                 ],
                 tabs: [
+                  // The request carried ?workspace_id=ws1, so the server
+                  // already dropped ws2's tab from the payload; the
+                  // workspace_counts map still reports it for the UI.
                   { workspace_id: "ws1", tab_id: "t1", number: 1 },
-                  { workspace_id: "ws2", tab_id: "t9", number: 9 },
                 ],
                 panes: [
                   { workspace_id: "ws1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" },
@@ -4191,12 +4202,38 @@ describe("app bundle load", () => {
                       repo_name: "repo",
                       source_checkout_path: "/repo",
                     },
-                    worktrees: [{ path: "/repo", branch: "main" }],
+                    // Rows arrive pre-stamped server-side (normalize_worktree_response
+                    // copies the source envelope onto each row, with the
+                    // repo_name -> repo_key -> repo_root and
+                    // source_checkout_path -> repo_root fallbacks).
+                    worktrees: [
+                      {
+                        path: "/repo",
+                        branch: "main",
+                        source_workspace_id: "ws1",
+                        source_repo_name: "repo",
+                        source_repo_key: null,
+                        source_repo_root: null,
+                        source_cwd: "/repo",
+                        default_worktree_directory: null,
+                      },
+                    ],
                   },
                 },
                 null,
               ],
               workspace_order: ["ws2", "ws1"],
+              // Server-derived maps + per-workspace counts: with these the
+              // client trusts the server filter instead of filtering tabs
+              // locally (see applySessionSnapshot).
+              workspaces_by_id: {
+                ws1: { workspace_id: "ws1", label: "repo", cwd: "/repo" },
+                ws2: { workspace_id: "ws2", label: "other", cwd: "/other" },
+              },
+              workspace_counts: {
+                ws1: { tabs: 1, panes: 1 },
+                ws2: { tabs: 1, panes: 0 },
+              },
             },
           }),
         };
@@ -4243,7 +4280,12 @@ describe("app bundle load", () => {
     // One request for the whole refresh: no workspaces, tabs, panes,
     // agents, worktrees, workspace-order, or pane-layout round trips.
     equal(calls.slice(before).length, 1);
-    equal(calls[before], "/api/session-snapshot");
+    // With a workspace selected the call carries ?workspace_id=, so the
+    // assertion matches by endpoint prefix.
+    ok(
+      calls[before].startsWith("/api/session-snapshot"),
+      "expected a snapshot request, got " + calls[before],
+    );
     // The seeded layout spared the pane-layout call and sized the terminal.
     equal(vm.runInContext("state.termCols", ctx), 80);
     equal(vm.runInContext("state.termRows", ctx), 24);
@@ -4253,6 +4295,11 @@ describe("app bundle load", () => {
     equal(state.worktrees.length, 1);
     equal(state.worktrees[0].source_workspace_id, "ws1");
     equal(state.workspaceBranches.ws1, "main");
+    // Server maps consumed as-is; workspace_counts is what made the client
+    // skip its local filter, and ws2's count survives although its tabs
+    // are not in the filtered payload.
+    equal(state.workspacesById.ws2.label, "other");
+    equal(state.workspaceCounts.ws2.tabs, 1);
     // The sticky bootstrap flag stays on after a successful apply.
     equal(state.snapshotBootstrap, true);
   });
@@ -4276,7 +4323,9 @@ describe("app bundle load", () => {
       calls.push(text);
       // A snapshot without a workspaces array: applySessionSnapshot
       // rejects it and refreshOnline must fall through to the legacy path.
-      if (text === "/api/session-snapshot")
+      // The refresh passes ?workspace_id= when a workspace is selected, so
+      // match the endpoint by prefix rather than exact string.
+      if (text.startsWith("/api/session-snapshot"))
         return { ok: true, status: 200, json: async () => ({ result: { agents: [] } }) };
       const result = text.includes("workspaces")
         ? { workspaces: [{ workspace_id: "ws1", label: "repo" }] }
@@ -4325,7 +4374,9 @@ describe("app bundle load", () => {
     ctx.fetch = async (url) => {
       const text = String(url);
       calls.push(text);
-      if (text === "/api/session-snapshot")
+      // The refresh passes ?workspace_id= when a workspace is selected, so
+      // match the endpoint by prefix rather than exact string.
+      if (text.startsWith("/api/session-snapshot"))
         return { ok: false, status: 500, json: async () => ({ error: "down" }) };
       const result = text.includes("workspaces")
         ? { workspaces: [{ workspace_id: "ws1", label: "repo" }] }
@@ -4357,7 +4408,8 @@ describe("app bundle load", () => {
     equal(vm.runInContext("state.snapshotBootstrap", ctx), false);
     await vm.runInContext("refreshSeq = 2; refreshOnline(2)", ctx);
     equal(
-      calls.slice(before).filter((c) => c === "/api/session-snapshot").length,
+      calls.slice(before).filter((c) => c.startsWith("/api/session-snapshot"))
+        .length,
       1,
     );
     ok(calls.slice(before).includes("/api/workspaces"));
@@ -4382,7 +4434,9 @@ describe("app bundle load", () => {
     ctx.fetch = async (url) => {
       const text = String(url);
       calls.push(text);
-      if (text === "/api/session-snapshot")
+      // The refresh passes ?workspace_id= when a workspace is selected, so
+      // match the endpoint by prefix rather than exact string.
+      if (text.startsWith("/api/session-snapshot"))
         return {
           ok: true,
           status: 200,
@@ -4460,7 +4514,9 @@ describe("app bundle load", () => {
     ctx.fetch = async (url) => {
       const text = String(url);
       calls.push(text);
-      if (text === "/api/session-snapshot")
+      // The refresh passes ?workspace_id= when a workspace is selected, so
+      // match the endpoint by prefix rather than exact string.
+      if (text.startsWith("/api/session-snapshot"))
         return {
           ok: true,
           status: 200,
@@ -4530,7 +4586,9 @@ describe("app bundle load", () => {
     ctx.fetch = async (url) => {
       const text = String(url);
       calls.push(text);
-      if (text === "/api/session-snapshot")
+      // The refresh passes ?workspace_id= when a workspace is selected, so
+      // match the endpoint by prefix rather than exact string.
+      if (text.startsWith("/api/session-snapshot"))
         return {
           ok: true,
           status: 200,
@@ -4554,12 +4612,38 @@ describe("app bundle load", () => {
                       repo_name: "repo",
                       source_checkout_path: "/repo",
                     },
-                    worktrees: [{ path: "/repo", branch: "main" }],
+                    // Rows arrive pre-stamped server-side (normalize_worktree_response
+                    // copies the source envelope onto each row, with the
+                    // repo_name -> repo_key -> repo_root and
+                    // source_checkout_path -> repo_root fallbacks).
+                    worktrees: [
+                      {
+                        path: "/repo",
+                        branch: "main",
+                        source_workspace_id: "ws1",
+                        source_repo_name: "repo",
+                        source_repo_key: null,
+                        source_repo_root: null,
+                        source_cwd: "/repo",
+                        default_worktree_directory: null,
+                      },
+                    ],
                   },
                 },
                 null,
               ],
               workspace_order: ["ws2", "ws1"],
+              // Server-derived maps + per-workspace counts: with these the
+              // client trusts the server filter instead of filtering tabs
+              // locally (see applySessionSnapshot).
+              workspaces_by_id: {
+                ws1: { workspace_id: "ws1", label: "repo", cwd: "/repo" },
+                ws2: { workspace_id: "ws2", label: "other", cwd: "/other" },
+              },
+              workspace_counts: {
+                ws1: { tabs: 1, panes: 1 },
+                ws2: { tabs: 1, panes: 0 },
+              },
             },
           }),
         };
@@ -5668,7 +5752,7 @@ describe("app bundle load", () => {
     const gitDiffRenderLayoutSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
     match(gitDiffRenderLayoutSource, /function renderUnifiedLine\(/);
     match(gitDiffRenderLayoutSource, /git-ui-unified-row/);
-    match(gitDiffRenderLayoutSource, /sideBySideRows\(chunk\)/);
+    match(gitDiffRenderLayoutSource, /chunk\.rows/);
     match(gitDiffRenderLayoutSource, /renderUnifiedLine\(row, path, index, rows, rowIndex, contextArrows, !!file\.preview_large_diff\)/);
     match(gitDiffRenderLayoutSource, /restoreHunk\('\$\{arg\(path\)\}',\$\{hunkIndex\}\)/);
     match(gitDiffRenderLayoutSource, /function contextArrowsForChunk\(chunks, index\)/);
@@ -5811,7 +5895,11 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /async function copyCommitId\(hash\)/);
     match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /Commit id copied/);
     match(gitUiSource, /async copyCommitId\(hash\)/);
-    match(gitLogSource, /current: detail\.labels\.some/);
+    // Legacy client-side log-line parsing is gone: rows come from the
+    // server's structured payload only.
+    ok(!gitLogSource.includes("current: detail.labels.some"), "legacy rowFromLegacyLine parsing removed");
+    ok(!gitLogSource.includes("graphLane"), "graphLane fallback removed");
+    match(gitLogSource, /return Array\.isArray\(data && data\.rows\) \? data\.rows : \[\];/);
     match(gitLogSource, /const LANE_COLORS = \[/);
     match(gitLogSource, /exact_date/);
     match(gitLogSource, /function renderLoadMore/);
@@ -6027,7 +6115,11 @@ describe("app bundle load", () => {
     match(source, /id="optEditorWhitespace"/);
     match(source, /next\.editorTabSize = Math\.max\(1, Math\.min\(8/);
     match(source, /next\.editorIndentUnit = Math\.max\(1, Math\.min\(8/);
-    match(fileBrowserSource, /function editorOptions\(\)/);
+    match(fileBrowserSource, /fileBrowserEditorOptions/);
+    match(
+      readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"),
+      /function fileBrowserEditorOptions\(\)/,
+    );
     match(source, /title: "Editor",\n\s+desc: "Editing behavior, readability, and performance controls\./);
     match(source, /optEditorEnabled.*optEditorWordWrap.*optEditorTabSize/);
     match(source, /registerSettingsCommit\("optEditorTabSize"/);
@@ -7200,5 +7292,65 @@ describe("shortcut hint toast", () => {
       zIndex(".file-browser-menu", read("./desktop/file_browser.css")) || 0,
     );
     ok(picker >= toast, `highest other layer ${picker} must not fall below the toast ${toast}`);
+  });
+});
+
+// ---- lens terminal-toggle force redraw ----
+// The lens covers the pane and pauses wterm's paints; toggling back to
+// Terminal must repaint the grid, not just resume the rAF loop. The
+// contract spans three files, so pin each link: the adapter method
+// exists, setLens(false) calls it, and it runs after the unpause (order
+// matters: requestSetup before the pause clears would no-op the frame).
+describe("lens terminal toggle force redraw", () => {
+  const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
+
+  it("exposes forceRedraw on the shared terminal adapter", () => {
+    const adapterSource = read("./shared/terminal_adapter.js");
+    match(adapterSource, /forceRedraw\(\) \{\n\s+if \(this\._destroyed \|\| !this\.wterm\) return;\n\s+const renderer = this\.wterm\.renderer;/);
+    match(adapterSource, /renderer\.requestSetup\(\);/);
+  });
+
+  it("repaints the covered grid when the lens closes", () => {
+    const lensSource = read("./desktop/app_js/lens.js");
+    // setCoveredRendering(false) resumes paints; forceTerminalRedraw()
+    // must run after it so the forced frame is not itself suppressed.
+    match(
+      lensSource,
+      /setCoveredRendering\(false\);\n\s+\/\/ Unpause alone leaves the last painted frame on screen[\s\S]*?forceTerminalRedraw\(\);/,
+    );
+    match(lensSource, /function forceTerminalRedraw\(\) \{/);
+    match(lensSource, /adapter\.forceRedraw\(\);/);
+  });
+});
+
+// ---- welcome-tab Enter creates the first terminal ----
+// The empty-workspace leaf is a div, so Enter has no native semantics;
+// the bindings keydown fallback must route it to newTab(). Pin the
+// guards too: without modalOpen() and the input/textarea exclusion a
+// stray Enter would spawn terminals behind open forms.
+describe("welcome tab enter creates terminal", () => {
+  const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
+
+  it("routes Enter on the welcome leaf to newTab", () => {
+    const bindingsSource = read("./desktop/app_js/bindings.js");
+    match(bindingsSource, /#workspaceEmptyLeaf/);
+    match(bindingsSource, /target === document\.body \|\|\n\s+target === document\.documentElement \|\|\n\s+!!target\.closest\("#workspaceEmptyLeaf"\)/);
+    // The guard chain: workspace open, no tab, no modal, no editable
+    // target: mirrors syncWorkspaceEmptyLeaf's show condition.
+    match(
+      bindingsSource,
+      /e\.key === "Enter" &&\n\s+state\.ws &&\n\s+!state\.tab &&\n\s+!modalOpen\(\) &&\n\s+!target\.closest\("input, select, textarea, \[contenteditable='true'\]"\)/,
+    );
+    match(bindingsSource, /newTab\(\);\n\s+return;/);
+  });
+
+  it("keeps span-button Enter semantics ahead of the welcome branch", () => {
+    const bindingsSource = read("./desktop/app_js/bindings.js");
+    // The spanButton click path must stay in front: sidebar rows and
+    // pane-tab closes own their Enter presses before the welcome
+    // fallback can claim them.
+    const spanIdx = bindingsSource.indexOf('spanButton.click();');
+    const welcomeIdx = bindingsSource.indexOf('#workspaceEmptyLeaf');
+    ok(spanIdx !== -1 && welcomeIdx !== -1 && spanIdx < welcomeIdx, "spanButton handling precedes the welcome-Enter fallback");
   });
 });

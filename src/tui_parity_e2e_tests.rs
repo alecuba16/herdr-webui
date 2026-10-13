@@ -174,6 +174,7 @@ fn localhost_no_auth_state(default_folder: PathBuf) -> WebState {
         promoted_temporary_tabs: Arc::new(Mutex::new(HashMap::new())),
         builtin_start_lock: Arc::new(Mutex::new(())),
         herdr_bin: "herdr".to_string(),
+        herdr_install_cache: Arc::new(Mutex::new(None)),
         auth: Arc::new(Mutex::new(AuthConfig {
             user: None,
             password: None,
