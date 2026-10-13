@@ -51,10 +51,11 @@ document.addEventListener("keydown", (e) => {
     }
     return;
   }
-  // Welcome (empty-workspace) leaf: Enter creates the first terminal
-  // panel, same as the card's "New terminal" button. The leaf is a div,
-  // so no native Enter semantics exist for it; after the open-workspace
-  // modal closes, focus falls to <body>, so accept body focus too.
+  // Zero-tab workspace body: Enter creates the first terminal panel,
+  // same as the card's "New terminal" button. The pane column scope
+  // (#workspacePanes) covers every real flow: a click on the empty
+  // workspace body, the leaf card once the open-workspace modal closes,
+  // and the body-level focus left after the last tab closes.
   // state.ws && !state.tab mirrors syncWorkspaceEmptyLeaf's show
   // condition in render.js: the leaf is on screen exactly then.
   if (
@@ -65,7 +66,7 @@ document.addEventListener("keydown", (e) => {
     !target.closest("input, select, textarea, [contenteditable='true']") &&
     (target === document.body ||
       target === document.documentElement ||
-      !!target.closest("#workspaceEmptyLeaf"))
+      !!target.closest("#workspacePanes"))
   ) {
     e.preventDefault();
     e.stopPropagation();
@@ -339,6 +340,14 @@ el("optStuckWorkingEnabled").onchange = () => {
   saveOptions();
   applyOptions();
   render();
+};
+el("optPromptCardsEnabled").onchange = () => {
+  options.promptCardsEnabled = el("optPromptCardsEnabled").checked;
+  saveOptions();
+  if (typeof flashSettingsApplied === "function")
+    flashSettingsApplied(el("optPromptCardsEnabled"));
+  if (typeof HerdrPromptCards !== "undefined" && HerdrPromptCards.evaluate)
+    HerdrPromptCards.evaluate();
 };
 function commitWorkingDismissMinutes() {
   options.workingDismissMinutes = Math.max(

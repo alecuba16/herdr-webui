@@ -118,7 +118,7 @@ function element(id) {
 
 function makeBridge(gridLines) {
   return {
-    getCols: () => 40,
+    getCols: () => Math.max(40, ...gridLines.map((line) => line.length)),
     getRows: () => gridLines.length,
     getScrollbackCount: () => 0,
     getScrollbackLineLen: () => 0,
@@ -160,6 +160,7 @@ function loadModule(overrides = {}) {
     },
     term: { wterm: { bridge: overrides.bridge || makeBridge([]) } },
     state: overrides.state || { ws: "ws_1", workspaces: [] },
+    options: overrides.options !== undefined ? overrides.options : {},
     statusClass: overrides.statusClass || ((s) => s),
     escapeHtml: (value) =>
       String(value).replace(/[&<>"']/g, (ch) =>
@@ -427,6 +428,152 @@ describe("prompt cards module", () => {
     equal(card.hidden, true, "local fallback finds no dialog in a blank grid");
   });
 
+  it("parses the jcode Permissions viewer into letter options", () => {
+    // The real jcode viewer tail (jcode-tui-permissions): fullscreen
+    // alt screen, letter shortcuts, waiting line, pending count.
+    const { ctx } = loadModule();
+    const grid = [
+      "│ Permissions (2 pending)                             │",
+      "│ a approve · d deny · A approve all · D deny all     │",
+      "│ ⏳ Agent is waiting for this decision               │",
+      "│ Tool: Bash (rm -rf work)                            │",
+    ];
+    const prompt = ctx.HerdrPromptCards.parsePrompt(grid);
+    ok(prompt, "jcode viewer must parse");
+    equal(prompt.kind, "options");
+    ok(prompt.title.includes("jcode permissions"), "viewer title");
+    ok(prompt.title.includes("2"), "pending count in title");
+    equal(prompt.options.map((o) => o.key).join(","), "a,d,A,D");
+    equal(prompt.options[0].label, "Approve");
+    equal(prompt.options[3].label, "Deny all");
+  });
+
+  it("jcode viewer markers above newer output still parse (pinned asymmetry)", () => {
+    // Pins CURRENT behavior: the round-2 tail-end tightening applies to
+    // the numbered branch only. The viewer branch parses both markers
+    // wherever they sit in the window, because real viewer layouts can
+    // carry content below the waiting line (tool rows, the deny-reason
+    // input state) and the live viewer holds the alt screen so its
+    // markers never sit above newer output while it is active. If this
+    // ever gets tightened, change all three parser copies and the
+    // parity corpus together.
+    const { ctx } = loadModule();
+    const prompt = ctx.HerdrPromptCards.parsePrompt([
+      "│ Permissions (1 pending) │",
+      "│ a approve · d deny · A approve all · D deny all │",
+      "│ ⏳ Agent is waiting for this decision │",
+      "build log line 1",
+      "build log line 2",
+    ]);
+    ok(prompt, "viewer card floats even with newer output below (pinned)");
+    equal(prompt.title, "jcode permissions (1 pending)");
+  });
+
+  it("jcode viewer needs both markers; transcript quotes do not parse", () => {
+    const { ctx } = loadModule();
+    equal(
+      ctx.HerdrPromptCards.parsePrompt([
+        "a approve · d deny · A approve all · D deny all",
+        "Release notes mention the shortcuts above.",
+      ]),
+      null,
+      "help row without the waiting line is not a viewer",
+    );
+    equal(
+      ctx.HerdrPromptCards.parsePrompt([
+        "earlier: ⏳ Agent is waiting for this decision",
+        "1. do not parse this",
+        "2. yes",
+        "task finished, exit 0",
+      ]),
+      null,
+      "waiting line alone is not a viewer",
+    );
+  });
+
+  it("answering a jcode viewer option sends the letter + Enter", () => {
+    const JCODE_GRID = [
+      "│ Permissions (2 pending)                             │",
+      "│ a approve · d deny · A approve all · D deny all     │",
+      "│ ⏳ Agent is waiting for this decision               │",
+    ];
+    const { ctx, card, sent } = loadModule({
+      state: { ws: "ws_1", workspaces: [{ workspace_id: "ws_1", agent_status: "blocked" }] },
+      bridge: makeBridge(JCODE_GRID),
+    });
+    const prompt = ctx.HerdrPromptCards.evaluate();
+    ok(prompt, "viewer card renders");
+    const buttons = card.querySelectorAll(".prompt-card-option");
+    equal(buttons.length, 4, "four letter buttons rendered");
+    // Click "Approve all" (A) via its bound handler.
+    buttons[2].onclick();
+    equal(sent.length, 1, "one payload sent");
+    equal(sent[0], "A\r", "letter + Enter, exactly what the viewer expects");
+    equal(card.hidden, true, "card hides after answering");
+  });
+
+  it("numbered list above newer output does not parse (stale-window FP)", () => {
+    const { ctx } = loadModule();
+    equal(
+      ctx.HerdrPromptCards.parsePrompt([
+        "plan:",
+        "1. allow port",
+        "2. deny stale entry",
+        "done, task finished",
+      ]),
+      null,
+      "block must sit at the tail end or carry a confirm hint",
+    );
+  });
+
+  it("numbered block at the tail end still parses", () => {
+    const { ctx } = loadModule();
+    const prompt = ctx.HerdrPromptCards.parsePrompt([
+      "❯ Run it?",
+      "1. Yes, allow once",
+      "2. No, deny",
+      "",
+      "",
+    ]);
+    ok(prompt, "tail-end options parse");
+    equal(prompt.title, "Run it");
+  });
+
+  it("numbered block with a confirm hint below parses", () => {
+    const { ctx } = loadModule();
+    const prompt = ctx.HerdrPromptCards.parsePrompt([
+      "❯ Apply migration?",
+      "1. yes, allow",
+      "2. no, cancel",
+      "press enter to confirm",
+      "(applying soon)",
+    ]);
+    ok(prompt, "confirm hint keeps the dialog parseable");
+    equal(prompt.title, "Apply migration");
+    equal(prompt.options.length, 2);
+  });
+
+  it("promptCardsEnabled=false hides the card even when blocked", () => {
+    const { ctx, card } = loadModule({
+      state: { ws: "ws_1", workspaces: [{ workspace_id: "ws_1", agent_status: "blocked" }] },
+      bridge: makeBridge(QUESTION_GRID),
+      options: { promptCardsEnabled: false },
+    });
+    const result = ctx.HerdrPromptCards.evaluate();
+    equal(result, null, "toggle off means no card");
+    ok(card.hidden, "overlay stays hidden");
+  });
+
+  it("promptCardsEnabled default (missing) keeps cards working", () => {
+    const { ctx, card } = loadModule({
+      state: { ws: "ws_1", workspaces: [{ workspace_id: "ws_1", agent_status: "blocked" }] },
+      bridge: makeBridge(QUESTION_GRID),
+    });
+    const result = ctx.HerdrPromptCards.evaluate();
+    ok(result, "no stored option defaults to enabled");
+    ok(!card.hidden, "overlay visible");
+  });
+
   it("escapes hostile terminal text in every rendered slot", () => {
     // Terminal output is attacker-influenceable: a malicious agent or
     // program can print a dialog whose title/labels carry markup. Every
@@ -456,5 +603,37 @@ describe("prompt cards module", () => {
     ok(!html.includes('" onclick="'), "attribute breakout must be escaped");
     ok(html.includes("&lt;img"), "escaped entities present");
     ok(html.includes("&lt;script&gt;"), "script escaped to entities");
+  });
+
+  it("exotic unicode whitespace parses like plain spaces", () => {
+    // JS `\s` and Rust regex `\s` disagree on BOM and NEL (and the two
+    // `trim()` sets differ too). All exotic spaces normalize to plain
+    // space before matching, so the JS parser reads NBSP/NEL/U+3000/
+    // BOM/LS/PS dialogs exactly like the Rust one.
+    const { ctx } = loadModule();
+    const nbsp = "\u00a0pick\u00a0one\u00a0";
+    const prompt = ctx.HerdrPromptCards.parsePrompt([
+      nbsp,
+      "1.\u0085allow",
+      "2.\u3000deny",
+    ]);
+    ok(prompt, "NBSP/NEL/U+3000 dialog parses");
+    equal(prompt.title, "pick one");
+    equal(prompt.options[0].label, "allow");
+    equal(prompt.options[1].label, "deny");
+
+    const bomPrompt = ctx.HerdrPromptCards.parsePrompt([
+      "\ufeffALLOW now?",
+      "enter your response",
+    ]);
+    ok(bomPrompt, "BOM-led free-text parses");
+    equal(bomPrompt.title, "ALLOW now", "BOM does not survive into the title");
+
+    const lsPrompt = ctx.HerdrPromptCards.parsePrompt([
+      "allow\u2028it?",
+      "enter your response",
+    ]);
+    ok(lsPrompt, "LS title parses");
+    equal(lsPrompt.title, "allow it");
   });
 });

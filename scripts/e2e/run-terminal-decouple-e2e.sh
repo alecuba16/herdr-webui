@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Real-DOM acceptance for the terminal-decoupling feature (update_windows
-# batch): open_terminal:false mints no tab, the empty-leaf body renders,
-# New terminal mints a Shell tab, closing the last tab keeps the workspace
-# alive, and the settings checkbox exists with default off.
+# batch): open_terminal:false mints no tab, the empty-leaf body renders
+# with the Enter hint, New terminal mints a Shell tab, closing the last
+# tab keeps the workspace alive, the settings checkbox exists with
+# default off, and a plain Enter on the zero-tab body mints a Shell tab.
 #
 # Boots an isolated herdr-webui (own XDG_CONFIG_HOME with localhost_no_auth,
 # own session, own port 8898; the user's running instance on 8787 is never

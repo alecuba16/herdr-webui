@@ -1365,6 +1365,7 @@
 
   mobileComposer = globalThis.HerdrMobileComposerModule.create({
     state,
+    api,
     render,
     escapeHtml,
     inputAttrs,
@@ -1563,6 +1564,7 @@
     setSoundScope: mobileSettings.setSoundScope,
     setAgentSortMode: mobileSettings.setAgentSortMode,
     setStuckWorkingEnabled: mobileSettings.setStuckWorkingEnabled,
+    setPromptCardsEnabled: mobileSettings.setPromptCardsEnabled,
     setWorkingDismissMinutes: mobileSettings.setWorkingDismissMinutes,
     setNoSleepMode: mobileSettings.setNoSleepMode,
     loadNoSleepState: mobileSettings.loadNoSleep,
