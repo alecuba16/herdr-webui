@@ -59,6 +59,8 @@
   also reorders its sections by task: Appearance, Terminal input,
   Shortcuts, Workspace behavior, Worktrees, File browser, Editor,
   Agents and alerts, Server.
+
+## 0.7.4 Release Notes
 - Chat mode text segments carry meaning by color now. The thinking
   toggle reads magenta (reasoning), tool names cyan (machine action),
   running tool rows and the working chip amber (in flight), failed parts
