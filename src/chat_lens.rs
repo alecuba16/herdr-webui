@@ -101,15 +101,19 @@ fn resolve_with(index: &JcodeStoreIndex, context: &PaneContext) -> JcodeSessionR
     // key their focus marker by their own pid, which in server mode is
     // NOT the session's last_pid (that is the shared daemon), so the
     // marker lookup must walk the tree, not the evidence rows.
-    let tree_pids: Vec<u32> = processes
-        .iter()
-        .map(|p| p.pid)
-        .filter(|pid| pid_in_tree(*pid, context.terminal_pid, &processes))
-        .collect();
+    //
+    // Built ONCE per resolution: pid_in_tree rebuilds a children map of
+    // the whole process table on every call, and the naive per-pid loop
+    // here made one agents refresh cost O(processes^2) map builds
+    // (hundreds of ms on a busy machine; measured live over the builtin
+    // socket before this fix). A precomputed membership set keeps the
+    // same walk semantics with O(1) lookups.
+    let tree: std::collections::HashSet<u32> = process_tree(context.terminal_pid, &processes);
+    let tree_pids: Vec<u32> = tree.iter().copied().collect();
     index.resolve(
         &context.live_cwd,
         &|pid| by_pid.contains_key(&pid),
-        &|pid| pid_in_tree(pid, context.terminal_pid, &processes),
+        &|pid| tree.contains(&pid),
         &context.pane_tail,
         &tree_pids,
     )
@@ -511,6 +515,9 @@ fn turn_json(turn: &Turn) -> Value {
 /// True when `pid` is inside the pane's process tree (the pane's PTY
 /// child or any of its descendants). Evidence pid must be inside the
 /// tree for step-1 resolution; jcode launched from this shell is.
+/// Production resolution uses `process_tree` (one pass); this predicate
+/// stays as the semantic reference the parity test checks against.
+#[cfg_attr(not(test), allow(dead_code))]
 fn pid_in_tree(pid: u32, root_pid: Option<u32>, processes: &[ProcessRow]) -> bool {
     let Some(root_pid) = root_pid else {
         return false;
@@ -533,6 +540,33 @@ fn pid_in_tree(pid: u32, root_pid: Option<u32>, processes: &[ProcessRow]) -> boo
         }
     }
     false
+}
+
+/// The whole pane process tree as a set, in one pass: one children-map
+/// build plus one walk from the root. `pid_in_tree` per pid is the same
+/// semantics but rebuilds the map for every query, O(processes^2) per
+/// resolution, which was the measurable cost behind slow agents refreshes.
+/// Cycle-safe for the same reason as pid_in_tree: the `seen` set stops
+/// re-visiting a pid whose ppid chain loops back.
+fn process_tree(root_pid: Option<u32>, processes: &[ProcessRow]) -> HashSet<u32> {
+    let mut tree = HashSet::new();
+    let Some(root_pid) = root_pid else {
+        return tree;
+    };
+    let mut children = HashMap::<u32, Vec<u32>>::new();
+    for process in processes {
+        children.entry(process.ppid).or_default().push(process.pid);
+    }
+    let mut stack = vec![root_pid];
+    while let Some(current) = stack.pop() {
+        if !tree.insert(current) {
+            continue;
+        }
+        if let Some(child_pids) = children.get(&current) {
+            stack.extend(child_pids.iter().copied());
+        }
+    }
+    tree
 }
 
 #[cfg(test)]
@@ -657,6 +691,33 @@ mod tests {
         assert!(pid_in_tree(2, Some(1), &rows));
         assert!(!pid_in_tree(9, Some(1), &rows));
         assert!(!pid_in_tree(3, None, &rows));
+    }
+
+    #[test]
+    fn process_tree_matches_pid_in_tree_membership() {
+        // Parity: the one-shot collector and the per-pid predicate must
+        // agree on membership for every pid in the table, including the
+        // root and a ppid cycle the walk must not enter.
+        let rows = vec![
+            ProcessRow { pid: 1, ppid: 0 },
+            ProcessRow { pid: 2, ppid: 1 },
+            ProcessRow { pid: 3, ppid: 2 },
+            ProcessRow { pid: 7, ppid: 5 },
+            ProcessRow { pid: 5, ppid: 7 }, // cycle away from the root
+            ProcessRow { pid: 9, ppid: 0 },
+        ];
+        let tree = process_tree(Some(1), &rows);
+        for pid in [0u32, 1, 2, 3, 5, 7, 9] {
+            assert_eq!(
+                tree.contains(&pid),
+                pid_in_tree(pid, Some(1), &rows),
+                "membership parity failed for pid {pid}"
+            );
+        }
+        assert!(process_tree(None, &rows).is_empty());
+        // Empty table: the root alone.
+        let root_only = process_tree(Some(4), &[]);
+        assert_eq!(root_only, std::iter::once(4u32).collect());
     }
 
     #[test]

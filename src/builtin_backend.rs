@@ -38,6 +38,14 @@ const PROTOCOL_VERSION: u32 = 22;
 const MAX_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MAX_SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
 const DETECTION_TAIL_BYTES: usize = 64 * 1024;
+/// Tail the chat-resolution PaneContext carries. The recency tiebreak
+/// matches a <=400-char chunk of the candidate's last assistant text
+/// against this tail, so 64KB is far beyond any match it could need;
+/// the strip of the full scrollback this replaces cost an 8MB copy plus
+/// a full ANSI scan on every conversation poll and every agents-list
+/// refresh. Same size as DETECTION_TAIL_BYTES by coincidence, not
+/// coupling: either can change alone.
+const RESOLVE_TAIL_BYTES: usize = 64 * 1024;
 /// Gap between a composer message's bracketed paste and its Enter. Must
 /// exceed jcode's 150ms paste-trailing-Enter suppression window
 /// (`paste_guard.rs`, jcode issue #544) or the submit is swallowed.
@@ -1431,8 +1439,11 @@ impl BuiltinState {
                 // echo, and VT emulation lets spinner redraws/CR overwrite
                 // it (found live: twin panes flipped ambiguous while a
                 // tool ran). Same strip mode as pane.read on the wire.
+                // Bounded tail (RESOLVE_TAIL_BYTES): the tiebreak matches
+                // a <=400-char chunk of the candidate's last text, so the
+                // full 8MB strip was pure per-poll cost.
                 terminal_text::strip_ansi_lossy(
-                    &String::from_utf8_lossy(&terminal.history_bytes()),
+                    &String::from_utf8_lossy(&terminal.history_tail_bytes(RESOLVE_TAIL_BYTES)),
                     terminal_text::StripCarriageReturn::Drop,
                 )
             })
@@ -2380,6 +2391,27 @@ impl TerminalRuntime {
             .unwrap_or_default()
     }
 
+    /// Last `max_bytes` of raw scrollback, byte-exact (no VT emulation),
+    /// for consumers that strip ANSI themselves. The resolution tail
+    /// uses this instead of history_bytes: the recency tiebreak matches
+    /// a <=400-char chunk, so 64KB bounds the copy and strip that used to
+    /// walk the full 8MB scrollback on every conversation poll.
+    fn history_tail_bytes(&self, max_bytes: usize) -> Vec<u8> {
+        self.scrollback
+            .lock()
+            .map(|scrollback| {
+                let mut bytes = scrollback
+                    .iter()
+                    .rev()
+                    .take(max_bytes)
+                    .copied()
+                    .collect::<Vec<_>>();
+                bytes.reverse();
+                bytes
+            })
+            .unwrap_or_default()
+    }
+
     fn history_tail_text(&self, max_bytes: usize) -> String {
         let bytes = self
             .scrollback
@@ -3063,8 +3095,13 @@ fn pane_agent_session(
         .terminals
         .get(&pane.terminal_id)
         .map(|terminal| {
+            // Same strip mode as pane_context (verbatim prompt echo, no
+            // VT emulation) and same RESOLVE_TAIL_BYTES bound: agent_json,
+            // conversation and tool-output resolution must see the same
+            // tail the PaneContext they came from had, or one path could
+            // resolve while another refuses on the same pane.
             terminal_text::strip_ansi_lossy(
-                &String::from_utf8_lossy(&terminal.history_bytes()),
+                &String::from_utf8_lossy(&terminal.history_tail_bytes(RESOLVE_TAIL_BYTES)),
                 terminal_text::StripCarriageReturn::Drop,
             )
         })
@@ -3787,7 +3824,8 @@ fn process_table() -> io::Result<Vec<ProcessInfo>> {
 
 /// Reads a live process's current working directory. Used by `tab.promote`
 /// to root the promoted workspace at the directory the shell `cd`-ed into,
-/// not the PTY spawn cwd. Returns `None` when the probe fails (missing pid,
+/// not the PTY spawn cwd, and by chat-lens PaneContexts to check a session's
+/// cwd evidence. Returns `None` when the probe fails (missing pid,
 /// permission denied, unsupported platform) so callers fall back to the
 /// pane's registered cwd.
 #[cfg(unix)]
@@ -3800,20 +3838,99 @@ fn live_process_cwd(pid: Option<u32>) -> Option<PathBuf> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        // macOS and other unixes: ask lsof for the process's cwd. Output is
-        // line-oriented with -Fn: "p<pid>", "fcwd", "n<path>".
-        let output = std::process::Command::new("lsof")
-            .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&output.stdout);
-        text.lines()
-            .find_map(|line| line.strip_prefix('n'))
-            .map(PathBuf::from)
+        macos_process_cwd(pid)
     }
+}
+
+/// Native cwd probe for macOS (and other non-Linux unixes carrying
+/// libSystem). The old implementation forked `lsof` per call (50-200ms),
+/// paid on every conversation poll and every agents refresh;
+/// `proc_pidinfo(PROC_PIDVNODEPATHINFO)` reads the same kernel vnode the
+/// cwd points at, at syscall cost (microseconds). Returns None on any
+/// failure: missing pid, EPERM, empty path.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn macos_process_cwd(pid: u32) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::ffi::OsStr;
+    // Mirrors <sys/proc_info.h> vnode_info_path so the cwd path can be
+    // read out of the struct the kernel fills. Only pvi_cdir.vip_path is
+    // consumed; the stat fields exist just to keep the layout exact.
+    // vinfo_stat's largest member alignment is 8, so the whole struct is
+    // naturally 8-aligned on every ABI we target.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct VinfoStat {
+        vst_dev: u32,
+        vst_mode: u16,
+        vst_nlink: u16,
+        vst_ino: u64,
+        vst_uid: u32,
+        vst_gid: u32,
+        vst_atime: i64,
+        vst_atimensec: i64,
+        vst_mtime: i64,
+        vst_mtimensec: i64,
+        vst_ctime: i64,
+        vst_ctimensec: i64,
+        vst_birthtime: i64,
+        vst_birthtimensec: i64,
+        vst_size: i64,
+        vst_blocks: i64,
+        vst_blksize: i32,
+        vst_flags: u32,
+        vst_gen: u32,
+        vst_rdev: u32,
+        vst_qspare: [i64; 2],
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct VnodeInfo {
+        vi_stat: VinfoStat,
+        vi_type: i32,
+        vi_pad: i32,
+        vi_fsid: [i32; 2], // fsid_t: two int32_t
+    }
+    #[repr(C)]
+    struct VnodeInfoPath {
+        vip_vi: VnodeInfo,
+        vip_path: [u8; 1024], // MAXPATHLEN
+    }
+    #[repr(C)]
+    struct ProcVnodePathInfo {
+        pvi_cdir: VnodeInfoPath, // current working directory
+        pvi_rdir: VnodeInfoPath, // root directory (chroot)
+    }
+    extern "C" {
+        fn proc_pidinfo(
+            pid: i32,
+            flavor: i32,
+            arg: u64,
+            buffer: *mut core::ffi::c_void,
+            buffersize: i32,
+        ) -> i32;
+    }
+    const PROC_PIDVNODEPATHINFO: i32 = 9;
+    // All-zero POD: every field is an integer, no niches, valid repr(C).
+    let mut info: ProcVnodePathInfo = unsafe { core::mem::zeroed() };
+    let size = core::mem::size_of::<ProcVnodePathInfo>() as i32;
+    let rc = unsafe {
+        proc_pidinfo(
+            pid as i32,
+            PROC_PIDVNODEPATHINFO,
+            0,
+            &mut info as *mut _ as *mut core::ffi::c_void,
+            size,
+        )
+    };
+    if rc < size {
+        return None;
+    }
+    let path = &info.pvi_cdir.vip_path;
+    let len = path.iter().position(|&b| b == 0)?;
+    if len == 0 {
+        return None;
+    }
+    Some(PathBuf::from(OsStr::from_bytes(&path[..len])))
 }
 
 #[cfg(not(unix))]
@@ -6172,12 +6289,12 @@ mod tests {
     /// The live-cwd probe returns None when the process cannot be
     /// interrogated (here: a pid that does not exist), and promote falls
     /// back to the pane's registered cwd when the terminal record is gone.
-    /// Exercises the lsof failure arm on non-Linux unix plus the fallback
+    /// Exercises the probe failure arm on non-Linux unix plus the fallback
     /// wiring: the same-workspace guard must fire on the pane cwd.
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn builtin_promote_probe_failure_falls_back_to_pane_cwd() {
-        // Bogus pid: lsof fails, the probe degrades to None.
+        // Bogus pid: the kernel probe fails, returns None.
         assert!(live_process_cwd(Some(u32::MAX)).is_none());
 
         let temp = std::env::temp_dir().join(format!(
@@ -6214,6 +6331,91 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&temp);
+    }
+
+    /// The native probe must return the same cwd the kernel reports for
+    /// THIS process, byte-exact: it replaced `lsof -d cwd` (50-200ms fork)
+    /// and a mismatch here would silently mis-route every resolution.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn builtin_live_process_cwd_matches_kernel_truth() {
+        let probe = live_process_cwd(Some(std::process::id()));
+        let truth = std::env::current_dir().unwrap();
+        let canonical_truth = std::fs::canonicalize(&truth).unwrap_or(truth);
+        assert_eq!(
+            probe.as_deref(),
+            Some(canonical_truth.as_path()),
+            "native probe must report the process cwd (symlinks resolved, as lsof did)"
+        );
+    }
+
+    /// A pane whose scrollback exceeds RESOLVE_TAIL_BYTES must still
+    /// resolve: the tail bound (64KB) must keep the recency tiebreak
+    /// working with far more text than it ever matches against.
+    #[cfg(unix)]
+    #[test]
+    fn builtin_pane_context_tail_is_bounded_but_resolution_survives() {
+        let (temp, _guard) = crate::tests::temp_guard("herdr-resolve-tail-bounded");
+        let (state, _workspace_id, tab_id) = promote_fixture(&temp);
+        let (pane_id, terminal_id) = {
+            let data = state.data.lock().unwrap();
+            let tab = data.tabs.get(&tab_id).unwrap();
+            let pane_id = tab.pane_ids.first().unwrap().clone();
+            let terminal_id = data.panes.get(&pane_id).unwrap().terminal_id.clone();
+            (pane_id, terminal_id)
+        };
+        // Push well past RESOLVE_TAIL_BYTES of scrollback through the real
+        // PTY, with a discriminating marker line in the LAST few KB. The
+        // filler is GENERATED in the shell (yes | head -c), not typed:
+        // the PTY canonical line limit (MAX_CANON 4096) silently drops
+        // any single typed line longer than that, so a big printf arg
+        // never reaches the shell.
+        let marker = "RESOLVE_TAIL_MARKER_XYZZY_7c9e";
+        let filler_bytes = RESOLVE_TAIL_BYTES + 128 * 1024;
+        let terminal = state.terminal(&terminal_id).unwrap();
+        let before = terminal.history_bytes().len();
+        let script = format!(
+            "yes 0123456789abcdef0123456789abcdef | head -c {filler_bytes}; printf '%s\\n' '{marker}'\n"
+        );
+        terminal.write_input(script.as_bytes()).unwrap();
+        // Wait until the marker is inside the bounded tail bytes.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let tail = terminal.history_tail_bytes(RESOLVE_TAIL_BYTES);
+            if tail.len() == RESOLVE_TAIL_BYTES || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let tail = terminal.history_tail_bytes(RESOLVE_TAIL_BYTES);
+        assert_eq!(
+            tail.len(),
+            RESOLVE_TAIL_BYTES,
+            "scrollback must exceed the tail bound for this test to mean anything"
+        );
+        assert!(
+            String::from_utf8_lossy(&tail).contains(marker),
+            "marker written last must be inside the bounded tail"
+        );
+        // pane_context's strip is bounded but must still carry the marker.
+        let pane = {
+            let data = state.data.lock().unwrap();
+            data.panes.get(&pane_id).unwrap().clone()
+        };
+        let context = state.pane_context(&pane);
+        assert!(
+            context.pane_tail.contains(marker),
+            "bounded pane_tail must include the newest text (marker missing)"
+        );
+        assert!(
+            context.pane_tail.len() <= RESOLVE_TAIL_BYTES,
+            "pane_tail must stay bounded (got {} bytes)",
+            context.pane_tail.len()
+        );
+        assert!(
+            before < terminal.history_bytes().len(),
+            "the pane must have actually received output"
+        );
     }
 
     #[cfg(unix)]
