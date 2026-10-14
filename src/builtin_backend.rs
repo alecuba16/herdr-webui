@@ -6384,11 +6384,19 @@ mod tests {
             "yes 0123456789abcdef0123456789abcdef | head -c {filler_bytes}; printf '%s\\n' '{marker}'\n"
         );
         terminal.write_input(script.as_bytes()).unwrap();
-        // Wait until the marker is inside the bounded tail bytes.
+        // Wait until BOTH conditions hold: the scrollback exceeded the
+        // bound (the tail is full) and the marker has landed inside it.
+        // Waiting on the tail length alone is racy under load: filler
+        // alone fills 64KB long before the trailing printf reaches the
+        // scrollback, so a poll can catch mid-filler bytes and the
+        // marker assert below would fail on a healthy pane.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             let tail = terminal.history_tail_bytes(RESOLVE_TAIL_BYTES);
-            if tail.len() == RESOLVE_TAIL_BYTES || std::time::Instant::now() > deadline {
+            let marker_landed = String::from_utf8_lossy(&tail).contains(marker);
+            if (tail.len() == RESOLVE_TAIL_BYTES && marker_landed)
+                || std::time::Instant::now() > deadline
+            {
                 break;
             }
             std::thread::sleep(Duration::from_millis(25));
