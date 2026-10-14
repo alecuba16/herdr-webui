@@ -3419,6 +3419,81 @@ mod step3_tiebreak_tests {
     }
 
     #[test]
+    fn client_marker_resolves_closed_session_in_cwd() {
+        let dir = store("marker-closed");
+        store_with_twin_sessions(&dir, "one", "two");
+        // session_a just closed (status flipped) while its client still
+        // shows it: the marker is per-pane positive evidence and step 1b
+        // deliberately carries no status filter, so it still resolves.
+        // Live-verified (round 4): old binary refuses no_session_path
+        // here, HEAD resolves via the marker.
+        let raw = std::fs::read_to_string(dir.join("session_a.json")).unwrap();
+        let closed = raw.replace("\"Active\"", "\"Closed\"");
+        std::fs::write(dir.join("session_a.json"), closed).unwrap();
+        let clients_dir = store("marker-closed-clients");
+        std::fs::write(clients_dir.join("4242"), "session_a").unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir.clone());
+        index.with_client_sessions_dir(clients_dir.clone());
+        let res = index.resolve(
+            Path::new("/w"),
+            &|pid| pid == 4242,
+            &|pid| pid == 4242,
+            "",
+            &[4242],
+        );
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
+        );
+    }
+
+    #[test]
+    fn client_marker_for_off_cwd_session_is_ignored() {
+        let dir = store("marker-offcwd");
+        store_with_twin_sessions(
+            &dir,
+            "The word to remember is APPLE, confirmed.",
+            "The word to remember is BANANA, confirmed.",
+        );
+        // The marker names a session whose cwd is elsewhere: it is NOT
+        // one of this pane's candidates, so step 1b must ignore it and
+        // let the tail tiebreak speak. Live-verified (round 4).
+        let clients_dir = store("marker-offcwd-clients");
+        std::fs::write(clients_dir.join("4242"), "session_offcwd").unwrap();
+        // off-cwd session is in the store so the marker is "known", but
+        // its working_dir differs from the pane cwd.
+        let off = json!({
+            "id": "session_offcwd", "working_dir": "/elsewhere",
+            "status": "Active", "last_pid": 900,
+            "messages": []
+        });
+        std::fs::write(
+            dir.join("session_offcwd.json"),
+            serde_json::to_string(&off).unwrap(),
+        )
+        .unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir.clone());
+        index.with_client_sessions_dir(clients_dir.clone());
+        // Pane tail names session_b's text, so step 3 must win, not the
+        // off-cwd marker.
+        let res = index.resolve(
+            Path::new("/w"),
+            &|pid| pid == 900 || pid == 4242,
+            &|pid| pid == 900 || pid == 4242,
+            "some chrome\nThe word to remember is BANANA, confirmed.\nprompt line",
+            &[900, 4242],
+        );
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_b".into()
+            }
+        );
+    }
+
+    #[test]
     fn two_client_markers_stay_ambiguous() {
         let dir = store("marker2");
         store_with_twin_sessions(&dir, "one", "two");
