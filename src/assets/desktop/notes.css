@@ -50,6 +50,10 @@
   gap: 2px;
   padding: 6px 8px;
 }
+.notes-row:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
 .notes-row:hover,
 .notes-row.active {
   background: var(--accent-soft, rgba(127, 127, 127, 0.12));
@@ -118,7 +122,10 @@
   flex: 1 1 auto;
   font: inherit;
   min-width: 0;
-  outline: 0;
+}
+.notes-title-input:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
 }
 .notes-language {
   background: transparent;
