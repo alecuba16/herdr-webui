@@ -11277,6 +11277,36 @@ async fn notes_routes_validation_caps() {
     let persisted: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(persisted["notes"].as_array().unwrap().len(), 0);
 
+    // The title cap counts characters, not bytes: 201 multibyte
+    // characters must be rejected while 200 still fit, pinning the
+    // doc claim of a 200-character cap against a byte-counting
+    // regression that would cut accented and CJK titles early. Runs on
+    // the cleared store so the fill-to-cap loop above keeps its count.
+    let oversized_multibyte_title = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/notes")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "title": "é".repeat(201) }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(oversized_multibyte_title.status(), StatusCode::BAD_REQUEST);
+    let full_multibyte_title = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/notes")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "title": "é".repeat(200) }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(full_multibyte_title.status(), StatusCode::CREATED);
+
     std::env::remove_var("XDG_CONFIG_HOME");
 }
 
@@ -11309,6 +11339,32 @@ async fn notes_sidecar_survives_state_rebuild() {
     assert_eq!(reloaded.notes.len(), 1);
     assert_eq!(reloaded.notes[0].title, "survivor");
     assert_eq!(reloaded.notes[0].content, "still here");
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+/// A corrupt sidecar must boot to an empty store instead of panicking,
+/// and the next save overwrites the garbage so the store recovers.
+#[tokio::test]
+async fn notes_sidecar_corrupt_boots_empty() {
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-notes-corrupt");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    fs::create_dir_all(config_home.join("herdr-webui")).unwrap();
+    fs::write(
+        config_home.join("herdr-webui/notes.json"),
+        "{ not valid json",
+    )
+    .unwrap();
+
+    let reloaded = notes::load_notes();
+    assert_eq!(reloaded.notes.len(), 0, "corrupt sidecar boots empty");
+
+    let recovered = notes::save_notes(&reloaded);
+    assert!(recovered.is_ok(), "save rewrites the corrupt file");
+    let raw = fs::read_to_string(config_home.join("herdr-webui/notes.json")).unwrap();
+    let persisted: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(persisted["notes"].as_array().unwrap().len(), 0);
 
     std::env::remove_var("XDG_CONFIG_HOME");
 }

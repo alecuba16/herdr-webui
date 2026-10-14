@@ -372,3 +372,19 @@ fn updated_by_label(state: &WebState) -> String {
         .and_then(|auth| auth.user.clone())
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Same recipe contract as auth session tokens: ids minted in a tight
+    /// loop (well within one second) must still be unique, or the store
+    /// would silently overwrite an older note on create.
+    #[test]
+    fn fresh_note_ids_differ_within_a_tight_loop() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..1000 {
+            assert!(seen.insert(fresh_note_id()));
+        }
+    }
+}
