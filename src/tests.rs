@@ -11059,6 +11059,363 @@ async fn events_socket_survives_backend_subscription_failure() {
     std::env::remove_var("XDG_CONFIG_HOME");
 }
 
+/// Notes CRUD round-trips through the real router: create, list, update,
+/// delete, all behind require_auth. Persistence lands in the notes.json
+/// sidecar under the isolated XDG_CONFIG_HOME, never webui-settings.json.
+#[tokio::test]
+async fn notes_routes_crud_round_trip() {
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-notes-crud");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let app = test_app();
+
+    let unauthenticated = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/api/notes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let create = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/notes")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "title": "deploy steps", "content": "cargo build", "language": "rust" })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let created = response_json(create).await;
+    let notes = created["notes"].as_array().expect("notes array");
+    assert_eq!(notes.len(), 1);
+    let note_id = notes[0]["id"].as_str().expect("note id").to_string();
+    assert_eq!(notes[0]["title"], "deploy steps");
+    assert_eq!(notes[0]["content"], "cargo build");
+    assert_eq!(notes[0]["language"], "rust");
+    assert_eq!(notes[0]["updated_by"], "user");
+
+    let update = app
+        .clone()
+        .oneshot(
+            request(
+                Method::PUT,
+                &format!("/api/notes/{note_id}"),
+            )
+            .header(header::COOKIE, "herdr_web_session=token-123")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({ "content": "cargo build --release", "language": "markdown" }).to_string(),
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update.status(), StatusCode::OK);
+    let updated = response_json(update).await;
+    assert_eq!(updated["notes"][0]["content"], "cargo build --release");
+    assert_eq!(updated["notes"][0]["language"], "markdown");
+    // Partial update: the title survives a content-only PUT.
+    assert_eq!(updated["notes"][0]["title"], "deploy steps");
+
+    // Unknown ids are 404, not a silent success.
+    let missing = app
+        .clone()
+        .oneshot(
+            request(Method::PUT, "/api/notes/does-not-exist")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "content": "x" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    // The sidecar exists and holds exactly the note; settings stay untouched.
+    let sidecar = config_home.join("herdr-webui/notes.json");
+    let raw = fs::read_to_string(&sidecar).expect("notes.json sidecar");
+    let persisted: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(persisted["notes"].as_array().unwrap().len(), 1);
+    assert_eq!(persisted["notes"][0]["content"], "cargo build --release");
+    assert!(!config_home.join("herdr-webui/webui-settings.json").exists());
+
+    let delete = app
+        .clone()
+        .oneshot(
+            request(
+                Method::DELETE,
+                &format!("/api/notes/{note_id}"),
+            )
+            .header(header::COOKIE, "herdr_web_session=token-123")
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), StatusCode::OK);
+    let deleted = response_json(delete).await;
+    assert_eq!(deleted["notes"].as_array().unwrap().len(), 0);
+
+    let redelete = app
+        .clone()
+        .oneshot(
+            request(Method::DELETE, &format!("/api/notes/{note_id}"))
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(redelete.status(), StatusCode::NOT_FOUND);
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+/// Validation caps: oversized titles and content are rejected, unknown
+/// languages are rejected, the 200-entry ceiling holds.
+#[tokio::test]
+async fn notes_routes_validation_caps() {
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-notes-caps");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let app = test_app();
+    let cookie = "herdr_web_session=token-123";
+
+    let oversized_title = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/notes")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "title": "x".repeat(201) }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(oversized_title.status(), StatusCode::BAD_REQUEST);
+
+    let oversized_content = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/notes")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "content": "x".repeat(32 * 1024 + 1) }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(oversized_content.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let bad_language = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/notes")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "language": "cobol" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad_language.status(), StatusCode::BAD_REQUEST);
+
+    // Fill to the cap. The sidecar keeps this fast: entries are tiny.
+    for index in 0..notes::MAX_NOTES {
+        let created = app
+            .clone()
+            .oneshot(
+                request(Method::POST, "/api/notes")
+                    .header(header::COOKIE, cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({ "title": format!("note {index}") }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED, "fill note {index}");
+    }
+    let over = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/notes")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "title": "one too many" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(over.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Clear-all empties the store and the sidecar.
+    let clear = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/notes/clear")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(clear.status(), StatusCode::OK);
+    let cleared = response_json(clear).await;
+    assert_eq!(cleared["notes"].as_array().unwrap().len(), 0);
+    let raw = fs::read_to_string(config_home.join("herdr-webui/notes.json")).unwrap();
+    let persisted: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(persisted["notes"].as_array().unwrap().len(), 0);
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+/// Notes persist across a fresh server state built from the same config
+/// dir: load_notes() on boot restores the sidecar (the reset-survival
+/// contract).
+#[tokio::test]
+async fn notes_sidecar_survives_state_rebuild() {
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-notes-persist");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let app = test_app();
+    let create = app
+        .oneshot(
+            request(Method::POST, "/api/notes")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "title": "survivor", "content": "still here" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+
+    // Rebuild the store from disk the way a reboot would.
+    let reloaded = notes::load_notes();
+    assert_eq!(reloaded.notes.len(), 1);
+    assert_eq!(reloaded.notes[0].title, "survivor");
+    assert_eq!(reloaded.notes[0].content, "still here");
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+/// Every notes mutation must broadcast a full notes_changed snapshot to
+/// connected events sockets, so open tabs converge without polling.
+#[cfg(unix)]
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn events_socket_broadcasts_notes_changed() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::connect_async;
+
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-notes-broadcast");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    let (socket, _handle) = fake_api_socket_events_streaming();
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let state = Arc::new(state);
+    let app = test_app_with_state((*state).clone());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_state = state.clone();
+    let server_handle = tokio::spawn(async move {
+        let _ = server_state;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let url = format!("ws://{addr}/ws/events");
+    let ws_request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(&url)
+        .header("cookie", "herdr_web_session=token-123")
+        .header("host", addr.to_string())
+        .header("connection", "Upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(())
+        .unwrap();
+    let (mut ws_stream, _response) = connect_async(ws_request)
+        .await
+        .expect("Failed to connect to WebSocket");
+
+    // Wait for the events loop to subscribe before mutating notes.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let create = test_app_with_state((*state).clone())
+        .oneshot(
+            request(Method::POST, "/api/notes")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "title": "hello", "content": "world" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+
+    let mut got_notes_change = false;
+    for _ in 0..30 {
+        let msg = match tokio::time::timeout(std::time::Duration::from_secs(15), ws_stream.next())
+            .await
+        {
+            Ok(Some(Ok(m))) => m,
+            _ => break,
+        };
+        let text = msg.to_text().expect("expected text message");
+        let value: serde_json::Value = serde_json::from_str(text).expect("invalid json");
+        if value["type"].as_str() == Some("notes_changed") {
+            let notes = value["notes"].as_array().expect("notes snapshot");
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0]["title"], "hello");
+            assert_eq!(notes[0]["content"], "world");
+            got_notes_change = true;
+            break;
+        }
+    }
+    assert!(
+        got_notes_change,
+        "notes_changed frame must reach the events socket"
+    );
+
+    server_handle.abort();
+    let _ = fs::remove_file(socket);
+    let _ = fs::remove_dir_all(&config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
 fn fake_api_socket_events_streaming() -> (PathBuf, thread::JoinHandle<()>) {
     use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
 

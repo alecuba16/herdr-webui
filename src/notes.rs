@@ -37,7 +37,7 @@ pub struct NotesState {
     pub notes: Vec<NoteEntry>,
 }
 
-const MAX_NOTES: usize = 200;
+pub(crate) const MAX_NOTES: usize = 200;
 const MAX_TITLE_CHARS: usize = 200;
 const MAX_CONTENT_BYTES: usize = 32 * 1024;
 const NOTE_LANGUAGES: [&str; 14] = [
@@ -129,7 +129,6 @@ fn fresh_note_id() -> String {
 /// that misses the frame self-heals on the next GET.
 async fn apply_notes(
     state: &WebState,
-    _updated_by: String,
     mutate: impl FnOnce(&mut NotesState) -> Result<(), (StatusCode, String)>,
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     let snapshot = {
@@ -229,7 +228,7 @@ async fn notes_create(
     };
     let updated_by = updated_by_label(&state);
     let now = crate::unix_now_seconds();
-    let result = apply_notes(&state, updated_by, move |notes| {
+    let result = apply_notes(&state, move |notes| {
         if notes.notes.len() >= MAX_NOTES {
             return Err((StatusCode::UNPROCESSABLE_ENTITY, "too many notes".into()));
         }
@@ -240,7 +239,7 @@ async fn notes_create(
             language,
             created_at: now,
             updated_at: now,
-            updated_by: String::new(),
+            updated_by,
         });
         Ok(())
     })
@@ -284,7 +283,7 @@ async fn notes_update(
     };
     let updated_by = updated_by_label(&state);
     let now = crate::unix_now_seconds();
-    let result = apply_notes(&state, updated_by, move |notes| {
+    let result = apply_notes(&state, move |notes| {
         let Some(note) = notes.notes.iter_mut().find(|note| note.id == note_id) else {
             return Err((StatusCode::NOT_FOUND, "note not found".into()));
         };
@@ -298,6 +297,7 @@ async fn notes_update(
             note.language = language;
         }
         note.updated_at = now;
+        note.updated_by = updated_by;
         Ok(())
     })
     .await;
@@ -316,8 +316,7 @@ async fn notes_delete(
     if let Err(response) = notes_auth(&state, &headers, remote) {
         return response;
     }
-    let updated_by = updated_by_label(&state);
-    let result = apply_notes(&state, updated_by, move |notes| {
+    let result = apply_notes(&state, move |notes| {
         let before = notes.notes.len();
         notes.notes.retain(|note| note.id != note_id);
         if notes.notes.len() == before {
@@ -340,8 +339,7 @@ async fn notes_clear(
     if let Err(response) = notes_auth(&state, &headers, remote) {
         return response;
     }
-    let updated_by = updated_by_label(&state);
-    let result = apply_notes(&state, updated_by, move |notes| {
+    let result = apply_notes(&state, move |notes| {
         notes.notes.clear();
         Ok(())
     })
