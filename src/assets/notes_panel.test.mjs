@@ -52,15 +52,23 @@ function makeNode(id, className) {
       }
     },
     matchesAttribute(attr) {
+      const wantClass = attr.startsWith(".") ? attr.slice(1) : null;
+      if (wantClass) {
+        return String(node.className)
+          .split(/\s+/)
+          .includes(wantClass);
+      }
       return node.attributes[attr] != null;
     },
     querySelector(selector) {
       const wantId = selector.startsWith("#") ? selector.slice(1) : null;
       const attr = selector.startsWith("[") && selector.endsWith("]") ? selector.slice(1, -1) : null;
+      const wantClass = selector.startsWith(".") ? selector.slice(1) : null;
       const walk = (n) => {
         for (const child of n.children) {
           if (wantId && child.id === wantId) return child;
           if (attr && child.matchesAttribute(attr)) return child;
+          if (wantClass && child.matchesAttribute("." + wantClass)) return child;
           const found = walk(child);
           if (found) return found;
         }
@@ -111,7 +119,7 @@ function buildDom() {
       if (seen.has(id)) continue;
       seen.add(id);
       const child = makeNode(id, "");
-      if (id === "notesTitleInput") child.addEventListener = () => {};
+      if (id === "notesTitleInput") child.addEventListener = (type, fn) => { child.__changeListener = fn; };
       if (id === "notesLanguage") {
         // A real <select> resolves value from its selected option.
         const selected = /<option value="([^"]*)" selected>/.exec(html);
@@ -175,6 +183,9 @@ function loadPanel(document, ctxOverrides = {}) {
     state: { ws: "ws-1", workspaces: [], workspaceShell: {} },
     api: async (url, opts) => {
       calls.api.push({ url, opts });
+      if (ctx.__apiReject && ctx.__apiReject.test(url)) {
+        throw new Error(ctx.__apiRejectMessage || "request failed");
+      }
       return ctx.__apiResponse || { notes: [] };
     },
     askQuestion: async (opts) => {
@@ -456,4 +467,91 @@ test("the back button flushes only when an edit is pending", async () => {
   const putsAfter = ctx.__calls.api.filter((c) => c.url === "/api/notes/n1" && c.opts && c.opts.method === "PUT");
   assert.equal(putsAfter.length, 1, "pending edit flushed on back");
   assert.equal(putsAfter[0].opts.body, JSON.stringify({ content: "typed" }), "flush sends the editor text");
+});
+test("a failed content save surfaces the error and stays dirty for retry", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  ctx.__apiResponse = {
+    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" }],
+  };
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  rowNodes(nodes.notesPanel)[0].onclick();
+  const editorApi = nodes.notesPanel._herdrEditorApi;
+
+  // The PUT fails (note deleted remotely, 500, ...).
+  ctx.__apiReject = /\/api\/notes\/n1$/;
+  ctx.__apiRejectMessage = "note not found";
+  ctx.__editorValue = "typed";
+  ctx.__editorOpts.onChange("typed");
+  // Fire the debounced flush manually and let the PUT settle.
+  const flush = ctx.__pendingTimers[ctx.__pendingTimers.length - 1];
+  await flush();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(nodes.notesSaveState.textContent, "Save failed", "state button shows the failure");
+  const errorNode = nodes.notesPanel.querySelector(".notes-editor-error");
+  assert.ok(errorNode, "editor view paints the error");
+  assert.equal(errorNode.textContent, "note not found");
+  // The edit stays dirty: no editor remount (no innerHTML wipe) happened.
+  assert.equal(nodes.notesPanel._herdrEditorApi, editorApi, "editor stayed mounted");
+
+  // Back must retry the flush because the save is still pending.
+  ctx.__apiReject = null;
+  ctx.__apiResponse = {
+    notes: [{ id: "n1", title: "t", content: "typed", language: "txt", updated_at: 2000, updated_by: "user" }],
+  };
+  await nodes.notesBack.onclick();
+  const puts = ctx.__calls.api.filter((c) => c.url === "/api/notes/n1" && c.opts && c.opts.method === "PUT");
+  assert.equal(puts.length, 2, "back retried the failed save");
+  assert.equal(puts[1].opts.body, JSON.stringify({ content: "typed" }), "retry sends the same text");
+});
+
+test("a successful retry clears the error and the dirty sentinel", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  ctx.__apiResponse = {
+    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" }],
+  };
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  rowNodes(nodes.notesPanel)[0].onclick();
+
+  ctx.__apiReject = /\/api\/notes\/n1$/;
+  ctx.__editorValue = "typed";
+  ctx.__editorOpts.onChange("typed");
+  const flush = ctx.__pendingTimers[ctx.__pendingTimers.length - 1];
+  await flush();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(nodes.notesPanel.querySelector(".notes-editor-error"), "error painted after failure");
+
+  // Next edit saves cleanly: error and sentinel must clear.
+  ctx.__apiReject = null;
+  ctx.__editorOpts.onChange("typed more");
+  const flush2 = ctx.__pendingTimers[ctx.__pendingTimers.length - 1];
+  await flush2();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(nodes.notesSaveState.textContent, "Saved", "state button returns to Saved");
+  assert.equal(nodes.notesPanel.querySelector(".notes-editor-error"), null, "error node removed");
+});
+
+test("a failed title save surfaces the error without remounting the editor", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  ctx.__apiResponse = {
+    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" }],
+  };
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  rowNodes(nodes.notesPanel)[0].onclick();
+  const editorApi = nodes.notesPanel._herdrEditorApi;
+
+  ctx.__apiReject = /\/api\/notes\/n1$/;
+  ctx.__apiRejectMessage = "boom";
+  nodes.notesTitleInput.value = "new title";
+  nodes.notesTitleInput.__changeListener();
+
+  // The title PUT is async: let it settle before asserting.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(nodes.notesSaveState.textContent, "Save failed", "title failure reaches the state button");
+  const errorNode = nodes.notesPanel.querySelector(".notes-editor-error");
+  assert.ok(errorNode, "title failure paints the error");
+  assert.equal(nodes.notesPanel._herdrEditorApi, editorApi, "editor stayed mounted through the failure");
 });

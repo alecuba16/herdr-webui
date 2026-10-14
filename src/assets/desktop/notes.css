@@ -108,6 +108,11 @@
 .notes-error {
   color: var(--danger, #d33);
 }
+.notes-editor-error {
+  color: var(--danger, #d33);
+  font-size: 12px;
+  padding: 6px 10px 0;
+}
 .notes-editor-head {
   align-items: center;
   border-bottom: 1px solid var(--border);

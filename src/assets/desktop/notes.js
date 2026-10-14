@@ -135,6 +135,7 @@
   async function saveContent(id, content) {
     const state = ensureState();
     state.saving = true;
+    setSaveState("saving");
     try {
       const data = await api(`/api/notes/${encodeURIComponent(id)}`, {
         method: "PUT",
@@ -142,12 +143,36 @@
         body: JSON.stringify({ content }),
       });
       if (Array.isArray(data && data.notes)) state.notes = data.notes;
+      state.error = "";
+      state.saveTimer = null;
+      setSaveState("saved");
+      showEditorError("");
     } catch (error) {
       state.error = error.message || String(error);
-      renderPanel();
+      setSaveState("failed");
+      showEditorError(state.error);
+      // Keep the edit dirty so back/close retry the flush instead of
+      // dropping the change after a failed PUT (deleted remotely, 500, ...).
+      if (!state.saveTimer) state.saveTimer = "failed";
     } finally {
       state.saving = false;
     }
+  }
+
+  function showEditorError(message) {
+    const panel = document.getElementById("notesPanel");
+    if (!panel) return;
+    let node = panel.querySelector(".notes-editor-error");
+    if (!message) {
+      if (node) node.remove();
+      return;
+    }
+    if (!node) {
+      node = document.createElement("div");
+      node.className = "notes-editor-error";
+      panel.appendChild(node);
+    }
+    node.textContent = message;
   }
 
   async function flushSave() {
@@ -172,9 +197,13 @@
         body: JSON.stringify({ title }),
       });
       if (Array.isArray(data && data.notes)) state.notes = data.notes;
+      state.error = "";
+      setSaveState("saved");
+      showEditorError("");
     } catch (error) {
       state.error = error.message || String(error);
-      renderPanel();
+      setSaveState("failed");
+      showEditorError(state.error);
     }
   }
 
@@ -192,10 +221,13 @@
         body: JSON.stringify({ language }),
       });
       if (Array.isArray(data && data.notes)) state.notes = data.notes;
-      renderPanel();
+      state.error = "";
+      setSaveState("saved");
+      showEditorError("");
     } catch (error) {
       state.error = error.message || String(error);
-      renderPanel();
+      setSaveState("failed");
+      showEditorError(state.error);
     }
   }
 
@@ -353,7 +385,13 @@
       },
     });
     panel._herdrEditorApi = container._herdrEditorApi;
-    setSaveState(state.saving ? "saving" : "saved");
+    if (state.saving) setSaveState("saving");
+    else if (state.saveTimer === "failed") {
+      // A previous flush failed (deleted remotely, 500, ...): keep the
+      // failure visible and the edit dirty instead of showing Saved.
+      setSaveState("failed");
+      showEditorError(state.error);
+    } else setSaveState("saved");
   }
 
   function setSaveState(kind) {
@@ -364,6 +402,9 @@
       button.disabled = false;
     } else if (kind === "saving") {
       button.textContent = "Saving...";
+      button.disabled = true;
+    } else if (kind === "failed") {
+      button.textContent = "Save failed";
       button.disabled = true;
     } else {
       button.textContent = "Saved";
