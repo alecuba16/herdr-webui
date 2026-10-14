@@ -1387,13 +1387,64 @@ describe("app bundle load", () => {
     match(html, /<div id="app" class="right-sidebar-collapsed">/);
   });
 
-  it("keeps the right sidebar collapsed across a workspace switch until a rail view expands it", async () => {
+  it("boots the real git-ui bundle through the production lazy-load path on a workspace switch", async () => {
+    // The old test stubbed window.HerdrGitUi here, which pinned nothing:
+    // the stub could not regress the way the real module can. This one
+    // installs a HerdrLoadScript shim that runs the same concatenated
+    // bundle the server serves at /assets/desktop/git-ui.js (assets.rs
+    // DESKTOP_GIT_UI_JS order), then drives the real openWorkspaceGitUi
+    // switch path against the real module.
+    const featureScripts = new Map([
+      ["/assets/desktop/directory-picker.js", readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8")],
+      ["/assets/desktop/git-ui.js", [
+        "./desktop/git_ui/settings.js",
+        "./desktop/git_ui/primitives.js",
+        "./desktop/git_ui/diff_search.js",
+        "./desktop/git_ui/workspace_nav.js",
+        "./desktop/git_ui/syntax.js",
+        "./desktop/git_ui/log.js",
+        "./desktop/git_ui/shortcuts.js",
+        "./desktop/git_ui/stash.js",
+        "./desktop/git_ui/cleanup.js",
+        "./desktop/git_ui/diff_render.js",
+        "./desktop/git_ui/conflicts.js",
+        "./desktop/git_ui/side_tree.js",
+        "./desktop/git_ui/modals.js",
+        "./desktop/git_ui/branch_list.js",
+        "./desktop/git_ui/toasts.js",
+        "./desktop/git_ui/diff_view.js",
+        "./desktop/git_ui/log_render.js",
+        "./desktop/git_ui.js",
+      ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8")).join("\n;")],
+    ]);
+    const loadedScripts = [];
     const ctx = context();
+    // Answer the git endpoints the real module calls: status/diff from
+    // refresh() inside open(), rail-status from the render-time probe,
+    // so the full path completes without a real repo.
+    ctx.fetch = async (url) => {
+      const raw = String(url);
+      if (raw.includes("/api/git-ui/status")) {
+        return { ok: true, status: 200, json: async () => ({ branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] }) };
+      }
+      if (raw.includes("/api/git-ui/diff")) {
+        return { ok: true, status: 200, json: async () => ({ files: [] }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    // Production wiring: app_boot defines HerdrLoadScript/HerdrLoadCss and
+    // render.js loadDesktopFeature() delegates to them. Mirror that here
+    // so ensureGitUiLoaded() runs the real bundle through the same path
+    // the browser takes.
+    ctx.window.HerdrLoadScript = (src) => {
+      const code = featureScripts.get(src);
+      if (!code) return Promise.reject(Error("unknown script " + src));
+      loadedScripts.push(src);
+      return Promise.resolve(vm.runInContext(code, ctx));
+    };
+    ctx.window.HerdrLoadCss = () => {};
     vm.runInContext(source, ctx);
-    // Boot-collapsed mirror with a remembered git mode for the target
-    // workspace: applyWorkspaceShellForSelection is the switch entry
-    // (refreshOnline/go path), and its openWorkspaceGitUi(forceOpen)
-    // wrapper must preserve the global collapse flag.
+    ok(!ctx.window.HerdrGitUi, "the lazy module must not exist before the first switch");
     vm.runInContext(`
       state.workspaces = [
         { workspace_id: "ws-a", label: "Alpha", worktree: { checkout_path: "/repo/alpha" } },
@@ -1404,19 +1455,33 @@ describe("app bundle load", () => {
       // stored flag, mirror, and class all start from one write.
       setRightSidebarCollapsedFlag(true);
       rememberWorkspaceShellMode("git", "ws-b");
-      // The lazy git-ui module never loads inside the vm; stub it so the
-      // wrapper runs its full forceOpen path instead of awaiting a fetch.
-      window.HerdrGitUi = {
-        isWorkspaceVisible: () => false,
-        open: () => {},
-        hide: () => {},
-      };
     `, ctx);
     await vm.runInContext("openWorkspaceGitUi('ws-b', { forceOpen: true })", ctx);
-    equal(ctx.window.__herdrRightSidebarCollapsed, true, "the switch (forceOpen) must not expand the column");
-    equal(ctx.document.getElementById("app").classList.contains("right-sidebar-collapsed"), true, "the collapsed class survives the switch");
+    // The real module booted from the concatenated bundle, through the
+    // production loader, in the assets.rs serving order.
+    ok(ctx.window.HerdrGitUi, "the real HerdrGitUi booted from the served bundle");
+    ok(typeof ctx.window.HerdrGitUi.open === "function", "the real module exposes open()");
+    ok(loadedScripts.includes("/assets/desktop/git-ui.js"), "the switch lazy-loaded git-ui.js through HerdrLoadScript");
+    ok(loadedScripts.includes("/assets/desktop/directory-picker.js"), "ensureGitUiLoaded pulls the picker first");
+    equal(loadedScripts.indexOf("/assets/desktop/directory-picker.js") < loadedScripts.indexOf("/assets/desktop/git-ui.js"), true, "the picker loads before the git-ui bundle");
+    // Collapse survives the real open(): the module's hosted mount runs
+    // HerdrRightSidebar.openView, which only remembers the mode and moves
+    // the panel into the host; the collapse flag stays untouched.
+    equal(ctx.window.__herdrRightSidebarCollapsed, true, "the real open() must not expand the column");
+    equal(ctx.document.getElementById("app").classList.contains("right-sidebar-collapsed"), true, "the collapsed class survives the real switch");
     equal(ctx.localStorage.getItem("herdr-web-right-sidebar-collapsed"), "1", "the stored flag stays collapsed");
-    // A rail click (no forceOpen) on the collapsed column expands it.
+    // The real module mounted its panel into the sidebar host.
+    const hosted = ctx.window.HerdrRightSidebar.isHosted("gitUiPanel");
+    equal(typeof hosted, "boolean", "isHosted answers after the real mount");
+    equal(ctx.window.HerdrRightSidebar.mode("ws-b"), "git", "the shell mode reads git for the workspace");
+    // The panel the real ensurePanel() created is visible and hosted.
+    const panel = ctx.document.getElementById("gitUiPanel");
+    ok(panel, "the real ensurePanel created gitUiPanel");
+    equal(panel.style.display !== "none", true, "the real showPanel displays the hosted panel");
+    // A rail click (no forceOpen) on the collapsed column expands it, and
+    // the real module's visibility toggle branch runs: isWorkspaceVisible
+    // now reports the workspace as visible after the first open.
+    equal(ctx.window.HerdrGitUi.isWorkspaceVisible("ws-b"), true, "the workspace is visible after the real open");
     await vm.runInContext("openWorkspaceGitUi('ws-b')", ctx);
     equal(ctx.window.__herdrRightSidebarCollapsed, false, "the rail click expands the collapsed column");
     equal(ctx.document.getElementById("app").classList.contains("right-sidebar-collapsed"), false);
@@ -2003,6 +2068,16 @@ describe("app bundle load", () => {
     ok(!fileBrowserSource.includes("target.split = true"), "no per-target split flag anymore");
     match(panesCss, /\.pane-tab\.editor \.pane-tab-dirty \{/);
     match(panesCss, /\.pane-tab\.active \.pane-tab-dot \{[\s\S]*?background: var\(--accent-2/);
+    // Active pane-tab styling: accent-soft fill plus inset accent
+    // underline (selection marker, not a primary action fill), with the
+    // hover and focus-visible variants layered on the same tokens.
+    match(panesCss, /\.pane-tab\.active \{[\s\S]*?background: var\(--accent-soft\);[\s\S]*?font-weight: 600;[\s\S]*?box-shadow: inset 0 -2px 0 var\(--accent\);[\s\S]*?\}/);
+    match(panesCss, /\.pane-tab\.active:hover \{[\s\S]*?background: var\(--accent-soft\);[\s\S]*?\}/);
+    match(panesCss, /\.pane-tab\.active:focus-visible \{[\s\S]*?box-shadow: var\(--focus-ring\), inset 0 -2px 0 var\(--accent\);[\s\S]*?\}/);
+    match(panesCss, /\.pane-tab:focus-visible \{[\s\S]*?box-shadow: var\(--focus-ring\);[\s\S]*?\}/);
+    match(panesCss, /\.pane-tab:hover \{[\s\S]*?background: var\(--control-hover\);[\s\S]*?color: var\(--text\);[\s\S]*?\}/);
+    match(panesCss, /\.pane-tab \{[\s\S]*?transition:[\s\S]*?background-color 120ms ease,[\s\S]*?color 120ms ease,[\s\S]*?box-shadow 120ms ease;[\s\S]*?\}/);
+    ok(panesCss.includes("@media (prefers-reduced-motion: reduce)"), "reduced-motion drops the pane-tab transition");
     match(panesCss, /\.pane-editor-container \{/);
     match(panesCss, /\.pane-editor-mount \{/);
     ok(!fileBrowserCss.includes(".file-browser-current-file"));
