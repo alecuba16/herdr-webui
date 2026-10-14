@@ -95,17 +95,47 @@
      budget, so a two-char tab is two chars wide instead of a fixed box. */
   max-width: calc(var(--pane-tab-max-chars, 20) * 1ch + 54px);
   flex: 0 0 auto;
+  /* Hover/active raise the background and text color only, so the swap
+     between muted and text/accent reads as one quick lift, not a flash. */
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
 }
 
 .pane-tab:hover {
-  background: var(--panel);
+  background: var(--control-hover);
   color: var(--text);
 }
 
+.pane-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 .pane-tab.active {
-  background: var(--panel);
+  background: var(--accent-soft);
   color: var(--text);
   font-weight: 600;
+  /* Accent underline instead of a full accent fill: the active tab is a
+     selection marker in a row of siblings, not a primary action. */
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.pane-tab.active:hover {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.pane-tab.active:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring), inset 0 -2px 0 var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pane-tab {
+    transition: none;
+  }
 }
 
 .pane-tab-dot {

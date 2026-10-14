@@ -1382,6 +1382,47 @@ describe("app bundle load", () => {
     equal(bootCollapsed("1").collapsedClass, true);
   });
 
+  it("ships the collapsed class in app.html so the first paint never flashes the column open", () => {
+    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+    match(html, /<div id="app" class="right-sidebar-collapsed">/);
+  });
+
+  it("keeps the right sidebar collapsed across a workspace switch until a rail view expands it", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    // Boot-collapsed mirror with a remembered git mode for the target
+    // workspace: applyWorkspaceShellForSelection is the switch entry
+    // (refreshOnline/go path), and its openWorkspaceGitUi(forceOpen)
+    // wrapper must preserve the global collapse flag.
+    vm.runInContext(`
+      state.workspaces = [
+        { workspace_id: "ws-a", label: "Alpha", worktree: { checkout_path: "/repo/alpha" } },
+        { workspace_id: "ws-b", label: "Beta", worktree: { checkout_path: "/repo/beta" } },
+      ];
+      state.ws = "ws-b";
+      // Seed the collapsed state through the canonical setter so the
+      // stored flag, mirror, and class all start from one write.
+      setRightSidebarCollapsedFlag(true);
+      rememberWorkspaceShellMode("git", "ws-b");
+      // The lazy git-ui module never loads inside the vm; stub it so the
+      // wrapper runs its full forceOpen path instead of awaiting a fetch.
+      window.HerdrGitUi = {
+        isWorkspaceVisible: () => false,
+        open: () => {},
+        hide: () => {},
+      };
+    `, ctx);
+    await vm.runInContext("openWorkspaceGitUi('ws-b', { forceOpen: true })", ctx);
+    equal(ctx.window.__herdrRightSidebarCollapsed, true, "the switch (forceOpen) must not expand the column");
+    equal(ctx.document.getElementById("app").classList.contains("right-sidebar-collapsed"), true, "the collapsed class survives the switch");
+    equal(ctx.localStorage.getItem("herdr-web-right-sidebar-collapsed"), "1", "the stored flag stays collapsed");
+    // A rail click (no forceOpen) on the collapsed column expands it.
+    await vm.runInContext("openWorkspaceGitUi('ws-b')", ctx);
+    equal(ctx.window.__herdrRightSidebarCollapsed, false, "the rail click expands the collapsed column");
+    equal(ctx.document.getElementById("app").classList.contains("right-sidebar-collapsed"), false);
+    equal(ctx.localStorage.getItem("herdr-web-right-sidebar-collapsed"), "0", "the expansion persists for the next boot");
+  });
+
   it("toggles the right sidebar column with the webui prefix shortcut", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
