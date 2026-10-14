@@ -118,6 +118,16 @@ Deeper checks on the design's load-bearing claims, all verified against source:
 
 No design changes required by this pass. Two implementation-detail notes added for the future build: reuse the editor-cache/loading-shell guard when mounting the notes editor, and shape notes.rs handlers after the file_browser auth+spawn_blocking pattern.
 
+## Validation pass (round 3): CodeMirror bundle exercised
+
+Loaded the checked-in `vendor/codemirror.bundle.js` in a Node VM with DOM stubs and called the real exported API (`HerdrCodeMirror` global, exports `create`, `languageForPath`, `languageNameForPath`):
+
+- `languageNameForPath`: `note.md -> markdown`, `note.rs -> rust`, `note.py -> python`, `note.ts -> typescript`, `note.json -> json`, `note.txt -> txt`.
+- `languageForPath`: returns real extension objects for `.rs`/`.kt`, `null` for `.txt`/`.sh` (plain text falls through, exactly what the `txt` default wants).
+- Load-time gotcha for the test harness: the bundle probes `document.body.style.tabSize` at module init (`nP()`), so any Node-side test of the bundle needs a `document.body.style` stub or the import throws. Real browsers are unaffected.
+
+Baseline re-confirmed on the branch after these probes: full JS suite 1168/1168, feature-adjacent suites (right sidebar, shell restore, app load) 257/257, all green.
+
 ## Open decisions
 
 1. Per-note delete: confirm-free trash click, or confirm modal like file delete? Plan assumes confirm-free.
