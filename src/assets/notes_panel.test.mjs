@@ -1,12 +1,18 @@
 // Shared notes panel (Notes rail view) behavior tests. Pins:
 //   - open hosts the panel into #rightSidebarContent, remembers the "notes"
 //     shell mode, and expands a collapsed column on a rail click
-//   - list render: notes newest-first, clear-all only with notes, per-row
+//   - list render: rows render in the server's arrival order (the server
+//     sorts newest-first; the client must not re-sort), titles come from
+//     the server's display_title, clear-all only with notes, per-row
 //     open/delete wiring
 //   - editing: row click mounts the editor with the per-note language path
+//     resolved through the server-provided language table
+//   - create: the server names the created note (created_note_id) and the
+//     client opens exactly that note
 //   - remote apply: no-op while closed, repaint while hosted, and while
 //     editing the local note wins (no editor remount, other clients'
-//     notes still land in the list behind)
+//     notes still land in the list behind); frames also adopt the server
+//     language table
 //   - cleanup: per-note delete is confirm-free, clear-all rides the danger
 //     confirm, both hit the API and adopt the snapshot
 //   - close flushes a pending debounced save instead of dropping it
@@ -14,6 +20,26 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+
+// Mirror of the server's language table (src/notes.rs NOTE_LANGUAGES):
+// value, label, editor extension. Tests exercise the client against the
+// same shape the API and notes_changed frames carry.
+const SERVER_LANGUAGES = [
+  { value: "txt", label: "Text", ext: "txt" },
+  { value: "markdown", label: "Markdown", ext: "md" },
+  { value: "javascript", label: "JavaScript", ext: "js" },
+  { value: "typescript", label: "TypeScript", ext: "ts" },
+  { value: "rust", label: "Rust", ext: "rs" },
+  { value: "python", label: "Python", ext: "py" },
+  { value: "go", label: "Go", ext: "go" },
+  { value: "json", label: "JSON", ext: "json" },
+  { value: "yaml", label: "YAML", ext: "yaml" },
+  { value: "css", label: "CSS", ext: "css" },
+  { value: "html", label: "HTML", ext: "html" },
+  { value: "xml", label: "XML", ext: "xml" },
+  { value: "java", label: "Java", ext: "java" },
+  { value: "sql", label: "SQL", ext: "sql" },
+];
 
 function makeNode(id, className) {
   const node = {
@@ -259,13 +285,16 @@ test("open hosts the panel, remembers notes mode, and expands a collapsed column
   assert.equal(ctx.__collapsed, false, "rail click expands the column");
 });
 
-test("the list renders notes newest-first with delete affordances", async () => {
+test("the list renders rows in the server's arrival order without re-sorting", async () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanel(document);
+  // Arrival order deliberately differs from updated_at order: if the client
+  // still sorted, the second row would jump to the front.
   ctx.__apiResponse = {
+    languages: SERVER_LANGUAGES,
     notes: [
-      { id: "old", title: "older", content: "", language: "txt", updated_at: 1000, updated_by: "user" },
-      { id: "new", title: "newer", content: "", language: "rust", updated_at: 2000, updated_by: "user" },
+      { id: "first-arrival", title: "first", content: "", language: "txt", updated_at: 1000, updated_by: "user", display_title: "first" },
+      { id: "second-arrival", title: "second", content: "", language: "rust", updated_at: 2000, updated_by: "user", display_title: "second" },
     ],
   };
 
@@ -277,8 +306,9 @@ test("the list renders notes newest-first with delete affordances", async () => 
   assert.ok(html.includes('id="notesClear"'), "clear-all button present when notes exist");
   const rows = rowNodes(panel);
   assert.equal(rows.length, 2, "both rows rendered");
-  assert.equal(rows[0].getAttribute("data-notes-open"), "new", "newest note renders first");
-  assert.equal(rows[1].getAttribute("data-notes-open"), "old", "older note renders second");
+  assert.equal(rows[0].getAttribute("data-notes-open"), "first-arrival", "rows keep the server's order");
+  assert.equal(rows[1].getAttribute("data-notes-open"), "second-arrival", "no client-side re-sort");
+  assert.ok(html.includes("first") && html.includes("second"), "server display titles render");
   assert.equal(deleteButtons(panel).length, 2, "per-row delete present");
 });
 
@@ -293,19 +323,23 @@ test("clear-all hides when there are no notes", async () => {
   assert.ok(html.includes("No notes yet"), "empty state copy present");
 });
 
-test("opening a note mounts the editor with the per-note language path", async () => {
+test("opening a note mounts the editor with the server-resolved language path", async () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanel(document);
   ctx.__apiResponse = {
-    notes: [{ id: "n1", title: "t", content: "fn main() {}", language: "rust", updated_at: 1000, updated_by: "user" }],
+    languages: SERVER_LANGUAGES,
+    notes: [{ id: "n1", title: "t", content: "fn main() {}", language: "rust", updated_at: 1000, updated_by: "user", display_title: "t" }],
   };
   await ctx.HerdrNotesPanel.open("ws-1", {});
 
-  const rows = rowNodes(nodes.notesPanel);
+  const panel = nodes.notesPanel;
+  const rows = rowNodes(panel);
   assert.equal(typeof rows[0].onclick, "function", "row click wired");
   rows[0].onclick();
 
-  assert.equal(ctx.__editorOpts.path, "note.rs", "editor path drives rust highlighting");
+  assert.ok(panel.innerHTML.includes("Rust</option>"), "select options build from the server language table");
+
+  assert.equal(ctx.__editorOpts.path, "note.rs", "editor path uses the server-provided rs extension");
   assert.equal(ctx.__editorOpts.content, "fn main() {}", "editor seeds note content");
   assert.equal(ctx.__editorOpts.readonly, false, "editor is editable");
   assert.equal(typeof ctx.__editorOpts.onChange, "function", "onChange captured");
@@ -313,11 +347,33 @@ test("opening a note mounts the editor with the per-note language path", async (
   assert.equal(nodes.notesLanguage.value, "rust", "language select reflects the note's language");
 });
 
+test("createNote opens exactly the note the server says it created", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+
+  ctx.__apiResponse = {
+    languages: SERVER_LANGUAGES,
+    created_note_id: "n9",
+    notes: [{ id: "n9", title: "", content: "", language: "txt", updated_at: 5000, updated_by: "user", display_title: "Untitled" }],
+  };
+  await ctx.HerdrNotesPanel.createNote();
+
+  const post = ctx.__calls.api.find((c) => c.url === "/api/notes" && c.opts && c.opts.method === "POST");
+  assert.ok(post, "POST /api/notes issued");
+  assert.equal(post.opts.body, JSON.stringify({ title: "", content: "", language: "txt" }), "create body is the empty note");
+  assert.ok(nodes.notesPanel.querySelector("#notesTitleInput"), "the created note's editing view hosts");
+  assert.equal(ctx.__calls.editorMounts, 1, "editor mounted for the created note");
+  // The panel went straight into editing for the server-named id, not a
+  // locally guessed "latest" note.
+  assert.ok(!nodes.notesPanel.innerHTML.includes("No notes yet"), "list view replaced by the editor");
+});
+
 test("per-note delete is confirm-free and wired through the row button", async () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanel(document);
   ctx.__apiResponse = {
-    notes: [{ id: "n1", title: "t", content: "", language: "txt", updated_at: 1000, updated_by: "user" }],
+    notes: [{ id: "n1", title: "t", content: "", language: "txt", updated_at: 1000, updated_by: "user" , display_title: "t" }],
   };
   await ctx.HerdrNotesPanel.open("ws-1", {});
 
@@ -339,7 +395,7 @@ test("clear-all rides the danger confirm and adopts the emptied snapshot", async
   const { nodes, document } = buildDom();
   const ctx = loadPanel(document);
   ctx.__apiResponse = {
-    notes: [{ id: "n1", title: "t", content: "", language: "txt", updated_at: 1000, updated_by: "user" }],
+    notes: [{ id: "n1", title: "t", content: "", language: "txt", updated_at: 1000, updated_by: "user" , display_title: "t" }],
   };
   await ctx.HerdrNotesPanel.open("ws-1", {});
 
@@ -357,7 +413,7 @@ test("clear-all cancels cleanly when the confirm is rejected", async () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanel(document);
   ctx.__apiResponse = {
-    notes: [{ id: "n1", title: "t", content: "", language: "txt", updated_at: 1000, updated_by: "user" }],
+    notes: [{ id: "n1", title: "t", content: "", language: "txt", updated_at: 1000, updated_by: "user" , display_title: "t" }],
   };
   await ctx.HerdrNotesPanel.open("ws-1", {});
   ctx.__confirmResult = false;
@@ -374,7 +430,7 @@ test("applyRemote is a no-op while closed and repaints while hosted", async () =
 
   // Closed panel: the frame must not mount anything.
   ctx.HerdrNotesPanel.applyRemote([
-    { id: "x", title: "ghost", content: "", language: "txt", updated_at: 1, updated_by: "" },
+    { id: "x", title: "ghost", content: "", language: "txt", updated_at: 1, updated_by: "", display_title: "ghost" },
   ]);
   assert.ok(!nodes.notesPanel, "closed panel did not mount anything");
 
@@ -383,7 +439,7 @@ test("applyRemote is a no-op while closed and repaints while hosted", async () =
   assert.ok(panel, "panel open");
 
   ctx.HerdrNotesPanel.applyRemote([
-    { id: "x", title: "ghost", content: "", language: "txt", updated_at: 1, updated_by: "" },
+    { id: "x", title: "ghost", content: "", language: "txt", updated_at: 1, updated_by: "", display_title: "ghost" },
   ]);
   assert.ok(panel.innerHTML.includes("ghost"), "hosted panel adopted the remote snapshot");
 
@@ -397,7 +453,7 @@ test("applyRemote while editing keeps the editor mounted and the local note", as
   const { nodes, document } = buildDom();
   const ctx = loadPanel(document);
   ctx.__apiResponse = {
-    notes: [{ id: "n1", title: "mine", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" }],
+    notes: [{ id: "n1", title: "mine", content: "draft", language: "txt", updated_at: 1000, updated_by: "user", display_title: "mine" }],
   };
   await ctx.HerdrNotesPanel.open("ws-1", {});
   rowNodes(nodes.notesPanel)[0].onclick();
@@ -406,8 +462,8 @@ test("applyRemote while editing keeps the editor mounted and the local note", as
 
   // Another client rewrites everything including our note, and adds a note.
   ctx.HerdrNotesPanel.applyRemote([
-    { id: "n1", title: "theirs", content: "remote rewrite", language: "txt", updated_at: 5000, updated_by: "other" },
-    { id: "n2", title: "other client", content: "", language: "txt", updated_at: 4000, updated_by: "other" },
+    { id: "n1", title: "theirs", content: "remote rewrite", language: "txt", updated_at: 5000, updated_by: "other", display_title: "theirs" },
+    { id: "n2", title: "other client", content: "", language: "txt", updated_at: 4000, updated_by: "other", display_title: "other client" },
   ]);
 
   assert.equal(ctx.__calls.editorMounts, 1, "no editor remount on a remote frame");
@@ -425,7 +481,7 @@ test("close flushes a pending debounced save instead of dropping it", async () =
   const { nodes, document } = buildDom();
   const ctx = loadPanel(document);
   ctx.__apiResponse = {
-    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" }],
+    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" , display_title: "t" }],
   };
   await ctx.HerdrNotesPanel.open("ws-1", {});
   rowNodes(nodes.notesPanel)[0].onclick();
@@ -436,7 +492,7 @@ test("close flushes a pending debounced save instead of dropping it", async () =
   ctx.__editorValue = "typed draft more";
   ctx.__editorOpts.onChange("typed draft more");
 
-  ctx.__apiResponse = { notes: [{ id: "n1", title: "t", content: "typed draft more", language: "txt", updated_at: 2000, updated_by: "user" }] };
+  ctx.__apiResponse = { notes: [{ id: "n1", title: "t", content: "typed draft more", language: "txt", updated_at: 2000, updated_by: "user" , display_title: "t" }] };
   await ctx.HerdrNotesPanel.close();
 
   const puts = ctx.__calls.api.filter((c) => c.url === "/api/notes/n1" && c.opts && c.opts.method === "PUT");
@@ -448,7 +504,7 @@ test("the back button flushes only when an edit is pending", async () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanel(document);
   ctx.__apiResponse = {
-    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" }],
+    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" , display_title: "t" }],
   };
   await ctx.HerdrNotesPanel.open("ws-1", {});
   rowNodes(nodes.notesPanel)[0].onclick();
@@ -472,7 +528,7 @@ test("a failed content save surfaces the error and stays dirty for retry", async
   const { nodes, document } = buildDom();
   const ctx = loadPanel(document);
   ctx.__apiResponse = {
-    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" }],
+    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" , display_title: "t" }],
   };
   await ctx.HerdrNotesPanel.open("ws-1", {});
   rowNodes(nodes.notesPanel)[0].onclick();
@@ -498,7 +554,7 @@ test("a failed content save surfaces the error and stays dirty for retry", async
   // Back must retry the flush because the save is still pending.
   ctx.__apiReject = null;
   ctx.__apiResponse = {
-    notes: [{ id: "n1", title: "t", content: "typed", language: "txt", updated_at: 2000, updated_by: "user" }],
+    notes: [{ id: "n1", title: "t", content: "typed", language: "txt", updated_at: 2000, updated_by: "user" , display_title: "t" }],
   };
   await nodes.notesBack.onclick();
   const puts = ctx.__calls.api.filter((c) => c.url === "/api/notes/n1" && c.opts && c.opts.method === "PUT");
@@ -510,7 +566,7 @@ test("a successful retry clears the error and the dirty sentinel", async () => {
   const { nodes, document } = buildDom();
   const ctx = loadPanel(document);
   ctx.__apiResponse = {
-    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" }],
+    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" , display_title: "t" }],
   };
   await ctx.HerdrNotesPanel.open("ws-1", {});
   rowNodes(nodes.notesPanel)[0].onclick();
@@ -537,7 +593,7 @@ test("a failed title save surfaces the error without remounting the editor", asy
   const { nodes, document } = buildDom();
   const ctx = loadPanel(document);
   ctx.__apiResponse = {
-    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" }],
+    notes: [{ id: "n1", title: "t", content: "draft", language: "txt", updated_at: 1000, updated_by: "user" , display_title: "t" }],
   };
   await ctx.HerdrNotesPanel.open("ws-1", {});
   rowNodes(nodes.notesPanel)[0].onclick();

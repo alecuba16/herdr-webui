@@ -40,21 +40,23 @@ pub struct NotesState {
 pub(crate) const MAX_NOTES: usize = 200;
 const MAX_TITLE_CHARS: usize = 200;
 const MAX_CONTENT_BYTES: usize = 32 * 1024;
-const NOTE_LANGUAGES: [&str; 14] = [
-    "txt",
-    "markdown",
-    "javascript",
-    "typescript",
-    "rust",
-    "python",
-    "go",
-    "json",
-    "yaml",
-    "css",
-    "html",
-    "xml",
-    "java",
-    "sql",
+const NOTE_LANGUAGES: [(&str, &str, &str); 14] = [
+    // (value, label, editor extension). The client renders this table as-is:
+    // labels for the select, extension for the CodeMirror mount path.
+    ("txt", "Text", "txt"),
+    ("markdown", "Markdown", "md"),
+    ("javascript", "JavaScript", "js"),
+    ("typescript", "TypeScript", "ts"),
+    ("rust", "Rust", "rs"),
+    ("python", "Python", "py"),
+    ("go", "Go", "go"),
+    ("json", "JSON", "json"),
+    ("yaml", "YAML", "yaml"),
+    ("css", "CSS", "css"),
+    ("html", "HTML", "html"),
+    ("xml", "XML", "xml"),
+    ("java", "Java", "java"),
+    ("sql", "SQL", "sql"),
 ];
 
 pub(crate) fn routes() -> Router<WebState> {
@@ -105,14 +107,57 @@ pub(crate) fn save_notes(state: &NotesState) -> io::Result<()> {
 }
 
 fn broadcast_notes(state: &WebState, snapshot: &NotesState) {
-    let _ = state.notes_tx.send(serde_json::json!({
-        "type": "notes_changed",
-        "notes": snapshot.notes,
-    }));
+    // Same public shape as GET /api/notes: newest first, display_title
+    // resolved, so adopting clients render identically without local logic.
+    let mut payload = notes_public_json(snapshot);
+    payload["type"] = serde_json::json!("notes_changed");
+    let _ = state.notes_tx.send(payload);
 }
 
 fn notes_public_json(snapshot: &NotesState) -> serde_json::Value {
-    serde_json::json!({ "notes": snapshot.notes })
+    // Server owns the list contract: newest first, display_title resolved,
+    // language table attached. Clients render, they do not sort or derive.
+    let mut notes = snapshot.notes.clone();
+    notes.sort_by_key(|note| std::cmp::Reverse(note.updated_at));
+    let notes: Vec<serde_json::Value> = notes
+        .iter()
+        .map(|note| {
+            let mut value = serde_json::to_value(note).unwrap_or_default();
+            value["display_title"] = serde_json::json!(note_display_title(note));
+            value
+        })
+        .collect();
+    serde_json::json!({
+        "notes": notes,
+        "languages": note_languages_json(),
+    })
+}
+
+/// The empty title falls back to the first content line ("Untitled" when
+/// the content is empty too), computed server-side so every client renders
+/// the same label for the same note.
+fn note_display_title(note: &NoteEntry) -> String {
+    let title = note.title.trim();
+    if !title.is_empty() {
+        return title.to_string();
+    }
+    note.content
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "Untitled".to_string())
+}
+
+fn note_languages_json() -> serde_json::Value {
+    NOTE_LANGUAGES
+        .iter()
+        .map(
+            |(value, label, ext)| serde_json::json!({ "value": value, "label": label, "ext": ext }),
+        )
+        .collect::<Vec<_>>()
+        .into()
 }
 
 /// Note id, same entropy recipe as auth session tokens (OS-seeded
@@ -188,7 +233,10 @@ fn validate_title(raw: Option<&str>) -> Result<String, (StatusCode, String)> {
 
 fn validate_language(raw: Option<&str>) -> Result<String, (StatusCode, String)> {
     let language = raw.unwrap_or("txt").to_string();
-    if !NOTE_LANGUAGES.contains(&language.as_str()) {
+    if !NOTE_LANGUAGES
+        .iter()
+        .any(|(value, _, _)| *value == language)
+    {
         return Err((
             StatusCode::BAD_REQUEST,
             format!("unsupported language: {language}"),
@@ -242,12 +290,15 @@ async fn notes_create(
     };
     let updated_by = updated_by_label(&state);
     let now = crate::unix_now_seconds();
+    let created_id = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let id_slot = created_id.clone();
     let result = apply_notes(&state, move |notes| {
         if notes.notes.len() >= MAX_NOTES {
             return Err((StatusCode::UNPROCESSABLE_ENTITY, "too many notes".into()));
         }
+        let id = fresh_note_id();
         notes.notes.push(NoteEntry {
-            id: fresh_note_id(),
+            id: id.clone(),
             title,
             content,
             language,
@@ -255,11 +306,21 @@ async fn notes_create(
             updated_at: now,
             updated_by,
         });
+        if let Ok(mut slot) = id_slot.lock() {
+            *slot = Some(id);
+        }
         Ok(())
     })
     .await;
     match result {
-        Ok(value) => (StatusCode::CREATED, Json(value)).into_response(),
+        Ok(mut value) => {
+            if let Ok(slot) = created_id.lock() {
+                if let Some(id) = slot.as_ref() {
+                    value["created_note_id"] = serde_json::json!(id);
+                }
+            }
+            (StatusCode::CREATED, Json(value)).into_response()
+        }
         Err((status, message)) => notes_json_error(status, message),
     }
 }

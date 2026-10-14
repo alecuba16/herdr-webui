@@ -7703,7 +7703,7 @@ describe("notes rail static pins", () => {
     const branch = terminal.match(/else if \(msg\.type === "notes_changed"\) \{[\s\S]*?\}/);
     ok(branch, "notes_changed arm exists");
     ok(!/scheduleRefresh\s*\(/.test(branch[0]), "the broadcast arm never calls the global refresh");
-    match(branch[0], /HerdrNotesPanel\.applyRemote\(msg\.notes \|\| \[\]\)/, "frames go to the panel");
+    match(branch[0], /HerdrNotesPanel\.applyRemote\(msg\)/, "whole frames go to the panel: notes plus the server language table");
   });
 
   it("lazily loads the notes feature assets only when opened", () => {

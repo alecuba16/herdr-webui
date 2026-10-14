@@ -2,34 +2,24 @@
 // sidebar column as the fourth rail view (Files/Git/Search/Notes). Entries
 // live on the server (notes.json sidecar), so every connected client sees
 // the same list: mutations PUT per note after a debounce and the server
-// broadcasts a full notes_changed snapshot that applyRemote adopts.
-// CodeMirror highlights a note through the shared editor's path->language
-// mapping ("note." + extension), so the parse cost is paid only while a
-// note is open for editing.
+// broadcasts a full notes_changed snapshot that applyRemote adopts. The
+// server owns the list contract (newest-first order, resolved display
+// titles, the language table, created note ids); this file only renders
+// it. CodeMirror highlights a note through the shared editor's
+// path->language mapping ("note." + extension), so the parse cost is paid
+// only while a note is open for editing.
 (function () {
   const SAVE_DEBOUNCE_MS = 600;
-  const LANGUAGES = [
-    ["txt", "Text"],
-    ["markdown", "Markdown"],
-    ["javascript", "JavaScript"],
-    ["typescript", "TypeScript"],
-    ["rust", "Rust"],
-    ["python", "Python"],
-    ["go", "Go"],
-    ["json", "JSON"],
-    ["yaml", "YAML"],
-    ["css", "CSS"],
-    ["html", "HTML"],
-    ["xml", "XML"],
-    ["java", "Java"],
-    ["sql", "SQL"],
-  ];
+  // Boot fallback until the first payload arrives: every server response
+  // and broadcast carries the authoritative table.
+  const FALLBACK_LANGUAGES = [{ value: "txt", label: "Text", ext: "txt" }];
 
   let panelState = null;
 
   function freshState() {
     return {
       notes: [],
+      languages: null,
       loaded: false,
       loading: false,
       error: "",
@@ -44,17 +34,28 @@
     return panelState;
   }
 
-  function languageExt(language) {
-    // Extension must match codemirror_entry's languageForPath table (rs, py,
-    // md, js, ts...); the other allowlist names already are extensions.
-    const map = {
-      markdown: "md",
-      javascript: "js",
-      typescript: "ts",
-      rust: "rs",
-      python: "py",
-    };
-    return map[language] || language;
+  function languages(state) {
+    const list = (state || ensureState()).languages;
+    return Array.isArray(list) && list.length ? list : FALLBACK_LANGUAGES;
+  }
+
+  function languageEntry(value, state) {
+    const list = languages(state);
+    return list.find((entry) => entry && entry.value === value) || list[0] || FALLBACK_LANGUAGES[0];
+  }
+
+  function languageExt(value) {
+    const entry = languageEntry(value);
+    return (entry && entry.ext) || "txt";
+  }
+
+  // Every server payload (GET, mutation response, broadcast) has the same
+  // shape: adopt notes and the language table in one place.
+  function adoptPayload(data) {
+    const state = ensureState();
+    if (data && Array.isArray(data.notes)) state.notes = data.notes;
+    if (data && Array.isArray(data.languages) && data.languages.length)
+      state.languages = data.languages;
   }
 
   function panelNode() {
@@ -90,8 +91,7 @@
     state.loading = true;
     state.error = "";
     try {
-      const data = await api("/api/notes");
-      state.notes = Array.isArray(data && data.notes) ? data.notes : [];
+      adoptPayload(await api("/api/notes"));
       state.loaded = true;
     } catch (error) {
       state.error = error.message || String(error);
@@ -108,19 +108,13 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title: "", content: "", language: "txt" }),
       });
-      if (Array.isArray(data && data.notes)) state.notes = data.notes;
-      state.editingId = latestNote(data && data.notes) ? latestNote(data.notes).id : null;
+      adoptPayload(data);
+      state.editingId = (data && data.created_note_id) || null;
       renderPanel();
     } catch (error) {
       state.error = error.message || String(error);
       renderPanel();
     }
-  }
-
-  function latestNote(notes) {
-    const list = (notes || []).filter((note) => note && note.id);
-    if (!list.length) return null;
-    return list.reduce((a, b) => (Number(b.updated_at || 0) >= Number(a.updated_at || 0) ? b : a));
   }
 
   function scheduleSave() {
@@ -142,7 +136,7 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content }),
       });
-      if (Array.isArray(data && data.notes)) state.notes = data.notes;
+      adoptPayload(data);
       state.error = "";
       state.saveTimer = null;
       setSaveState("saved");
@@ -196,7 +190,7 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title }),
       });
-      if (Array.isArray(data && data.notes)) state.notes = data.notes;
+      adoptPayload(data);
       state.error = "";
       setSaveState("saved");
       showEditorError("");
@@ -220,7 +214,7 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ language }),
       });
-      if (Array.isArray(data && data.notes)) state.notes = data.notes;
+      adoptPayload(data);
       state.error = "";
       setSaveState("saved");
       showEditorError("");
@@ -240,7 +234,7 @@
     }
     try {
       const data = await api(`/api/notes/${encodeURIComponent(id)}`, { method: "DELETE" });
-      if (Array.isArray(data && data.notes)) state.notes = data.notes;
+      adoptPayload(data);
       if (state.editingId === id) state.editingId = null;
       renderPanel();
     } catch (error) {
@@ -266,7 +260,7 @@
     }
     try {
       const data = await api("/api/notes/clear", { method: "POST" });
-      if (Array.isArray(data && data.notes)) state.notes = data.notes;
+      adoptPayload(data);
       state.editingId = null;
       renderPanel();
     } catch (error) {
@@ -275,25 +269,14 @@
     }
   }
 
-  function titleFor(note) {
-    const text = String(note && note.title ? note.title : "").trim();
-    if (text) return text;
-    const firstLine = String(note && note.content ? note.content : "")
-      .split("\n")
-      .map((line) => line.trim())
-      .find((line) => line.length > 0);
-    return firstLine ? firstLine.slice(0, 80) : "Untitled note";
-  }
-
   function renderPanel() {
     const panel = document.getElementById("notesPanel");
     if (!panel) return;
     const state = ensureState();
     const notes = state.notes || [];
     const editing = state.editingId ? noteById(state.editingId) : null;
+    // The server delivers newest-first; render in arrival order.
     const rows = notes
-      .slice()
-      .sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0))
       .map((note) => noteRowHtml(note, editing && note.id === editing.id))
       .join("");
     const listHtml = state.loading && !state.loaded
@@ -304,7 +287,7 @@
           ? `<ul class="notes-list" role="list">${rows}</ul>`
           : '<div class="notes-empty">No notes yet. Create one to get started.</div>';
     const head = editing
-      ? `<div class="notes-editor-head"><button class="mini notes-back" id="notesBack" title="Back to list" aria-label="Back to notes list"><span aria-hidden="true">‹</span></button><input id="notesTitleInput" class="notes-title-input" placeholder="Note title"${typeof inputAttrs === "function" ? inputAttrs("done") : " autocomplete=\"off\" spellcheck=\"false\""} aria-label="Note title" /><select id="notesLanguage" class="notes-language" aria-label="Syntax language">${LANGUAGES.map(([value, label]) => `<option value="${value}"${editing.language === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select><button class="mini notes-save-state" id="notesSaveState" disabled>${state.saving ? "Saving..." : "Saved"}</button></div>`
+      ? `<div class="notes-editor-head"><button class="mini notes-back" id="notesBack" title="Back to list" aria-label="Back to notes list"><span aria-hidden="true">‹</span></button><input id="notesTitleInput" class="notes-title-input" placeholder="Note title"${typeof inputAttrs === "function" ? inputAttrs("done") : " autocomplete=\"off\" spellcheck=\"false\""} aria-label="Note title" /><select id="notesLanguage" class="notes-language" aria-label="Syntax language">${languages(state).map((entry) => `<option value="${escapeHtml(entry.value)}"${editing.language === entry.value ? " selected" : ""}>${escapeHtml(entry.label)}</option>`).join("")}</select><button class="mini notes-save-state" id="notesSaveState" disabled>${state.saving ? "Saving..." : "Saved"}</button></div>`
       : `<div class="notes-panel-head"><strong>Notes</strong><span class="notes-count">${notes.length}</span><button class="mini" id="notesNew" title="New note" aria-label="New note">+ New</button>${notes.length ? '<button class="mini notes-clear" id="notesClear" title="Clear all notes" aria-label="Clear all notes">Clear all</button>' : ""}</div>`;
     const body = editing
       ? '<div class="notes-editor" id="notesEditor"></div>'
@@ -364,7 +347,7 @@
 
   function noteRowHtml(note, active) {
     const id = escapeHtml(note.id);
-    const title = escapeHtml(titleFor(note));
+    const title = escapeHtml(note.display_title || "Untitled");
     const language = escapeHtml(note.language || "txt");
     const updated = Number(note.updated_at || 0);
     const when = updated ? new Date(updated * 1000).toLocaleString() : "";
@@ -425,17 +408,22 @@
   // editing the local copy of that note wins (LWW lands on the next flush)
   // and the editor is left untouched: repainting would replace innerHTML,
   // remount CodeMirror, and throw away both the cursor and un-flushed text.
-  function applyRemote(notes) {
+  function applyRemote(message) {
     if (!isOpen()) return;
     const state = ensureState();
-    const incoming = Array.isArray(notes) ? notes : [];
+    // The broadcast has the same shape as GET; accept a bare notes array too.
+    const payload = Array.isArray(message) ? { notes: message } : message || {};
+    const incoming = Array.isArray(payload.notes) ? payload.notes : [];
+    if (Array.isArray(payload.languages) && payload.languages.length)
+      state.languages = payload.languages;
     const id = state.editingId;
     if (id) {
       const local = noteById(id);
       if (local) {
-        state.notes = incoming
-          .filter((note) => note && note.id !== id)
-          .concat([local]);
+        // Keep the edited note pinned to the front: it is the most recent
+        // write this client knows about, matching the newest-first order
+        // the server owns.
+        state.notes = [local].concat(incoming.filter((note) => note && note.id !== id));
         return;
       }
     }

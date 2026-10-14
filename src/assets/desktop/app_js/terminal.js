@@ -52,7 +52,7 @@ function connectEvents() {
       // global scheduleRefresh here: a notes save must not refresh the
       // whole workspace tree.
       if (window.HerdrNotesPanel && window.HerdrNotesPanel.applyRemote)
-        window.HerdrNotesPanel.applyRemote(msg.notes || []);
+        window.HerdrNotesPanel.applyRemote(msg);
     }
     else if (msg.type === "event") {
       const evt = msg.event || {},

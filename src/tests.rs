@@ -11063,6 +11063,10 @@ async fn events_socket_survives_backend_subscription_failure() {
 /// delete, all behind require_auth. Persistence lands in the notes.json
 /// sidecar under the isolated XDG_CONFIG_HOME, never webui-settings.json.
 #[tokio::test]
+// The env lock must span the whole test: XDG_CONFIG_HOME is process-global
+// and every await point races the other env-dependent suites. Notes tests
+// are the only lock users in this file, so the guard cannot deadlock.
+#[allow(clippy::await_holding_lock)]
 async fn notes_routes_crud_round_trip() {
     let _guard = lock_env();
     let (config_home, _config_guard) = temp_guard("herdr-webui-notes-crud");
@@ -11179,9 +11183,119 @@ async fn notes_routes_crud_round_trip() {
     std::env::remove_var("XDG_CONFIG_HOME");
 }
 
+/// The server owns the list contract: newest-first order, display_title
+/// fallback resolved per entry, the language table attached, and the
+/// created_note_id pointing at the exact note the client must open.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn notes_list_contract_is_server_owned() {
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-notes-contract");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    // Seed the sidecar with insertion order deliberately older-first so a
+    // pass-through list would expose it; the server must re-sort newest
+    // first regardless of storage order.
+    let sidecar_dir = config_home.join("herdr-webui");
+    fs::create_dir_all(&sidecar_dir).unwrap();
+    let seeded = json!({
+        "notes": [
+            { "id": "a-old", "title": "titled old", "content": "old body", "language": "txt",
+              "created_at": 1000, "updated_at": 1000, "updated_by": "user" },
+            { "id": "b-new", "title": "", "content": "first line is the title\nsecond line", "language": "txt",
+              "created_at": 2000, "updated_at": 2000, "updated_by": "user" },
+            { "id": "c-empty", "title": "", "content": "", "language": "txt",
+              "created_at": 3000, "updated_at": 3000, "updated_by": "user" }
+        ]
+    });
+    fs::write(
+        sidecar_dir.join("notes.json"),
+        serde_json::to_string(&seeded).unwrap(),
+    )
+    .unwrap();
+
+    // test_state() seeds the store with NotesState::default(); load from
+    // the sidecar the same way a reboot would so the GET exercises the
+    // seeded entries.
+    let mut state = test_state();
+    state.notes = Arc::new(Mutex::new(notes::load_notes()));
+    let app = app_router(state);
+    let response = app
+        .clone()
+        .oneshot(
+            request(Method::GET, "/api/notes")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = response_json(response).await;
+
+    let notes = payload["notes"].as_array().expect("notes array");
+    assert_eq!(notes.len(), 3);
+    assert_eq!(
+        notes[0]["id"], "c-empty",
+        "newest first despite storage order"
+    );
+    assert_eq!(notes[1]["id"], "b-new");
+    assert_eq!(notes[2]["id"], "a-old");
+
+    // display_title: explicit title, first content line, Untitled fallback.
+    assert_eq!(notes[2]["display_title"], "titled old");
+    assert_eq!(notes[1]["display_title"], "first line is the title");
+    assert_eq!(notes[0]["display_title"], "Untitled");
+
+    // The language table rides along: value, label, editor extension.
+    let languages = payload["languages"].as_array().expect("languages array");
+    assert_eq!(languages.len(), 14);
+    let rust = languages
+        .iter()
+        .find(|entry| entry["value"] == "rust")
+        .expect("rust entry");
+    assert_eq!(rust["label"], "Rust");
+    assert_eq!(rust["ext"], "rs");
+
+    // created_note_id names the note the client must open after POST.
+    let create = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/notes")
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "title": "", "content": "", "language": "txt" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let created = response_json(create).await;
+    let created_id = created["created_note_id"]
+        .as_str()
+        .expect("created_note_id");
+    let listed: Vec<&str> = created["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        listed.first(),
+        Some(&created_id),
+        "the created note leads the list"
+    );
+    assert!(listed.contains(&"a-old"), "preexisting notes still listed");
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
 /// Validation caps: oversized titles and content are rejected, unknown
 /// languages are rejected, the 200-entry ceiling holds.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn notes_routes_validation_caps() {
     let _guard = lock_env();
     let (config_home, _config_guard) = temp_guard("herdr-webui-notes-caps");
@@ -11316,6 +11430,7 @@ async fn notes_routes_validation_caps() {
 /// dir: load_notes() on boot restores the sidecar (the reset-survival
 /// contract).
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn notes_sidecar_survives_state_rebuild() {
     let _guard = lock_env();
     let (config_home, _config_guard) = temp_guard("herdr-webui-notes-persist");
@@ -11375,6 +11490,7 @@ async fn notes_sidecar_corrupt_boots_empty() {
 /// file must stay byte-identical across a full CRUD cycle, pinning the
 /// "note writes never rewrite auth config" isolation claim.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn notes_mutations_never_touch_the_settings_sidecar() {
     let _guard = lock_env();
     let (config_home, _config_guard) = temp_guard("herdr-webui-notes-isolation");
@@ -11533,6 +11649,13 @@ async fn events_socket_broadcasts_notes_changed() {
             assert_eq!(notes.len(), 1);
             assert_eq!(notes[0]["title"], "hello");
             assert_eq!(notes[0]["content"], "world");
+            // The frame carries the same contract as GET: resolved titles
+            // and the language table, so adopting clients need no local
+            // derivation logic.
+            assert_eq!(notes[0]["display_title"], "hello");
+            let languages = value["languages"].as_array().expect("languages table");
+            assert_eq!(languages.len(), 14);
+            assert_eq!(languages[0]["value"], "txt");
             got_notes_change = true;
             break;
         }
