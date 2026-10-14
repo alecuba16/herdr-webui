@@ -3856,8 +3856,8 @@ fn live_process_cwd(pid: Option<u32>) -> Option<PathBuf> {
 /// failure: missing pid, EPERM, empty path.
 #[cfg(all(unix, not(target_os = "linux")))]
 fn macos_process_cwd(pid: u32) -> Option<PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
     use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
     // Mirrors <sys/proc_info.h> vnode_info_path so the cwd path can be
     // read out of the struct the kernel fills. Only pvi_cdir.vip_path is
     // consumed; the stat fields exist just to keep the layout exact.

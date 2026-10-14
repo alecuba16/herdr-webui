@@ -2503,7 +2503,13 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid != 500, &|pid| pid == 500, "", &[]);
+        let res = index.resolve(
+            Path::new("/w"),
+            &|pid| pid != 500,
+            &|pid| pid == 500,
+            "",
+            &[],
+        );
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
