@@ -11108,16 +11108,14 @@ async fn notes_routes_crud_round_trip() {
     let update = app
         .clone()
         .oneshot(
-            request(
-                Method::PUT,
-                &format!("/api/notes/{note_id}"),
-            )
-            .header(header::COOKIE, "herdr_web_session=token-123")
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(
-                json!({ "content": "cargo build --release", "language": "markdown" }).to_string(),
-            ))
-            .unwrap(),
+            request(Method::PUT, &format!("/api/notes/{note_id}"))
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "content": "cargo build --release", "language": "markdown" })
+                        .to_string(),
+                ))
+                .unwrap(),
         )
         .await
         .unwrap();
@@ -11153,13 +11151,10 @@ async fn notes_routes_crud_round_trip() {
     let delete = app
         .clone()
         .oneshot(
-            request(
-                Method::DELETE,
-                &format!("/api/notes/{note_id}"),
-            )
-            .header(header::COOKIE, "herdr_web_session=token-123")
-            .body(Body::empty())
-            .unwrap(),
+            request(Method::DELETE, &format!("/api/notes/{note_id}"))
+                .header(header::COOKIE, "herdr_web_session=token-123")
+                .body(Body::empty())
+                .unwrap(),
         )
         .await
         .unwrap();
@@ -11199,9 +11194,7 @@ async fn notes_routes_validation_caps() {
             request(Method::POST, "/api/notes")
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({ "title": "x".repeat(201) }).to_string(),
-                ))
+                .body(Body::from(json!({ "title": "x".repeat(201) }).to_string()))
                 .unwrap(),
         )
         .await
@@ -11229,9 +11222,7 @@ async fn notes_routes_validation_caps() {
             request(Method::POST, "/api/notes")
                 .header(header::COOKIE, cookie)
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({ "language": "cobol" }).to_string(),
-                ))
+                .body(Body::from(json!({ "language": "cobol" }).to_string()))
                 .unwrap(),
         )
         .await

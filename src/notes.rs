@@ -41,8 +41,20 @@ pub(crate) const MAX_NOTES: usize = 200;
 const MAX_TITLE_CHARS: usize = 200;
 const MAX_CONTENT_BYTES: usize = 32 * 1024;
 const NOTE_LANGUAGES: [&str; 14] = [
-    "txt", "markdown", "javascript", "typescript", "rust", "python", "go", "json", "yaml",
-    "css", "html", "xml", "java", "sql",
+    "txt",
+    "markdown",
+    "javascript",
+    "typescript",
+    "rust",
+    "python",
+    "go",
+    "json",
+    "yaml",
+    "css",
+    "html",
+    "xml",
+    "java",
+    "sql",
 ];
 
 pub(crate) fn routes() -> Router<WebState> {
@@ -55,6 +67,7 @@ pub(crate) fn routes() -> Router<WebState> {
         .route("/api/notes/clear", axum::routing::post(notes_clear))
 }
 
+#[allow(clippy::result_large_err)]
 fn notes_auth(state: &WebState, headers: &HeaderMap, remote: SocketAddr) -> Result<(), Response> {
     crate::require_auth(state, headers, remote)
 }
@@ -135,9 +148,7 @@ async fn apply_notes(
         let Ok(mut guard) = state.notes.lock() else {
             return Err((StatusCode::SERVICE_UNAVAILABLE, "notes unavailable".into()));
         };
-        if let Err(err) = mutate(&mut guard) {
-            return Err(err);
-        }
+        mutate(&mut guard)?;
         guard.clone()
     };
     let persist = {
@@ -178,7 +189,10 @@ fn validate_title(raw: Option<&str>) -> Result<String, (StatusCode, String)> {
 fn validate_language(raw: Option<&str>) -> Result<String, (StatusCode, String)> {
     let language = raw.unwrap_or("txt").to_string();
     if !NOTE_LANGUAGES.contains(&language.as_str()) {
-        return Err((StatusCode::BAD_REQUEST, format!("unsupported language: {language}")));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("unsupported language: {language}"),
+        ));
     }
     Ok(language)
 }
