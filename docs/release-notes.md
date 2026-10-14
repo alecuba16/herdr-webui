@@ -20,7 +20,10 @@
   delete is confirm-free while Clear all goes through the danger
   confirm. Closing the panel flushes a pending save instead of
   dropping it, and a save in flight when another client rewrites the
-  same note resolves last-write-wins on the next broadcast.
+  same note resolves last-write-wins on the next broadcast. A failed
+  save paints the error in the editing view, flips the state button to
+  Save failed, and keeps the edit dirty so closing or going back
+  retries the flush instead of silently dropping the change.
 - Server caps guard the store: 200 notes, 200-character titles, 32KB
   per note, language allowlist enforced. All routes sit behind the
   same session auth as the rest of the API.
