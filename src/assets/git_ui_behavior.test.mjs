@@ -113,17 +113,14 @@ function context(fetchImpl) {
 }
 
 const GIT_UI_SOURCE = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
-// shared/core.js runs FIRST on its own: it defines HerdrAppHelpers, and
-// git_ui/settings.js evaluates its html template literal at load time, so
-// the bare inputAttrs binding must exist before any git_ui module loads.
-const CORE_SOURCE = readFileSync(new URL("./shared/core.js", import.meta.url), "utf8");
-const SHARED_SOURCES = [
-  "./shared/actions.js",
-  "./shared/file_icons.js",
-  "./shared/file_tree.js",
-  "./shared/line_context.js",
-  "./shared/file_content_search.js",
-  "./shared/workspace_search.js",
+// Parity with the served bundle: the git_ui module list below mirrors the
+// tail of assets.rs DESKTOP_GIT_UI_JS. A missing or reordered file there
+// must fail here too, not only in app_load's workspace-switch test.
+const ASSETS_RS = readFileSync(new URL("../../src/assets.rs", import.meta.url), "utf8");
+const CONCAT_START = ASSETS_RS.indexOf("const DESKTOP_GIT_UI_JS: &str = concat!(");
+assert.ok(CONCAT_START !== -1, "assets.rs still defines the DESKTOP_GIT_UI_JS concat");
+const CONCAT_BODY = ASSETS_RS.slice(CONCAT_START, ASSETS_RS.indexOf(");", CONCAT_START));
+const GIT_UI_BUNDLE_FILES = [
   "./desktop/git_ui/settings.js",
   "./desktop/git_ui/primitives.js",
   "./desktop/git_ui/diff_search.js",
@@ -141,6 +138,27 @@ const SHARED_SOURCES = [
   "./desktop/git_ui/toasts.js",
   "./desktop/git_ui/diff_view.js",
   "./desktop/git_ui/log_render.js",
+];
+const SERVED_GIT_UI_ORDER = [...CONCAT_BODY.matchAll(/include_str!\("([^"]+)"\)/g)]
+  .map((m) => "./" + m[1].replace("assets/desktop/", "desktop/"))
+  .filter((path) => path !== "./desktop/git_ui.js");
+assert.equal(
+  JSON.stringify(SERVED_GIT_UI_ORDER),
+  JSON.stringify(GIT_UI_BUNDLE_FILES),
+  "the git_ui module list here matches the assets.rs serving order",
+);
+// shared/core.js runs FIRST on its own: it defines HerdrAppHelpers, and
+// git_ui/settings.js evaluates its html template literal at load time, so
+// the bare inputAttrs binding must exist before any git_ui module loads.
+const CORE_SOURCE = readFileSync(new URL("./shared/core.js", import.meta.url), "utf8");
+const SHARED_SOURCES = [
+  "./shared/actions.js",
+  "./shared/file_icons.js",
+  "./shared/file_tree.js",
+  "./shared/line_context.js",
+  "./shared/file_content_search.js",
+  "./shared/workspace_search.js",
+  ...GIT_UI_BUNDLE_FILES,
 ]
   .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
   .join("\n;\n");

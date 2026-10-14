@@ -544,8 +544,9 @@ async function resetWindowLayout({ skipConfirm = false } = {}) {
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
   if (window.HerdrSearchPanel) window.HerdrSearchPanel.close();
   if (window.HerdrNotesPanel) window.HerdrNotesPanel.close();
-  // Expand both sidebars. The right setter re-stores "0" (same as absent
-  // for storedFlag reads); the left one mirrors the toggle's write path.
+  // Expand both sidebars. The right setter re-stores "0" so the next boot
+  // opens expanded (absent now means collapsed); the left one mirrors the
+  // toggle's write path.
   setRightSidebarCollapsedFlag(false);
   sidebarCollapsed = false;
   storeFlag(SIDEBAR_COLLAPSED_KEY, false);

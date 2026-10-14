@@ -476,6 +476,8 @@ noted in code):
   from before the parity work, so stage-all lives on `Shift+G`.
 - `sidebar: KeyB` — plain `b` stays git branches; sidebar collapse is
   `Shift+B`.
+- `rightSidebar: KeyQ`: webui-only column toggle (Files/Git/Search rail);
+  the TUI prefix `q` is quit, so no parity key exists.
 - `settings: KeyS`, `stash: Digit4` — the old TUI-only prefix-`s` stash
   moved aside; stash keeps `4`.
 - `help: Shift+Slash` (webui) maps to prefix `?`/`0` in the TUI.
