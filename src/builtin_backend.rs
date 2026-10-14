@@ -1440,8 +1440,14 @@ impl BuiltinState {
                 // it (found live: twin panes flipped ambiguous while a
                 // tool ran). Same strip mode as pane.read on the wire.
                 // Bounded tail (RESOLVE_TAIL_BYTES): the tiebreak matches
-                // a <=400-char chunk of the candidate's last text, so the
-                // full 8MB strip was pure per-poll cost.
+                // a <=400-char chunk of the candidate's last text
+                // (jcode_transcript.rs last_substantial_text_chunk), so
+                // the full 8MB strip was pure per-poll cost. The bound
+                // only narrows the step-3 window: steps 1/1b/2 never
+                // read pane_tail, and a candidate chunk older than 64KB
+                // of scrollback only fails to match when the pane really
+                // scrolled that far past it (the same candidate then
+                // loses to ambiguity either way).
                 terminal_text::strip_ansi_lossy(
                     &String::from_utf8_lossy(&terminal.history_tail_bytes(RESOLVE_TAIL_BYTES)),
                     terminal_text::StripCarriageReturn::Drop,
