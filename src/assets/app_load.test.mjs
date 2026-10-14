@@ -7857,3 +7857,77 @@ describe("empty leaf hint and focus", () => {
     match(appHtml, /<section class="workspace-empty-leaf" id="workspaceEmptyLeaf" tabindex="-1" hidden><\/section>/, "leaf carries tabindex=-1");
   });
 });
+
+// ---- notes rail static pins ----
+// The panel module itself has its own vm suite (notes_panel.test.mjs);
+// these pins cover the integration seams: the rail button, the shell-mode
+// whitelists, the broadcast arm, the lazy asset load, and the drawer-close
+// mutual-exclusion sweeps.
+describe("notes rail static pins", () => {
+  const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
+
+  it("renders the rail button and routes its click", () => {
+    const appHtml = read("./app.html");
+    match(appHtml, /<button class="right-sidebar-rail-button" id="rightRailNotes" title="Notes" aria-label="Notes"/, "rail button in app.html");
+    const core = read("./desktop/app_js/core.js");
+    match(core, /const notes = el\("rightRailNotes"\);/, "rail node lookup");
+    match(core, /notes\.onclick = \(\) => openWorkspaceNotesPanel\(state\.ws\);/, "rail click opens the notes panel");
+  });
+
+  it("ships no notes asset on the idle page (zero idle cost)", () => {
+    // The only script tag the initial page carries is app-boot.js: notes
+    // JS/CSS load on the first rail click through ensureNotesLoaded. If
+    // a regression eagerly references the notes assets anywhere in the
+    // boot chain, the idle cost claim breaks.
+    const appHtml = read("./app.html");
+    const scriptTags = [...appHtml.matchAll(/<script[^>]*src="([^"]+)"[^>]*>/g)].map((m) => m[1]);
+    assert.deepEqual(scriptTags, ["/assets/app-boot.js"], "initial page loads only app-boot.js");
+    const appBoot = read("./app_boot.js");
+    ok(!appBoot.includes("notes"), "app-boot never references notes assets");
+  });
+
+  it("whitelists the notes shell mode everywhere the others are", () => {
+    const rightSidebar = read("./desktop/app_js/right_sidebar.js");
+    match(rightSidebar, /notes: "notesPanel"/, "RIGHT_SIDEBAR_PANES carries notes");
+    match(rightSidebar, /mode === "files" \|\| mode === "git" \|\| mode === "search" \|\| mode === "notes"/, "shell-mode normalization accepts notes");
+    const workspaceShell = read("./desktop/app_js/workspace_shell.js");
+    match(workspaceShell, /mode === "git" \|\| mode === "files" \|\| mode === "search" \|\| mode === "notes"/, "isHostedShellMode accepts notes");
+    const core = read("./desktop/app_js/core.js");
+    match(core, /set\(notes, "notes", "notesPanel"\);/, "rail sync maps notes to notesPanel");
+  });
+
+  it("adopts notes_changed broadcasts without a global refresh", () => {
+    const terminal = read("./desktop/app_js/terminal.js");
+    const branch = terminal.match(/else if \(msg\.type === "notes_changed"\) \{[\s\S]*?\}/);
+    ok(branch, "notes_changed arm exists");
+    ok(!/scheduleRefresh\s*\(/.test(branch[0]), "the broadcast arm never calls the global refresh");
+    match(branch[0], /HerdrNotesPanel\.applyRemote\(msg\)/, "whole frames go to the panel: notes plus the server language table");
+  });
+
+  it("lazily loads the notes feature assets only when opened", () => {
+    const render = read("./desktop/app_js/render.js");
+    const ensureIdx = render.indexOf("async function ensureNotesLoaded");
+    ok(ensureIdx !== -1, "ensureNotesLoaded exists");
+    match(render, /if \(window\.HerdrNotesPanel\) return;[\s\S]*?loadDesktopFeatureCss\("\/assets\/desktop\/notes\.css"\);[\s\S]*?loadDesktopFeature\("\/assets\/desktop\/notes\.js"\);/, "notes assets load behind the ensure guard");
+    const openFn = render.slice(render.indexOf("async function openWorkspaceNotesPanel"));
+    ok(openFn.includes("await ensureNotesLoaded();"), "the open path goes through the ensure guard");
+  });
+
+  it("keeps modes mutually exclusive through the close sweeps", () => {
+    const render = read("./desktop/app_js/render.js");
+    const closes = render.match(/HerdrNotesPanel\.close\(\);/g) || [];
+    ok(closes.length >= 3, "drawer-close sweeps close the notes panel too: " + closes.length);
+    const core = read("./desktop/app_js/core.js");
+    match(core, /else if \(mode === "notes"\) openWorkspaceNotesPanel\(state\.ws, \{ forceOpen: true \}\);/, "toggle-expand fallback reopens notes");
+  });
+
+  it("serves the notes assets and api under auth", () => {
+    const assetsRs = read("../assets.rs");
+    match(assetsRs, /include_str!\("assets\/desktop\/notes\.js"\)/, "notes.js embedded");
+    match(assetsRs, /include_str!\("assets\/desktop\/notes\.css"\)/, "notes.css embedded");
+    const notesRs = read("../notes.rs");
+    ok(notesRs.includes("crate::require_auth"), "notes handlers sit behind require_auth");
+    const guards = (notesRs.match(/notes_auth\(&state, &headers, remote\)/g) || []).length;
+    ok(guards >= 5, "every notes route checks auth: " + guards);
+  });
+});

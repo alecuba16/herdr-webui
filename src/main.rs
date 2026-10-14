@@ -47,6 +47,7 @@ mod file_browser;
 mod git_ui;
 mod jcode_transcript;
 mod lsp;
+mod notes;
 mod protocol;
 mod server_settings;
 mod service;
@@ -56,17 +57,17 @@ mod terminal_text;
 use assets::{
     app_boot_js, app_html, desktop_css, desktop_directory_picker_css, desktop_directory_picker_js,
     desktop_file_browser_css, desktop_file_browser_js, desktop_git_ui_css, desktop_git_ui_js,
-    desktop_js, desktop_search_css, desktop_search_js, desktop_shortcuts_css,
-    favicon_attention_svg, favicon_error_svg, favicon_svg, icon_chevron_down_svg,
-    icon_chevron_right_svg, icon_clock_svg, icon_columns_svg, icon_copy_svg, icon_eye_off_svg,
-    icon_eye_svg, icon_file_svg, icon_folder_svg, icon_folder_up_svg, icon_git_svg, icon_help_svg,
-    icon_link_svg, icon_lock_open_svg, icon_lock_svg, icon_pencil_svg, icon_refresh_svg,
-    icon_save_svg, icon_search_svg, icon_settings_svg, icon_terminal_svg, icon_theme_auto_svg,
-    icon_trash_svg, icon_x_svg, jetbrains_mono_nerd_font, login_css, login_html, login_js,
-    mobile_actions_js, mobile_attention_js, mobile_backend_js, mobile_composer_js, mobile_core_js,
-    mobile_css, mobile_directory_picker_js, mobile_events_js, mobile_file_browser_js,
-    mobile_git_js, mobile_js, mobile_panels_js, mobile_screens_js, mobile_search_js,
-    mobile_sessions_js, mobile_settings_js, mobile_terminal_js, mobile_theme_js,
+    desktop_js, desktop_notes_css, desktop_notes_js, desktop_search_css, desktop_search_js,
+    desktop_shortcuts_css, favicon_attention_svg, favicon_error_svg, favicon_svg,
+    icon_chevron_down_svg, icon_chevron_right_svg, icon_clock_svg, icon_columns_svg, icon_copy_svg,
+    icon_eye_off_svg, icon_eye_svg, icon_file_svg, icon_folder_svg, icon_folder_up_svg,
+    icon_git_svg, icon_help_svg, icon_link_svg, icon_lock_open_svg, icon_lock_svg, icon_pencil_svg,
+    icon_refresh_svg, icon_save_svg, icon_search_svg, icon_settings_svg, icon_terminal_svg,
+    icon_theme_auto_svg, icon_trash_svg, icon_x_svg, jetbrains_mono_nerd_font, login_css,
+    login_html, login_js, mobile_actions_js, mobile_attention_js, mobile_backend_js,
+    mobile_composer_js, mobile_core_js, mobile_css, mobile_directory_picker_js, mobile_events_js,
+    mobile_file_browser_js, mobile_git_js, mobile_js, mobile_panels_js, mobile_screens_js,
+    mobile_search_js, mobile_sessions_js, mobile_settings_js, mobile_terminal_js, mobile_theme_js,
     mobile_workmeta_js, mobile_worktrees_js, shared_actions_js, shared_alert_card_css,
     shared_alert_card_js, shared_attention_js, shared_colors_css, shared_content_search_css,
     shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
@@ -639,6 +640,13 @@ pub(crate) struct WebState {
     /// after a settings change, so open tabs re-sync backend enablement
     /// without a page reload.
     settings_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// Server-wide note entries. Loaded from the notes.json sidecar at
+    /// boot; every mutation persists back and fans out a full snapshot to
+    /// connected events sockets.
+    notes: Arc<Mutex<notes::NotesState>>,
+    /// Broadcasts the full notes snapshot after every notes mutation so
+    /// every connected tab converges without polling.
+    notes_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
     lsp: Arc<lsp::LspRegistry>,
     /// Shared terminal attach hub: one backend attach per
@@ -978,6 +986,8 @@ async fn main() -> io::Result<()> {
     };
     let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(listen_endpoint);
     let (settings_tx, _) = tokio::sync::broadcast::channel(16);
+    let notes = Arc::new(Mutex::new(notes::load_notes()));
+    let (notes_tx, _) = tokio::sync::broadcast::channel(16);
     let closed_builtin_sessions: ClosedBuiltinSessions = Arc::new(Mutex::new(HashSet::new()));
     let promoted_temporary_tabs: PromotedTemporaryTabs = Arc::new(Mutex::new(HashMap::new()));
     let state = WebState {
@@ -998,6 +1008,8 @@ async fn main() -> io::Result<()> {
         no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
         rebind_tx,
         settings_tx,
+        notes,
+        notes_tx,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         lsp: lsp_registry,
         terminal_hub: Arc::new(terminal_hub::TerminalHub::new()),
@@ -1344,6 +1356,7 @@ fn app_router(state: WebState) -> Router {
         .merge(file_browser::routes())
         .merge(git_ui::routes())
         .merge(lsp::routes())
+        .merge(notes::routes())
         .route(
             "/api/workspaces/{workspace_id}/rename",
             post(rename_workspace),
@@ -1384,6 +1397,7 @@ fn app_router(state: WebState) -> Router {
             get(desktop_directory_picker_css),
         )
         .route("/assets/desktop/search.css", get(desktop_search_css))
+        .route("/assets/desktop/notes.css", get(desktop_notes_css))
         .route("/assets/desktop/shortcuts.css", get(desktop_shortcuts_css))
         .route("/assets/app-boot.js", get(app_boot_js))
         .route("/assets/shared/core.js", get(shared_core_js))
@@ -1469,6 +1483,7 @@ fn app_router(state: WebState) -> Router {
             get(desktop_directory_picker_js),
         )
         .route("/assets/desktop/search.js", get(desktop_search_js))
+        .route("/assets/desktop/notes.js", get(desktop_notes_js))
         .route("/assets/desktop/app.js", get(desktop_js))
         .route("/assets/login.css", get(login_css))
         .route("/assets/login.js", get(login_js))
@@ -5964,6 +5979,9 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     // Settings changes must reach open tabs immediately: a backend disabled
     // mid-session stops being targeted/offered without a page reload.
     let mut settings_rx = state.settings_tx.subscribe();
+    // Notes mutations broadcast the full snapshot; receivers that lag a
+    // burst miss frames and self-heal on the next panel-open GET.
+    let mut notes_rx = state.notes_tx.subscribe();
     let subscribe_api = api.clone();
     // backend_info() does a blocking ping over a Unix socket; run it on a
     // blocking thread so it does not stall the async runtime while waiting
@@ -6108,6 +6126,10 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
             settings = settings_rx.recv() => {
                 let Ok(settings) = settings else { break; };
                 if socket.send(Message::Text(settings.to_string().into())).await.is_err() { break; }
+            }
+            notes = notes_rx.recv() => {
+                let Ok(notes) = notes else { break; };
+                if socket.send(Message::Text(notes.to_string().into())).await.is_err() { break; }
             }
             message = socket.recv() => {
                 if message.is_none() { break; }

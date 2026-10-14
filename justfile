@@ -36,6 +36,19 @@ log-hover-e2e:
 rail-e2e:
     scripts/e2e/run-rail-e2e.sh
 
+# Real-browser acceptance for the Notes rail (server-synced notes panel:
+# hosting, create/edit with CodeMirror, persistence, delete, clear-all).
+# See scripts/e2e/README.md.
+notes-rail-e2e:
+    scripts/e2e/run-notes-rail-e2e.sh
+
+# Live API+WebSocket probe: two subscribers must both get the
+# notes_changed frame carrying the server contract (newest-first,
+# display_title fallback, language table, created_note_id).
+# See scripts/e2e/README.md.
+notes-broadcast-probe:
+    scripts/e2e/notes-broadcast-probe.sh
+
 # Real-browser acceptance for the chat lens segment colors (thinking /
 # tool names / running / failed rows, both themes, WCAG AA contrast).
 # See scripts/e2e/README.md.

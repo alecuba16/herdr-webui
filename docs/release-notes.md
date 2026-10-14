@@ -1,5 +1,37 @@
 # Release notes
 
+## 0.7.9 Release Notes
+- The desktop right rail gains a fourth view: Notes. A server-synced
+  scratchpad behind the rail Notes button, hosting in the sidebar column
+  like Files/Git/Search with the same re-click collapse and per-workspace
+  shell-mode memory. Desktop-only in v1; the mobile gap is documented.
+- Notes live on the server in a `notes.json` sidecar next to
+  `webui-settings.json`, so they survive server restarts, workspace
+  resets, and browser sessions, and every connected client sees the same
+  list. Writes are debounced per note (600ms) and sent as
+  `PUT /api/notes/{id}`; every mutation broadcasts a `notes_changed`
+  snapshot over the events socket that the open panel adopts directly,
+  with no polling and no global workspace refresh. A closed panel does
+  nothing with frames and self-heals on the next open.
+- Editing a note hosts the shared CodeMirror editor with syntax
+  highlighting derived from the note's language (14-language picker
+  served by the API: text, markdown, javascript, typescript, rust, python,
+  go, json, yaml, css, html, xml, java, sql). The server owns the list
+  contract: every response and broadcast delivers notes newest-first with
+  resolved display titles (note title, else first content line, else
+  Untitled) and the language table, and create responses name the created
+  note, so the client only renders. Per-note
+  delete is confirm-free while Clear all goes through the danger
+  confirm. Closing the panel flushes a pending save instead of
+  dropping it, and a save in flight when another client rewrites the
+  same note resolves last-write-wins on the next broadcast. A failed
+  save paints the error in the editing view, flips the state button to
+  Save failed, and keeps the edit dirty so closing or going back
+  retries the flush instead of silently dropping the change.
+- Server caps guard the store: 200 notes, 200-character titles, 32KB
+  per note, language allowlist enforced. All routes sit behind the
+  same session auth as the rest of the API.
+
 ## 0.7.8 Release Notes
 - Fixed `closeWorkspaceOnLastTerminal`: closing a workspace's last panel
   left it open because the auto-close guard read server-sent per-workspace

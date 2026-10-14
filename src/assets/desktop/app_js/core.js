@@ -339,6 +339,7 @@ if (rightSidebarToggle)
       const mode = typeof resolveHostedShellMode === "function" ? resolveHostedShellMode() : "files";
       if (mode === "git") openWorkspaceGitUi(state.ws, { forceOpen: true });
       else if (mode === "search") openWorkspaceSearchPanel(state.ws, { forceOpen: true });
+      else if (mode === "notes") openWorkspaceNotesPanel(state.ws, { forceOpen: true });
       else openWorkspaceFileBrowser(state.ws, { forceOpen: true });
       if (typeof globalThis.HerdrScheduleTerminalResize === "function")
         globalThis.HerdrScheduleTerminalResize();
@@ -453,6 +454,7 @@ function showTerminalShellMode(options = {}) {
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
   if (window.HerdrSearchPanel) window.HerdrSearchPanel.close();
+  if (window.HerdrNotesPanel) window.HerdrNotesPanel.close();
   const shell = el("terminalShell");
   if (shell) shell.style.display = "";
   if (typeof render === "function") render();
@@ -2813,18 +2815,22 @@ function setupRightSidebarRail() {
   if (git && !git.innerHTML) git.innerHTML = appIcon("git");
   const search = el("rightRailSearch");
   if (search && !search.innerHTML) search.innerHTML = '<span aria-hidden="true">⌕</span>';
+  const notes = el("rightRailNotes");
+  if (notes && !notes.innerHTML) notes.innerHTML = appIcon("pencil");
   if (!rail.__herdrWired) {
     rail.__herdrWired = true;
     if (files) files.onclick = () => openWorkspaceFileBrowser(state.ws);
     if (git) git.onclick = () => openWorkspaceGitUi(state.ws);
     if (search) search.onclick = () => openWorkspaceSearchPanel(state.ws);
+    if (notes) notes.onclick = () => openWorkspaceNotesPanel(state.ws);
   }
   syncRightSidebarRail();
 }
 function syncRightSidebarRail() {
   const files = el("rightRailFiles"),
     git = el("rightRailGit"),
-    search = el("rightRailSearch");
+    search = el("rightRailSearch"),
+    notes = el("rightRailNotes");
   if (!files && !git) return;
   const mode = currentWorkspaceShellMode();
   const collapsed = !!(window.HerdrRightSidebar && window.HerdrRightSidebar.collapsed && window.HerdrRightSidebar.collapsed());
@@ -2845,6 +2851,7 @@ function syncRightSidebarRail() {
   set(files, "files", "fileBrowserPanel");
   set(git, "git", "gitUiPanel");
   set(search, "search", "searchPanel");
+  set(notes, "notes", "notesPanel");
 }
 function themeToggleIcon() {
   if (themeMode === "auto") return `${appIcon("themeAuto")}<sub>A</sub>`;

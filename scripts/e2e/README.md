@@ -80,6 +80,39 @@ keeps the sibling strip visible (stub keyed by pane id, live controls),
 own-tab click keeps maximize, rail tab click restores the split and
 activates the sibling tab, and the git drawer opens a `gitchanges` tab.
 
+## Notes rail (notes-rail-e2e)
+
+```sh
+just notes-rail-e2e  # or: scripts/e2e/run-notes-rail-e2e.sh
+```
+
+Same real-browser setup on its own port (8898). Covers the server-synced
+notes panel: the rail Notes button hosts #notesPanel, creating a note
+enters editing straight away, the row renders after back, CodeMirror
+mounts with the note's language, title/language/content persist through
+the real API and survive a client reload (sidecar GET), per-note delete
+asks nothing, and clear-all rides the danger confirm and leaves the
+note in place on reject. Server-restart persistence is covered by the
+Rust suite's sidecar-rebuild test.
+
+## Notes broadcast contract (notes-broadcast-probe)
+
+```sh
+just notes-broadcast-probe  # or: scripts/e2e/notes-broadcast-probe.sh
+```
+
+Live API+WebSocket probe (no browser): boots an isolated server, logs
+in, opens two raw-socket `/ws/events` subscribers, creates a note with
+an empty title, and asserts both subscribers receive a
+`notes_changed` frame carrying the full server contract: the created
+note id, the `display_title` falling back to the first content line,
+and the 14-entry language table (value/label/ext). Pins the
+backend-ownership claim that responses and frames share one shape.
+
+Related probes: `notes-auth-probe.sh` (all five routes reject
+unauthenticated requests) and `notes-restart-probe.sh` (sidecar
+survives a process restart).
+
 ## Utility scripts
 
 - `cdp-driver-helpers.mjs` - shared CDP plumbing for the real-browser drivers

@@ -1,14 +1,15 @@
 // Right sidebar host (Phase 2). Owns the #rightSidebarContent column: the
 // rail's Files button hosts the file browser side there, Git hosts the git
-// status side, Search hosts the embedded search panel, terminal clears the
-// column. Drawer panels keep their own nodes (#fileBrowserPanel,
-// #gitUiPanel, #searchPanel); this module only moves them and the drawers
-// render their side column only when hosted.
+// status side, Search hosts the embedded search panel, Notes hosts the
+// shared notes panel, terminal clears the column. Drawer panels keep their
+// own nodes (#fileBrowserPanel, #gitUiPanel, #searchPanel, #notesPanel);
+// this module only moves them and the drawers render their side column only
+// when hosted.
 // State model: the collapse flag is global (mirrors the left sidebar
 // strip toggle), the view mode is the per-workspace shell mode that
 // workspace_shell.js already persists.
 
-const RIGHT_SIDEBAR_PANES = { files: "fileBrowserPanel", git: "gitUiPanel", search: "searchPanel" };
+const RIGHT_SIDEBAR_PANES = { files: "fileBrowserPanel", git: "gitUiPanel", search: "searchPanel", notes: "notesPanel" };
 
 function rightSidebarHostNode() {
   return el("rightSidebarContent");
@@ -16,7 +17,7 @@ function rightSidebarHostNode() {
 
 function rightSidebarModeFor(workspaceId = state.ws) {
   const mode = currentWorkspaceShellMode(workspaceId);
-  return mode === "files" || mode === "git" || mode === "search" ? mode : "terminal";
+  return mode === "files" || mode === "git" || mode === "search" || mode === "notes" ? mode : "terminal";
 }
 
 function rightSidebarVisibleFor(workspaceId = state.ws) {
@@ -97,7 +98,7 @@ function rightSidebarAfterDrawerRender() {
 // untouched here: callers decide whether a rail click expands the column
 // (render.js wrappers) or a workspace switch preserves it (forceOpen).
 async function openRightSidebarView(mode, workspaceId = state.ws, ensurePanel) {
-  if (mode !== "files" && mode !== "git" && mode !== "search") return "terminal";
+  if (mode !== "files" && mode !== "git" && mode !== "search" && mode !== "notes") return "terminal";
   if (typeof ensurePanel !== "function") return "legacy";
   const panel = ensurePanel();
   if (!panel) return "legacy";

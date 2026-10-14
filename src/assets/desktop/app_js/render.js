@@ -543,6 +543,7 @@ async function resetWindowLayout({ skipConfirm = false } = {}) {
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
   if (window.HerdrSearchPanel) window.HerdrSearchPanel.close();
+  if (window.HerdrNotesPanel) window.HerdrNotesPanel.close();
   // Expand both sidebars. The right setter re-stores "0" so the next boot
   // opens expanded (absent now means collapsed); the left one mirrors the
   // toggle's write path.
@@ -614,6 +615,12 @@ async function ensureFileBrowserLoaded() {
   await loadDesktopFeature("/assets/desktop/file-browser.js");
 }
 
+async function ensureNotesLoaded() {
+  if (window.HerdrNotesPanel) return;
+  loadDesktopFeatureCss("/assets/desktop/notes.css");
+  await loadDesktopFeature("/assets/desktop/notes.js");
+}
+
 async function openWorkspaceGitUi(id, options) {
   if (!gitUiEnabled()) return;
   const openOptions = options || {};
@@ -637,6 +644,7 @@ async function openWorkspaceGitUi(id, options) {
     window.HerdrRightSidebar.setCollapsed(false);
   if (window.HerdrFileBrowser) window.HerdrFileBrowser.hide();
   if (window.HerdrSearchPanel) window.HerdrSearchPanel.close();
+  if (window.HerdrNotesPanel) window.HerdrNotesPanel.close();
   rememberWorkspaceShellMode("git", id);
   window.HerdrGitUi.open(workspace, openOptions);
   render();
@@ -675,6 +683,7 @@ async function openWorkspaceFileBrowser(id, options) {
     window.HerdrRightSidebar.setCollapsed(false);
   if (window.HerdrGitUi) window.HerdrGitUi.hide();
   if (window.HerdrSearchPanel) window.HerdrSearchPanel.close();
+  if (window.HerdrNotesPanel) window.HerdrNotesPanel.close();
   rememberWorkspaceShellMode("files", id);
   window.HerdrFileBrowser.open(workspace, openOptions).catch((error) => alert(error.message || String(error)));
   render();
@@ -699,6 +708,30 @@ async function openWorkspaceSearchPanel(id, options) {
   render();
 }
 window.HerdrOpenWorkspaceSearchPanel = openWorkspaceSearchPanel;
+
+// Rail Notes hosts the shared notes panel in the sidebar column. Notes are
+// server-wide, so unlike Files/Git/Search there is nothing workspace-scoped
+// to resolve: the wrapper exists to follow the same rail contracts (re-click
+// toggles the column, collapsed-click expands it, forceOpen preserves the
+// collapse flag) and to keep the shell mode bookkeeping consistent.
+async function openWorkspaceNotesPanel(id, options) {
+  const openOptions = options || {};
+  if (window.HerdrNotesPanel && !openOptions.forceOpen && currentWorkspaceShellMode(id) === "notes" && window.HerdrNotesPanel.isOpen() && (!window.HerdrRightSidebar || window.HerdrRightSidebar.isHosted("notesPanel"))) {
+    if (window.HerdrRightSidebar) window.HerdrRightSidebar.setCollapsed(!window.HerdrRightSidebar.collapsed());
+    return;
+  }
+  try {
+    await ensureNotesLoaded();
+  } catch (error) {
+    alert(error.message || String(error));
+    return;
+  }
+  if (!openOptions.forceOpen && window.HerdrRightSidebar && window.HerdrRightSidebar.collapsed())
+    window.HerdrRightSidebar.setCollapsed(false);
+  await window.HerdrNotesPanel.open(id, openOptions);
+  render();
+}
+window.HerdrOpenWorkspaceNotesPanel = openWorkspaceNotesPanel;
 function runWorkspaceContextAction(action, button, workspaceId) {
   const w = workspaceId
     ? state.workspaces.find((x) => x.workspace_id === workspaceId)

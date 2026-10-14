@@ -32,7 +32,7 @@ function shellPathForId(id) {
 }
 
 function isHostedShellMode(mode) {
-  return mode === "git" || mode === "files" || mode === "search";
+  return mode === "git" || mode === "files" || mode === "search" || mode === "notes";
 }
 
 function loadWorkspaceShellStates() {
@@ -137,6 +137,7 @@ function applyWorkspaceShellForSelection(id = state.ws) {
   if (shell.mode === "git") openWorkspaceGitUi(id, { forceOpen: true });
   else if (shell.mode === "files") openWorkspaceFileBrowser(id, { forceOpen: true });
   else if (shell.mode === "search") openWorkspaceSearchPanel(id, { forceOpen: true });
+  else if (shell.mode === "notes") openWorkspaceNotesPanel(id, { forceOpen: true });
   else showTerminalShellMode({ forceOpen: true });
 }
 // The extended column always hosts one of Files/Git/Search. "terminal" is

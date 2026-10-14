@@ -1370,6 +1370,7 @@ mod tests {
             tls_mode: crate::TlsMode::Auto,
         });
         let (settings_tx, _) = tokio::sync::broadcast::channel(16);
+        let (notes_tx, _) = tokio::sync::broadcast::channel(16);
         WebState {
             api_socket: None,
             client_socket: None,
@@ -1415,6 +1416,8 @@ mod tests {
             no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
             rebind_tx,
             settings_tx,
+            notes: Arc::new(Mutex::new(crate::notes::NotesState::default())),
+            notes_tx,
             workspace_orders: Arc::new(Mutex::new(HashMap::new())),
             lsp: Arc::new(crate::lsp::LspRegistry::new(Default::default())),
             terminal_hub: Arc::new(crate::terminal_hub::TerminalHub::new()),
