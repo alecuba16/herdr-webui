@@ -360,6 +360,10 @@ function runPrefixedShortcut(e) {
       sidebarToggle && sidebarToggle.click();
       return true;
     },
+    rightSidebar: () => {
+      rightSidebarToggle && rightSidebarToggle.click();
+      return true;
+    },
     newWorkspace: () => {
       openWorktreeOpenModal();
       return true;

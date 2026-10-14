@@ -80,6 +80,7 @@ Browser terminal shortcuts:
 | Shortcut | Scope | Behavior |
 | --- | --- | --- |
 | `Ctrl+B` by default | Desktop WebUI | Opens the WebUI prefix overlay. The next shortcut key is handled by WebUI instead of the terminal. `Esc` cancels. The prefix is configurable in Settings. |
+| Prefix then `Q` | Desktop WebUI | Shows or hides the workspace views sidebar (Files, Git, Search rail column). A fresh boot starts it collapsed until a rail view is opened. |
 | Prefix then `F` | Desktop WebUI | Focuses the main terminal. |
 | `Shift+Enter` | Main terminal | Sends the configured newline sequence when `Shift+Enter newline` is enabled. |
 | `PageUp` / `PageDown` | Main terminal | Scrolls terminal output by one visible terminal page in normal scrollback. |

@@ -251,9 +251,10 @@ describe("window layout reset integration", () => {
     assert.ok(!keys.includes("herdr-web-workspace-panes"), "panes store cleared");
     // The reset writes the fresh defaults back through the canonical
     // setters on purpose: shell mode "terminal" (same as absent for the
-    // restore reads) and sidebar flags "0" (storedFlag reads false for
-    // both absent and "0"). The saved split trees, hosted modes, and
-    // collapsed states are gone.
+    // restore reads) and sidebar flags "0". The right sidebar reads
+    // "0" as expanded while an absent flag means collapsed (fresh-boot
+    // rule), the left sidebar reads false for both. The saved split
+    // trees, hosted modes, and collapsed states are gone.
     assert.ok(!keys.includes("herdr-web-sidebar-collapsed") || vm.runInContext("localStorage.getItem('herdr-web-sidebar-collapsed')", ctx) === "0", "left sidebar reset to expanded");
     assert.ok(!keys.includes("herdr-web-right-sidebar-collapsed") || vm.runInContext("localStorage.getItem('herdr-web-right-sidebar-collapsed')", ctx) === "0", "right sidebar reset to expanded");
     assert.ok(!keys.some((k) => k.startsWith("herdr-session-state:")), "session selection keys cleared");

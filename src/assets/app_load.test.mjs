@@ -56,6 +56,9 @@ function element(id = "") {
     select() {
       this.selected = true;
     },
+    click() {
+      if (typeof this.onclick === "function") this.onclick();
+    },
     addEventListener() {},
     getBoundingClientRect() {
       return { bottom: 100, height: 100, left: 0, top: 0, width: 100 };
@@ -1357,6 +1360,68 @@ describe("app bundle load", () => {
     const webuiKeys = new Set([...source.matchAll(/case "([^"]+)":/g)].map((match) => match[1]));
     const gitKeys = ["Digit1", "Digit2", "Digit3", "Digit4", "KeyC", "KeyL", "KeyR", "KeyG", "KeyY", "KeyU", "KeyD", "KeyZ", "KeyH", "KeyM", "KeyE", "KeyO", "KeyV", "KeyI", "Digit0"];
     equal(gitKeys.filter((key) => webuiKeys.has(key)).join(","), "");
+  });
+
+  it("boots the right sidebar collapsed unless the stored flag says expanded", () => {
+    const bootCollapsed = (stored) => {
+      const ctx = context();
+      if (stored !== undefined) ctx.localStorage.setItem("herdr-web-right-sidebar-collapsed", stored);
+      vm.runInContext(source, ctx);
+      return {
+        collapsed: ctx.window.__herdrRightSidebarCollapsed,
+        collapsedClass: ctx.document.getElementById("app").classList.contains("right-sidebar-collapsed"),
+        stored: ctx.localStorage.getItem("herdr-web-right-sidebar-collapsed"),
+      };
+    };
+    equal(bootCollapsed(undefined).collapsed, true, "absent flag boots collapsed (boot-clean)");
+    equal(bootCollapsed(undefined).collapsedClass, true);
+    equal(bootCollapsed("0").collapsed, false, 'stored "0" still boots expanded (reset contract)');
+    equal(bootCollapsed("0").collapsedClass, false);
+    equal(bootCollapsed("0").stored, "0", "the boot read must not write the store");
+    equal(bootCollapsed("1").collapsed, true);
+    equal(bootCollapsed("1").collapsedClass, true);
+  });
+
+  it("toggles the right sidebar column with the webui prefix shortcut", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const prefixEvent = () => ({
+      code: "KeyB",
+      key: "b",
+      ctrlKey: true,
+      altKey: false,
+      metaKey: false,
+      shiftKey: false,
+      target: ctx.document.body,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    const keyEvent = () => ({
+      code: "KeyQ",
+      key: "q",
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: false,
+      defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() {},
+    });
+    // Arm the prefix (Ctrl+B), then Q flips the collapse flag and mirrors
+    // it for the host module. A fresh event per press: a consumed event
+    // keeps defaultPrevented and would short-circuit the next dispatch.
+    ctx.handleGlobalShortcut(prefixEvent());
+    const firstPress = keyEvent();
+    ctx.handleGlobalShortcut(firstPress);
+    equal(firstPress.defaultPrevented, true, "the prefixed key is consumed");
+    equal(ctx.window.__herdrRightSidebarCollapsed, false, "KeyQ expanded the boot-collapsed column");
+    equal(ctx.document.getElementById("app").classList.contains("right-sidebar-collapsed"), false);
+    equal(ctx.localStorage.getItem("herdr-web-right-sidebar-collapsed"), "0");
+    // Second press collapses again and persists; re-arm the prefix each
+    // time because the dispatch consumes it.
+    ctx.handleGlobalShortcut(prefixEvent());
+    ctx.handleGlobalShortcut(keyEvent());
+    equal(ctx.window.__herdrRightSidebarCollapsed, true);
+    equal(ctx.localStorage.getItem("herdr-web-right-sidebar-collapsed"), "1");
   });
 
   it("defines Git cleanup tab and maintenance endpoints", () => {
