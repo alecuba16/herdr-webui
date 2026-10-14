@@ -1464,6 +1464,37 @@ describe("app bundle load", () => {
     ok(loadedScripts.includes("/assets/desktop/git-ui.js"), "the switch lazy-loaded git-ui.js through HerdrLoadScript");
     ok(loadedScripts.includes("/assets/desktop/directory-picker.js"), "ensureGitUiLoaded pulls the picker first");
     equal(loadedScripts.indexOf("/assets/desktop/directory-picker.js") < loadedScripts.indexOf("/assets/desktop/git-ui.js"), true, "the picker loads before the git-ui bundle");
+    // Drift guard: the bundle list above is a copy of the serving order
+    // in src/assets.rs DESKTOP_GIT_UI_JS. Parse that const and assert the
+    // copy stays faithful, so a new module added to the server bundle
+    // fails here instead of silently missing from this boot path.
+    const assetsRs = readFileSync(new URL("../../src/assets.rs", import.meta.url), "utf8");
+    const concatStart = assetsRs.indexOf("const DESKTOP_GIT_UI_JS: &str = concat!(");
+    ok(concatStart !== -1, "assets.rs still defines the DESKTOP_GIT_UI_JS concat");
+    const concatBody = assetsRs.slice(concatStart, assetsRs.indexOf(");", concatStart));
+    const servedOrder = [...concatBody.matchAll(/include_str!\("([^"]+)"\)/g)].map((m) => "./" + m[1].replace("assets/desktop/", "desktop/"));
+    equal(servedOrder.length, 18, "assets.rs serves 18 files in the git-ui bundle");
+    const testOrder = [
+      "./desktop/git_ui/settings.js",
+      "./desktop/git_ui/primitives.js",
+      "./desktop/git_ui/diff_search.js",
+      "./desktop/git_ui/workspace_nav.js",
+      "./desktop/git_ui/syntax.js",
+      "./desktop/git_ui/log.js",
+      "./desktop/git_ui/shortcuts.js",
+      "./desktop/git_ui/stash.js",
+      "./desktop/git_ui/cleanup.js",
+      "./desktop/git_ui/diff_render.js",
+      "./desktop/git_ui/conflicts.js",
+      "./desktop/git_ui/side_tree.js",
+      "./desktop/git_ui/modals.js",
+      "./desktop/git_ui/branch_list.js",
+      "./desktop/git_ui/toasts.js",
+      "./desktop/git_ui/diff_view.js",
+      "./desktop/git_ui/log_render.js",
+      "./desktop/git_ui.js",
+    ];
+    equal(JSON.stringify(servedOrder), JSON.stringify(testOrder), "the test bundle list matches the assets.rs serving order exactly");
     // Collapse survives the real open(): the module's hosted mount runs
     // HerdrRightSidebar.openView, which only remembers the mode and moves
     // the panel into the host; the collapse flag stays untouched.
