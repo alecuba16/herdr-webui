@@ -583,6 +583,8 @@ body.light {
    styles are kept out of the sheet path; strip classes are deleted. */
 .mobile-terminal-shell {
   contain: layout paint style;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   position: relative;
   min-height: 0;
   min-width: 0;
@@ -651,6 +653,56 @@ body.light {
   min-width: 0;
   min-height: 0;
   white-space: nowrap;
+}
+.mobile-composer {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.mobile-composer-note {
+  color: var(--danger, #f38ba8);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.mobile-composer-note[hidden] {
+  display: none;
+}
+.mobile-composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.mobile-composer-row textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  max-height: 24vh;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-input, 16px);
+  line-height: 1.35;
+}
+.mobile-composer-row textarea:focus-visible {
+  outline: var(--ring);
+  outline-offset: var(--ring-offset, 2px);
+}
+.mobile-composer-send {
+  flex: 0 0 auto;
+  min-width: 64px;
+  min-height: 44px;
+}
+.mobile-composer-send[disabled] {
+  cursor: wait;
+  opacity: 0.65;
 }
 .mobile-terminal.wterm,
 .mobile-terminal .wterm {
@@ -958,9 +1010,7 @@ body.mobile-keyboard-open .mobile-keys-fab {
   font-size: 14px;
 }
 /* Prompt card is a bottom sheet now (same .mobile-sheet chrome as the
-   confirm/rename sheets). These rules only tune the question specifics.
-   The old .mobile-composer bar is gone: typing goes straight into the
-   terminal, whose wterm textarea carries the full keyboard guard set. */
+   confirm/rename sheets). These rules only tune the question specifics. */
 .mobile-prompt-card {
   z-index: 91;
   border: 1px solid var(--status-blocked, #f38ba8);

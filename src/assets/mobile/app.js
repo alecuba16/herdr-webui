@@ -190,8 +190,12 @@
       throw Error("unauthorized");
     }
     const body = await response.json();
-    if (!response.ok || body.error)
-      throw Error(apiErrorMessage(body, response.statusText));
+    if (!response.ok || (body && body.error)) {
+      const error = Error(apiErrorMessage(body, response.statusText));
+      error.status = response.status;
+      error.details = body || {};
+      throw error;
+    }
     return body;
   }
 
@@ -1378,8 +1382,9 @@
   globalThis.HerdrMobileComposerDeps = {
     renderComposerBar: (...args) => mobileComposer.renderComposerBar(...args),
     renderComposerNote: (...args) => mobileComposer.renderComposerNote(...args),
+    syncComposer: (...args) => mobileComposer.syncComposer(...args),
     renderPromptCard: (...args) => mobileComposer.renderPromptCard(...args),
-    draftValue: () => "",
+    draftValue: (paneId) => mobileComposer.drafts.get(paneId) || "",
   };
 
   mobileEvents = globalThis.HerdrMobileEventsModule.create({
@@ -1495,8 +1500,12 @@
     setCommitField: (...args) => mobileGit.setCommitField(...args),
     submitCommit: (...args) => mobileGit.submitCommit(...args),
     dismissCommitDone: (...args) => mobileGit.dismissCommitDone(...args),
-    composerInput: () => {},
-    composerSubmit: () => {},
+    composerInput(value) {
+      const paneId = state.pane;
+      if (paneId && mobileComposer && mobileComposer.drafts)
+        mobileComposer.drafts.set(paneId, String(value || ""));
+    },
+    composerSubmit: (...args) => mobileComposer.submit(...args),
     renameWorkspace: (...args) => mobileScreens.startRenameWorkspace(...args),
     setRenameWorkspaceValue: (...args) => mobileScreens.setRenameWorkspaceValue(...args),
     submitRenameWorkspace: (...args) => mobileScreens.submitRenameWorkspace(...args),

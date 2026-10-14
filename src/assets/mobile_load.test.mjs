@@ -551,6 +551,7 @@ function context(pathname = "/", options = {}) {
   };
   ctx.HerdrTerminalRenderer = {
     create: async (_target, rendererOptions = {}) => {
+      ctx.lastRendererOptions = rendererOptions;
       const term = new ctx.Terminal();
       terminalStats.opened += 1;
       if (rendererOptions.links !== false) {
@@ -750,6 +751,28 @@ describe("mobile bundle load", () => {
     equal(gate(), true);
     gate.enable();
     equal(gate(), false);
+  });
+
+  it("uses a compact mobile terminal default and refits after geometry settles", async () => {
+    const terminalSource = readFileSync(new URL("./mobile/terminal.js", import.meta.url), "utf8");
+    match(terminalSource, /function terminalFontSize\(\)/);
+    match(terminalSource, /if \(!Number\.isFinite\(value\) \|\| value <= 0\) return 12;/);
+    match(terminalSource, /document\.fonts/);
+    match(terminalSource, /new ResizeObserver\(\(\) => scheduleTerminalShellResize\(\)\)/);
+    match(terminalSource, /pendingTerminalResize/);
+
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    equal(ctx.lastRendererOptions.fontSize, 12);
+
+    const stored = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    stored.localStorage.setItem("herdr-web-options", JSON.stringify({ terminalFontSize: 16 }));
+    vm.runInContext(source, stored);
+    await stored.HerdrMobile.refresh();
+    await stored.settle();
+    equal(stored.lastRendererOptions.fontSize, 16);
   });
 
   it("emits the full keyboard guard set from the real inputAttrs helper", () => {

@@ -16,7 +16,49 @@ const backendSource = read("./mobile/backend.js");
 const layoutSettingsSource = read("./desktop/layout_settings.js");
 const assetsRsSource = read("../assets.rs");
 
-function composerContext({ status = "blocked", term = null, options = null, apiResponses = null, apiFails = false, dateNow = null } = {}) {
+function mobileComposerDom() {
+  const inputListeners = {};
+  const input = {
+    value: "",
+    disabled: false,
+    placeholder: "",
+    listeners: inputListeners,
+    addEventListener(type, listener) {
+      (inputListeners[type] ||= []).push(listener);
+    },
+  };
+  const note = { textContent: "", hidden: true };
+  const send = {
+    disabled: false,
+    attributes: {},
+    onclick: null,
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+    },
+  };
+  const root = {
+    __herdrMobileComposerBound: false,
+    querySelector(selector) {
+      if (selector === "#mobileComposerInput") return input;
+      if (selector === "#mobileComposerNote") return note;
+      if (selector === "#mobileComposerSend") return send;
+      return null;
+    },
+  };
+  return {
+    input,
+    note,
+    send,
+    document: {
+      activeElement: null,
+      getElementById(id) {
+        return id === "mobileComposer" ? root : null;
+      },
+    },
+  };
+}
+
+function composerContext({ status = "blocked", term = null, options = null, apiResponses = null, apiFails = false, apiError = null, dom = null, dateNow = null } = {}) {
   const calls = { api: [], paste: [], renders: 0 };
   const storage = new Map();
   if (options) storage.set("herdr-web-options", JSON.stringify(options));
@@ -43,6 +85,7 @@ function composerContext({ status = "blocked", term = null, options = null, apiR
     Promise,
     RegExp,
     encodeURIComponent,
+    document: dom ? dom.document : undefined,
     localStorage: {
       getItem: (k) => (storage.has(k) ? storage.get(k) : null),
       setItem: (k, v) => storage.set(k, String(v)),
@@ -64,6 +107,7 @@ function composerContext({ status = "blocked", term = null, options = null, apiR
     state,
     api: async (url, opts) => {
       calls.api.push({ url, opts });
+      if (apiError) throw apiError;
       if (apiFails) throw new Error("route missing");
       if (apiResponses) {
         const entry = apiResponses.find((r) => url.includes(r.urlPart));
@@ -92,15 +136,48 @@ describe("mobile composer + prompt cards module", () => {
     assert.equal(typeof module.promptDismiss, "function");
   });
 
-  it("composer bar is removed: typing goes straight into the terminal", () => {
-    const { module, state, calls } = composerContext();
-    // The bar stub must stay empty everywhere so panels.js never mounts a
-    // second input fighting the terminal for focus.
-    assert.equal(module.renderComposerBar(), "");
-    assert.equal(module.renderComposerNote(), "");
+  it("composer bar renders only on the terminal screen with a pane", () => {
+    const { module, state } = composerContext();
+    assert.match(module.renderComposerBar(), /id="mobileComposerInput"/);
+    assert.match(module.renderComposerBar(), /enterkeyhint="send"/);
     state.screen = "home";
     assert.equal(module.renderComposerBar(), "");
-    assert.equal(calls.api.length, 0, "no pane submit calls without the bar");
+    state.screen = "terminal";
+    state.pane = null;
+    assert.equal(module.renderComposerBar(), "");
+  });
+
+  it("composer preserves drafts and submits through the server route", async () => {
+    const dom = mobileComposerDom();
+    const { module, calls } = composerContext({ dom });
+    module.syncComposer();
+    dom.input.value = "do the thing\n";
+    dom.input.listeners.input[0]();
+
+    await module.submit();
+
+    assert.equal(calls.api.length, 1);
+    assert.equal(calls.api[0].url, "/api/panes/pane-1/submit");
+    assert.equal(calls.api[0].opts.method, "POST");
+    assert.deepEqual(JSON.parse(calls.api[0].opts.body), { text: "do the thing" });
+    assert.equal(dom.input.value, "");
+    assert.equal(module.drafts.has("pane-1"), false);
+  });
+
+  it("keeps the draft and shows the server refusal note", async () => {
+    const refusal = Error("agent is blocked");
+    refusal.details = { note: "This panel is blocked. Answer its question first." };
+    const dom = mobileComposerDom();
+    const { module } = composerContext({ dom, apiError: refusal });
+    module.syncComposer();
+    dom.input.value = "continue anyway";
+    dom.input.listeners.input[0]();
+
+    await module.submit();
+
+    assert.equal(dom.input.value, "continue anyway");
+    assert.equal(dom.note.textContent, refusal.details.note);
+    assert.equal(dom.note.hidden, false);
   });
 
   it("wterm bundle ships the keyboard guard set for direct terminal typing", () => {
