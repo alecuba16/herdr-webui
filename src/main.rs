@@ -47,6 +47,7 @@ mod file_browser;
 mod git_ui;
 mod jcode_transcript;
 mod lsp;
+mod notes;
 mod protocol;
 mod server_settings;
 mod service;
@@ -639,6 +640,13 @@ pub(crate) struct WebState {
     /// after a settings change, so open tabs re-sync backend enablement
     /// without a page reload.
     settings_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// Server-wide note entries. Loaded from the notes.json sidecar at
+    /// boot; every mutation persists back and fans out a full snapshot to
+    /// connected events sockets.
+    notes: Arc<Mutex<notes::NotesState>>,
+    /// Broadcasts the full notes snapshot after every notes mutation so
+    /// every connected tab converges without polling.
+    notes_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
     workspace_orders: Arc<Mutex<HashMap<String, Vec<String>>>>,
     lsp: Arc<lsp::LspRegistry>,
     /// Shared terminal attach hub: one backend attach per
@@ -978,6 +986,8 @@ async fn main() -> io::Result<()> {
     };
     let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(listen_endpoint);
     let (settings_tx, _) = tokio::sync::broadcast::channel(16);
+    let notes = Arc::new(Mutex::new(notes::load_notes()));
+    let (notes_tx, _) = tokio::sync::broadcast::channel(16);
     let closed_builtin_sessions: ClosedBuiltinSessions = Arc::new(Mutex::new(HashSet::new()));
     let promoted_temporary_tabs: PromotedTemporaryTabs = Arc::new(Mutex::new(HashMap::new()));
     let state = WebState {
@@ -998,6 +1008,8 @@ async fn main() -> io::Result<()> {
         no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
         rebind_tx,
         settings_tx,
+        notes,
+        notes_tx,
         workspace_orders: Arc::new(Mutex::new(HashMap::new())),
         lsp: lsp_registry,
         terminal_hub: Arc::new(terminal_hub::TerminalHub::new()),
@@ -1344,6 +1356,7 @@ fn app_router(state: WebState) -> Router {
         .merge(file_browser::routes())
         .merge(git_ui::routes())
         .merge(lsp::routes())
+        .merge(notes::routes())
         .route(
             "/api/workspaces/{workspace_id}/rename",
             post(rename_workspace),
@@ -5964,6 +5977,9 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
     // Settings changes must reach open tabs immediately: a backend disabled
     // mid-session stops being targeted/offered without a page reload.
     let mut settings_rx = state.settings_tx.subscribe();
+    // Notes mutations broadcast the full snapshot; receivers that lag a
+    // burst miss frames and self-heal on the next panel-open GET.
+    let mut notes_rx = state.notes_tx.subscribe();
     let subscribe_api = api.clone();
     // backend_info() does a blocking ping over a Unix socket; run it on a
     // blocking thread so it does not stall the async runtime while waiting
@@ -6108,6 +6124,10 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
             settings = settings_rx.recv() => {
                 let Ok(settings) = settings else { break; };
                 if socket.send(Message::Text(settings.to_string().into())).await.is_err() { break; }
+            }
+            notes = notes_rx.recv() => {
+                let Ok(notes) = notes else { break; };
+                if socket.send(Message::Text(notes.to_string().into())).await.is_err() { break; }
             }
             message = socket.recv() => {
                 if message.is_none() { break; }
