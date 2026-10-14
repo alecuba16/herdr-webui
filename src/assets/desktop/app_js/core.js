@@ -163,12 +163,16 @@ let term,
   searchSelectedIndex = 0;
 const SIDEBAR_COLLAPSED_KEY = "herdr-web-sidebar-collapsed";
 const RIGHT_SIDEBAR_COLLAPSED_KEY = "herdr-web-right-sidebar-collapsed";
+// Boot-clean rule: with no stored flag the column starts collapsed, so
+// the remembered shell mode alone never expands it at boot or on a
+// workspace switch. "0" (set by resetWindowLayout) still boots expanded.
 const DEFAULT_GLOBAL_SHORTCUT_PREFIX = "Ctrl+B";
 const DEFAULT_WEBUI_SHORTCUTS = {
   search: "Slash",
   help: "Shift+Slash",
   settings: "KeyS",
   sidebar: "KeyB",
+  rightSidebar: "KeyQ",
   newWorkspace: "KeyN",
   newPanel: "KeyP",
   openWorktrees: "KeyW",
@@ -224,7 +228,14 @@ const FAST_REFRESH_EVENTS = new Set([
   "worktree.removed",
 ]);
 let sidebarCollapsed = storedFlag(SIDEBAR_COLLAPSED_KEY);
-let rightSidebarCollapsed = storedFlag(RIGHT_SIDEBAR_COLLAPSED_KEY);
+function storedRightSidebarCollapsed() {
+  try {
+    return localStorage.getItem(RIGHT_SIDEBAR_COLLAPSED_KEY) !== "0";
+  } catch (_) {
+    return true;
+  }
+}
+let rightSidebarCollapsed = storedRightSidebarCollapsed();
 // The right_sidebar.js host module reads the collapse state through this
 // mirror (module init order differs from this let), so keep it in sync at
 // every mutation point.
@@ -317,8 +328,10 @@ if (sidebarToggle)
 const rightSidebarToggle = el("rightSidebarToggle");
 if (rightSidebarToggle)
   rightSidebarToggle.onclick = () => {
+    showShortcutHintToast("webuiShortcuts", "rightSidebar");
     const expanding = rightSidebarCollapsed;
     setRightSidebarCollapsedFlag(!rightSidebarCollapsed);
+    syncShortcutTooltips();
     // The expanded column always hosts a view (Files/Git/Search).
     // Expanding from terminal mode opens the workspace's last hosted
     // view (resolveHostedShellMode) so the column never renders empty.
@@ -719,6 +732,7 @@ function helpAndShortcutsBodyHtml() {
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ?</kbd><span>Open this help and shortcuts reference.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then S</kbd><span>Open Settings.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then B</kbd><span>Show or hide the workspace/agents sidebar.</span></div>
+          <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then Q</kbd><span>Show or hide the workspace views sidebar.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then N</kbd><span>Open or create workspace.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then P</kbd><span>Create panel in current workspace.</span></div>
           <div class="shortcut-row"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then W</kbd><span>Open workspace/worktrees browser. Without an open workspace, it starts from the configured default folder.</span></div>
@@ -762,6 +776,7 @@ const shortcutEditorGroups = [
       ["help", "Shortcut window"],
       ["settings", "Settings"],
       ["sidebar", "Toggle sidebar"],
+      ["rightSidebar", "Toggle workspace views sidebar"],
       ["newWorkspace", "Open/create workspace"],
       ["newPanel", "New panel"],
       ["openWorktrees", "Open workspace/worktrees"],
@@ -882,6 +897,7 @@ function syncShortcutTooltips() {
   setShortcutTooltip("footerSettingsButton", "Settings", "settings");
   setShortcutTooltip("headerActionsButton", "Search and actions", "search");
   setShortcutTooltip("sidebarToggle", sidebarCollapsed ? "Show sidebar" : "Hide sidebar", "sidebar");
+  setShortcutTooltip("rightSidebarToggle", rightSidebarCollapsed ? "Show workspace views" : "Hide workspace views", "rightSidebar");
   const searchClose = el("searchPaletteClose");
   if (searchClose) searchClose.title = "Close (Esc)";
 }
