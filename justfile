@@ -42,6 +42,13 @@ rail-e2e:
 notes-rail-e2e:
     scripts/e2e/run-notes-rail-e2e.sh
 
+# Live API+WebSocket probe: two subscribers must both get the
+# notes_changed frame carrying the server contract (newest-first,
+# display_title fallback, language table, created_note_id).
+# See scripts/e2e/README.md.
+notes-broadcast-probe:
+    scripts/e2e/notes-broadcast-probe.sh
+
 # Real-browser acceptance for the chat lens segment colors (thinking /
 # tool names / running / failed rows, both themes, WCAG AA contrast).
 # See scripts/e2e/README.md.

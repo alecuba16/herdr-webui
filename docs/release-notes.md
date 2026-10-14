@@ -14,9 +14,13 @@
   with no polling and no global workspace refresh. A closed panel does
   nothing with frames and self-heals on the next open.
 - Editing a note hosts the shared CodeMirror editor with syntax
-  highlighting derived from the note's language (14-language picker:
-  text, markdown, javascript, typescript, rust, python, go, json, yaml,
-  css, html, xml, java, sql). The list renders newest first; per-note
+  highlighting derived from the note's language (14-language picker
+  served by the API: text, markdown, javascript, typescript, rust, python,
+  go, json, yaml, css, html, xml, java, sql). The server owns the list
+  contract: every response and broadcast delivers notes newest-first with
+  resolved display titles (note title, else first content line, else
+  Untitled) and the language table, and create responses name the created
+  note, so the client only renders. Per-note
   delete is confirm-free while Clear all goes through the danger
   confirm. Closing the panel flushes a pending save instead of
   dropping it, and a save in flight when another client rewrites the

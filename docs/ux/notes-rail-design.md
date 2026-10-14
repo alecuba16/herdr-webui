@@ -128,6 +128,46 @@ Loaded the checked-in `vendor/codemirror.bundle.js` in a Node VM with DOM stubs 
 
 Baseline re-confirmed on the branch after these probes: full JS suite 1168/1168, feature-adjacent suites (right sidebar, shell restore, app load) 257/257, all green.
 
+## Backend ownership pass (round 5)
+
+The client kept four pieces of derivation logic that every client would have
+had to reimplement identically: the newest-first sort, the display-title
+fallback (title, else first content line, else Untitled), the language table
+(labels + editor extension), and the created-note pick after POST. All four
+moved to the server:
+
+- `notes_public_json` sorts newest-first by `updated_at`, stamps
+  `display_title` per entry, and attaches `languages` (value/label/ext
+  triples). Every response (GET, POST, PUT, DELETE, clear) and every
+  `notes_changed` frame now carries the same shape, so `adoptPayload` on the
+  client is one path for all of them.
+- `POST` returns `created_note_id`: the client opens exactly the note the
+  server created instead of locally scanning for the most recent one.
+- `NOTE_LANGUAGES` became (value, label, ext) triples; the select renders
+  server labels and the editor mount path uses the server-provided ext, so
+  the client no longer keeps a value->extension map that could drift from
+  the codemirror bundle.
+- `applyRemote` takes the whole frame (notes + languages) with bare-array
+  back-compat, and pins the locally edited note first while editing (it is
+  the most recent write this client knows about).
+
+Pins moved with the logic: the vm suite's newest-first pin became an
+arrival-order pin (the client must NOT re-sort, fixture order deliberately
+contradicts `updated_at`), a new vm test pins `created_note_id` adoption, a
+new Rust test (`notes_list_contract_is_server_owned`) seeds a sidecar with
+older-first storage order and asserts the server re-sorts, resolves the
+three display-title cases, ships the 14-entry language table, and names the
+created note. The fan-out broadcast test now asserts `display_title` and
+`languages` in the frame too.
+
+One lint finding from this pass: the five env-guarded notes tests hold the
+`lock_env()` std guard across awaits, which `cargo clippy --all-targets`
+(CI's exact gate) rejects. The guard must span the whole test because
+`XDG_CONFIG_HOME` is process-global; the fns carry an explicit
+`#[allow(clippy::await_holding_lock)]` with the rationale in a comment on
+the first one. These five errors pre-existed the pass (found on the stashed
+baseline), meaning the branch would have failed CI clippy before it.
+
 ## Open decisions
 
 1. Per-note delete: confirm-free trash click, or confirm modal like file delete? Plan assumes confirm-free.

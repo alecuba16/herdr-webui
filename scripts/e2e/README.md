@@ -95,6 +95,24 @@ asks nothing, and clear-all rides the danger confirm and leaves the
 note in place on reject. Server-restart persistence is covered by the
 Rust suite's sidecar-rebuild test.
 
+## Notes broadcast contract (notes-broadcast-probe)
+
+```sh
+just notes-broadcast-probe  # or: scripts/e2e/notes-broadcast-probe.sh
+```
+
+Live API+WebSocket probe (no browser): boots an isolated server, logs
+in, opens two raw-socket `/ws/events` subscribers, creates a note with
+an empty title, and asserts both subscribers receive a
+`notes_changed` frame carrying the full server contract: the created
+note id, the `display_title` falling back to the first content line,
+and the 14-entry language table (value/label/ext). Pins the
+backend-ownership claim that responses and frames share one shape.
+
+Related probes: `notes-auth-probe.sh` (all five routes reject
+unauthenticated requests) and `notes-restart-probe.sh` (sidecar
+survives a process restart).
+
 ## Utility scripts
 
 - `cdp-driver-helpers.mjs` - shared CDP plumbing for the real-browser drivers
