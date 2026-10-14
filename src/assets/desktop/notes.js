@@ -45,10 +45,14 @@
   }
 
   function languageExt(language) {
+    // Extension must match codemirror_entry's languageForPath table (rs, py,
+    // md, js, ts...); the other allowlist names already are extensions.
     const map = {
       markdown: "md",
       javascript: "js",
       typescript: "ts",
+      rust: "rs",
+      python: "py",
     };
     return map[language] || language;
   }
@@ -128,18 +132,14 @@
     }, SAVE_DEBOUNCE_MS);
   }
 
-  async function flushSave() {
+  async function saveContent(id, content) {
     const state = ensureState();
-    const id = state.editingId;
-    const note = id ? noteById(id) : null;
-    const editor = panelNode()._herdrEditorApi;
-    if (!note || !editor || state.saving) return;
     state.saving = true;
     try {
       const data = await api(`/api/notes/${encodeURIComponent(id)}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content: editor.getValue() }),
+        body: JSON.stringify({ content }),
       });
       if (Array.isArray(data && data.notes)) state.notes = data.notes;
     } catch (error) {
@@ -148,6 +148,15 @@
     } finally {
       state.saving = false;
     }
+  }
+
+  async function flushSave() {
+    const state = ensureState();
+    const id = state.editingId;
+    const note = id ? noteById(id) : null;
+    const editor = panelNode()._herdrEditorApi;
+    if (!note || !editor || state.saving) return;
+    return saveContent(id, editor.getValue());
   }
 
   async function saveTitle(id, title) {
@@ -272,7 +281,11 @@
 
     const back = panel.querySelector("#notesBack");
     if (back) back.onclick = async () => {
-      await flushSave();
+      if (state.saveTimer) {
+        clearTimeout(state.saveTimer);
+        state.saveTimer = null;
+        await flushSave();
+      }
       state.editingId = null;
       renderPanel();
     };
@@ -360,13 +373,25 @@
 
   // Server (or another client) changed the notes. Adopt the snapshot only
   // while the panel is hosted: a closed panel keeps nothing to repaint and
-  // picks the fresh list up on the next open's GET. An open editor keeps its
-  // local text: last-write-wins lands on the next flushSave broadcast, and
-  // the row list still shows every other client's changes.
+  // picks the fresh list up on the next open's GET. While a note is open for
+  // editing the local copy of that note wins (LWW lands on the next flush)
+  // and the editor is left untouched: repainting would replace innerHTML,
+  // remount CodeMirror, and throw away both the cursor and un-flushed text.
   function applyRemote(notes) {
     if (!isOpen()) return;
     const state = ensureState();
-    state.notes = Array.isArray(notes) ? notes : [];
+    const incoming = Array.isArray(notes) ? notes : [];
+    const id = state.editingId;
+    if (id) {
+      const local = noteById(id);
+      if (local) {
+        state.notes = incoming
+          .filter((note) => note && note.id !== id)
+          .concat([local]);
+        return;
+      }
+    }
+    state.notes = incoming;
     renderPanel();
   }
 
@@ -396,6 +421,12 @@
     if (state.saveTimer) {
       clearTimeout(state.saveTimer);
       state.saveTimer = null;
+      // The pending edit must not die with the panel: capture the text
+      // before the editor unmounts and let the PUT fly on its own.
+      const id = state.editingId;
+      const note = id ? noteById(id) : null;
+      const editor = panelNode()._herdrEditorApi;
+      if (note && editor) saveContent(id, editor.getValue());
     }
     const panel = document.getElementById("notesPanel");
     if (panel) {
