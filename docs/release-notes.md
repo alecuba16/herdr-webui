@@ -1,6 +1,50 @@
 # Release notes
 
 ## 0.7.9 Release Notes
+- Chat lens panes no longer bind to the wrong jcode session or
+  refuse with ambiguous when two sessions share a cwd. The pane's
+  client focus marker picks the session first, so each pane binds to
+  its own session even with twins. A marker naming a closed
+  cwd-matched session still resolves, an off-cwd marker is ignored.
+- Pane resolution also got cheap. The kernel cwd probe replaces the
+  lsof walk, the pane tail read is bounded to 64KB (step 3 matches a
+  <=400 char chunk, the old full 8MB strip per poll was pure cost),
+  and the process tree is one pass. With 500 extra processes the
+  agents poll moves +0.15/+0.33ms vs +0.60/+0.95ms before, and the
+  baseline drops from ~6.4ms to ~1.1ms.
+- Three HIGH findings from the implementation review are fixed, each
+  with a regression test or behavioral probe. resolve_child_create
+  walked create_dir_all on the joined path before the containment
+  check, so a create_parents write through an in-root symlink left
+  directories outside the root on disk even though the API answered
+  400; each component is now created, canonicalized, and checked
+  against root before the next mkdir runs, and the final component is
+  resolved but never created. Four async paths still called the
+  synchronous ApiClient request_value inline (worktrees handler,
+  no-sleep agent probe, 5s auto loop, terminal socket teardown), so
+  a hung backend parked tokio workers for the full 10s socket
+  timeout; all four run through spawn_blocking now. create_workspace,
+  create_tab, and start_agent held the BuiltinData mutex across openpty
+  and process spawn, stalling every other builtin request; IDs are
+  allocated under the lock, spawn happens outside, inserts land under a
+  fresh lock, and create_tab fails if the workspace closed while the
+  spawn ran instead of resurrecting the row.
+- Mobile terminal scrolling is fixed on Android Chrome. Terminal edge
+  overscroll chained to the document scroller, so Chrome read it as a
+  page pull and reloaded the app; overscroll is now contained inside
+  the terminal. Every touch focus also jumped the view to the bottom
+  because the wterm composition-prepare path snapped to bottom on each
+  focus; that jump is dropped from the composition-prepare path only,
+  so finger-down no longer resets the view and typing still reveals
+  newest output.
+- The git-ui workspace-switch test now runs the same concatenated
+  bundle the server serves at /assets/desktop/git-ui.js, through the
+  production lazy-load path in the assets.rs order, so the real module
+  can no longer regress silently behind a stub. Pane-tab active
+  styling is pinned in the suite, and both bundle-list copies are
+  guarded against assets.rs so a reorder or a new file fails the
+  suite instead of drifting. The right sidebar also boots collapsed
+  and prefix-Q toggles it.
 - The desktop right rail gains a fourth view: Notes. A server-synced
   scratchpad behind the rail Notes button, hosting in the sidebar column
   like Files/Git/Search with the same re-click collapse and per-workspace
