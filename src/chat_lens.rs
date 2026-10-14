@@ -97,11 +97,21 @@ pub fn resolve_session_with(
 fn resolve_with(index: &JcodeStoreIndex, context: &PaneContext) -> JcodeSessionResolution {
     let processes: Vec<ProcessRow> = context.processes.clone();
     let by_pid: HashMap<u32, bool> = processes.iter().map(|p| (p.pid, true)).collect();
+    // The pane's own pid set, for the client-marker step: jcode clients
+    // key their focus marker by their own pid, which in server mode is
+    // NOT the session's last_pid (that is the shared daemon), so the
+    // marker lookup must walk the tree, not the evidence rows.
+    let tree_pids: Vec<u32> = processes
+        .iter()
+        .map(|p| p.pid)
+        .filter(|pid| pid_in_tree(*pid, context.terminal_pid, &processes))
+        .collect();
     index.resolve(
         &context.live_cwd,
         &|pid| by_pid.contains_key(&pid),
         &|pid| pid_in_tree(pid, context.terminal_pid, &processes),
         &context.pane_tail,
+        &tree_pids,
     )
 }
 

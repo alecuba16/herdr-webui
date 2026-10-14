@@ -81,6 +81,11 @@ pub struct JcodeStoreIndex {
     // wasted work between registry rotations.
     swarm_dir: PathBuf,
     swarm_workers: Mutex<(Option<Instant>, HashSet<String>)>,
+    // jcode's client focus markers, `~/.jcode/client_sessions/<pid>`.
+    // Resolve step 1b reads one file per pane-tree pid; the dir is a
+    // field so tests (and only tests) can redirect it away from the
+    // real HOME.
+    client_sessions_dir: PathBuf,
     // Parsed-turn cache for the chat lens: full snapshot+journal
     // re-read/re-parse per poll was the lens's hot path. One entry
     // per session, keyed by the stat signatures of both files (the
@@ -98,14 +103,23 @@ impl JcodeStoreIndex {
 
     pub fn with_store_dir(store_dir: PathBuf) -> Self {
         let swarm_dir = default_swarm_registry_dir();
+        let client_sessions_dir = default_client_sessions_dir();
         Self {
             store_dir,
             cache: Mutex::new(HashMap::new()),
             last_sweep: Mutex::new(None),
             swarm_dir,
             swarm_workers: Mutex::new((None, HashSet::new())),
+            client_sessions_dir,
             turns_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Test hook: the client-sessions dir this index reads (mirrors
+    /// `with_swarm_dir`).
+    #[cfg(test)]
+    pub fn with_client_sessions_dir(&mut self, dir: PathBuf) {
+        self.client_sessions_dir = dir;
     }
 
     /// Test hook: the swarm registry dir this index reads (mirrors
@@ -359,6 +373,7 @@ impl JcodeStoreIndex {
         live_pids: &dyn Fn(u32) -> bool,
         descendants: &dyn Fn(u32) -> bool,
         pane_tail: &str,
+        tree_pids: &[u32],
     ) -> JcodeSessionResolution {
         let swarm_workers = self.swarm_worker_set();
         let index: Vec<SessionEvidence> = self
@@ -377,6 +392,38 @@ impl JcodeStoreIndex {
         if let Some(only) = single(&tree_hits) {
             return JcodeSessionResolution::Resolved {
                 session_id: only.session_id.clone(),
+            };
+        }
+
+        // Step 1b: client-marker evidence. jcode's interactive clients
+        // write `~/.jcode/client_sessions/<pid>` naming the session the
+        // process shows (client_focus.rs, on focus gain and every
+        // interaction, so it stays fresh). The pane's live process tree
+        // gates which pids are this pane's own, so stale markers for
+        // dead clients elsewhere never leak in. A marker found through
+        // a tree pid that names one of the candidate sessions is
+        // POSITIVE per-pane evidence, the discriminator step 1 lacks
+        // in server mode, where every session's last_pid is the shared
+        // daemon's pid (found live: 7 same-cwd Active sessions all
+        // carrying daemon pid 9939 made every multi-pane resolve flip
+        // `ambiguous`). Exactly one distinct session wins; zero or
+        // many (two clients in one tree) continue.
+        let known: HashSet<&str> = index
+            .iter()
+            .filter(|e| e.working_dir == cwd)
+            .map(|e| e.session_id.as_str())
+            .collect();
+        let mut marker_ids: Vec<String> = Vec::new();
+        for pid in tree_pids {
+            if let Some(marker) = client_session_marker(&self.client_sessions_dir, *pid) {
+                if known.contains(marker.as_str()) && !marker_ids.iter().any(|m| m == &marker) {
+                    marker_ids.push(marker);
+                }
+            }
+        }
+        if marker_ids.len() == 1 {
+            return JcodeSessionResolution::Resolved {
+                session_id: marker_ids.remove(0),
             };
         }
 
@@ -664,6 +711,29 @@ fn default_swarm_registry_dir() -> PathBuf {
     {
         PathBuf::from(".jcode/state/swarm")
     }
+}
+
+/// The default client-sessions dir jcode writes its focus markers to
+/// (`~/.jcode/client_sessions`).
+fn default_client_sessions_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".jcode")
+        .join("client_sessions")
+}
+
+/// The session id a live client pid is showing, from jcode's own
+/// focus marker `<client_sessions_dir>/<pid>` (client_focus.rs:
+/// rewritten on focus gain and every interaction). Liveness is the
+/// caller's check (the tree filter already gates it); the marker
+/// alone never proves anything because stale rows for dead clients
+/// linger until jcode sweeps them.
+fn client_session_marker(dir: &Path, pid: u32) -> Option<String> {
+    std::fs::read_to_string(dir.join(pid.to_string()))
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
 }
 
 /// The durable swarm registry's worker session ids, one flat set
@@ -2433,7 +2503,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid != 500, &|pid| pid == 500, "");
+        let res = index.resolve(Path::new("/w"), &|pid| pid != 500, &|pid| pid == 500, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
@@ -2462,7 +2532,7 @@ mod tests {
             .unwrap();
         }
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 900, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 900, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
@@ -2485,7 +2555,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 700, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 700, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Refused {
@@ -2503,7 +2573,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|_| true, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|_| true, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Refused {
@@ -2527,7 +2597,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 300, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 300, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
@@ -2579,7 +2649,7 @@ mod tests {
         .unwrap();
         let mut index = JcodeStoreIndex::with_store_dir(dir);
         index.with_swarm_dir(swarm_dir);
-        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
@@ -2622,7 +2692,7 @@ mod tests {
         .unwrap();
         let mut index = JcodeStoreIndex::with_store_dir(dir);
         index.with_swarm_dir(swarm_dir);
-        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
@@ -2673,7 +2743,7 @@ mod tests {
         .unwrap();
         let mut index = JcodeStoreIndex::with_store_dir(dir);
         index.with_swarm_dir(swarm_dir);
-        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
@@ -2732,7 +2802,7 @@ mod tests {
         index.with_swarm_dir(swarm_dir);
         // The coordinator stays resolvable (not collected from ANY
         // slot); the other member is excluded; so resolve is unique.
-        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
@@ -2763,7 +2833,7 @@ mod tests {
         }
         let mut index = JcodeStoreIndex::with_store_dir(dir);
         index.with_swarm_dir(temp_store("sw3-registry")); // exists, empty
-        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Refused {
@@ -2821,7 +2891,7 @@ mod tests {
         // Both sessions have resolvable evidence: without the .bak-skip
         // the worker would be excluded and the coordinator would win.
         // With it, the pair is ambiguous.
-        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Refused {
@@ -2878,7 +2948,7 @@ mod tests {
         .unwrap();
         let mut index = JcodeStoreIndex::with_store_dir(dir);
         index.with_swarm_dir(swarm_dir);
-        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Refused {
@@ -2921,7 +2991,7 @@ mod tests {
         .unwrap();
         let mut index = JcodeStoreIndex::with_store_dir(dir);
         index.with_swarm_dir(swarm_dir);
-        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "");
+        let res = index.resolve(Path::new("/repo"), &|pid| pid == 21155, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
@@ -2939,7 +3009,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
-        let res1 = index.resolve(Path::new("/w"), &|pid| pid == 100, &|_| false, "");
+        let res1 = index.resolve(Path::new("/w"), &|pid| pid == 100, &|_| false, "", &[]);
         assert!(matches!(res1, JcodeSessionResolution::Resolved { .. }));
         // Rewrite with a different pid; the stat generation must
         // invalidate the cached evidence.
@@ -2949,7 +3019,7 @@ mod tests {
         )
         .unwrap();
         index.force_sweep_for_tests();
-        let res2 = index.resolve(Path::new("/w"), &|pid| pid == 200, &|_| false, "");
+        let res2 = index.resolve(Path::new("/w"), &|pid| pid == 200, &|_| false, "", &[]);
         assert_eq!(
             res2,
             JcodeSessionResolution::Resolved {
@@ -2957,7 +3027,7 @@ mod tests {
             }
         );
         index.force_sweep_for_tests();
-        let res3 = index.resolve(Path::new("/w"), &|pid| pid == 100, &|_| false, "");
+        let res3 = index.resolve(Path::new("/w"), &|pid| pid == 100, &|_| false, "", &[]);
         assert!(matches!(res3, JcodeSessionResolution::Refused { .. }));
     }
 
@@ -2973,7 +3043,7 @@ mod tests {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
@@ -3004,7 +3074,7 @@ mod refresh_tests {
         })];
         write_store(&dir, "session_a", Some(snapshot), &journal);
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
@@ -3029,7 +3099,7 @@ mod refresh_tests {
         })];
         write_store(&dir, "session_a", None, &journal);
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
@@ -3267,7 +3337,7 @@ mod step3_tiebreak_tests {
         );
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         // Both Active on the same live pid + cwd: ambiguous without the tail.
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 900, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 900, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Refused {
@@ -3280,6 +3350,7 @@ mod step3_tiebreak_tests {
             &|pid| pid == 900,
             &|_| false,
             "some chrome\nThe word to remember is APPLE, confirmed.\nprompt line",
+            &[],
         );
         assert_eq!(
             res,
@@ -3304,6 +3375,86 @@ mod step3_tiebreak_tests {
             &|pid| pid == 900,
             &|_| false,
             "The word to remember is APPLE, confirmed. earlier The word to remember is BANANA, confirmed.",
+            &[],
+        );
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::Ambiguous
+            }
+        );
+    }
+
+    #[test]
+    fn client_marker_disambiguates_daemon_pids() {
+        let dir = store("marker");
+        store_with_twin_sessions(&dir, "one", "two");
+        let clients_dir = store("marker-clients");
+        // Both sessions carry the SAME last_pid (the shared daemon pid
+        // 900), the exact live failure: step 1 cannot tell them apart.
+        // A live client pid in the pane tree with a focus marker naming
+        // session_a is the discriminator.
+        std::fs::write(clients_dir.join("4242"), "session_a").unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir.clone());
+        index.with_client_sessions_dir(clients_dir.clone());
+        let res = index.resolve(
+            Path::new("/w"),
+            &|pid| pid == 900 || pid == 4242,
+            &|pid| pid == 900 || pid == 4242,
+            "",
+            &[900, 4242],
+        );
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Resolved {
+                session_id: "session_a".into()
+            }
+        );
+    }
+
+    #[test]
+    fn two_client_markers_stay_ambiguous() {
+        let dir = store("marker2");
+        store_with_twin_sessions(&dir, "one", "two");
+        let clients_dir = store("marker2-clients");
+        // Two live clients in ONE pane tree pointing at different
+        // sessions (e.g. two jcode instances sharing a pane): still
+        // ambiguous, never a coin flip.
+        std::fs::write(clients_dir.join("4242"), "session_a").unwrap();
+        std::fs::write(clients_dir.join("5252"), "session_b").unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir.clone());
+        index.with_client_sessions_dir(clients_dir.clone());
+        let res = index.resolve(
+            Path::new("/w"),
+            &|pid| pid == 900 || pid == 4242 || pid == 5252,
+            &|pid| pid == 900 || pid == 4242 || pid == 5252,
+            "",
+            &[900, 4242, 5252],
+        );
+        assert_eq!(
+            res,
+            JcodeSessionResolution::Refused {
+                reason: RefusalReason::Ambiguous
+            }
+        );
+    }
+
+    #[test]
+    fn marker_for_unknown_session_is_ignored() {
+        let dir = store("marker3");
+        store_with_twin_sessions(&dir, "one", "two");
+        let clients_dir = store("marker3-clients");
+        // Marker naming a session not in the store (deleted, or another
+        // machine's HOME): no evidence, falls through to ambiguity.
+        std::fs::write(clients_dir.join("4242"), "session_gone").unwrap();
+        let mut index = JcodeStoreIndex::with_store_dir(dir.clone());
+        index.with_client_sessions_dir(clients_dir.clone());
+        let res = index.resolve(
+            Path::new("/w"),
+            &|pid| pid == 900 || pid == 4242,
+            &|pid| pid == 900 || pid == 4242,
+            "",
+            &[900, 4242],
         );
         assert_eq!(
             res,
@@ -3319,7 +3470,7 @@ mod step3_tiebreak_tests {
         store_with_twin_sessions(&dir, "ok", "ok");
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         // "ok" is under MIN_MATCH_CHARS: no winner even though both match.
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 900, &|_| false, "ok");
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 900, &|_| false, "ok", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Refused {
@@ -3374,6 +3525,7 @@ mod step3_short_reply_tests {
             &|pid| pid == 900,
             &|_| false,
             "chrome\nRemember the word CHERRY. Reply ok then stop.\nOk",
+            &[],
         );
         assert_eq!(
             res,
@@ -3440,6 +3592,7 @@ mod step3_journal_tests {
             &|pid| pid == 900,
             &|_| false,
             "Run this exact command with bash and wait for it: sleep 30 && echo finished-slowly. Then reply slow done.",
+            &[],
         );
         assert_eq!(
             res,
@@ -3497,6 +3650,7 @@ mod step3_reflow_tests {
             &|pid| pid == 900,
             &|_| false,
             "ok  I’ll remember the word HONEYDEW.  710ms · ↑17k ↓19",
+            &[],
         );
         assert_eq!(
             res,
@@ -3627,7 +3781,7 @@ mod coverage_gaps {
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         // First sweep caches session_a.
         index.force_sweep_for_tests();
-        let res = index.resolve(Path::new("/w"), &|_| false, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|_| false, &|_| false, "", &[]);
         assert!(matches!(res, JcodeSessionResolution::Refused { .. }));
         // Vanish both files; force a fresh sweep: the stale cached row
         // must be dropped, not resurrected from cache. Resolve again:
@@ -3635,7 +3789,7 @@ mod coverage_gaps {
         std::fs::remove_file(dir.join("session_a.json")).unwrap();
         std::fs::remove_file(dir.join("session_a.journal.jsonl")).unwrap();
         index.force_sweep_for_tests();
-        let res = index.resolve(Path::new("/w"), &|_| false, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|_| false, &|_| false, "", &[]);
         assert!(
             matches!(res, JcodeSessionResolution::Refused { .. }),
             "stale cache row must not resurrect the session"
@@ -3650,7 +3804,7 @@ mod coverage_gaps {
         let _ = std::fs::remove_dir_all(&dir);
         let index = JcodeStoreIndex::with_store_dir(dir);
         index.force_sweep_for_tests();
-        let res = index.resolve(Path::new("/w"), &|_| false, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|_| false, &|_| false, "", &[]);
         assert!(matches!(res, JcodeSessionResolution::Refused { .. }));
     }
 
@@ -3689,7 +3843,7 @@ mod coverage_gaps {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 77, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 77, &|_| false, "", &[]);
         // Snapshot has NO evidence fields -> journal meta is used,
         // torn tail line skipped.
         assert_eq!(
@@ -3931,7 +4085,7 @@ mod coverage_gaps {
         )
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 42, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Refused {
@@ -3955,7 +4109,7 @@ mod coverage_gaps {
         let index = JcodeStoreIndex::with_store_dir(dir.clone());
         // First sweep: resolves by tree (pid 500 in tree).
         index.force_sweep_for_tests();
-        let res = index.resolve(Path::new("/w"), &|_| false, &|pid| pid == 500, "");
+        let res = index.resolve(Path::new("/w"), &|_| false, &|pid| pid == 500, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
@@ -3966,7 +4120,7 @@ mod coverage_gaps {
         // (not resurrect it from the 250 ms throttle window).
         std::fs::remove_file(dir.join("session_a.json")).unwrap();
         index.force_sweep_for_tests();
-        let res = index.resolve(Path::new("/w"), &|_| false, &|pid| pid == 500, "");
+        let res = index.resolve(Path::new("/w"), &|_| false, &|pid| pid == 500, "", &[]);
         assert!(
             matches!(res, JcodeSessionResolution::Refused { .. }),
             "stale cached evidence must not resurrect a vanished session"
@@ -4091,7 +4245,7 @@ mod coverage_gaps {
         .unwrap();
         let index = JcodeStoreIndex::with_store_dir(dir);
         index.force_sweep_for_tests();
-        let res = index.resolve(Path::new("/w"), &|pid| pid == 12, &|_| false, "");
+        let res = index.resolve(Path::new("/w"), &|pid| pid == 12, &|_| false, "", &[]);
         assert_eq!(
             res,
             JcodeSessionResolution::Resolved {
