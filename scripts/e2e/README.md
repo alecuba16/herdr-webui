@@ -80,6 +80,21 @@ keeps the sibling strip visible (stub keyed by pane id, live controls),
 own-tab click keeps maximize, rail tab click restores the split and
 activates the sibling tab, and the git drawer opens a `gitchanges` tab.
 
+## Notes rail (notes-rail-e2e)
+
+```sh
+just notes-rail-e2e  # or: scripts/e2e/run-notes-rail-e2e.sh
+```
+
+Same real-browser setup on its own port (8898). Covers the server-synced
+notes panel: the rail Notes button hosts #notesPanel, creating a note
+enters editing straight away, the row renders after back, CodeMirror
+mounts with the note's language, title/language/content persist through
+the real API and survive a client reload (sidecar GET), per-note delete
+asks nothing, and clear-all rides the danger confirm and leaves the
+note in place on reject. Server-restart persistence is covered by the
+Rust suite's sidecar-rebuild test.
+
 ## Utility scripts
 
 - `cdp-driver-helpers.mjs` - shared CDP plumbing for the real-browser drivers
