@@ -11125,6 +11125,8 @@ async fn notes_routes_crud_round_trip() {
     assert_eq!(updated["notes"][0]["language"], "markdown");
     // Partial update: the title survives a content-only PUT.
     assert_eq!(updated["notes"][0]["title"], "deploy steps");
+    // The update stamps the acting user; this was the abc5f46 regression.
+    assert_eq!(updated["notes"][0]["updated_by"], "user");
 
     // Unknown ids are 404, not a silent success.
     let missing = app
@@ -11369,6 +11371,73 @@ async fn notes_sidecar_corrupt_boots_empty() {
     std::env::remove_var("XDG_CONFIG_HOME");
 }
 
+/// Note mutations only ever write the notes.json sidecar: the settings
+/// file must stay byte-identical across a full CRUD cycle, pinning the
+/// "note writes never rewrite auth config" isolation claim.
+#[tokio::test]
+async fn notes_mutations_never_touch_the_settings_sidecar() {
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-notes-isolation");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    fs::create_dir_all(config_home.join("herdr-webui")).unwrap();
+    let settings_path = config_home.join("herdr-webui/webui-settings.json");
+    let settings_before = "{ \"user\": \"u\", \"password\": \"p\", \"localhost_no_auth\": false }";
+    fs::write(&settings_path, settings_before).unwrap();
+
+    let app = test_app();
+    let cookie = "herdr_web_session=token-123";
+    let create = app
+        .clone()
+        .oneshot(
+            request(Method::POST, "/api/notes")
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "title": "iso", "content": "body" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let created = response_json(create).await;
+    let note_id = created["notes"][0]["id"].as_str().unwrap().to_string();
+
+    let update = app
+        .clone()
+        .oneshot(
+            request(Method::PUT, format!("/api/notes/{note_id}").as_str())
+                .header(header::COOKIE, cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "title": "iso 2" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update.status(), StatusCode::OK);
+
+    let delete = app
+        .oneshot(
+            request(Method::DELETE, format!("/api/notes/{note_id}").as_str())
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), StatusCode::OK);
+
+    let settings_after = fs::read_to_string(&settings_path).unwrap();
+    assert_eq!(
+        settings_after, settings_before,
+        "settings sidecar untouched"
+    );
+    let notes_sidecar = config_home.join("herdr-webui/notes.json");
+    assert!(notes_sidecar.exists(), "notes sidecar exists");
+
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
 /// Every notes mutation must broadcast a full notes_changed snapshot to
 /// connected events sockets, so open tabs converge without polling.
 #[cfg(unix)]
@@ -11416,6 +11485,22 @@ async fn events_socket_broadcasts_notes_changed() {
         .await
         .expect("Failed to connect to WebSocket");
 
+    // Second subscriber: the "every connected client sees the same list"
+    // claim needs fan-out evidence, not a single-socket happy path.
+    let ws_request_two = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(&url)
+        .header("cookie", "herdr_web_session=token-123")
+        .header("host", addr.to_string())
+        .header("connection", "Upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(())
+        .unwrap();
+    let (mut ws_stream_two, _response_two) = connect_async(ws_request_two)
+        .await
+        .expect("Failed to connect the second WebSocket");
+
     // Wait for the events loop to subscribe before mutating notes.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
@@ -11455,6 +11540,31 @@ async fn events_socket_broadcasts_notes_changed() {
     assert!(
         got_notes_change,
         "notes_changed frame must reach the events socket"
+    );
+
+    let mut got_notes_change_two = false;
+    for _ in 0..30 {
+        let msg =
+            match tokio::time::timeout(std::time::Duration::from_secs(15), ws_stream_two.next())
+                .await
+            {
+                Ok(Some(Ok(m))) => m,
+                _ => break,
+            };
+        let text = msg.to_text().expect("expected text message");
+        let value: serde_json::Value = serde_json::from_str(text).expect("invalid json");
+        if value["type"].as_str() == Some("notes_changed") {
+            let notes = value["notes"].as_array().expect("notes snapshot");
+            assert_eq!(notes.len(), 1);
+            assert_eq!(notes[0]["title"], "hello");
+            assert_eq!(notes[0]["content"], "world");
+            got_notes_change_two = true;
+            break;
+        }
+    }
+    assert!(
+        got_notes_change_two,
+        "notes_changed frame must reach the second events socket too"
     );
 
     server_handle.abort();
