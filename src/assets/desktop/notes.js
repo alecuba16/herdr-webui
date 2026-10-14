@@ -316,7 +316,14 @@
       if (state.saveTimer) {
         clearTimeout(state.saveTimer);
         state.saveTimer = null;
-        await flushSave();
+        // Capture before the editor unmounts and PUT directly, like close:
+        // flushSave refuses while a save is in flight, which would drop
+        // this debounce window's keystrokes. A parallel PUT is harmless
+        // (same note, last write wins on the server).
+        const id = state.editingId;
+        const note = id ? noteById(id) : null;
+        const editor = panelNode()._herdrEditorApi;
+        if (note && editor) await saveContent(id, editor.getValue());
       }
       state.editingId = null;
       renderPanel();
