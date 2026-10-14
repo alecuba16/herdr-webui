@@ -112,6 +112,27 @@ patchedJs = applyPatch(
     'this.textarea.setAttribute("name","terminalImeInput"),',
   "IME textarea keyboard guards",
 );
+// The Ghostty WASM imports `env.log` and @wterm/ghostty wires it
+// straight to console.log("[ghostty-vt]", ...), unconditionally. In
+// normal use the VT logs every page-capacity adjustment, flooding the
+// devtools console with millions of lines (2026-10 live report). Gate it
+// behind a global opt-in: silent unless `globalThis.__herdrGhosttyLog`
+// is truthy. Identifier names are captured, not assumed, so esbuild
+// renames keep the patch applying; a format change still fails loudly.
+const ghosttyLogRe =
+  /log\((\w+),(\w+)\)\{let (\w+)=new TextDecoder\(\)\.decode\(new Uint8Array\((\w+)\.buffer,\1,\2\)\);console\.log\("\[ghostty-vt\]",\3\)\}/;
+const ghosttyLogMatch = patchedJs.match(ghosttyLogRe);
+if (!ghosttyLogMatch)
+  throw new Error("wterm vendor patch did not apply: ghostty env.log gate");
+patchedJs = patchedJs.replace(
+  ghosttyLogRe,
+  `log(${ghosttyLogMatch[1]},${ghosttyLogMatch[2]}){` +
+    `if(!globalThis.__herdrGhosttyLog)return;` +
+    `let ${ghosttyLogMatch[3]}=new TextDecoder().decode(` +
+    `new Uint8Array(${ghosttyLogMatch[4]}.buffer,${ghosttyLogMatch[1]},${ghosttyLogMatch[2]}));` +
+    `console.log("[ghostty-vt]",${ghosttyLogMatch[3]})}`,
+);
+
 await writeFile(bundlePath, patchedJs);
 
 await copyFile(
