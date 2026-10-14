@@ -63,6 +63,7 @@ const DESKTOP_GIT_UI_CSS: &str = concat!(
     include_str!("assets/desktop/git_ui/syntax.css"),
 );
 const DESKTOP_SEARCH_CSS: &str = include_str!("assets/desktop/search.css");
+const DESKTOP_NOTES_CSS: &str = include_str!("assets/desktop/notes.css");
 const DESKTOP_FILE_BROWSER_CSS: &str = include_str!("assets/desktop/file_browser.css");
 const DESKTOP_DIRECTORY_PICKER_CSS: &str = include_str!("assets/desktop/directory_picker.css");
 const DESKTOP_SHORTCUTS_CSS: &str = include_str!("assets/desktop/shortcuts.css");
@@ -87,6 +88,7 @@ const DESKTOP_GIT_UI_JS: &str = concat!(
     include_str!("assets/desktop/git_ui.js"),
 );
 const DESKTOP_SEARCH_JS: &str = include_str!("assets/desktop/search.js");
+const DESKTOP_NOTES_JS: &str = include_str!("assets/desktop/notes.js");
 const DESKTOP_FILE_BROWSER_JS: &str = include_str!("assets/desktop/file_browser.js");
 const DESKTOP_DIRECTORY_PICKER_JS: &str = include_str!("assets/desktop/directory_picker.js");
 const DESKTOP_JS: &str = concat!(
@@ -469,6 +471,14 @@ pub(crate) async fn desktop_search_js(headers: HeaderMap) -> Response {
     )
 }
 
+pub(crate) async fn desktop_notes_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        DESKTOP_NOTES_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
 pub(crate) async fn desktop_file_browser_js(headers: HeaderMap) -> Response {
     static_text(
         &headers,
@@ -495,6 +505,10 @@ pub(crate) async fn desktop_git_ui_css(headers: HeaderMap) -> Response {
 
 pub(crate) async fn desktop_search_css(headers: HeaderMap) -> Response {
     static_text(&headers, DESKTOP_SEARCH_CSS, "text/css; charset=utf-8")
+}
+
+pub(crate) async fn desktop_notes_css(headers: HeaderMap) -> Response {
+    static_text(&headers, DESKTOP_NOTES_CSS, "text/css; charset=utf-8")
 }
 
 pub(crate) async fn desktop_file_browser_css(headers: HeaderMap) -> Response {

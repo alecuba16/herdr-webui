@@ -172,6 +172,7 @@
 
   async function hostPanel(workspace) {
     if (window.HerdrSearchPanel) window.HerdrSearchPanel.close();
+    if (window.HerdrNotesPanel) window.HerdrNotesPanel.close();
     if (window.HerdrRightSidebar)
       await window.HerdrRightSidebar.openView("files", workspace, ensurePanel);
   }

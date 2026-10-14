@@ -506,6 +506,9 @@ body.light {
 .app-icon-terminal {
   mask-image: url("/assets/icons/terminal.svg");
 }
+.app-icon-pencil {
+  mask-image: url("/assets/icons/pencil.svg");
+}
 .agent-title,
 .agent-meta {
   display: flex;

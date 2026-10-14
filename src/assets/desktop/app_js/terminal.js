@@ -45,6 +45,15 @@ function connectEvents() {
       }
       scheduleRefresh();
     }
+    else if (msg.type === "notes_changed") {
+      // Another client (or this one) changed the shared notes. The panel
+      // repaints from the snapshot only while it is hosted; a closed panel
+      // does nothing and self-heals on the next open's GET. Never hit the
+      // global scheduleRefresh here: a notes save must not refresh the
+      // whole workspace tree.
+      if (window.HerdrNotesPanel && window.HerdrNotesPanel.applyRemote)
+        window.HerdrNotesPanel.applyRemote(msg.notes || []);
+    }
     else if (msg.type === "event") {
       const evt = msg.event || {},
         kind = evt.event || evt.type,
