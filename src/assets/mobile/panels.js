@@ -133,12 +133,14 @@
     function syncComposer(screen) {
       const deps = globalThis.HerdrMobileComposerDeps;
       if (!deps) return;
-      // Composer bar and note are removed (typing goes into the terminal);
-      // keep the removal so an upgrade from an old DOM clears leftovers.
+      const wantedBar = deps.renderComposerBar();
       const existingBar = el("mobileComposer");
-      if (existingBar) removeNode(existingBar);
-      const existingNote = el("mobileComposerNote");
-      if (existingNote) removeNode(existingNote);
+      if (!wantedBar) {
+        if (existingBar) removeNode(existingBar);
+      } else if (!existingBar) {
+        mountAfterTerminal(el("terminalShell"), wantedBar);
+      }
+      if (deps.syncComposer) deps.syncComposer();
       const existingCard = el("mobilePromptCard");
       const wantedCard = deps.renderPromptCard();
       if (existingCard) {

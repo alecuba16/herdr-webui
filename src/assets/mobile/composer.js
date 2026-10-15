@@ -1,19 +1,21 @@
-// Mobile prompt cards: the mobile half of the desktop chat surfaces
-// (prompt_cards.js). The composer bar (input + Send) is gone by design:
-// mobile types straight into the terminal (wterm's textarea carries the full
-// keyboard guard set: autocapitalize=none, autocorrect off, no writing
-// suggestions), so a second input only fought the terminal for focus and
-// hid the terminal behind the keyboard. What remains here is the blocked
-// agent question card: parse the terminal tail (wterm bridge grid reads)
-// for a question dialog and answer it by synthesizing keystrokes through
-// the terminal input path. Same parse shapes as desktop prompt_cards.js
-// (frozen protocol 22 has no structured prompt payload).
+// Mobile chat and prompt cards: the mobile half of the desktop chat surfaces
+// (prompt_cards.js). Chat messages use the server-side submit route, so the
+// browser does not synthesize agent input or compete with wterm's textarea.
+// Terminal typing remains owned by wterm, with the guarded textarea and the
+// on-screen key bar for control keys. Blocked agent questions still use the
+// terminal input path because they are prompt answers, not chat messages.
 (function () {
   const PILL_STATUSES = ["blocked", "done", "idle", "working"];
 
   function createMobileComposer({ state, render, escapeHtml, inputAttrs, statusClassFn, getTerminal, api }) {
     // `api` is optional: the live app injects it; older callers fall
     // back to the global HerdrMobileApi that app.js publishes.
+
+    const drafts = new Map();
+    const MAX_COMPOSER_CHARS = 20000;
+    let sending = false;
+    let noteText = "";
+    let lastSyncedPane = null;
 
     // ---- Terminal tail reading (wterm bridge grid, same as desktop) ----
 
@@ -293,25 +295,138 @@
       render();
     }
 
-    // ---- Composer (removed) ----
-    // The old composer bar (textarea + Send) submitted to
-    // POST /api/panes/{id}/submit. Mobile now types directly into the
-    // terminal: wterm's hidden textarea carries the full keyboard guard
-    // set (autocapitalize=none, autocorrect off, no writing suggestions),
-    // and the terminal input path already strips mouse reports and query
-    // replies. The stubs below keep the HerdrMobileComposerDeps contract
-    // intact so panels.js syncComposer needs no branching.
+    // ---- Chat composer ----
 
     function composerVisible() {
       return !!(state.pane && state.screen === "terminal");
     }
 
+    function activePaneId() {
+      return state && state.pane ? state.pane : null;
+    }
+
+    function composerNode() {
+      return typeof document !== "undefined" ? document.getElementById("mobileComposer") : null;
+    }
+
+    function composerInput() {
+      const node = composerNode();
+      return node && node.querySelector ? node.querySelector("#mobileComposerInput") : null;
+    }
+
+    function composerNote() {
+      const node = composerNode();
+      return node && node.querySelector ? node.querySelector("#mobileComposerNote") : null;
+    }
+
+    function setNote(text) {
+      noteText = String(text || "");
+      const note = composerNote();
+      if (note) {
+        note.textContent = noteText;
+        note.hidden = !noteText;
+      }
+    }
+
+    function bindComposer(node) {
+      if (!node || node.__herdrMobileComposerBound) return;
+      const input = node.querySelector && node.querySelector("#mobileComposerInput");
+      const send = node.querySelector && node.querySelector("#mobileComposerSend");
+      if (input && input.addEventListener) {
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            submit();
+          }
+        });
+        input.addEventListener("input", () => {
+          const paneId = activePaneId();
+          if (paneId) drafts.set(paneId, input.value);
+        });
+      }
+      if (send) send.onclick = () => submit();
+      node.__herdrMobileComposerBound = true;
+    }
+
+    function syncComposer() {
+      const node = composerNode();
+      if (!node) return;
+      bindComposer(node);
+      const paneId = activePaneId();
+      if (paneId !== lastSyncedPane) {
+        noteText = "";
+        lastSyncedPane = paneId;
+      }
+      const input = node.querySelector && node.querySelector("#mobileComposerInput");
+      const send = node.querySelector && node.querySelector("#mobileComposerSend");
+      const note = node.querySelector && node.querySelector("#mobileComposerNote");
+      if (input) {
+        input.disabled = !paneId || sending;
+        input.placeholder = paneId ? "Message this agent" : "Selecting panel...";
+        const activeElement = typeof document !== "undefined" ? document.activeElement : null;
+        const draft = paneId ? drafts.get(paneId) || "" : "";
+        if (activeElement !== input && input.value !== draft) input.value = draft;
+      }
+      if (send) {
+        send.disabled = !paneId || sending;
+        send.setAttribute("aria-busy", sending ? "true" : "false");
+      }
+      if (note) {
+        note.textContent = noteText;
+        note.hidden = !noteText;
+      }
+    }
+
     function renderComposerBar() {
-      return "";
+      if (!composerVisible()) return "";
+      const paneId = activePaneId();
+      const draft = paneId ? drafts.get(paneId) || "" : "";
+      return (
+        `<div class="mobile-composer" id="mobileComposer" role="region" aria-label="Chat message">` +
+        `<div class="mobile-composer-note" id="mobileComposerNote" role="status" aria-live="polite" hidden></div>` +
+        `<div class="mobile-composer-row">` +
+        `<textarea id="mobileComposerInput" rows="2" placeholder="Message this agent" aria-label="Message this agent"${inputAttrs("send")}>${escapeHtml(draft)}</textarea>` +
+        `<button type="button" class="mobile-btn primary mobile-composer-send" id="mobileComposerSend">Send</button>` +
+        `</div></div>`
+      );
     }
 
     function renderComposerNote() {
-      return "";
+      return noteText;
+    }
+
+    async function submit() {
+      const input = composerInput();
+      const paneId = activePaneId();
+      const request = typeof api === "function" ? api : globalThis.HerdrMobileApi;
+      if (!input || !paneId || sending || typeof request !== "function") return;
+      const message = String(input.value || "").replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
+      if (!message.trim()) return;
+      if (message.length > MAX_COMPOSER_CHARS) {
+        setNote("Not sent: message is too long (20000 characters max).");
+        return;
+      }
+      sending = true;
+      setNote("");
+      syncComposer();
+      try {
+        await request(`/api/panes/${encodeURIComponent(paneId)}/submit`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: message }),
+        });
+        input.value = "";
+        drafts.delete(paneId);
+        setNote("");
+      } catch (error) {
+        const details = error && error.details;
+        const text = String((error && error.message) || error);
+        setNote((details && details.note) || text);
+      } finally {
+        sending = false;
+        syncComposer();
+        if (typeof render === "function") render();
+      }
     }
 
     function renderPromptCard() {
@@ -353,10 +468,13 @@
     }
 
     return {
-      // composer (removed: stubs keep the deps contract)
+      // chat composer
       renderComposerBar,
       renderComposerNote,
       composerVisible,
+      syncComposer,
+      submit,
+      drafts,
       // prompt cards
       evaluatePrompt,
       renderPromptCard,
@@ -375,7 +493,13 @@
         promptFetchInFlight = false;
         promptFetchAt = 0;
       },
-      _reset() { dismissedFor = null; lastCardKey = ""; state.composerNote = ""; },
+      _reset() {
+        dismissedFor = null;
+        lastCardKey = "";
+        noteText = "";
+        lastSyncedPane = null;
+        state.composerNote = "";
+      },
     };
   }
 

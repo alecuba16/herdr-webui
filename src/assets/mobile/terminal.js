@@ -15,7 +15,11 @@
       inputEncoder = new TextEncoder(),
       terminalAttachPending = false,
       terminalInputGate = null,
-      terminalInputBound = false;
+      terminalInputBound = false,
+      pendingTerminalResize = null,
+      terminalShellResizeObserver = null,
+      observedTerminalShell = null,
+      terminalShellResizeTimer = null;
 
     const IMMEDIATE_WRITE_THRESHOLD = 8192;
     const LARGE_FRAME_THRESHOLD = 32768;
@@ -122,6 +126,16 @@
 
     function applyFontFamily() {
       if (term && term.setFontFamily) term.setFontFamily(terminalFontFamily());
+      scheduleTerminalShellResize();
+    }
+
+    function terminalFontSize() {
+      const value = Number(options().terminalFontSize);
+      // Mobile has less horizontal space than the desktop terminal. A 12px
+      // default gives the shell several more columns without changing an
+      // explicit stored preference.
+      if (!Number.isFinite(value) || value <= 0) return 12;
+      return Math.max(10, Math.min(22, Math.round(value)));
     }
 
     // Theme tokens (shared --term-* + body.light overrides) resolve fresh on
@@ -166,6 +180,54 @@
       return options().terminalMouseReporting === true;
     }
 
+    function scheduleTerminalShellResize() {
+      if (!term || !termWs || termWs.readyState !== 1) return;
+      if (terminalShellResizeTimer) clearTimeout(terminalShellResizeTimer);
+      terminalShellResizeTimer = setTimeout(() => {
+        terminalShellResizeTimer = null;
+        if (state.screen === "terminal") connect();
+      }, 80);
+    }
+
+    function observeTerminalShell(shell) {
+      if (!shell || observedTerminalShell === shell) return;
+      if (terminalShellResizeObserver && terminalShellResizeObserver.disconnect)
+        terminalShellResizeObserver.disconnect();
+      terminalShellResizeObserver = null;
+      observedTerminalShell = shell;
+      if (typeof ResizeObserver !== "function") return;
+      terminalShellResizeObserver = new ResizeObserver(() => scheduleTerminalShellResize());
+      terminalShellResizeObserver.observe(shell);
+    }
+
+    function clearTerminalShellObserver() {
+      if (terminalShellResizeTimer) {
+        clearTimeout(terminalShellResizeTimer);
+        terminalShellResizeTimer = null;
+      }
+      if (terminalShellResizeObserver && terminalShellResizeObserver.disconnect)
+        terminalShellResizeObserver.disconnect();
+      terminalShellResizeObserver = null;
+      observedTerminalShell = null;
+    }
+
+    function refreshTerminalAfterFontLoad(terminalKey) {
+      const fonts = globalThis.document && globalThis.document.fonts;
+      if (!fonts || !fonts.load) return;
+      Promise.all([
+        fonts.load(`${terminalFontSize()}px "Herdr JetBrainsMono Nerd Font Mono"`),
+        fonts.ready,
+      ])
+        .then(() => {
+          if (!term || connectedTerminalKey !== terminalKey) return;
+          if (term.invalidateCellMetrics) term.invalidateCellMetrics();
+          if (globalThis.HerdrTerminalFit && globalThis.HerdrTerminalFit.invalidateCellSizeCache)
+            globalThis.HerdrTerminalFit.invalidateCellSizeCache();
+          scheduleTerminalShellResize();
+        })
+        .catch(() => {});
+    }
+
     function size() {
       const shell = el("terminalShell");
       if (!shell) return { cols: 80, rows: 24 };
@@ -186,10 +248,20 @@
         setConnectionState(false);
         return;
       }
+      observeTerminalShell(el("terminalShell"));
       if (term && openedTerminalElement && openedTerminalElement !== terminal) destroy(false);
       const nextSize = size();
       const terminalKey = `${state.session}|${state.ws}|${state.tab}|${state.pane}|${state.terminalId}|${terminalCore()}`;
       const terminalSizeKey = `${nextSize.cols}x${nextSize.rows}`;
+      if (termWs && termWs.readyState === 0 && connectedTerminalKey === terminalKey) {
+        setConnectionState(false);
+        if (connectedTerminalSize !== terminalSizeKey) {
+          connectedTerminalSize = terminalSizeKey;
+          pendingTerminalResize = nextSize;
+          try { term.resize(nextSize.cols, nextSize.rows); } catch (_) {}
+        }
+        return;
+      }
       if (termWs && termWs.readyState === 1 && connectedTerminalKey === terminalKey) {
         setConnectionState(false);
         if (connectedTerminalSize === terminalSizeKey) return;
@@ -220,7 +292,7 @@
           rows: nextSize.rows,
           core: terminalCore(),
           fontFamily: terminalFontFamily(),
-          fontSize: options().terminalFontSize || 14,
+          fontSize: terminalFontSize(),
           theme: terminalTheme(),
           links: terminalLinksEnabled(),
           scrollback: 10000,
@@ -229,6 +301,7 @@
           inputGate: terminalInputGate,
         });
         openedTerminalElement = terminal;
+        refreshTerminalAfterFontLoad(terminalKey);
       }
       if (!terminalScrollBound) {
         terminal.addEventListener("paste", handlePaste, true);
@@ -267,6 +340,15 @@
         if (termWs === ws) {
           setConnectionState(false);
           terminalAttachPending = true;
+          if (pendingTerminalResize) {
+            const resize = pendingTerminalResize;
+            pendingTerminalResize = null;
+            try { term.resize(resize.cols, resize.rows); } catch (_) {}
+            try {
+              ws.send(JSON.stringify({ type: "resize", cols: resize.cols, rows: resize.rows }));
+            } catch (_) {}
+          }
+          scheduleTerminalShellResize();
         }
       };
       ws.onmessage = (event) => {
@@ -350,6 +432,7 @@
       }
       connectedTerminalKey = "";
       connectedTerminalSize = "";
+      pendingTerminalResize = null;
       setConnectionState(false);
       inputQueue = [];
       terminalQueryReplyState = {};
@@ -365,6 +448,7 @@
 
     function destroy(clear) {
       disconnect(clear);
+      clearTerminalShellObserver();
       if (term) {
         try { term.destroy(); } catch (_) {}
         term = null;
