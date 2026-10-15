@@ -17,6 +17,7 @@
     gitToast: null,
     scopeCopyToast: null,
     cleanupConfirm: null,
+    cleanupConfirmDeleteBranch: false,
     sideScrollTop: 0,
     shortcutPrefixUntil: 0,
   };
@@ -171,8 +172,7 @@
   const cleanupRepoItems = cleanup.cleanupRepoItems;
   const cleanupSelectedItems = cleanup.cleanupSelectedItems;
   const cleanupItemLabel = cleanup.cleanupItemLabel;
-  const deleteCleanupItem = cleanup.deleteCleanupItem;
-  const cleanupForceRetryLikelyNeeded = cleanup.cleanupForceRetryLikelyNeeded;
+  const deleteCleanupItemWithRetry = cleanup.deleteCleanupItemWithRetry;
 
   const diffRender = globalThis.HerdrGitUiDiffRenderModule.create({
     state,
@@ -2086,11 +2086,15 @@
       const items = cleanupSelectedItems();
       if (!items.length) return;
       state.cleanupConfirm = { items };
+      state.cleanupConfirmDeleteBranch = false;
       render();
     },
     cancelCleanupDelete() {
       state.cleanupConfirm = null;
       render();
+    },
+    toggleCleanupDeleteBranch(checked) {
+      state.cleanupConfirmDeleteBranch = !!checked;
     },
     async confirmCleanupDelete() {
       const view = active();
@@ -2102,29 +2106,47 @@
       view.cleanupError = "";
       render();
       if (typeof showBlocking === "function") showBlocking("Deleting items...");
+      const deleteBranchToo = !!state.cleanupConfirmDeleteBranch;
+      state.cleanupConfirmDeleteBranch = false;
       const failures = [];
-      try {
-        for (const item of items) {
+      let deleted = 0;
+      // Items of one repo run sequentially: git ref updates in a shared
+      // object database must not race. Repos are independent, so their
+      // groups run in parallel.
+      const groups = new Map();
+      for (const item of items) {
+        if (!groups.has(item.repo)) groups.set(item.repo, []);
+        groups.get(item.repo).push(item);
+      }
+      const deleteOne = async (item) => {
+        try {
+          await deleteCleanupItemWithRetry(item);
+          deleted += 1;
+        } catch (err) {
+          failures.push(`${cleanupItemLabel(item)}: ${(err && err.message) || err}`);
+          return;
+        }
+        if (item.type === "worktree" && deleteBranchToo && item.branch) {
           try {
-            await deleteCleanupItem(item, false);
+            await deleteCleanupItemWithRetry({ type: "branch", repo: item.repo, name: item.branch, key: item.key });
+            deleted += 1;
           } catch (err) {
-            if (!cleanupForceRetryLikelyNeeded(err)) {
-              failures.push(`${cleanupItemLabel(item)}: ${(err && err.message) || err}`);
-              continue;
-            }
-            try {
-              await deleteCleanupItem(item, true);
-            } catch (forceErr) {
-              failures.push(`${cleanupItemLabel(item)}: ${(forceErr && forceErr.message) || forceErr || err}`);
-            }
+            failures.push(`${item.repo}:${item.branch}: ${(err && err.message) || err}`);
           }
         }
+      };
+      try {
+        await Promise.all([...groups.values()].map((group) => (async () => {
+          for (const item of group) await deleteOne(item);
+        })()));
       } finally {
         view.cleanupLoading = false;
         if (typeof hideBlocking === "function") hideBlocking();
       }
+      // Rescan only when at least one deletion succeeded; on total failure
+      // the scan result and selection stay so the user can retry.
+      if (deleted > 0) await this.scanCleanup();
       if (failures.length) view.cleanupError = failures.join("\n");
-      await this.scanCleanup();
       if (failures.length) {
         const latest = active();
         if (latest) latest.cleanupError = failures.join("\n");

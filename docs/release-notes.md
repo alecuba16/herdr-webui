@@ -75,6 +75,16 @@
 - Server caps guard the store: 200 notes, 200-character titles, 32KB
   per note, language allowlist enforced. All routes sit behind the
   same session auth as the rest of the API.
+- Git cleanup delete-selected grew up. The confirm modal now offers
+  a `Delete branch of N selected worktrees too` checkbox (shown only
+  when a selected worktree has a branch), which runs
+  `worktree-remove` then `branch-delete` per item through the same
+  safe-then-force retry. Deletions run per repository in parallel
+  while items inside one repository stay sequential, so shared
+  object databases never see racing ref updates. The post-delete
+  rescan only fires when at least one deletion succeeded; on total
+  failure the scan result and selection survive for a retry, and
+  per-item failures surface in the cleanup error list either way.
 
 ## 0.7.8 Release Notes
 - Fixed `closeWorkspaceOnLastTerminal`: closing a workspace's last panel
