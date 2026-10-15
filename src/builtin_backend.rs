@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use crate::builtin_detection::{
     jcode::{
         detect_jcode_status_with_variant, is_jcode_active_background_line,
-        jcode_blocked as jcode_blocked_markers, jcode_shell_prompt_line,
+        jcode_blocked as jcode_blocked_markers, jcode_shell_prompt_line, mentions_jcode_brand,
     },
     JcodeDetectionVariant,
 };
@@ -3742,7 +3742,7 @@ fn detect_agent_label_from_text(text: &str) -> Option<&'static str> {
     let bottom3 = bottom_non_empty_lines(&lower, 3);
     let bottom8 = bottom_non_empty_lines(&lower, 8);
     let bottom12 = bottom_non_empty_lines(&lower, 12);
-    if lower.contains("jcode")
+    if mentions_jcode_brand(&lower)
         || jcode_blocked_markers(&bottom8)
         || has_jcode_spinner(&bottom3)
         || is_jcode_active_background_line(&bottom8)
@@ -8717,6 +8717,24 @@ mod tests {
             detect_agent_label_from_text("claurst is ready"),
             Some("claurst")
         );
+
+        // A shell prompt whose cwd merely sits under a jcode-named
+        // directory is not a jcode agent. This is the split-panel ghost row:
+        // the bare `contains("jcode")` check branded this tail as jcode.
+        assert_eq!(
+            detect_agent_label_from_text("mac ~/documents/projects/jcode %"),
+            None
+        );
+        assert_eq!(
+            detect_agent_label_from_text("mac ~/.jcode/scratch/lens_repo %"),
+            None
+        );
+        // But a real brand mention still detects.
+        assert_eq!(
+            detect_agent_label_from_text("welcome to jcode\nready"),
+            Some("jcode")
+        );
+        assert_eq!(detect_agent_label_from_text("jcode"), Some("jcode"));
     }
 
     #[test]
