@@ -55,6 +55,34 @@ test("kbdHint returns empty for actions without a shortcut", () => {
   assert.equal(registry.kbdHint(theme), "");
 });
 
+test("workspace actions resolve their chord through the registry resolver", () => {
+  const registry = loadRegistry();
+  // These rows run real prefix actions (Ctrl+B N/T): open workspace and
+  // create worktree. The palette row and the toast must agree on the
+  // chord, so they resolve the same shortcutId the runSearchAction hint
+  // map uses. The mobile-only discover-worktrees row keeps no id: its
+  // surface renders no chords.
+  const chords = {
+    newWorkspace: "Ctrl+B then N",
+    createWorktree: "Ctrl+B then T",
+  };
+  registry.setChordResolver((id) => chords[id] || "");
+  const desktop = registry.candidates(">", { platform: "desktop", hasWorkspace: true });
+  for (const [id, chord] of Object.entries(chords)) {
+    const row = desktop.find((a) => a.shortcutId === id);
+    assert.ok(row, `${id} row present on desktop`);
+    assert.equal(
+      registry.kbdHint(row),
+      `<span class="kbd" aria-hidden="true">${chord}</span>`,
+    );
+  }
+  // Mobile keeps its full row set (touch surface, no kbd rendering there)
+  // and the dedupe holds after the new shortcutIds.
+  const mobile = registry.candidates("", { platform: "mobile", hasWorkspace: true }).map((a) => a.action);
+  assert.ok(mobile.includes("discover-worktrees"));
+  assert.equal(mobile.filter((id) => id === "settings").length, 1);
+});
+
 test("kbdHint can be suppressed via options and escapes the shortcut", () => {
   const registry = loadRegistry();
   const settings = registry.action("settings");

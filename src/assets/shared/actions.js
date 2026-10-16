@@ -16,6 +16,7 @@
       text: "open workspace folder worktree project plus add create",
       surfaces: ["desktop", "mobile"],
       primary: true,
+      shortcutId: "newWorkspace",
     },
     {
       id: "discover-worktrees",
@@ -86,6 +87,7 @@
       text: "create new git worktree branch checkout plus add",
       surfaces: ["desktop", "mobile"],
       requiresWorkspace: true,
+      shortcutId: "createWorktree",
     },
     {
       id: "toggle-sidebar",
