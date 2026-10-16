@@ -1150,53 +1150,58 @@ async function commitTabRename(id) {
 let closeTabInFlight = false;
 async function closeTab(id) {
   // Guard: double-click on the ✕ button must not fire two close requests
-  // (the second would close the next panel too).
+  // (the second would close the next panel too). Claimed at entry, before
+  // the await on the modal: a slow question dialog must not open a window
+  // where a second click doubles the close.
   if (closeTabInFlight) return;
+  closeTabInFlight = true;
   // Terminals are the one tab kind worth a confirm: a dead shell is a
   // lost session. The question modal (Enter confirms, Esc cancels)
   // replaces the old blocking confirm(); file and git tabs close silent.
-  const okToClose = await askQuestion({
-    title: "Close panel",
-    message: `Close panel "${panelCloseName(id)}"?`,
-    confirmText: "Close",
-    danger: true,
-  });
-  if (!okToClose) return;
-  // Capture the workspace before the close: with
-  // closeWorkspaceOnLastTerminal the workspace follows its last panel down.
-  const closingTab = (state.tabs || []).find((tab) => tab.tab_id === id) ||
-    (state.allTabs || []).find((tab) => tab.tab_id === id) || null;
-  const closingWorkspaceId = closingTab && closingTab.workspace_id;
-  closeTabInFlight = true;
-  showBlocking("Closing panel...");
   try {
-    // One close call, any tab count: the workspace survives a last-tab
-    // close on builtin backends, and external backends now keep the
-    // workspace too (terminal close never kills the workspace).
-    // A not-found race (pane.exited already closed it elsewhere) is the
-    // outcome we wanted: run the same post-close flow instead of failing.
+    const okToClose = await askQuestion({
+      title: "Close panel",
+      message: `Close panel "${panelCloseName(id)}"?`,
+      confirmText: "Close",
+      danger: true,
+    });
+    if (!okToClose) return;
+    // Capture the workspace before the close: with
+    // closeWorkspaceOnLastTerminal the workspace follows its last panel down.
+    const closingTab = (state.tabs || []).find((tab) => tab.tab_id === id) ||
+      (state.allTabs || []).find((tab) => tab.tab_id === id) || null;
+    const closingWorkspaceId = closingTab && closingTab.workspace_id;
+    showBlocking("Closing panel...");
     try {
-      await api(`/api/tabs/${encodeURIComponent(id)}/close`, { method: "POST" });
-    } catch (error) {
-      if (!String(error.message || error).includes("not found")) throw error;
+      // One close call, any tab count: the workspace survives a last-tab
+      // close on builtin backends, and external backends now keep the
+      // workspace too (terminal close never kills the workspace).
+      // A not-found race (pane.exited already closed it elsewhere) is the
+      // outcome we wanted: run the same post-close flow instead of failing.
+      try {
+        await api(`/api/tabs/${encodeURIComponent(id)}/close`, { method: "POST" });
+      } catch (error) {
+        if (!String(error.message || error).includes("not found")) throw error;
+      }
+      if (typeof removeClosedTabFromState === "function") removeClosedTabFromState(id);
+      if (closingWorkspaceId && typeof maybeAutoCloseWorkspace === "function")
+        maybeAutoCloseWorkspace(closingWorkspaceId);
+      if (state.tab === id && typeof selectFallbackTabAfterClosed === "function") {
+        resetTerminalConnection(true);
+        selectFallbackTabAfterClosed(id);
+        replaceSelectionHistory();
+        render();
+        if (window.HerdrTerminalRenderer) connectTerminal();
+      } else if (state.tab === id) {
+        state.tab = null;
+        state.pane = null;
+        render();
+      }
+      refresh();
+    } finally {
+      hideBlocking();
     }
-    if (typeof removeClosedTabFromState === "function") removeClosedTabFromState(id);
-    if (closingWorkspaceId && typeof maybeAutoCloseWorkspace === "function")
-      maybeAutoCloseWorkspace(closingWorkspaceId);
-    if (state.tab === id && typeof selectFallbackTabAfterClosed === "function") {
-      resetTerminalConnection(true);
-      selectFallbackTabAfterClosed(id);
-      replaceSelectionHistory();
-      render();
-      if (window.HerdrTerminalRenderer) connectTerminal();
-    } else if (state.tab === id) {
-      state.tab = null;
-      state.pane = null;
-      render();
-    }
-    refresh();
   } finally {
     closeTabInFlight = false;
-    hideBlocking();
   }
 }

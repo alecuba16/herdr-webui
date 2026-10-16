@@ -82,6 +82,10 @@ async function makeHarness({ file, target }) {
     worktreeForWorkspace: () => null,
     tabTitle: (t) => (t && t.tab_id) || "tab",
     confirm: () => true,
+    // closeTab confirms through the question modal, not confirm();
+    // resolve immediately so the in-flight guard test still measures the
+    // guard itself, not modal latency.
+    askQuestion: async () => true,
   });
 
   return { sandbox, state, releaseGate: releaseAll, counts: () => ({ createCalls, closeCalls }) };
