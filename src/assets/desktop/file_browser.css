@@ -17,9 +17,8 @@
   background: var(--panel);
   min-width: 0;
   overflow: auto;
-  /* Full-tree re-renders (context menu open/close) restore scrollTop
-     explicitly; Chrome scroll anchoring fights that restore and drifts a
-     few px per render. */
+  /* Full-tree re-renders restore scrollTop. Disable Chrome anchoring so
+     it does not adjust that position again. */
   overflow-anchor: none;
 }
 .file-browser-head {
@@ -275,11 +274,8 @@
 .herdr-editor.cm {
   height: 100%;
 }
-/* The preview mount lands in the grid's auto row 1 and grows to content
- * height, so .herdr-markdown-body (height: 100%) has nothing to resolve
- * against and the pane clips with no scroll. Explicit row 3 is the
- * minmax(0, 1fr) track: the mount gets the pane height, min-height: 0
- * lets the body shrink, and overflow: auto does the scrolling. */
+/* Row 3 is the pane's minmax track. min-height: 0 lets the preview shrink
+   so its own overflow:auto can scroll instead of clipping. */
 .herdr-markdown-preview-mount {
   display: flex;
   flex-direction: column;
