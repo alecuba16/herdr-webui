@@ -833,6 +833,20 @@ describe("mobile bundle load", () => {
     ok(!html.includes("Temporary terminal"));
   });
 
+  it("lists every mobile action exactly once in the search sheet", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.showScreen("search");
+    const html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    // Every action row is a button.mobile-row; settings used to appear
+    // twice (a stray mobile duplicate of the desktop entry).
+    const rows = Array.from(html.matchAll(/<button class="mobile-row"/g)).length;
+    const settingsRows = Array.from(html.matchAll(/<strong>Settings<\/strong>/g)).length;
+    equal(rows, 5, `expected the 5 deduped action rows, got ${rows}`);
+    equal(settingsRows, 1, `settings must appear exactly once, got ${settingsRows}`);
+  });
+
   it("restores all agents after rendering Home attention-only agents", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
