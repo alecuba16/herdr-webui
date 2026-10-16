@@ -110,6 +110,44 @@
       if (typeof setTimeout === "function") setTimeout(focusQuery, 0);
       else focusQuery();
     }
+    syncFindToggleAria(parent, true);
+    return true;
+  }
+
+  // The header/float find buttons are real toggles now, so mirror toolbar
+  // visibility onto aria-pressed. Guarded: static callers hand in bare
+  // containers and test mocks may skip querySelectorAll entirely.
+  function syncFindToggleAria(parent, visible) {
+    if (!parent || !parent.querySelectorAll) return;
+    let toggles;
+    try { toggles = parent.querySelectorAll(".herdr-editor-find-toggle"); } catch (_) { return; }
+    for (let i = 0; i < toggles.length; i++) {
+      const button = toggles[i];
+      if (!button || !button.setAttribute) continue;
+      try { button.setAttribute("aria-pressed", visible ? "true" : "false"); } catch (_) {}
+    }
+  }
+
+  // Static toggle for the inline header/float buttons. They resolve the
+  // .herdr-editor wrapper via closest(), but create() pins the api on the
+  // mount container above it, so walk parentNode until the api shows up;
+  // the api owns the real toggle (query reset, state, focus). openFind
+  // stays show-only because the pane strip and tests call it directly.
+  function toggleFind(parent) {
+    let node = parent;
+    while (node) {
+      if (node._herdrEditorApi && typeof node._herdrEditorApi.toggleFind === "function") {
+        node._herdrEditorApi.toggleFind();
+        return true;
+      }
+      if (!node.parentNode) break;
+      node = node.parentNode;
+    }
+    const toolbar = parent && parent.querySelector && parent.querySelector(".herdr-editor-find");
+    if (!toolbar) return false;
+    if (toolbar.hidden) return openFind(parent);
+    toolbar.hidden = true;
+    syncFindToggleAria(parent, false);
     return true;
   }
 
@@ -191,7 +229,7 @@
 
   function editorHeaderHtml(opts, title) {
     if (opts.hideHeader) return "";
-    return `<div class="herdr-editor-head"><strong>${esc(title)}</strong><span>${esc(languageFor(opts.path))}</span><button type="button" class="herdr-editor-find-toggle" title="Find / replace (Ctrl+F)" aria-label="Find / replace" onclick="HerdrEditor.openFind(this.closest('.herdr-editor'))">⌕</button></div>`;
+    return `<div class="herdr-editor-head"><strong>${esc(title)}</strong><span>${esc(languageFor(opts.path))}</span><button type="button" class="herdr-editor-find-toggle" title="Find / replace (Ctrl+F)" aria-label="Find / replace" aria-pressed="false" onclick="HerdrEditor.toggleFind(this.closest('.herdr-editor'))">⌕</button></div>`;
   }
 
   // IDE-review A1: headerless mounts (mobile preview/edit) previously had no
@@ -203,7 +241,7 @@
   // stays so openFind still has something to open.
   function findToggleHtml(opts) {
     if (!opts.hideHeader || opts.hideFind || opts.hideFindToggle) return "";
-    return `<button type="button" class="herdr-editor-find-toggle herdr-editor-find-float" title="Find / replace" aria-label="Find / replace" onclick="HerdrEditor.openFind(this.closest('.herdr-editor'))">⌕</button>`;
+    return `<button type="button" class="herdr-editor-find-toggle herdr-editor-find-float" title="Find / replace" aria-label="Find / replace" aria-pressed="false" onclick="HerdrEditor.toggleFind(this.closest('.herdr-editor'))">⌕</button>`;
   }
 
   function wireFindToolbar(parent, api, opts) {
@@ -231,6 +269,7 @@
     function setStatus(text) { if (status) status.textContent = text || ""; }
     function showFind(focus) {
       toolbar.hidden = false;
+      syncFindToggleAria(parent, true);
       if (focus !== false && query) {
         query.focus();
         if (query.select) query.select();
@@ -238,6 +277,7 @@
     }
     function hideFind() {
       toolbar.hidden = true;
+      syncFindToggleAria(parent, false);
       if (query) query.value = "";
       current = -1;
       lastQuery = "";
@@ -257,7 +297,17 @@
       event.preventDefault();
       event.stopPropagation();
       if (event.stopImmediatePropagation) event.stopImmediatePropagation();
-      showFind(true);
+      if (toolbar.hidden) { showFind(true); return; }
+      // Toggle guard: Ctrl/Cmd+F while the query itself has focus re-selects
+      // it (browser find-bar behavior) instead of hiding the toolbar
+      // mid-typing; any other focus closes it.
+      const queryFocused = !!(query && typeof document !== "undefined" && document.activeElement === query);
+      if (queryFocused) {
+        if (query.focus) query.focus();
+        if (query.select) query.select();
+        return;
+      }
+      hideFind();
     }
     if (parent.addEventListener) {
       if (parent._herdrEditorFindShortcutHandler && parent.removeEventListener) {
@@ -596,5 +646,5 @@
     return codeMirrorPromise;
   }
 
-  window.HerdrEditor = { create, highlight, languageFor, ensureCodeMirror, findRanges, editorFindShortcutEnabled, openFind, isMarkdownPath, markdownPreviewEnabled, gotoLine, cursorPosition };
+  window.HerdrEditor = { create, highlight, languageFor, ensureCodeMirror, findRanges, editorFindShortcutEnabled, openFind, toggleFind, isMarkdownPath, markdownPreviewEnabled, gotoLine, cursorPosition };
 })();

@@ -7888,12 +7888,15 @@ describe("notes rail static pins", () => {
     // The only script tag the initial page carries is app-boot.js: notes
     // JS/CSS load on the first rail click through ensureNotesLoaded. If
     // a regression eagerly references the notes assets anywhere in the
-    // boot chain, the idle cost claim breaks.
+    // boot chain, the idle cost claim breaks. The mobile bundle list is
+    // exempt: on phones notes is a drawer screen, so its module rides
+    // the layout bundle with the rest of the screens.
     const appHtml = read("./app.html");
     const scriptTags = [...appHtml.matchAll(/<script[^>]*src="([^"]+)"[^>]*>/g)].map((m) => m[1]);
     assert.deepEqual(scriptTags, ["/assets/app-boot.js"], "initial page loads only app-boot.js");
     const appBoot = read("./app_boot.js");
-    ok(!appBoot.includes("notes"), "app-boot never references notes assets");
+    const desktopSlice = appBoot.slice(0, appBoot.indexOf("...(mobile ? ["));
+    ok(!desktopSlice.includes("notes"), "desktop boot chain never references notes assets");
   });
 
   it("whitelists the notes shell mode everywhere the others are", () => {

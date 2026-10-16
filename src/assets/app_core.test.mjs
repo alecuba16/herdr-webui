@@ -1227,7 +1227,14 @@ describe("HerdrEditor line number helpers", () => {
         return null;
       },
       addEventListener(type, handler) { if (type === "keydown") parentKeydowns.push(handler); },
-      removeEventListener() {},
+      // A real DOM removes the listener; the earlier no-op let the
+      // double wireFindToolbar binding (create + mountCodeMirror) fire two
+      // shortcut handlers, and the stale one toggled the toolbar back off.
+      removeEventListener(type, handler) {
+        if (type !== "keydown") return;
+        const at = parentKeydowns.indexOf(handler);
+        if (at >= 0) parentKeydowns.splice(at, 1);
+      },
     };
     const context = {
       window: {

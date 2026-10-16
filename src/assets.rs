@@ -119,6 +119,7 @@ const MOBILE_TERMINAL_JS: &str = include_str!("assets/mobile/terminal.js");
 const MOBILE_WORKTREES_JS: &str = include_str!("assets/mobile/worktrees.js");
 const MOBILE_DIRECTORY_PICKER_JS: &str = include_str!("assets/mobile/directory_picker.js");
 const MOBILE_FILE_BROWSER_JS: &str = include_str!("assets/mobile/file_browser.js");
+const MOBILE_NOTES_JS: &str = include_str!("assets/mobile/notes.js");
 const MOBILE_SEARCH_JS: &str = include_str!("assets/mobile/search.js");
 const MOBILE_GIT_JS: &str = include_str!("assets/mobile/git.js");
 const MOBILE_COMPOSER_JS: &str = include_str!("assets/mobile/composer.js");
@@ -679,6 +680,14 @@ pub(crate) async fn mobile_file_browser_js(headers: HeaderMap) -> Response {
     )
 }
 
+pub(crate) async fn mobile_notes_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_NOTES_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
 pub(crate) async fn mobile_css(headers: HeaderMap) -> Response {
     static_text(&headers, MOBILE_CSS, "text/css; charset=utf-8")
 }
@@ -1023,6 +1032,10 @@ mod tests {
         );
         assert_eq!(
             content_type(&mobile_file_browser_js(HeaderMap::new()).await),
+            javascript
+        );
+        assert_eq!(
+            content_type(&mobile_notes_js(HeaderMap::new()).await),
             javascript
         );
         assert_eq!(

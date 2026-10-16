@@ -170,6 +170,12 @@ function buildDom() {
   };
   const document = {
     activeElement: null,
+    hidden: false,
+    __listeners: {},
+    addEventListener(type, handler) {
+      const list = this.__listeners[type] || (this.__listeners[type] = []);
+      list.push(handler);
+    },
     createElement: () => {
       const node = makeNode("", "");
       let id = "";
@@ -205,6 +211,18 @@ function loadPanel(document, ctxOverrides = {}) {
     },
     clearTimeout: (t) => {
       if (t) ctx.__pendingTimers[t - 1] = null;
+    },
+    // Interval harness mirrors the timer one: callbacks park in a list so
+    // tests fire ticks on demand instead of waiting wall-clock seconds.
+    setInterval: (fn) => {
+      ctx.__pendingIntervals.push(fn);
+      return ctx.__pendingIntervals.length;
+    },
+    clearInterval: (id) => {
+      if (id) {
+        ctx.__pendingIntervals[id - 1] = null;
+        ctx.__clearedIntervals += 1;
+      }
     },
     state: { ws: "ws-1", workspaces: [], workspaceShell: {} },
     api: async (url, opts) => {
@@ -255,6 +273,8 @@ function loadPanel(document, ctxOverrides = {}) {
     ...ctxOverrides,
   };
   ctx.__pendingTimers = [];
+  ctx.__pendingIntervals = [];
+  ctx.__clearedIntervals = 0;
   ctx.__calls = calls;
   ctx.window = ctx;
   ctx.globalThis = ctx;
@@ -610,4 +630,218 @@ test("a failed title save surfaces the error without remounting the editor", asy
   const errorNode = nodes.notesPanel.querySelector(".notes-editor-error");
   assert.ok(errorNode, "title failure paints the error");
   assert.equal(nodes.notesPanel._herdrEditorApi, editorApi, "editor stayed mounted through the failure");
+});
+
+test("the editor mounts headerless for notes", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  ctx.__apiResponse = {
+    notes: [{ id: "n1", title: "t", content: "body", language: "txt", updated_at: 1, updated_by: "", display_title: "t" }],
+  };
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  rowNodes(nodes.notesPanel)[0].onclick();
+  assert.equal(ctx.__calls.editorMounts, 1, "editor mounted once");
+  assert.equal(ctx.__editorOpts.hideHeader, true, "notes editor mounts without the file header");
+  assert.ok(!nodes.notesPanel.innerHTML.includes("herdr-editor-head"), "no note.txt/txt header row");
+  assert.ok(!nodes.notesPanel.innerHTML.includes("note.txt"), "no fake filename in the markup");
+});
+
+test("open starts the resync interval, close stops it", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  assert.equal(ctx.__pendingIntervals.length, 1, "one resync interval scheduled");
+  assert.equal(ctx.__clearedIntervals, 0, "interval not cleared while open");
+
+  ctx.HerdrNotesPanel.close();
+  assert.equal(ctx.__clearedIntervals, 1, "close cleared the resync interval");
+
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  assert.equal(ctx.__pendingIntervals.filter(Boolean).length, 1, "reopen schedules a fresh interval");
+});
+
+test("resync ticks fetch the list and repaint the list view", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  ctx.__apiResponse = { notes: [] };
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  assert.ok(nodes.notesPanel.innerHTML.includes("No notes yet"), "starts empty");
+
+  ctx.__apiResponse = {
+    notes: [{ id: "x", title: "from tick", content: "", language: "txt", updated_at: 5, updated_by: "", display_title: "from tick" }],
+  };
+  const tick = ctx.__pendingIntervals[0];
+  await tick();
+  assert.ok(nodes.notesPanel.innerHTML.includes("from tick"), "interval tick adopted the fresh snapshot");
+});
+
+test("resync skips while hidden, collapsed, or while a sync is in flight", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  const apiCallsBefore = ctx.__calls.api.length;
+
+  document.hidden = true;
+  await ctx.__pendingIntervals[0]();
+  assert.equal(ctx.__calls.api.length, apiCallsBefore, "hidden tab skipped the tick");
+
+  document.hidden = false;
+  ctx.__collapsed = true;
+  await ctx.__pendingIntervals[0]();
+  assert.equal(ctx.__calls.api.length, apiCallsBefore, "collapsed column skipped the tick");
+  ctx.__collapsed = false;
+
+  // In-flight guard: the first tick hangs on the api; the second must
+  // skip instead of stacking a second request.
+  let resolveApi;
+  ctx.api = async () => new Promise((resolve) => { resolveApi = resolve; });
+  const first = ctx.__pendingIntervals[0]();
+  const callsAtFirst = ctx.__calls.api.length;
+  const second = ctx.__pendingIntervals[0]();
+  assert.equal(ctx.__calls.api.length, callsAtFirst, "second tick skipped while the first sync was in flight");
+  resolveApi({ notes: [] });
+  await first;
+  await second;
+});
+
+test("the sync button click forces a fetch past the guards", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  const apiCallsBefore = ctx.__calls.api.length;
+
+  document.hidden = true;
+  await nodes.notesSync.onclick();
+  assert.equal(ctx.__calls.api.length, apiCallsBefore + 1, "manual sync ignores the hidden guard");
+  document.hidden = false;
+});
+
+test("a failed resync paints the sync button failed and the retry recovers", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  const sync = nodes.notesSync;
+
+  ctx.__apiReject = { test: (url) => url.includes("/api/notes") };
+  await sync.onclick();
+  assert.equal(sync.className, "mini notes-sync failed", "failed state painted");
+  assert.equal(sync.title, "Sync failed. Click to retry.", "failed title painted");
+  assert.equal(sync.disabled, false, "failed sync stays clickable");
+
+  ctx.__apiReject = null;
+  await sync.onclick();
+  // The successful sync repaints the panel, so the button node is fresh.
+  const fresh = nodes.notesSync;
+  assert.equal(fresh.className, "mini notes-sync", "retry recovered to idle");
+  assert.equal(fresh.disabled, false, "idle stays clickable");
+});
+
+test("spinning state disables the sync button while a sync runs", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  const sync = nodes.notesSync;
+
+  let resolveApi;
+  ctx.api = async () => new Promise((resolve) => { resolveApi = resolve; });
+  const inflight = sync.onclick();
+  assert.equal(sync.className, "mini notes-sync spinning", "spinning while in flight");
+  assert.equal(sync.disabled, true, "button disabled while spinning");
+  resolveApi({ notes: [] });
+  await inflight;
+  // The repaint replaced the sync button node; read the fresh one.
+  const fresh = nodes.notesSync;
+  assert.equal(fresh.className, "mini notes-sync", "back to idle after");
+  assert.equal(fresh.disabled, false, "re-enabled after");
+});
+
+test("visibilitychange triggers a catch-up sync when the tab returns", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  const apiCallsBefore = ctx.__calls.api.length;
+
+  const listeners = document.__listeners.visibilitychange || [];
+  assert.equal(listeners.length, 1, "one visibility listener wired");
+  // hidden -> the listener must not fire a sync
+  document.hidden = true;
+  await listeners[0]();
+  assert.equal(ctx.__calls.api.length, apiCallsBefore, "no sync while still hidden");
+  document.hidden = false;
+  await listeners[0]();
+  assert.equal(ctx.__calls.api.length, apiCallsBefore + 1, "returning to the tab synced at once");
+});
+
+test("syncNotes merges snapshots exactly like applyRemote", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  ctx.__apiResponse = {
+    notes: [{ id: "n1", title: "mine", content: "draft", language: "txt", updated_at: 1000, updated_by: "user", display_title: "mine" }],
+  };
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  rowNodes(nodes.notesPanel)[0].onclick();
+  assert.equal(ctx.__calls.editorMounts, 1, "editor mounted once");
+  const htmlWhileEditing = nodes.notesPanel.innerHTML;
+
+  // Same merge semantics as the broadcast path: local edited note wins,
+  // no repaint while editing.
+  ctx.__apiResponse = {
+    notes: [
+      { id: "n1", title: "theirs", content: "remote rewrite", language: "txt", updated_at: 5000, updated_by: "other", display_title: "theirs" },
+      { id: "n2", title: "other client", content: "", language: "txt", updated_at: 4000, updated_by: "other", display_title: "other client" },
+    ],
+  };
+  await nodes.notesSync.onclick();
+  assert.equal(ctx.__calls.editorMounts, 1, "no remount during an editing sync");
+  assert.equal(nodes.notesPanel.innerHTML, htmlWhileEditing, "editing view untouched by the sync");
+});
+
+test("an externally deleted note closes a clean editor but not a dirty one", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  ctx.__apiResponse = {
+    notes: [
+      { id: "n1", title: "keep", content: "", language: "txt", updated_at: 1, updated_by: "", display_title: "keep" },
+      { id: "n2", title: "victim", content: "v", language: "txt", updated_at: 2, updated_by: "", display_title: "victim" },
+    ],
+  };
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  rowNodes(nodes.notesPanel)[1].onclick();
+  assert.equal(ctx.__calls.editorMounts, 1, "editor mounted once");
+
+  // Clean edit + note deleted remotely: the edit view closes.
+  ctx.__apiResponse = {
+    notes: [{ id: "n1", title: "keep", content: "", language: "txt", updated_at: 3, updated_by: "", display_title: "keep" }],
+  };
+  ctx.HerdrNotesPanel.applyRemote(
+    { notes: [{ id: "n1", title: "keep", content: "", language: "txt", updated_at: 3, updated_by: "", display_title: "keep" }] }
+  );
+  assert.ok(!nodes.notesPanel.innerHTML.includes("notes-editor"), "clean editor closed after external delete");
+  assert.ok(nodes.notesPanel.innerHTML.includes("keep"), "list repainted without the deleted note");
+
+  // Dirty edit + note deleted remotely: the editor stays.
+  rowNodes(nodes.notesPanel)[0].onclick();
+  assert.equal(ctx.__calls.editorMounts, 2, "editor mounted again");
+  // The real dirty signal: the editor reports a change, the debounce
+  // parks a pending save.
+  ctx.__editorOpts.onChange("unsaved typing");
+  ctx.__apiResponse = { notes: [] };
+  ctx.HerdrNotesPanel.applyRemote({ notes: [] });
+  assert.ok(nodes.notesPanel.innerHTML.includes("notes-editor"), "dirty editor survived the external delete");
+});
+
+test("syncNotes closes a clean editor on an externally deleted note", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+  ctx.__apiResponse = {
+    notes: [{ id: "n2", title: "victim", content: "v", language: "txt", updated_at: 2, updated_by: "", display_title: "victim" }],
+  };
+  await ctx.HerdrNotesPanel.open("ws-1", {});
+  rowNodes(nodes.notesPanel)[0].onclick();
+  assert.equal(ctx.__calls.editorMounts, 1, "editor mounted once");
+
+  ctx.__apiResponse = { notes: [] };
+  await nodes.notesSync.onclick();
+  assert.ok(!nodes.notesPanel.innerHTML.includes("notes-editor"), "sync closed the clean ghost edit");
+  assert.ok(nodes.notesPanel.innerHTML.includes("No notes yet"), "list shows the emptied state");
 });

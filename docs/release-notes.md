@@ -48,7 +48,8 @@
 - The desktop right rail gains a fourth view: Notes. A server-synced
   scratchpad behind the rail Notes button, hosting in the sidebar column
   like Files/Git/Search with the same re-click collapse and per-workspace
-  shell-mode memory. Desktop-only in v1; the mobile gap is documented.
+  shell-mode memory; the mobile layout ships the matching drawer screen
+  (under More) in the same release.
 - Notes live on the server in a `notes.json` sidecar next to
   `webui-settings.json`, so they survive server restarts, workspace
   resets, and browser sessions, and every connected client sees the same
@@ -75,6 +76,38 @@
 - Server caps guard the store: 200 notes, 200-character titles, 32KB
   per note, language allowlist enforced. All routes sit behind the
   same session auth as the rest of the API.
+- The notes editor is headerless now: the fake note.txt header is
+  gone, the find/replace toggle floats over the editor's top-right,
+  and the editor fills the full column height (the flex chain had
+  collapsed CodeMirror to a sliver headerless). Find/replace became a
+  real toggle: the button and Ctrl+F both open and close it,
+  aria-pressed mirrors the state, and Ctrl+F while the query holds
+  focus re-selects it instead of hiding the bar mid-typing. The
+  static openFind stays show-only for pane strips and tests. The
+  caret also renders in the theme accent (dimmed while unfocused);
+  CodeMirror's injected theme defaulted it to black, invisible on the
+  dark editor background.
+- The notes list keeps itself fresh. The list head carries a sync
+  icon: it spins while a fetch is in flight, goes red when the last
+  fetch failed (click retries), and a click when idle forces a
+  refresh past the hidden-tab and collapsed-column guards. While
+  hosted, the panel resyncs every 15s and catches up immediately when
+  the tab becomes visible again. When a sync or broadcast reports
+  the note being edited as deleted by another client, a clean editor
+  closes back to the list instead of editing a ghost; un-flushed
+  local edits keep the local copy pinned until the save lands.
+- The mobile layout gains the same Notes: a drawer screen under
+  More with the shared server list, + Note create, per-row delete,
+  danger-confirmed Clear all, and a Sync button in the head. Editing
+  reuses the shared headerless CodeMirror editor with a title input
+  and language select above it; saves debounce per note like the
+  desktop, the notes_changed broadcast adopts while the screen is
+  open, and a 15s resync covers missed frames. Leaving the screen
+  flushes a pending save and stops the timer; an externally deleted
+  note closes a clean editor while dirty edits stay pinned. The
+  desktop zero-idle-cost claim holds: the module rides the mobile
+  layout bundle with the rest of the screens, and the desktop boot
+  chain still never references a notes asset.
 - Git cleanup delete-selected grew up. The confirm modal now offers
   a `Delete branch of N selected worktrees too` checkbox (shown only
   when a selected worktree has a branch), which runs

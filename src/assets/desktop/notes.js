@@ -10,6 +10,10 @@
 // only while a note is open for editing.
 (function () {
   const SAVE_DEBOUNCE_MS = 600;
+  // List resync cadence while the panel is hosted. The notes_changed
+  // broadcast covers live changes, but a missed WS frame or a reconnect
+  // gap can leave the list stale; the interval is the floor.
+  const RESYNC_INTERVAL_MS = 15000;
   // Boot fallback until the first payload arrives: every server response
   // and broadcast carries the authoritative table.
   const FALLBACK_LANGUAGES = [{ value: "txt", label: "Text", ext: "txt" }];
@@ -26,6 +30,9 @@
       editingId: null,
       saveTimer: null,
       saving: false,
+      syncTimer: null,
+      syncing: false,
+      syncFailed: false,
     };
   }
 
@@ -56,6 +63,42 @@
     if (data && Array.isArray(data.notes)) state.notes = data.notes;
     if (data && Array.isArray(data.languages) && data.languages.length)
       state.languages = data.languages;
+  }
+
+  // Un-flushed local work: a pending debounce, a failed flush (the
+  // "failed" sentinel), or a PUT still in flight.
+  function editingDirty(state) {
+    return !!(state.saveTimer || state.saving);
+  }
+
+  // Merge an incoming snapshot into state. While a note is open for
+  // editing and still present remotely, the local copy wins (LWW lands
+  // on the next flush) and no repaint happens: repainting would replace
+  // innerHTML, remount CodeMirror, and throw away the cursor and
+  // un-flushed text. If the edited note vanished remotely and nothing is
+  // dirty here, the edit view closes instead of editing a ghost.
+  // Returns true when the caller should repaint.
+  function adoptIncoming(incoming) {
+    const state = ensureState();
+    const id = state.editingId;
+    if (id) {
+      const local = noteById(id);
+      if (local) {
+        const stillThere = incoming.some((note) => note && note.id === id);
+        if (!stillThere && !editingDirty(state)) {
+          state.editingId = null;
+          state.notes = incoming;
+          return true;
+        }
+        // Keep the edited note pinned to the front: it is the most
+        // recent write this client knows about, matching the newest-
+        // first order the server owns.
+        state.notes = [local].concat(incoming.filter((note) => note && note.id !== id));
+        return false;
+      }
+    }
+    state.notes = incoming;
+    return true;
   }
 
   function panelNode() {
@@ -98,6 +141,77 @@
     } finally {
       state.loading = false;
     }
+  }
+
+  function setSyncState(kind) {
+    const button = document.getElementById("notesSync");
+    if (!button) return;
+    const syncing = kind === "syncing";
+    button.className = syncing
+      ? "mini notes-sync spinning"
+      : kind === "failed" ? "mini notes-sync failed" : "mini notes-sync";
+    button.title = syncing
+      ? "Syncing notes..."
+      : kind === "failed" ? "Sync failed. Click to retry." : "Sync notes";
+    button.disabled = syncing;
+  }
+
+  // Periodic list resync. Skips while the tab is hidden, the column is
+  // collapsed, or a sync is in flight; a manual click forces past those
+  // guards. While a note is open the merge rules still apply: clean +
+  // deleted remotely closes the editor, dirty keeps local pinned.
+  async function syncNotes(force) {
+    const state = ensureState();
+    if (!isOpen() || state.syncing) return;
+    if (!force) {
+      if (state.loading) return;
+      if (window.HerdrRightSidebar && window.HerdrRightSidebar.collapsed && window.HerdrRightSidebar.collapsed()) return;
+      if (typeof document !== "undefined" && document.hidden) return;
+    }
+    state.syncing = true;
+    setSyncState("syncing");
+    try {
+      const data = await api("/api/notes");
+      const payload = data || {};
+      const incoming = Array.isArray(payload.notes) ? payload.notes : [];
+      if (Array.isArray(payload.languages) && payload.languages.length)
+        state.languages = payload.languages;
+      if (adoptIncoming(incoming)) renderPanel();
+      state.syncFailed = false;
+      setSyncState("idle");
+    } catch (error) {
+      state.syncFailed = true;
+      setSyncState("failed");
+    } finally {
+      state.syncing = false;
+    }
+  }
+
+  function startResyncTimer() {
+    const state = ensureState();
+    if (state.syncTimer || typeof setInterval !== "function") return;
+    // Return the promise so a tick in flight is observable (and tests can
+    // await it); setInterval itself ignores the return value.
+    state.syncTimer = setInterval(() => syncNotes(false), RESYNC_INTERVAL_MS);
+  }
+
+  function stopResyncTimer() {
+    const state = ensureState();
+    if (state.syncTimer && typeof clearInterval === "function") clearInterval(state.syncTimer);
+    state.syncTimer = null;
+  }
+
+  let visibilityWired = false;
+  function wireVisibilitySync() {
+    if (visibilityWired) return;
+    if (typeof document === "undefined" || !document.addEventListener) return;
+    visibilityWired = true;
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      // Catch up right away after the tab returns instead of waiting for
+      // the next interval tick.
+      syncNotes(true);
+    });
   }
 
   async function createNote() {
@@ -288,7 +402,7 @@
           : '<div class="notes-empty">No notes yet. Create one to get started.</div>';
     const head = editing
       ? `<div class="notes-editor-head"><button class="mini notes-back" id="notesBack" title="Back to list" aria-label="Back to notes list"><span aria-hidden="true">‹</span></button><input id="notesTitleInput" class="notes-title-input" placeholder="Note title"${typeof inputAttrs === "function" ? inputAttrs("done") : " autocomplete=\"off\" spellcheck=\"false\""} aria-label="Note title" /><select id="notesLanguage" class="notes-language" aria-label="Syntax language">${languages(state).map((entry) => `<option value="${escapeHtml(entry.value)}"${editing.language === entry.value ? " selected" : ""}>${escapeHtml(entry.label)}</option>`).join("")}</select><button class="mini notes-save-state" id="notesSaveState" disabled>${state.saving ? "Saving..." : "Saved"}</button></div>`
-      : `<div class="notes-panel-head"><strong>Notes</strong><span class="notes-count">${notes.length}</span><button class="mini" id="notesNew" title="New note" aria-label="New note">+ New</button>${notes.length ? '<button class="mini notes-clear" id="notesClear" title="Clear all notes" aria-label="Clear all notes">Clear all</button>' : ""}</div>`;
+      : `<div class="notes-panel-head"><strong>Notes</strong><span class="notes-count">${notes.length}</span><button class="mini" id="notesNew" title="New note" aria-label="New note">+ New</button>${notes.length ? '<button class="mini notes-clear" id="notesClear" title="Clear all notes" aria-label="Clear all notes">Clear all</button>' : ""}<button class="mini notes-sync" id="notesSync" title="Sync notes" aria-label="Sync notes now"><span aria-hidden="true"></span></button></div>`;
     const body = editing
       ? '<div class="notes-editor" id="notesEditor"></div>'
       : listHtml;
@@ -327,6 +441,9 @@
     };
     const newButton = panel.querySelector("#notesNew");
     if (newButton) newButton.onclick = () => createNote();
+    const syncButton = panel.querySelector("#notesSync");
+    if (syncButton) syncButton.onclick = () => syncNotes(true);
+    setSyncState(state.syncing ? "syncing" : state.syncFailed ? "failed" : "idle");
     const clearButton = panel.querySelector("#notesClear");
     if (clearButton) clearButton.onclick = () => clearAllNotes();
     panel.querySelectorAll("[data-notes-open]").forEach((row) => {
@@ -368,6 +485,7 @@
       path: `note.${languageExt(note.language || "txt")}`,
       content: String(note.content || ""),
       readonly: false,
+      hideHeader: true,
       onChange(value) {
         note.content = value;
         setSaveState("pending");
@@ -416,19 +534,7 @@
     const incoming = Array.isArray(payload.notes) ? payload.notes : [];
     if (Array.isArray(payload.languages) && payload.languages.length)
       state.languages = payload.languages;
-    const id = state.editingId;
-    if (id) {
-      const local = noteById(id);
-      if (local) {
-        // Keep the edited note pinned to the front: it is the most recent
-        // write this client knows about, matching the newest-first order
-        // the server owns.
-        state.notes = [local].concat(incoming.filter((note) => note && note.id !== id));
-        return;
-      }
-    }
-    state.notes = incoming;
-    renderPanel();
+    if (adoptIncoming(incoming)) renderPanel();
   }
 
   async function open(workspaceId, options) {
@@ -449,11 +555,14 @@
     const state = ensureState();
     if (!state.loaded) await fetchNotes();
     renderPanel();
+    startResyncTimer();
+    wireVisibilitySync();
     if (typeof render === "function") render();
   }
 
   function close() {
     const state = ensureState();
+    stopResyncTimer();
     if (state.saveTimer) {
       clearTimeout(state.saveTimer);
       state.saveTimer = null;
@@ -482,5 +591,7 @@
     deleteNote,
     clearAll: clearAllNotes,
     flush: flushSave,
+    editingId: () => ensureState().editingId,
+    syncNow: () => syncNotes(true),
   };
 })();

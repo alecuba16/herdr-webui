@@ -104,6 +104,8 @@ const EXPECTED_HINTS = {
   // "|text" (empty placeholder + type). Both surfaces (tab rename via panel
   // switcher dblclick, workspace rename) pin the same hint.
   "|text": "done",
+  // Notes panel title input (desktop notes editor head).
+  notesTitleInput: "done",
 };
 function assertGuards(surface, item) {
   if (LIVE_ALLOWLIST.has(item.key)) {
@@ -379,6 +381,32 @@ async function main() {
       console.log(`FAIL file browser: ${e.message}`);
     }
   } else console.log("SKIP file browser: no active workspace");
+
+  // F2. Notes panel (lazy module): open via the real app trigger, create a
+  // note so the editor + title input mount, then audit the panel root and
+  // the find bar (shared herdr-editor markup, revealed by its float toggle).
+  if (wsId) {
+    try {
+      await evalJs(`openWorkspaceNotesPanel(${JSON.stringify(wsId)}, { forceOpen: true })`);
+      await waitFor(`!!document.getElementById('notesPanel')`, "notes panel", 12000);
+      const created = await evalJs(`(async () => { if (!window.HerdrNotesPanel) return false; await HerdrNotesPanel.createNote(); return !!document.getElementById('notesEditor'); })()`);
+      if (created) {
+        await waitFor(`!!document.querySelector('#notesPanel .herdr-editor')`, "notes editor mounted", 12000);
+        await auditSurface("notes title", "#notesPanel .notes-editor-head", { required: true });
+        const notesFindOpened = await evalJs(`(() => { const b = document.querySelector('#notesPanel .herdr-editor-find-toggle'); if (!b) return false; b.click(); return !!document.querySelector('#notesPanel .herdr-editor-find:not([hidden])'); })()`);
+        if (notesFindOpened) await auditSurface("notes find bar", "#notesPanel .herdr-editor-find", { required: true });
+        else { failures.push("notes find bar: float toggle did not reveal the find bar"); console.log("FAIL notes find bar: float toggle did not reveal the find bar"); }
+        // Delete the scratch note and close so later surfaces enumerate cleanly.
+        const noteId = await evalJs(`(() => window.HerdrNotesPanel && window.HerdrNotesPanel.editingId && window.HerdrNotesPanel.editingId())()`);
+        if (noteId) { await evalJs(`HerdrNotesPanel.deleteNote(${JSON.stringify(noteId)})`); await sleep(300); }
+      } else { failures.push("notes panel: createNote did not mount the editor"); console.log("FAIL notes panel: createNote did not mount the editor"); }
+      await evalJs(`(() => { if (window.HerdrNotesPanel) HerdrNotesPanel.close(); return true; })()`);
+      await sleep(300);
+    } catch (e) {
+      failures.push(`notes panel: ${e.message}`);
+      console.log(`FAIL notes panel: ${e.message}`);
+    }
+  } else console.log("SKIP notes panel: no active workspace");
 
   // G. Git UI lazy surfaces: real trigger opens git_ui.js + directory_picker.js,
   // then drive each tab and modal that renders text inputs.

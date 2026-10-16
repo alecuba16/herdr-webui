@@ -25,10 +25,36 @@ function makeNode(document, tag, className) {
     children: [],
     handlers: {},
     ownerDocument: document,
-    addEventListener(type, handler) { this.handlers[type] = handler; },
-    removeEventListener() {},
+    __attrs: {},
+    __listeners: {},
+    setAttribute(name, value) { this.__attrs[String(name)] = String(value); },
+    getAttribute(name) { return this.__attrs[String(name)]; },
+    // Real-DOM semantics: multiple handlers per type, removeEventListener
+    // actually removes. The single-slot version let editor.js's rebind cycle
+    // (create + mountCodeMirror) drop or double-fire handlers.
+    addEventListener(type, handler) {
+      const list = this.__listeners[type] || (this.__listeners[type] = []);
+      if (!list.includes(handler)) list.push(handler);
+      this.handlers[type] = (event) => { for (let i = list.length - 1; i >= 0; i--) list[i](event); };
+    },
+    removeEventListener(type, handler) {
+      const list = this.__listeners[type];
+      if (!list) return;
+      const at = list.indexOf(handler);
+      if (at >= 0) list.splice(at, 1);
+      this.handlers[type] = list.length
+        ? (event) => { for (let i = list.length - 1; i >= 0; i--) list[i](event); }
+        : null;
+    },
     focus() { document.activeElement = node; },
     select() {},
+    closest(selector) {
+      const wantClass = selector.startsWith(".") ? selector.slice(1) : null;
+      for (let at = node; at; at = at.parentNode) {
+        if (wantClass && String(at.className).split(/\s+/).includes(wantClass)) return at;
+      }
+      return null;
+    },
     querySelector(selector) {
       return this.querySelectorAll(selector)[0] || null;
     },
@@ -45,7 +71,7 @@ function makeNode(document, tag, className) {
   };
   Object.defineProperty(node, "innerHTML", {
     get() { return node.__innerHTML || ""; },
-    set(value) { node.__innerHTML = String(value); node.children = parseHtml(document, node.__innerHTML); },
+    set(value) { node.__innerHTML = String(value); node.children = parseHtml(document, node.__innerHTML); for (const child of node.children) child.parentNode = node; },
   });
   return node;
 }
@@ -55,7 +81,7 @@ function makeNode(document, tag, className) {
 // are ignored; the toolbar code only queries by class.
 function parseHtml(document, html) {
   const roots = [];
-  const stack = [{ tag: "#root", children: roots }];
+  const stack = [{ tag: "#root", node: { children: roots } }];
   const re = /<(\/?)([a-z]+)([^>]*)>/gi;
   let match;
   while ((match = re.exec(html))) {
@@ -69,8 +95,15 @@ function parseHtml(document, html) {
     const classMatch = /class="([^"]*)"/.exec(attrs);
     if (!classMatch) continue;
     const node = makeNode(document, tag, classMatch[1]);
-    stack[stack.length - 1].children.push(node);
-    if (!match[0].endsWith("/>")) stack.push({ tag, children: node.children });
+    const pressed = /aria-pressed="([^"]*)"/.exec(attrs);
+    if (pressed) node.setAttribute("aria-pressed", pressed[1]);
+    if (/\shidden(\s|$)/.test(attrs)) node.hidden = true;
+    const disabledMatch = /\sdisabled(\s|$)/.test(attrs);
+    if (disabledMatch) node.disabled = true;
+    const parent = stack[stack.length - 1].node;
+    parent.children.push(node);
+    node.parentNode = parent;
+    if (!match[0].endsWith("/>")) stack.push({ tag, node });
   }
   return roots;
 }
@@ -189,5 +222,76 @@ describe("editor find toolbar focus", () => {
     equal(replaceCalls.length, 1, "one replaceRange call");
     ok(replaceCalls[0].opts && replaceCalls[0].opts.keepFocus === true, "replaceRange passed keepFocus");
     equal(replaceCalls[0].value, "zeta");
+  });
+});
+
+describe("editor find toggle behavior", () => {
+  // Header/float buttons are real toggles now. They resolve their editor
+  // wrapper via closest(), but create() pins the api on the mount container
+  // above the wrapper, so the static toggle must walk parentNode to find it.
+  function makeFloatEditor() {
+    const { ctx, HerdrEditor, document } = loadEditor();
+    const stub = { getValue: () => "alpha beta", setValue() {}, selectRange() {}, replaceRange() {} };
+    ctx.HerdrCodeMirror = { create: () => stub };
+    const parent = makeNode(document, "div", "notes-editor");
+    HerdrEditor.create({ parent, readonly: false, content: "alpha beta", hideHeader: true });
+    const wrapper = parent.querySelector(".herdr-editor");
+    const toggle = parent.querySelector(".herdr-editor-find-toggle");
+    const toolbar = parent.querySelector(".herdr-editor-find");
+    const query = parent.querySelector(".herdr-editor-find-query");
+    return { ctx, HerdrEditor, document, parent, wrapper, toggle, toolbar, query };
+  }
+
+  it("renders the floating toggle on headerless mounts with aria-pressed off", () => {
+    const { wrapper, toggle, toolbar } = makeFloatEditor();
+    ok(wrapper, "herdr-editor wrapper rendered");
+    ok(toggle, "floating find toggle rendered");
+    ok(toggle.className.includes("herdr-editor-find-float"), "toggle carries the float class");
+    equal(toggle.getAttribute("aria-pressed"), "false", "aria-pressed starts false");
+    ok(toolbar, "find toolbar rendered");
+    equal(toolbar.hidden, true, "toolbar starts hidden");
+  });
+
+  it("static toggleFind toggles through the mount api and syncs aria", () => {
+    const { HerdrEditor, wrapper, toggle, toolbar } = makeFloatEditor();
+    // The button's inline handler resolves closest('.herdr-editor').
+    ok(HerdrEditor.toggleFind(wrapper), "first toggle showed the toolbar");
+    equal(toolbar.hidden, false, "toolbar visible after first toggle");
+    equal(toggle.getAttribute("aria-pressed"), "true", "aria-pressed synced on show");
+    ok(HerdrEditor.toggleFind(wrapper), "second toggle hid the toolbar");
+    equal(toolbar.hidden, true, "toolbar hidden after second toggle");
+    equal(toggle.getAttribute("aria-pressed"), "false", "aria-pressed synced on hide");
+  });
+
+  it("static openFind stays show-only", () => {
+    const { HerdrEditor, wrapper, toolbar } = makeFloatEditor();
+    ok(HerdrEditor.openFind(wrapper));
+    equal(toolbar.hidden, false, "openFind showed the toolbar");
+    ok(HerdrEditor.openFind(wrapper));
+    equal(toolbar.hidden, false, "openFind never hides the toolbar");
+  });
+
+  it("Ctrl+F toggles the toolbar; query focus re-selects instead of hiding", () => {
+    const { document, parent, toggle, toolbar, query } = makeFloatEditor();
+    // The shortcut handler is bound on the mount container (create's parent).
+    const fire = (opts) => {
+      const event = Object.assign({ preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} }, opts);
+      parent.handlers.keydown(event);
+    };
+    // First press shows.
+    fire({ key: "f", ctrlKey: true, metaKey: false, altKey: false });
+    equal(toolbar.hidden, false, "first Ctrl+F shows the toolbar");
+    equal(toggle.getAttribute("aria-pressed"), "true", "aria synced after shortcut show");
+    // Query focused: second press re-selects, does not hide.
+    query.value = "al";
+    query.focus();
+    fire({ key: "f", ctrlKey: true, metaKey: false, altKey: false });
+    equal(toolbar.hidden, false, "Ctrl+F with query focused keeps the toolbar open");
+    equal(document.activeElement, query, "focus stayed in the query");
+    // Focus outside the query: third press hides.
+    document.activeElement = null;
+    fire({ key: "f", ctrlKey: true, metaKey: false, altKey: false });
+    equal(toolbar.hidden, true, "Ctrl+F with focus elsewhere hides the toolbar");
+    equal(toggle.getAttribute("aria-pressed"), "false", "aria synced after shortcut hide");
   });
 });

@@ -58,6 +58,7 @@ const MOBILE_SCRIPTS = [
   "/assets/mobile/worktrees.js",
   "/assets/mobile/directory-picker.js",
   "/assets/mobile/file-browser.js",
+  "/assets/mobile/notes.js",
   "/assets/mobile/settings.js",
   "/assets/mobile/search.js",
   "/assets/mobile/git.js",

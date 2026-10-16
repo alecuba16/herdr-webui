@@ -220,6 +220,7 @@
       if (screen === "terminal") return "Terminal";
       if (screen === "git") return "Git";
       if (screen === "files") return "Files";
+      if (screen === "notes") return "Notes";
       if (screen !== "more") return screen;
       // Only surface attention pills for statuses the CSS styles; an unknown
       // agent status would render an unstyled "unknown" pill permanently.
@@ -245,6 +246,7 @@
         { screen: "panels", title: "Panels", meta: workspace ? `${state.tabs.length} terminal tabs` : "No workspace open", icon: "▦" },
         { screen: "worktrees", title: "Worktrees", meta: "Discover, open, or create Git worktrees", icon: "wt" },
         { screen: "sessions", title: "Sessions", meta: `${state.session || "default"} · ${sessionBackendLabel(currentSessionBackend())}`, icon: "se" },
+        { screen: "notes", title: "Notes", meta: "Shared scratchpad, synced with every client", icon: "✎" },
         { screen: "settings", title: "Settings", meta: "Appearance, search, alerts, terminal", icon: "⚙" },
       ];
       return items.map((item) => `<button class="mobile-drawer-item" onclick="HerdrMobile.openDrawerTarget('${item.screen}')"><span class="mobile-drawer-icon" aria-hidden="true">${escapeHtml(item.icon)}</span><span class="mobile-drawer-text"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.meta)}</small></span></button>`).join("");
