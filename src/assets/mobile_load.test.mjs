@@ -2817,11 +2817,16 @@ describe("mobile bundle load", () => {
     // The toolbar div sits in the shell right before the nav (grid
     // auto-placement puts it visually ABOVE the nav bar); the Keys fab is
     // a fixed-position shell button, terminal-only.
-    const shellIdx = source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden></div>');
+    const shellIdx = source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden><div id="mobileToolbarKeys"></div></div>');
     const navIdx = source.indexOf('<nav class="mobile-nav">');
     ok(shellIdx > -1 && shellIdx < navIdx, "toolbar markup comes before the nav markup (renders above it)");
     match(source, /id="mobileKeysFab" class="mobile-keys-fab" hidden aria-label="Toggle terminal keys, drag to move" aria-pressed="false"/);
-    ok(source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden></div>') < source.indexOf('<div class="mobile-sheet-backdrop" id="mobileTabsBackdrop"'), "toolbar sits between screen and overlays");
+    ok(source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden><div id="mobileToolbarKeys"></div></div>') < source.indexOf('<div class="mobile-sheet-backdrop" id="mobileTabsBackdrop"'), "toolbar sits between screen and overlays");
+    // The keybar writes into its own #mobileToolbarKeys child so toolbar
+    // repaints never wipe the composer bar panels.syncComposer mounts
+    // into the toolbar after it.
+    match(source, /el\("mobileToolbarKeys"\)/);
+    match(source, /function syncComposer\(screen\) \{[\s\S]*?const toolbar = el\("mobileToolbar"\);[\s\S]*?mountInto\(toolbar, wantedBar\)/);
     // Toolbar content mirrors the keybar builder, and syncs per render.
     match(source, /function syncToolbar\(\) \{[\s\S]*?mobilePanels\.renderKeyBar\(\)/);
     // Toggle flips visibility, persists, and updates the fab aria-pressed.

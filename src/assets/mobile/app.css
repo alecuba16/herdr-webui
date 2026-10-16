@@ -149,6 +149,29 @@ body.light {
 .mobile-toolbar[hidden] {
   display: none;
 }
+/* The chat composer bar mounts inside the Keys toolbar (panels.js
+   syncComposer), so the Keys toggle owns its visibility too: a folded
+   toolbar gives the terminal the full shell height. The hairline and
+   panel background come from the toolbar, so the composer drops its own
+   border-top and blends into the toolbar stack. */
+.mobile-toolbar .mobile-composer {
+  border-top: 0;
+  background: transparent;
+  padding: 6px 8px 8px;
+}
+/* Keyboard-open hides the toolbar row with the rest of the chrome, but a
+   composer mid-typing must stay reachable: the focus-within exemption
+   keeps the toolbar (and only it) mounted while its textarea holds
+   focus, so the user never types into a hidden input. The companion
+   :has() rule gives the app grid its auto row back, otherwise the
+   re-displayed toolbar would land in an implicit row clipped away by
+   overflow: hidden. */
+body.mobile-keyboard-open .mobile-app:has(.mobile-toolbar:focus-within) {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+body.mobile-keyboard-open .mobile-toolbar:focus-within {
+  display: block;
+}
 /* Floating Keys button: draggable pill inside the terminal view. A tap
    toggles the keybar toolbar (aria-pressed mirrors that state), a drag
    moves the pill and the position persists. Fixed-positioned against the

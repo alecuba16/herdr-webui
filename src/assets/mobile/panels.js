@@ -123,22 +123,29 @@
       else if (node.parentNode) node.parentNode.removeChild(node);
     }
 
-    function mountAfterTerminal(shell, html) {
-      if (!shell) return;
+    function mountInto(parent, html) {
+      if (!parent) return;
       const wrap = document.createElement("div");
       wrap.innerHTML = html;
-      while (wrap.firstElementChild) shell.appendChild(wrap.firstElementChild);
+      while (wrap.firstElementChild) parent.appendChild(wrap.firstElementChild);
     }
 
     function syncComposer(screen) {
       const deps = globalThis.HerdrMobileComposerDeps;
       if (!deps) return;
+      // The composer bar lives inside the Keys toolbar (#mobileToolbar),
+      // not the terminal shell: the Keys toggle now owns its visibility,
+      // so a folded toolbar gives the terminal the full shell height and
+      // the default terminal screen stays clean. The prompt card keeps
+      // mounting into the terminal shell because it is a dialog over the
+      // pane, not a toolbar row.
+      const toolbar = el("mobileToolbar");
       const wantedBar = deps.renderComposerBar();
       const existingBar = el("mobileComposer");
       if (!wantedBar) {
         if (existingBar) removeNode(existingBar);
       } else if (!existingBar) {
-        mountAfterTerminal(el("terminalShell"), wantedBar);
+        mountInto(toolbar, wantedBar);
       }
       if (deps.syncComposer) deps.syncComposer();
       const existingCard = el("mobilePromptCard");
