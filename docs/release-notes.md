@@ -85,6 +85,13 @@
   rescan only fires when at least one deletion succeeded; on total
   failure the scan result and selection survive for a retry, and
   per-item failures surface in the cleanup error list either way.
+- The TUI cleanup view keeps pace with the webui flow. `Space`
+  marks/unmarks rows (the webui checkbox, `*` prefix like the log
+  view), and the `x` confirm accepts `y` (delete pending) or `yb`
+  (also delete each marked worktree's branch when one exists,
+  offered only in that case). Deletes run per repository in parallel
+  with the same safe-then-force retry and the same `deleted > 0`
+  rescan gate; per-item failures land on the error line.
 
 ## 0.7.8 Release Notes
 - Fixed `closeWorkspaceOnLastTerminal`: closing a workspace's last panel

@@ -4941,7 +4941,10 @@ fn renders_content_search_results_conflicts_cleanup_and_prompt_subjects() {
     app.git_panel.cleanup_repos = vec![crate::tui::panels::git::CleanupRepo {
         path: "/repo".to_string(),
         branches: vec!["old-branch".to_string()],
-        worktrees: vec!["stale-worktree".to_string()],
+        worktrees: vec![crate::tui::panels::git::CleanupWorktree {
+            path: "stale-worktree".to_string(),
+            branch: None,
+        }],
     }];
     let cleanup = draw(&app, 150, 30);
     assert!(cleanup.contains("Cleanup"));
@@ -5845,7 +5848,7 @@ fn round4_render_small_area_diff_and_status_variants() {
 fn final_round_prompt_titles_options_and_refresh_error_arms() {
     assert_eq!(
         PromptKind::ConfirmCleanupDelete.title(),
-        "Delete cleanup item (y)"
+        "Delete cleanup items (y / yb)"
     );
     assert_eq!(
         PromptKind::CreateTag.hint(),

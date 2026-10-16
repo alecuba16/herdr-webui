@@ -1508,15 +1508,27 @@ fn render_git_conflicts(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
 }
 
 /// Cleanup view (webui cleanup tab): repos with merged branches and
-/// stale worktrees; x deletes the selected entry after a y-confirm,
-/// p prunes the selected repo's worktree metadata.
+/// stale worktrees; Space marks/unmarks (webui checkbox), x deletes
+/// the pending items after a y-confirm (yb also deletes branches),
+/// B prunes the selected repo's worktree metadata.
 fn render_git_cleanup(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let panel = &app.git_panel;
     let items = panel
         .cleanup_items()
         .into_iter()
         .map(|item| {
+            // Webui checkbox state: marked rows show `*` (same mark
+            // gesture as the log view's shift-click selection).
+            let mark = if panel.cleanup_marked.contains(&item.key()) {
+                Span::styled(
+                    "* ",
+                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled("  ", Style::default().fg(p.muted))
+            };
             ListItem::new(Line::from(vec![
+                mark,
                 Span::styled(
                     format!("{} ", item.kind.label()),
                     Style::default().fg(p.teal),
@@ -1538,9 +1550,12 @@ fn render_git_cleanup(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palet
     }
     let root = panel.cleanup_root.as_deref().unwrap_or("");
     let title = if root.is_empty() {
-        " Cleanup · x delete · B prune ".to_string()
+        " Cleanup · Space mark · x delete · B prune ".to_string()
     } else {
-        format!(" Cleanup · {} · x delete · B prune ", truncate(root, 32))
+        format!(
+            " Cleanup · {} · Space mark · x delete · B prune ",
+            truncate(root, 32)
+        )
     };
     let list = List::new(items)
         .block(panel_block(&title, p))
@@ -1620,11 +1635,20 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             .selected_workspace()
             .map(|workspace| workspace.label.clone())
             .unwrap_or_default(),
-        crate::tui::PromptKind::ConfirmCleanupDelete => app
-            .git_panel
-            .selected_cleanup_item()
-            .map(|item| format!("{} {}", item.kind.label(), item.name))
-            .unwrap_or_default(),
+        crate::tui::PromptKind::ConfirmCleanupDelete => {
+            let items = app.git_panel.cleanup_pending_items();
+            let branch_too = app.git_panel.cleanup_branch_option_available();
+            let summary = match items.len() {
+                0 => "no cleanup item".to_string(),
+                1 => format!("{} {}", items[0].kind.label(), items[0].name),
+                n => format!("{n} cleanup items"),
+            };
+            if branch_too {
+                format!("{summary} (yb also deletes branches)")
+            } else {
+                summary
+            }
+        }
         // Log action prompts: show the selected commit as the subject.
         crate::tui::PromptKind::CreateTag
         | crate::tui::PromptKind::ResetMode
