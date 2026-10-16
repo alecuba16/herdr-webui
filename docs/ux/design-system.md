@@ -141,12 +141,15 @@ keeping stale colors, and mirrors `selectionBackground` as
   the pointerdown guard). Mobile-native sheets (`.mobile-sheet`, z 91)
   remain for file browser action sheets.
 - **Terminal key bar** (`.mobile-keybar`): Esc/Tab/one-shot Ctrl/arrows/^C
-  above the terminal shell. Bytes go through `sendInputData` (strip helpers
-  intact); every button uses `onmousedown preventDefault` so wterm's
-  textarea keeps focus. Ctrl arms via `aria-pressed` on the key plus a
-  module-level flag (source of truth), disarms after any key send and on
-  screen leave. Hides with header/nav while the OS keyboard is open
-  (`body.mobile-keyboard-open`).
+  above the terminal shell, inside the Keys toolbar (`#mobileToolbar`).
+  Bytes go through `sendInputData` (strip helpers intact); every button
+  uses `onmousedown preventDefault` so wterm's textarea keeps focus.
+  Ctrl arms via `aria-pressed` on the key plus a module-level flag
+  (source of truth), disarms after any key send and on screen leave.
+  Hides with header/nav while the OS keyboard is open
+  (`body.mobile-keyboard-open`). The chat composer bar mounts in the
+  same toolbar, so the Keys toggle owns both; a focused composer keeps
+  the toolbar mounted while typing (`:focus-within` exemption).
 - **Drawer navigation** (`.mobile-drawer`, z 92/93): secondary screens
   (Agents/Panels/Worktrees/Files/Git/Sessions/Settings) slide from the left
   over a scrim; 24px edge swipe opens, 56px left swipe closes, scrim tap
