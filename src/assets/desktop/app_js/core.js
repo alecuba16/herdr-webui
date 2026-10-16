@@ -764,6 +764,8 @@ function helpAndShortcutsBodyHtml() {
           <div class="shortcut-row"><kbd>Cmd/Ctrl+V</kbd><span>Paste clipboard text into terminal through bounded WebSocket chunks.</span></div>
           <div class="shortcut-row"><kbd>Double-click</kbd><span>Rename workspaces and panels.</span></div>
           <div class="shortcut-row"><kbd>Cmd/Middle-click</kbd><span>Open workspace, agent, or panel link using browser tab behavior.</span></div>
+          <div class="shortcut-row"><kbd>Middle-click on a tab</kbd><span>Close the tab. Terminals and files with unsaved changes ask first.</span></div>
+          <div class="shortcut-row"><kbd>◑ / ✎ / ◔</kbd><span>Markdown strip button: switch a markdown file between rendered preview, source, and edit.</span></div>
         </div>
         </div>
       `;

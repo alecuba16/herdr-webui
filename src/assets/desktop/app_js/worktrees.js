@@ -1152,7 +1152,16 @@ async function closeTab(id) {
   // Guard: double-click on the ✕ button must not fire two close requests
   // (the second would close the next panel too).
   if (closeTabInFlight) return;
-  if (!confirm(`Close panel "${panelCloseName(id)}"?`)) return;
+  // Terminals are the one tab kind worth a confirm: a dead shell is a
+  // lost session. The question modal (Enter confirms, Esc cancels)
+  // replaces the old blocking confirm(); file and git tabs close silent.
+  const okToClose = await askQuestion({
+    title: "Close panel",
+    message: `Close panel "${panelCloseName(id)}"?`,
+    confirmText: "Close",
+    danger: true,
+  });
+  if (!okToClose) return;
   // Capture the workspace before the close: with
   // closeWorkspaceOnLastTerminal the workspace follows its last panel down.
   const closingTab = (state.tabs || []).find((tab) => tab.tab_id === id) ||

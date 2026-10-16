@@ -148,7 +148,7 @@ function paneGitMountId(viewKey) {
 function paneGitTabButtonHtml(tabId, isActive) {
   const viewKey = gitTabViewKey(tabId);
   const label = gitTabLabel(viewKey);
-  return `<button class="pane-tab git ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="git" data-tab-id="${escapeAttr(tabId)}" draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" title="${escapeAttr(gitTabTitle(viewKey))}" onclick="activatePaneTab('${escapeAttr(tabId)}')"><span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close Git view" aria-label="Close Git view" onclick="event.stopPropagation();closeGitTab('${escapeAttr(viewKey)}')">✕</span></button>`;
+  return `<button class="pane-tab git ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="git" data-tab-id="${escapeAttr(tabId)}" draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" title="${escapeAttr(gitTabTitle(viewKey))}" onclick="activatePaneTab('${escapeAttr(tabId)}')" onauxclick="paneTabAuxClick(event,'git','${escapeAttr(viewKey)}')"><span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close Git view" aria-label="Close Git view" onclick="event.stopPropagation();closeGitTab('${escapeAttr(viewKey)}')">✕</span></button>`;
 }
 
 function paneEditorMountId(path) {
@@ -170,7 +170,7 @@ function paneEditorTabButtonHtml(tabId, isActive) {
   const dirty = !!(file && file.dirty && file.editing);
   const label = editorTabLabel(path);
   const encoded = encodeURIComponent(path);
-  return `<button class="pane-tab editor ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="editor" data-tab-id="${escapeAttr(tabId)}" draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" title="${escapeAttr(path)}" onclick="activatePaneTab('${escapeAttr(tabId)}')">${dirty ? '<span class="pane-tab-dirty" title="Modified" aria-hidden="true">●</span>' : ""}<span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close file" aria-label="Close file" onclick="event.stopPropagation();closeEditorTab('${escapeAttr(encoded)}')">✕</span></button>`;
+  return `<button class="pane-tab editor ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="editor" data-tab-id="${escapeAttr(tabId)}" draggable="true" ondragstart="paneTabDragStart(event)" ondragend="paneTabDragEnd()" title="${escapeAttr(path)}" onclick="activatePaneTab('${escapeAttr(tabId)}')" onauxclick="paneTabAuxClick(event,'editor','${escapeAttr(encoded)}')">${dirty ? '<span class="pane-tab-dirty" title="Modified" aria-hidden="true">●</span>' : ""}<span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close file" aria-label="Close file" onclick="event.stopPropagation();closeEditorTab('${escapeAttr(encoded)}')">✕</span></button>`;
 }
 
 function panesStateFor(id = state.ws) {
@@ -951,7 +951,7 @@ function paneTabButtonHtml(tab, isActive, index, tabs) {
   if (state.editingTab === tab.tab_id)
     return `<span class="pane-tab terminal ${isActive ? "active" : ""}" role="tab"><input class="tab-rename-input" value="${escapeAttr(state.editingTabValue)}"${inputAttrs("done")} onmousedown="event.stopPropagation()" onclick="event.stopPropagation()" onblur="commitTabRename('${escapeAttr(tab.tab_id)}')" oninput="state.editingTabValue=this.value" onkeydown="tabRenameKey(event,'${escapeAttr(tab.tab_id)}')"></span>`;
   const label = panelVisibleLabel(tab, index, tabs);
-  return `<button class="pane-tab terminal ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="terminal" data-tab-id="${escapeAttr(tab.tab_id)}" onclick="activatePaneTab('${escapeAttr(tab.tab_id)}')" ondblclick="event.preventDefault();startTabRename('${escapeAttr(tab.tab_id)}','${escapeAttr(panelRenameInitialLabel(tab))}')" title="${escapeAttr(tabHoverTitle(tab))}">${paneTabStatusHtml(tab)}<span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close panel" aria-label="Close panel" onclick="event.stopPropagation();closeTab('${escapeAttr(tab.tab_id)}')">✕</span></button>`;
+  return `<button class="pane-tab terminal ${isActive ? "active" : ""}" role="tab" aria-selected="${isActive ? "true" : "false"}" data-tab-kind="terminal" data-tab-id="${escapeAttr(tab.tab_id)}" onclick="activatePaneTab('${escapeAttr(tab.tab_id)}')" onauxclick="paneTabAuxClick(event,'terminal','${escapeAttr(tab.tab_id)}')" ondblclick="event.preventDefault();startTabRename('${escapeAttr(tab.tab_id)}','${escapeAttr(panelRenameInitialLabel(tab))}')" title="${escapeAttr(tabHoverTitle(tab))}">${paneTabStatusHtml(tab)}<span class="pane-tab-label">${escapeHtml(label)}</span><span class="pane-tab-close" role="button" tabindex="0" title="Close panel" aria-label="Close panel" onclick="event.stopPropagation();closeTab('${escapeAttr(tab.tab_id)}')">✕</span></button>`;
 }
 
 function paneTerminalTabButtonHtml(tab, isActive) {
@@ -960,8 +960,20 @@ function paneTerminalTabButtonHtml(tab, isActive) {
   return paneTabButtonHtml(tab, isActive, tabs.indexOf(tab), tabs);
 }
 
+// Middle-click close for pane tabs, all three kinds. It routes to the
+// same close paths as the strip ✕ (confirmations included), so the
+// middle button can never bypass a dirty-file or terminal confirm.
+function paneTabAuxClick(event, kind, rawId) {
+  if (!event || event.button !== 1) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (kind === "editor") { void closeEditorTab(rawId); return; }
+  if (kind === "git") { closeGitTab(rawId); return; }
+  if (kind === "terminal") { void closeTab(decodeURIComponentSafe(rawId)); return; }
+}
+
 function paneStripControlsHtml(leaf) {
-  return `<span class="pane-strip-controls">${paneNewTabControlHtml(leaf)}${paneSplitControlsHtml(leaf)}${panePaneControlsHtml(leaf)}${paneFindControlHtml(leaf)}${paneMenuControlHtml()}</span>`;
+  return `<span class="pane-strip-controls">${paneNewTabControlHtml(leaf)}${paneSplitControlsHtml(leaf)}${panePaneControlsHtml(leaf)}${paneFindControlHtml(leaf)}${paneMarkdownControlHtml(leaf)}${paneMenuControlHtml()}</span>`;
 }
 
 // The editor tab's find/replace control lives in the strip next to the
@@ -972,6 +984,52 @@ function paneFindControlHtml(leaf) {
   if (!activeTab || !isEditorTab(activeTab)) return "";
   const encoded = leaf.paneId ? encodeURIComponent(leaf.paneId) : "";
   return `<button class="pane-strip-button pane-find-button" title="Find / replace" aria-label="Find / replace" onclick="event.preventDefault();openPaneEditorFind('${escapeAttr(encoded)}')">⌕</button>`;
+}
+
+// Markdown editor tabs get one eye control beside the find button: it
+// cycles rendered preview, raw source, and edit. Non-markdown files and
+// read-only mounts (partial previews) keep the strip without it.
+function paneMarkdownControlHtml(leaf) {
+  const activeTab = leaf && leaf.active;
+  if (!activeTab || !isEditorTab(activeTab)) return "";
+  const path = editorTabPath(activeTab);
+  const registry = window.HerdrFileBrowser;
+  const file = registry && registry.editorFor ? registry.editorFor(path) : null;
+  // Binary and truncated mounts (placeholder or partial preview) are
+  // view-only: no eye control for them.
+  if (!file || file.binary || file.truncated) return "";
+  const markdown = !!(window.HerdrEditor && window.HerdrEditor.isMarkdownPath && window.HerdrEditor.isMarkdownPath(path));
+  if (!markdown) return "";
+  const encoded = encodeURIComponent(path);
+  if (file.editing) {
+    // Edit mode: the eye returns to the rendered preview. Dirty drafts
+    // stay in the draft buffer; going back is the same unsaved state the
+    // tab close would confirm about.
+    return `<button class="pane-strip-button pane-md-button" title="Show rendered preview" aria-label="Show rendered preview" onclick="event.preventDefault();paneMarkdownPreview('${escapeAttr(encoded)}')">◔</button>`;
+  }
+  const viewingSource = !!file.previewSource;
+  return viewingSource
+    ? `<button class="pane-strip-button pane-md-button" title="Edit markdown source" aria-label="Edit markdown source" onclick="event.preventDefault();paneMarkdownEdit('${escapeAttr(encoded)}')">✎</button>`
+    : `<button class="pane-strip-button pane-md-button" title="Show markdown source" aria-label="Show markdown source" onclick="event.preventDefault();paneMarkdownSource('${escapeAttr(encoded)}')">◑</button>`;
+}
+
+// Preview: leave edit/source and mount the rendered view. Dirty drafts
+// are preserved in the entry so a later Edit returns to them.
+function paneMarkdownPreview(encodedPath) {
+  const registry = window.HerdrFileBrowser;
+  if (registry && registry.setMarkdownPreview) registry.setMarkdownPreview(decodeURIComponentSafe(encodedPath));
+}
+
+// Source view: the raw text, still read-only.
+function paneMarkdownSource(encodedPath) {
+  const registry = window.HerdrFileBrowser;
+  if (registry && registry.setMarkdownSource) registry.setMarkdownSource(decodeURIComponentSafe(encodedPath));
+}
+
+// Edit the raw markdown text.
+function paneMarkdownEdit(encodedPath) {
+  const registry = window.HerdrFileBrowser;
+  if (registry && registry.setMarkdownEdit) registry.setMarkdownEdit(decodeURIComponentSafe(encodedPath));
 }
 
 // Resolve the pane's mounted editor and hand it to HerdrEditor.openFind.

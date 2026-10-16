@@ -1538,3 +1538,105 @@ function findPaneElementForLeaf(nodes, leaf) {
   const first = container.querySelector(".workspace-pane");
   return first && first.dataset.paneId === leaf.paneId ? first : null;
 }
+
+// Middle-click close: every tab kind carries an onauxclick that routes to
+// the same close path as its ✕ (confirm included), so the middle button
+// can never bypass a terminal or dirty-file confirmation.
+test("pane strip tabs carry middle-click close routing", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const closed = [];
+  ctx.closeEditorTab = async (id) => closed.push(["editor", id]);
+  ctx.closeGitTab = (id) => closed.push(["git", id]);
+  ctx.closeTab = async (id) => closed.push(["terminal", id]);
+  const panes = ctx.HerdrWorkspacePanes;
+
+  ctx.state.tabs = [{ tab_id: "tab_2" }];
+  ctx.state.tab = "tab_2";
+  panes.renderWorkspacePanes();
+  const root = panes.paneRoot();
+  root.tabs.push("editor:src/readme.md");
+  root.tabs.push(panes.gitTabId("status"));
+  root.active = "tab_2";
+  panes.renderWorkspacePanes();
+
+  const strip = nodes.container.querySelector(".pane-tab-strip");
+  assert.ok(strip.innerHTML.includes('onauxclick="paneTabAuxClick(event,\'terminal\',\'tab_2\')"'),
+    "terminal tab carries the auxclick close");
+  assert.ok(strip.innerHTML.includes(`onauxclick="paneTabAuxClick(event,'editor','${encodeURIComponent("src/readme.md")}')"`),
+    "editor tab carries the auxclick close");
+  assert.ok(strip.innerHTML.includes(`onauxclick="paneTabAuxClick(event,'git','status')"`),
+    "git tab carries the auxclick close");
+
+  // The dispatcher only reacts to button 1 (middle); other buttons are
+  // ignored, and each kind lands on its own close path.
+  ctx.paneTabAuxClick({ button: 0, preventDefault() {}, stopPropagation() {} }, "terminal", "tab_2");
+  assert.equal(closed.length, 0, "left click is not a close");
+  ctx.paneTabAuxClick({ button: 1, preventDefault() {}, stopPropagation() {} }, "terminal", "tab_2");
+  ctx.paneTabAuxClick({ button: 1, preventDefault() {}, stopPropagation() {} }, "editor", encodeURIComponent("src/readme.md"));
+  ctx.paneTabAuxClick({ button: 1, preventDefault() {}, stopPropagation() {} }, "git", "status");
+  assert.deepEqual(closed.map(([kind]) => kind), ["terminal", "editor", "git"],
+    "middle click routes each kind to its close path");
+  assert.deepEqual(closed[1], ["editor", encodeURIComponent("src/readme.md")], "editor id stays encoded");
+});
+
+// Markdown strip control: the eye button mirrors the file's view state
+// (preview shows the source toggle, source shows edit, edit shows
+// preview). Binary and truncated files get no control.
+test("markdown strip control follows the file view state", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-1");
+  const views = [];
+  ctx.window.HerdrFileBrowser = {
+    editorFor: (path) => (path === "src/readme.md"
+      ? { path, editing: false, previewSource: false, binary: false, truncated: false, dirty: false }
+      : { path, editing: false, previewSource: false, binary: false, truncated: true, dirty: false }),
+    setMarkdownPreview: (path) => views.push(["preview", path]),
+    setMarkdownSource: (path) => views.push(["source", path]),
+    setMarkdownEdit: (path) => views.push(["edit", path]),
+  };
+  ctx.window.HerdrEditor = { isMarkdownPath: (path) => /\.md$/.test(path) };
+  const panes = ctx.HerdrWorkspacePanes;
+
+  ctx.state.tabs = [{ tab_id: "tab_2" }];
+  ctx.state.tab = "tab_2";
+  panes.renderWorkspacePanes();
+  const root = panes.paneRoot();
+  root.tabs.push("editor:src/readme.md");
+  root.tabs.push("editor:src/huge.md");
+  root.active = "editor:src/readme.md";
+  panes.renderWorkspacePanes();
+
+  const strip = nodes.container.querySelector(".pane-tab-strip");
+  assert.ok(strip.innerHTML.includes("paneMarkdownSource('src%2Freadme.md')"),
+    "preview state offers the source view");
+
+  // Source state offers edit; edit state offers preview. The eye is
+  // active-tab only, and the truncated file never gets one at all.
+  ctx.window.HerdrFileBrowser.editorFor = (path) => (path === "src/readme.md"
+    ? { path, editing: false, previewSource: true, binary: false, truncated: false, dirty: false }
+    : { path, editing: false, previewSource: false, binary: false, truncated: true, dirty: false });
+  root.active = "editor:src/huge.md";
+  panes.renderWorkspacePanes();
+  assert.ok(!strip.innerHTML.includes("paneMarkdownEdit"), "truncated markdown shows no edit toggle");
+  assert.ok(!strip.innerHTML.includes("paneMarkdownSource"), "truncated markdown shows no eye at all");
+  root.active = "editor:src/readme.md";
+  panes.renderWorkspacePanes();
+  assert.ok(strip.innerHTML.includes("paneMarkdownEdit('src%2Freadme.md')"),
+    "source state offers edit");
+
+  ctx.window.HerdrFileBrowser.editorFor = (path) => ({ path, editing: true, previewSource: false, binary: false, truncated: false, dirty: false });
+  panes.renderWorkspacePanes();
+  assert.ok(strip.innerHTML.includes("paneMarkdownPreview('src%2Freadme.md')"),
+    "edit state offers the preview");
+
+  // The strip dispatchers forward to the registry API.
+  ctx.paneMarkdownSource(encodeURIComponent("src/readme.md"));
+  ctx.paneMarkdownEdit(encodeURIComponent("src/readme.md"));
+  ctx.paneMarkdownPreview(encodeURIComponent("src/readme.md"));
+  assert.deepEqual(views, [
+    ["source", "src/readme.md"],
+    ["edit", "src/readme.md"],
+    ["preview", "src/readme.md"],
+  ], "strip dispatchers land on the registry view setters");
+});
