@@ -2681,3 +2681,276 @@ test("return to the workspace folder drops the rail park and refetches the works
   const lastCall = calls.filter((call) => call.path === "/api/git-ui/status").pop();
   assert.equal(lastCall.params.get("cwd"), "/tmp/ws-repo", "the return refetched the workspace folder");
 });
+
+// ---- cleanup delete flow (branch-too option, parallelism, rescan gate) --
+
+function cleanupScanFixture() {
+  return {
+    repos: [
+      {
+        path: "/tmp/demo-repo",
+        branches: [{ name: "main", current: true, checked_out: false, pushed: true }],
+        worktrees: [
+          { path: "/tmp/demo-repo", primary: true, branch: "main" },
+          { path: "/tmp/wt-a", primary: false, branch: "wt-a-branch", pushed: false },
+        ],
+      },
+      {
+        path: "/tmp/other-repo",
+        branches: [{ name: "feature-x", current: false, checked_out: false, pushed: false }],
+        worktrees: [
+          { path: "/tmp/other-repo", primary: true, branch: "main" },
+          { path: "/tmp/wt-b", primary: false, branch: null, detached: true },
+        ],
+      },
+    ],
+  };
+}
+
+async function bootCleanup(scanPayload) {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/cleanup-scan": () => scanPayload(),
+    "/api/git-ui/worktree-remove": () => ({ ok: true }),
+    "/api/git-ui/branch-delete": () => ({ ok: true }),
+  });
+  await booted.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  // Reach the cleanup tab through the same public path the tab strip uses.
+  booted.ui.tab("cleanup");
+  await booted.ui.scanCleanup();
+  return booted;
+}
+
+function cleanupPosts(calls, path, from = 0) {
+  return calls.slice(from).filter((call) => call.path === path);
+}
+
+function postBody(call) {
+  return JSON.parse(call.init.body);
+}
+
+test("cleanup confirm modal offers the delete-branch option only when a selected worktree has a branch", async () => {
+  let scan = cleanupScanFixture();
+  const booted = await bootCleanup(() => scan);
+  const { ui } = booted;
+
+  // One worktree with a branch selected: the option renders, pluralized for one.
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/demo-repo|1"), true);
+  ui.openCleanupDeleteConfirm();
+  let html = ctxHtml(booted);
+  assert.match(html, /gitUiCleanupDeleteBranch/);
+  assert.match(html, /Delete branch of 1 selected worktree too/);
+  assert.ok(!/Delete branch of 1 selected worktrees too/.test(html), "singular noun for a single worktree");
+  ui.cancelCleanupDelete();
+
+  // A detached worktree (branch null) selected alone: no option row.
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/demo-repo|1"), false);
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/other-repo|1"), true);
+  ui.openCleanupDeleteConfirm();
+  html = ctxHtml(booted);
+  assert.ok(!/gitUiCleanupDeleteBranch/.test(html), "detached worktree shows no branch option");
+  ui.cancelCleanupDelete();
+
+  // Branch items alone do not unlock the option either.
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/other-repo|1"), false);
+  ui.toggleCleanupSelection(encodeURIComponent("branch|/tmp/other-repo|feature-x"), true);
+  ui.openCleanupDeleteConfirm();
+  html = ctxHtml(booted);
+  assert.ok(!/gitUiCleanupDeleteBranch/.test(html), "branch-only selection shows no branch option");
+  ui.cancelCleanupDelete();
+
+  // Reopening always starts unchecked: the toggle handler flips it, a
+  // fresh open must reset the safe default.
+  ui.toggleCleanupSelection(encodeURIComponent("branch|/tmp/other-repo|feature-x"), false);
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/demo-repo|1"), true);
+  ui.toggleCleanupDeleteBranch(true);
+  ui.openCleanupDeleteConfirm();
+  assert.ok(!/gitUiCleanupDeleteBranch" type="checkbox" checked/.test(ctxHtml(booted)), "reopen resets the option to unchecked");
+});
+
+test("cleanup delete with branch option posts worktree-remove then branch-delete per item", async () => {
+  let scan = cleanupScanFixture();
+  const booted = await bootCleanup(() => scan);
+  const { ui, calls } = booted;
+
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/demo-repo|1"), true);
+  ui.openCleanupDeleteConfirm();
+  ui.toggleCleanupDeleteBranch(true);
+  const before = calls.length;
+  await ui.confirmCleanupDelete();
+  const removed = cleanupPosts(calls, "/api/git-ui/worktree-remove", before);
+  const branchesDeleted = cleanupPosts(calls, "/api/git-ui/branch-delete", before);
+  assert.equal(removed.length, 1, "one worktree-remove POST");
+  assert.equal(branchesDeleted.length, 1, "branch-delete POST follows for the worktree branch");
+  assert.ok(removed[0] && branchesDeleted[0] && calls.indexOf(removed[0]) < calls.indexOf(branchesDeleted[0]),
+    "worktree-remove runs before branch-delete");
+  const branchBody = postBody(branchesDeleted[0]);
+  assert.equal(branchBody.cwd, "/tmp/demo-repo");
+  assert.equal(branchBody.branch, "wt-a-branch");
+  assert.equal(branchBody.confirmed, true);
+  // The rescan fired because the deletion succeeded.
+  assert.ok(cleanupPosts(calls, "/api/git-ui/cleanup-scan", before).length > 0, "successful delete rescans");
+});
+
+test("cleanup delete without the branch option removes only the worktree", async () => {
+  let scan = cleanupScanFixture();
+  const booted = await bootCleanup(() => scan);
+  const { ui, calls } = booted;
+
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/demo-repo|1"), true);
+  ui.openCleanupDeleteConfirm();
+  const before = calls.length;
+  await ui.confirmCleanupDelete();
+  assert.equal(cleanupPosts(calls, "/api/git-ui/worktree-remove", before).length, 1);
+  assert.equal(cleanupPosts(calls, "/api/git-ui/branch-delete", before).length, 0, "no branch delete without the option");
+});
+
+test("cleanup delete retries with force when Git requires it", async () => {
+  let scan = cleanupScanFixture();
+  let forceNeeded = true;
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/cleanup-scan": () => scan,
+    "/api/git-ui/worktree-remove": () => {
+      if (forceNeeded) {
+        forceNeeded = false;
+        return { error: "cannot remove a working tree containing modified or untracked files, use --force to delete it" };
+      }
+      return { ok: true };
+    },
+    "/api/git-ui/branch-delete": () => ({ ok: true }),
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  ui.tab("cleanup");
+  await ui.scanCleanup();
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/demo-repo|1"), true);
+  ui.openCleanupDeleteConfirm();
+  const before = calls.length;
+  await ui.confirmCleanupDelete();
+  const removed = cleanupPosts(calls, "/api/git-ui/worktree-remove", before);
+  assert.equal(removed.length, 2, "safe delete retried with force");
+  assert.equal(postBody(removed[0]).force, false);
+  assert.equal(postBody(removed[1]).force, true);
+});
+
+test("cleanup delete runs repos in parallel but items of one repo sequentially", async () => {
+  // Two repos, two worktrees each. Deferred handlers gate the calls so
+  // the test observes real interleaving: repo A's first item blocks
+  // until repo B's first item started, proving the groups run in
+  // parallel, while a repo's own items never overlap.
+  const scan = {
+    repos: [
+      {
+        path: "/tmp/para-a",
+        branches: [],
+        worktrees: [
+          { path: "/tmp/para-a", primary: true, branch: "main" },
+          { path: "/tmp/wt-a1", primary: false, branch: "a1" },
+          { path: "/tmp/wt-a2", primary: false, branch: "a2" },
+        ],
+      },
+      {
+        path: "/tmp/para-b",
+        branches: [],
+        worktrees: [
+          { path: "/tmp/para-b", primary: true, branch: "main" },
+          { path: "/tmp/wt-b1", primary: false, branch: "b1" },
+          { path: "/tmp/wt-b2", primary: false, branch: "b2" },
+        ],
+      },
+    ],
+  };
+  const started = [];
+  const gates = {};
+  const gate = (id) => new Promise((resolve) => { gates[id] = resolve; });
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/cleanup-scan": () => scan,
+    "/api/git-ui/worktree-remove": (params, init) => {
+      const body = JSON.parse(init.body);
+      started.push(body.path);
+      // a1 blocks until b1 has started: with sequential deletes this
+      // deadlocks the promise chain, with parallel groups it passes.
+      if (body.path === "/tmp/wt-a1") return gate("a1").then(() => ({ ok: true }));
+      if (gates.a1) gates.a1();
+      return { ok: true };
+    },
+    "/api/git-ui/branch-delete": () => ({ ok: true }),
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  ui.tab("cleanup");
+  await ui.scanCleanup();
+  ui.selectAllCleanup();
+  ui.openCleanupDeleteConfirm();
+  const before = calls.length;
+  await ui.confirmCleanupDelete();
+  assert.equal(cleanupPosts(calls, "/api/git-ui/worktree-remove", before).length, 4, "all four worktrees removed");
+  // Sequential within each repo: a2 starts only after a1 finished.
+  assert.ok(started.indexOf("/tmp/wt-a2") > started.indexOf("/tmp/wt-a1"), "items of one repo run in order");
+});
+
+test("cleanup delete skips the rescan when every deletion fails", async () => {
+  let scan = cleanupScanFixture();
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/cleanup-scan": () => scan,
+    "/api/git-ui/worktree-remove": () => ({ error: "not a working tree" }),
+    "/api/git-ui/branch-delete": () => ({ error: "not a git repository" }),
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  ui.tab("cleanup");
+  await ui.scanCleanup();
+  const before = calls.length;
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/demo-repo|1"), true);
+  ui.toggleCleanupSelection(encodeURIComponent("branch|/tmp/other-repo|feature-x"), true);
+  ui.openCleanupDeleteConfirm();
+  await ui.confirmCleanupDelete();
+  assert.equal(cleanupPosts(calls, "/api/git-ui/worktree-remove", before).length, 1, "the worktree attempt fired");
+  assert.equal(cleanupPosts(calls, "/api/git-ui/branch-delete", before).length, 1, "the branch attempt fired");
+  assert.equal(cleanupPosts(calls, "/api/git-ui/cleanup-scan", before).length, 0, "no rescan when nothing was deleted");
+  // The failure list lands in the cleanup error surface.
+  assert.match(ctxHtml(booted), /not a working tree/);
+});
+
+test("cleanup delete rescans on partial failure and keeps the error message", async () => {
+  let scan = cleanupScanFixture();
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/cleanup-scan": () => scan,
+    "/api/git-ui/worktree-remove": (params, init) => {
+      const body = JSON.parse(init.body);
+      return body.path === "/tmp/wt-a" ? { error: "cannot remove a working tree with running processes" } : { ok: true };
+    },
+    "/api/git-ui/branch-delete": () => ({ ok: true }),
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  ui.tab("cleanup");
+  await ui.scanCleanup();
+  const before = calls.length;
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/demo-repo|1"), true);
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/other-repo|1"), true);
+  ui.openCleanupDeleteConfirm();
+  await ui.confirmCleanupDelete();
+  assert.equal(cleanupPosts(calls, "/api/git-ui/worktree-remove", before).length, 2);
+  assert.ok(cleanupPosts(calls, "/api/git-ui/cleanup-scan", before).length > 0, "partial success still rescans");
+  assert.match(ctxHtml(booted), /running processes/, "the surviving failure is reported");
+});

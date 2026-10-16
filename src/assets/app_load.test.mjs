@@ -1578,6 +1578,16 @@ describe("app bundle load", () => {
     match(gitCleanupSource, /cleanupVisibleBranches\(repo\)\.map\(\(branch\) => renderCleanupBranch/);
     match(gitCleanupSource, /for \(const branch of cleanupVisibleBranches\(repo\)\)/);
     match(gitCleanupSource, /No removable local branches/);
+    // Delete-selected flow: the confirm modal offers the branch-too
+    // option, deletions retry with force when Git demands it, and the
+    // rescan only runs when at least one deletion succeeded.
+    match(gitCleanupSource, /function deleteCleanupItemWithRetry\(item\)/);
+    match(gitCleanupSource, /branch: worktree\.branch \|\| null/);
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Delete branch of \$\{worktreeBranches\} selected \$\{noun\} too/);
+    match(gitUiSource, /toggleCleanupDeleteBranch\(checked\)/);
+    match(gitUiSource, /state\.cleanupConfirmDeleteBranch = false;/);
+    match(gitUiSource, /if \(deleted > 0\) await this\.scanCleanup\(\);/);
+    match(gitUiSource, /await Promise\.all\(\[\.\.\.groups\.values\(\)\]/);
     const cleanupRs = readFileSync(new URL("../git_ui/cleanup.rs", import.meta.url), "utf8");
     const branchRs = readFileSync(new URL("../git_ui/branch.rs", import.meta.url), "utf8");
     match(cleanupRs, /\.filter\(\|worktree\| !worktree\.primary\)/);

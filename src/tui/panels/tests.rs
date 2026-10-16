@@ -6,11 +6,12 @@
 use super::files::parse_entries;
 use super::git::{
     parse_blame_authors, parse_branch, parse_cleanup_repos, parse_commit,
-    parse_diff_lines_with_meta, parse_git_files, CleanupItemKind, CleanupRepo, LogScope,
-    LOG_MAX_LIMIT, LOG_PAGE_SIZE,
+    parse_diff_lines_with_meta, parse_git_files, test_support, CleanupItem, CleanupItemKind,
+    CleanupRepo, CleanupWorktree, LogScope, LOG_MAX_LIMIT, LOG_PAGE_SIZE,
 };
 use super::*;
 use crate::tui::web_api::WebApiClient;
+use crate::tui::PromptKind;
 use serde_json::{json, Value};
 
 fn edit_key(ch: char, ctrl: bool) -> crossterm::event::KeyEvent {
@@ -1019,7 +1020,13 @@ fn parse_cleanup_repos_filters_current_branches_and_primary_worktrees() {
     // The current branch is never offered for deletion.
     assert_eq!(repos[0].branches, vec!["merged-feature"]);
     // The primary worktree (the repo itself) is not removable.
-    assert_eq!(repos[0].worktrees, vec!["/code/wt-stale"]);
+    assert_eq!(
+        repos[0].worktrees,
+        vec![CleanupWorktree {
+            path: "/code/wt-stale".to_string(),
+            branch: None
+        }]
+    );
     assert!(repos[1].branches.is_empty());
 
     // Missing shapes parse to empty.
@@ -1033,7 +1040,10 @@ fn cleanup_items_flatten_branches_before_worktrees() {
     panel.cleanup_repos = vec![CleanupRepo {
         path: "/code/repo".to_string(),
         branches: vec!["one".to_string(), "two".to_string()],
-        worktrees: vec!["/code/wt".to_string()],
+        worktrees: vec![CleanupWorktree {
+            path: "/code/wt".to_string(),
+            branch: None,
+        }],
     }];
     let items = panel.cleanup_items();
     assert_eq!(items.len(), 3);
@@ -1045,6 +1055,145 @@ fn cleanup_items_flatten_branches_before_worktrees() {
     panel.cleanup_selected = 2;
     let selected = panel.selected_cleanup_item().unwrap();
     assert_eq!(selected.kind, CleanupItemKind::Worktree);
+}
+
+#[test]
+fn cleanup_mark_and_pending_items_follow_marks() {
+    let mut panel = GitPanel::new("/repo");
+    panel.cleanup_repos = vec![CleanupRepo {
+        path: "/code/repo".to_string(),
+        branches: vec!["one".to_string(), "two".to_string()],
+        worktrees: vec![CleanupWorktree {
+            path: "/code/wt".to_string(),
+            branch: Some("feature".to_string()),
+        }],
+    }];
+
+    // No marks: pending is the cursor item only.
+    assert_eq!(panel.cleanup_pending_items().len(), 1);
+
+    // Toggle two items on; pending follows the marks, not the cursor.
+    panel.cleanup_toggle_mark();
+    panel.cleanup_selected = 1;
+    panel.cleanup_toggle_mark();
+    let pending = panel.cleanup_pending_items();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].name, "one");
+    assert_eq!(pending[1].name, "two");
+
+    // Toggle the first mark off; pending shrinks.
+    panel.cleanup_toggle_mark();
+    assert_eq!(panel.cleanup_pending_items().len(), 1);
+
+    // Marks never survive a successful scan (keys embed paths and
+    // names), so a stale mark can never target an unseen row.
+    let (api, server) = one_shot_json_server(|_, _| json!({ "repos": [] }));
+    let _ = panel.cleanup_scan(&api, "/code/repo");
+    server.join().unwrap();
+    assert!(panel.cleanup_marked.is_empty());
+}
+
+#[test]
+fn cleanup_branch_option_available_only_for_worktrees_with_branch() {
+    let mut panel = GitPanel::new("/repo");
+    panel.cleanup_repos = vec![CleanupRepo {
+        path: "/code/repo".to_string(),
+        branches: vec!["merged".to_string()],
+        worktrees: vec![CleanupWorktree {
+            path: "/code/wt".to_string(),
+            branch: Some("feature".to_string()),
+        }],
+    }];
+    // Cursor on a branch: no branch-too option.
+    assert!(!panel.cleanup_branch_option_available());
+    // Cursor on the worktree with a branch: option offered.
+    panel.cleanup_selected = 1;
+    assert!(panel.cleanup_branch_option_available());
+    // A detached worktree offers nothing.
+    panel.cleanup_repos[0].worktrees[0].branch = None;
+    assert!(!panel.cleanup_branch_option_available());
+}
+
+#[test]
+fn cleanup_scan_clears_marks_and_failures() {
+    let mut panel = GitPanel::new("/repo");
+    panel.cleanup_marked = vec!["branch|/code/repo|one".to_string()];
+    let (api, server) = one_shot_json_server(|_, _| json!({ "repos": [] }));
+    let _ = panel.cleanup_scan(&api, "/code/repo");
+    server.join().unwrap();
+    assert!(panel.cleanup_marked.is_empty());
+}
+
+#[test]
+fn cleanup_rescan_gate_keeps_scan_on_total_failure() {
+    let mut panel = GitPanel::new("/repo");
+    panel.cleanup_root = Some("/code/repo".to_string());
+    let api = WebApiClient::new("127.0.0.1", 1);
+    // Total failure (deleted == 0, failures > 0) must keep the scan.
+    let result = test_support::rescan_gate(&mut panel, &api, 0, 1);
+    assert!(result.is_ok());
+    // A success (deleted > 0) rescans; the stub has no server so the
+    // scan call errors, but the gate itself fired.
+    let result = test_support::rescan_gate(&mut panel, &api, 1, 0);
+    assert!(result.is_err());
+}
+
+#[test]
+fn cleanup_item_key_uses_kind_repo_and_name() {
+    let item = CleanupItem {
+        repo: "/code/repo".to_string(),
+        name: "/code/wt".to_string(),
+        kind: CleanupItemKind::Worktree,
+        branch: None,
+        current: false,
+    };
+    assert_eq!(item.key(), "worktree|/code/repo|/code/wt");
+}
+
+#[test]
+fn cleanup_delete_selected_records_per_item_failures() {
+    let mut panel = GitPanel::new("/repo");
+    panel.cleanup_root = Some("/code/repo".to_string());
+    panel.cleanup_repos = vec![CleanupRepo {
+        path: "/code/repo".to_string(),
+        branches: vec!["one".to_string()],
+        worktrees: vec![],
+    }];
+    panel.cleanup_marked = vec!["branch|/code/repo|one".to_string()];
+    // The port-1 stub rejects every delete: the run must keep the
+    // scan (total failure), record the per-item failure, and report
+    // zero deletions.
+    let api = WebApiClient::new("127.0.0.1", 1);
+    let deleted = panel
+        .cleanup_delete_selected(&api, false)
+        .expect("total failure still returns Ok");
+    assert_eq!(deleted, 0);
+    assert_eq!(panel.cleanup_failures().len(), 1);
+    assert!(panel.cleanup_failures()[0].contains("one"));
+    assert!(panel.cleanup_failures()[0].contains("branch"));
+}
+
+#[test]
+fn cleanup_confirm_prompt_accepts_y_and_yb() {
+    // Mirrors the TuiApp confirm gate: `y` deletes, `yb` deletes with
+    // branches, anything else cancels.
+    assert_eq!(
+        PromptKind::ConfirmCleanupDelete.title(),
+        "Delete cleanup items (y / yb)"
+    );
+    assert!(PromptKind::ConfirmCleanupDelete.needs_confirm());
+    assert!(PromptKind::ConfirmCleanupDelete.hint().contains("yb"));
+}
+
+#[test]
+fn force_retry_needles_match_git_refusals() {
+    assert!(test_support::force_retry_probe(
+        "error: The branch 'x' is not fully merged."
+    ));
+    assert!(test_support::force_retry_probe(
+        "fatal: 'x' contains modified or untracked files, use --force to delete it"
+    ));
+    assert!(!test_support::force_retry_probe("error: no such branch"));
 }
 
 #[test]
@@ -1941,10 +2090,12 @@ fn cleanup_delete_and_prune_use_cleanup_routes() {
     let api = WebApiClient::new("127.0.0.1", port);
     let mut panel = GitPanel::new("/repo");
     panel.cleanup_scan(&api, "/root").unwrap();
-    let branch = panel.cleanup_items()[0].clone();
-    panel.cleanup_delete(&api, &branch).unwrap();
-    let worktree = panel.cleanup_items()[1].clone();
-    panel.cleanup_delete(&api, &worktree).unwrap();
+    // Unmarked delete acts on the cursor row (webui single-row delete
+    // shares the confirm modal): cursor on the branch first.
+    panel.cleanup_delete_selected(&api, false).unwrap();
+    // Then the worktree, through the same pending flow.
+    panel.cleanup_selected = 1;
+    panel.cleanup_delete_selected(&api, false).unwrap();
     panel.cleanup_selected = 1;
     panel.cleanup_prune(&api).unwrap();
 

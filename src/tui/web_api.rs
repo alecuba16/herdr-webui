@@ -1130,9 +1130,16 @@ impl WebApiClient {
     }
 
     /// `/api/git-ui/branch-delete` with explicit confirmation (the TUI
-    /// collects its own confirmation before calling).
-    pub fn git_cleanup_branch_delete(&self, cwd: &str, branch: &str) -> Result<Value, WebApiError> {
-        let body = json!({ "cwd": cwd, "branch": branch, "force": false, "confirmed": true });
+    /// collects its own confirmation before calling). `force` mirrors
+    /// the webui safe-then-force retry: the first attempt runs with
+    /// `git branch -d`, the retry only when Git demanded force.
+    pub fn git_cleanup_branch_delete(
+        &self,
+        cwd: &str,
+        branch: &str,
+        force: bool,
+    ) -> Result<Value, WebApiError> {
+        let body = json!({ "cwd": cwd, "branch": branch, "force": force, "confirmed": true });
         self.call(
             "POST",
             "/api/git-ui/branch-delete",
@@ -1142,9 +1149,15 @@ impl WebApiClient {
         )
     }
 
-    /// `/api/git-ui/worktree-remove` for cleanup.
-    pub fn git_cleanup_worktree_remove(&self, cwd: &str, path: &str) -> Result<Value, WebApiError> {
-        let body = json!({ "cwd": cwd, "path": path, "confirmed": true });
+    /// `/api/git-ui/worktree-remove` for cleanup. `force` mirrors the
+    /// webui safe-then-force retry semantics.
+    pub fn git_cleanup_worktree_remove(
+        &self,
+        cwd: &str,
+        path: &str,
+        force: bool,
+    ) -> Result<Value, WebApiError> {
+        let body = json!({ "cwd": cwd, "path": path, "force": force, "confirmed": true });
         self.call(
             "POST",
             "/api/git-ui/worktree-remove",
@@ -2176,7 +2189,7 @@ mod tests {
         });
         let client = WebApiClient::new("127.0.0.1", port);
         let err = client
-            .git_cleanup_branch_delete("/repo", "old")
+            .git_cleanup_branch_delete("/repo", "old", false)
             .unwrap_err();
         assert_eq!(err.to_string(), "WebUI API error 404");
         handle.join().unwrap();

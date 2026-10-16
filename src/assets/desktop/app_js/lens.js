@@ -29,6 +29,11 @@
   // same-pane guard in onPaneChanged: refresh() polls re-run
   // connectTerminal on the unchanged pane and must not reset follow.
   let lastPaneKey = null;
+  // The pane moved away from a chat pane while the lens was open, so
+  // onPaneChanged force-closed it (an agent-less panel must not show
+  // the previous pane's chat). The user never closed it: coming back
+  // to a chat-capable pane reopens the lens.
+  let autoReopenOnChatPane = false;
 
   // ---- structured mode state (all keyed by pane id) ----
   // One poll loop, one rendered conversation, one pending bubble: the
@@ -1862,6 +1867,9 @@
   function setLens(active) {
     const wasActive = lensActive;
     lensActive = !!active;
+    // A user-driven open or close consumes the reopen intent: only the
+    // force-off path in onPaneChanged re-arms it (after this clear).
+    autoReopenOnChatPane = false;
     const node = overlay();
     if (!node) return;
     node.hidden = !lensActive;
@@ -1971,11 +1979,41 @@
     lastRenderedLineCount = -1;
     // Force-off BEFORE the first render tick on the new pane: a jcode
     // pane's frozen transcript must never flash over an incoming shell
-    // pane (round 11 force-off timing). Positive evidence only: with no
-    // agent row for the pane (agents list empty, backend offline, or a
-    // pane not yet snapshotted) the gate cannot judge — the lens keeps
-    // its scrollback behavior instead of snapping shut mid-navigation.
-    if (lensActive && activeAgentRow() && !chatSupported()) setLens(false);
+    // pane (round 11 force-off timing). Two ways to know the new pane
+    // cannot host the chat view: a positive agent row that fails the
+    // gate (null/unsupported agent_session), or a lens that was in
+    // structured chat mode (chatPane anchored) landing on a pane with
+    // no row at all. connectTerminal fires this after refresh()
+    // landed the fresh agents list, so a missing row means the pane
+    // has no agent (a split sibling shell), not a not-yet-snapshotted
+    // one. Keeping the lens open there left the previous pane's chat
+    // view riding the shell onto the agent-less panel. A pane the
+    // gate can neither green nor disprove (no row, never anchored:
+    // scrollback mode) keeps the old excursion contract: the lens
+    // survives the switch.
+    if (lensActive && !chatSupported() && (activeAgentRow() || chatPane !== null)) {
+      // Structured mode is leaving a chat pane the user never closed:
+      // remember to reopen when a chat-capable pane returns. Scrollback
+      // force-offs (row-positive) never auto-reopen, nobody opened a
+      // chat there. setLens(false) clears the flag, so arm it after.
+      const wasStructured = chatPane !== null;
+      // The lens closes before the lensActive block below, so the stale
+      // pane's session meta must clear here too: the composer must not
+      // keep the previous pane's model label over the agent-less pane.
+      clearStaleSessionMeta();
+      setLens(false);
+      autoReopenOnChatPane = wasStructured;
+    }
+    // The other side of the force-off above: the user left the chat
+    // pane open and the excursion closed it, so returning to a
+    // chat-capable pane reopens it (their click, not ours, opened it
+    // the first time). An explicit Terminal click clears nothing here
+    // because the flag was already consumed at the reopen before any
+    // close could follow it.
+    if (!lensActive && autoReopenOnChatPane && chatSupported()) {
+      autoReopenOnChatPane = false;
+      setLens(true);
+    }
     if (lensActive) {
       const paneId = activePaneId();
       if (chatSupported() && paneId !== chatPane) resetChatState(paneId);
