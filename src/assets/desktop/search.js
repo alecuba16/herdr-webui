@@ -538,7 +538,7 @@ function renderSearchPalette() {
     content: actionsOnly || opts.searchContentEnabled === false ? "" : renderWorkspaceContentSection(),
   };
   const recent = actionsOnly ? [] : recentWorkspaceCandidates(searchPaletteState.recent);
-  container.innerHTML = sections.actions + (actionsOnly ? searchActionHints(actions) : "") + (actionsOnly ? "" : renderRecentSection(recent)) + (actionsOnly ? "" : order.map((key) => sections[key] || "").join(""));
+  container.innerHTML = sections.actions + searchActionHints(actions) + (actionsOnly ? "" : renderRecentSection(recent)) + (actionsOnly ? "" : order.map((key) => sections[key] || "").join(""));
 }
 
 function renderRecentSection(recent, callbacks = {}) {

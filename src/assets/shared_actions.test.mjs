@@ -103,6 +103,12 @@ test("candidates '>' filter lists actions only, desktop surface", () => {
   const mobile = registry.candidates("", { platform: "mobile" }).map((a) => a.action);
   assert.ok(!mobile.includes("toggle-sidebar"));
   assert.ok(mobile.includes("toggle-theme"));
+  // Settings appears exactly once on mobile (the old duplicate row is gone).
+  assert.equal(
+    mobile.filter((id) => id === "settings").length,
+    1,
+    `mobile settings must be unique: ${mobile}`,
+  );
   // ">sess" narrows to the sessions tool only.
   const narrowed = registry.candidates(">sess", { platform: "desktop" }).map((a) => a.action);
   assert.equal(JSON.stringify(narrowed), JSON.stringify(["sessions"]));

@@ -4512,6 +4512,34 @@ describe("app bundle load", () => {
     );
   });
 
+  it("persisted rebound chords load on boot into tooltips and palette hints", () => {
+    const ctx = context();
+    // Seed localStorage exactly like a previous session's saveOptions() did,
+    // then boot. The resolver registration and every hint surface must
+    // read the persisted maps, not the defaults.
+    ctx.localStorage.setItem(
+      "herdr-web-options",
+      JSON.stringify({
+        globalShortcutPrefix: "Ctrl+X",
+        webuiShortcuts: { sidebar: "KeyJ", settings: "KeyK" },
+      }),
+    );
+    vm.runInContext(source, ctx);
+
+    const button = ctx.document.getElementById("sidebarToggle");
+    match(button.title, /Hide sidebar \(Ctrl\+X then J\)/);
+    const hintHtml = vm.runInContext(
+      `HerdrActionRegistry.kbdHint(HerdrActionRegistry.action('toggle-sidebar'))`,
+      ctx,
+    );
+    match(hintHtml, /Ctrl\+X then J/);
+    const settingsHint = vm.runInContext(
+      `HerdrActionRegistry.kbdHint(HerdrActionRegistry.action('settings'))`,
+      ctx,
+    );
+    match(settingsHint, /Ctrl\+X then K/);
+  });
+
   it("renders collapsed sidebar agent counters", () => {
     const ctx = context();
     ctx.localStorage.setItem("herdr-web-sidebar-collapsed", "1");
