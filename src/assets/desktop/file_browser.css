@@ -17,6 +17,9 @@
   background: var(--panel);
   min-width: 0;
   overflow: auto;
+  /* Full-tree re-renders restore scrollTop. Disable Chrome anchoring so
+     it does not adjust that position again. */
+  overflow-anchor: none;
 }
 .file-browser-head {
   border-bottom: 1px solid var(--border);
@@ -270,6 +273,19 @@
 }
 .herdr-editor.cm {
   height: 100%;
+}
+/* Row 3 is the pane's minmax track. min-height: 0 lets the preview shrink
+   so its own overflow:auto can scroll instead of clipping. */
+.herdr-markdown-preview-mount {
+  display: flex;
+  flex-direction: column;
+  grid-row: 3;
+  min-height: 0;
+  min-width: 0;
+}
+.herdr-markdown-preview-mount .herdr-markdown-body {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .herdr-editor-mount {
   min-height: 0;

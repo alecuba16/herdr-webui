@@ -71,7 +71,7 @@
   document.addEventListener("click", () => {
     if (!state.contextMenu) return;
     state.contextMenu = null;
-    if (state.open) render();
+    if (state.open) renderPreservingScroll();
   });
   document.addEventListener("click", (event) => {
     const target = event.target && event.target.closest ? event.target : event.target && event.target.parentElement;
@@ -86,7 +86,7 @@
     if (!state.open || !state.contextMenu || event.key !== "Escape") return;
     event.preventDefault();
     state.contextMenu = null;
-    render();
+    renderPreservingScroll();
   }, true);
   window.addEventListener("keydown", (event) => {
     if (!state.open || !state.contextMenu || !event || event.defaultPrevented) return;
@@ -1078,7 +1078,7 @@
     } catch (error) {
       state.error = error.message || String(error);
     } finally {
-      if (state.open) render();
+      if (state.open) renderPreservingScroll();
     }
   }
 
@@ -1314,7 +1314,7 @@
       event.preventDefault();
       event.stopPropagation();
       state.contextMenu = { x: event.clientX, y: event.clientY, path: decodeURIComponent(encodedPath), kind };
-      render();
+      renderPreservingScroll();
       return false;
     },
     menuAction(action) { return handleMenuAction(action); },
