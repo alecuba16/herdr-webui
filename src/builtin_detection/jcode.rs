@@ -314,6 +314,54 @@ pub(crate) fn jcode_blocked(bottom8: &str) -> bool {
         && contains_any(bottom8, &["deny", "reject", "cancel"])
 }
 
+/// Brand-word test for the `contains("jcode")` arm of
+/// `detect_agent_label_from_text`. A bare substring match branded any shell
+/// whose prompt showed a path through a jcode-named directory
+/// (`~/.jcode/scratch/...`, `~/Documents/projects/jcode`) as a jcode agent,
+/// so a split sibling panel gained a ghost agents row and with it the
+/// Chat|Terminal switch. Real brand mentions ("Welcome to jcode",
+/// a lone `jcode` line) sit on word boundaries; path and identifier
+/// neighbors (`.jcode/`, `jcode.rs`, `jcode-tui`) do not. Input is already
+/// lowercased by the caller.
+pub(crate) fn mentions_jcode_brand(lower: &str) -> bool {
+    let bytes = lower.as_bytes();
+    let mut from = 0;
+    while let Some(found) = lower[from..].find("jcode") {
+        let start = from + found;
+        let end = start + "jcode".len();
+        let before = if start == 0 {
+            None
+        } else {
+            Some(bytes[start - 1])
+        };
+        let after = if end >= bytes.len() {
+            None
+        } else {
+            Some(bytes[end])
+        };
+        if boundary_clean(before) && boundary_clean(after) {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
+/// `Some(byte)` here is a neighbor that makes the occurrence a path segment
+/// or identifier token rather than the brand word: letters, digits, and the
+/// separators `. _ ~ / -` that join file names and paths. A space, newline,
+/// punctuation, or string edge keeps it a word and passes.
+fn boundary_clean(neighbor: Option<u8>) -> bool {
+    match neighbor {
+        None => true,
+        Some(b) => {
+            b.is_ascii()
+                && !b.is_ascii_alphanumeric()
+                && !matches!(b, b'.' | b'_' | b'~' | b'/' | b'-')
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +369,28 @@ mod tests {
 
     fn detect(lower: &str, variant: JcodeDetectionVariant) -> &'static str {
         detect_jcode_status_with_variant(&lower.to_lowercase(), variant)
+    }
+
+    #[test]
+    fn brand_word_matches_real_mentions_but_not_paths() {
+        // Brand mentions on word boundaries.
+        assert!(mentions_jcode_brand("welcome to jcode onboarding"));
+        assert!(mentions_jcode_brand("jcode"));
+        assert!(mentions_jcode_brand("jcode is starting"));
+        assert!(mentions_jcode_brand("running: jcode\r\n"));
+        // Paths and identifiers that only contain the substring.
+        assert!(!mentions_jcode_brand("mac ~/.jcode/scratch/lens_repo %"));
+        assert!(!mentions_jcode_brand("mac ~/documents/projects/jcode %"));
+        assert!(!mentions_jcode_brand("~/.jcode"));
+        assert!(!mentions_jcode_brand("jcode.rs:12: error"));
+        assert!(!mentions_jcode_brand("jcode-tui"));
+        assert!(!mentions_jcode_brand("non-jcode tools"));
+        assert!(!mentions_jcode_brand("jcode_workspace"));
+        // A path neighbor on one side is enough to reject even when the
+        // other side is clean.
+        assert!(!mentions_jcode_brand("cd /opt/jcode\n"));
+        // Unicode neighbor bytes are continuation bytes, never clean.
+        assert!(!mentions_jcode_brand("jcodeü"));
     }
 
     // ---- vanilla idle ----

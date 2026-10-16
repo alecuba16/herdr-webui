@@ -1124,6 +1124,94 @@ describe("lens structured chat mode", () => {
     equal(registry.get("terminalLensSwitch").hidden, true, "switch hidden on the shell pane");
   });
 
+  it("pane switch to an agent-less pane (no agents row) forces the lens off", async () => {
+    // Split-workspace regression: the chat lens is open on a jcode pane,
+    // then the route moves to a sibling panel with no agent row at all
+    // (a plain shell in the same workspace). The agents list is fresh
+    // when connectTerminal fires onPaneChanged, so a missing row means
+    // the pane has no agent: the lens must close instead of riding the
+    // shell onto the agent-less panel.
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    ctx.HerdrLens.insertLensSwitch();
+    equal(ctx.HerdrLens.isActive(), true, "lens open on the jcode pane");
+    const overlayNode = registry.get("terminalLens");
+    equal(overlayNode.hidden, false, "overlay visible before the switch");
+    // Switch to the agent-less sibling: agents list carries NO row for it.
+    ctx.state.pane = "pane_2";
+    ctx.state.agents = [];
+    ctx.HerdrLens.onPaneChanged("session|builtin|ws_1|tab_2|pane_2|term_2");
+    equal(ctx.HerdrLens.isActive(), false, "agent-less pane forces the lens off");
+    equal(overlayNode.hidden, true, "overlay hides with the lens closed");
+    equal(registry.get("terminalLensSwitch").hidden, true, "switch hidden on the agent-less pane");
+  });
+
+  it("excursion to an agent-less pane reopens the lens back on the chat pane", async () => {
+    // The force-off above closes a lens the user opened, not one they
+    // closed. Returning to the chat-capable pane reopens it: their
+    // click, not ours, opened it the first time. A row-positive
+    // force-off (shell row with agent_session null) reopens too: the
+    // lens was in structured mode when it closed.
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    ctx.HerdrLens.insertLensSwitch();
+    // Excursion: pane moves to the agent-less sibling, lens force-closes.
+    ctx.state.pane = "pane_2";
+    ctx.state.agents = [];
+    ctx.HerdrLens.onPaneChanged("session|builtin|ws_1|tab_2|pane_2|term_2");
+    equal(ctx.HerdrLens.isActive(), false, "agent-less pane closes the lens");
+    // Return: the route lands back on the jcode pane with its row.
+    ctx.state.pane = "pane_1";
+    ctx.state.agents = [jcodeRow(resolvableSession)];
+    ctx.HerdrLens.onPaneChanged("session|builtin|ws_1|tab_1|pane_1|term_1");
+    equal(ctx.HerdrLens.isActive(), true, "return to the chat pane reopens the lens");
+    equal(registry.get("terminalLens").hidden, false, "overlay visible again");
+    equal(registry.get("terminalLensSwitch").hidden, false, "switch shows on the chat pane");
+    // The reopened lens re-anchors the structured state to the pane.
+    fireTimers(ctx);
+    await settle();
+    const content = registry.get("terminalLens").querySelector(".terminal-lens-content");
+    ok(content.innerHTML.includes("hello"), "conversation renders after the reopen");
+  });
+
+  it("an explicit Terminal click does not reopen the lens later", async () => {
+    // The reopen flag lives one excursion: the user closed the lens
+    // themselves (Terminal half of the toggle) while sitting on the
+    // agent-less pane, so a later pane switch must not surprise them
+    // with a lens they closed. setLens(false) drops the flag.
+    const { ctx } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    // Excursion: pane 2 is agent-less, the lens force-closes, the flag
+    // arms.
+    ctx.state.pane = "pane_2";
+    ctx.state.agents = [];
+    ctx.HerdrLens.onPaneChanged("session|builtin|ws_1|tab_2|pane_2|term_2");
+    equal(ctx.HerdrLens.isActive(), false, "agent-less pane closes the lens");
+    // The user clicks Terminal on the shell pane: an explicit close
+    // AFTER the force-off.
+    ctx.HerdrLens.setLens(false);
+    // Return to the chat pane: no reopen, the flag died with the click.
+    ctx.state.pane = "pane_1";
+    ctx.state.agents = [jcodeRow(resolvableSession)];
+    ctx.HerdrLens.onPaneChanged("session|builtin|ws_1|tab_1|pane_1|term_1");
+    equal(ctx.HerdrLens.isActive(), false, "explicit close wins over the reopen flag");
+  });
+
   it("empty conversation shows the empty state, not a blank column", async () => {
     const empty = { ...conversationFixture(), turns: [] };
     const { ctx, registry } = makeContext({
