@@ -305,6 +305,12 @@ const {
 } = globalThis.HerdrAppHelpers;
 const browserFavicon = createFaviconNotifier(document);
 let browserFaviconError = false;
+// refreshSidebarToggleTitles (called by the appliers below) reads the
+// `let options` binding that initializes far below; the boot-time
+// applySidebarCollapsed() runs before that line evaluates. Until the flag
+// flips, the sidebar toggles keep plain titles; afterwards every writer
+// path goes through the chord-suffixed tooltip.
+let shortcutTooltipsReady = false;
 const workspaces = el("workspaces"),
   agents = el("agents"),
   tabs = el("tabs");
@@ -367,8 +373,7 @@ function applySidebarCollapsed() {
   if (app) app.classList.toggle("sidebar-collapsed", sidebarCollapsed);
   if (button) {
     button.innerHTML = sidebarToggleHtml();
-    button.title = sidebarCollapsed ? "Show sidebar" : "Hide sidebar";
-    button.setAttribute("aria-label", button.title);
+    refreshSidebarToggleTitles();
   }
   applyRightSidebarCollapsed();
 }
@@ -378,8 +383,7 @@ function applyRightSidebarCollapsed() {
   if (app) app.classList.toggle("right-sidebar-collapsed", rightSidebarCollapsed);
   if (button) {
     button.innerHTML = `<span class="sidebar-toggle-arrow">${rightSidebarCollapsed ? "‹" : "›"}</span>`;
-    button.title = rightSidebarCollapsed ? "Show workspace views" : "Hide workspace views";
-    button.setAttribute("aria-label", button.title);
+    refreshSidebarToggleTitles();
   }
 }
 function sidebarAgentStatusCounts() {
@@ -895,13 +899,37 @@ function setShortcutTooltip(id, title, action) {
   node.setAttribute("aria-label", text);
 }
 
+// Single writer for the two sidebar-toggle titles. The boot-time
+// applySidebarCollapsed() runs before `let options` initializes below, so
+// until options lands the toggles keep plain titles; after that every call
+// (applier, syncShortcutTooltips, settings save) writes the chord-suffixed
+// one. Keeping one writer means render() polls can no longer wipe the
+// chord with a plain title.
+function refreshSidebarToggleTitles() {
+  const sidebarLabel = sidebarCollapsed ? "Show sidebar" : "Hide sidebar";
+  const rightLabel = rightSidebarCollapsed ? "Show workspace views" : "Hide workspace views";
+  if (!shortcutTooltipsReady) {
+    plainTitle("sidebarToggle", sidebarLabel);
+    plainTitle("rightSidebarToggle", rightLabel);
+    return;
+  }
+  setShortcutTooltip("sidebarToggle", sidebarLabel, "sidebar");
+  setShortcutTooltip("rightSidebarToggle", rightLabel, "rightSidebar");
+}
+
+function plainTitle(id, title) {
+  const node = el(id);
+  if (!node) return;
+  node.title = title;
+  node.setAttribute("aria-label", title);
+}
+
 function syncShortcutTooltips() {
   setShortcutTooltip("shortcutsToggle", "Help & Shortcuts", "help");
   setShortcutTooltip("settingsToggle", "Settings", "settings");
   setShortcutTooltip("footerSettingsButton", "Settings", "settings");
   setShortcutTooltip("headerActionsButton", "Search and actions", "search");
-  setShortcutTooltip("sidebarToggle", sidebarCollapsed ? "Show sidebar" : "Hide sidebar", "sidebar");
-  setShortcutTooltip("rightSidebarToggle", rightSidebarCollapsed ? "Show workspace views" : "Hide workspace views", "rightSidebar");
+  refreshSidebarToggleTitles();
   const searchClose = el("searchPaletteClose");
   if (searchClose) searchClose.title = "Close (Esc)";
 }
@@ -1616,6 +1644,13 @@ function normalizeOptions(value) {
   return next;
 }
 let options = normalizeOptions(loadOptions());
+shortcutTooltipsReady = true;
+// The shared action registry renders palette kbd hints through this
+// resolver, so rows show the live configured chord (prefix + key, rebound
+// or not) instead of a stale hardcoded string. Registered after options
+// initializes; kbdHint reads it lazily at render time.
+if (window.HerdrActionRegistry && window.HerdrActionRegistry.setChordResolver)
+  window.HerdrActionRegistry.setChordResolver((id) => shortcutLabel("webuiShortcuts", id));
 // The merged-modal module (settings_sections.js, loaded after this file)
 // renders the in-settings Help & Shortcuts body once it installs, so the
 // editor targets exist before the first applyOptions() pass.

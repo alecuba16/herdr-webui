@@ -15,14 +15,37 @@ function loadRegistry() {
   return ctx.HerdrActionRegistry;
 }
 
-test("kbdHint renders the kbd span for actions with a shortcut", () => {
+test("kbdHint resolves the chord through the registered resolver", () => {
   const registry = loadRegistry();
   const sidebar = registry.action("toggle-sidebar");
-  assert.equal(sidebar.kbd, "g s");
+  // No resolver: the static-kbd fallback stays empty for shortcutId rows.
+  assert.equal(sidebar.kbd, undefined);
+  assert.equal(registry.kbdHint(sidebar), "");
+  registry.setChordResolver((id) => `Ctrl+B then ${id}`);
   assert.equal(
     registry.kbdHint(sidebar),
-    '<span class="kbd" aria-hidden="true">g s</span>',
+    '<span class="kbd" aria-hidden="true">Ctrl+B then sidebar</span>',
   );
+  // The settings action pairs with webuiShortcuts.settings the same way.
+  const settings = registry.action("settings");
+  assert.equal(
+    registry.kbdHint(settings),
+    '<span class="kbd" aria-hidden="true">Ctrl+B then settings</span>',
+  );
+  // Resolver returning nothing (unknown shortcut id) hides the hint.
+  registry.setChordResolver(() => "");
+  assert.equal(registry.kbdHint(sidebar), "");
+  registry.setChordResolver(null);
+  assert.equal(registry.kbdHint(sidebar), "", "null resolver restores the static fallback");
+});
+
+test("registry has no duplicate action ids per surface", () => {
+  const registry = loadRegistry();
+  for (const platform of ["desktop", "mobile"]) {
+    const ids = registry.candidates("", { platform, hasWorkspace: true }).map((a) => a.action);
+    const unique = new Set(ids);
+    assert.equal(ids.length, unique.size, `${platform} candidates must be unique: ${ids}`);
+  }
 });
 
 test("kbdHint returns empty for actions without a shortcut", () => {

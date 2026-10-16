@@ -673,6 +673,42 @@ describe("app bundle load", () => {
     ok(!actionNames("").includes("discover-worktrees"));
     match(source, /function renderSearchRowResult\(result\)/);
     match(source, /function searchResultKey\(result\)/);
+
+    // The help line under the actions list shows live chords: the
+    // registered resolver (boot wires it after options init) feeds
+    // kbdHint, so the sidebar and settings rows carry their configured
+    // prefix chords instead of a stale hardcoded string.
+    const help = ctx.searchActionHints(ctx.searchActionCandidates(""));
+    match(help, /Ctrl\+B then B/);
+    match(help, /Ctrl\+B then S/);
+    ok(!help.includes("g s"), "fake g s chord must be gone");
+    equal(
+      ctx.searchActionHints([]),
+      "",
+      "empty candidates render no help line",
+    );
+
+    // Action rows carry the chord span too: the registry kbdHint feeds
+    // renderSearchRowResult's trailing HTML for action results.
+    const sidebarRowHtml = vm.runInContext(
+      "renderSearchRowResult(HerdrActionRegistry.action('toggle-sidebar'))",
+      ctx,
+    );
+    match(sidebarRowHtml, /<span class="kbd" aria-hidden="true">Ctrl\+B then B<\/span>/);
+    const settingsRowHtml = vm.runInContext(
+      "renderSearchRowResult(HerdrActionRegistry.action('settings'))",
+      ctx,
+    );
+    match(settingsRowHtml, /Ctrl\+B then S/);
+    const themeRowHtml = vm.runInContext(
+      "renderSearchRowResult(HerdrActionRegistry.action('toggle-theme'))",
+      ctx,
+    );
+    equal(
+      themeRowHtml.includes('class="kbd"'),
+      false,
+      "rows without a shortcut carry no chord span",
+    );
   });
 
   it("wires desktop project dashboard and command actions to expected launchers", () => {
@@ -4380,6 +4416,100 @@ describe("app bundle load", () => {
     match(source, /applySidebarCollapsed/);
     match(source, /sidebarAgentStatusCounts/);
     match(source, /sidebar-count/);
+  });
+
+  it("keeps chord tooltips on sidebar toggles across render() polls", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // Boot ran: options initialized, resolver registered, bindings ran
+    // applyOptions() -> syncShortcutTooltips(). The toggle title must carry
+    // the live chord, not the plain label.
+    const button = ctx.document.getElementById("sidebarToggle");
+    match(button.title, /Hide sidebar \(Ctrl\+B then B\)/);
+    match(button.getAttribute("aria-label"), /Ctrl\+B then B/);
+
+    // A render() poll re-applies the collapsed class and toggle markup; the
+    // chord suffix must survive instead of resetting to a plain title.
+    vm.runInContext("render()", ctx);
+    match(button.title, /Hide sidebar \(Ctrl\+B then B\)/);
+    equal(button.getAttribute("aria-label"), button.title);
+
+    // Toggling collapse rewrites titles through the same writer; the chord
+    // follows the new direction-aware label.
+    vm.runInContext("sidebarToggle.click()", ctx);
+    match(button.title, /Show sidebar \(Ctrl\+B then B\)/);
+  });
+
+  it("rebound chords follow into palette hints and toggle tooltips", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // User rebinds the sidebar chord to KeyJ and the prefix to Ctrl+X
+    // through the real settings save path (recordShortcut's body: mutate
+    // options, saveOptions, applyOptions). Both hint surfaces must follow.
+    vm.runInContext(
+      "options.webuiShortcuts = { ...options.webuiShortcuts, sidebar: 'KeyJ' };" +
+        "options.globalShortcutPrefix = 'Ctrl+X';" +
+        "saveOptions(); applyOptions();",
+      ctx,
+    );
+
+    // Palette row hint: the registry resolver reads the live options map.
+    const hintHtml = vm.runInContext(
+      `HerdrActionRegistry.kbdHint(HerdrActionRegistry.action('toggle-sidebar'))`,
+      ctx,
+    );
+    match(hintHtml, /Ctrl\+X then J/);
+
+    // Sidebar toggle tooltip follows the same rebind through the single writer.
+    const button = ctx.document.getElementById("sidebarToggle");
+    match(button.title, /Hide sidebar \(Ctrl\+X then J\)/);
+
+    // Render poll keeps the rebound chord.
+    vm.runInContext("render()", ctx);
+    match(button.title, /Hide sidebar \(Ctrl\+X then J\)/);
+  });
+
+  it("hint toast echoes the rebound chord after the settings save path", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // Rebind prefix and sidebar key through the same save path a settings
+    // change takes, then trigger the learn-by-use toast exactly like the
+    // sidebar toggle click does.
+    vm.runInContext(
+      "options.webuiShortcuts = { ...options.webuiShortcuts, sidebar: 'KeyJ' };" +
+        "options.globalShortcutPrefix = 'Ctrl+X';" +
+        "saveOptions(); applyOptions();",
+      ctx,
+    );
+    vm.runInContext(
+      "showShortcutHintToast('webuiShortcuts', 'sidebar');",
+      ctx,
+    );
+
+    // Same access pattern as the existing toast tests: the mock DOM's
+    // querySelector returns blank elements, so read the module-level toast
+    // nodes the writer populated.
+    equal(
+      vm.runInContext("shortcutHintToastLabelNode.textContent", ctx),
+      "Toggle sidebar",
+    );
+    equal(
+      vm.runInContext("shortcutHintToastPrefixNode.textContent", ctx),
+      "Ctrl+X",
+      "toast prefix follows the rebound global prefix",
+    );
+    equal(
+      vm.runInContext("shortcutHintToastKeyNode.textContent", ctx),
+      "J",
+      "toast key follows the rebound chord",
+    );
+    ok(
+      vm.runInContext("shortcutHintToastNode !== null", ctx),
+      "toast node mounted",
+    );
   });
 
   it("renders collapsed sidebar agent counters", () => {
