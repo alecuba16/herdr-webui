@@ -2129,3 +2129,70 @@ body.mobile-keyboard-open .mobile-keys-fab {
 }
 /* .mobile-worktree-open-actions retired: the merged Choose-folder flow
    renders results inline, no separate open-existing action group. */
+/* Notes screen: rows sit next to their Delete button in a wrapper div
+   (a button cannot nest a button), the row grows, Delete stays a
+   fixed-width tail. .mobile-row span normally clamps to one line with
+   ellipsis, which would truncate the meta line, so the meta gets its own
+   wrap-friendly layout instead. */
+.mobile-note-row-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mobile-note-row-wrap .mobile-note-row {
+  flex: 1;
+  min-width: 0;
+}
+.mobile-note-row .mobile-note-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  overflow: visible;
+  white-space: normal;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.mobile-note-delete {
+  min-height: 30px;
+  min-width: 30px;
+  padding: 4px 10px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+/* Edit head: title input grows, language select keeps a fixed share. */
+.mobile-note-edit-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0;
+}
+.mobile-note-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 9px 11px;
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  background: var(--panel2);
+  color: var(--fg);
+  font-size: 15px;
+  font-weight: 700;
+}
+.mobile-note-language {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 9px 11px;
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  background: var(--panel2);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 700;
+}
+/* The shared editor mounts headerless here; give the host a usable
+   viewport without stealing the whole screen (min-height, not flex). */
+.mobile-note-editor {
+  min-height: 55vh;
+}

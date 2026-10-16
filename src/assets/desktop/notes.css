@@ -152,9 +152,193 @@
   flex-direction: column;
   min-height: 0;
 }
+
+/* The shared editor shell, scoped: file-browser.css is feature-lazy and only
+ * loads with the file browser, so the notes editor cannot borrow its rules.
+ * Headerless mount = the find bar is the only in-flow row before the mount,
+ * so a flex column with a flex-growing mount is what actually fills (the
+ * file-browser grid template expects a header row that notes no longer has). */
 .notes-editor .herdr-editor {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
+  position: relative;
+}
+.notes-editor .herdr-editor-mount {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.notes-editor .cm-editor {
+  height: 100%;
+}
+
+/* CodeMirror's injected theme styles the caret with a generated class prefix
+ * that defaults it to black, invisible on the dark editor background. Scope
+ * with .notes-editor so it wins the cascade and stays theme-aware. */
+.notes-editor .cm-editor .cm-cursor,
+.notes-editor .cm-editor .cm-dropCursor {
+  border-left: 2px solid var(--editor-caret);
+  margin-left: -1px;
+}
+.notes-editor .cm-editor.cm-focused .cm-cursor {
+  border-left-color: var(--editor-caret);
+}
+.notes-editor .cm-editor:not(.cm-focused) .cm-cursor {
+  border-left-color: var(--editor-caret-dim);
+}
+
+/* Fallback textarea shell (CodeMirror absent or load failed). */
+.notes-editor .herdr-editor textarea {
+  background: var(--editor-bg, var(--panel2));
+  border: 0;
+  color: var(--fg);
+  flex: 1 1 auto;
+  font: 12px/1.5 var(--mono-font);
+  margin: 0;
+  min-height: 0;
+  outline: none;
+  overflow: auto;
+  padding: 12px;
+  resize: none;
+  white-space: pre;
+  width: 100%;
+}
+
+/* Find/replace bar and its floating toggle. */
+.notes-editor .herdr-editor-find {
+  align-items: center;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.notes-editor .herdr-editor-find[hidden] {
+  display: none;
+}
+.notes-editor .herdr-editor-find input[type="text"],
+.notes-editor .herdr-editor-find input:not([type]) {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  color: var(--fg);
+  font-size: 12px;
+  min-width: 110px;
+  padding: 5px 7px;
+}
+.notes-editor .herdr-editor-find button {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 8px;
+}
+.notes-editor .herdr-editor-find button:disabled,
+.notes-editor .herdr-editor-find input:disabled {
+  opacity: 0.55;
+}
+.notes-editor .herdr-editor-find label {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 3px;
+}
+.notes-editor .herdr-editor-find-status {
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: auto;
+}
+.notes-editor .herdr-editor-find-toggle {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+.notes-editor .herdr-editor-find-toggle:hover,
+.notes-editor .herdr-editor-find-toggle:focus-visible {
+  background: var(--control-hover, var(--panel2));
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: 0;
+}
+.notes-editor .herdr-editor-find-float {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 4;
+}
+
+/* Cursor position readout on this headerless mount. */
+.notes-editor .herdr-editor-position {
+  background: color-mix(in srgb, var(--panel2) 88%, transparent);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  bottom: 8px;
+  color: var(--muted);
+  font: 11px var(--mono-font);
+  padding: 2px 7px;
+  pointer-events: none;
+  position: absolute;
+  right: 8px;
+  z-index: 4;
+}
+.notes-editor .herdr-editor-position[hidden] {
+  display: none;
+}
+
+/* Notes list head: the sync icon sits last so it pins to the right edge
+ * whether or not the Clear all button is rendered. */
+.notes-panel-head .notes-sync {
+  align-items: center;
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--accent);
+  display: inline-flex;
+  flex: none;
+  font-size: 0;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  width: 28px;
+}
+.notes-panel-head .notes-sync span {
+  background: currentColor;
+  display: inline-block;
+  height: 15px;
+  mask: url("/assets/icons/refresh.svg") center / contain no-repeat;
+  width: 15px;
+}
+.notes-panel-head .notes-sync.spinning span {
+  animation: notes-sync-spin 2s linear;
+}
+.notes-panel-head .notes-sync.failed {
+  border-color: var(--danger, #f38ba8);
+  color: var(--danger, #f38ba8);
+}
+.notes-panel-head .notes-sync:disabled {
+  opacity: 0.55;
+}
+@keyframes notes-sync-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(720deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notes-panel-head .notes-sync.spinning span {
+    animation: none;
+  }
 }

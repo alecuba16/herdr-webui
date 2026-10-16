@@ -7,6 +7,10 @@
 //   - the flushed save lands in the sidecar and survives a client reload
 //     (the restart case is covered by the Rust state-rebuild test)
 //   - per-note delete is confirm-free; Clear all rides the danger confirm
+//   - the notes editor mounts headerless with a floating find toggle,
+//     and find/replace toggles open/closed from the button and Ctrl+F
+//   - the list-head sync icon forces a resync and settles back to idle
+//   - an external DELETE closes a clean editor; dirty edits survive
 import { fetchJson, attach, sleep, makeRecorder, writeReport, writeCrashReport } from "./cdp-driver-helpers.mjs";
 
 const CDP_HTTP = process.env.CDP_HTTP || "http://127.0.0.1:9225";
@@ -108,7 +112,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 800));
     const editorHost = document.getElementById("notesEditor");
     const cm = editorHost && editorHost.querySelector(".cm-editor");
-    const content = "fn main() { println!(\\"e2e\\"); }";
+    const content = 'fn main() { println!("e2e"); }';
     const api = window.HerdrNotesPanel;
     if (api && api.flush) {
       const editorApi = document.getElementById("notesPanel")._herdrEditorApi;
@@ -210,6 +214,128 @@ async function main() {
   let clearInfo = null;
   try { clearInfo = JSON.parse(cleared); } catch { /* below */ }
   record("clear-all rides the danger confirm and rejects cleanly", !!clearInfo && clearInfo.danger === true && clearInfo.notes === 1, cleared.slice(0, 300));
+
+  // n6: the edited view mounts the editor headerless: no note.txt-style
+  // head, but the floating find toggle and Ctrl+F both work as toggles.
+  const headerless = await evalExpr(`(async () => {
+    const nb = document.getElementById("notesNew");
+    if (!nb) return "no-new";
+    nb.click();
+    await new Promise((r) => setTimeout(r, 1200));
+    const host = document.getElementById("notesEditor");
+    if (!host) return "no-host";
+    const head = host.querySelector(".herdr-editor-head");
+    const float = host.querySelector(".herdr-editor-find-float");
+    const find = host.querySelector(".herdr-editor-find");
+    if (!float || !find) return JSON.stringify({ head: !!head, float: !!float, find: !!find });
+    const before = { pressed: float.getAttribute("aria-pressed"), hidden: find.hidden };
+    float.click();
+    await new Promise((r) => setTimeout(r, 200));
+    const opened = { pressed: float.getAttribute("aria-pressed"), hidden: find.hidden, focused: document.activeElement === find.querySelector(".herdr-editor-find-query") };
+    // Ctrl+F with focus already in the query re-selects instead of hiding.
+    // Dispatch with the query as the target (inside .herdr-editor) so the
+    // app-level Ctrl+F fallback does not intercept the keystroke.
+    const query = find.querySelector(".herdr-editor-find-query");
+    query.dispatchEvent(new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 200));
+    const requery = { hidden: find.hidden, stillFocused: document.activeElement === query };
+    float.click();
+    await new Promise((r) => setTimeout(r, 200));
+    const closed = { pressed: float.getAttribute("aria-pressed"), hidden: find.hidden };
+    // Ctrl+F from the editor surface (CodeMirror content holds focus)
+    // opens the bar again.
+    const cmContent = host.querySelector(".cm-content") || host.querySelector(".herdr-editor");
+    cmContent.dispatchEvent(new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 200));
+    const viaShortcut = { hidden: find.hidden };
+    return JSON.stringify({ head: !!head, before, opened, requery, closed, viaShortcut });
+  })()`);
+  let headerlessInfo = null;
+  try { headerlessInfo = JSON.parse(headerless); } catch { /* below */ }
+  const hl = headerlessInfo || {};
+  record("edited note mounts headerless (no note.txt head)", hl.head === false, headerless.slice(0, 300));
+  record("floating find toggle opens with aria-pressed sync", hl.opened && hl.opened.pressed === "true" && hl.opened.hidden === false && hl.opened.focused === true, headerless.slice(0, 300));
+  record("Ctrl+F with focus in the query re-selects, not hides", hl.requery && hl.requery.hidden === false && hl.requery.stillFocused === true, headerless.slice(0, 300));
+  record("toggle and Ctrl+F close and reopen the find bar", hl.closed && hl.closed.hidden === true && hl.closed.pressed === "false" && hl.viaShortcut && hl.viaShortcut.hidden === false, headerless.slice(0, 300));
+
+  // n7: the list head shows the sync icon; a manual forced sync runs and
+  // settles back to idle. The list repaint replaces the button node, so
+  // re-grab it by id for every read (a detached node measures 0x0).
+  const synced = await evalExpr(`(async () => {
+    const back = document.getElementById("notesBack");
+    if (back) back.click();
+    await new Promise((r) => setTimeout(r, 600));
+    const idle = (() => { const b = document.getElementById("notesSync"); return { cls: b.className, disabled: b.disabled, last: b === b.parentNode.lastElementChild }; })();
+    const btn = document.getElementById("notesSync");
+    if (!btn) return "no-sync";
+    btn.click();
+    await new Promise((r) => setTimeout(r, 900));
+    const fresh = document.getElementById("notesSync");
+    if (!fresh) return "no-sync-after";
+    const after = { cls: fresh.className, disabled: fresh.disabled };
+    const size = Math.round(fresh.getBoundingClientRect().width) + "x" + Math.round(fresh.getBoundingClientRect().height);
+    return JSON.stringify({ idle, after, size });
+  })()`);
+  let syncInfo = null;
+  try { syncInfo = JSON.parse(synced); } catch { /* below */ }
+  const sy = syncInfo || {};
+  record("list head shows the sync icon pinned last", sy.idle && sy.idle.last === true && sy.idle.cls.includes("notes-sync") && sy.size === "28x28", synced.slice(0, 300));
+  record("manual sync runs and settles back to idle", sy.after && sy.after.cls === "mini notes-sync" && sy.after.disabled === false, synced.slice(0, 300));
+
+  // n8: an external DELETE of the open, clean note closes the editor back
+  // to the list on the next sync; dirty local edits survive instead.
+  const ghost = await evalExpr(`(async () => {
+    // Open the note, let the save settle, then delete it behind the UI.
+    const row = document.querySelector("[data-notes-open]");
+    if (!row) return "no-row";
+    row.click();
+    await new Promise((r) => setTimeout(r, 1000));
+    const api = window.HerdrNotesPanel;
+    if (api && api.flush) await api.flush();
+    await new Promise((r) => setTimeout(r, 400));
+    const id = api && api.editingId ? api.editingId() : null;
+    if (!id) return "no-editing-id";
+    const res = await fetch("/api/notes/" + encodeURIComponent(id), { method: "DELETE" });
+    if (!res.ok) return "delete-failed:" + res.status;
+    // Clean editor: the next periodic sync (or a forced one) closes it.
+    await api.syncNow();
+    await new Promise((r) => setTimeout(r, 300));
+    const closed = !document.getElementById("notesTitleInput");
+    // The earlier n6 note legitimately remains: only the open note dies.
+    const rows = document.querySelectorAll("[data-notes-open]").length;
+    return JSON.stringify({ closed, rows });
+  })()`);
+  let ghostInfo = null;
+  try { ghostInfo = JSON.parse(ghost); } catch { /* below */ }
+  record("external delete closes the clean edited note on sync", ghostInfo && ghostInfo.closed === true && ghostInfo.rows === 1, ghost.slice(0, 300));
+
+  // n9: a dirty editor (un-flushed keystrokes) survives the external delete.
+  const dirtySurvives = await evalExpr(`(async () => {
+    const nb = document.getElementById("notesNew");
+    if (!nb) return "no-new";
+    nb.click();
+    await new Promise((r) => setTimeout(r, 1200));
+    const host = document.getElementById("notesEditor");
+    const editorApi = document.getElementById("notesPanel")._herdrEditorApi;
+    if (!editorApi || !editorApi.setValue) return "no-editor-api";
+    editorApi.setValue("dirty local draft");
+    // Give the debounce a tick to arm, then delete behind the UI without
+    // flushing: the local edit must win and the editor must stay open.
+    await new Promise((r) => setTimeout(r, 200));
+    const api = window.HerdrNotesPanel;
+    const id = api.editingId ? api.editingId() : null;
+    if (!id) return "no-editing-id";
+    const res = await fetch("/api/notes/" + encodeURIComponent(id), { method: "DELETE" });
+    if (!res.ok) return "delete-failed:" + res.status;
+    await api.syncNow();
+    await new Promise((r) => setTimeout(r, 300));
+    const stillEditing = !!document.getElementById("notesTitleInput");
+    const content = editorApi.getValue ? editorApi.getValue() : null;
+    return JSON.stringify({ stillEditing, content });
+  })()`);
+  let dirtyInfo = null;
+  try { dirtyInfo = JSON.parse(dirtySurvives); } catch { /* below */ }
+  record("dirty editor survives an external delete", dirtyInfo && dirtyInfo.stillEditing === true && dirtyInfo.content === "dirty local draft", dirtySurvives.slice(0, 300));
 
   console.log(`\n${recorder.passed}/${recorder.results.length} checks passed`);
   writeReport(outPath, recorder, { status: recorder.failed ? "failed" : "passed" });

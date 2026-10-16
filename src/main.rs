@@ -66,9 +66,10 @@ use assets::{
     icon_theme_auto_svg, icon_trash_svg, icon_x_svg, jetbrains_mono_nerd_font, login_css,
     login_html, login_js, mobile_actions_js, mobile_attention_js, mobile_backend_js,
     mobile_composer_js, mobile_core_js, mobile_css, mobile_directory_picker_js, mobile_events_js,
-    mobile_file_browser_js, mobile_git_js, mobile_js, mobile_panels_js, mobile_screens_js,
-    mobile_search_js, mobile_sessions_js, mobile_settings_js, mobile_terminal_js, mobile_theme_js,
-    mobile_workmeta_js, mobile_worktrees_js, shared_actions_js, shared_alert_card_css,
+    mobile_file_browser_js, mobile_git_js, mobile_js, mobile_notes_js, mobile_panels_js,
+    mobile_screens_js, mobile_search_js, mobile_sessions_js, mobile_settings_js,
+    mobile_terminal_js, mobile_theme_js, mobile_workmeta_js, mobile_worktrees_js,
+    shared_actions_js, shared_alert_card_css,
     shared_alert_card_js, shared_attention_js, shared_colors_css, shared_content_search_css,
     shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
     shared_file_icons_js, shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js,
@@ -1511,6 +1512,7 @@ fn app_router(state: WebState) -> Router {
             "/assets/mobile/file-browser.js",
             get(mobile_file_browser_js),
         )
+        .route("/assets/mobile/notes.js", get(mobile_notes_js))
         .route("/assets/mobile/app.css", get(mobile_css))
         .route("/assets/mobile/app.js", get(mobile_js))
         .route(

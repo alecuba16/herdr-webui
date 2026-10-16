@@ -5,6 +5,7 @@
     wsUrl,
     refresh,
     handleServerSettingsChanged,
+    handleNotesChanged,
   }) {
     let eventWs = null;
     let eventRefreshTimer = null;
@@ -80,6 +81,11 @@
           const msg = JSON.parse(event.data);
           if (msg && msg.type === "server_settings_changed") {
             handleServerSettingsChanged(msg);
+          }
+          if (msg && msg.type === "notes_changed" && handleNotesChanged) {
+            // Notes snapshots are panel-local: adopt them without the
+            // global refresh a generic event would schedule.
+            try { handleNotesChanged(msg); } catch (_) {}
           }
           const evt = msg && msg.event;
           kind = evt && (evt.event || evt.type);

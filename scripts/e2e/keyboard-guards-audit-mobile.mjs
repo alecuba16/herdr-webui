@@ -313,8 +313,10 @@ async function main() {
   const sweepScreens = [
     ["terminal", null],
     ["home", null],
-    ["agents", 1], ["panels", 2], ["worktrees", 3], ["files", 4],
-    ["git", 5], ["sessions", 6], ["settings", 7],
+    ["files", null],
+    ["git", null],
+    ["agents", 1], ["panels", 2], ["worktrees", 3], ["sessions", 4],
+    ["notes", 5], ["settings", 6],
   ];
   const reg = new Map(); // key -> screens seen on
   for (const [name, drawerIndex] of sweepScreens) {
@@ -331,6 +333,12 @@ async function main() {
     // Open all <details> disclosures on this screen so nested inputs render.
     await evalJs(`(() => { document.querySelectorAll('details').forEach(d => { d.open = true; }); return true; })()`);
     await sleep(300);
+    // The notes list screen hides its one text input behind the editor:
+    // create a note so the title input (and the editor) render for the sweep.
+    if (name === "notes") {
+      await evalJs(`(() => { const btn = [...document.querySelectorAll('#mobileNotesScreen button')].find(b => /\\+ Note/.test(b.textContent || "")); if (!btn) return false; btn.click(); return true; })()`);
+      await waitFor(`!!document.getElementById("mobileNoteTitle")`, "notes editor title input");
+    }
     const found = await evalJs(`(() => {
       const root = document.querySelector('.mobile-app') || document;
       const els = [...root.querySelectorAll('input, textarea')].filter(el => {

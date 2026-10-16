@@ -17,7 +17,7 @@
     writeSessionBackend,
   } = globalThis.HerdrMobileCore;
   const { createFaviconNotifier } = globalThis.HerdrAppHelpers;
-  const MORE_SCREENS = ["agents", "panels", "worktrees", "settings", "sessions"];
+  const MORE_SCREENS = ["agents", "panels", "worktrees", "settings", "sessions", "notes"];
 
   // Terminal key toolbar visibility is a per-browser preference: the
   // toolbar sits above the nav bar on every screen, and the nav toggler
@@ -128,6 +128,7 @@
     mobileSettings,
     mobileTerminal,
     mobileFileBrowser,
+    mobileNotes,
     mobileWorktrees,
     mobileSearch,
     mobileGit,
@@ -751,11 +752,16 @@
     }
     const wasTerminal = state.screen === "terminal";
     const wasSettings = state.screen === "settings";
+    const prevScreen = state.screen;
     state.screen = screen;
     if (wasTerminal && screen !== "terminal") {
       mobileTerminal.destroy(false);
       keyBarCtrlArmed = false;
     }
+    // Leaving the notes screen flushes a pending save and stops the
+    // resync timer; entering it lazy-loads the list once.
+    if (prevScreen === "notes" && screen !== "notes" && mobileNotes) mobileNotes.leave();
+    if (screen === "notes" && mobileNotes) mobileNotes.enter();
     if (!wasSettings && screen === "settings" && mobileSettings.resetSettingBaselines)
       mobileSettings.resetSettingBaselines();
     if (screen === "settings" && mobileSettings.loadNoSleep) mobileSettings.loadNoSleep();
@@ -826,6 +832,7 @@
     else if (state.screen === "panels") html = renderPanels();
     else if (state.screen === "worktrees") html = mobileWorktrees.renderScreen();
     else if (state.screen === "files") html = mobileFileBrowser.renderScreen();
+    else if (state.screen === "notes") html = mobileNotes.renderScreen();
     else if (state.screen === "git") mobileGit.renderGitScreen(screen);
     else if (state.screen === "settings") html = mobileSettings.render();
     else if (state.screen === "sessions") html = mobileSessions.renderSessions();
@@ -842,6 +849,9 @@
       screen.innerHTML = html;
       screen.__lastScreenHtml = html;
     }
+    // The notes editor mounts into #mobileNoteEditor after the screen
+    // HTML lands; innerHTML writes would wipe it on every re-render.
+    if (state.screen === "notes" && mobileNotes) mobileNotes.afterRender();
     syncBrowserFavicon();
   }
 
@@ -1338,6 +1348,14 @@
     state,
   });
 
+  mobileNotes = globalThis.HerdrMobileNotesModule.create({
+    api,
+    confirm: (...args) => mobileConfirm(...args),
+    escapeHtml,
+    inputAttrs,
+    render,
+  });
+
   mobileSearch = globalThis.HerdrMobileSearchModule.create({
     el,
     state,
@@ -1393,6 +1411,11 @@
     wsUrl,
     refresh,
     handleServerSettingsChanged,
+    // Notes snapshots adopt into the notes screen only; a closed screen
+    // ignores frames and self-heals on the next open's GET.
+    handleNotesChanged: (msg) => {
+      if (mobileNotes && mobileNotes.applyRemote) mobileNotes.applyRemote(msg);
+    },
   });
   // Connection dot in the header context: reflects the events stream state.
   mobileEvents.onEventState((connected) => {
@@ -1699,6 +1722,18 @@
     select: mobileFileBrowser.select,
     up: mobileFileBrowser.up,
     rowActions: mobileFileBrowser.rowActions,
+  };
+
+  globalThis.HerdrMobileNotes = {
+    openNote: (...args) => mobileNotes.openNote(...args),
+    deleteNote: (event, id) => mobileNotes.deleteNote(event, id),
+    createNote: () => mobileNotes.createNote(),
+    clearAll: () => mobileNotes.clearAll(),
+    syncNow: () => mobileNotes.syncNow(),
+    backToList: () => mobileNotes.backToList(),
+    titleInput: (event) => mobileNotes.titleInput(event),
+    titleChange: (event) => mobileNotes.titleChange(event),
+    languageChange: (event) => mobileNotes.languageChange(event),
   };
 
   // Shared helpers for directory picker markup and overlay-free navigation
