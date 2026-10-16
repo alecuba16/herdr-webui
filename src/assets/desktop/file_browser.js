@@ -613,6 +613,29 @@
     return `pane-editor-${hashId(path)}`;
   }
 
+  // Markdown view states: preview (default), source (read-only raw text),
+  // edit. All three remount through mountEditorTab; the editor signature
+  // (editing/previewSource) drives HerdrEditor's preview-vs-source choice.
+  // Edits live in the same draft buffer as text files, so save and the
+  // dirty close guard work unchanged.
+  function setMarkdownView(path, mode) {
+    const file = fileFor(path);
+    if (!file || file.binary || file.truncated) return;
+    if (!markdownPath(path)) return;
+    if (mode === "edit") {
+      file.editing = true;
+      file.previewSource = false;
+      if (file.draft == null || file.draft === "") file.draft = file.content || "";
+    } else if (mode === "source") {
+      file.editing = false;
+      file.previewSource = true;
+    } else {
+      file.editing = false;
+      file.previewSource = false;
+    }
+    void mountEditorTab(path);
+  }
+
   // Close with the legacy dirty wording. The strip ✕ lands here via the
   // panes module; confirm, then ask the pane tree to drop the tab id via
   // its immediate path (closeEditorTabImmediate, which calls teardownEditorTab
@@ -1298,6 +1321,9 @@
       if (panes && panes.openEditorTab) { void panes.openEditorTab(path); return; }
       openEditorTab(path);
     },
+    setMarkdownPreview(path) { setMarkdownView(path, "preview"); },
+    setMarkdownSource(path) { setMarkdownView(path, "source"); },
+    setMarkdownEdit(path) { setMarkdownView(path, "edit"); },
     openEditorTab,
     closeEditorTab,
     closeEditorState,

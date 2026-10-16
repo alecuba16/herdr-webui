@@ -232,3 +232,112 @@ test("closing a tab mid-fetch does not resurrect it when the fetch lands", async
   const editor = context.HerdrFileBrowser.editorFor("src/lib.rs");
   assert.equal(editor, null, "no editor state survives for the closed tab");
 });
+
+// Markdown view states: the strip eye (preview/source/edit) lands on
+// setMarkdownView, which flips the file entry flags and remounts. Save
+// and the dirty guard ride the same draft buffer as text files.
+test("markdown view setters flip the entry flags and remount", async () => {
+  const { context } = loadFileBrowser();
+  const workspace = { workspace_id: "ws-1", cwd: "/repo" };
+  const mounts = [];
+  context.HerdrEditor = { isMarkdownPath: (path) => /\.md$/.test(path) };
+  let tabOpen = true;
+  context.HerdrWorkspacePanes = {
+    renderWorkspacePanes() {},
+    editorTabId: (path) => `editor:${path}`,
+    setActivePaneTab() {},
+    paneElementForTab: () => null,
+    activePaneElement: () => null,
+    paneRoot: () => ({ leaves: tabOpen ? [{ tabs: ["editor:src/readme.md"] }] : [] }),
+    paneLeaves: (root) => root.leaves,
+  };
+  context.fetch = async () => ({
+    ok: true,
+    statusText: "OK",
+    json: async () => ({
+      path: "src", entries: [], git_status: null,
+      content: "# hi", hash: "h1", size: 4,
+      lines_gutter_html: null, lines_code_html: null,
+    }),
+  });
+  // The module calls its internal mountEditorTab directly, so the
+  // mount signal observable from outside is the pane tab activation.
+  context.HerdrWorkspacePanes.setActivePaneTab = (tabId) => { mounts.push(tabId); };
+  await context.HerdrFileBrowser.openAt(workspace, "src", { kind: "dir" });
+
+  await context.HerdrFileBrowser.openEditorTab("src/readme.md");
+  const opened = context.HerdrFileBrowser.editorFor("src/readme.md");
+  assert.ok(opened, "markdown open creates the entry");
+  assert.equal(opened.editing, false, "markdown opens in preview, read-only");
+  mounts.length = 0;
+
+  context.HerdrFileBrowser.setMarkdownEdit("src/readme.md");
+  let entry = context.HerdrFileBrowser.editorFor("src/readme.md");
+  assert.equal(entry.editing, true, "edit mode is editing");
+  assert.equal(entry.previewSource, false, "edit mode is not source view");
+  assert.equal(entry.draft, "# hi", "edit seeds the draft from content");
+  assert.deepEqual(mounts, ["editor:src/readme.md"], "edit remounts the tab");
+
+  context.HerdrFileBrowser.setMarkdownSource("src/readme.md");
+  entry = context.HerdrFileBrowser.editorFor("src/readme.md");
+  assert.equal(entry.editing, false, "source view is read-only");
+  assert.equal(entry.previewSource, true, "source view flag set");
+
+  context.HerdrFileBrowser.setMarkdownPreview("src/readme.md");
+  entry = context.HerdrFileBrowser.editorFor("src/readme.md");
+  assert.equal(entry.editing, false, "preview is not editing");
+  assert.equal(entry.previewSource, false, "preview clears the source flag");
+  assert.deepEqual(mounts, ["editor:src/readme.md", "editor:src/readme.md", "editor:src/readme.md"],
+    "each view change remounts once");
+});
+
+test("markdown view setters ignore binary, truncated, and non-markdown files", async () => {
+  const { context } = loadFileBrowser();
+  const workspace = { workspace_id: "ws-1", cwd: "/repo" };
+  const mounts = [];
+  context.HerdrEditor = { isMarkdownPath: (path) => /\.md$/.test(path) };
+  context.HerdrWorkspacePanes = {
+    renderWorkspacePanes() {},
+    editorTabId: (path) => `editor:${path}`,
+    setActivePaneTab() {},
+    paneElementForTab: () => null,
+    activePaneElement: () => null,
+    paneRoot: () => ({ leaves: [{ tabs: ["editor:src/readme.md"] }] }),
+    paneLeaves: (root) => root.leaves,
+  };
+  context.fetch = async () => ({
+    ok: true,
+    statusText: "OK",
+    json: async () => ({
+      path: "src", entries: [], git_status: null,
+      content: "# hi", hash: "h1", size: 4,
+      lines_gutter_html: null, lines_code_html: null,
+    }),
+  });
+  context.HerdrWorkspacePanes.setActivePaneTab = (tabId) => { mounts.push(tabId); };
+  await context.HerdrFileBrowser.openAt(workspace, "src", { kind: "dir" });
+  await context.HerdrFileBrowser.openEditorTab("src/readme.md");
+
+  const entry = context.HerdrFileBrowser.editorFor("src/readme.md");
+  assert.ok(entry, "markdown entry exists");
+  mounts.length = 0;
+
+  // Binary markdown: view locked.
+  entry.binary = true;
+  context.HerdrFileBrowser.setMarkdownEdit("src/readme.md");
+  assert.equal(entry.editing, false, "binary file never flips to edit");
+  assert.deepEqual(mounts, [], "binary file never remounts through the view setter");
+
+  // Truncated markdown: view locked (placeholder or partial preview).
+  entry.binary = false;
+  entry.truncated = true;
+  context.HerdrFileBrowser.setMarkdownSource("src/readme.md");
+  assert.equal(entry.previewSource, false, "truncated file stays in preview");
+  assert.deepEqual(mounts, [], "truncated file never remounts through the view setter");
+  entry.truncated = false;
+
+  // Non-markdown files have no entry to flip.
+  context.HerdrFileBrowser.setMarkdownPreview("src/lib.rs");
+  assert.equal(context.HerdrFileBrowser.editorFor("src/lib.rs"), null,
+    "non-markdown path has no entry to flip");
+});

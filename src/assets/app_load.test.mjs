@@ -4137,7 +4137,7 @@ describe("app bundle load", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
-    const calls = await vm.runInContext(
+    vm.runInContext(
       `const calls = [];
       api = async (url, opt = {}) => {
         calls.push({ url, method: opt.method || "GET" });
@@ -4150,21 +4150,31 @@ describe("app bundle load", () => {
       state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
       state.allTabs = state.tabs;
       state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
-      closeTab("tab1").then(() => calls);`,
+      closeTab("tab1");`,
       ctx,
     );
+    await flushMicrotasks();
+    // The question modal is up: terminals ask before closing. Enter
+    // confirms, and the close then proceeds.
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
 
     // One tab close call, no workspace close: terminals are decoupled
-    // from workspace lifecycle.
-    equal(calls.length, 1);
-    equal(calls[0].url, "/api/tabs/tab1/close");
+    // from workspace lifecycle. (The bundle boot also queues workspace
+    // and session fetches; only the close call matters here.)
+    const closeCalls = calls.filter((call) => call.url.includes("/close"));
+    equal(closeCalls.length, 1);
+    equal(closeCalls[0].url, "/api/tabs/tab1/close");
+    equal(calls.some((call) => call.url.includes("workspaces") && call.method === "POST"), false,
+      "closing the last terminal never posts a workspace close");
   });
 
   it("closing a panel that vanished server-side still finishes the close flow", async () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
-    const calls = await vm.runInContext(
+    vm.runInContext(
       `const calls = [];
       api = async (url, opt = {}) => {
         calls.push({ url, method: opt.method || "GET" });
@@ -4182,25 +4192,62 @@ describe("app bundle load", () => {
       closeTab("tab1")
         .then(() => ({ ok: true }))
         .catch((error) => ({ ok: false, message: String(error) }))
-        .then((outcome) => (calls.outcome = outcome, calls));`,
+        .then((outcome) => (calls.outcome = outcome));`,
       ctx,
     );
+    await flushMicrotasks();
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
 
     // A not-found race is the desired outcome: the close must not throw,
     // and the state cleanup and refresh still run.
-    equal(calls[0].url, "/api/tabs/tab1/close");
+    equal(calls.some((call) => call.url === "/api/tabs/tab1/close"), true,
+      "the tab close call fired");
     equal(calls.outcome.ok, true, "not-found close must not surface an error");
     const selectionAfterClose = await vm.runInContext("state.tab", ctx);
     equal(selectionAfterClose, null, "closed panel leaves the selection");
-    equal(calls.filter((call) => call.url.includes("workspaces")).length, 0,
+    equal(calls.some((call) => call.url.includes("workspaces") && call.method === "POST"), 0 === 1,
       "no workspace close: the panel close race never kills the workspace");
+  });
+
+  it("canceling the terminal close question keeps the panel open", async () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    vm.runInContext(
+      `const calls = [];
+      api = async (url, opt = {}) => {
+        calls.push({ url, method: opt.method || "GET" });
+        return { result: {} };
+      };
+      refresh = () => {};
+      state.ws = "ws1";
+      state.tab = "tab1";
+      state.pane = "pane1";
+      state.tabs = [{ workspace_id: "ws1", tab_id: "tab1", label: "one" }];
+      state.allTabs = state.tabs;
+      state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
+      closeTab("tab1");`,
+      ctx,
+    );
+    await flushMicrotasks();
+    // Escape cancels: the panel survives.
+    await ctx.closeQuestion(false);
+    await flushMicrotasks();
+    const calls = await vm.runInContext("calls", ctx);
+
+    equal(calls.some((call) => call.url === "/api/tabs/tab1/close"), false,
+      "a canceled close never posts the tab close");
+    equal(vm.runInContext("!!state.questionResolve", ctx), false,
+      "the question modal is closed after the cancel");
   });
 
   it("closing a panel surfaces real server errors", async () => {
     const ctx = context();
     vm.runInContext(source, ctx);
 
-    const outcome = await vm.runInContext(
+    vm.runInContext(
       `const calls = [];
       api = async (url, opt = {}) => {
         calls.push({ url, method: opt.method || "GET" });
@@ -4216,10 +4263,14 @@ describe("app bundle load", () => {
       state.allTabs = state.tabs;
       state.panes = [{ tab_id: "tab1", pane_id: "pane1" }];
       closeTab("tab1")
-        .then(() => ({ ok: true }))
-        .catch((error) => ({ ok: false, message: String(error) }));`,
+        .then(() => (calls.outcome = { ok: true }))
+        .catch((error) => (calls.outcome = { ok: false, message: String(error) }));`,
       ctx,
     );
+    await flushMicrotasks();
+    await ctx.closeQuestion(true);
+    await flushMicrotasks();
+    const outcome = await vm.runInContext("calls.outcome", ctx);
 
     // Real errors propagate: the close flow must not swallow them.
     equal(outcome.ok, false, "a real close error must reject");
