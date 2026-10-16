@@ -284,7 +284,9 @@ function searchActionCandidates(query) {
 
 function searchActionHints(actions) {
   if (!actions.length || !window.HerdrActionRegistry || !window.HerdrActionRegistry.kbdHint) return "";
-  return `<div class="search-help">Type <span class="kbd">&gt;</span> to browse actions only. Shortcuts: ${actions.filter((action) => action.kbd).slice(0, 4).map((action) => window.HerdrActionRegistry.kbdHint(action)).join(" ")}</div>`;
+  const withHint = actions.filter((action) => window.HerdrActionRegistry.hasHint(action)).slice(0, 4);
+  if (!withHint.length) return "";
+  return `<div class="search-help">Type <span class="kbd">&gt;</span> to browse actions only. Shortcuts: ${withHint.map((action) => window.HerdrActionRegistry.kbdHint(action)).join(" ")}</div>`;
 }
 
 function actionsOnlyQuery(query) {
@@ -536,7 +538,7 @@ function renderSearchPalette() {
     content: actionsOnly || opts.searchContentEnabled === false ? "" : renderWorkspaceContentSection(),
   };
   const recent = actionsOnly ? [] : recentWorkspaceCandidates(searchPaletteState.recent);
-  container.innerHTML = sections.actions + (actionsOnly ? searchActionHints(actions) : "") + (actionsOnly ? "" : renderRecentSection(recent)) + (actionsOnly ? "" : order.map((key) => sections[key] || "").join(""));
+  container.innerHTML = sections.actions + searchActionHints(actions) + (actionsOnly ? "" : renderRecentSection(recent)) + (actionsOnly ? "" : order.map((key) => sections[key] || "").join(""));
 }
 
 function renderRecentSection(recent, callbacks = {}) {

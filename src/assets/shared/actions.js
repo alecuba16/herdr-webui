@@ -16,6 +16,7 @@
       text: "open workspace folder worktree project plus add create",
       surfaces: ["desktop", "mobile"],
       primary: true,
+      shortcutId: "newWorkspace",
     },
     {
       id: "discover-worktrees",
@@ -52,14 +53,6 @@
       menuOnly: true,
     },
     {
-      id: "settings",
-      icon: "⚙",
-      title: "Settings",
-      subtitle: "Adjust layout, files, alerts, terminal, and worktree defaults",
-      text: "settings options preferences",
-      surfaces: ["mobile"],
-    },
-    {
       id: "terminal",
       icon: "term",
       title: "Open Terminal",
@@ -94,6 +87,7 @@
       text: "create new git worktree branch checkout plus add",
       surfaces: ["desktop", "mobile"],
       requiresWorkspace: true,
+      shortcutId: "createWorktree",
     },
     {
       id: "toggle-sidebar",
@@ -102,7 +96,10 @@
       subtitle: "Show or hide the workspace navigation sidebar",
       text: "toggle hide show collapse expand sidebar navigation",
       surfaces: ["desktop"],
-      kbd: "g s",
+      // Chord is resolved at render time from the live options map, so a
+      // user-rebound or rebound-prefix chord never shows stale text. The
+      // shortcutId pairs with the webuiShortcuts map entry "sidebar".
+      shortcutId: "sidebar",
     },
     {
       id: "toggle-theme",
@@ -119,7 +116,10 @@
       subtitle: "Adjust layout, files, alerts, terminal, and worktree defaults",
       text: "settings options preferences",
       surfaces: ["desktop", "mobile"],
-      kbd: "g o",
+      // Chord is resolved at render time from the live options map, so a
+      // user-rebound chord or prefix never shows stale text here. Pairs
+      // with the webuiShortcuts map entry "settings".
+      shortcutId: "settings",
     },
   ];
 
@@ -151,9 +151,35 @@
     };
   }
 
+  // kbdHint renders the chord for a palette action row. Actions carry a
+  // shortcutId (webuiShortcuts key) instead of a hardcoded chord: the host
+  // registers a chord resolver on HerdrActionRegistry so rebound keys or a
+  // rebound prefix never leak a stale "g s"-style hint into the palette.
+  let chordResolver = null;
+
   function kbdHint(action, options = {}) {
-    if (options.kbd === false || !action.kbd) return "";
-    return `<span class="kbd" aria-hidden="true">${escapeHtml(action.kbd)}</span>`;
+    if (options.kbd === false) return "";
+    const chord = chordFor(action);
+    if (!chord) return "";
+    return `<span class="kbd" aria-hidden="true">${escapeHtml(chord)}</span>`;
+  }
+
+  // hasHint lets callers filter rows without knowing how a chord is
+  // sourced (resolver, static kbd, or none).
+  function hasHint(action) {
+    return !!chordFor(action);
+  }
+
+  function chordFor(action) {
+    return (
+      (chordResolver && action && action.shortcutId && chordResolver(action.shortcutId)) ||
+      (action && action.kbd) ||
+      ""
+    );
+  }
+
+  function setChordResolver(fn) {
+    chordResolver = typeof fn === "function" ? fn : null;
   }
 
   function candidates(query, options = {}) {
@@ -192,6 +218,8 @@
     action,
     candidates,
     kbdHint,
+    hasHint,
+    setChordResolver,
     renderButtons,
     loadRecent,
     invalidateRecent,

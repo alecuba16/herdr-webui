@@ -15,14 +15,37 @@ function loadRegistry() {
   return ctx.HerdrActionRegistry;
 }
 
-test("kbdHint renders the kbd span for actions with a shortcut", () => {
+test("kbdHint resolves the chord through the registered resolver", () => {
   const registry = loadRegistry();
   const sidebar = registry.action("toggle-sidebar");
-  assert.equal(sidebar.kbd, "g s");
+  // No resolver: the static-kbd fallback stays empty for shortcutId rows.
+  assert.equal(sidebar.kbd, undefined);
+  assert.equal(registry.kbdHint(sidebar), "");
+  registry.setChordResolver((id) => `Ctrl+B then ${id}`);
   assert.equal(
     registry.kbdHint(sidebar),
-    '<span class="kbd" aria-hidden="true">g s</span>',
+    '<span class="kbd" aria-hidden="true">Ctrl+B then sidebar</span>',
   );
+  // The settings action pairs with webuiShortcuts.settings the same way.
+  const settings = registry.action("settings");
+  assert.equal(
+    registry.kbdHint(settings),
+    '<span class="kbd" aria-hidden="true">Ctrl+B then settings</span>',
+  );
+  // Resolver returning nothing (unknown shortcut id) hides the hint.
+  registry.setChordResolver(() => "");
+  assert.equal(registry.kbdHint(sidebar), "");
+  registry.setChordResolver(null);
+  assert.equal(registry.kbdHint(sidebar), "", "null resolver restores the static fallback");
+});
+
+test("registry has no duplicate action ids per surface", () => {
+  const registry = loadRegistry();
+  for (const platform of ["desktop", "mobile"]) {
+    const ids = registry.candidates("", { platform, hasWorkspace: true }).map((a) => a.action);
+    const unique = new Set(ids);
+    assert.equal(ids.length, unique.size, `${platform} candidates must be unique: ${ids}`);
+  }
 });
 
 test("kbdHint returns empty for actions without a shortcut", () => {
@@ -30,6 +53,34 @@ test("kbdHint returns empty for actions without a shortcut", () => {
   const theme = registry.action("toggle-theme");
   assert.equal(theme.kbd, undefined);
   assert.equal(registry.kbdHint(theme), "");
+});
+
+test("workspace actions resolve their chord through the registry resolver", () => {
+  const registry = loadRegistry();
+  // These rows run real prefix actions (Ctrl+B N/T): open workspace and
+  // create worktree. The palette row and the toast must agree on the
+  // chord, so they resolve the same shortcutId the runSearchAction hint
+  // map uses. The mobile-only discover-worktrees row keeps no id: its
+  // surface renders no chords.
+  const chords = {
+    newWorkspace: "Ctrl+B then N",
+    createWorktree: "Ctrl+B then T",
+  };
+  registry.setChordResolver((id) => chords[id] || "");
+  const desktop = registry.candidates(">", { platform: "desktop", hasWorkspace: true });
+  for (const [id, chord] of Object.entries(chords)) {
+    const row = desktop.find((a) => a.shortcutId === id);
+    assert.ok(row, `${id} row present on desktop`);
+    assert.equal(
+      registry.kbdHint(row),
+      `<span class="kbd" aria-hidden="true">${chord}</span>`,
+    );
+  }
+  // Mobile keeps its full row set (touch surface, no kbd rendering there)
+  // and the dedupe holds after the new shortcutIds.
+  const mobile = registry.candidates("", { platform: "mobile", hasWorkspace: true }).map((a) => a.action);
+  assert.ok(mobile.includes("discover-worktrees"));
+  assert.equal(mobile.filter((id) => id === "settings").length, 1);
 });
 
 test("kbdHint can be suppressed via options and escapes the shortcut", () => {
@@ -80,6 +131,12 @@ test("candidates '>' filter lists actions only, desktop surface", () => {
   const mobile = registry.candidates("", { platform: "mobile" }).map((a) => a.action);
   assert.ok(!mobile.includes("toggle-sidebar"));
   assert.ok(mobile.includes("toggle-theme"));
+  // Settings appears exactly once on mobile (the old duplicate row is gone).
+  assert.equal(
+    mobile.filter((id) => id === "settings").length,
+    1,
+    `mobile settings must be unique: ${mobile}`,
+  );
   // ">sess" narrows to the sessions tool only.
   const narrowed = registry.candidates(">sess", { platform: "desktop" }).map((a) => a.action);
   assert.equal(JSON.stringify(narrowed), JSON.stringify(["sessions"]));
