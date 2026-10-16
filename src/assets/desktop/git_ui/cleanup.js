@@ -99,7 +99,7 @@
           if (cleanupBranchSelectable(branch)) items.push({ type: "branch", repo: repo.path, name: branch.name, key: `branch|${repo.path}|${branch.name}` });
         }
         (repo.worktrees || []).forEach((worktree, index) => {
-          if (!worktree.primary) items.push({ type: "worktree", repo: repo.path, path: worktree.path, key: `worktree|${repo.path}|${index}` });
+          if (!worktree.primary) items.push({ type: "worktree", repo: repo.path, path: worktree.path, branch: worktree.branch || null, key: `worktree|${repo.path}|${index}` });
         });
       }
       return items;
@@ -118,7 +118,7 @@
       }
       if (!type || type === "worktree") {
         (repo.worktrees || []).forEach((worktree, index) => {
-          if (!worktree.primary) items.push({ type: "worktree", repo: repo.path, path: worktree.path, key: `worktree|${repo.path}|${index}` });
+          if (!worktree.primary) items.push({ type: "worktree", repo: repo.path, path: worktree.path, branch: worktree.branch || null, key: `worktree|${repo.path}|${index}` });
         });
       }
       return items;
@@ -146,6 +146,15 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ cwd: item.repo, path: item.path, force, confirmed: true }),
       });
+    }
+
+    async function deleteCleanupItemWithRetry(item) {
+      try {
+        await deleteCleanupItem(item, false);
+      } catch (err) {
+        if (!cleanupForceRetryLikelyNeeded(err)) throw err;
+        await deleteCleanupItem(item, true);
+      }
     }
 
     function cleanupForceRetryLikelyNeeded(err) {
@@ -181,6 +190,7 @@
       cleanupSelectedItems,
       cleanupItemLabel,
       deleteCleanupItem,
+      deleteCleanupItemWithRetry,
       cleanupForceRetryLikelyNeeded,
     };
   }

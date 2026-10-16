@@ -209,7 +209,7 @@ impl FooterContext {
                 " j/k files · o ours · e parent · t remote · m resolved · R continue · Ctrl+B ? help "
             }
             Self::Git(_, GitView::Cleanup) => {
-                " j/k rows · x delete · B prune · Ctrl+B ? help "
+                " j/k rows · Space mark · x delete · B prune · Ctrl+B ? help "
             }
         }
     }
@@ -248,7 +248,7 @@ impl FooterContext {
             Self::Git(_, GitView::Stash) => " Enter diff · a apply · Ctrl+B ? help ",
             Self::Git(_, GitView::History) => " Enter commit diff · Ctrl+B ? help ",
             Self::Git(_, GitView::Conflicts) => " o/e/t resolve · R continue · Ctrl+B ? help ",
-            Self::Git(_, GitView::Cleanup) => " x delete · B prune · Ctrl+B ? help ",
+            Self::Git(_, GitView::Cleanup) => " Space mark · x delete · Ctrl+B ? help ",
         }
     }
 }
@@ -491,7 +491,7 @@ impl PromptKind {
             Self::CreateWorktreeBranch => "Create worktree: branch",
             Self::CreateWorktreePath => "Create worktree: checkout path",
             Self::ConfirmCloseWorkspace => "Close workspace (y)",
-            Self::ConfirmCleanupDelete => "Delete cleanup item (y)",
+            Self::ConfirmCleanupDelete => "Delete cleanup items (y / yb)",
             Self::CreateTag => "Tag commit",
             Self::ResetMode => "Reset to commit",
             Self::ConfirmResetHard => "Hard reset (y)",
@@ -528,6 +528,9 @@ impl PromptKind {
             }
             Self::ComposerMessage => "type the message, Enter sends it to the selected panel",
             Self::CardAnswer => "type the answer, Enter answers the question (Esc cancels)",
+            Self::ConfirmCleanupDelete => {
+                "y deletes the selected items, yb also deletes their branches"
+            }
             _ => "type y then Enter to confirm, Esc cancels",
         }
     }
@@ -930,7 +933,16 @@ impl TuiApp {
                     .map(|prompt| prompt.text.trim().to_string())
                     .unwrap_or_default();
                 self.prompt_input = None;
-                if kind.needs_confirm() && text != "y" {
+                // The cleanup confirm accepts `y` (delete selected) and
+                // `yb` (delete selected plus their branches, webui
+                // branch-too checkbox); every other destructive prompt
+                // takes a plain `y`.
+                let confirmed = if kind == PromptKind::ConfirmCleanupDelete {
+                    text == "y" || text == "yb"
+                } else {
+                    text == "y"
+                };
+                if kind.needs_confirm() && !confirmed {
                     self.status = "cancelled".to_string();
                     return;
                 }
@@ -1041,13 +1053,27 @@ impl TuiApp {
                 let kind = kind.into_workspace_prompt();
                 workspace::run_prompt(self, &kind, text);
             }
-            PromptKind::ConfirmCleanupDelete => match self.git_panel.selected_cleanup_item() {
-                Some(item) => match self.git_panel.cleanup_delete(&self.web_api, &item) {
-                    Ok(()) => self.status = format!("deleted {} {}", item.kind.label(), item.name),
+            PromptKind::ConfirmCleanupDelete => {
+                // Webui confirm modal: `y` deletes the pending items; `yb`
+                // also deletes each worktree's branch when that option is
+                // offered (a marked worktree carries a branch). The
+                // webui checkbox starts unchecked, so plain `y` is the
+                // safe default.
+                let branch_too =
+                    text.trim() == "yb" && self.git_panel.cleanup_branch_option_available();
+                match self
+                    .git_panel
+                    .cleanup_delete_selected(&self.web_api, branch_too)
+                {
+                    Ok(deleted) => {
+                        self.status = format!("deleted {deleted} cleanup item(s)");
+                    }
                     Err(err) => self.error = Some(err.to_string()),
-                },
-                None => self.error = Some("no cleanup item selected".to_string()),
-            },
+                }
+                if !self.git_panel.cleanup_failures().is_empty() {
+                    self.error = Some(self.git_panel.cleanup_failures().join("\n"));
+                }
+            }
             PromptKind::CreateTag => {
                 let tag = text.trim();
                 if tag.is_empty() {
@@ -3077,7 +3103,12 @@ impl TuiApp {
                     Err(err) => self.error = Some(err.to_string()),
                 }
             }
-            // Cleanup view actions (webui cleanup tab: delete + prune).
+            // Webui cleanup multi-select: Space toggles the mark on the
+            // cursor row (webui checkbox), `x` opens the delete confirm.
+            KeyCode::Char(' ') if self.git_panel.view == GitView::Cleanup => {
+                self.git_panel.cleanup_toggle_mark();
+                self.status = format!("marked {} item(s)", self.git_panel.cleanup_marked.len());
+            }
             KeyCode::Char('x') if self.git_panel.view == GitView::Cleanup => {
                 match self.git_panel.selected_cleanup_item() {
                     Some(_) => {

@@ -15,7 +15,8 @@ mod search;
 mod stash;
 
 #[cfg(test)]
-pub(crate) use cleanup::{parse_cleanup_repos, CleanupItemKind};
+pub(crate) use cleanup::{parse_cleanup_repos, test_support};
+pub use cleanup::{CleanupItem, CleanupItemKind};
 pub use conflicts::{ConflictAction, ConflictResolveMode};
 pub use log::LogScope;
 #[cfg(test)]
@@ -186,10 +187,13 @@ pub struct GitPanel {
     pub conflict_selected: usize,
     pub merge_in_progress: bool,
     pub rebase_in_progress: bool,
-    /// Cleanup view: scan results and the space-toggled selection set.
+    /// Cleanup view: scan results, the space-toggled selection set,
+    /// and per-item failures from the last delete-selected run.
     pub cleanup_root: Option<String>,
     pub cleanup_repos: Vec<CleanupRepo>,
     pub cleanup_selected: usize,
+    pub cleanup_marked: Vec<String>,
+    pub cleanup_failures: Vec<String>,
     /// Log view scope, mirroring the webui log scope cycle
     /// (all → base-current → base). `base` is the configured default
     /// branch ("master" unless the webui option changes it).
@@ -224,7 +228,17 @@ pub struct GitPanel {
 pub struct CleanupRepo {
     pub path: String,
     pub branches: Vec<String>,
-    pub worktrees: Vec<String>,
+    pub worktrees: Vec<CleanupWorktree>,
+}
+
+/// One non-primary worktree offered for removal. `branch` is the
+/// checkout's branch when any (detached worktrees carry none); the
+/// webui branch-too delete option is offered only for worktrees
+/// that have one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CleanupWorktree {
+    pub path: String,
+    pub branch: Option<String>,
 }
 
 impl GitPanel {
@@ -263,6 +277,8 @@ impl GitPanel {
             cleanup_root: None,
             cleanup_repos: Vec::new(),
             cleanup_selected: 0,
+            cleanup_marked: Vec::new(),
+            cleanup_failures: Vec::new(),
             log_scope: LogScope::default(),
             log_limit: LOG_PAGE_SIZE,
             log_has_more: false,

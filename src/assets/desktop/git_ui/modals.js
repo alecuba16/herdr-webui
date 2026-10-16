@@ -46,11 +46,18 @@
         return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Switch branch</strong></div>${dir}${body}<div class="git-ui-muted">Choosing a folder moves the Git panel to that directory immediately. Use Switch branch only to checkout another branch in the current Git directory.</div><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Cancel</button><button class="git-ui-btn primary" onclick="HerdrGitUi.switchBranchFromModal()" ${modal.loading || modal.error ? "disabled" : ""}>Switch branch</button></div></div></div>`;
       }
 
+      function cleanupConfirmBranchOption(items) {
+        const worktreeBranches = items.filter((item) => item.type === "worktree" && item.branch).length;
+        if (!worktreeBranches) return "";
+        const noun = worktreeBranches === 1 ? "worktree" : "worktrees";
+        return `<label class="git-ui-check-row"><input id="gitUiCleanupDeleteBranch" type="checkbox" ${state.cleanupConfirmDeleteBranch ? "checked" : ""} onchange="HerdrGitUi.toggleCleanupDeleteBranch(this.checked)"><span>Delete branch of ${worktreeBranches} selected ${noun} too</span></label>`;
+      }
+
       function renderCleanupConfirm() {
         const modal = state.cleanupConfirm;
         if (!modal) return "";
         const items = modal.items || [];
-        return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal git-ui-cleanup-modal"><div class="git-ui-modal-head"><strong>Delete ${items.length} Git cleanup item${items.length === 1 ? "" : "s"}?</strong></div><div class="git-ui-muted">Git will use safe delete first. If Git rejects that because force is required, Herdr retries with force. If deleting the current non-main branch in the primary repo, Herdr checks out main/master first.</div><pre class="git-ui-cleanup-confirm-list">${esc(items.map(cleanupItemLabel).join("\n"))}</pre><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.cancelCleanupDelete()">Cancel</button><button class="git-ui-btn danger" onclick="HerdrGitUi.confirmCleanupDelete()">Delete selected</button></div></div></div>`;
+        return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal git-ui-cleanup-modal"><div class="git-ui-modal-head"><strong>Delete ${items.length} Git cleanup item${items.length === 1 ? "" : "s"}?</strong></div><div class="git-ui-muted">Git will use safe delete first. If Git rejects that because force is required, Herdr retries with force. If deleting the current non-main branch in the primary repo, Herdr checks out main/master first.</div>${cleanupConfirmBranchOption(items)}<pre class="git-ui-cleanup-confirm-list">${esc(items.map(cleanupItemLabel).join("\n"))}</pre><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.cancelCleanupDelete()">Cancel</button><button class="git-ui-btn danger" onclick="HerdrGitUi.confirmCleanupDelete()">Delete selected</button></div></div></div>`;
       }
 
       function renderGitOpModal() {
