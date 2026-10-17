@@ -11,7 +11,7 @@
 //! - **Blocked**: Permission dialog with labels like `Yes, allow once`,
 //!   `Yes, allow this session`, `Yes, always allow`, `No, deny`.
 
-use crate::builtin_backend::{bottom_non_empty_lines, contains_any, is_braille};
+use crate::builtin_detection::scrape::{bottom_non_empty_lines, contains_any, is_braille};
 
 /// Screen-scrape detection for Claurst agent status.
 pub fn detect_claurst_status(lower: &str) -> &'static str {

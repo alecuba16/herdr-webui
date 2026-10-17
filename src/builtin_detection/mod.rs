@@ -19,8 +19,29 @@
 //! a single `detect_jcode_status` implementation. See `docs/features.md` and
 //! `docs/technical-details.md` for the temporary annotation.
 
+pub mod amp;
+pub mod antigravity;
+pub mod claude;
 pub mod claurst;
+pub mod cline;
+pub mod codex;
+pub mod copilot;
+pub mod cursor;
+pub mod devin;
+pub mod droid;
+pub mod gemini;
+pub mod grok;
+pub mod hermes;
 pub mod jcode;
+pub mod kilo;
+pub mod kimi;
+pub mod kiro;
+pub mod maki;
+pub mod opencode;
+pub mod pi;
+pub mod qodercli;
+pub mod qwen;
+pub mod scrape;
 
 use serde::{Deserialize, Serialize};
 
