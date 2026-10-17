@@ -32,10 +32,29 @@
 //! should be merged back into a single `detect_jcode_status` and this selector
 //! removed. See `docs/features.md` and `docs/technical-details.md`.
 
-use crate::builtin_backend::{
-    bottom_non_empty_lines, contains_any, has_jcode_spinner, jcode_numbered_prompt_line,
-};
+use crate::builtin_detection::scrape::{bottom_non_empty_lines, contains_any, is_braille};
 use crate::builtin_detection::JcodeDetectionVariant;
+
+/// Numbered input prompt line (`N> `) at the start of a line.
+pub(crate) fn jcode_numbered_prompt_line(line: &str) -> bool {
+    let line = line.trim_start();
+    let digit_count = line.chars().take_while(|ch| ch.is_ascii_digit()).count();
+    digit_count > 0
+        && line[digit_count..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch == '>')
+}
+
+/// Spinner line (`⠋ sending… 12s`) at the start of a line.
+pub(crate) fn has_jcode_spinner(text: &str) -> bool {
+    text.lines().any(|line| {
+        let mut chars = line.trim_start().chars();
+        matches!(chars.next(), Some(first) if is_braille(first))
+            && matches!(chars.next(), Some(second) if second.is_whitespace())
+            && chars.any(char::is_alphabetic)
+    })
+}
 
 /// Screen-scrape detection for jcode, selected by variant.
 ///
