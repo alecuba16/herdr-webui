@@ -1,6 +1,8 @@
 //! Screen-scrape status detection for Grok CLI.
 
-use crate::builtin_detection::scrape::{bottom_non_empty_lines, contains_any, starts_with_braille, top_non_empty_lines};
+use crate::builtin_detection::scrape::{
+    bottom_non_empty_lines, contains_any, starts_with_braille, top_non_empty_lines,
+};
 
 pub(crate) fn detect_grok_status(lower: &str) -> &'static str {
     let bottom2 = bottom_non_empty_lines(lower, 2);

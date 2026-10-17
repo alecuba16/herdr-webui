@@ -14,22 +14,36 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde_json::{json, Value};
 
 use crate::builtin_detection::{
+    amp::detect_amp_status,
+    antigravity::detect_antigravity_status,
+    claude::detect_claude_status,
+    claude::has_claude_half_circle_spinner,
+    cline::detect_cline_status,
+    codex::detect_codex_status,
+    copilot::detect_copilot_status,
+    cursor::detect_cursor_status,
+    devin::detect_devin_status,
+    droid::detect_droid_status,
+    gemini::detect_gemini_status,
+    grok::detect_grok_status,
+    hermes::detect_hermes_status,
+    kilo::detect_kilo_status,
+    kimi::detect_kimi_status,
+    kiro::detect_kiro_status,
+    maki::detect_maki_status,
+    opencode::detect_opencode_status,
+    pi::detect_pi_status,
+    qodercli::detect_qodercli_status,
+    qwen::detect_qwen_status,
+    scrape::{bottom_non_empty_lines, contains_any, contains_braille, starts_with_braille},
+};
+use crate::builtin_detection::{
     jcode::{
         detect_jcode_status_with_variant, has_jcode_spinner, is_jcode_active_background_line,
         jcode_blocked as jcode_blocked_markers, jcode_numbered_prompt_line,
         jcode_shell_prompt_line, mentions_jcode_brand,
     },
     JcodeDetectionVariant,
-};
-use crate::builtin_detection::{
-    amp::detect_amp_status, antigravity::detect_antigravity_status, claude::detect_claude_status,
-    claude::has_claude_half_circle_spinner, cline::detect_cline_status, codex::detect_codex_status,
-    copilot::detect_copilot_status, cursor::detect_cursor_status, devin::detect_devin_status,
-    droid::detect_droid_status, gemini::detect_gemini_status, grok::detect_grok_status,
-    hermes::detect_hermes_status, kilo::detect_kilo_status, kimi::detect_kimi_status,
-    kiro::detect_kiro_status, maki::detect_maki_status, opencode::detect_opencode_status,
-    pi::detect_pi_status, qodercli::detect_qodercli_status, qwen::detect_qwen_status,
-    scrape::{bottom_non_empty_lines, contains_any, contains_braille, starts_with_braille},
 };
 use crate::builtin_events::{BuiltinEventHub, PaneEventContext};
 use crate::chat_lens;

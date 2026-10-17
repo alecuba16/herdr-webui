@@ -33,9 +33,7 @@
 //! removed. See `docs/features.md` and `docs/technical-details.md`.
 
 use crate::builtin_detection::scrape::{bottom_non_empty_lines, contains_any, is_braille};
-use crate::builtin_detection::{
-    JcodeDetectionVariant,
-};
+use crate::builtin_detection::JcodeDetectionVariant;
 
 /// Numbered input prompt line (`N> `) at the start of a line.
 pub(crate) fn jcode_numbered_prompt_line(line: &str) -> bool {
