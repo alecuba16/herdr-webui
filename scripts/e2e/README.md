@@ -113,6 +113,23 @@ Related probes: `notes-auth-probe.sh` (all five routes reject
 unauthenticated requests) and `notes-restart-probe.sh` (sidecar
 survives a process restart).
 
+## Mobile composer chord (mobile-chord-e2e)
+
+```sh
+just mobile-chord-e2e   # or: scripts/e2e/run-mobile-chord-e2e.sh
+```
+
+Same real-browser setup on its own ports (server 8931, CDP 9331).
+Covers the mobile composer-in-keybar unit: the composer nests inside
+`#mobileKeyBar` inside the Keys toolbar, the Keys toggle folds/unfolds
+keybar and composer together with the fab tracking aria-pressed, row1
+keeps the classic 8 keys with row2 leading ctrl-enter (21 total), and a
+live tap on the chord key sends the renderer-matching bytes (kitty
+CSI-u `13;5u` when the bridge reports the protocol, legacy `\r`
+otherwise) observed both at the app boundary and on the terminal input
+WebSocket, with the pane executing the pending line (fresh prompt in
+the bridge grid).
+
 ## Utility scripts
 
 - `cdp-driver-helpers.mjs` - shared CDP plumbing for the real-browser drivers

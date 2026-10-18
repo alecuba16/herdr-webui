@@ -59,6 +59,12 @@ chat-colors-e2e:
 content-search-e2e:
     scripts/e2e/run-content-search-e2e.sh
 
+# Real-browser acceptance for the mobile composer-in-keybar unit and the
+# Ctrl+Enter chord key (nesting, Keys toggle, rows, live chord bytes on
+# the input WS, pane executes). See scripts/e2e/README.md.
+mobile-chord-e2e:
+    bash scripts/e2e/run-mobile-chord-e2e.sh
+
 # External-backend graphics probe: isolated herdr 0.9.0 daemon + the webui's
 # protocol.rs types speaking the real ClientShell endpoint protocol. See
 # scripts/e2e/README.md.
