@@ -4745,8 +4745,17 @@ mod tests {
         // "terminal connection failed". A real listener + real accepted
         // stream, not a Cursor, because the fix under test is about the
         // exact error text a real EOF produces on this platform.
+        // pid + counter + nanos: the harness spawns tests in threads that
+        // can tie on nanos (measured ~19% tie rate, ~21us clock granularity),
+        // and a tie plus try_overwrite(true) rebinds the socket so the
+        // wrong listener takes the connect and both tests wedge in
+        // accept()/read forever. The counter breaks the tie.
+        static EOF_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
+        let id = EOF_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "herdr-eof-sock-{}",
+            "herdr-eof-sock-{}-{}-{}",
+            std::process::id(),
+            id,
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
