@@ -1,0 +1,441 @@
+//! End-to-end shed validation against the real `herdr-webui` binary.
+//!
+//! Spawns the production binary in builtin backend mode, drives the real
+//! JSON-lines API socket to mint a workspace/terminal, then speaks the real
+//! client wire protocol (4-byte LE length + bincode frames, TerminalHello
+//! handshake, AttachTerminal, Input) over the real client socket. The
+//! regression under test: a re-attach on a live connection used to
+//! underflow the subscriber pending-bytes counter, so the next output byte
+//! shed a healthy re-attached client with "terminal output backlog
+//! overflow". This test reproduces the exact production sequence:
+//!
+//!   attach -> flood via real shell -> re-attach on the live connection
+//!   -> keep producing output -> client must keep receiving frames.
+//!
+//! bincode encodes the enum variant index as a varint followed by struct
+//! fields in declaration order; the two frames this test needs
+//! (TerminalHello at index 0, Input at index 1) are hand-encoded below.
+//! The Welcome/terminal frames coming back are decoded loosely: the test
+//! only needs the ServerShutdown sentinel with the overflow reason, so it
+//! scans raw frame payloads for the shutdown string instead of fully
+//! decoding ServerMessage (its variant set is large and versioned).
+
+use interprocess::local_socket::{prelude::*, GenericFilePath, Stream};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// Bincode varint (standard config) for small unsigned integers.
+fn varint(mut value: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+    out
+}
+
+fn u32_varint(value: u32) -> Vec<u8> {
+    varint(u64::from(value))
+}
+
+/// Encode `ClientMessage::TerminalHello` (variant 0) with bincode standard
+/// config: varint variant index, then fields in declaration order. Bools
+/// are one byte; u32/u16 use varints under the standard config.
+fn encode_terminal_hello(cols: u16, rows: u16) -> Vec<u8> {
+    let mut out = varint(0); // variant index
+    out.extend(u32_varint(22)); // version: PROTOCOL_VERSION
+    out.extend(varint(u64::from(cols)));
+    out.extend(varint(u64::from(rows)));
+    out.extend(varint(0)); // cell_width_px
+    out.extend(varint(0)); // cell_height_px
+    out.push(0); // pixel_mouse: false
+    out
+}
+
+/// Encode `ClientMessage::Input { data }` (variant 1): index, then the
+/// Vec<u8> as a varint length prefix followed by the bytes.
+fn encode_input(data: &[u8]) -> Vec<u8> {
+    let mut out = varint(1);
+    out.extend(varint(data.len() as u64));
+    out.extend_from_slice(data);
+    out
+}
+
+/// Encode `ClientMessage::AttachTerminal { terminal_id, takeover }`
+/// (variant 5): index, then String as varint length + bytes, then bool.
+fn encode_attach_terminal(terminal_id: &str) -> Vec<u8> {
+    let mut out = varint(5);
+    out.extend(varint(terminal_id.len() as u64));
+    out.extend_from_slice(terminal_id.as_bytes());
+    out.push(1); // takeover: true (matches web attach behavior)
+    out
+}
+
+/// Encode `ClientMessage::Detach` (variant 4): just the index.
+fn encode_detach() -> Vec<u8> {
+    varint(4)
+}
+
+fn write_frame(stream: &mut Stream, payload: &[u8]) {
+    let len = u32::try_from(payload.len()).expect("frame fits u32");
+    stream.write_all(&len.to_le_bytes()).expect("write len");
+    stream.write_all(payload).expect("write payload");
+    stream.flush().expect("flush");
+}
+
+/// One incoming frame from the server: (payload bytes, truncated?).
+/// Frames larger than a loose cap are read fully but flagged.
+fn read_frame(stream: &mut Stream) -> Vec<u8> {
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).expect("read len");
+    let len = u32::from_le_bytes(len_buf) as usize;
+    assert!(len <= 32 * 1024 * 1024, "oversized frame: {len}");
+    let mut payload = vec![0u8; len];
+    stream.read_exact(&mut payload).expect("read payload");
+    payload
+}
+
+struct ServerGuard {
+    child: Child,
+    sockets: Vec<PathBuf>,
+    home: PathBuf,
+}
+
+impl Drop for ServerGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        for socket in &self.sockets {
+            let _ = std::fs::remove_file(socket);
+        }
+        let _ = std::fs::remove_dir_all(&self.home);
+    }
+}
+
+fn wait_for_socket(path: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if path.exists() {
+            std::thread::sleep(Duration::from_millis(200));
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+fn api_request(socket: &Path, line: &str) -> serde_json::Value {
+    let mut stream = Stream::connect(
+        socket
+            .to_fs_name::<GenericFilePath>()
+            .expect("valid socket name"),
+    )
+    .expect("connect api socket");
+    stream
+        .write_all(line.as_bytes())
+        .and_then(|_| stream.write_all(b"\n"))
+        .and_then(|_| stream.flush())
+        .expect("write request");
+    let mut out = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    stream
+        .set_recv_timeout(Some(Duration::from_secs(5)))
+        .expect("set read timeout");
+    loop {
+        if Instant::now() > deadline {
+            panic!("api response timeout for: {line}");
+        }
+        let mut buf = [0u8; 16384];
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                out.extend_from_slice(&buf[..n]);
+                if out.contains(&b'\n') {
+                    break;
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if out.contains(&b'\n') {
+                    break;
+                }
+                continue;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) => panic!("api read failed: {err}"),
+        }
+    }
+    let text = String::from_utf8_lossy(&out);
+    let line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .expect("non-empty response line");
+    serde_json::from_str(line).expect("valid json response")
+}
+
+#[test]
+fn builtin_binary_reattach_survives_output_flood() {
+    let tag = format!(
+        "shed-e2e-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+    let home = std::env::temp_dir().join(&tag);
+    std::fs::create_dir_all(&home).expect("create home");
+    // Socket derivation must mirror the server's builtin_socket_paths()
+    // exactly, including its over-limit fallback to /tmp/herdr-webui-
+    // builtin-<hash>: the canonical path under a long settings dir exceeds
+    // SOCKET_PATH_LIMIT and the server silently relocates. The server
+    // derives sockets from server_settings_path().parent(), which is
+    // XDG_CONFIG_HOME/herdr-webui; use the same helper with the same
+    // settings dir so both sides land on byte-identical socket paths.
+    let settings_dir = home.join("herdr-webui");
+    let (api_socket, client_socket) =
+        herdr_webui::socket_paths::builtin_socket_paths_in(&settings_dir, Some("shed-e2e"));
+
+    let bin = env!("CARGO_BIN_EXE_herdr-webui");
+    let child = Command::new(bin)
+        .arg("--https")
+        .arg("off")
+        .arg("--bind")
+        .arg("127.0.0.1:0")
+        .arg("--session")
+        .arg("shed-e2e")
+        .arg("--backend-mode")
+        .arg("builtin")
+        .env("XDG_CONFIG_HOME", &home)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn herdr-webui binary");
+
+    let mut guard = ServerGuard {
+        child,
+        sockets: vec![api_socket.clone(), client_socket.clone()],
+        home,
+    };
+
+    assert!(
+        wait_for_socket(&api_socket, Duration::from_secs(30)),
+        "api socket never appeared; binary may have failed to start"
+    );
+    assert!(
+        wait_for_socket(&client_socket, Duration::from_secs(10)),
+        "client socket never appeared"
+    );
+
+    // Mint a workspace with a live terminal through the real JSON API.
+    let ws = api_request(
+        &api_socket,
+        r#"{"id":"1","method":"workspace.create","params":{"label":"shed-e2e"}}"#,
+    );
+    assert!(ws["result"].is_object(), "workspace.create failed: {ws}");
+    // The builtin API returns workspace/tab/root_pane JSON; only the
+    // terminal id matters for the client wire protocol.
+    let terminal_id = ws["result"]["root_pane"]["terminal_id"]
+        .as_str()
+        .or_else(|| ws["result"]["root_pane"]["pane_id"].as_str())
+        .expect("terminal id in workspace.create result")
+        .to_string();
+
+    // --- Client wire protocol: real handshake ---
+    let client_socket_name = client_socket
+        .to_fs_name::<GenericFilePath>()
+        .expect("valid client socket name");
+    let mut client = Stream::connect(client_socket_name.clone()).expect("connect client socket");
+    write_frame(&mut client, &encode_terminal_hello(120, 40));
+    let welcome = read_frame(&mut client);
+    // Welcome is variant 0; the error field is Option<String> (None = 0)
+    // after version varint and encoding varint. A handshake rejection
+    // carries a Some(reason) string; assert loosely.
+    assert!(welcome.len() >= 4, "welcome frame too small");
+    assert!(
+        !welcome
+            .windows(20)
+            .any(|w| w == b"older than server".as_slice()),
+        "handshake rejected: {:?}",
+        String::from_utf8_lossy(&welcome)
+    );
+
+    // First attach: history replay arrives as a Terminal frame. Even an
+    // empty history yields a valid frame (variant index + headers), so
+    // only require decodability, not a size floor.
+    write_frame(&mut client, &encode_attach_terminal(&terminal_id));
+    let replay = read_frame(&mut client);
+    assert!(!replay.is_empty(), "expected history replay frame");
+
+    // --- Flood the real shell with sustained output ---
+    // The shell command generates the volume; each burst must come back as
+    // Terminal frames while the subscriber stays healthy. The echoed
+    // command itself would match the marker, so the typed command uses
+    // FL""OOD quoting: the PTY echo shows the quotes while the shell's
+    // output shows the plain marker. A per-burst deadline surfaces a shed
+    // instead of hanging forever.
+    let flood_cmd = "for i in $(seq 1 1000); do echo FL\"\"OOD-$i-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345; done; echo FL\"\"OOD-DONE-$RANDOM\n";
+    let marker: &[u8] = b"FLOOD-DONE-";
+    let bursts = 40u32;
+    for burst in 0..bursts {
+        write_frame(&mut client, &encode_input(flood_cmd.as_bytes()));
+        let burst_deadline = Instant::now() + Duration::from_secs(30);
+        let mut saw_marker = false;
+        while Instant::now() < burst_deadline && !saw_marker {
+            client
+                .set_recv_timeout(Some(Duration::from_millis(250)))
+                .expect("set read timeout");
+            match read_frame_nonblocking(&mut client) {
+                Some(payload) => {
+                    saw_marker = count_marker(&payload, marker) >= 1;
+                }
+                None => continue,
+            }
+        }
+        assert!(
+            saw_marker,
+            "burst {burst} never finished; client likely shed mid-flood"
+        );
+    }
+
+    // Drop this connection and open a fresh one whose FIRST attach carries
+    // the accumulated history. This matters for the regression's shape:
+    // the pre-fix writer subtracts the first-attach replay length (its
+    // captured `replay_len`) when it later processes a re-attach replay, so
+    // the counter wraps to usize::MAX - replay_len. A later output chunk
+    // then fetch_add's its own length: when the chunk exceeds the debt the
+    // add wraps the counter back below the shed cap and the bug is masked
+    // (a near-empty first history hides it). A first attach over the full
+    // flooded scrollback makes the debt (~1.7MB) dwarf every probe chunk
+    // (~100B), so on unfixed code the counter stays above the cap and the
+    // shed fires deterministically.
+    write_frame(&mut client, &encode_detach());
+    drop(client);
+    let mut client = Stream::connect(client_socket_name).expect("reconnect client socket");
+    write_frame(&mut client, &encode_terminal_hello(120, 40));
+    let welcome2 = read_frame(&mut client);
+    assert!(!welcome2.is_empty(), "expected welcome on reconnect");
+    write_frame(&mut client, &encode_attach_terminal(&terminal_id));
+    // The first replay on this connection is the full flooded history.
+    let replay = read_frame(&mut client);
+    assert!(!replay.is_empty(), "expected history replay on reconnect");
+
+    // --- Quiesce: drive the pending counter to exactly zero ---
+    // The pre-fix writer subtracts the first-attach replay length from the
+    // counter when it processes the re-attach replay, wrapping only when
+    // the counter is zero at that instant. Drain until the shell goes
+    // silent so the re-attach replay is the only thing in flight.
+    let quiesce_deadline = Instant::now() + Duration::from_secs(10);
+    let mut last_frame = Instant::now();
+    while Instant::now() < quiesce_deadline {
+        if last_frame.elapsed() < Duration::from_secs(1) {
+            client
+                .set_recv_timeout(Some(Duration::from_millis(100)))
+                .expect("set read timeout");
+            if read_frame_nonblocking(&mut client).is_some() {
+                last_frame = Instant::now();
+            }
+        } else {
+            break;
+        }
+    }
+
+    // --- The regression: re-attach on the live connection ---
+    // Before the fix, this queued a replay frame without charging the
+    // pending counter; the writer subtracted the first attach's captured
+    // replay length from a counter that never received it, wrapping to
+    // usize::MAX - debt, and the next output byte shed the client. After
+    // the fix the re-attach replay is charged, the subtraction balances,
+    // and output keeps flowing.
+    write_frame(&mut client, &encode_attach_terminal(&terminal_id));
+    let replay2 = read_frame(&mut client);
+    assert!(!replay2.is_empty(), "expected re-attach history frame");
+
+    // --- Two-round health probe: the actual shed detector ---
+    // The chunk that trips the pending counter is still delivered (its
+    // send succeeded before the shed check), so a single marker after
+    // re-attach passes even on unfixed code. The shed only becomes
+    // visible on the NEXT round of output: the subscriber is gone, so
+    // nothing after the trip ever reaches this socket. Require markers
+    // from two further commands; on unfixed code round 1 either delivers
+    // the queued "backlog overflow" shutdown or goes silent.
+    for round in 0..2 {
+        let probe_cmd = format!("echo PROBE{round}-AL\"\"IVE-OK\n");
+        let probe_marker = format!("PROBE{round}-ALIVE-OK");
+        write_frame(&mut client, &encode_input(probe_cmd.as_bytes()));
+        let probe_deadline = Instant::now() + Duration::from_secs(10);
+        let mut probe_ok = false;
+        while Instant::now() < probe_deadline && !probe_ok {
+            client
+                .set_recv_timeout(Some(Duration::from_millis(250)))
+                .expect("set read timeout");
+            match read_frame_nonblocking(&mut client) {
+                Some(payload) => {
+                    if payload
+                        .windows(b"backlog overflow".len())
+                        .any(|w| w == b"backlog overflow")
+                    {
+                        panic!("client was shed after re-attach (overflow shutdown frame)");
+                    }
+                    probe_ok = count_marker(&payload, probe_marker.as_bytes()) >= 1;
+                }
+                None => continue,
+            }
+        }
+        assert!(
+            probe_ok,
+            "probe round {round} produced no output; subscriber was shed on re-attach"
+        );
+    }
+
+    // Detach cleanly; the child must still be alive.
+    write_frame(&mut client, &encode_detach());
+    let status = guard
+        .child
+        .try_wait()
+        .expect("try_wait on child")
+        .map(|status| status.success());
+    assert_eq!(status, None, "binary exited during the test");
+
+    drop(guard);
+}
+
+/// Occurrences of the flood completion marker in a frame payload. The
+/// typed command quotes the marker (FL""OOD-DONE) so the PTY echo never
+/// matches; only real shell output does.
+fn count_marker(payload: &[u8], marker: &[u8]) -> usize {
+    payload
+        .windows(marker.len())
+        .filter(|window| *window == marker)
+        .count()
+}
+
+/// Non-blocking-ish frame read: None when no full frame is available
+/// within the socket's current read timeout.
+fn read_frame_nonblocking(stream: &mut Stream) -> Option<Vec<u8>> {
+    let mut len_buf = [0u8; 4];
+    match stream.read_exact(&mut len_buf) {
+        Ok(()) => {}
+        Err(err)
+            if err.kind() == std::io::ErrorKind::WouldBlock
+                || err.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            return None
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::Interrupted => return None,
+        Err(err) => panic!("frame read failed: {err}"),
+    }
+    let len = u32::from_le_bytes(len_buf) as usize;
+    assert!(len <= 32 * 1024 * 1024, "oversized frame: {len}");
+    let mut payload = vec![0u8; len];
+    stream.read_exact(&mut payload).expect("read payload");
+    Some(payload)
+}
