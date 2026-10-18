@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -62,6 +62,9 @@ const BUILTIN_VERSION: &str = "builtin-0.1.0";
 const PROTOCOL_VERSION: u32 = 22;
 const MAX_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MAX_SCROLLBACK_BYTES: usize = 8 * 1024 * 1024;
+// Per-subscriber live-output backlog before the subscriber is shed. Must
+// exceed MAX_SCROLLBACK_BYTES so a full-history replay never trips the shed.
+const MAX_SUBSCRIBER_PENDING_BYTES: usize = 2 * MAX_SCROLLBACK_BYTES;
 const DETECTION_TAIL_BYTES: usize = 64 * 1024;
 /// Tail the chat-resolution PaneContext carries. The recency tiebreak
 /// matches a <=400-char chunk of the candidate's last assistant text
@@ -496,7 +499,6 @@ fn handle_client_connection(
 
     let mut attached: Option<Arc<TerminalRuntime>> = None;
     let mut writer_started = false;
-    let mut seq = 1_u64;
     let terminal_size = Arc::new(Mutex::new((cols, rows)));
     loop {
         let message = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE)?;
@@ -507,28 +509,51 @@ fn handle_client_connection(
                     .terminal(&terminal_id)
                     .ok_or_else(|| format!("terminal {terminal_id} not found"))?;
                 terminal.resize(rows, cols);
+                // The socket is written only by the writer thread from here
+                // on. Writing the history frame from this loop while the
+                // writer thread pumps live output interleaved two `write_all`
+                // sequences mid-frame; the reader then decoded garbage frames
+                // ("trailing bytes in frame") and whole PTY bursts were lost
+                // when bulk output floods raced the attach replay.
                 let history = terminal.history_bytes();
-                write_message(
-                    &mut stream,
-                    &ServerMessage::Terminal(TerminalFrame {
-                        seq,
+                if !writer_started {
+                    let (tx, rx) = mpsc::channel::<TerminalSubscriberMessage>();
+                    let pending_bytes = Arc::new(AtomicUsize::new(0));
+                    let replay_len = history.len().max(1);
+                    pending_bytes.fetch_add(replay_len, Ordering::AcqRel);
+                    let history_frame = ServerMessage::Terminal(TerminalFrame {
+                        seq: 1,
                         width: cols,
                         height: rows,
                         full: true,
                         bytes: history,
-                    }),
-                )?;
-                seq += 1;
-                if !writer_started {
-                    let (tx, rx) = mpsc::sync_channel::<TerminalSubscriberMessage>(256);
-                    terminal.subscribe(tx);
+                    });
+                    let subscriber = TerminalSubscriber {
+                        tx,
+                        pending_bytes: Arc::clone(&pending_bytes),
+                    };
+                    if subscriber
+                        .tx
+                        .send(TerminalSubscriberMessage::Replay(history_frame))
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    terminal.subscribe(subscriber);
                     let mut writer = stream.try_clone().map_err(|err| err.to_string())?;
                     let terminal_size = Arc::clone(&terminal_size);
                     thread::spawn(move || {
-                        let mut seq = seq;
+                        let mut seq = 2_u64;
                         while let Ok(message) = rx.recv() {
                             match message {
+                                TerminalSubscriberMessage::Replay(frame) => {
+                                    pending_bytes.fetch_sub(replay_len, Ordering::AcqRel);
+                                    if write_message(&mut writer, &frame).is_err() {
+                                        break;
+                                    }
+                                }
                                 TerminalSubscriberMessage::Output(bytes) => {
+                                    pending_bytes.fetch_sub(bytes.len(), Ordering::AcqRel);
                                     let (width, height) = terminal_size
                                         .lock()
                                         .map(|size| *size)
@@ -553,6 +578,17 @@ fn handle_client_connection(
                                         &mut writer,
                                         &ServerMessage::ServerShutdown {
                                             reason: Some("terminal exited".to_string()),
+                                        },
+                                    );
+                                    break;
+                                }
+                                TerminalSubscriberMessage::Overflow => {
+                                    let _ = write_message(
+                                        &mut writer,
+                                        &ServerMessage::ServerShutdown {
+                                            reason: Some(
+                                                "terminal output backlog overflow".to_string(),
+                                            ),
                                         },
                                     );
                                     break;
@@ -2159,7 +2195,7 @@ struct TerminalRuntime {
     child: Mutex<Option<Box<dyn Child + Send + Sync>>>,
     writer: Mutex<Box<dyn Write + Send>>,
     scrollback: Mutex<VecDeque<u8>>,
-    subscribers: Mutex<Vec<mpsc::SyncSender<TerminalSubscriberMessage>>>,
+    subscribers: Mutex<Vec<TerminalSubscriber>>,
     osc9_tracker: Mutex<Osc9Tracker>,
     exited: AtomicBool,
     jcode_detection_variant: JcodeDetectionVariant,
@@ -2172,7 +2208,24 @@ enum TerminalSubscriberMessage {
     // (Before: each subscriber got its own to_vec() copy per chunk, which
     // multiplied PTY output volume by the subscriber count.)
     Output(Arc<Vec<u8>>),
+    // Attach replay frame. Queued as the first message on the writer
+    // channel so the history write and live output writes are serialized
+    // by the same thread instead of racing on a dup'ed socket.
+    Replay(ServerMessage),
     Exited,
+    // Terminal output backlog exceeded MAX_SUBSCRIBER_PENDING_BYTES: the
+    // writer thread sends a shutdown frame instead of leaving the client
+    // blocked on read_message forever.
+    Overflow,
+}
+
+/// One attached terminal client. Unbounded queue: a slow client never
+/// silently loses output while it catches up. `pending_bytes` bounds memory
+/// for clients that stopped reading; on overflow the subscriber is shed
+/// with an explicit Overflow notice, never a silent drop.
+struct TerminalSubscriber {
+    tx: mpsc::Sender<TerminalSubscriberMessage>,
+    pending_bytes: Arc<AtomicUsize>,
 }
 
 /// Open a pty, retrying transient failures. Under parallel test load (and
@@ -2405,13 +2458,13 @@ impl TerminalRuntime {
         }
     }
 
-    fn subscribe(&self, tx: mpsc::SyncSender<TerminalSubscriberMessage>) {
+    fn subscribe(&self, subscriber: TerminalSubscriber) {
         if self.exited.load(Ordering::Acquire) {
-            let _ = tx.try_send(TerminalSubscriberMessage::Exited);
+            let _ = subscriber.tx.send(TerminalSubscriberMessage::Exited);
             return;
         }
         if let Ok(mut subscribers) = self.subscribers.lock() {
-            subscribers.push(tx);
+            subscribers.push(subscriber);
         }
     }
 
@@ -2477,10 +2530,35 @@ impl TerminalRuntime {
         }
         if let Ok(mut subscribers) = self.subscribers.lock() {
             let payload = TerminalSubscriberMessage::Output(Arc::new(bytes.to_vec()));
-            subscribers.retain(|tx| match tx.try_send(payload.clone()) {
-                Ok(()) => true,
-                Err(mpsc::TrySendError::Full(_)) => false,
-                Err(mpsc::TrySendError::Disconnected(_)) => false,
+            // Count the chunk before queueing: the writer decrements on
+            // dequeue, so the add must land first or the counter wraps.
+            subscribers.retain(|subscriber| {
+                subscriber
+                    .pending_bytes
+                    .fetch_add(bytes.len(), Ordering::AcqRel);
+                match subscriber.tx.send(payload.clone()) {
+                    Ok(()) => {
+                        if subscriber.pending_bytes.load(Ordering::Acquire)
+                            > MAX_SUBSCRIBER_PENDING_BYTES
+                        {
+                            // Shed, but queue an Overflow notice behind the
+                            // backlog so the writer can tell the client.
+                            let _ = subscriber
+                                .tx
+                                .send(TerminalSubscriberMessage::Overflow);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    Err(_) => {
+                        // Disconnected writer never dequeues: undo the add.
+                        subscriber
+                            .pending_bytes
+                            .fetch_sub(bytes.len(), Ordering::AcqRel);
+                        false
+                    }
+                }
             });
         }
         // Invalidate cached agent presentation so next agent.list recomputes
@@ -2551,10 +2629,11 @@ impl TerminalRuntime {
             }),
         );
         if let Ok(mut subscribers) = self.subscribers.lock() {
-            subscribers.retain(|tx| match tx.try_send(TerminalSubscriberMessage::Exited) {
-                Ok(()) => false,
-                Err(mpsc::TrySendError::Full(_)) => false,
-                Err(mpsc::TrySendError::Disconnected(_)) => false,
+            subscribers.retain(|subscriber| {
+                matches!(
+                    subscriber.tx.send(TerminalSubscriberMessage::Exited),
+                    Ok(())
+                )
             });
         }
     }
@@ -6445,13 +6524,18 @@ mod tests {
             JcodeDetectionVariant::Vanilla,
         )
         .unwrap();
-        let (tx, rx) = mpsc::sync_channel(8);
-        terminal.subscribe(tx);
+        let (tx, rx) = mpsc::channel();
+        terminal.subscribe(TerminalSubscriber {
+            tx,
+            pending_bytes: Arc::new(AtomicUsize::new(0)),
+        });
 
         let mut saw_exit = false;
         for _ in 0..8 {
             match rx.recv_timeout(Duration::from_secs(1)).unwrap() {
                 TerminalSubscriberMessage::Output(_) => {}
+                TerminalSubscriberMessage::Replay(_) => {}
+                TerminalSubscriberMessage::Overflow => {}
                 TerminalSubscriberMessage::Exited => {
                     saw_exit = true;
                     break;
@@ -6507,12 +6591,17 @@ mod tests {
         .unwrap();
 
         // Wait for exit.
-        let (tx, rx) = mpsc::sync_channel(8);
-        terminal.subscribe(tx);
+        let (tx, rx) = mpsc::channel();
+        terminal.subscribe(TerminalSubscriber {
+            tx,
+            pending_bytes: Arc::new(AtomicUsize::new(0)),
+        });
         let mut saw_exit = false;
         for _ in 0..8 {
             match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
                 TerminalSubscriberMessage::Output(_) => {}
+                TerminalSubscriberMessage::Replay(_) => {}
+                TerminalSubscriberMessage::Overflow => {}
                 TerminalSubscriberMessage::Exited => {
                     saw_exit = true;
                     break;
@@ -6766,12 +6855,17 @@ mod tests {
         terminal.update_agent_exit_record(None, true);
 
         // Wait for the reader thread to see the shell exit.
-        let (tx, rx) = mpsc::sync_channel(8);
-        terminal.subscribe(tx);
+        let (tx, rx) = mpsc::channel();
+        terminal.subscribe(TerminalSubscriber {
+            tx,
+            pending_bytes: Arc::new(AtomicUsize::new(0)),
+        });
         let mut saw_exit = false;
         for _ in 0..16 {
             match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
                 TerminalSubscriberMessage::Output(_) => {}
+                TerminalSubscriberMessage::Replay(_) => {}
+                TerminalSubscriberMessage::Overflow => {}
                 TerminalSubscriberMessage::Exited => {
                     saw_exit = true;
                     break;
@@ -8935,6 +9029,177 @@ mod tests {
             ServerMessage::Terminal(_) => {}
             other => panic!("expected Terminal frame after attach, got {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_socket_replay_survives_output_flood_during_attach() {
+        // Regression guard: the attach replay frame and live output frames
+        // used to be written from two threads on the same dup'ed socket, so a
+        // PTY output burst racing the attach replay interleaved `write_all`
+        // sequences mid-frame. The reader then failed with "trailing bytes in
+        // frame" and whole bursts were lost. Drive a flood through a second
+        // attach while the first one replays, then prove the stream stays
+        // frame-exact and every flooded line is delivered.
+        let base = format!(
+            "/tmp/herdr-webui-flood-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        );
+        let api_socket = PathBuf::from(format!("{base}-api.sock"));
+        let client_socket = PathBuf::from(format!("{base}-client.sock"));
+        let _handle = BuiltinBackendHandle::start(BuiltinBackendConfig {
+            api_socket: api_socket.clone(),
+            client_socket,
+            cwd: std::env::temp_dir(),
+            shell: Some(default_shell()),
+            jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+        })
+        .unwrap();
+        let request = |line: &str| -> Value {
+            let mut api = connect_local_stream(&api_socket).unwrap();
+            api.write_all(line.as_bytes()).unwrap();
+            api.write_all(b"\n").unwrap();
+            api.flush().unwrap();
+            let mut reader = BufReader::new(api);
+            let mut out = String::new();
+            reader.read_line(&mut out).unwrap();
+            serde_json::from_str(&out).unwrap()
+        };
+        let workspace =
+            request(r#"{"id":"seed","method":"workspace.create","params":{"label":"flood"}}"#);
+        let workspace_id = workspace["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let tab = request(&format!(
+            r#"{{"id":"tab","method":"tab.create","params":{{"workspace_id":"{workspace_id}"}}}}"#
+        ));
+        let terminal_id = tab["result"]["root_pane"]["terminal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let attach = || -> LocalStream {
+            let mut client =
+                connect_local_stream(&PathBuf::from(format!("{base}-client.sock"))).unwrap();
+            write_message(
+                &mut client,
+                &ClientMessage::TerminalHello {
+                    version: 22,
+                    cols: 80,
+                    rows: 24,
+                    cell_width_px: 0,
+                    cell_height_px: 0,
+                    pixel_mouse: false,
+                },
+            )
+            .unwrap();
+            match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE).unwrap() {
+                ServerMessage::Welcome { error: None, .. } => {}
+                ServerMessage::Welcome {
+                    error: Some(err), ..
+                } => panic!("builtin backend rejected attach: {err}"),
+                other => panic!("expected Welcome, got {other:?}"),
+            }
+            write_message(
+                &mut client,
+                &ClientMessage::AttachTerminal {
+                    terminal_id: terminal_id.clone(),
+                    takeover: true,
+                },
+            )
+            .unwrap();
+            client
+        };
+
+        // Attach the driver first, then flood while it streams, then race
+        // fresh attaches against the running burst: each new connection's
+        // attach replay used to be written from the connection loop while
+        // that connection's own writer thread (subscribed microseconds
+        // earlier) pumped live output, interleaving two `write_all` sequences
+        // mid-frame on the dup'ed socket. The readers here decode every
+        // frame; the old interleaving surfaced as "trailing bytes in frame"
+        // within a few mid-flood attaches.
+        let mut driver = attach();
+        let driver_stream = Arc::new(Mutex::new(String::new()));
+        let driver_reader = {
+            let driver_stream = Arc::clone(&driver_stream);
+            let driver = driver.try_clone().expect("clone driver socket");
+            thread::spawn(move || {
+                let mut client = driver;
+                let deadline = Instant::now() + Duration::from_secs(60);
+                while Instant::now() < deadline {
+                    match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE) {
+                        Ok(ServerMessage::Terminal(frame)) => {
+                            let text = String::from_utf8_lossy(&frame.bytes);
+                            driver_stream
+                                .lock()
+                                .expect("driver stream lock")
+                                .push_str(&text);
+                            if text.contains("FLOOD_DONE") {
+                                break;
+                            }
+                        }
+                        Ok(ServerMessage::ServerShutdown { .. }) => break,
+                        Ok(_) => {}
+                        Err(err) => panic!("driver attach stream broke: {err}"),
+                    }
+                }
+            })
+        };
+        write_message(
+            &mut driver,
+            &ClientMessage::Input {
+                data: b"printf 'FLOOD-LINE-%05d\\n' $(seq 1 60000); echo FLOOD_\"DONE\"\n"
+                    .to_vec(),
+            },
+        )
+        .unwrap();
+
+        // Attach fresh connections while the burst streams. Each attach gets
+        // a replay of the history accumulated so far (which keeps growing,
+        // so replay writes get longer and race harder) plus the live tail.
+        let mut probe_lines = 0usize;
+        for _ in 0..4 {
+            thread::sleep(Duration::from_millis(30));
+            let probe = attach();
+            let probe_reader = thread::spawn(move || {
+                let mut client = probe;
+                let mut stream = String::new();
+                let deadline = Instant::now() + Duration::from_secs(60);
+                while Instant::now() < deadline {
+                    match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE) {
+                        Ok(ServerMessage::Terminal(frame)) => {
+                            stream.push_str(&String::from_utf8_lossy(&frame.bytes));
+                            if stream.contains("FLOOD_DONE") {
+                                break;
+                            }
+                        }
+                        Ok(ServerMessage::ServerShutdown { .. }) => break,
+                        Ok(_) => {}
+                        Err(err) => panic!("mid-flood attach stream broke: {err}"),
+                    }
+                }
+                stream.matches("FLOOD-LINE-").count()
+            });
+            probe_lines += probe_reader.join().expect("probe reader panicked");
+        }
+        driver_reader.join().expect("driver reader panicked");
+        let driver_lines = driver_stream
+            .lock()
+            .expect("driver stream lock")
+            .matches("FLOOD-LINE-")
+            .count();
+
+        assert!(
+            driver_lines >= 60000,
+            "driver attach lost flood output: saw {driver_lines} of 60000 FLOOD-LINE markers"
+        );
+        assert!(
+            probe_lines > 0,
+            "mid-flood attaches saw no flood output (driver saw {driver_lines})"
+        );
     }
 
     #[cfg(unix)]
