@@ -2838,6 +2838,118 @@ fn rejects_framed_protocol_message_with_trailing_bytes() {
         read_message::<_, ClientMessage>(&mut Cursor::new(bytes), MAX_FRAME_SIZE).unwrap_err();
 
     assert!(err.contains("trailing bytes"));
+    // The head and consumed-count were added after a framing desync showed
+    // up as a bare "trailing bytes" that could not tell a misdecoded
+    // variant from a mid-frame shift (a 16KB Input frame decoded 130 of
+    // 16388 bytes and nothing in the error said which).
+    assert!(err.contains("head"));
+    assert!(err.contains("decoded"));
+}
+
+#[test]
+fn truncated_framed_protocol_errors_name_the_stage_and_length() {
+    // EOF before any length byte vs EOF mid-body must be tellable apart
+    // from the error alone; each carries the frame length in play.
+    let empty = read_message::<_, ClientMessage>(&mut Cursor::new([]), MAX_FRAME_SIZE).unwrap_err();
+    assert!(empty.starts_with("read frame length"), "{empty}");
+    assert!(empty.contains("kind UnexpectedEof"), "{empty}");
+
+    let payload =
+        bincode::serde::encode_to_vec(&ClientMessage::Detach, bincode::config::standard()).unwrap();
+    let mut truncated = Vec::new();
+    truncated.extend_from_slice(&u32::try_from(payload.len() + 64).unwrap().to_le_bytes());
+    truncated.extend_from_slice(&payload);
+    let mid_body =
+        read_message::<_, ClientMessage>(&mut Cursor::new(truncated), MAX_FRAME_SIZE).unwrap_err();
+    assert!(
+        mid_body.contains("failed to fill whole buffer"),
+        "{mid_body}"
+    );
+    assert!(
+        mid_body.contains(&format!("read {}-byte frame body", payload.len() + 64)),
+        "{mid_body}"
+    );
+}
+
+#[test]
+fn client_message_wire_goldens_match_the_hand_rolled_mirrors() {
+    // The e2e suites (tests/input_rate_e2e.rs, tests/shed_binary_e2e.rs)
+    // hand-roll ClientMessage payloads because the types are pub(crate)
+    // and unreachable from integration tests. Those mirrors cannot be
+    // compared against the real encoder directly, so both sides pin
+    // these exact byte goldens: the mirror tests assert the same vectors,
+    // and this test asserts the real ClientMessage encodes to them through
+    // the production write path (bincode::serde, standard config). Any
+    // drift - variant index, field order, bool byte, length-prefix scheme -
+    // fails here with a byte-level diff instead of desyncing a live
+    // handshake with "trailing bytes in frame".
+    let hello = bincode::serde::encode_to_vec(
+        &ClientMessage::TerminalHello {
+            version: PROTOCOL_VERSION,
+            cols: 120,
+            rows: 40,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            pixel_mouse: false,
+        },
+        bincode::config::standard(),
+    )
+    .unwrap();
+    assert_eq!(
+        hello,
+        vec![
+            0x00,                   // TerminalHello variant index (varint)
+            PROTOCOL_VERSION as u8, // version: 22 fits one varint byte
+            120,                    // cols
+            40,                     // rows
+            0,                      // cell_width_px
+            0,                      // cell_height_px
+            0,                      // pixel_mouse: false is one zero byte
+        ]
+    );
+
+    // 16 KiB is the frame size the flood tests actually push, so pin the
+    // length prefix at that size: 16384 = 0x4000 > 250, so bincode emits
+    // the FB marker + u16 LE (00 40), the exact shape the old LEB128
+    // mirror got wrong (it produced 80 80 01 and desynced framing).
+    let input = bincode::serde::encode_to_vec(
+        &ClientMessage::Input {
+            data: vec![b'x'; 16384],
+        },
+        bincode::config::standard(),
+    )
+    .unwrap();
+    assert_eq!(&input[..4], &[0x01, 0xFB, 0x00, 0x40]);
+    assert_eq!(input.len(), 4 + 16384);
+    assert_eq!(&input[4..], &[b'x'; 16384][..]);
+
+    // Small Vec: length 5 stays inline (< 251).
+    let small = bincode::serde::encode_to_vec(
+        &ClientMessage::Input {
+            data: vec![0xAB; 5],
+        },
+        bincode::config::standard(),
+    )
+    .unwrap();
+    assert_eq!(small, [0x01, 0x05, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB]);
+
+    let attach = bincode::serde::encode_to_vec(
+        &ClientMessage::AttachTerminal {
+            terminal_id: "probe-tty".to_string(),
+            takeover: true,
+        },
+        bincode::config::standard(),
+    )
+    .unwrap();
+    assert_eq!(
+        attach,
+        vec![
+            0x05, // AttachTerminal variant index (Detach=4 sits before it)
+            0x09, // String length as varint: "probe-tty" is 9 bytes
+            b'p', b'r', b'o', b'b', b'e', b'-', b't', b't', b'y',
+            0x01, // takeover: true is one 0x01 byte
+        ]
+    );
 }
 
 #[tokio::test]
