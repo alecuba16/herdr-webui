@@ -26,21 +26,30 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Bincode varint (standard config) for small unsigned integers.
-fn varint(mut value: u64) -> Vec<u8> {
-    let mut out = Vec::new();
-    loop {
-        let mut byte = (value & 0x7f) as u8;
-        value >>= 7;
-        if value != 0 {
-            byte |= 0x80;
+/// bincode standard config varint (verified against bincode 2.0.1's own
+/// `encode_to_vec`): values <= 250 are a single byte; larger values use a
+/// marker byte (FB = u16 LE, FC = u32 LE, FD = u64 LE) carrying the whole
+/// number. NOT LEB128: a hand-rolled 7-bit encoder diverges at 128 and
+/// desyncs framing for any Input frame larger than 127 bytes.
+fn varint(value: u64) -> Vec<u8> {
+    match value {
+        0..=250 => vec![value as u8],
+        251..=0xFFFF => {
+            let mut out = vec![0xFB];
+            out.extend_from_slice(&(value as u16).to_le_bytes());
+            out
         }
-        out.push(byte);
-        if value == 0 {
-            break;
+        0x1_0000..=0xFFFF_FFFF => {
+            let mut out = vec![0xFC];
+            out.extend_from_slice(&(value as u32).to_le_bytes());
+            out
+        }
+        _ => {
+            let mut out = vec![0xFD];
+            out.extend_from_slice(&value.to_le_bytes());
+            out
         }
     }
-    out
 }
 
 fn u32_varint(value: u32) -> Vec<u8> {
@@ -237,6 +246,96 @@ fn api_request(socket: &Path, line: &str) -> serde_json::Value {
         .find(|line| !line.trim().is_empty())
         .expect("non-empty response line");
     serde_json::from_str(line).expect("valid json response")
+}
+
+#[test]
+fn varint_matches_bincode_across_the_value_space() {
+    // The wire-format mirror above was wrong once (LEB128 vs bincode's
+    // marker scheme) and desynced every large frame; this sweep locks it
+    // to the real encoder so it cannot drift again. Covers every scheme
+    // boundary (250/251 inline, FB u16, FC u32, FD u64) plus the frame
+    // lengths the flood test actually encodes.
+    let probes: Vec<u64> = [
+        0,
+        1,
+        127,
+        128,
+        249,
+        250,
+        251,
+        252,
+        255,
+        256,
+        u16::MAX as u64 - 1,
+        u16::MAX as u64,
+        u16::MAX as u64 + 1,
+        u32::MAX as u64 - 1,
+        u32::MAX as u64,
+        u32::MAX as u64 + 1,
+        u64::MAX,
+        16383,
+        16384,
+        16385,
+    ]
+    .into();
+    for value in probes {
+        assert_eq!(
+            varint(value),
+            bincode::encode_to_vec(value, bincode::config::standard()).unwrap(),
+            "varint({value}) diverged from bincode"
+        );
+    }
+}
+
+#[test]
+fn mirror_encodings_match_the_protocol_wire_goldens() {
+    // Same byte vectors as client_message_wire_goldens_match_the_hand_
+    // rolled_mirrors in src/tests.rs, which encodes the REAL
+    // ClientMessage through the production bincode path. This suite
+    // cannot import the pub(crate) type, so both sides pin these
+    // goldens: a drift fails fast here at test time instead of
+    // desyncing a live handshake with "trailing bytes in frame".
+    assert_eq!(
+        encode_terminal_hello(120, 40),
+        [
+            0x00, // TerminalHello variant index (varint)
+            22,   // version: PROTOCOL_VERSION fits one varint byte
+            120,  // cols
+            40,   // rows
+            0,    // cell_width_px
+            0,    // cell_height_px
+            0,    // pixel_mouse: false is one zero byte
+        ]
+    );
+
+    // 16 KiB Input frame: the size the flood pushes. Length 16384 =
+    // 0x4000 > 250, so bincode emits FB + u16 LE (00 40); the old LEB128
+    // mirror emitted 80 80 01 here and desynced framing.
+    let big = vec![b'x'; 16384];
+    let big_encoded = encode_input(&big);
+    assert_eq!(&big_encoded[..4], &[0x01, 0xFB, 0x00, 0x40]);
+    assert_eq!(big_encoded.len(), 4 + 16384);
+    assert_eq!(&big_encoded[4..], &big[..]);
+
+    // Small Vec: length 5 stays inline (< 251).
+    assert_eq!(
+        encode_input(&[0xAB; 5]),
+        [0x01, 0x05, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB]
+    );
+
+    // AttachTerminal: variant 5 (Detach=4 sits before it), String as
+    // varint length + bytes, bool takeover as a single 0x01 byte.
+    assert_eq!(
+        encode_attach_terminal("probe-tty"),
+        vec![
+            0x05, // AttachTerminal variant index
+            0x09, // "probe-tty".len() as varint (9 bytes)
+            b'p', b'r', b'o', b'b', b'e', b'-', b't', b't', b'y', 0x01, // takeover: true
+        ]
+    );
+
+    // Detach is just the variant index: one zero-cost byte.
+    assert_eq!(encode_detach(), [0x04]);
 }
 
 #[test]

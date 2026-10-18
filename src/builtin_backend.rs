@@ -457,11 +457,35 @@ fn handle_api_connection(
     write_json_line(&mut stream, &response)
 }
 
+/// Decide whether a `read_message` error string is the client closing
+/// the socket. `read_message` stamps every io error with the stage and
+/// `(kind <Kind>)`, and `read_exact` on a closed socket yields
+/// `UnexpectedEof`, so the marker is unambiguous: real transport failures
+/// come back as `ConnectionReset`/`BrokenPipe`/`WouldBlock`, not EOF.
+/// Kept as a string check because `read_message` returns `String` errors;
+/// matching the kind token keeps this stable against std rewording the
+/// "failed to fill whole buffer" prose the previous check relied on.
+fn is_client_disconnect(err: &str) -> bool {
+    err.contains("(kind UnexpectedEof)")
+}
+
 fn handle_client_connection(
     mut stream: LocalStream,
     backend: Arc<BuiltinBackendInner>,
 ) -> Result<(), String> {
-    let hello = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE)?;
+    // Client EOF (socket closed, mid-frame or between frames) is a normal
+    // disconnect, not a backend failure: the "terminal connection failed"
+    // line it produced on every clean teardown drowned real errors and
+    // could land half-written when a kill raced the print. Match our own
+    // `read frame length/body: ... (kind UnexpectedEof)` marker, not std's
+    // "failed to fill whole buffer" prose: the prose is an implementation
+    // detail of ReadBytesExt that a std upgrade can reword, while the kind
+    // marker is ours and stays stable.
+    let hello = match read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE) {
+        Ok(hello) => hello,
+        Err(err) if is_client_disconnect(&err) => return Ok(()),
+        Err(err) => return Err(err),
+    };
     let (cols, rows) = match hello {
         ClientMessage::TerminalHello {
             version,
@@ -505,7 +529,11 @@ fn handle_client_connection(
     let mut subscriber_pending_bytes: Option<Arc<AtomicUsize>> = None;
     let terminal_size = Arc::new(Mutex::new((cols, rows)));
     loop {
-        let message = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE)?;
+        let message = match read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE) {
+            Ok(message) => message,
+            Err(err) if is_client_disconnect(&err) => break,
+            Err(err) => return Err(err),
+        };
         match message {
             ClientMessage::AttachTerminal { terminal_id, .. } => {
                 let terminal = backend
@@ -4682,6 +4710,81 @@ fn now_ms() -> u128 {
 mod tests {
     use super::*;
     use interprocess::local_socket::traits::Stream as _;
+
+    #[test]
+    fn client_disconnect_marker_matches_only_eof_kind() {
+        // The handler routes errors to `Ok(())` on a clean disconnect and
+        // everything else to `Err`, so a too-loose marker would silently
+        // swallow real transport failures (reset, broken pipe). EOF at both
+        // read stages is a disconnect; anything carrying another kind is
+        // not, even when std's prose mentions the same words.
+        assert!(is_client_disconnect(
+            "read frame length: failed to fill whole buffer (kind UnexpectedEof)"
+        ));
+        assert!(is_client_disconnect(
+            "read 130-byte frame body: failed to fill whole buffer (kind UnexpectedEof)"
+        ));
+        assert!(!is_client_disconnect(
+            "read frame length: connection reset by peer (kind ConnectionReset)"
+        ));
+        assert!(!is_client_disconnect(
+            "read frame length: resource temporarily unavailable (kind WouldBlock)"
+        ));
+        // Old check matched std's prose directly; the marker must not
+        // regress to that behavior for a non-EOF error that happens to
+        // contain the phrase.
+        assert!(!is_client_disconnect(
+            "failed to fill whole buffer (kind ConnectionReset)"
+        ));
+    }
+
+    #[test]
+    fn client_connection_treats_immediate_eof_as_clean_disconnect() {
+        // Handler-level proof that dropping the socket before the hello
+        // returns Ok(()), not an error: clean teardown must not log
+        // "terminal connection failed". A real listener + real accepted
+        // stream, not a Cursor, because the fix under test is about the
+        // exact error text a real EOF produces on this platform.
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-eof-sock-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("client.sock");
+        use interprocess::local_socket::{prelude::*, GenericFilePath};
+        let name = sock.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = interprocess::local_socket::ListenerOptions::new()
+            .name(name)
+            .try_overwrite(true)
+            .create_sync()
+            .unwrap();
+        let state = BuiltinState::new(
+            std::env::current_dir().unwrap(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let backend = Arc::new(BuiltinBackendInner {
+            running: AtomicBool::new(true),
+            api_socket: dir.join("api.sock"),
+            client_socket: sock.clone(),
+            state: Arc::new(state),
+        });
+        // Connect and close immediately: EOF before any length byte.
+        let client = interprocess::local_socket::Stream::connect(
+            sock.clone().to_fs_name::<GenericFilePath>().unwrap(),
+        )
+        .unwrap();
+        let (server, _) = (listener.accept().unwrap(), ());
+        drop(client);
+        let result = handle_client_connection(server, backend);
+        assert!(result.is_ok(), "EOF before hello must be Ok: {result:?}");
+        let _ = fs::remove_file(&sock);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn openpty_retry_recovers_from_transient_failures() {

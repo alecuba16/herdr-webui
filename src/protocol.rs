@@ -49,7 +49,7 @@ pub(crate) fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
     let mut len_buf = [0u8; 4];
     reader
         .read_exact(&mut len_buf)
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| format!("read frame length: {err} (kind {:?})", err.kind()))?;
     let len = u32::from_le_bytes(len_buf) as usize;
     if len > max_frame_size {
         return Err(format!("frame size {len} exceeds maximum {max_frame_size}"));
@@ -57,11 +57,17 @@ pub(crate) fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
     let mut payload = vec![0u8; len];
     reader
         .read_exact(&mut payload)
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| format!("read {len}-byte frame body: {err} (kind {:?})", err.kind()))?;
     let (msg, consumed) = bincode::serde::decode_from_slice(&payload, bincode::config::standard())
         .map_err(|err| err.to_string())?;
     if consumed != len {
-        return Err("trailing bytes in frame".into());
+        // Frame head in the error: a framing desync is invisible without
+        // it, and "trailing bytes" alone cannot tell a misdecoded variant
+        // from a mid-frame shift.
+        let head: Vec<u8> = payload.iter().copied().take(16).collect();
+        return Err(format!(
+            "trailing bytes in frame: decoded {consumed} of {len}, head {head:02x?}"
+        ));
     }
     Ok(msg)
 }
