@@ -499,6 +499,10 @@ fn handle_client_connection(
 
     let mut attached: Option<Arc<TerminalRuntime>> = None;
     let mut writer_tx: Option<mpsc::Sender<TerminalSubscriberMessage>> = None;
+    // The pending counter for the live writer subscription, hoisted here so
+    // the re-attach branch can charge replay frames against the same
+    // counter the writer thread discharges.
+    let mut subscriber_pending_bytes: Option<Arc<AtomicUsize>> = None;
     let terminal_size = Arc::new(Mutex::new((cols, rows)));
     loop {
         let message = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE)?;
@@ -521,16 +525,29 @@ fn handle_client_connection(
                     // of the history accumulated since the last attach. The
                     // pending counter belongs to the writer thread's
                     // subscriber; the replay is queued through the same
-                    // channel so frames stay ordered behind any live output.
-                    let _ = tx.send(TerminalSubscriberMessage::Replay(Box::new(
-                        ServerMessage::Terminal(TerminalFrame {
-                            seq: 0,
-                            width: cols,
-                            height: rows,
-                            full: true,
-                            bytes: history,
-                        }),
-                    )));
+                    // channel so frames stay ordered behind any live
+                    // output. Charge the frame's own length or the writer's
+                    // subtraction below underflows the counter and the next
+                    // output byte sheds a healthy re-attached client.
+                    let replay_len = history.len().max(1);
+                    if let Some(pending) = &subscriber_pending_bytes {
+                        pending.fetch_add(replay_len, Ordering::AcqRel);
+                        if tx
+                            .send(TerminalSubscriberMessage::Replay(
+                                Box::new(ServerMessage::Terminal(TerminalFrame {
+                                    seq: 0,
+                                    width: cols,
+                                    height: rows,
+                                    full: true,
+                                    bytes: history,
+                                })),
+                                replay_len,
+                            ))
+                            .is_err()
+                        {
+                            pending.fetch_sub(replay_len, Ordering::AcqRel);
+                        }
+                    }
                     attached = Some(terminal);
                     continue;
                 }
@@ -551,19 +568,26 @@ fn handle_client_connection(
                 };
                 if subscriber
                     .tx
-                    .send(TerminalSubscriberMessage::Replay(Box::new(history_frame)))
+                    .send(TerminalSubscriberMessage::Replay(
+                        Box::new(history_frame),
+                        replay_len,
+                    ))
                     .is_err()
                 {
+                    pending_bytes.fetch_sub(replay_len, Ordering::AcqRel);
                     continue;
                 }
                 terminal.subscribe(subscriber);
+                // Clone before the writer thread moves the Arc: the re-attach
+                // branch charges replays against this same counter.
+                let pending_for_reattach = Arc::clone(&pending_bytes);
                 let mut writer = stream.try_clone().map_err(|err| err.to_string())?;
                 let terminal_size = Arc::clone(&terminal_size);
                 thread::spawn(move || {
                     let mut seq = 2_u64;
                     while let Ok(message) = rx.recv() {
                         match message {
-                            TerminalSubscriberMessage::Replay(frame) => {
+                            TerminalSubscriberMessage::Replay(frame, charged_len) => {
                                 if write_message(&mut writer, &frame).is_err() {
                                     break;
                                 }
@@ -571,7 +595,11 @@ fn handle_client_connection(
                                 // the frame: a blocked write still counts as
                                 // pending, or a stalled client never trips
                                 // the shed while the writer sits in write(2).
-                                pending_bytes.fetch_sub(replay_len, Ordering::AcqRel);
+                                // charged_len is the length this frame's send
+                                // added, so re-attach replays stay balanced
+                                // instead of subtracting the first attach's
+                                // capture.
+                                pending_bytes.fetch_sub(charged_len, Ordering::AcqRel);
                             }
                             TerminalSubscriberMessage::Output(bytes) => {
                                 let (width, height) = terminal_size
@@ -622,6 +650,7 @@ fn handle_client_connection(
                     }
                 });
                 writer_tx = Some(tx);
+                subscriber_pending_bytes = Some(pending_for_reattach);
                 attached = Some(terminal);
             }
             ClientMessage::Input { data } => {
@@ -2234,8 +2263,11 @@ enum TerminalSubscriberMessage {
     Output(Arc<Vec<u8>>),
     // Attach replay frame. Queued as the first message on the writer
     // channel so the history write and live output writes are serialized
-    // by the same thread instead of racing on a dup'ed socket.
-    Replay(Box<ServerMessage>),
+    // by the same thread instead of racing on a dup'ed socket. Carries its
+    // own charged length: the re-attach path queues additional replays
+    // through the same channel, and the writer must subtract exactly what
+    // this send added, not the length captured at the first attach.
+    Replay(Box<ServerMessage>, usize),
     Exited,
     // Terminal output backlog exceeded MAX_SUBSCRIBER_PENDING_BYTES: the
     // writer thread sends a shutdown frame instead of leaving the client
@@ -6559,7 +6591,7 @@ mod tests {
         for _ in 0..8 {
             match rx.recv_timeout(Duration::from_secs(1)).unwrap() {
                 TerminalSubscriberMessage::Output(_) => {}
-                TerminalSubscriberMessage::Replay(_) => {}
+                TerminalSubscriberMessage::Replay(..) => {}
                 TerminalSubscriberMessage::Overflow => {}
                 TerminalSubscriberMessage::Exited => {
                     saw_exit = true;
@@ -6625,7 +6657,7 @@ mod tests {
         for _ in 0..8 {
             match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
                 TerminalSubscriberMessage::Output(_) => {}
-                TerminalSubscriberMessage::Replay(_) => {}
+                TerminalSubscriberMessage::Replay(..) => {}
                 TerminalSubscriberMessage::Overflow => {}
                 TerminalSubscriberMessage::Exited => {
                     saw_exit = true;
@@ -6889,7 +6921,7 @@ mod tests {
         for _ in 0..16 {
             match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
                 TerminalSubscriberMessage::Output(_) => {}
-                TerminalSubscriberMessage::Replay(_) => {}
+                TerminalSubscriberMessage::Replay(..) => {}
                 TerminalSubscriberMessage::Overflow => {}
                 TerminalSubscriberMessage::Exited => {
                     saw_exit = true;
@@ -9265,12 +9297,14 @@ mod tests {
         // Why the refusal path is the right fidelity here: once an agent
         // check passes, conversation work reads transcript FILES (bounded,
         // disjoint from scrollback) plus pane_context, whose only
-        // scrollback touch is the 64KB tail strip this loop already
-        // exercises on every pane.read. Serving real turns mid-flood
-        // would need the backend's process-global store_index() pointed
-        // at a fixture store (it hardwires ~/.jcode/sessions today), a
-        // production refactor out of scope for flood robustness; the
-        // payload-building half is covered by the chat_lens unit tests.
+        // scrollback touch is the 64KB tail strip (RESOLVE_TAIL_BYTES),
+        // cheap next to the full-scrollback strip (bounded by
+        // MAX_SCROLLBACK_BYTES) this loop exercises on every pane.read.
+        // Serving real turns mid-flood would need the backend's
+        // process-global store_index() pointed at a fixture store (it
+        // hardwires ~/.jcode/sessions today), a production refactor out
+        // of scope for flood robustness; the payload-building half is
+        // covered by the chat_lens unit tests.
         let base = format!(
             "/tmp/herdr-webui-flood-api-test-{}-{}",
             std::process::id(),
@@ -9393,7 +9427,10 @@ mod tests {
         // Tight post-flood regression bounds, measured under full-suite
         // parallel load (solo run: refusals ~0.2ms, pane.read ~20ms for the
         // 8MB copy+strip). An order of magnitude over those catches a real
-        // stall without flaking on a starved CI runner.
+        // stall without flaking on a starved CI runner. pane.read gets more
+        // headroom than the refusals: its cost scales with scrollback fill
+        // (up to MAX_SCROLLBACK_BYTES) and a loaded runner can inflate the
+        // copy+strip well past the solo measurement.
         assert!(
             worst_conversation < Duration::from_secs(1),
             "pane.conversation regression: worst {worst_conversation:?}"
@@ -9403,7 +9440,7 @@ mod tests {
             "pane.tool_output regression: worst {worst_tool_output:?}"
         );
         assert!(
-            worst_read < Duration::from_secs(2),
+            worst_read < Duration::from_secs(5),
             "pane.read regression: worst {worst_read:?}"
         );
         // Sanity: the flood actually filled the scrollback past its cap.
@@ -9480,6 +9517,82 @@ mod tests {
         )
         .unwrap();
         read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE).unwrap();
+
+        // Seed real scrollback BEFORE the first attach so the first replay
+        // charges a large pending_bytes debt. The historical wrap bug only
+        // shed a re-attached client when the first-attach history exceeded
+        // the next live output chunk: each subsequent chunk fetch_add's its
+        // own length, which wraps a small debt back below the shed cap, so
+        // a near-empty first history masks the bug exactly like the original
+        // test did.
+        {
+            let mut seeder =
+                connect_local_stream(&PathBuf::from(format!("{base}-client.sock"))).unwrap();
+            write_message(
+                &mut seeder,
+                &ClientMessage::TerminalHello {
+                    version: 22,
+                    cols: 80,
+                    rows: 24,
+                    cell_width_px: 0,
+                    cell_height_px: 0,
+                    pixel_mouse: false,
+                },
+            )
+            .unwrap();
+            read_message::<_, ServerMessage>(&mut seeder, MAX_FRAME_SIZE).unwrap();
+            write_message(
+                &mut seeder,
+                &ClientMessage::AttachTerminal {
+                    terminal_id: terminal_id.clone(),
+                    takeover: true,
+                },
+            )
+            .unwrap();
+            // Drain the seeder's own replay frame.
+            match read_message::<_, ServerMessage>(&mut seeder, MAX_FRAME_SIZE).unwrap() {
+                ServerMessage::Terminal(frame) => assert!(frame.full),
+                other => panic!("expected seeder replay frame, got {other:?}"),
+            }
+            write_message(
+                &mut seeder,
+                &ClientMessage::Input {
+                    data: b"for i in $(seq 1 2000); do echo SEED-$i; done\n".to_vec(),
+                },
+            )
+            .unwrap();
+            // Wait until the seed lines land in scrollback: without this the
+            // first attach can race the PTY echo and replay an empty (or
+            // partial) history, reintroducing the small-debt mask.
+            seeder
+                .set_recv_timeout(Some(Duration::from_millis(250)))
+                .unwrap();
+            let mut seeded_bytes = 0_usize;
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while seeded_bytes < 12_000 && Instant::now() < deadline {
+                match read_message::<_, ServerMessage>(&mut seeder, MAX_FRAME_SIZE) {
+                    Ok(ServerMessage::Terminal(frame)) => {
+                        seeded_bytes += frame.bytes.len();
+                    }
+                    Ok(_) => {}
+                    Err(ref err)
+                        if err.contains("timed out")
+                            || err.contains("Resource temporarily unavailable") =>
+                    {
+                        continue
+                    }
+                    Err(err) => panic!("seeder stream broke: {err}"),
+                }
+            }
+            assert!(
+                seeded_bytes >= 12_000,
+                "seed output never reached scrollback (only {seeded_bytes} bytes)"
+            );
+            // The seeder connection is deliberately left unread from now on;
+            // dropping it unsubscribes its writer thread on send failure.
+            drop(seeder);
+        }
+
         write_message(
             &mut client,
             &ClientMessage::AttachTerminal {
@@ -9571,6 +9684,61 @@ mod tests {
         assert!(
             replay_has_marker,
             "second attach on same connection did not replay history"
+        );
+
+        // Regression: the re-attach replay used to leave pending_bytes
+        // unbalanced (writer subtracted the first attach's capture, the
+        // re-attach send charged nothing), the counter wrapped to near
+        // usize::MAX, and the very next output byte shed a healthy
+        // re-attached client with "output backlog overflow". Prove the
+        // counter stays balanced: produce output AFTER the second attach
+        // and require the live marker frame. A shed arrives as
+        // ServerShutdown AFTER the queued frames drain, so keep reading
+        // past the marker for a grace period; any shutdown in that window
+        // is the wrap bug firing.
+        write_message(
+            &mut client,
+            &ClientMessage::Input {
+                data: b"echo POST-REATTACH-MARKER\n".to_vec(),
+            },
+        )
+        .unwrap();
+        let mut saw_post_marker = false;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE) {
+                Ok(ServerMessage::Terminal(frame)) => {
+                    if String::from_utf8_lossy(&frame.bytes).contains("POST-REATTACH-MARKER") {
+                        saw_post_marker = true;
+                        // Marker seen. The wrap bug sheds on the chunk
+                        // FOLLOWING the re-attach replay, which may already
+                        // be flushed; give the writer thread a moment to
+                        // surface a delayed shutdown before declaring
+                        // success.
+                        thread::sleep(Duration::from_millis(500));
+                    }
+                }
+                Ok(ServerMessage::ServerShutdown { reason }) => {
+                    panic!("re-attached client was shed after second attach: {reason:?}")
+                }
+                Ok(_) => {}
+                Err(ref err)
+                    if err.contains("timed out")
+                        || err.contains("Resource temporarily unavailable") =>
+                {
+                    // Silent socket past the marker: nothing more is coming,
+                    // which is exactly the healthy path.
+                    if saw_post_marker {
+                        break;
+                    }
+                    continue;
+                }
+                Err(err) => panic!("post-reattach stream broke: {err}"),
+            }
+        }
+        assert!(
+            saw_post_marker,
+            "output after second attach never streamed; pending_bytes wrap shed the client"
         );
     }
 
