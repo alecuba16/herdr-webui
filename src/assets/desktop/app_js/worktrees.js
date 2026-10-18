@@ -1184,6 +1184,10 @@ async function closeTab(id) {
         if (!String(error.message || error).includes("not found")) throw error;
       }
       if (typeof removeClosedTabFromState === "function") removeClosedTabFromState(id);
+      // The closed terminal may have been a split leaf's last tab: drop
+      // the empty pane so the survivor takes the layout back.
+      if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)
+        window.HerdrWorkspacePanes.collapseLeafForClosedTab(id);
       if (closingWorkspaceId && typeof maybeAutoCloseWorkspace === "function")
         maybeAutoCloseWorkspace(closingWorkspaceId);
       if (state.tab === id && typeof selectFallbackTabAfterClosed === "function") {
