@@ -462,6 +462,13 @@
   top: calc(100% + 6px);
   z-index: 1200;
 }
+/* In the footer bar the button sits at the sidebar's bottom edge: the
+ * default downward drop would open past the viewport (and under the
+ * terminal area it also fights for pointer space). Flip it up instead. */
+.side-footer-bar .no-sleep-menu {
+  bottom: calc(100% + 6px);
+  top: auto;
+}
 .no-sleep-menu[hidden] {
   display: none;
 }

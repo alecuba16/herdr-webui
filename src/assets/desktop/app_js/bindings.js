@@ -9,7 +9,12 @@ document.addEventListener("click", (e) => {
   const option = e.target && e.target.closest && e.target.closest(".no-sleep-menu [data-mode]");
   if (option) {
     closeNoSleepMenus();
-    setNoSleepMode(option.dataset.mode || "off", option.closest(".no-sleep-wrap") || option);
+    // Focus returns to the toggle after picking a mode: the option
+    // button is about to be hidden, which would strand keyboard focus.
+    const wrap = option.closest(".no-sleep-wrap");
+    const control = wrap && wrap.querySelector(".no-sleep-control");
+    if (control && typeof control.focus === "function") control.focus();
+    setNoSleepMode(option.dataset.mode || "off", wrap || option);
     return;
   }
   const control = e.target && e.target.closest && e.target.closest(".no-sleep-control");
@@ -20,6 +25,15 @@ document.addEventListener("click", (e) => {
       const nextHidden = !menu.hidden;
       closeNoSleepMenus(menu);
       menu.hidden = nextHidden;
+      // aria-expanded mirrors the open state for screen readers; when
+      // opening, the first option takes focus so the menu is keyboard-
+      // reachable (arrow keys then move through native button focus).
+      // nextHidden is "the menu ends up hidden", the inverse of expanded.
+      control.setAttribute("aria-expanded", nextHidden ? "false" : "true");
+      if (!nextHidden) {
+        const first = menu.querySelector("[data-mode]");
+        if (first && typeof first.focus === "function") first.focus();
+      }
     }
     return;
   }
@@ -560,6 +574,22 @@ document.addEventListener(
   "keydown",
   (e) => {
     if (e.key !== "Escape") return;
+    // Any open no-sleep menu closes first, before the modal cascade:
+    // it is a popover, not a modal, and its options are real buttons
+    // that keep keyboard focus inside the menu.
+    const openNoSleep = document.querySelector(".no-sleep-menu:not([hidden])");
+    if (openNoSleep) {
+      e.preventDefault();
+      e.stopPropagation();
+      openNoSleep.hidden = true;
+      const wrap = openNoSleep.closest && openNoSleep.closest(".no-sleep-wrap");
+      const control = wrap && wrap.querySelector && wrap.querySelector(".no-sleep-control");
+      if (control) {
+        control.setAttribute("aria-expanded", "false");
+        if (typeof control.focus === "function") control.focus();
+      }
+      return;
+    }
     if (document.getElementById("paneMenu")) {
       e.preventDefault();
       e.stopPropagation();
