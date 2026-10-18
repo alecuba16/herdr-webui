@@ -188,10 +188,8 @@ async function main() {
   );
 
   // mc2: Keys toggle folds/unfolds keybar and composer together, aria tracks.
-  // The fab mirrors state.toolbarOpen (aria-pressed) and the fold hides
-  // #mobileToolbar itself; the keybar DOM persists while folded, so node
-  // presence proves nothing. Assert the flip in both directions instead of
-  // assuming a starting state.
+  // The fab mirrors state.toolbarOpen and the fold hides #mobileToolbar; the
+  // keybar DOM persists while folded, so assert the flip, not a starting state.
   const toggle = await evalJs(
     cdp,
     `(() => {
