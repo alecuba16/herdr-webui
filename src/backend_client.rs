@@ -567,7 +567,6 @@ mod tests {
     use std::fs;
     use std::sync::{mpsc, Mutex};
     use std::thread;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use interprocess::local_socket::traits::Listener;
     use interprocess::local_socket::Listener as LocalListener;
@@ -1222,12 +1221,18 @@ mod tests {
         crate::test_env_lock()
     }
 
+    /// pid + a process-local counter, no clock: two test threads minting
+    /// names in the same nanosecond used to collide (measured ~19% tie
+    /// rate, ~21us clock granularity), and a tie let one test's connect
+    /// land in the other's listener. A counter cannot tie, and dropping
+    /// nanos keeps socket paths short: builtin sockets under a long
+    /// XDG_CONFIG_HOME fall back to a hashed dir once the 104-byte sun_path
+    /// limit would be exceeded (socket_path_pair_fits).
     fn unique_name(prefix: &str) -> String {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        format!("{prefix}-{}-{nanos}", std::process::id())
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NAME_ID: AtomicU64 = AtomicU64::new(0);
+        let id = NAME_ID.fetch_add(1, Ordering::Relaxed);
+        format!("{prefix}-{}-{id}", std::process::id())
     }
 
     fn temp_socket(prefix: &str) -> PathBuf {
