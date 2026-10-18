@@ -115,10 +115,17 @@ pub(crate) fn lock_env() -> std::sync::MutexGuard<'static, ()> {
 /// a scratch tree must use this instead of a trailing remove_dir_all,
 /// which a failed assert skips; that pattern leaked hundreds of dirs
 /// into TMPDIR over repeated suite runs.
+///
+/// pid + nanos is not unique under the harness: parallel tests in one
+/// process tie on nanos ~19% of the time (measured, ~21us clock
+/// granularity), and a tie means two tests share one scratch dir. The
+/// counter breaks the tie.
 pub(crate) fn temp_guard(prefix: &str) -> (PathBuf, TempDirGuard) {
     sweep_dead_test_artifacts_once();
+    static GUARD_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = GUARD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "{prefix}-{}-{}",
+        "{prefix}-{}-{id}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
