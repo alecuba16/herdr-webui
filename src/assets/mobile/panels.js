@@ -36,10 +36,11 @@
       // preventDefault keeps wterm's textarea focused: no focus steal.
       //
       // Two rows: the first carries the classic set (Esc/Tab/Ctrl/arrows/^C),
-      // the second the combos Android keyboards cannot type but shells and
-      // pagers need constantly (EOF, suspend, clear, line edits, reverse
-      // search, pager scroll). Rows scroll horizontally so narrow screens
-      // keep every key reachable.
+      // the second the combos Android keyboards cannot type but shells,
+      // pagers and prompt dialogs need constantly (the Ctrl+Enter submit
+      // chord first, then EOF, suspend, clear, line edits, reverse search,
+      // pager scroll). Rows scroll horizontally so narrow screens keep every
+      // key reachable; row1 stays swipless because the chord lives in row2.
       const key = (name, label, aria, extra = "", pressed) =>
         `<button class="mobile-keybar-key${extra}" type="button" data-key="${name}"${pressed ? ' aria-pressed="false"' : ""} aria-label="${aria}" onmousedown="event.preventDefault()" onclick="HerdrMobile.keyBarKey(event, this)">${label}</button>`;
       const row1 = [
@@ -53,6 +54,7 @@
         key("ctrl-c", "^C", "Ctrl C, interrupt", " mobile-keybar-danger"),
       ].join("");
       const row2 = [
+        key("ctrl-enter", "C⏎", "Ctrl Enter, submit modified Enter", " mobile-keybar-sendkey"),
         key("ctrl-d", "^D", "Ctrl D, end of file", " mobile-keybar-danger"),
         key("ctrl-z", "^Z", "Ctrl Z, suspend job"),
         key("ctrl-l", "^L", "Ctrl L, clear screen"),
@@ -66,7 +68,11 @@
         key("home", "Home", "Home"),
         key("end", "End", "End"),
       ].join("");
-      return `<div class="mobile-keybar" id="mobileKeyBar" aria-label="Terminal keys" role="toolbar"><div class="mobile-keybar-row">${row1}</div><div class="mobile-keybar-row">${row2}</div></div>`;
+      // The composer mounts as a row of this toolbar (panels.syncComposer
+      // appends it inside #mobileKeyBar): keys and message box travel as
+      // one unit behind the Keys toggle, and the render memo on the keybar
+      // string keeps the composer node (and its focus) across repaints.
+      return `<div class="mobile-keybar" id="mobileKeyBar" aria-label="Terminal keys and message" role="toolbar"><div class="mobile-keybar-row">${row1}</div><div class="mobile-keybar-row">${row2}</div></div>`;
     }
 
     function renderTerminal() {
@@ -123,22 +129,31 @@
       else if (node.parentNode) node.parentNode.removeChild(node);
     }
 
-    function mountAfterTerminal(shell, html) {
-      if (!shell) return;
+    function mountInto(parent, html) {
+      if (!parent) return;
       const wrap = document.createElement("div");
       wrap.innerHTML = html;
-      while (wrap.firstElementChild) shell.appendChild(wrap.firstElementChild);
+      while (wrap.firstElementChild) parent.appendChild(wrap.firstElementChild);
     }
 
     function syncComposer(screen) {
       const deps = globalThis.HerdrMobileComposerDeps;
       if (!deps) return;
+      // The composer bar lives inside the keybar (#mobileKeyBar) itself:
+      // keys and message box are one unit behind the Keys toggle, so a
+      // folded toolbar gives the terminal the full shell height. Mounting
+      // into the keybar (not the toolbar) is safe because syncToolbar only
+      // rewrites #mobileKeyBar when the built keybar string changed, which
+      // never happens mid-draft: the string depends on screen + terminalId
+      // alone. The prompt card keeps mounting into the terminal shell
+      // because it is a dialog over the pane, not a toolbar row.
+      const keybar = el("mobileKeyBar");
       const wantedBar = deps.renderComposerBar();
       const existingBar = el("mobileComposer");
       if (!wantedBar) {
         if (existingBar) removeNode(existingBar);
       } else if (!existingBar) {
-        mountAfterTerminal(el("terminalShell"), wantedBar);
+        mountInto(keybar, wantedBar);
       }
       if (deps.syncComposer) deps.syncComposer();
       const existingCard = el("mobilePromptCard");

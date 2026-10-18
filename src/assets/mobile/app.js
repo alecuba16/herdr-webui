@@ -431,7 +431,7 @@
             <div class="mobile-help">Enter opens · Alt+F files · Alt+D folders · Esc closes</div>
           </div>
         </div>
-        <div class="mobile-toolbar" id="mobileToolbar" hidden></div>
+        <div class="mobile-toolbar" id="mobileToolbar" hidden><div id="mobileToolbarKeys"></div></div>
         <button type="button" id="mobileKeysFab" class="mobile-keys-fab" hidden aria-label="Toggle terminal keys, drag to move" aria-pressed="false" onmousedown="HerdrMobile.keysFabDragStart(event)" ontouchstart="HerdrMobile.keysFabDragStart(event)"><span aria-hidden="true">⌨</span>Keys</button>
         <nav class="mobile-nav">
           <button data-screen="home">Home</button>
@@ -466,9 +466,11 @@
 
   // Terminal key toolbar: rendered by panels.js into #mobileToolbar above
   // the nav bar. The floating Keys button (in the terminal view) toggles
-  // it; the choice persists. Folding the toolbar changes the terminal
-  // shell height, so every toggle re-fits the grid (debounced) instead of
-  // leaving the terminal sized for the old layout.
+  // it; the choice persists. The chat composer bar mounts inside the same
+  // toolbar, so the Keys toggle owns both: folded toolbar, clean terminal.
+  // Folding changes the terminal shell height, so every toggle re-fits the
+  // grid (debounced) instead of leaving the terminal sized for the old
+  // layout.
   function toggleToolbar() {
     state.toolbarOpen = !state.toolbarOpen;
     try {
@@ -482,8 +484,13 @@
     const toolbar = el("mobileToolbar");
     if (!toolbar) return;
     const html = state.screen === "terminal" && state.terminalId && mobilePanels ? mobilePanels.renderKeyBar() : "";
+    // The keybar is written as its own child container so repaints never
+    // wipe the composer bar panels.syncComposer mounts into the toolbar
+    // (typing in the composer would otherwise lose the node and its focus
+    // on every WS-driven render).
     if (toolbar.__lastToolbarHtml !== html) {
-      toolbar.innerHTML = html;
+      const keybar = el("mobileToolbarKeys");
+      if (keybar) keybar.innerHTML = html;
       toolbar.__lastToolbarHtml = html;
     }
     toolbar.hidden = !(state.toolbarOpen && html);
@@ -1683,6 +1690,21 @@
       };
       if (key === "ctrl") {
         setArmed(!keyBarCtrlArmed);
+        return;
+      }
+      // Ctrl+Enter chord: what a physical Ctrl+Enter sends on this pane's
+      // renderer. wterm with the kitty keyboard protocol active (jcode and
+      // other crossterm TUIs) reports the modified Enter as CSI 13;5u; the
+      // legacy flag-0 path sends a bare \r instead, because wterm drops
+      // modified keys there. The pane sees the same bytes a physical
+      // Ctrl+Enter press+release would produce.
+      if (key === "ctrl-enter") {
+        // Same shape composer.js uses to reach the bridge grid: term.wterm.bridge
+        const term = mobileTerminal.getTerm && mobileTerminal.getTerm();
+        const bridge = term && term.wterm && term.wterm.bridge ? term.wterm.bridge : null;
+        const kittyFlags = bridge && bridge.kittyKeyboardFlags ? bridge.kittyKeyboardFlags() : 0;
+        mobileTerminal.sendControlKey(kittyFlags ? "\x1b[13;5u" : "\r");
+        setArmed(false);
         return;
       }
       const ctrlCombo = /^ctrl-([a-z])$/.exec(key);

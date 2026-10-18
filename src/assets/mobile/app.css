@@ -82,6 +82,7 @@ body.light {
   --border2: #7a8296;
   --muted: #525769;
   --accent: #1957d2;
+  --danger: #a61b1b;
   --editor-caret: #25253d;
   --editor-caret-dim: #525769;
   --git-modified-color: #7a4d00;
@@ -148,6 +149,37 @@ body.light {
 }
 .mobile-toolbar[hidden] {
   display: none;
+}
+/* The chat composer row mounts inside the keybar (panels.js syncComposer),
+   so the Keys toggle owns its visibility too: a folded toolbar gives the
+   terminal the full shell height. The hairline and panel background come
+   from the toolbar, so the composer drops its own border-top and blends
+   into the toolbar stack. The keybar already pads its rows, so the
+   composer keeps only its top separator gap. */
+.mobile-keybar .mobile-composer {
+  border-top: 0;
+  background: transparent;
+  padding: 2px 0 0;
+}
+/* Keyboard-open hides the toolbar row with the rest of the chrome, but a
+   composer mid-typing must stay reachable: the focus-within exemption
+   keeps the toolbar (and only it) mounted while its textarea holds
+   focus, so the user never types into a hidden input. The composer lives
+   inside the keybar, so the exemption must restore the keybar as well:
+   focus-within on a display:none subtree never fires, but the exemption
+   re-displays the toolbar first (same specificity family, later rule),
+   and this rule then re-displays the focused keybar inside it. The
+   companion :has() rule gives the app grid its auto row back, otherwise
+   the re-displayed toolbar would land in an implicit row clipped away by
+   overflow: hidden. */
+body.mobile-keyboard-open .mobile-app:has(.mobile-toolbar:focus-within) {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+body.mobile-keyboard-open .mobile-toolbar:focus-within {
+  display: block;
+}
+body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
+  display: flex;
 }
 /* Floating Keys button: draggable pill inside the terminal view. A tap
    toggles the keybar toolbar (aria-pressed mirrors that state), a drag
@@ -574,6 +606,14 @@ body.light {
 .mobile-keybar-danger {
   color: var(--danger, #f38ba8);
   border-color: currentColor;
+}
+/* C⏎ is the composer's submit chord, not a destructive control: the
+   accent border marks it as the send action of the row (the same accent
+   the Send button uses). Text stays --fg: the light accent sits under the
+   4.5:1 text floor on panel2 (4.08:1), while a border only needs 3:1,
+   which it passes in both themes. */
+.mobile-keybar-sendkey {
+  border-color: var(--accent);
 }
 .mobile-terminal-screen > .mobile-keybar:empty {
   display: none;
