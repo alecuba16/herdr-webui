@@ -9252,6 +9252,144 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn builtin_api_stays_responsive_while_pane_floods() {
+        // The shed test covers the subscriber path. This one covers the API
+        // surface the WebUI leans on while a pane floods: pane.conversation,
+        // pane.tool_output, and pane.read must each answer in bounded time
+        // even while the PTY reader keeps appending and the scrollback lock
+        // is hot. A plain-shell pane refuses conversation/tool_output with
+        // unsupported_agent BEFORE any transcript work, so the assertion is
+        // the refusal arriving quickly, not its content; pane.read has real
+        // work (full-scrollback copy + ANSI strip) and must still finish.
+        let base = format!(
+            "/tmp/herdr-webui-flood-api-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        );
+        let api_socket = PathBuf::from(format!("{base}-api.sock"));
+        let client_socket = PathBuf::from(format!("{base}-client.sock"));
+        let _handle = BuiltinBackendHandle::start(BuiltinBackendConfig {
+            api_socket: api_socket.clone(),
+            client_socket,
+            cwd: std::env::temp_dir(),
+            shell: Some(default_shell()),
+            jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+        })
+        .unwrap();
+        let request = |line: &str| -> Value {
+            let mut api = connect_local_stream(&api_socket).unwrap();
+            api.write_all(line.as_bytes()).unwrap();
+            api.write_all(b"\n").unwrap();
+            api.flush().unwrap();
+            let mut reader = BufReader::new(api);
+            let mut out = String::new();
+            reader.read_line(&mut out).unwrap();
+            serde_json::from_str(&out).unwrap()
+        };
+        let workspace =
+            request(r#"{"id":"seed","method":"workspace.create","params":{"label":"flood-api"}}"#);
+        let workspace_id = workspace["result"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let tab = request(&format!(
+            r#"{{"id":"tab","method":"tab.create","params":{{"workspace_id":"{workspace_id}"}}}}"#
+        ));
+        let pane_id = tab["result"]["root_pane"]["pane_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Sustained flood past the 8MB scrollback cap. Generated in the
+        // shell (MAX_CANON drops typed lines over 4096 bytes), split in
+        // two printfs so the echoed command cannot satisfy the poll early.
+        let flood = request(&format!(
+            r#"{{"id":"prompt","method":"agent.prompt","params":{{"pane_id":"{pane_id}","text":"dd if=/dev/zero bs=1024 count=131072 2>/dev/null; printf 'FLOOD-' ; printf 'DONE\\n'"}}}}"#
+        ));
+        assert_eq!(flood["result"]["ok"], Value::Bool(true), "flood must start");
+
+        // While dd streams, hammer the API. Each call gets a generous
+        // per-call bound (suite load can starve this thread badly) but a
+        // hang shows up as the deadline expiring without the answer.
+        let per_call_bound = Duration::from_secs(30);
+        let overall = Instant::now() + Duration::from_secs(120);
+        let mut conversation_refusals = 0;
+        let mut tool_output_refusals = 0;
+        let mut reads = 0;
+        while Instant::now() < overall {
+            let started = Instant::now();
+            let conversation = request(&format!(
+                r#"{{"id":"conv","method":"pane.conversation","params":{{"pane_id":"{pane_id}"}}}}"#
+            ));
+            assert!(
+                started.elapsed() < per_call_bound,
+                "pane.conversation stalled"
+            );
+            let err = conversation["error"]["message"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(
+                err.starts_with("unsupported_agent"),
+                "plain shell must refuse conversation, got {err}"
+            );
+            conversation_refusals += 1;
+
+            let started = Instant::now();
+            let tool_output = request(&format!(
+                r#"{{"id":"tool","method":"pane.tool_output","params":{{"pane_id":"{pane_id}","ref":"does-not-exist"}}}}"#
+            ));
+            assert!(
+                started.elapsed() < per_call_bound,
+                "pane.tool_output stalled"
+            );
+            let err = tool_output["error"]["message"].as_str().unwrap_or_default();
+            assert!(
+                err.starts_with("unsupported_agent"),
+                "plain shell must refuse tool_output, got {err}"
+            );
+            tool_output_refusals += 1;
+
+            let started = Instant::now();
+            let read = request(&format!(
+                r#"{{"id":"read","method":"pane.read","params":{{"pane_id":"{pane_id}"}}}}"#
+            ));
+            assert!(started.elapsed() < per_call_bound, "pane.read stalled");
+            assert!(
+                read["result"]["read"]["text"].as_str().is_some(),
+                "pane.read must return text during the flood"
+            );
+            reads += 1;
+
+            // End the loop once the flood finished: the marker only shows
+            // up in scrollback after dd completed, so surviving requests
+            // prove responsiveness across the whole flood.
+            if read["result"]["read"]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("FLOOD-DONE"))
+            {
+                break;
+            }
+        }
+        assert!(
+            conversation_refusals > 0 && tool_output_refusals > 0 && reads > 0,
+            "no requests completed during the flood"
+        );
+        // Sanity: the flood actually filled the scrollback past its cap.
+        let read = request(&format!(
+            r#"{{"id":"final","method":"pane.read","params":{{"pane_id":"{pane_id}"}}}}"#
+        ));
+        let text_len = read["result"]["read"]["text"]
+            .as_str()
+            .map(str::len)
+            .unwrap_or(0);
+        assert!(
+            text_len <= MAX_SCROLLBACK_BYTES,
+            "pane.read text must be bounded by the scrollback cap, got {text_len}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn client_socket_second_attach_on_same_connection_replays_history() {
         // The writer thread starts once per connection; a re-attach on the
         // same connection must still deliver a fresh replay frame of the
