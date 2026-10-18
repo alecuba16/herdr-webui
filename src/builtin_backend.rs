@@ -9312,6 +9312,9 @@ mod tests {
         // per-call bound (suite load can starve this thread badly) but a
         // hang shows up as the deadline expiring without the answer.
         let per_call_bound = Duration::from_secs(30);
+        let mut worst_conversation = Duration::ZERO;
+        let mut worst_tool_output = Duration::ZERO;
+        let mut worst_read = Duration::ZERO;
         let overall = Instant::now() + Duration::from_secs(120);
         let mut conversation_refusals = 0;
         let mut tool_output_refusals = 0;
@@ -9325,6 +9328,7 @@ mod tests {
                 started.elapsed() < per_call_bound,
                 "pane.conversation stalled"
             );
+            worst_conversation = worst_conversation.max(started.elapsed());
             let err = conversation["error"]["message"]
                 .as_str()
                 .unwrap_or_default();
@@ -9342,6 +9346,7 @@ mod tests {
                 started.elapsed() < per_call_bound,
                 "pane.tool_output stalled"
             );
+            worst_tool_output = worst_tool_output.max(started.elapsed());
             let err = tool_output["error"]["message"].as_str().unwrap_or_default();
             assert!(
                 err.starts_with("unsupported_agent"),
@@ -9354,6 +9359,7 @@ mod tests {
                 r#"{{"id":"read","method":"pane.read","params":{{"pane_id":"{pane_id}"}}}}"#
             ));
             assert!(started.elapsed() < per_call_bound, "pane.read stalled");
+            worst_read = worst_read.max(started.elapsed());
             assert!(
                 read["result"]["read"]["text"].as_str().is_some(),
                 "pane.read must return text during the flood"
@@ -9373,6 +9379,22 @@ mod tests {
         assert!(
             conversation_refusals > 0 && tool_output_refusals > 0 && reads > 0,
             "no requests completed during the flood"
+        );
+        // Tight post-flood regression bounds, measured under full-suite
+        // parallel load (solo run: refusals ~0.2ms, pane.read ~20ms for the
+        // 8MB copy+strip). An order of magnitude over those catches a real
+        // stall without flaking on a starved CI runner.
+        assert!(
+            worst_conversation < Duration::from_secs(1),
+            "pane.conversation regression: worst {worst_conversation:?}"
+        );
+        assert!(
+            worst_tool_output < Duration::from_secs(1),
+            "pane.tool_output regression: worst {worst_tool_output:?}"
+        );
+        assert!(
+            worst_read < Duration::from_secs(2),
+            "pane.read regression: worst {worst_read:?}"
         );
         // Sanity: the flood actually filled the scrollback past its cap.
         let read = request(&format!(
