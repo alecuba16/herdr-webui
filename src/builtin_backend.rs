@@ -534,7 +534,7 @@ fn handle_client_connection(
                     };
                     if subscriber
                         .tx
-                        .send(TerminalSubscriberMessage::Replay(history_frame))
+                        .send(TerminalSubscriberMessage::Replay(Box::new(history_frame)))
                         .is_err()
                     {
                         continue;
@@ -2211,7 +2211,7 @@ enum TerminalSubscriberMessage {
     // Attach replay frame. Queued as the first message on the writer
     // channel so the history write and live output writes are serialized
     // by the same thread instead of racing on a dup'ed socket.
-    Replay(ServerMessage),
+    Replay(Box<ServerMessage>),
     Exited,
     // Terminal output backlog exceeded MAX_SUBSCRIBER_PENDING_BYTES: the
     // writer thread sends a shutdown frame instead of leaving the client
@@ -2543,9 +2543,7 @@ impl TerminalRuntime {
                         {
                             // Shed, but queue an Overflow notice behind the
                             // backlog so the writer can tell the client.
-                            let _ = subscriber
-                                .tx
-                                .send(TerminalSubscriberMessage::Overflow);
+                            let _ = subscriber.tx.send(TerminalSubscriberMessage::Overflow);
                             false
                         } else {
                             true
@@ -9033,6 +9031,369 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn client_socket_overflow_sheds_stalled_reader_with_shutdown_frame() {
+        // A client that stops reading must be shed, but never silently: the
+        // writer drains the buffered backlog, then delivers an explicit
+        // shutdown frame so the client sees why the stream ended instead of
+        // blocking on read_message forever.
+        let base = format!(
+            "/tmp/herdr-webui-overflow-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        );
+        let api_socket = PathBuf::from(format!("{base}-api.sock"));
+        let client_socket = PathBuf::from(format!("{base}-client.sock"));
+        let _handle = BuiltinBackendHandle::start(BuiltinBackendConfig {
+            api_socket: api_socket.clone(),
+            client_socket,
+            cwd: std::env::temp_dir(),
+            shell: Some(default_shell()),
+            jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+        })
+        .unwrap();
+        let request = |line: &str| -> Value {
+            let mut api = connect_local_stream(&api_socket).unwrap();
+            api.write_all(line.as_bytes()).unwrap();
+            api.write_all(b"\n").unwrap();
+            api.flush().unwrap();
+            let mut reader = BufReader::new(api);
+            let mut out = String::new();
+            reader.read_line(&mut out).unwrap();
+            serde_json::from_str(&out).unwrap()
+        };
+        let workspace = request(
+            r#"{"id":"seed","method":"workspace.create","params":{"label":"overflow"}}"#,
+        );
+        let workspace_id = workspace["result"]["workspace"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let tab = request(&format!(
+            r#"{{"id":"tab","method":"tab.create","params":{{"workspace_id":"{workspace_id}"}}}}"#
+        ));
+        let terminal_id = tab["result"]["root_pane"]["terminal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let mut client =
+            connect_local_stream(&PathBuf::from(format!("{base}-client.sock"))).unwrap();
+        write_message(
+            &mut client,
+            &ClientMessage::TerminalHello {
+                version: 22,
+                cols: 80,
+                rows: 24,
+                cell_width_px: 0,
+                cell_height_px: 0,
+                pixel_mouse: false,
+            },
+        )
+        .unwrap();
+        read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE).unwrap();
+        write_message(
+            &mut client,
+            &ClientMessage::AttachTerminal {
+                terminal_id,
+                takeover: true,
+            },
+        )
+        .unwrap();
+
+        // Flood far past MAX_SUBSCRIBER_PENDING_BYTES without reading. The
+        // socket buffer plus pending queue fill; the subscriber is shed.
+        write_message(
+            &mut client,
+            &ClientMessage::Input {
+                data: b"while true; do printf 'OVERFLOW-LINE-%05d\\n' 1; done\n"
+                    .to_vec(),
+            },
+        )
+        .unwrap();
+
+        // Wait for the shed, then read everything the writer buffered: the
+        // backlog frames first, then the explicit shutdown frame.
+        thread::sleep(Duration::from_secs(2));
+        let mut saw_shutdown = false;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE) {
+                Ok(ServerMessage::Terminal(_)) => {}
+                Ok(ServerMessage::ServerShutdown { reason }) => {
+                    let reason = reason.unwrap_or_default();
+                    assert!(
+                        reason.contains("overflow"),
+                        "expected overflow shutdown, got {reason}"
+                    );
+                    saw_shutdown = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(err) => panic!("overflowed client stream broke before shutdown: {err}"),
+            }
+        }
+        assert!(
+            saw_shutdown,
+            "stalled reader was never shed or got no shutdown frame"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_socket_second_attach_on_same_connection_replays_history() {
+        // The writer thread starts once per connection; a re-attach on the
+        // same connection must still deliver a fresh replay frame of the
+        // history accumulated since the last attach.
+        let base = format!(
+            "/tmp/herdr-webui-reattach-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        );
+        let api_socket = PathBuf::from(format!("{base}-api.sock"));
+        let client_socket = PathBuf::from(format!("{base}-client.sock"));
+        let _handle = BuiltinBackendHandle::start(BuiltinBackendConfig {
+            api_socket: api_socket.clone(),
+            client_socket,
+            cwd: std::env::temp_dir(),
+            shell: Some(default_shell()),
+            jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+        })
+        .unwrap();
+        let request = |line: &str| -> Value {
+            let mut api = connect_local_stream(&api_socket).unwrap();
+            api.write_all(line.as_bytes()).unwrap();
+            api.write_all(b"\n").unwrap();
+            api.flush().unwrap();
+            let mut reader = BufReader::new(api);
+            let mut out = String::new();
+            reader.read_line(&mut out).unwrap();
+            serde_json::from_str(&out).unwrap()
+        };
+        let workspace =
+            request(r#"{"id":"seed","method":"workspace.create","params":{"label":"reattach"}}"#);
+        let workspace_id = workspace["result"]["workspace"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let tab = request(&format!(
+            r#"{{"id":"tab","method":"tab.create","params":{{"workspace_id":"{workspace_id}"}}}}"#
+        ));
+        let terminal_id = tab["result"]["root_pane"]["terminal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let mut client =
+            connect_local_stream(&PathBuf::from(format!("{base}-client.sock"))).unwrap();
+        write_message(
+            &mut client,
+            &ClientMessage::TerminalHello {
+                version: 22,
+                cols: 80,
+                rows: 24,
+                cell_width_px: 0,
+                cell_height_px: 0,
+                pixel_mouse: false,
+            },
+        )
+        .unwrap();
+        read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE).unwrap();
+        write_message(
+            &mut client,
+            &ClientMessage::AttachTerminal {
+                terminal_id: terminal_id.clone(),
+                takeover: true,
+            },
+        )
+        .unwrap();
+        // Drain the first replay.
+        match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE).unwrap() {
+            ServerMessage::Terminal(frame) => assert!(frame.full),
+            other => panic!("expected replay frame, got {other:?}"),
+        }
+        // Produce output, wait for it to land in scrollback, then re-attach
+        // on the same connection and demand a fresh replay containing it.
+        write_message(
+            &mut client,
+            &ClientMessage::Input {
+                data: b"echo REATTACH-MARKER\n".to_vec(),
+            },
+        )
+        .unwrap();
+        let mut saw_marker = false;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE) {
+                Ok(ServerMessage::Terminal(frame)) => {
+                    if String::from_utf8_lossy(&frame.bytes).contains("REATTACH-MARKER") {
+                        saw_marker = true;
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => panic!("reattach stream broke: {err}"),
+            }
+        }
+        assert!(saw_marker, "marker never streamed before re-attach");
+        write_message(
+            &mut client,
+            &ClientMessage::AttachTerminal {
+                terminal_id,
+                takeover: true,
+            },
+        )
+        .unwrap();
+        let mut replay_has_marker = false;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE) {
+                Ok(ServerMessage::Terminal(frame)) => {
+                    if frame.full {
+                        replay_has_marker =
+                            String::from_utf8_lossy(&frame.bytes).contains("REATTACH-MARKER");
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Ok(ServerMessage::ServerShutdown { .. }) => break,
+                Err(err) => panic!("reattach replay stream broke: {err}"),
+            }
+        }
+        assert!(
+            replay_has_marker,
+            "second attach on same connection did not replay history"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_socket_disconnected_client_is_dropped_from_fanout() {
+        // A dead connection must leave the subscriber list so its queue stops
+        // growing; otherwise every later append_output pays an Err send and a
+        // pending_bytes add/sub pair for a client that is long gone.
+        let base = format!(
+            "/tmp/herdr-webui-disconnect-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        );
+        let api_socket = PathBuf::from(format!("{base}-api.sock"));
+        let client_socket = PathBuf::from(format!("{base}-client.sock"));
+        let _handle = BuiltinBackendHandle::start(BuiltinBackendConfig {
+            api_socket: api_socket.clone(),
+            client_socket,
+            cwd: std::env::temp_dir(),
+            shell: Some(default_shell()),
+            jcode_detection_variant: JcodeDetectionVariant::Vanilla,
+        })
+        .unwrap();
+        let request = |line: &str| -> Value {
+            let mut api = connect_local_stream(&api_socket).unwrap();
+            api.write_all(line.as_bytes()).unwrap();
+            api.write_all(b"\n").unwrap();
+            api.flush().unwrap();
+            let mut reader = BufReader::new(api);
+            let mut out = String::new();
+            reader.read_line(&mut out).unwrap();
+            serde_json::from_str(&out).unwrap()
+        };
+        let workspace = request(
+            r#"{"id":"seed","method":"workspace.create","params":{"label":"disconnect"}}"#,
+        );
+        let workspace_id = workspace["result"]["workspace"]["workspace"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let tab = request(&format!(
+            r#"{{"id":"tab","method":"tab.create","params":{{"workspace_id":"{workspace_id}"}}}}"#
+        ));
+        let terminal_id = tab["result"]["root_pane"]["terminal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Attach, consume the replay, then close the socket without Detach.
+        let mut client =
+            connect_local_stream(&PathBuf::from(format!("{base}-client.sock"))).unwrap();
+        write_message(
+            &mut client,
+            &ClientMessage::TerminalHello {
+                version: 22,
+                cols: 80,
+                rows: 24,
+                cell_width_px: 0,
+                cell_height_px: 0,
+                pixel_mouse: false,
+            },
+        )
+        .unwrap();
+        read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE).unwrap();
+        write_message(
+            &mut client,
+            &ClientMessage::AttachTerminal {
+                terminal_id,
+                takeover: true,
+            },
+        )
+        .unwrap();
+        read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE).unwrap();
+        drop(client);
+
+        // Keep producing output after the disconnect; nothing may panic and a
+        // fresh attach must still receive live output.
+        let mut second =
+            connect_local_stream(&PathBuf::from(format!("{base}-client.sock"))).unwrap();
+        write_message(
+            &mut second,
+            &ClientMessage::TerminalHello {
+                version: 22,
+                cols: 80,
+                rows: 24,
+                cell_width_px: 0,
+                cell_height_px: 0,
+                pixel_mouse: false,
+            },
+        )
+        .unwrap();
+        read_message::<_, ServerMessage>(&mut second, MAX_FRAME_SIZE).unwrap();
+        write_message(
+            &mut second,
+            &ClientMessage::AttachTerminal {
+                terminal_id: tab["result"]["root_pane"]["terminal_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+                takeover: true,
+            },
+        )
+        .unwrap();
+        read_message::<_, ServerMessage>(&mut second, MAX_FRAME_SIZE).unwrap();
+        write_message(
+            &mut second,
+            &ClientMessage::Input {
+                data: b"echo AFTER-DISCONNECT-MARKER\n".to_vec(),
+            },
+        )
+        .unwrap();
+        let mut saw_marker = false;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            match read_message::<_, ServerMessage>(&mut second, MAX_FRAME_SIZE) {
+                Ok(ServerMessage::Terminal(frame)) => {
+                    if String::from_utf8_lossy(&frame.bytes).contains("AFTER-DISCONNECT-MARKER")
+                    {
+                        saw_marker = true;
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => panic!("post-disconnect attach stream broke: {err}"),
+            }
+        }
+        assert!(saw_marker, "fresh attach saw no live output after a dead subscriber");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn client_socket_replay_survives_output_flood_during_attach() {
         // Regression guard: the attach replay frame and live output frames
         // used to be written from two threads on the same dup'ed socket, so a
@@ -9151,8 +9512,7 @@ mod tests {
         write_message(
             &mut driver,
             &ClientMessage::Input {
-                data: b"printf 'FLOOD-LINE-%05d\\n' $(seq 1 60000); echo FLOOD_\"DONE\"\n"
-                    .to_vec(),
+                data: b"printf 'FLOOD-LINE-%05d\\n' $(seq 1 60000); echo FLOOD_\"DONE\"\n".to_vec(),
             },
         )
         .unwrap();
