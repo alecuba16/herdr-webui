@@ -498,7 +498,7 @@ fn handle_client_connection(
     };
 
     let mut attached: Option<Arc<TerminalRuntime>> = None;
-    let mut writer_started = false;
+    let mut writer_tx: Option<mpsc::Sender<TerminalSubscriberMessage>> = None;
     let terminal_size = Arc::new(Mutex::new((cols, rows)));
     loop {
         let message = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE)?;
@@ -516,88 +516,112 @@ fn handle_client_connection(
                 // ("trailing bytes in frame") and whole PTY bursts were lost
                 // when bulk output floods raced the attach replay.
                 let history = terminal.history_bytes();
-                if !writer_started {
-                    let (tx, rx) = mpsc::channel::<TerminalSubscriberMessage>();
-                    let pending_bytes = Arc::new(AtomicUsize::new(0));
-                    let replay_len = history.len().max(1);
-                    pending_bytes.fetch_add(replay_len, Ordering::AcqRel);
-                    let history_frame = ServerMessage::Terminal(TerminalFrame {
-                        seq: 1,
-                        width: cols,
-                        height: rows,
-                        full: true,
-                        bytes: history,
-                    });
-                    let subscriber = TerminalSubscriber {
-                        tx,
-                        pending_bytes: Arc::clone(&pending_bytes),
-                    };
-                    if subscriber
-                        .tx
-                        .send(TerminalSubscriberMessage::Replay(Box::new(history_frame)))
-                        .is_err()
-                    {
-                        continue;
-                    }
-                    terminal.subscribe(subscriber);
-                    let mut writer = stream.try_clone().map_err(|err| err.to_string())?;
-                    let terminal_size = Arc::clone(&terminal_size);
-                    thread::spawn(move || {
-                        let mut seq = 2_u64;
-                        while let Ok(message) = rx.recv() {
-                            match message {
-                                TerminalSubscriberMessage::Replay(frame) => {
-                                    pending_bytes.fetch_sub(replay_len, Ordering::AcqRel);
-                                    if write_message(&mut writer, &frame).is_err() {
-                                        break;
-                                    }
-                                }
-                                TerminalSubscriberMessage::Output(bytes) => {
-                                    pending_bytes.fetch_sub(bytes.len(), Ordering::AcqRel);
-                                    let (width, height) = terminal_size
-                                        .lock()
-                                        .map(|size| *size)
-                                        .unwrap_or((cols, rows));
-                                    // TerminalFrame serializes owned bytes on the
-                                    // wire; move out of the shared Arc (the last
-                                    // writer to touch the chunk pays the copy).
-                                    let frame = ServerMessage::Terminal(TerminalFrame {
-                                        seq,
-                                        width,
-                                        height,
-                                        full: false,
-                                        bytes: (*bytes).clone(),
-                                    });
-                                    seq += 1;
-                                    if write_message(&mut writer, &frame).is_err() {
-                                        break;
-                                    }
-                                }
-                                TerminalSubscriberMessage::Exited => {
-                                    let _ = write_message(
-                                        &mut writer,
-                                        &ServerMessage::ServerShutdown {
-                                            reason: Some("terminal exited".to_string()),
-                                        },
-                                    );
+                if let Some(tx) = &writer_tx {
+                    // Re-attach on a live connection: deliver a fresh replay
+                    // of the history accumulated since the last attach. The
+                    // pending counter belongs to the writer thread's
+                    // subscriber; the replay is queued through the same
+                    // channel so frames stay ordered behind any live output.
+                    let _ = tx.send(TerminalSubscriberMessage::Replay(Box::new(
+                        ServerMessage::Terminal(TerminalFrame {
+                            seq: 0,
+                            width: cols,
+                            height: rows,
+                            full: true,
+                            bytes: history,
+                        }),
+                    )));
+                    attached = Some(terminal);
+                    continue;
+                }
+                let (tx, rx) = mpsc::channel::<TerminalSubscriberMessage>();
+                let pending_bytes = Arc::new(AtomicUsize::new(0));
+                let replay_len = history.len().max(1);
+                pending_bytes.fetch_add(replay_len, Ordering::AcqRel);
+                let history_frame = ServerMessage::Terminal(TerminalFrame {
+                    seq: 1,
+                    width: cols,
+                    height: rows,
+                    full: true,
+                    bytes: history,
+                });
+                let subscriber = TerminalSubscriber {
+                    tx: tx.clone(),
+                    pending_bytes: Arc::clone(&pending_bytes),
+                };
+                if subscriber
+                    .tx
+                    .send(TerminalSubscriberMessage::Replay(Box::new(history_frame)))
+                    .is_err()
+                {
+                    continue;
+                }
+                terminal.subscribe(subscriber);
+                let mut writer = stream.try_clone().map_err(|err| err.to_string())?;
+                let terminal_size = Arc::clone(&terminal_size);
+                thread::spawn(move || {
+                    let mut seq = 2_u64;
+                    while let Ok(message) = rx.recv() {
+                        match message {
+                            TerminalSubscriberMessage::Replay(frame) => {
+                                if write_message(&mut writer, &frame).is_err() {
                                     break;
                                 }
-                                TerminalSubscriberMessage::Overflow => {
-                                    let _ = write_message(
-                                        &mut writer,
-                                        &ServerMessage::ServerShutdown {
-                                            reason: Some(
-                                                "terminal output backlog overflow".to_string(),
-                                            ),
-                                        },
-                                    );
+                                // Decrement only after the kernel accepted
+                                // the frame: a blocked write still counts as
+                                // pending, or a stalled client never trips
+                                // the shed while the writer sits in write(2).
+                                pending_bytes.fetch_sub(replay_len, Ordering::AcqRel);
+                            }
+                            TerminalSubscriberMessage::Output(bytes) => {
+                                let (width, height) = terminal_size
+                                    .lock()
+                                    .map(|size| *size)
+                                    .unwrap_or((cols, rows));
+                                // TerminalFrame serializes owned bytes on the
+                                // wire; move out of the shared Arc (the last
+                                // writer to touch the chunk pays the copy).
+                                let frame = ServerMessage::Terminal(TerminalFrame {
+                                    seq,
+                                    width,
+                                    height,
+                                    full: false,
+                                    bytes: (*bytes).clone(),
+                                });
+                                seq += 1;
+                                if write_message(&mut writer, &frame).is_err() {
                                     break;
                                 }
+                                // Same rule as Replay: the chunk stays
+                                // pending until write_message returns, so a
+                                // slow client inflates the counter even
+                                // while the writer is blocked in write(2).
+                                pending_bytes.fetch_sub(bytes.len(), Ordering::AcqRel);
+                            }
+                            TerminalSubscriberMessage::Exited => {
+                                let _ = write_message(
+                                    &mut writer,
+                                    &ServerMessage::ServerShutdown {
+                                        reason: Some("terminal exited".to_string()),
+                                    },
+                                );
+                                break;
+                            }
+                            TerminalSubscriberMessage::Overflow => {
+                                let _ = write_message(
+                                    &mut writer,
+                                    &ServerMessage::ServerShutdown {
+                                        reason: Some(
+                                            "terminal output backlog overflow".to_string(),
+                                        ),
+                                    },
+                                );
+                                break;
                             }
                         }
-                    });
-                    writer_started = true;
-                }
+                    }
+                });
+                writer_tx = Some(tx);
                 attached = Some(terminal);
             }
             ClientMessage::Input { data } => {
@@ -2530,8 +2554,10 @@ impl TerminalRuntime {
         }
         if let Ok(mut subscribers) = self.subscribers.lock() {
             let payload = TerminalSubscriberMessage::Output(Arc::new(bytes.to_vec()));
-            // Count the chunk before queueing: the writer decrements on
-            // dequeue, so the add must land first or the counter wraps.
+            // Count the chunk before queueing: the writer decrements only
+            // after the kernel accepts the frame, so the counter covers the
+            // channel backlog AND any in-flight blocked write. The add must
+            // land first or the counter wraps.
             subscribers.retain(|subscriber| {
                 subscriber
                     .pending_bytes
@@ -4623,6 +4649,7 @@ fn now_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use interprocess::local_socket::traits::Stream as _;
 
     #[test]
     fn openpty_retry_recovers_from_transient_failures() {
@@ -9061,10 +9088,9 @@ mod tests {
             reader.read_line(&mut out).unwrap();
             serde_json::from_str(&out).unwrap()
         };
-        let workspace = request(
-            r#"{"id":"seed","method":"workspace.create","params":{"label":"overflow"}}"#,
-        );
-        let workspace_id = workspace["result"]["workspace"]["workspace"]["workspace_id"]
+        let workspace =
+            request(r#"{"id":"seed","method":"workspace.create","params":{"label":"overflow"}}"#);
+        let workspace_id = workspace["result"]["workspace"]["workspace_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -9072,6 +9098,10 @@ mod tests {
             r#"{{"id":"tab","method":"tab.create","params":{{"workspace_id":"{workspace_id}"}}}}"#
         ));
         let terminal_id = tab["result"]["root_pane"]["terminal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let pane_id = tab["result"]["root_pane"]["pane_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -9100,41 +9130,123 @@ mod tests {
         )
         .unwrap();
 
-        // Flood far past MAX_SUBSCRIBER_PENDING_BYTES without reading. The
-        // socket buffer plus pending queue fill; the subscriber is shed.
+        // Flood far past MAX_SUBSCRIBER_PENDING_BYTES without reading.
+        // dd streams from the kernel at PTY speed; the printf/seq form
+        // formats 3M arguments in the shell itself and stalls before the
+        // PTY ever fills. The burst is finite and bigger than the cap, so
+        // once the flood is done the writer can drain and deliver the
+        // shutdown notice.
         write_message(
             &mut client,
             &ClientMessage::Input {
-                data: b"while true; do printf 'OVERFLOW-LINE-%05d\\n' 1; done\n"
-                    .to_vec(),
+                // The PTY echoes the typed command itself, so the marker the
+                // poll waits for must not appear in the command text: print
+                // the two halves separately so scrollback only shows the
+                // joined marker once the flood has actually finished.
+                data: b"dd if=/dev/zero bs=1024 count=65536 2>/dev/null; printf 'FLOOD-' ; printf 'DONE\\n'\n".to_vec(),
             },
         )
         .unwrap();
 
-        // Wait for the shed, then read everything the writer buffered: the
-        // backlog frames first, then the explicit shutdown frame.
-        thread::sleep(Duration::from_secs(2));
+        // Keep the client stalled until the flood FINISHES producing, not
+        // for a fixed time: under parallel-suite load dd can underrun any
+        // wall-clock window, and once the test starts reading it drains at
+        // line rate so pending never crosses the cap. Poll server-side
+        // scrollback over the API for the FLOOD-DONE marker instead; the
+        // client socket stays unread the whole time, so the shed is
+        // deterministic. The marker is split in the command so the PTY's
+        // echo of the typed command cannot satisfy the poll early.
+        let flood_deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let read = request(&format!(
+                r#"{{"id":"read","method":"pane.read","params":{{"pane_id":"{pane_id}"}}}}"#
+            ));
+            if read["result"]["read"]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("FLOOD-DONE"))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < flood_deadline,
+                "flood never finished; pane.read keeps racing the client stream"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
         let mut saw_shutdown = false;
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < deadline {
-            match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE) {
-                Ok(ServerMessage::Terminal(_)) => {}
-                Ok(ServerMessage::ServerShutdown { reason }) => {
-                    let reason = reason.unwrap_or_default();
-                    assert!(
-                        reason.contains("overflow"),
-                        "expected overflow shutdown, got {reason}"
-                    );
-                    saw_shutdown = true;
+        // A silent socket blocks read_message forever; the deadline below is
+        // only checked between frames. read_message cannot be retried on a
+        // timeout either: EAGAIN between its two read_exact calls loses the
+        // frame boundary. So drain bytes into a buffer with a short recv
+        // timeout and decode whole frames from it; an EAGAIN with zero new
+        // bytes just re-loops without touching sync.
+        client
+            .set_recv_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
+        let mut pending: Vec<u8> = Vec::new();
+        let mut scratch = [0u8; 16384];
+        let mut diag_frames: usize = 0;
+        let mut diag_bytes: usize = 0;
+        let deadline = Instant::now() + Duration::from_secs(120);
+        'wait: while Instant::now() < deadline {
+            use std::io::Read as _;
+            loop {
+                match client.read(&mut scratch) {
+                    Ok(0) => panic!("overflowed client stream closed before shutdown"),
+                    Ok(n) => {
+                        pending.extend_from_slice(&scratch[..n]);
+                        diag_bytes += n;
+                    }
+                    // macOS surfaces an expired recv timeout as EAGAIN.
+                    Err(ref err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        break;
+                    }
+                    Err(ref err) if err.kind() == std::io::ErrorKind::TimedOut => break,
+                    Err(err) => panic!("overflowed client stream broke: {err}"),
+                }
+            }
+            // Frames on the wire are 4-byte LE length + bincode payload
+            // (write_message). Decode only complete frames so a partial
+            // tail waits for more bytes instead of losing sync.
+            loop {
+                if pending.len() < 4 {
                     break;
                 }
-                Ok(_) => {}
-                Err(err) => panic!("overflowed client stream broke before shutdown: {err}"),
+                let len =
+                    u32::from_le_bytes([pending[0], pending[1], pending[2], pending[3]]) as usize;
+                assert!(
+                    len <= MAX_FRAME_SIZE,
+                    "overflowed stream frame size {len} exceeds {MAX_FRAME_SIZE}"
+                );
+                if pending.len() < 4 + len {
+                    break;
+                }
+                let (message, consumed) = bincode::serde::decode_from_slice::<ServerMessage, _>(
+                    &pending[4..4 + len],
+                    bincode::config::standard(),
+                )
+                .expect("overflowed stream frame failed to decode");
+                assert_eq!(consumed, len, "overflowed stream frame has trailing bytes");
+                pending.drain(..4 + len);
+                diag_frames += 1;
+                match message {
+                    ServerMessage::Terminal(_) => {}
+                    ServerMessage::ServerShutdown { reason } => {
+                        let reason = reason.unwrap_or_default();
+                        assert!(
+                            reason.contains("overflow"),
+                            "expected overflow shutdown, got {reason}"
+                        );
+                        saw_shutdown = true;
+                        break 'wait;
+                    }
+                    _ => {}
+                }
             }
         }
         assert!(
             saw_shutdown,
-            "stalled reader was never shed or got no shutdown frame"
+            "stalled reader was never shed or got no shutdown frame (frames={diag_frames}, bytes={diag_bytes})"
         );
     }
 
@@ -9171,7 +9283,7 @@ mod tests {
         };
         let workspace =
             request(r#"{"id":"seed","method":"workspace.create","params":{"label":"reattach"}}"#);
-        let workspace_id = workspace["result"]["workspace"]["workspace"]["workspace_id"]
+        let workspace_id = workspace["result"]["workspace"]["workspace_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -9221,6 +9333,11 @@ mod tests {
         )
         .unwrap();
         let mut saw_marker = false;
+        // Mute-socket guard: without a recv timeout a missing marker hangs
+        // read_message past every deadline below.
+        client
+            .set_recv_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
             match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE) {
@@ -9231,6 +9348,14 @@ mod tests {
                     }
                 }
                 Ok(_) => {}
+                // read_message wraps io errors in Strings; the recv timeout
+                // surfaces as either phrasing depending on platform.
+                Err(ref err)
+                    if err.contains("timed out")
+                        || err.contains("Resource temporarily unavailable") =>
+                {
+                    continue
+                }
                 Err(err) => panic!("reattach stream broke: {err}"),
             }
         }
@@ -9244,6 +9369,13 @@ mod tests {
         )
         .unwrap();
         let mut replay_has_marker = false;
+        // Same mute-socket guard as the shed test: read_message blocks
+        // forever on a silent stream and the deadline below only runs
+        // between frames. A short recv timeout converts the stall into
+        // deadline lapses; EAGAIN on an empty buffer keeps frame sync.
+        client
+            .set_recv_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
             match read_message::<_, ServerMessage>(&mut client, MAX_FRAME_SIZE) {
@@ -9255,7 +9387,14 @@ mod tests {
                     }
                 }
                 Ok(_) => {}
-                Ok(ServerMessage::ServerShutdown { .. }) => break,
+                // read_message wraps io errors in Strings; the recv timeout
+                // surfaces as either phrasing depending on platform.
+                Err(ref err)
+                    if err.contains("timed out")
+                        || err.contains("Resource temporarily unavailable") =>
+                {
+                    continue
+                }
                 Err(err) => panic!("reattach replay stream broke: {err}"),
             }
         }
@@ -9296,10 +9435,9 @@ mod tests {
             reader.read_line(&mut out).unwrap();
             serde_json::from_str(&out).unwrap()
         };
-        let workspace = request(
-            r#"{"id":"seed","method":"workspace.create","params":{"label":"disconnect"}}"#,
-        );
-        let workspace_id = workspace["result"]["workspace"]["workspace"]["workspace_id"]
+        let workspace =
+            request(r#"{"id":"seed","method":"workspace.create","params":{"label":"disconnect"}}"#);
+        let workspace_id = workspace["result"]["workspace"]["workspace_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -9379,8 +9517,7 @@ mod tests {
         while Instant::now() < deadline {
             match read_message::<_, ServerMessage>(&mut second, MAX_FRAME_SIZE) {
                 Ok(ServerMessage::Terminal(frame)) => {
-                    if String::from_utf8_lossy(&frame.bytes).contains("AFTER-DISCONNECT-MARKER")
-                    {
+                    if String::from_utf8_lossy(&frame.bytes).contains("AFTER-DISCONNECT-MARKER") {
                         saw_marker = true;
                         break;
                     }
@@ -9389,7 +9526,10 @@ mod tests {
                 Err(err) => panic!("post-disconnect attach stream broke: {err}"),
             }
         }
-        assert!(saw_marker, "fresh attach saw no live output after a dead subscriber");
+        assert!(
+            saw_marker,
+            "fresh attach saw no live output after a dead subscriber"
+        );
     }
 
     #[cfg(unix)]
