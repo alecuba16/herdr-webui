@@ -1029,3 +1029,95 @@ test("registry exports the split surface completely", () => {
   );
   assert.equal(panes2.paneEditorMountId("src/demo.py"), `pane-editor-${sandbox.hashId("src/demo.py")}`, "mount id matches shared hashId");
 });
+
+// ---- empty leaf collapse (split behavior fix) -----------------------------
+// Closing the last tab of one split pane must not strand a blank half:
+// the tree collapses to the survivor, the survivor takes focus, and a
+// single-leaf workspace keeps its empty leaf for the New terminal card.
+
+test("collapseLeafForClosedTab collapses the closed tab's emptied split leaf", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-40");
+  const panes = ctx.HerdrWorkspacePanes;
+  bootstrapPanes(ctx, "t1");
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[0].tabs = ["t1"];
+  leaves[0].active = "t1";
+  leaves[1].tabs = ["t2"];
+  leaves[1].active = "t2";
+  ctx.state.tabs = [{ tab_id: "t1" }, { tab_id: "t2" }];
+  panes.renderWorkspacePanes();
+
+  // t2 closes: the helper drops the dead id and collapses the emptied
+  // leaf, exactly what the close flows hand it.
+  ctx.state.tabs = [{ tab_id: "t1" }];
+  assert.equal(panes.collapseLeafForClosedTab("t2"), true, "collapse reported");
+  const after = panes.paneLeaves(panes.paneRoot());
+  assert.equal(after.length, 1, "tree collapsed to one leaf");
+  assert.equal(after[0].paneId, leaves[0].paneId, "survivor is the leaf with the live tab");
+  assert.equal(panes.paneRoot().kind, "pane", "split root promoted the survivor");
+  assert.equal(after[0].active, "t1", "survivor pointer intact");
+});
+
+test("collapseLeafForClosedTab keeps by-design empty split leaves and single-leaf trees", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-41");
+  const panes = ctx.HerdrWorkspacePanes;
+  bootstrapPanes(ctx, "t1");
+  // Single leaf, no split: nothing to collapse.
+  assert.equal(panes.collapseLeafForClosedTab("t1"), false, "single-leaf tree untouched");
+  // Split created by the strip: the fresh sibling is empty BY DESIGN.
+  // Closing the terminal leaf's tab (the only non-empty pane) may
+  // collapse the tree, but the empty sibling itself must never be the
+  // target of a sweep.
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[0].tabs = ["t1"];
+  leaves[0].active = "t1";
+  panes.renderWorkspacePanes();
+  assert.equal(panes.collapseLeafForClosedTab("missing"), false, "unknown id is a no-op");
+  assert.equal(panes.paneLeaves(panes.paneRoot()).length, 2, "split intact");
+});
+
+test("closing an editor tab empties a split leaf and collapses it", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-42");
+  const panes = ctx.HerdrWorkspacePanes;
+  bootstrapPanes(ctx, "t1");
+  ctx.window.HerdrFileBrowser = {
+    editorFor: () => null,
+    closeEditorState: () => {},
+    closeEditorTab: null,
+  };
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  // The fresh split leaf holds ONLY an editor tab: closing it empties the
+  // pane, so the collapse must take the whole split down with it.
+  leaves[1].tabs = ["editor:src/only.py"];
+  leaves[1].active = "editor:src/only.py";
+  panes.renderWorkspacePanes();
+  panes.closeEditorTabImmediate(encodeURIComponent("src/only.py"));
+  const after = panes.paneLeaves(panes.paneRoot());
+  assert.equal(after.length, 1, "emptied leaf collapsed after editor close");
+  assert.equal(after[0].paneId, leaves[0].paneId, "survivor keeps the terminal");
+  // The editor-active leaf had the pane focus; the survivor takes it back.
+  assert.equal(panes.activePane().paneId, leaves[0].paneId, "focus moved to the survivor");
+});
+
+test("cross-leaf drag move that empties the source collapses the blank pane", () => {
+  const { document } = buildDom();
+  const ctx = loadPanesModule(document, "ws-43");
+  const panes = ctx.HerdrWorkspacePanes;
+  bootstrapPanes(ctx, "t1");
+  panes.splitPaneRight();
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[1].tabs = ["editor:src/move.py"];
+  leaves[1].active = "editor:src/move.py";
+  panes.renderWorkspacePanes();
+  assert.equal(panes.movePaneTabTo("editor:src/move.py", leaves[0].paneId, null), true,
+    "move accepted");
+  const after = panes.paneLeaves(panes.paneRoot());
+  assert.equal(after.length, 1, "emptied source leaf collapsed after the move");
+  assert.ok(after[0].tabs.includes("editor:src/move.py"), "moved tab landed in the survivor");
+});

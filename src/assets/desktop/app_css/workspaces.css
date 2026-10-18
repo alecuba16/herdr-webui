@@ -445,6 +445,15 @@ body.light .agent-sort-chip.blue {
   background: color-mix(in srgb, var(--panel), transparent 8%);
   box-shadow: 0 20px 80px #0006;
   overflow: hidden;
+  /* The card centers inside the fixed overlay, so it needs its own
+   * height budget: long session lists scroll inside the card instead
+   * of pushing the create/cleanup rows past the bottom edge. Percentage
+   * of the overlay (inset 52px top), not 100vh: the overlay already
+   * starts below the header, so a vh budget overshoots by that offset
+   * plus the 32px margin. */
+  max-height: calc(100% - 64px);
+  display: flex;
+  flex-direction: column;
 }
 .session-hero {
   display: flex;
@@ -458,6 +467,7 @@ body.light .agent-sort-chip.blue {
     color-mix(in srgb, var(--accent), transparent 88%),
     transparent
   );
+  flex: none;
 }
 .session-hero h1 {
   margin: 0;
@@ -480,6 +490,11 @@ body.light .agent-sort-chip.blue {
   max-width: none;
   margin: 0;
   padding: 18px;
+  /* Flex child of the capped card: min-height 0 lets the overflow-y
+   * budget actually shrink, grid default is min-height auto. */
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .session-list {
   display: grid;
@@ -596,12 +611,30 @@ body.light .agent-sort-chip.blue {
 }
 .session-new {
   margin-top: 14px;
+  /* Pinned to the bottom of the scrollable actions area: the create
+   * and cleanup rows stay reachable without scrolling past a long
+   * session list. */
+  position: sticky;
+  bottom: 0;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  margin-left: -18px;
+  margin-right: -18px;
+  padding: 10px 18px 0;
+  z-index: 1;
 }
 .session-new .btn {
   white-space: nowrap;
 }
 .session-cleanup {
   margin-top: 0;
+  position: sticky;
+  bottom: 0;
+  background: var(--panel);
+  margin-left: -18px;
+  margin-right: -18px;
+  padding: 0 18px 18px;
+  z-index: 1;
 }
 .session-cleanup small {
   color: var(--muted, inherit);

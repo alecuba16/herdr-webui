@@ -1156,15 +1156,18 @@ test("closing a sibling pane's terminal prunes it and heals its active pointer",
   panes.renderWorkspacePanes();
 
   // t2 closes: the backend list drops it while the route stays on t1.
+  // The emptied split leaf collapses (last tab of that pane closed), so
+  // the survivor keeps the screen and the route stays intact.
   ctx.state.tabs = [{ tab_id: "t1" }];
   ctx.state.tab = "t1";
   panes.syncTerminalTabsIntoTree(panes.paneRoot());
 
   const bAfter = panes.paneLeaves(panes.paneRoot()).find((leaf) => leaf.paneId === leafB.paneId);
-  assert.ok(!bAfter.tabs.includes("t2"), "closed sibling id pruned from the non-target leaf");
-  assert.equal(bAfter.active, null, "emptied sibling has no dangling active pointer");
+  assert.equal(bAfter, undefined, "emptied split leaf collapsed, no dead pane lingers");
   const aAfter = panes.paneLeaves(panes.paneRoot()).find((leaf) => leaf.paneId === leafA.paneId);
-  assert.equal(aAfter.active, "t1", "target leaf keeps its live pointer");
+  assert.ok(aAfter && !aAfter.tabs.includes("t2"), "closed sibling id pruned from the tree");
+  assert.equal(aAfter.active, "t1", "survivor keeps its live pointer");
+  assert.equal(panes.paneLeaves(panes.paneRoot()).length, 1, "tree collapsed to the survivor");
 });
 
 // Same heal with a surviving editor tab in the sibling: the pointer

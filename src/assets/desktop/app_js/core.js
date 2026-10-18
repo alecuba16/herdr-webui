@@ -1963,14 +1963,19 @@ function noSleepButtonHtml(mode) {
 }
 function noSleepControlHtml(extraId) {
   const suffix = extraId ? ` id="${extraId}"` : "";
-  return `<span class="no-sleep-wrap"><button type="button" class="btn shell-action shell-icon-button no-sleep-control"${suffix} value="off" title="Prevent computer sleep">${noSleepButtonHtml("off")}</button><span class="no-sleep-menu" hidden><button type="button" data-mode="off">${noSleepButtonHtml("off")}<span>Off</span></button><button type="button" data-mode="auto">${noSleepButtonHtml("auto")}<span>Auto</span></button><button type="button" data-mode="1h">${noSleepButtonHtml("1h")}<span>1 hour</span></button><button type="button" data-mode="2h">${noSleepButtonHtml("2h")}<span>2 hours</span></button><button type="button" data-mode="4h">${noSleepButtonHtml("4h")}<span>4 hours</span></button><button type="button" data-mode="infinite">${noSleepButtonHtml("infinite")}<span>Infinite</span></button></span></span>`;
+  return `<span class="no-sleep-wrap"><button type="button" class="btn shell-action shell-icon-button no-sleep-control"${suffix} value="off" title="Prevent computer sleep" aria-haspopup="menu" aria-expanded="false">${noSleepButtonHtml("off")}</button><span class="no-sleep-menu" hidden role="menu"><button type="button" data-mode="off">${noSleepButtonHtml("off")}<span>Off</span></button><button type="button" data-mode="auto">${noSleepButtonHtml("auto")}<span>Auto</span></button><button type="button" data-mode="1h">${noSleepButtonHtml("1h")}<span>1 hour</span></button><button type="button" data-mode="2h">${noSleepButtonHtml("2h")}<span>2 hours</span></button><button type="button" data-mode="4h">${noSleepButtonHtml("4h")}<span>4 hours</span></button><button type="button" data-mode="infinite">${noSleepButtonHtml("infinite")}<span>Infinite</span></button></span></span>`;
 }
 function noSleepControls() {
   return Array.from(document.querySelectorAll(".no-sleep-control"));
 }
 function closeNoSleepMenus(except) {
   document.querySelectorAll(".no-sleep-menu").forEach((menu) => {
-    if (menu !== except) menu.hidden = true;
+    if (menu !== except) {
+      menu.hidden = true;
+      const wrap = menu.closest && menu.closest(".no-sleep-wrap");
+      const control = wrap && wrap.querySelector && wrap.querySelector(".no-sleep-control");
+      if (control && control.setAttribute) control.setAttribute("aria-expanded", "false");
+    }
   });
 }
 function syncNoSleepControls() {
@@ -4514,6 +4519,9 @@ function forgetClosedSelection(kind, data) {
       closedPane.tab_id &&
       !(state.panes || []).some((pane) => pane.tab_id === closedPane.tab_id);
     if (closedLastPaneInTab) removeClosedTabFromState(closedPane.tab_id);
+    // Last pane of a tab emptied a split leaf: same collapse as tab.closed.
+    if (closedLastPaneInTab && window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)
+      window.HerdrWorkspacePanes.collapseLeafForClosedTab(closedPane.tab_id);
     if (closedPane && closedPane.workspace_id)
       maybeAutoCloseWorkspace(closedPane.workspace_id);
     if (data && data.pane_id && data.pane_id === state.pane) {
@@ -4538,6 +4546,10 @@ function forgetClosedSelection(kind, data) {
     }
     if (data && data.tab_id) removeClosedTabFromState(data.tab_id);
     if (closedTab) maybeAutoCloseWorkspace(closedTab.workspace_id);
+    // A closed terminal tab can leave its split leaf empty: collapse
+    // the tree to the survivor now (render picks it up next pass).
+    if (window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.collapseLeafForClosedTab)
+      window.HerdrWorkspacePanes.collapseLeafForClosedTab(data.tab_id);
     if (data && data.tab_id && data.tab_id === state.tab) {
       resetTerminalConnection(true);
       selectFallbackTabAfterClosed(data.tab_id);

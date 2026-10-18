@@ -530,11 +530,23 @@ function syncTerminalTabsIntoTree(root) {
     // so a sibling whose terminal closed keeps a dead id in its tabs and a
     // dangling active pointer (the strip filter hides the id, leaving an
     // orphan blank pane until something re-targets the sync).
+    // A leaf the prune emptied inside a split is a dead pane: collapse it
+    // to the survivor right here. Only prune-emptied leaves qualify: a
+    // split-created leaf is empty by design (its strip offers New
+    // terminal), and a zero-tab workspace keeps its single leaf for the
+    // empty-leaf card.
+    const emptiedByPrune = [];
     for (const leaf of paneLeaves(root)) {
       const kept = leaf.tabs.filter((id) => isEditorTab(id) || isGitTab(id) || backendIds.includes(id));
       if (kept.length !== leaf.tabs.length) {
         leaf.tabs = kept;
         changed = true;
+        if (!kept.length) emptiedByPrune.push(leaf);
+      }
+    }
+    if (isPaneSplit(root)) {
+      for (const leaf of emptiedByPrune) {
+        if (collapseEmptyLeafInTree(root, leaf)) changed = true;
       }
     }
   }
@@ -1238,6 +1250,18 @@ function positionPaneMenu(menu, button) {
   if (!rect) return;
   menu.style.left = `${Math.max(8, rect.left)}px`;
   menu.style.top = `${rect.bottom + 4}px`;
+  // A strip near the viewport bottom would push the menu off-screen.
+  // Measure after the first paint position lands, then flip it up when
+  // the drop exceeds the viewport, keeping an 8px margin.
+  if (typeof document.documentElement === "undefined" || !document.documentElement) return;
+  const viewportBottom = (typeof window !== "undefined" && typeof window.innerHeight === "number")
+    ? window.innerHeight
+    : document.documentElement.clientHeight;
+  const height = menu.offsetHeight || 0;
+  if (height && rect.bottom + 4 + height > viewportBottom - 8) {
+    const flippedTop = rect.top - height - 4;
+    menu.style.top = `${Math.max(8, flippedTop)}px`;
+  }
 }
 
 function closePaneMenu() {
@@ -1419,6 +1443,9 @@ function movePaneTabTo(tabId, targetPaneId, index) {
   // Keep the active pointer on the pane receiving the tab: the next
   // sidebar open lands there, matching a click on the moved tab.
   focusLeaf(root, target);
+  // A cross-leaf move that emptied the source leaf collapses it: no
+  // blank pane survives the drag.
+  if (!source.tabs.length) collapseEmptyLeafInTree(root, source);
   saveWorkspacePanesStates();
   renderWorkspacePanes();
   if (isEditorTab(tabId)) void activateEditorTab(editorTabPath(tabId));
@@ -1761,6 +1788,62 @@ function findSplitSlot(root, childrenArray) {
   return isPaneSplit(root) ? walk(root) : null;
 }
 
+// A split leaf whose last tab just closed keeps a dead pane on screen.
+// Drop it the same way the strip close does: sibling promoted into the
+// parent slot, single-child splits collapse, wider parents splice. No
+// tab migration here: the leaf emptied out, so the nearest survivor
+// (route- or tree-order) takes focus instead. Single-leaf trees keep
+// their empty leaf for the New terminal card.
+function collapseEmptyLeafInTree(root, leaf) {
+  if (!isPaneSplit(root)) return false;
+  const leaves = paneLeaves(root);
+  if (leaves.length <= 1 || !leaves.includes(leaf)) return false;
+  if (leaf.tabs.length) return false;
+  const survivor = migrationTargetForClosedLeaf(root, leaf);
+  const slot = findLeafSlot(root, leaf);
+  if (!slot || slot.holder === "root") return false;
+  const entry = panesStateFor();
+  if (entry.maximizedPaneId === leaf.paneId) entry.maximizedPaneId = null;
+  const holderArray = slot.holder;
+  const sibling = holderArray.length === 2 ? holderArray[1 - slot.index] : null;
+  if (sibling) {
+    const parentSlot = findSplitSlot(root, holderArray);
+    if (!parentSlot) return false;
+    if (parentSlot.holder === "root") entry.root = sibling;
+    else parentSlot.holder[parentSlot.index] = sibling;
+  } else {
+    holderArray.splice(slot.index, 1);
+    normalizeEntryRoot(entry);
+  }
+  const liveRoot = paneRootFor();
+  const focusTarget = (survivor && paneLeaves(liveRoot).includes(survivor) && survivor !== leaf)
+    ? survivor
+    : activeLeaf(liveRoot) || paneLeaves(liveRoot)[0];
+  if (focusTarget) focusLeaf(liveRoot, focusTarget);
+  saveWorkspacePanesStates();
+  return true;
+}
+
+// Sweep helper for the close flows: drop the leaf that held a closed
+// terminal tab, but ONLY that leaf. A blanket empty-leaf sweep would
+// also swallow a split-created sibling that is empty by design (its
+// strip still offers New terminal). The sync prune owns poll-driven
+// closes; this runs right after the local/event close while the tree
+// may still hold the dead id.
+function collapseLeafForClosedTab(tabId) {
+  if (!tabId) return false;
+  const root = paneRootFor();
+  if (!isPaneSplit(root)) return false;
+  const id = String(tabId);
+  const leaf = paneForTab(root, id);
+  if (!leaf) return false;
+  const at = leaf.tabs.indexOf(id);
+  if (at >= 0) leaf.tabs.splice(at, 1);
+  if (leaf.active === id) leaf.active = leaf.tabs[0] || null;
+  if (leaf.tabs.length) return false;
+  return collapseEmptyLeafInTree(root, leaf);
+}
+
 // Moves the active tab to the next leaf in tree order (wraps). Terminal
 // tabs refuse: exactly one #terminalShell surface exists and its tab
 // stays in the terminal leaf. The moved-to leaf takes focus and the tab
@@ -1784,6 +1867,8 @@ function moveActiveTabToNextPane() {
   target.active = tabId;
   leaf.active = leaf.tabs[0] || null;
   focusLeaf(root, target);
+  // The emptied source leaf must not linger as a blank split pane.
+  if (!leaf.tabs.length) collapseEmptyLeafInTree(root, leaf);
   saveWorkspacePanesStates();
   renderWorkspacePanes();
   // The moved tab's module mounts its container into the new leaf's
@@ -1906,7 +1991,10 @@ function closeEditorTabImmediate(encodedPath) {
     else if (isGitTab(leaf.active)) void openGitTab(gitTabViewKey(leaf.active));
     else if (leaf.active && typeof go === "function") go(state.ws, leaf.active);
   }
-  saveWorkspacePanesStates();
+  // Last tab in a split leaf: the pane would sit empty, collapse the
+  // tree to the survivor instead (single-leaf trees keep their card).
+  const collapsed = collapseEmptyLeafInTree(root, leaf);
+  if (!collapsed) saveWorkspacePanesStates();
   renderWorkspacePanes();
   teardownEditorTab(encodedPath);
 }
@@ -2012,7 +2100,10 @@ function closeGitTabImmediate(viewKey) {
     else if (isGitTab(leaf.active)) void openGitTab(gitTabViewKey(leaf.active));
     else if (leaf.active && typeof go === "function") go(state.ws, leaf.active);
   }
-  saveWorkspacePanesStates();
+  // Last tab in a split leaf: collapse to the survivor, same as the
+  // editor close above.
+  const collapsed = collapseEmptyLeafInTree(root, leaf);
+  if (!collapsed) saveWorkspacePanesStates();
   renderWorkspacePanes();
   const container = document.getElementById(paneGitMountId(viewKey));
   if (container && container.remove) container.remove();
@@ -2543,4 +2634,7 @@ window.HerdrWorkspacePanes = {
   terminalShellOwnerLeaf,
   mountDashboardInPane,
   mountEmptyLeafInPane,
+  // Drop the split leaf emptied by a closed terminal tab (that leaf only:
+  // a blanket sweep would eat by-design empty split siblings).
+  collapseLeafForClosedTab,
 };
