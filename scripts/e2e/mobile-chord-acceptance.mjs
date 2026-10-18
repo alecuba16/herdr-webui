@@ -188,23 +188,33 @@ async function main() {
   );
 
   // mc2: Keys toggle folds/unfolds keybar and composer together, aria tracks.
+  // The fab mirrors state.toolbarOpen (aria-pressed) and the fold hides
+  // #mobileToolbar itself; the keybar DOM persists while folded, so node
+  // presence proves nothing. Assert the flip in both directions instead of
+  // assuming a starting state.
   const toggle = await evalJs(
     cdp,
     `(() => {
-      const fab = document.querySelector("#mobileToolbar button[aria-pressed]");
+      const fab = document.getElementById("mobileKeysFab");
       if (!fab || !window.HerdrMobile || !HerdrMobile.toggleToolbar) return null;
+      const toolbar = document.getElementById("mobileToolbar");
+      const before = { aria: fab.getAttribute("aria-pressed"), hidden: toolbar ? toolbar.hidden : null };
       HerdrMobile.toggleToolbar();
-      const openAfter = document.querySelector("#mobileToolbarKeys");
-      const fabPressed1 = fab.getAttribute("aria-pressed");
-      const keybarVisible = !!openAfter && openAfter.querySelector("#mobileKeyBar");
+      const afterFlip1 = { aria: fab.getAttribute("aria-pressed"), hidden: toolbar ? toolbar.hidden : null };
       HerdrMobile.toggleToolbar();
-      const fabPressed2 = fab.getAttribute("aria-pressed");
-      return { keybarVisible, fabPressed1, fabPressed2 };
+      const afterFlip2 = { aria: fab.getAttribute("aria-pressed"), hidden: toolbar ? toolbar.hidden : null };
+      return { before, afterFlip1, afterFlip2 };
     })()`,
   );
+  const toggleOk =
+    !!toggle &&
+    toggle.afterFlip1.aria !== toggle.before.aria &&
+    toggle.afterFlip1.hidden !== toggle.before.hidden &&
+    toggle.afterFlip2.aria === toggle.before.aria &&
+    toggle.afterFlip2.hidden === toggle.before.hidden;
   record(
     "keys toggle folds keybar and composer",
-    !!toggle && toggle.keybarVisible && toggle.fabPressed1 === "true" && toggle.fabPressed2 === "false",
+    toggleOk,
     JSON.stringify(toggle),
   );
 
@@ -302,8 +312,9 @@ async function main() {
       const adapter = window.__herdrCapture.adapter;
       const core = adapter && adapter.wterm && adapter.wterm.bridge ? adapter.wterm.bridge : null;
       if (!core) return -1;
+      let prompts = 0;
       for (let i = 0; i < 20; i++) {
-        let prompts = 0;
+        prompts = 0;
         try {
           if (core.usingAltScreen && core.usingAltScreen()) return -1;
           const cols = core.getCols(), rows = core.getRows();
