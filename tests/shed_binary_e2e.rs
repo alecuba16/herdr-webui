@@ -92,16 +92,75 @@ fn write_frame(stream: &mut Stream, payload: &[u8]) {
     stream.flush().expect("flush");
 }
 
-/// One incoming frame from the server: (payload bytes, truncated?).
-/// Frames larger than a loose cap are read fully but flagged.
-fn read_frame(stream: &mut Stream) -> Vec<u8> {
-    let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).expect("read len");
-    let len = u32::from_le_bytes(len_buf) as usize;
-    assert!(len <= 32 * 1024 * 1024, "oversized frame: {len}");
-    let mut payload = vec![0u8; len];
-    stream.read_exact(&mut payload).expect("read payload");
-    payload
+/// Buffered frame reader for one client connection.
+///
+/// `read_exact` cannot coexist with a recv timeout: on timeout it
+/// discards the bytes it already read, desyncing this length-prefixed
+/// stream (and on macOS the expiry surfaces as WouldBlock, panicking the
+/// read outright). The polling loops need short recv timeouts, so every
+/// frame read goes through this buffer instead: partial reads accumulate
+/// and a frame parses only once fully buffered. `poll` honors the
+/// socket's current recv timeout; `read_frame` clears it to block.
+struct FrameReader {
+    buf: Vec<u8>,
+}
+
+impl FrameReader {
+    fn new() -> Self {
+        FrameReader { buf: Vec::new() }
+    }
+
+    /// One full frame if the socket offers one within its current recv
+    /// timeout; None when nothing complete arrived. Partial bytes stay
+    /// buffered for the next call, so a timeout can never desync.
+    fn poll(&mut self, stream: &mut Stream) -> Option<Vec<u8>> {
+        loop {
+            if let Some(frame) = self.take_frame() {
+                return Some(frame);
+            }
+            let mut chunk = [0u8; 16384];
+            match stream.read(&mut chunk) {
+                Ok(0) => panic!("client socket closed by server"),
+                Ok(n) => self.buf.extend_from_slice(&chunk[..n]),
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut
+                        || err.kind() == std::io::ErrorKind::Interrupted =>
+                {
+                    return None
+                }
+                Err(err) => panic!("frame read failed: {err}"),
+            }
+        }
+    }
+
+    /// Pop one complete frame from the buffer, if any.
+    fn take_frame(&mut self) -> Option<Vec<u8>> {
+        if self.buf.len() < 4 {
+            return None;
+        }
+        let len =
+            u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
+        assert!(len <= 32 * 1024 * 1024, "oversized frame: {len}");
+        if self.buf.len() < 4 + len {
+            return None;
+        }
+        let payload = self.buf[4..4 + len].to_vec();
+        self.buf.drain(..4 + len);
+        Some(payload)
+    }
+}
+
+/// Blocking frame read for the handshake/replay points: clears the recv
+/// timeout (the polling loops leave short ones behind) and consumes the
+/// same buffer, so leftovers from a poll can never strand a frame.
+fn read_frame(stream: &mut Stream, reader: &mut FrameReader) -> Vec<u8> {
+    stream.set_recv_timeout(None).expect("clear read timeout");
+    loop {
+        if let Some(frame) = reader.poll(stream) {
+            return frame;
+        }
+    }
 }
 
 struct ServerGuard {
@@ -254,8 +313,10 @@ fn builtin_binary_reattach_survives_output_flood() {
         .to_fs_name::<GenericFilePath>()
         .expect("valid client socket name");
     let mut client = Stream::connect(client_socket_name.clone()).expect("connect client socket");
+    let mut reader = FrameReader::new();
+    let mut marker_matcher = MarkerMatcher::new();
     write_frame(&mut client, &encode_terminal_hello(120, 40));
-    let welcome = read_frame(&mut client);
+    let welcome = read_frame(&mut client, &mut reader);
     // Welcome is variant 0; the error field is Option<String> (None = 0)
     // after version varint and encoding varint. A handshake rejection
     // carries a Some(reason) string; assert loosely.
@@ -272,7 +333,7 @@ fn builtin_binary_reattach_survives_output_flood() {
     // empty history yields a valid frame (variant index + headers), so
     // only require decodability, not a size floor.
     write_frame(&mut client, &encode_attach_terminal(&terminal_id));
-    let replay = read_frame(&mut client);
+    let replay = read_frame(&mut client, &mut reader);
     assert!(!replay.is_empty(), "expected history replay frame");
 
     // --- Flood the real shell with sustained output ---
@@ -293,9 +354,9 @@ fn builtin_binary_reattach_survives_output_flood() {
             client
                 .set_recv_timeout(Some(Duration::from_millis(250)))
                 .expect("set read timeout");
-            match read_frame_nonblocking(&mut client) {
+            match reader.poll(&mut client) {
                 Some(payload) => {
-                    saw_marker = count_marker(&payload, marker) >= 1;
+                    saw_marker = marker_matcher.feed(&payload, marker);
                 }
                 None => continue,
             }
@@ -320,12 +381,13 @@ fn builtin_binary_reattach_survives_output_flood() {
     write_frame(&mut client, &encode_detach());
     drop(client);
     let mut client = Stream::connect(client_socket_name).expect("reconnect client socket");
+    let mut reader = FrameReader::new();
     write_frame(&mut client, &encode_terminal_hello(120, 40));
-    let welcome2 = read_frame(&mut client);
+    let welcome2 = read_frame(&mut client, &mut reader);
     assert!(!welcome2.is_empty(), "expected welcome on reconnect");
     write_frame(&mut client, &encode_attach_terminal(&terminal_id));
     // The first replay on this connection is the full flooded history.
-    let replay = read_frame(&mut client);
+    let replay = read_frame(&mut client, &mut reader);
     assert!(!replay.is_empty(), "expected history replay on reconnect");
 
     // --- Quiesce: drive the pending counter to exactly zero ---
@@ -340,7 +402,7 @@ fn builtin_binary_reattach_survives_output_flood() {
             client
                 .set_recv_timeout(Some(Duration::from_millis(100)))
                 .expect("set read timeout");
-            if read_frame_nonblocking(&mut client).is_some() {
+            if reader.poll(&mut client).is_some() {
                 last_frame = Instant::now();
             }
         } else {
@@ -356,7 +418,7 @@ fn builtin_binary_reattach_survives_output_flood() {
     // the fix the re-attach replay is charged, the subtraction balances,
     // and output keeps flowing.
     write_frame(&mut client, &encode_attach_terminal(&terminal_id));
-    let replay2 = read_frame(&mut client);
+    let replay2 = read_frame(&mut client, &mut reader);
     assert!(!replay2.is_empty(), "expected re-attach history frame");
 
     // --- Two-round health probe: the actual shed detector ---
@@ -377,7 +439,7 @@ fn builtin_binary_reattach_survives_output_flood() {
             client
                 .set_recv_timeout(Some(Duration::from_millis(250)))
                 .expect("set read timeout");
-            match read_frame_nonblocking(&mut client) {
+            match reader.poll(&mut client) {
                 Some(payload) => {
                     if payload
                         .windows(b"backlog overflow".len())
@@ -385,7 +447,7 @@ fn builtin_binary_reattach_survives_output_flood() {
                     {
                         panic!("client was shed after re-attach (overflow shutdown frame)");
                     }
-                    probe_ok = count_marker(&payload, probe_marker.as_bytes()) >= 1;
+                    probe_ok = marker_matcher.feed(&payload, probe_marker.as_bytes());
                 }
                 None => continue,
             }
@@ -418,24 +480,24 @@ fn count_marker(payload: &[u8], marker: &[u8]) -> usize {
         .count()
 }
 
-/// Non-blocking-ish frame read: None when no full frame is available
-/// within the socket's current read timeout.
-fn read_frame_nonblocking(stream: &mut Stream) -> Option<Vec<u8>> {
-    let mut len_buf = [0u8; 4];
-    match stream.read_exact(&mut len_buf) {
-        Ok(()) => {}
-        Err(err)
-            if err.kind() == std::io::ErrorKind::WouldBlock
-                || err.kind() == std::io::ErrorKind::TimedOut =>
-        {
-            return None
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::Interrupted => return None,
-        Err(err) => panic!("frame read failed: {err}"),
+/// Marker matcher that survives frame boundaries: chunked PTY output can
+/// split a marker across two Terminal frames, so each feed joins a short
+/// carry from the previous frame before counting.
+struct MarkerMatcher {
+    carry: Vec<u8>,
+}
+
+impl MarkerMatcher {
+    fn new() -> Self {
+        MarkerMatcher { carry: Vec::new() }
     }
-    let len = u32::from_le_bytes(len_buf) as usize;
-    assert!(len <= 32 * 1024 * 1024, "oversized frame: {len}");
-    let mut payload = vec![0u8; len];
-    stream.read_exact(&mut payload).expect("read payload");
-    Some(payload)
+
+    fn feed(&mut self, payload: &[u8], marker: &[u8]) -> bool {
+        let mut joined = std::mem::take(&mut self.carry);
+        joined.extend_from_slice(payload);
+        let found = count_marker(&joined, marker) >= 1;
+        let keep = marker.len().saturating_sub(1).min(joined.len());
+        self.carry = joined[joined.len() - keep..].to_vec();
+        found
+    }
 }
