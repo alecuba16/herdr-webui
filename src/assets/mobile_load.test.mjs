@@ -2795,14 +2795,14 @@ describe("mobile bundle load", () => {
     equal((source.match(/class="mobile-keybar-row"/g) || []).length, 2, "keybar renders two rows");
     const keybarSource = source.match(/function renderKeyBar\(\) \{[\s\S]*?\n    \}\n/)[0];
     for (const key of [
-      "esc", "tab", "ctrl", "up", "down", "left", "right", "ctrl-c",
+      "esc", "tab", "ctrl", "up", "down", "left", "right", "ctrl-c", "ctrl-enter",
       "ctrl-d", "ctrl-z", "ctrl-l", "ctrl-a", "ctrl-e", "ctrl-u", "ctrl-w", "ctrl-r",
       "pgup", "pgdn", "home", "end",
     ])
       ok(keybarSource.includes(`key("${key}"`), `${key} key present`);
     // No focus steal: every key bar button prevents default on mousedown.
     equal((keybarSource.match(/onmousedown="event\.preventDefault\(\)"/g) || []).length, 1, "mousedown guard on the shared key builder");
-    equal((keybarSource.match(/\bkey\("|\bkey\("|key\("/g) || []).length, 20, "twenty keys across the two rows");
+    equal((keybarSource.match(/\bkey\("|\bkey\("|key\("/g) || []).length, 21, "twenty-one keys across the two rows");
     // Keyboard-open hides the key bar along with header/nav.
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     match(mobileCss, /body\.mobile-keyboard-open \.mobile-keybar/);
@@ -2824,9 +2824,9 @@ describe("mobile bundle load", () => {
     ok(source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden><div id="mobileToolbarKeys"></div></div>') < source.indexOf('<div class="mobile-sheet-backdrop" id="mobileTabsBackdrop"'), "toolbar sits between screen and overlays");
     // The keybar writes into its own #mobileToolbarKeys child so toolbar
     // repaints never wipe the composer bar panels.syncComposer mounts
-    // into the toolbar after it.
+    // into the keybar after it.
     match(source, /el\("mobileToolbarKeys"\)/);
-    match(source, /function syncComposer\(screen\) \{[\s\S]*?const toolbar = el\("mobileToolbar"\);[\s\S]*?mountInto\(toolbar, wantedBar\)/);
+    match(source, /function syncComposer\(screen\) \{[\s\S]*?const keybar = el\("mobileKeyBar"\);[\s\S]*?mountInto\(keybar, wantedBar\)/);
     // Toolbar content mirrors the keybar builder, and syncs per render.
     match(source, /function syncToolbar\(\) \{[\s\S]*?mobilePanels\.renderKeyBar\(\)/);
     // Toggle flips visibility, persists, and updates the fab aria-pressed.
@@ -2991,6 +2991,17 @@ describe("mobile bundle load", () => {
     equal(armed.ariaPressed, "true");
     ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "ctrl-l" }, setAttribute() {} });
     equal(sent[i], "\x0c", "armed Ctrl then combo sends the literal combo");
+    // Ctrl+Enter chord without a kitty bridge (ghostty core, term stub
+    // without .wterm): a bare \r, the Enter a legacy pane expects.
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "ctrl-enter" }, setAttribute() {} });
+    equal(sent[sent.length - 1], "\r", "ctrl-enter falls back to Enter without a kitty bridge");
+    // With the kitty keyboard protocol reported by the bridge, the chord
+    // sends the CSI-u form a physical Ctrl+Enter types (13;5u = Ctrl+Enter).
+    // The connect() stub keeps the live term on ctx.lastTerminal.
+    ctx.lastTerminal.wterm = { bridge: { kittyKeyboardFlags: () => 1 } };
+    ctx.HerdrMobile.keyBarKey(null, { dataset: { key: "ctrl-enter" }, setAttribute() {} });
+    equal(sent[sent.length - 1], "\x1b[13;5u", "ctrl-enter sends the kitty CSI-u chord");
+    ctx.lastTerminal.wterm = null;
   });
 
   it("applies one-shot Ctrl to the next arrow key", async () => {

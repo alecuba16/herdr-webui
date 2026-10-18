@@ -1692,6 +1692,21 @@
         setArmed(!keyBarCtrlArmed);
         return;
       }
+      // Ctrl+Enter chord: what a physical Ctrl+Enter sends on this pane's
+      // renderer. wterm with the kitty keyboard protocol active (jcode and
+      // other crossterm TUIs) reports the modified Enter as CSI 13;5u; the
+      // legacy flag-0 path sends a bare \r instead, because wterm drops
+      // modified keys there. The pane sees the same bytes a physical
+      // Ctrl+Enter press+release would produce.
+      if (key === "ctrl-enter") {
+        // Same shape composer.js uses to reach the bridge grid: term.wterm.bridge
+        const term = mobileTerminal.getTerm && mobileTerminal.getTerm();
+        const bridge = term && term.wterm && term.wterm.bridge ? term.wterm.bridge : null;
+        const kittyFlags = bridge && bridge.kittyKeyboardFlags ? bridge.kittyKeyboardFlags() : 0;
+        mobileTerminal.sendControlKey(kittyFlags ? "\x1b[13;5u" : "\r");
+        setArmed(false);
+        return;
+      }
       const ctrlCombo = /^ctrl-([a-z])$/.exec(key);
       if (ctrlCombo) {
         // With Ctrl armed, the explicit combo keys still send their literal
