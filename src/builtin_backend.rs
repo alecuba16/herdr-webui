@@ -4713,8 +4713,96 @@ mod tests {
         // "terminal connection failed". A real listener + real accepted
         // stream, not a Cursor, because the fix under test is about the
         // exact error text a real EOF produces on this platform.
+        let (dir, listener, backend) = eof_test_backend();
+        let sock = dir.join("client.sock");
+        use interprocess::local_socket::{prelude::*, GenericFilePath};
+        // Connect and close immediately: EOF before any length byte.
+        let client = interprocess::local_socket::Stream::connect(
+            sock.clone().to_fs_name::<GenericFilePath>().unwrap(),
+        )
+        .unwrap();
+        let server = listener.accept().unwrap();
+        drop(client);
+        let result = handle_client_connection(server, Arc::clone(&backend));
+        assert!(result.is_ok(), "EOF before hello must be Ok: {result:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn client_connection_treats_mid_stream_eof_as_clean_disconnect() {
+        // The loop guard (the `break` path), not the hello guard: complete
+        // the handshake, then drop the client between frames. This is the
+        // teardown every e2e run performs when its ServerGuard closes the
+        // client stream, so it must land in Ok(()) exactly like the
+        // pre-hello EOF does.
+        let (dir, listener, backend) = eof_test_backend();
+        let sock = dir.join("client.sock");
+        use interprocess::local_socket::{prelude::*, GenericFilePath};
+        let mut client = interprocess::local_socket::Stream::connect(
+            sock.clone().to_fs_name::<GenericFilePath>().unwrap(),
+        )
+        .unwrap();
+        let server = listener.accept().unwrap();
+        // Handshake exactly as the e2e suites do: framed TerminalHello.
+        let hello = bincode::serde::encode_to_vec(
+            &ClientMessage::TerminalHello {
+                version: PROTOCOL_VERSION,
+                cols: 120,
+                rows: 40,
+                cell_width_px: 0,
+                cell_height_px: 0,
+                pixel_mouse: false,
+            },
+            bincode::config::standard(),
+        )
+        .unwrap();
+        client
+            .write_all(&(hello.len() as u32).to_le_bytes())
+            .unwrap();
+        client.write_all(&hello).unwrap();
+        client.flush().unwrap();
+        // Drain the Welcome on the client side BEFORE closing: the
+        // handler writes it synchronously during the handshake, and a
+        // closed peer would turn that write into EPIPE (an Err), muddying
+        // what this test proves. The handler must be running while the
+        // client drains (the handler is the writer), and after the welcome
+        // the handler can only block on the loop read, so dropping the
+        // client here puts it deterministically on the EOF path.
+        let handle = thread::spawn(move || handle_client_connection(server, backend));
+        let mut len_buf = [0u8; 4];
+        client.read_exact(&mut len_buf).unwrap();
+        let mut welcome = vec![0u8; u32::from_le_bytes(len_buf) as usize];
+        client.read_exact(&mut welcome).unwrap();
+        drop(client);
+        let result = handle.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "EOF after hello must be Ok (loop break), got: {result:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Shared fixture for the EOF tests: scratch dir, a listener bound on
+    /// a per-test socket path, and a backend whose Drop removes the
+    /// socket files (the dir itself is the tests' job to delete).
+    ///
+    /// The path mixes pid, nanos and a process-local counter: parallel
+    /// tests can read the same nanos (measured: ~21us clock granularity,
+    /// 18.65% exact tie between two threads) and with the same path
+    /// try_overwrite(true) silently rebinds the socket, so one test's
+    /// connect lands on the wrong listener and both wedge forever in
+    /// accept()/read with nothing logged. The counter breaks the tie.
+    fn eof_test_backend() -> (
+        PathBuf,
+        interprocess::local_socket::Listener,
+        Arc<BuiltinBackendInner>,
+    ) {
+        static FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
+        let id = FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "herdr-eof-sock-{}",
+            "herdr-eof-sock-{}-{}-{}",
+            std::process::id(),
+            id,
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -4738,20 +4826,10 @@ mod tests {
         let backend = Arc::new(BuiltinBackendInner {
             running: AtomicBool::new(true),
             api_socket: dir.join("api.sock"),
-            client_socket: sock.clone(),
+            client_socket: sock,
             state: Arc::new(state),
         });
-        // Connect and close immediately: EOF before any length byte.
-        let client = interprocess::local_socket::Stream::connect(
-            sock.clone().to_fs_name::<GenericFilePath>().unwrap(),
-        )
-        .unwrap();
-        let (server, _) = (listener.accept().unwrap(), ());
-        drop(client);
-        let result = handle_client_connection(server, backend);
-        assert!(result.is_ok(), "EOF before hello must be Ok: {result:?}");
-        let _ = fs::remove_file(&sock);
-        let _ = fs::remove_dir_all(&dir);
+        (dir, listener, backend)
     }
 
     #[test]
