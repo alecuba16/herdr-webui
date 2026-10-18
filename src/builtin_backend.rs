@@ -9261,6 +9261,16 @@ mod tests {
         // unsupported_agent BEFORE any transcript work, so the assertion is
         // the refusal arriving quickly, not its content; pane.read has real
         // work (full-scrollback copy + ANSI strip) and must still finish.
+        //
+        // Why the refusal path is the right fidelity here: once an agent
+        // check passes, conversation work reads transcript FILES (bounded,
+        // disjoint from scrollback) plus pane_context, whose only
+        // scrollback touch is the 64KB tail strip this loop already
+        // exercises on every pane.read. Serving real turns mid-flood
+        // would need the backend's process-global store_index() pointed
+        // at a fixture store (it hardwires ~/.jcode/sessions today), a
+        // production refactor out of scope for flood robustness; the
+        // payload-building half is covered by the chat_lens unit tests.
         let base = format!(
             "/tmp/herdr-webui-flood-api-test-{}-{}",
             std::process::id(),
