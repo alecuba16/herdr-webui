@@ -139,8 +139,7 @@ impl FrameReader {
         if self.buf.len() < 4 {
             return None;
         }
-        let len =
-            u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
+        let len = u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
         assert!(len <= 32 * 1024 * 1024, "oversized frame: {len}");
         if self.buf.len() < 4 + len {
             return None;
