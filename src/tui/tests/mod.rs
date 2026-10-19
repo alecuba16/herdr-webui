@@ -7247,9 +7247,9 @@ fn lens_prefix_toggles_overlay_and_esc_closes() {
     app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert!(app.lens.active);
     assert!(app.lens.follow);
-    // While open, the lens owns the keys: j scrolls up (stops follow).
+    // While open, the lens owns the keys: k scrolls up (stops follow).
     app.pane_tail = vec!["one".to_string(), "two".to_string()];
-    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
     assert!(!app.lens.follow);
     assert_eq!(app.lens.scroll_up, 1);
     // G jumps back to the tail: follow re-arms.
@@ -7383,7 +7383,7 @@ fn lens_unread_tracks_new_output_while_scrolled_up() {
     // refresh_tail feeds observe_len through the set_pane_tail path;
     // simulate by calling the observer directly (refresh needs a backend).
     app.lens.observe_len(app.pane_tail.len());
-    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
     assert!(!app.lens.follow);
     // New output lands while the reader is scrolled up.
     app.pane_tail.push("line 10".to_string());
@@ -7714,14 +7714,14 @@ fn lens_page_keys_scroll_by_ten() {
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert!(app.lens.active);
-    // PageDown jumps 10 lines away from the tail (stops follow).
-    app.handle_key(KeyEvent::from(KeyCode::PageDown));
-    assert!(!app.lens.follow);
-    assert_eq!(app.lens.scroll_up, 10, "PageDown scrolls up 10 lines");
-    // PageUp scrolls back 10 toward the tail, re-arming follow when
-    // it lands at the bottom.
+    // PageUp jumps 10 lines away from the tail (stops follow).
     app.handle_key(KeyEvent::from(KeyCode::PageUp));
-    assert_eq!(app.lens.scroll_up, 0, "PageUp returns to the tail");
+    assert!(!app.lens.follow);
+    assert_eq!(app.lens.scroll_up, 10, "PageUp scrolls up 10 lines");
+    // PageDown scrolls back 10 toward the tail, re-arming follow when
+    // it lands at the bottom.
+    app.handle_key(KeyEvent::from(KeyCode::PageDown));
+    assert_eq!(app.lens.scroll_up, 0, "PageDown returns to the tail");
     assert!(app.lens.follow);
 }
 
@@ -7782,27 +7782,28 @@ fn narrow_footer_keeps_lens_discovery_hints() {
 }
 
 #[test]
-fn lens_arrow_and_k_keys_scroll_toward_the_tail() {
-    // k and Up share the scroll-toward-tail arm (the lens's
-    // down-scroll): PageUp covers the 10-line jump, this covers the
-    // single-step one, plus the Down alias of the up-scroll.
+fn lens_arrow_and_k_keys_scroll_toward_older_lines() {
+    // k and Up share the scroll-away-from-tail arm (the lens's
+    // up-scroll, matching the pane view): PageUp covers the 10-line
+    // jump, this covers the single-step one, plus the Up alias of the
+    // k scroll.
     let mut app = app_with_snapshot();
     app.pane_tail = (0..30).map(|i| format!("line {i}")).collect();
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert!(app.lens.active);
-    // Down aliases j: one line away from the tail.
-    app.handle_key(KeyEvent::from(KeyCode::Down));
+    // Up aliases k: one line away from the tail.
+    app.handle_key(KeyEvent::from(KeyCode::Up));
     assert!(!app.lens.follow);
     assert_eq!(app.lens.scroll_up, 1);
-    // k scrolls one line back toward the tail.
-    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
+    // j scrolls one line back toward the tail.
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
     assert_eq!(app.lens.scroll_up, 0);
     assert!(app.lens.follow, "back at the tail re-arms follow");
-    // Up aliases k from a scrolled position.
-    app.handle_key(KeyEvent::from(KeyCode::PageDown));
+    // Down aliases j from a scrolled position.
+    app.handle_key(KeyEvent::from(KeyCode::PageUp));
     assert_eq!(app.lens.scroll_up, 10);
-    app.handle_key(KeyEvent::from(KeyCode::Up));
+    app.handle_key(KeyEvent::from(KeyCode::Down));
     assert_eq!(app.lens.scroll_up, 9);
     // End aliases G: straight to the tail.
     app.handle_key(KeyEvent::from(KeyCode::End));

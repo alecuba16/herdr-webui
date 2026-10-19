@@ -42,21 +42,24 @@ and attach mode stays.
 
 ## Lens (chat transcript view)
 
-`Ctrl+B Shift+L` opens a reading view over the selected pane's tail:
-user turns (❯-marked prompt lines) render as accent-bold chat bubbles
-with gap folding, everything else as output. Terminal-screen surface
-only; it never opens over Files or Git.
+`Ctrl+B Shift+L` opens a reading view over the selected pane's deep
+scrollback (the same buffer the pane scrolls): user turns (❯-marked
+prompt lines) render as accent-bold chat bubbles with gap folding,
+everything else as output. Terminal-screen surface only; it never
+opens over Files or Git.
 
 | Key | Action |
 | --- | --- |
-| `j` / `Down` | one line away from the tail (pause follow) |
-| `k` / `Up` | one line back toward the tail |
-| `PgDn` / `PgUp` | ten lines away / toward the tail |
+| `k` / `Up` | one line toward older output (pause follow) |
+| `j` / `Down` | one line back toward the tail |
+| `PgUp` / `PgDn` | ten lines older / back toward the tail |
 | `G` / `End` | jump to the tail, re-arm follow |
 | `Esc`, `q`, `i` | close the lens |
 
-While scrolled away from the tail the meta line shows a scrolled/new
-output hint instead of the following state.
+Scrolling past the oldest held line lazy-fetches older scrollback
+(the window grows geometrically, up to 40k lines). While scrolled
+away from the tail the meta line shows a scrolled/new output hint
+instead of the following state.
 
 ## Chat composer
 

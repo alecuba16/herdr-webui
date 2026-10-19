@@ -3262,12 +3262,11 @@ impl TuiApp {
         }
     }
 
-    /// Lens overlay keys (webui scroller focus): j/k or arrows
-    /// scroll, G jumps back to the tail, g the oldest held line, Esc
-    /// closes. Scrolling past the held top deep-fetches older
-    /// scrollback (the lens reads the same buffer the pane scrolls).
-    /// Anything else is swallowed so no navigation or attach input
-    /// fires under the reading view.
+    /// Lens overlay keys, same directions as the pane view: k/Up
+    /// scrolls toward older lines (deep-fetching past the held top),
+    /// j/Down toward newer, G jumps back to the tail, g the oldest
+    /// held line, Esc closes. Anything else is swallowed so no
+    /// navigation or attach input fires under the reading view.
     fn handle_lens_key(&mut self, key: KeyEvent) {
         let len = self.pane_scrollback_lines().len();
         match key.code {
@@ -3275,14 +3274,16 @@ impl TuiApp {
                 self.lens.close();
                 self.status = "lens closed".to_string();
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('k') | KeyCode::Up => {
                 self.scroll_lens_up(1);
             }
-            KeyCode::Char('k') | KeyCode::Up => self.lens.scroll_down(1, len),
+            KeyCode::Char('j') | KeyCode::Down => self.lens.scroll_down(1, len),
             KeyCode::PageDown => {
+                self.lens.scroll_down(10, len);
+            }
+            KeyCode::PageUp => {
                 self.scroll_lens_up(10);
             }
-            KeyCode::PageUp => self.lens.scroll_down(10, len),
             KeyCode::Char('G') | KeyCode::End => self.lens.scroll_down(usize::MAX, len),
             KeyCode::Char('g') | KeyCode::Home => {
                 self.scroll_lens_up(len);
