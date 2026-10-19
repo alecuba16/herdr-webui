@@ -73,7 +73,11 @@ Animated tour of the terminal UI (all screens, one pass):
 
 Static shots with captions per screen: [TUI screenshots](docs/tui-screenshots.md).
 
-Screenshots of the browser WebUI are coming soon.
+Animated tour of the browser WebUI (agents, git, files, notes, one pass):
+
+![WebUI tour](docs/screens/webui/00-webui-tour.gif)
+
+Static shots with captions per screen: [WebUI screenshots](docs/webui-screenshots.md).
 
 ## Documentation layout
 
@@ -86,6 +90,7 @@ The README is the project summary and documentation index. Detailed functionalit
 | [Features](docs/features.md) | User-facing desktop and mobile functionality details. |
 | [Technical details](docs/technical-details.md) | Architecture, API decisions, file explorer internals, settings, performance, styling. |
 | [TUI screenshots](docs/tui-screenshots.md) | Every `herdr-webui-tui` screen with captions: terminal, overlays, git, files, tabs, CLI modes. |
+| [WebUI screenshots](docs/webui-screenshots.md) | Browser WebUI captures with captions: agents and chat, git log and compare, file explorer, notes. |
 | [TUI backend API and prototype](docs/tui-backend-api.md) | Reusable Rust client layer over built-in backend sockets, first-party TUI prototype, and parity gaps. |
 | [Development guide](docs/development.md) | Repo layout, frontend structure, parity rules, maintainability guidance. |
 | [Release notes](docs/release-notes.md) | Release policy and change history. |
