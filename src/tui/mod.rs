@@ -56,6 +56,11 @@ impl PromptKind {
 
 const TAIL_LINES: usize = 240;
 const TERMINAL_RAW_BUFFER_BYTES: usize = 512 * 1024;
+/// Lines kept in the scroll-up history on the first deep fetch. Grows
+/// geometrically per fetch (`PANE_HISTORY_MAX_LINES` cap) so a plain
+/// scroll-up never walks the whole 8 MiB backend scrollback at once.
+const PANE_HISTORY_START_LINES: usize = 2000;
+const PANE_HISTORY_MAX_LINES: usize = 40_000;
 /// Tail poll cadence while the terminal screen is NOT attached: 1/5th
 /// of the default snapshot interval. The preview keeps flowing at a
 /// readable rate without hammering the backend with pane.read per event
@@ -290,6 +295,21 @@ pub struct TuiApp {
     pub prompt_input: Option<PromptInput>,
     pub pane_tail: Vec<String>,
     pub(crate) pane_tail_styles: Vec<Vec<TuiTextSpan>>,
+    /// Scroll-up offset over the pane view in lines-above-tail
+    /// (0 = following the newest line, the lens uses the same shape).
+    /// Kept across tail refills: the offset is bottom-anchored, so new
+    /// output streams in below the frozen view instead of moving it.
+    pub pane_scroll: usize,
+    /// Full pane scrollback lines beyond `pane_tail`, filled by the
+    /// deep `pane.read` fetch the first scroll-up past the tail
+    /// triggers. Both the pane view and the lens read from it.
+    pub(crate) pane_history: Vec<String>,
+    /// Pane id the tail/history buffers belong to; a switch drops the
+    /// scroll offset and the deep history instead of mixing panes.
+    pub(crate) pane_buffers_pane_id: Option<String>,
+    /// The backend served its whole scrollback (or the retention cap
+    /// was reached): further deep fetches cannot grow the buffer.
+    pub(crate) pane_history_exhausted: bool,
     terminal_raw_output: String,
     terminal_raw_terminal_id: Option<String>,
     /// Full TUI screen size (cols, rows), set by the binary loop at
@@ -555,6 +575,10 @@ impl TuiApp {
             prompt_input: None,
             pane_tail: Vec::new(),
             pane_tail_styles: Vec::new(),
+            pane_scroll: 0,
+            pane_history: Vec::new(),
+            pane_buffers_pane_id: None,
+            pane_history_exhausted: false,
             terminal_raw_output: String::new(),
             terminal_raw_terminal_id: None,
             terminal_size: (0, 0),
@@ -3184,6 +3208,29 @@ impl TuiApp {
                 KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
                 KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
                 KeyCode::Enter => self.attach_selected(),
+                // Pane scroll (main region owns the pane): arrows and
+                // vim keys walk the scrollback, page keys jump by ten,
+                // G/End snap back to the newest line, g/Home to the
+                // oldest held one.
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.scroll_pane_up(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.scroll_pane_down(1);
+                }
+                KeyCode::PageUp => {
+                    self.scroll_pane_up(10);
+                }
+                KeyCode::PageDown => {
+                    self.scroll_pane_down(10);
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    self.scroll_pane_down(usize::MAX);
+                }
+                KeyCode::Char('g') | KeyCode::Home => {
+                    let len = self.pane_scrollback_lines().len();
+                    self.scroll_pane_up(len);
+                }
                 _ => {}
             }
             return;
@@ -3198,6 +3245,15 @@ impl TuiApp {
             KeyCode::Char('r') => self.refresh_active_screen(),
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
+            // Page keys scroll the pane even with the sidebar focused:
+            // the pane is the main surface, the lists have no page
+            // semantics to shadow.
+            KeyCode::PageUp => {
+                self.scroll_pane_up(10);
+            }
+            KeyCode::PageDown => {
+                self.scroll_pane_down(10);
+            }
             KeyCode::Tab | KeyCode::BackTab => self.toggle_sidebar_focus(),
             KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
             KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
@@ -3207,22 +3263,55 @@ impl TuiApp {
     }
 
     /// Lens overlay keys (webui scroller focus): j/k or arrows
-    /// scroll, G jumps back to the tail, Esc closes. Anything else is
-    /// swallowed so no navigation or attach input fires under the
-    /// reading view.
+    /// scroll, G jumps back to the tail, g the oldest held line, Esc
+    /// closes. Scrolling past the held top deep-fetches older
+    /// scrollback (the lens reads the same buffer the pane scrolls).
+    /// Anything else is swallowed so no navigation or attach input
+    /// fires under the reading view.
     fn handle_lens_key(&mut self, key: KeyEvent) {
-        let len = self.pane_tail.len();
+        let len = self.pane_scrollback_lines().len();
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => {
                 self.lens.close();
                 self.status = "lens closed".to_string();
             }
-            KeyCode::Char('j') | KeyCode::Down => self.lens.scroll_up(1, len),
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.scroll_lens_up(1);
+            }
             KeyCode::Char('k') | KeyCode::Up => self.lens.scroll_down(1, len),
-            KeyCode::PageDown => self.lens.scroll_up(10, len),
+            KeyCode::PageDown => {
+                self.scroll_lens_up(10);
+            }
             KeyCode::PageUp => self.lens.scroll_down(10, len),
             KeyCode::Char('G') | KeyCode::End => self.lens.scroll_down(usize::MAX, len),
+            KeyCode::Char('g') | KeyCode::Home => {
+                self.scroll_lens_up(len);
+            }
             _ => {}
+        }
+    }
+
+    /// Scroll the lens up, deep-fetching older scrollback when the
+    /// offset reaches the held top, then re-observing the grown buffer
+    /// so the unread hint keeps tracking.
+    fn scroll_lens_up(&mut self, delta: usize) {
+        let mut remaining = delta;
+        loop {
+            let len = self.pane_scrollback_lines().len();
+            let max = len.saturating_sub(1);
+            let target = self.lens.scroll_up.saturating_add(remaining);
+            if target <= max {
+                self.lens.scroll_up(remaining, len);
+                self.lens.observe_len(len);
+                return;
+            }
+            let advance = max.saturating_sub(self.lens.scroll_up);
+            self.lens.scroll_up(advance, len);
+            remaining = remaining.saturating_sub(advance);
+            if self.deepen_pane_history() == 0 {
+                self.lens.observe_len(len);
+                return;
+            }
         }
     }
 
@@ -3427,9 +3516,21 @@ impl TuiApp {
         let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
             self.pane_tail.clear();
             self.pane_tail_styles.clear();
+            self.pane_scroll = 0;
+            self.pane_history.clear();
+            self.pane_history_exhausted = false;
+            self.pane_buffers_pane_id = None;
             self.reset_terminal_output_buffer();
             return;
         };
+        if self.pane_buffers_pane_id.as_deref() != Some(pane_id.as_str()) {
+            // Pane switch: the old scroll offset and deep history
+            // describe another pane's output, so both start over.
+            self.pane_scroll = 0;
+            self.pane_history.clear();
+            self.pane_history_exhausted = false;
+            self.pane_buffers_pane_id = Some(pane_id.clone());
+        }
         match self.client.read_pane(&pane_id) {
             Ok(value) => {
                 let text = value
@@ -3457,6 +3558,101 @@ impl TuiApp {
         self.terminal_raw_terminal_id = None;
     }
 
+    /// Lines the pane view and the lens scroll over: the deep history
+    /// followed by the tail, one contiguous scrollback.
+    pub fn pane_scrollback_lines(&self) -> &[String] {
+        if self.pane_history.is_empty() {
+            &self.pane_tail
+        } else {
+            &self.pane_history
+        }
+    }
+
+    /// Scroll the pane view up (away from the newest line) by `delta`
+    /// lines, deep-fetching older scrollback whenever the offset
+    /// reaches the top of the held buffer. The offset counts lines
+    /// above the buffer end, so growth never moves the anchor.
+    /// Returns how many older lines a deep fetch added (0 if none).
+    pub fn scroll_pane_up(&mut self, delta: usize) -> usize {
+        let mut loaded = 0;
+        let mut remaining = delta;
+        loop {
+            let max = self.pane_scrollback_lines().len().saturating_sub(1);
+            let target = self.pane_scroll.saturating_add(remaining);
+            if target <= max {
+                self.pane_scroll = target;
+                return loaded;
+            }
+            let advance = max.saturating_sub(self.pane_scroll);
+            self.pane_scroll = max;
+            remaining = remaining.saturating_sub(advance);
+            let grew = self.deepen_pane_history();
+            loaded = loaded.saturating_add(grew);
+            if grew == 0 {
+                return loaded;
+            }
+        }
+    }
+
+    /// Scroll back toward the newest line; reaching the bottom re-arms
+    /// following (the lens `follow` semantics on the pane view).
+    pub fn scroll_pane_down(&mut self, delta: usize) {
+        self.pane_scroll = self.pane_scroll.saturating_sub(delta);
+    }
+
+    /// Pull more scrollback through `pane.read` (the backend serves the
+    /// whole scrollback; the TUI just retains a window of it). The
+    /// retained window is suffix-anchored, so the already-held lines
+    /// keep their offsets from the tail and the frozen view does not
+    /// jump. Returns how many new lines the buffer grew by.
+    fn deepen_pane_history(&mut self) -> usize {
+        if self.pane_history_exhausted {
+            return 0;
+        }
+        let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
+            return 0;
+        };
+        let want = if self.pane_history.is_empty() {
+            PANE_HISTORY_START_LINES
+        } else {
+            self.pane_history
+                .len()
+                .saturating_mul(2)
+                .min(PANE_HISTORY_MAX_LINES)
+        };
+        let lines = match self.client.read_pane(&pane_id) {
+            Ok(value) => value
+                .get("read")
+                .and_then(|read| read.get("text"))
+                .and_then(Value::as_str)
+                .or_else(|| value.get("text").and_then(Value::as_str))
+                .map(|text| {
+                    let clean = strip_ansi_lossy(text);
+                    let mut lines: Vec<String> = clean.lines().map(str::to_string).collect();
+                    if lines.len() > want {
+                        let start = lines.len() - want;
+                        lines.drain(..start);
+                    }
+                    lines
+                })
+                .unwrap_or_default(),
+            Err(err) => {
+                self.error = Some(err.to_string());
+                return 0;
+            }
+        };
+        if lines.len() < want || lines.len() >= PANE_HISTORY_MAX_LINES {
+            self.pane_history_exhausted = true;
+        }
+        let before = self.pane_scrollback_lines().len();
+        let grew = lines.len().saturating_sub(before);
+        self.pane_history = lines;
+        if grew > 0 {
+            self.mark_dirty();
+        }
+        grew
+    }
+
     fn set_pane_tail_from_text(&mut self, text: &str) {
         self.pane_tail = text
             .lines()
@@ -3468,6 +3664,7 @@ impl TuiApp {
             .rev()
             .collect();
         self.pane_tail_styles = vec![Vec::new(); self.pane_tail.len()];
+        self.sync_history_suffix();
     }
 
     fn set_pane_tail_from_styled_lines(&mut self, lines: Vec<Vec<TuiTextSpan>>) {
@@ -3482,7 +3679,20 @@ impl TuiApp {
                     .collect::<String>()
             })
             .collect();
-        self.lens.observe_len(self.pane_tail.len());
+        self.sync_history_suffix();
+    }
+
+    /// The deep history and the live tail share one suffix: the tail is
+    /// always the newest TAIL_LINES of the scrollback, so a refreshed
+    /// tail overwrites the history's suffix instead of leaving two
+    /// diverging copies of the newest output.
+    fn sync_history_suffix(&mut self) {
+        if self.pane_history.len() > self.pane_tail.len() {
+            let keep = self.pane_history.len() - self.pane_tail.len();
+            self.pane_history.truncate(keep);
+            self.pane_history.extend(self.pane_tail.iter().cloned());
+        }
+        self.lens.observe_len(self.pane_scrollback_lines().len());
     }
 
     pub fn should_quit(&self) -> bool {

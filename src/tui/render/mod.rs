@@ -303,7 +303,7 @@ fn render_lens(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
-    let transcript = lens::transcript_lines(&app.pane_tail);
+    let transcript = lens::transcript_lines(app.pane_scrollback_lines());
     let viewport = inner.height.saturating_sub(1) as usize;
     let window = lens::visible_window(&transcript, app.lens.scroll_up, viewport);
     let mut lines: Vec<Line> = window
@@ -404,17 +404,33 @@ fn render_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         )));
     } else {
         let max_tail = inner.height.saturating_sub(lines.len() as u16) as usize;
-        let start = app.pane_tail.len().saturating_sub(max_tail);
-        for index in start..app.pane_tail.len() {
+        // Scroll view (ux fix): the pane scrolls over the deep
+        // scrollback the same way the lens does, bottom-anchored with
+        // `pane_scroll` lines above the buffer end. Styles only cover
+        // the live tail window, so deep-history lines render plain.
+        let lines_ref = app.pane_scrollback_lines();
+        let scroll = app.pane_scroll.min(lines_ref.len().saturating_sub(max_tail));
+        let end = lines_ref.len().saturating_sub(scroll);
+        let start = end.saturating_sub(max_tail);
+        for (window_index, line_text) in lines_ref[start..end].iter().enumerate() {
             let width = inner.width as usize;
-            let line = app
-                .pane_tail_styles
-                .get(index)
-                .filter(|spans| !spans.is_empty())
-                .map(|spans| styled_terminal_line(spans, width, p.text))
+            let styled_index = start + window_index;
+            let tail_offset = lines_ref.len().saturating_sub(app.pane_tail.len());
+            let styled = if styled_index >= tail_offset {
+                Some(styled_index - tail_offset)
+            } else {
+                None
+            };
+            let line = styled
+                .and_then(|index| {
+                    app.pane_tail_styles
+                        .get(index)
+                        .filter(|spans| !spans.is_empty())
+                        .map(|spans| styled_terminal_line(spans, width, p.text))
+                })
                 .unwrap_or_else(|| {
                     Line::from(Span::styled(
-                        truncate(&app.pane_tail[index], width),
+                        truncate(line_text, width),
                         Style::default().fg(p.text),
                     ))
                 });
