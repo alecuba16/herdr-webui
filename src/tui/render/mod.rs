@@ -1743,7 +1743,10 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
     // composer, so typing always shows where the caret is.
     let skip = input_lines.len().saturating_sub(8);
     for row in input_lines.iter().skip(skip) {
-        lines.push(Line::from(Span::styled(row.clone(), Style::default().fg(p.text))));
+        lines.push(Line::from(Span::styled(
+            row.clone(),
+            Style::default().fg(p.text),
+        )));
     }
     lines.push(Line::from(Span::styled(
         prompt.kind.hint(),

@@ -71,8 +71,7 @@ static PERMISSION_WORDS: LazyLock<Regex> =
 // "Enter sends" matches FREE_TEXT, so without this guard the chooser tail
 // parses as a free-text card with a scraped shell-prompt title.
 static JCODE_CHOOSER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)1-9 or ↑↓ \+ Enter to choose|type on Your answer|\. Your answer")
-        .unwrap()
+    Regex::new(r"(?i)1-9 or ↑↓ \+ Enter to choose|type on Your answer|\. Your answer").unwrap()
 });
 // jcode Permissions viewer markers, the same lines jcode_blocked
 // (builtin_detection/jcode.rs) scrapes: the bordered help row and the
@@ -714,7 +713,10 @@ mod tests {
             "1-9 or ↑↓ + Enter to choose · type on Your answer · Esc dismisses",
             "Enter sends · Shift/Alt+Enter newline · Esc dismisses",
         ]);
-        assert!(parse_prompt(&tail).is_none(), "chooser tail is never a card");
+        assert!(
+            parse_prompt(&tail).is_none(),
+            "chooser tail is never a card"
+        );
     }
 
     #[test]

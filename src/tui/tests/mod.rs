@@ -1565,8 +1565,8 @@ fn prompt_input_wraps_long_text_and_grows_the_box() {
     // in a 64-col box, and the cursor block must land after the tail.
     let mut app = app_with_snapshot();
     app.screen = TuiScreen::Files;
-    let long = "fix the login flow so the session cookie survives a ".repeat(2)
-        + "hard refresh on Safari";
+    let long =
+        "fix the login flow so the session cookie survives a ".repeat(2) + "hard refresh on Safari";
     app.prompt_input = Some(PromptInput {
         kind: PromptKind::CreateFile,
         text: long.clone(),
@@ -1624,8 +1624,7 @@ fn commit_input_wraps_long_text_like_the_prompt_modal() {
     let mut app = app_with_snapshot();
     app.screen = TuiScreen::Git;
     app.commit_input = Some(CommitInput {
-        text: "release 0.7.17: prompt cards chat-mode gate, chooser parse guard, "
-            .to_string()
+        text: "release 0.7.17: prompt cards chat-mode gate, chooser parse guard, ".to_string()
             + "wrapped composer and commit modals",
         amend: false,
     });
