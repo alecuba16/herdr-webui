@@ -532,12 +532,12 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
 }
 .mobile-terminal-screen {
   display: grid;
-  /* Single row: the keybar moved to the toolbar above the nav bar and the
-     tabs to the header dropdown, so the shell is the only child. Keeping
-     the old auto-auto-1fr rows stranded the shell in the first auto row
-     (content-sized, ~186px) and left the 1fr row empty below as a blank
-     strip. */
-  grid-template-rows: minmax(0, 1fr);
+  /* Two rows: the chat-view switch (auto, collapses to 0 when the row is
+     absent on non-chat panes) and the shell (1fr). The shell always owns
+     row 2 explicitly: without it, a screen without the switch would
+     auto-place the shell into the content-sized auto row and strand the
+     1fr row empty (same trap the old keybar rows had). */
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   min-width: 0;
@@ -624,6 +624,7 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
 .mobile-terminal-shell {
   contain: layout paint style;
   display: grid;
+  grid-row: 2;
   grid-template-rows: minmax(0, 1fr) auto;
   position: relative;
   min-height: 0;
@@ -2235,4 +2236,443 @@ body.mobile-keyboard-open .mobile-keys-fab {
    viewport without stealing the whole screen (min-height, not flex). */
 .mobile-note-editor {
   min-height: 55vh;
+}
+
+/* ---- mobile chat lens (chat view over the terminal) ---- */
+/* The lens overlay covers the terminal surface inside the shell. The
+   switch row above the shell picks Chat or Terminal; the terminal socket
+   stays attached in both views. */
+
+.mobile-lens-switch {
+  grid-row: 1;
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 4px;
+}
+.mobile-lens-switch[hidden] {
+  display: none;
+}
+.mobile-lens-switch button {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  flex: 1 1 auto;
+  font-size: 13px;
+  font-weight: 700;
+  min-height: 44px;
+  padding: 6px 10px;
+}
+.mobile-lens-switch button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+.mobile-lens-switch button[aria-pressed="false"] {
+  background: var(--panel);
+  color: var(--muted);
+}
+.mobile-lens-switch button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.mobile-lens {
+  background: var(--bg);
+  inset: 0;
+  position: absolute;
+  z-index: 3;
+}
+.mobile-lens[hidden] {
+  display: none;
+}
+/* Follow button belongs to the terminal view: while the lens covers the
+   shell the button's scroll tracking would misfire, so it stays hidden. */
+.mobile-terminal-shell.lens-active .mobile-terminal-follow-button {
+  display: none;
+}
+.mobile-lens-scroller {
+  height: 100%;
+  overflow-y: auto;
+  /* The composer is not docked inside the shell on mobile (it lives in
+     the toolbar below), so a small breathing margin is all the bottom
+     padding needs. */
+  padding: 12px 12px 24px;
+  scroll-behavior: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.mobile-lens-scroller:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.mobile-lens-content {
+  font-size: 15px;
+  line-height: 1.5;
+  min-width: 0;
+}
+.mobile-lens-new {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  bottom: 18px;
+  box-shadow: 0 10px 28px #0008;
+  color: var(--accent-fg);
+  font-size: 13px;
+  font-weight: 900;
+  min-height: 44px;
+  padding: 0 13px;
+  position: absolute;
+  right: 18px;
+  z-index: 4;
+}
+.mobile-lens-new[hidden] {
+  display: none;
+}
+
+/* Turns: user bubbles right, assistant plain full-width. Same pattern as
+   the desktop lens, rescaled for touch (44px targets, 15px body). */
+.lens-turn {
+  min-width: 0;
+}
+.lens-turn-user {
+  display: flex;
+  justify-content: flex-end;
+  margin: 12px 0 2px;
+}
+.lens-turn-user > span {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-bottom-right-radius: 4px;
+  border-radius: 12px;
+  color: var(--accent, #89b4fa);
+  font-weight: 600;
+  max-width: 85%;
+  overflow-wrap: anywhere;
+  padding: 8px 14px;
+  white-space: pre-wrap;
+}
+.lens-turn-pending > span {
+  opacity: 0.6;
+}
+.lens-turn-assistant {
+  margin: 8px 0 2px;
+}
+.lens-turn-meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 2px;
+}
+.lens-text {
+  color: var(--fg);
+  overflow-wrap: anywhere;
+  padding: 1px 0;
+  white-space: pre-wrap;
+}
+.lens-loading,
+.lens-empty,
+.lens-refusal {
+  color: var(--muted);
+  padding: 18px 0;
+  text-align: center;
+}
+.lens-loading::after {
+  animation: lens-blink 1s steps(2, start) infinite;
+  content: "…";
+}
+@keyframes lens-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+/* Tool rows: one tappable head (44px min), body on expand. */
+.lens-tool {
+  margin: 4px 0;
+}
+.lens-tool-head {
+  align-items: center;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 44px;
+  padding: 4px 0;
+}
+.lens-tool-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.lens-tool-head.lens-tool-error .lens-tool-name {
+  color: var(--danger, #f38ba8);
+}
+.lens-tool-name {
+  color: var(--fg);
+  font-weight: 700;
+}
+.lens-tool-brief {
+  color: var(--muted);
+  flex: 1 1 50%;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lens-tool-caret {
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.lens-tool-running {
+  color: var(--muted);
+  min-height: 44px;
+  padding-top: 10px;
+}
+.lens-tool-output {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg);
+  font-size: 12px;
+  margin: 4px 0;
+  max-height: 40vh;
+  overflow: auto;
+  padding: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.lens-tool-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+.lens-tool-more {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0;
+  min-height: 44px;
+  padding: 6px 10px;
+}
+.lens-tool-more:disabled {
+  opacity: 0.6;
+}
+
+/* Compaction notice. */
+.lens-compact {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 10px 0;
+}
+.lens-compact-label {
+  font-weight: 700;
+}
+.lens-compact-summary {
+  overflow-wrap: anywhere;
+}
+
+/* Images: capped height, rounded, full-width cap. */
+.lens-image {
+  margin: 6px 0;
+}
+.lens-image img {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 40vh;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+/* Decision chooser: full-width option buttons, tappable. */
+.lens-decision {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin: 10px 0;
+  padding: 10px;
+}
+.lens-decision-question {
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.lens-decision-context {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+.lens-decision-option {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: block;
+  margin: 6px 0;
+  min-height: 44px;
+  padding: 8px 12px;
+  text-align: left;
+  width: 100%;
+}
+.lens-decision-option[aria-disabled="true"] {
+  opacity: 0.55;
+}
+.lens-decision-option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.lens-decision-label {
+  display: block;
+  font-weight: 700;
+}
+.lens-decision-detail {
+  color: var(--muted);
+  display: block;
+  font-size: 13px;
+}
+.lens-decision-form {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+.lens-decision-input {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--fg);
+  flex: 1 1 auto;
+  font-size: 15px;
+  min-height: 44px;
+  min-width: 0;
+  padding: 8px 10px;
+}
+.lens-decision-send {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  color: var(--accent-fg);
+  font-weight: 700;
+  min-height: 44px;
+  padding: 8px 14px;
+}
+.lens-decision-dismiss,
+.lens-decision-expand {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 6px;
+  min-height: 44px;
+  padding: 4px 0;
+}
+.lens-decision-hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+/* Working indicator: one collapsible block at the end. */
+.lens-working {
+  margin: 8px 0;
+}
+.lens-working-toggle {
+  align-items: center;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px 0;
+}
+.lens-working-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.lens-working-dots i {
+  animation: lens-dot 1.2s infinite;
+  background: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  height: 5px;
+  margin-right: 3px;
+  width: 5px;
+}
+.lens-working-dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.lens-working-dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes lens-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+.lens-working-label {
+  font-weight: 700;
+}
+.lens-working-caret {
+  color: var(--muted);
+}
+.lens-working-body {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 2px 0 4px 16px;
+}
+.lens-working-elapsed {
+  font-variant-numeric: tabular-nums;
+}
+.lens-working-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+.lens-working-tool {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  padding: 2px 8px;
+}
+.lens-working-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Load-older row: quiet, centered, one control in every state. */
+.lens-older-load {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  display: block;
+  font-size: 12px;
+  margin: 4px auto 10px;
+  min-height: 44px;
+  padding: 6px 10px;
+}
+.lens-older-load:disabled {
+  opacity: 0.6;
+}
+.lens-older-done {
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  gap: 8px;
+  margin: 4px auto 10px;
+  text-align: center;
+}
+.lens-older-done::before,
+.lens-older-done::after {
+  border-top: 1px solid var(--border);
+  content: "";
+  flex: 1 1 auto;
 }

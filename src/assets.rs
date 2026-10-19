@@ -123,6 +123,7 @@ const MOBILE_NOTES_JS: &str = include_str!("assets/mobile/notes.js");
 const MOBILE_SEARCH_JS: &str = include_str!("assets/mobile/search.js");
 const MOBILE_GIT_JS: &str = include_str!("assets/mobile/git.js");
 const MOBILE_COMPOSER_JS: &str = include_str!("assets/mobile/composer.js");
+const MOBILE_LENS_JS: &str = include_str!("assets/mobile/lens.js");
 const MOBILE_SESSIONS_JS: &str = include_str!("assets/mobile/sessions.js");
 const MOBILE_EVENTS_JS: &str = include_str!("assets/mobile/events.js");
 const MOBILE_SCREENS_JS: &str = include_str!("assets/mobile/screens.js");
@@ -580,6 +581,14 @@ pub(crate) async fn mobile_composer_js(headers: HeaderMap) -> Response {
     static_text(
         &headers,
         MOBILE_COMPOSER_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn mobile_lens_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        MOBILE_LENS_JS,
         "application/javascript; charset=utf-8",
     )
 }
