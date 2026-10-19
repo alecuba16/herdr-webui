@@ -134,6 +134,7 @@
     mobileGit,
     mobileComposer,
     mobileEvents,
+    mobileLens,
     mobileSessions,
     mobileScreens,
     mobilePanels,
@@ -764,6 +765,10 @@
     if (wasTerminal && screen !== "terminal") {
       mobileTerminal.destroy(false);
       keyBarCtrlArmed = false;
+      // Leaving the terminal screen closes the lens: its overlay lives
+      // inside the terminal shell, and the poll loop must not keep
+      // running from another screen.
+      if (mobileLens && mobileLens.setLens) mobileLens.setLens(false);
     }
     // Leaving the notes screen flushes a pending save and stops the
     // resync timer; entering it lazy-loads the list once.
@@ -1412,6 +1417,20 @@
     draftValue: (paneId) => mobileComposer.drafts.get(paneId) || "",
   };
 
+  // The lens module is created after the composer so its setLens can
+  // reach the composer sync hook (prompt card gate rides the chat mode).
+  mobileLens = globalThis.HerdrMobileLensModule.create({
+    state,
+    el,
+    api,
+    escapeHtml,
+    inputAttrs,
+    statusClassFn: (status) => mobileAttention.statusClass(status),
+    getTerminal: () => mobileTerminal.getTerm(),
+    sendPaste: (text) => mobileTerminal.sendPaste(text),
+  });
+  globalThis.HerdrMobileLens = mobileLens;
+
   mobileEvents = globalThis.HerdrMobileEventsModule.create({
     document,
     globalThisWebSocket: globalThis.WebSocket,
@@ -1422,6 +1441,11 @@
     // ignores frames and self-heals on the next open's GET.
     handleNotesChanged: (msg) => {
       if (mobileNotes && mobileNotes.applyRemote) mobileNotes.applyRemote(msg);
+    },
+    // Per-pane agent status frames feed the lens's freshest-status cache
+    // (working indicator + decision gate) without waiting for refresh.
+    handleAgentStatusChanged: (data) => {
+      if (mobileLens && mobileLens.onAgentStatusChanged) mobileLens.onAgentStatusChanged(data);
     },
   });
   // Connection dot in the header context: reflects the events stream state.

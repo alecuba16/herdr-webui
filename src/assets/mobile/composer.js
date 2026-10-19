@@ -214,6 +214,20 @@
       } catch (_) {
         // readOptions failure falls through to normal evaluation.
       }
+      // Chat-mode gate (desktop prompt_cards parity): the card is a
+      // chat-mode surface. While the mobile lens is open its decision
+      // chooser owns blocked answering, so the card must stay hidden;
+      // on the terminal view the card owns it.
+      try {
+        const lens = globalThis.HerdrMobileLens;
+        if (lens && lens.isActive && lens.isActive()) {
+          dismissedFor = null;
+          lastCardKey = "";
+          return null;
+        }
+      } catch (_) {
+        // lens probe failure falls through to normal evaluation.
+      }
       const status = currentAgentStatus();
       if (status !== "blocked") {
         dismissedFor = null;
@@ -418,6 +432,14 @@
       }
       sending = true;
       setNote("");
+      // Pending bubble: the mobile lens shows the sent text immediately,
+      // then the next poll carries the real user turn and clears it
+      // (desktop composer parity).
+      const lens = globalThis.HerdrMobileLens;
+      if (lens && typeof lens.setPendingBubble === "function")
+        lens.setPendingBubble(message);
+      if (lens && typeof lens.refreshConversation === "function")
+        lens.refreshConversation();
       syncComposer();
       try {
         await request(`/api/panes/${encodeURIComponent(paneId)}/submit`, {
@@ -428,6 +450,13 @@
         input.value = "";
         drafts.delete(paneId);
         setNote("");
+        // Poll carried the turn (or the pane went agent-less): the
+        // pending bubble has served its purpose either way.
+        const lens = globalThis.HerdrMobileLens;
+        if (lens && typeof lens.setPendingBubble === "function")
+          lens.setPendingBubble(null);
+        if (lens && typeof lens.refreshConversation === "function")
+          lens.refreshConversation();
       } catch (error) {
         const details = error && error.details;
         const text = String((error && error.message) || error);

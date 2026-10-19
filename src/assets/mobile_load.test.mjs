@@ -643,6 +643,8 @@ describe("mobile bundle load", () => {
     "\n" +
     readFileSync(new URL("./mobile/composer.js", import.meta.url), "utf8") +
     "\n" +
+    readFileSync(new URL("./mobile/lens.js", import.meta.url), "utf8") +
+    "\n" +
     readFileSync(new URL("./mobile/sessions.js", import.meta.url), "utf8") +
     "\n" +
     readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8") +

@@ -104,6 +104,7 @@
         "/assets/mobile/search.js",
         "/assets/mobile/git.js",
         "/assets/mobile/composer.js",
+        "/assets/mobile/lens.js",
         "/assets/mobile/sessions.js",
         "/assets/mobile/events.js",
         "/assets/mobile/screens.js",

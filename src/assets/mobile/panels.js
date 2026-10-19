@@ -81,8 +81,12 @@
       // Key toolbar and tabs strip no longer live inside the terminal
       // screen: the toolbar renders into #mobileToolbar above the nav bar
       // (app.js syncToolbar) and the tabs moved to the header dropdown
-      // (app.js openTabsSheet / renderTabsSheet).
-      return `<div class="mobile-terminal-screen"><div class="mobile-terminal-shell" id="terminalShell"><div class="mobile-terminal-loading" id="mobileTerminalLoading"${state.terminalConnecting ? "" : " hidden"}><span>Loading panel</span></div><button class="mobile-terminal-follow-button" id="mobileTerminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow" onclick="HerdrMobile.scrollTerminalToBottom(false)">↓ Tail</button><div class="mobile-terminal" id="terminal"></div></div></div>`;
+      // (app.js openTabsSheet / renderTabsSheet). The Chat|Terminal view
+      // switch sits at the top of the screen when the pane is chat-capable
+      // (mobile lens); the lens module owns the gate and the toggle state.
+      const lens = globalThis.HerdrMobileLens;
+      const switchRow = lens && lens.chatSupported ? (lens.chatSupported() ? lens.renderSwitch() : "") : "";
+      return `<div class="mobile-terminal-screen">${switchRow}<div class="mobile-terminal-shell" id="terminalShell"><div class="mobile-terminal-loading" id="mobileTerminalLoading"${state.terminalConnecting ? "" : " hidden"}><span>Loading panel</span></div><button class="mobile-terminal-follow-button" id="mobileTerminalFollowButton" type="button" hidden title="Go to latest terminal output and resume follow" aria-label="Go to latest terminal output and resume follow" onclick="HerdrMobile.scrollTerminalToBottom(false)">↓ Tail</button><div class="mobile-terminal" id="terminal"></div></div></div>`;
     }
 
     // Dropdown list for the header panels button: every tab as a row plus
@@ -113,9 +117,51 @@
         // The early return below would otherwise defer it to the next
         // refresh, and a quiet pane may not produce one for a long time.
         syncComposer(screen);
+        syncLens();
         return;
       }
+      // The switch row rides the screen HTML: on a data refresh with the
+      // shell already mounted, only the gate state can have changed.
+      syncLensSwitchRow();
       syncComposer(screen);
+      syncLens();
+    }
+
+    // The lens overlay mounts into the terminal shell once and stays
+    // mounted (the lens owns its own visibility). Called after every
+    // terminal screen sync so a pane switch re-anchors it.
+    function syncLens() {
+      const lens = globalThis.HerdrMobileLens;
+      if (!lens) return;
+      if (lens.onPaneChanged) {
+        const key = `${state.session || ""}|${state.ws || ""}|${state.tab || ""}|${state.pane || ""}|${state.terminalId || ""}`;
+        lens.onPaneChanged(key);
+      }
+    }
+
+    // Chat|Terminal switch presence follows the chat gate: a screen that
+    // rendered without the row (shell pane) gains it when a chat-capable
+    // pane lands, and loses it when the pane stops being one.
+    function syncLensSwitchRow() {
+      const lens = globalThis.HerdrMobileLens;
+      if (!lens || !lens.chatSupported) return;
+      const existing = el("mobileLensSwitch");
+      const supported = lens.chatSupported();
+      if (supported && !existing) {
+        const screenEl = el("mobileScreen");
+        const shell = el("terminalShell");
+        const screenContainer =
+          shell && shell.parentNode && shell.parentNode.classList &&
+          shell.parentNode.classList.contains("mobile-terminal-screen")
+            ? shell.parentNode
+            : null;
+        if (screenEl && screenContainer) {
+          screenContainer.insertAdjacentHTML("afterbegin", lens.renderSwitch());
+          lens.syncSwitchUi();
+        }
+      } else if (existing) {
+        existing.hidden = !supported;
+      }
     }
 
     // ---- Composer sync helpers ----
@@ -187,6 +233,8 @@
       renderTabsSheetList,
       renderTerminalScreen,
       syncComposer,
+      syncLens,
+      syncLensSwitchRow,
       setBrowserFaviconError,
     };
   }

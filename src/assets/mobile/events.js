@@ -6,6 +6,7 @@
     refresh,
     handleServerSettingsChanged,
     handleNotesChanged,
+    handleAgentStatusChanged,
   }) {
     let eventWs = null;
     let eventRefreshTimer = null;
@@ -88,6 +89,16 @@
             try { handleNotesChanged(msg); } catch (_) {}
           }
           const evt = msg && msg.event;
+          // Per-pane agent status: the mobile lens caches these to gate
+          // the working indicator and the decision chooser fresher than
+          // the coalesced refresh would allow. The refresh still runs;
+          // the lens renders from its own cache.
+          if (
+            evt && evt.event === "pane.agent_status_changed" &&
+            typeof handleAgentStatusChanged === "function"
+          ) {
+            try { handleAgentStatusChanged(evt.data || evt); } catch (_) {}
+          }
           kind = evt && (evt.event || evt.type);
         } catch (_) {}
         scheduleEventRefresh(kind);
