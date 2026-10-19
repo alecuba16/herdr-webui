@@ -1922,8 +1922,12 @@
       }
     }
     // The composer rides with the lens: same surface, same visibility,
-    // and it swaps its per-pane draft when the pane changes.
+    // and it swaps its per-pane draft when the pane changes. The prompt
+    // card is the same chat-mode surface: closing the lens hides it now
+    // (its own evaluate gate also keeps it hidden on terminal mode).
     if (globalThis.HerdrComposer) globalThis.HerdrComposer.sync();
+    if (globalThis.HerdrPromptCards && globalThis.HerdrPromptCards.evaluate)
+      globalThis.HerdrPromptCards.evaluate();
     syncLensToggleUi();
     void wasActive;
   }

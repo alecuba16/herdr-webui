@@ -65,6 +65,14 @@ static NAV_CANCEL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)esc cancel|esc dismiss").unwrap());
 static PERMISSION_WORDS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)allow|approve|yes|proceed|deny|reject|no|cancel").unwrap());
+// jcode ask_user chooser (jcode-tui ui_inline.rs): hint lines "1-9 or ↑↓ +
+// Enter to choose · type on Your answer · Esc dismisses", "Enter sends ·
+// Shift/Alt+Enter newline · Esc dismisses", and the "N. Your answer" row.
+// "Enter sends" matches FREE_TEXT, so without this guard the chooser tail
+// parses as a free-text card with a scraped shell-prompt title.
+static JCODE_CHOOSER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)1-9 or ↑↓ \+ Enter to choose|type on Your answer|\. Your answer").unwrap()
+});
 // jcode Permissions viewer markers, the same lines jcode_blocked
 // (builtin_detection/jcode.rs) scrapes: the bordered help row and the
 // waiting line. Both must be present so transcript text quoting the
@@ -154,6 +162,13 @@ pub fn parse_prompt(lines: &[String]) -> Option<PromptCard> {
         .collect();
     let lines = &normalized[..];
     let joined = lines.join("\n");
+    // jcode ask_user chooser: its hint lines would otherwise fall through
+    // to the free-text branch ("Enter sends ..." matches FREE_TEXT) and
+    // pick a shell-prompt line as the title. The chooser is its own
+    // answer surface (chat lens decision part), never a prompt card.
+    if JCODE_CHOOSER.is_match(&joined) {
+        return None;
+    }
     // Take the LAST contiguous numbered block: an older dialog may still
     // be on screen above; the active one is the newest.
     let mut blocks: Vec<Vec<PromptOption>> = Vec::new();
@@ -681,6 +696,27 @@ mod tests {
             "task finished, exit 0",
         ]);
         assert!(parse_prompt(&waiting_only).is_none());
+    }
+
+    #[test]
+    fn parse_jcode_ask_user_chooser_is_not_a_card() {
+        // The jcode ask_user chooser (ui_inline.rs) has its own answer
+        // surface (chat lens decision parts). Its hint lines contain
+        // "Enter sends ..." which matches FREE_TEXT, so without the
+        // guard the hint tail would parse as a free-text card with a
+        // scraped shell-prompt title.
+        let tail = lines(&[
+            "Where should the new workspace live?",
+            "❯ 1. ~/Documents/projects/new-space",
+            "  2. /tmp/scratch",
+            "  3. Your answer",
+            "1-9 or ↑↓ + Enter to choose · type on Your answer · Esc dismisses",
+            "Enter sends · Shift/Alt+Enter newline · Esc dismisses",
+        ]);
+        assert!(
+            parse_prompt(&tail).is_none(),
+            "chooser tail is never a card"
+        );
     }
 
     #[test]

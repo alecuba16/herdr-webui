@@ -1,5 +1,9 @@
 // Prompt cards: interactive answer surface for blocked agents (backlog 3/3).
 //
+// Chat-mode surface ONLY: the card renders while the Chat lens is open
+// (lensOpen gate in evaluate). Over the terminal view the pane's own
+// dialog owns the keyboard; the card never appears there.
+//
 // When the selected pane's agent is blocked on a question dialog, the card
 // renders the question title plus clickable options (or a free-text input).
 // Two sources: the wrapper's GET /api/panes/{pane_id}/prompt returns a
@@ -37,6 +41,13 @@
   const OPTION_LINE = /^[>\s]*([0-9]+)[.)]\s+(.+)$/;
   const NAV_HINT = /↑↓\s*select|↑\/↓/;
   const FREE_TEXT = /enter your response|type your answer|enter send/i;
+  // jcode ask_user chooser (ui_inline.rs): hint lines "1-9 or ↑↓ + Enter
+  // to choose · type on Your answer · Esc dismisses" and "Enter sends ·
+  // Shift/Alt+Enter newline · Esc dismisses", plus the "N. Your answer"
+  // row itself. "Enter sends" matches FREE_TEXT and "Type your own
+  // answer" nearly matches "type your answer", so without this guard
+  // the chooser tail parses as a free-text card with a garbage title.
+  const JCODE_CHOOSER = /1-9 or ↑↓ \+ Enter to choose|type on Your answer|\. Your answer/i;
   const QUESTION_LINE = /^\s*(?:❯|›|➜|\$)\s*(.+?)(?:\?+)?\s*$|^\s*\?+\s*(.+)$/;
   // jcode Permissions viewer markers (jcode-tui-permissions), the same
   // lines the backend's jcode_blocked detector scrapes. Both the help row
@@ -49,6 +60,22 @@
 
   function shellElement() {
     return document.getElementById("terminalShell");
+  }
+
+  // Chat-mode gate: question cards are a chat-mode surface only. While
+  // the Chat lens is closed the terminal view owns input, so the card
+  // must stay hidden there (the lens's own decision part covers chat
+  // mode answering).
+  function lensOpen() {
+    try {
+      return !!(
+        globalThis.HerdrLens &&
+        globalThis.HerdrLens.isActive &&
+        globalThis.HerdrLens.isActive()
+      );
+    } catch (_) {
+      return false;
+    }
   }
 
   function bridge() {
@@ -95,6 +122,13 @@
       line.replace(/[\u00a0\u0085\u3000\ufeff\u2028\u2029]/g, " "),
     );
     const joined = lines.join("\n");
+    // jcode ask_user chooser (ui_inline.rs): its hint lines carry "Enter
+    // sends ..." and "Type your own answer", which the generic FREE_TEXT
+    // regex mistakes for a free-text dialog, and a shell tail above the
+    // chooser then becomes the "title". The chooser renders its own
+    // numbered rows plus an "N. Your answer" entry; the chat lens
+    // decision part is the answer surface there, so parse nothing here.
+    if (JCODE_CHOOSER.test(joined)) return null;
     // Take the LAST contiguous numbered block: an older dialog may still be
     // on screen above; the active one is the newest.
     const blocks = [];
@@ -265,6 +299,15 @@
     // User toggle (Settings > Agents and alerts): off means no card, ever.
     // Also reset episode state so re-enabling starts clean.
     if (typeof options !== "undefined" && options && options.promptCardsEnabled === false) {
+      node.hidden = true;
+      lastCardKey = "";
+      return null;
+    }
+    // Chat-mode gate: question cards render only while the Chat lens is
+    // open (the card is a chat-mode surface). On the terminal view the
+    // pane's own dialog owns the keyboard, so hide and stay hidden; the
+    // next evaluate after the lens reopens re-parses everything fresh.
+    if (!lensOpen()) {
       node.hidden = true;
       lastCardKey = "";
       return null;

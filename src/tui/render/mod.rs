@@ -1572,8 +1572,9 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         .prompt_input
         .as_ref()
         .expect("render_prompt_input requires an active prompt");
-    let rect = overlay_rect(area, area.width.min(64), 6);
-    render_shadow(frame, rect, p);
+    // Box size depends on the wrapped input (see below), so only the
+    // width is known here; the rect is computed after wrapping.
+    let box_width = area.width.min(64);
     // Show the subject of the action (file/branch/stash) above the input.
     let subject = match prompt.kind {
         crate::tui::PromptKind::RenameFile => app
@@ -1721,26 +1722,121 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
             .unwrap_or_default(),
     };
     let title = format!(" {} ", prompt.kind.title());
-    let lines = vec![
-        Line::from(Span::styled(
-            truncate(&subject, (rect.width.saturating_sub(4)) as usize),
-            Style::default().fg(p.muted),
-        )),
-        Line::from(Span::styled(
-            format!("{}█", prompt.text),
+    // The typed text wraps instead of clipping: the box grows with the
+    // input (same budget idea as jcode's composer, max 8 visible rows)
+    // and the wrap always ends on the cursor's own row, so the tail of
+    // a long line is always on screen. Width is display width, not
+    // chars, so double-width glyphs never spill a column.
+    let inner_width = box_width.saturating_sub(2) as usize;
+    let input_lines = wrap_input_with_cursor(&prompt.text, inner_width.max(1));
+    let visible_input = (input_lines.len() as u16).min(8);
+    // subject + hint + borders; the box centers per row count.
+    let height = (visible_input + 5).min(area.height);
+    let rect = overlay_rect(area, box_width, height);
+    render_shadow(frame, rect, p);
+    let mut lines = vec![Line::from(Span::styled(
+        truncate(&subject, (rect.width.saturating_sub(4)) as usize),
+        Style::default().fg(p.muted),
+    ))];
+    // Tail-scroll: past 8 wrapped rows keep the LAST 8, the ones the
+    // cursor lives in. Earlier rows scroll away exactly like jcode's
+    // composer, so typing always shows where the caret is.
+    let skip = input_lines.len().saturating_sub(8);
+    for row in input_lines.iter().skip(skip) {
+        lines.push(Line::from(Span::styled(
+            row.clone(),
             Style::default().fg(p.text),
-        )),
-        Line::from(Span::styled(
-            prompt.kind.hint(),
-            Style::default().fg(p.muted),
-        )),
-    ];
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        prompt.kind.hint(),
+        Style::default().fg(p.muted),
+    )));
     frame.render_widget(
         Paragraph::new(lines)
             .block(overlay_panel(&title, p))
             .style(Style::default().fg(p.text).bg(p.panel_bg)),
         rect,
     );
+}
+
+/// Wrap typed input text at `width` display columns, appending the
+/// cursor block to the last row. Word wrap: break at spaces when the
+/// next word does not fit (jcode's composer wraps the same way), and
+/// hard-break only a word wider than the row. Widths are display
+/// widths, so a double-width glyph never splits mid-cell.
+///
+/// Spacing is preserved exactly as typed: `split_inclusive` keeps each
+/// space glued to the word before it, so wrapping never swallows or
+/// invents spaces. The empty input is exactly one cursor row, so the
+/// box height does not jump when the first character arrives.
+fn wrap_input_with_cursor(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec!["█".to_string()];
+    }
+    let mut rows: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    // Greedy per source line. Every line except the last ends its own
+    // row (pasted multiline opens real rows); the last line keeps its
+    // text in `current` and becomes the cursor row below.
+    let lines: Vec<&str> = text.split('\n').collect();
+    let last = lines.len().saturating_sub(1);
+    for (i, line) in lines.iter().enumerate() {
+        let mut pending = String::new();
+        let mut pending_width = 0usize;
+        for token in line.split_inclusive(' ') {
+            let tok_width = token.width();
+            if current_width + pending_width + tok_width > width && !pending.is_empty() {
+                // The next token does not fit: flush the row so far.
+                if current_width < width && pending.ends_with(' ') && !current.ends_with(' ') {
+                    // Break between two words: the trailing space of
+                    // the breaking token belongs to the flushed row.
+                    pending.pop();
+                    current.push(' ');
+                }
+                current.push_str(&pending);
+                rows.push(std::mem::take(&mut current));
+                current_width = 0;
+                pending.clear();
+            }
+            pending.push_str(token);
+            pending_width += tok_width;
+            // A single word wider than the row hard-breaks mid-word;
+            // flush what fits so the wrap always progresses.
+            while pending_width > width {
+                // Walk chars until the row budget, push that part.
+                let mut fit = String::new();
+                let mut fit_width = 0usize;
+                let mut rest = String::new();
+                let mut rest_width = 0usize;
+                for ch in pending.chars() {
+                    let ch_width = ch.width().unwrap_or(0);
+                    if fit_width + ch_width <= width {
+                        fit.push(ch);
+                        fit_width += ch_width;
+                    } else {
+                        rest.push(ch);
+                        rest_width += ch_width;
+                    }
+                }
+                rows.push(fit);
+                pending = rest;
+                pending_width = rest_width;
+            }
+        }
+        current.push_str(&pending);
+        current_width += pending_width;
+        if i < last {
+            // A line the text itself ends: its row ends here, the
+            // next line starts fresh.
+            rows.push(std::mem::take(&mut current));
+            current_width = 0;
+        }
+    }
+    current.push('█');
+    rows.push(current);
+    rows
 }
 
 /// Render the commit modal. Only called while `app.commit_input` is
@@ -1750,24 +1846,31 @@ fn render_commit_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
         .commit_input
         .as_ref()
         .expect("render_commit_input requires an active commit");
-    let rect = overlay_rect(area, area.width.min(64), 7);
+    // Same wrap-and-grow as the prompt input: a long commit title
+    // wraps and the box grows (max 8 visible rows, tail-scroll keeps
+    // the cursor row on screen) instead of clipping at one row.
+    let box_width = area.width.min(64);
+    let inner_width = box_width.saturating_sub(2) as usize;
+    let input_lines = wrap_input_with_cursor(&commit.text, inner_width.max(1));
+    let visible_input = (input_lines.len() as u16).min(8);
+    let height = (visible_input + 5).min(area.height);
+    let rect = overlay_rect(area, box_width, height);
     render_shadow(frame, rect, p);
     let title = if commit.amend {
         " Amend commit message "
     } else {
         " Commit message "
     };
-    let lines = vec![
-        Line::from(Span::styled(
-            format!("{}█", commit.text),
-            Style::default().fg(p.text),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Enter commit · Esc cancel · Ctrl-U clear",
-            Style::default().fg(p.muted),
-        )),
-    ];
+    let mut lines: Vec<Line> = input_lines
+        .iter()
+        .skip(input_lines.len().saturating_sub(8))
+        .map(|row| Line::from(Span::styled(row.clone(), Style::default().fg(p.text))))
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Enter commit · Esc cancel · Ctrl-U clear",
+        Style::default().fg(p.muted),
+    )));
     frame.render_widget(
         Paragraph::new(lines)
             .block(overlay_panel(title, p))

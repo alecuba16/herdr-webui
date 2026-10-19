@@ -167,6 +167,10 @@ function loadModule(overrides = {}) {
         ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]),
     sendInputData: (data) => sent.push(data),
     inputAttrs,
+    // Chat lens defaults to OPEN: the card is a chat-mode surface, so
+    // rendering tests run in chat mode. Tests can override with
+    // extra: { HerdrLens: { isActive: () => false } }.
+    HerdrLens: { isActive: () => true },
     ...overrides.extra,
   };
   ctx.globalThis = ctx;
@@ -512,6 +516,25 @@ describe("prompt cards module", () => {
     equal(card.hidden, true, "card hides after answering");
   });
 
+  it("jcode ask_user chooser never parses as a prompt card", () => {
+    // The chooser renders its own answer rows ("N. option", plus an
+    // "N. Your answer" free-text row) followed by hint lines whose
+    // "Enter sends ..." text matches FREE_TEXT. Without the guard the
+    // hint tail parses as a free-text card with a scraped title. The
+    // chooser already has its own surface: the chat lens decision
+    // parts.
+    const { ctx } = loadModule();
+    const chooserGrid = [
+      "Where should the new workspace live?",
+      "❯ 1. ~/Documents/projects/new-space",
+      "  2. /tmp/scratch",
+      "  3. Your answer",
+      "1-9 or ↑↓ + Enter to choose · type on Your answer · Esc dismisses",
+      "Enter sends · Shift/Alt+Enter newline · Esc dismisses",
+    ];
+    equal(ctx.HerdrPromptCards.parsePrompt(chooserGrid), null, "chooser tail is not a card");
+  });
+
   it("numbered list above newer output does not parse (stale-window FP)", () => {
     const { ctx } = loadModule();
     equal(
@@ -568,10 +591,43 @@ describe("prompt cards module", () => {
     const { ctx, card } = loadModule({
       state: { ws: "ws_1", workspaces: [{ workspace_id: "ws_1", agent_status: "blocked" }] },
       bridge: makeBridge(QUESTION_GRID),
+      // Chat lens open: the card is a chat-mode surface, so the default
+      // harness must simulate the lens being open for rendering paths.
+      extra: { HerdrLens: { isActive: () => true } },
     });
     const result = ctx.HerdrPromptCards.evaluate();
     ok(result, "no stored option defaults to enabled");
     ok(!card.hidden, "overlay visible");
+  });
+
+  it("card stays hidden on the terminal view (chat lens closed)", () => {
+    // Chat-mode gate: the card is a chat-mode surface. With the lens
+    // closed (terminal view), a blocked pane with a live dialog must not
+    // open the card — the pane's own dialog owns the keyboard there.
+    const { ctx, card } = loadModule({
+      state: { ws: "ws_1", workspaces: [{ workspace_id: "ws_1", agent_status: "blocked" }] },
+      bridge: makeBridge(QUESTION_GRID),
+      extra: { HerdrLens: { isActive: () => false } },
+    });
+    equal(ctx.HerdrPromptCards.evaluate(), null, "lens closed means no card");
+    ok(card.hidden, "overlay stays hidden on the terminal view");
+  });
+
+  it("card hides when the chat lens closes mid-episode", () => {
+    // The lens can close while the card is up (user clicks Terminal).
+    // evaluate after the close must collapse it, not leave it floating
+    // over the terminal view.
+    let lensActive = true;
+    const { ctx, card } = loadModule({
+      state: { ws: "ws_1", workspaces: [{ workspace_id: "ws_1", agent_status: "blocked" }] },
+      bridge: makeBridge(QUESTION_GRID),
+      extra: { HerdrLens: { isActive: () => lensActive } },
+    });
+    ok(ctx.HerdrPromptCards.evaluate(), "card open while lens open");
+    ok(!card.hidden, "overlay visible in chat mode");
+    lensActive = false;
+    equal(ctx.HerdrPromptCards.evaluate(), null, "lens close collapses the card");
+    ok(card.hidden, "overlay hidden after lens close");
   });
 
   it("escapes hostile terminal text in every rendered slot", () => {

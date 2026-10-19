@@ -740,6 +740,23 @@ describe("mobile composer + prompt cards module", () => {
     assert.match(prompt.title, /jcode permissions \(1 pending\)/);
   });
 
+  it("jcode ask_user chooser never parses on mobile", () => {
+    // Same guard as desktop prompt_cards.js and the Rust parser: the
+    // chooser hint lines carry "Enter sends ..." which matches
+    // FREE_TEXT, so without the bail the tail parses as a free-text
+    // card. The chooser has its own answer surface.
+    const { module } = composerContext();
+    const prompt = module.parsePrompt([
+      "Where should the new workspace live?",
+      "❯ 1. ~/Documents/projects/new-space",
+      "  2. /tmp/scratch",
+      "  3. Your answer",
+      "1-9 or ↑↓ + Enter to choose · type on Your answer · Esc dismisses",
+      "Enter sends · Shift/Alt+Enter newline · Esc dismisses",
+    ]);
+    assert.equal(prompt, null, "chooser tail is never a card");
+  });
+
   it("exotic unicode whitespace parses like plain spaces on mobile", () => {
     const { module } = composerContext();
     const prompt = module.parsePrompt([
