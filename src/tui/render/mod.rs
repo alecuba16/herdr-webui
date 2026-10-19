@@ -409,7 +409,9 @@ fn render_pane(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         // `pane_scroll` lines above the buffer end. Styles only cover
         // the live tail window, so deep-history lines render plain.
         let lines_ref = app.pane_scrollback_lines();
-        let scroll = app.pane_scroll.min(lines_ref.len().saturating_sub(max_tail));
+        let scroll = app
+            .pane_scroll
+            .min(lines_ref.len().saturating_sub(max_tail));
         let end = lines_ref.len().saturating_sub(scroll);
         let start = end.saturating_sub(max_tail);
         for (window_index, line_text) in lines_ref[start..end].iter().enumerate() {
