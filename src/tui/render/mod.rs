@@ -1777,8 +1777,9 @@ fn wrap_input_with_cursor(text: &str, width: usize) -> Vec<String> {
             current_width = 0;
             continue;
         }
-        // Split keeping the trailing space attached to each word so
-        // glued words ("a b") rejoin on wrap exactly as typed.
+        // Words go to `pending` until they fit the row budget; on
+        // wrap the pending words flush down and rejoin with single
+        // spaces, so the wrapped rows read exactly like the input.
         let mut pending = String::new();
         let mut pending_width = 0usize;
         for token in word.split(' ').map(|t| (t, t.width())) {
