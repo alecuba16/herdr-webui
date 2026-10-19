@@ -11,7 +11,9 @@ import { rust } from "@codemirror/lang-rust";
 import { sql } from "@codemirror/lang-sql";
 import { xml } from "@codemirror/lang-xml";
 import { yaml } from "@codemirror/lang-yaml";
-import { bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
+import { bracketMatching, foldGutter, foldKeymap, HighlightStyle, indentOnInput, indentUnit, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
+import { shell } from "@codemirror/legacy-modes/mode/shell";
+import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { EditorState } from "@codemirror/state";
 import { Decoration, drawSelection, dropCursor, EditorView, GutterMarker, gutter, highlightActiveLine, highlightActiveLineGutter, highlightSpecialChars, keymap, lineNumbers, rectangularSelection, ViewPlugin, WidgetType } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
@@ -71,6 +73,7 @@ const readableHighlightStyle = HighlightStyle.define([
 function languageForPath(path) {
   const name = String(path || "").split("/").pop().toLowerCase();
   if (["makefile", "gnumakefile", "bsdmakefile"].includes(name)) return null;
+  if ([".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile"].includes(name)) return StreamLanguage.define(shell);
   const ext = name.split(".").pop();
   if (["js", "jsx", "mjs", "cjs"].includes(ext)) return javascript({ jsx: ext === "jsx" });
   if (["ts", "tsx"].includes(ext)) return javascript({ typescript: true, jsx: ext === "tsx" });
@@ -82,6 +85,8 @@ function languageForPath(path) {
   if (ext === "css") return css();
   if (["md", "markdown"].includes(ext)) return markdown();
   if (["yaml", "yml"].includes(ext)) return yaml();
+  if (ext === "toml") return StreamLanguage.define(toml);
+  if (["sh", "bash", "zsh"].includes(ext)) return StreamLanguage.define(shell);
   if (ext === "xml") return xml();
   if (ext === "java" || ["kt", "kts"].includes(ext)) return java();
   if (["sql", "psql"].includes(ext)) return sql();
@@ -91,6 +96,7 @@ function languageForPath(path) {
 function languageNameForPath(path) {
   const name = String(path || "").split("/").pop().toLowerCase();
   if (["makefile", "gnumakefile", "bsdmakefile"].includes(name)) return "makefile";
+  if ([".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile"].includes(name)) return "shell";
   const ext = name.split(".").pop();
   if (["js", "jsx", "mjs", "cjs"].includes(ext)) return "javascript";
   if (["ts", "tsx"].includes(ext)) return "typescript";
@@ -102,6 +108,8 @@ function languageNameForPath(path) {
   if (ext === "css") return "css";
   if (["md", "markdown"].includes(ext)) return "markdown";
   if (["yaml", "yml"].includes(ext)) return "yaml";
+  if (ext === "toml") return "toml";
+  if (["sh", "bash", "zsh"].includes(ext)) return "shell";
   if (ext === "xml") return "xml";
   if (ext === "java" || ["kt", "kts"].includes(ext)) return ext === "java" ? "java" : "kotlin";
   if (["sql", "psql"].includes(ext)) return "sql";

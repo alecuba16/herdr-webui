@@ -40,12 +40,14 @@
   register("rust", { keywords: words("as async await break const continue crate else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while"), comments: /(\/\/.*$|\/\*.*?\*\/)/g });
   register("java", { keywords: words("abstract assert boolean break case catch class const continue default else enum extends false final finally for if implements import instanceof interface new null package private protected public return static super switch this throw true try void while"), comments: /(\/\/.*$|\/\*.*?\*\/)/g });
   register("yaml", { keywords: "true|false|null", comments: /(#.*$)/g });
+  register("toml", { keywords: "true|false", comments: /(#.*$)/g });
   register("shell", { keywords: words("case do done elif else esac export fi for function if in local return then while"), comments: /(#.*$)/g });
 
   alias(["py", "pyw"], "python");
   alias(["js", "jsx", "mjs", "cjs"], "js");
   alias(["ts", "tsx"], "ts");
   alias(["yml", "yaml"], "yaml");
+  alias(["toml"], "toml");
   alias(["go"], "go");
   alias(["rs"], "rust");
   alias(["java"], "java");
@@ -57,6 +59,7 @@
   function languageFor(path) {
     const name = String(path || "").split("/").pop().toLowerCase();
     if (["makefile", "gnumakefile", "bsdmakefile"].includes(name)) return "make";
+    if ([".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile"].includes(name)) return "shell";
     const ext = name.split(".").pop().toLowerCase();
     const lang = aliases.get(ext);
     return typeof lang === "function" ? lang(ext) : lang || "text";
