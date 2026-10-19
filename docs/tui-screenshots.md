@@ -27,7 +27,6 @@ opens the help overlay, `/` the search palette.
 | ![help filter](screens/tui/03-help-filter.png) | Help overlay filter box narrowing rows as you type. |
 | ![prefix hint](screens/tui/04-prefix-hint.png) | Prefix armed: footer shows the hint and waits for the next key. |
 | ![composer](screens/tui/28-composer.png) | Chat composer prompt over the selected pane. |
-| ![prompt card](screens/tui/29-prompt-card.png) | Prompt card answering an agent's blocked question with an option cursor. |
 | ![quit confirm](screens/tui/34-quit-confirm.png) | Quit confirmation with y/n keys. |
 | ![worktree browser](screens/tui/17-worktree-browser.png) | Worktree browser overlay with filter and open hints. |
 | ![settings](screens/tui/18-settings.png) | Settings overlay. |

@@ -1,28 +1,17 @@
-//! Prompt cards for blocked agents (ux overhaul 3/3, TUI port).
+//! Question-dialog parser for blocked agents, shared by the webui
+//! `/api/panes/{pane_id}/prompt` endpoint.
 //!
-//! When the selected pane's agent is blocked on a question dialog, the
-//! card renders the question title plus selectable options (or a
-//! free-text input) parsed from the pane tail — the same source the
-//! chat lens reads. Protocol 22 is frozen, so there is no structured
-//! prompt payload: the shapes match the dialogs the backend's blocked
-//! detectors already recognize (numbered option lists, ↑↓ select
-//! hints, "enter your response" free-text prompts), plus the jcode
-//! Permissions viewer (`a approve · d deny · A approve all · D deny all`),
-//! whose options are letters, not numbers.
+//! Protocol 22 is frozen, so there is no structured prompt payload:
+//! the parser scrapes the pane tail for the shapes the backend's
+//! blocked detectors already recognize (numbered option lists, ↑↓
+//! select hints, "enter your response" free-text prompts), plus the
+//! jcode Permissions viewer (`a approve · d deny · A approve all ·
+//! D deny all`), whose options are letters, not numbers.
 //!
-//! Answering is hybrid (user decision on the port):
-//! - Numbered options always synthesize raw keystrokes through the
-//!   terminal input path (`N\r`) — the webui semantics. The composer
-//!   submit route is NOT used: `agent_prompt` refuses blocked panes by
-//!   design, and an option answer must land in the dialog.
-//! - Free text picks the transport by the pane's live status: an
-//!   unblocked pane routes through the composer submit (a plain
-//!   message to the agent), a blocked pane types the text + Enter
-//!   into the dialog via raw input, like the webui.
-//!
-//! The card is derived state only: every refresh re-evaluates the parse
-//! against the CURRENT tail before sending, so a stale card can never
-//! send stale input.
+//! The parse is pure and derived on every call: callers re-parse the
+//! CURRENT tail before acting on a dialog, so a stale parse can never
+//! send stale input. The interactive card UI lives in the webui only
+//! (chat lens surfaces); the TUI has no card overlay.
 
 use std::sync::LazyLock;
 
@@ -312,133 +301,6 @@ fn options_at_tail_or_confirmed(lines: &[String], options: &[PromptOption]) -> b
         .all(|l| l.trim().is_empty())
 }
 
-/// Live state of the prompt-card overlay. Owned by `TuiApp`; the render
-/// reads it, the refresh cycle re-evaluates it against the current
-/// tail, and answer/dismiss keys update it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PromptCardState {
-    /// Question (title + option keys) the user dismissed or answered.
-    dismissed_for: Option<String>,
-    /// Signature of the last rendered card (title|keys@tail-suffix), to
-    /// re-render only on change.
-    last_card_key: String,
-    /// Blocked-episode tracking: false until the first blocked
-    /// observation; a fresh transition INTO blocked clears the
-    /// dismissal so a new question re-opens the card.
-    was_blocked: bool,
-    /// The most recent parsed card, kept for the answer path's
-    /// stale-send guard.
-    current: Option<PromptCard>,
-    /// Whether the card is visible (parsed, not dismissed).
-    pub visible: bool,
-}
-
-impl PromptCardState {
-    /// Stable identity of a question: title + option keys. Two cards
-    /// with the same identity are the same question.
-    pub fn card_identity(card: &PromptCard) -> String {
-        let keys = card
-            .options
-            .iter()
-            .map(|option| option.key.as_str())
-            .collect::<Vec<_>>()
-            .join(",");
-        format!("{}|{}", card.title, keys)
-    }
-
-    /// Re-evaluate the card against the pane status and tail (webui
-    /// `evaluate`). Called on every refresh tick and status change:
-    /// the card is derived state, never stale.
-    pub fn evaluate(&mut self, blocked: bool, lines: &[String]) -> Option<&PromptCard> {
-        // Blocked-episode tracking: a fresh transition INTO blocked
-        // means a new question (even with identical text) — clear any
-        // dismissal so the card re-opens. Within one episode,
-        // dismissal sticks.
-        if blocked && !self.was_blocked {
-            self.dismissed_for = None;
-            self.last_card_key = String::new();
-        }
-        self.was_blocked = blocked;
-        let prompt = if blocked { parse_prompt(lines) } else { None };
-        let Some(prompt) = prompt else {
-            self.visible = false;
-            self.last_card_key = String::new();
-            self.current = None;
-            return None;
-        };
-        // Dismissed: the user collapsed THIS question; keep it collapsed
-        // until the question (title+options) changes.
-        let identity = Self::card_identity(&prompt);
-        if self.dismissed_for.as_deref() == Some(identity.as_str()) {
-            self.visible = false;
-            self.current = Some(prompt);
-            return None;
-        }
-        // Tail signature: the joined tail's trailing characters, so a
-        // dialog repaint with the same question but fresher context
-        // still re-renders (webui keeps the same 120-char slice).
-        let tail_signature: String = lines
-            .join("§")
-            .chars()
-            .rev()
-            .take(120)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        let key = format!("{}@{}", identity, tail_signature);
-        self.last_card_key = key;
-        self.visible = true;
-        self.current = Some(prompt);
-        self.current.as_ref()
-    }
-
-    /// The current card, regardless of visibility (answer path guard).
-    pub fn current_card(&self) -> Option<&PromptCard> {
-        self.current.as_ref()
-    }
-
-    /// Dismiss the current question (Esc): collapses the card until the
-    /// question changes.
-    pub fn dismiss(&mut self) {
-        if let Some(card) = self.current.take() {
-            self.dismissed_for = Some(Self::card_identity(&card));
-        }
-        self.visible = false;
-    }
-
-    /// Guard for the blocked answer path: re-parse the CURRENT tail
-    /// and make sure the dialog is still the one the card rendered
-    /// (webui `answer` stale-send guard). Returns the fresh card when
-    /// it matches, None when the dialog moved on. Status is NOT part
-    /// of the guard: the hybrid transport routes by status before
-    /// this runs, and the raw path only fires for a blocked pane
-    /// anyway.
-    pub fn stale_guard(&self, lines: &[String]) -> Option<PromptCard> {
-        let fresh = parse_prompt(lines)?;
-        let current = self.current_card()?;
-        (fresh.title == current.title).then_some(fresh)
-    }
-
-    /// Mark the question answered: the card collapses while the same
-    /// dialog text is still on screen (real TUIs repaint it away; a
-    // plain shell keeps the text).
-    pub fn mark_answered(&mut self) {
-        if let Some(card) = self.current.take() {
-            self.dismissed_for = Some(Self::card_identity(&card));
-        }
-        self.visible = false;
-        self.last_card_key = String::new();
-    }
-}
-
-/// The payload a free-text answer sends, by pane status (hybrid
-/// decision): raw typed text + Enter for a blocked dialog, composer
-/// submit semantics for an unblocked pane.
-pub fn free_text_via_composer(blocked: bool) -> bool {
-    !blocked
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,73 +450,6 @@ mod tests {
         // (verified against the webui oracle: questionTitle gives
         // "First question" for this exact tail).
         assert_eq!(card.title, "First question");
-    }
-
-    #[test]
-    fn state_opens_on_blocked_and_hides_when_unblocked() {
-        let mut state = PromptCardState::default();
-        let tail = lines(&["❯ Run it?", "1. Yes, allow once", "2. No, deny"]);
-        assert!(state.evaluate(true, &tail).is_some());
-        assert!(state.visible);
-        assert!(state.evaluate(false, &tail).is_none());
-        assert!(!state.visible);
-    }
-
-    #[test]
-    fn dismissal_sticks_within_episode() {
-        let mut state = PromptCardState::default();
-        let tail = lines(&["❯ Run it?", "1. Yes, allow once", "2. No, deny"]);
-        state.evaluate(true, &tail);
-        state.dismiss();
-        assert!(!state.visible);
-        assert!(
-            state.evaluate(true, &tail).is_none(),
-            "same question stays collapsed"
-        );
-        // Fresh blocked episode re-opens even the identical question.
-        assert!(state.evaluate(false, &tail).is_none());
-        assert!(state.evaluate(true, &tail).is_some(), "new episode re-arms");
-        assert!(state.visible);
-    }
-
-    #[test]
-    fn stale_guard_blocks_answered_dialog_change() {
-        let mut state = PromptCardState::default();
-        let tail = lines(&["❯ Run it?", "1. Yes, allow once", "2. No, deny"]);
-        state.evaluate(true, &tail);
-        let other = lines(&["❯ Other question?", "1. Yes, allow once", "2. No, deny"]);
-        assert!(state.stale_guard(&other).is_none());
-        let fresh = state.stale_guard(&tail).expect("same dialog passes");
-        assert_eq!(fresh.title, "Run it");
-        // A tail that no longer parses is stale (dialog scrolled away).
-        assert!(state.stale_guard(&lines(&["plain shell output"])).is_none());
-    }
-
-    #[test]
-    fn answered_card_collapses_until_question_changes() {
-        let mut state = PromptCardState::default();
-        let tail = lines(&["❯ Run it?", "1. Yes, allow once", "2. No, deny"]);
-        state.evaluate(true, &tail);
-        state.mark_answered();
-        assert!(!state.visible);
-        assert!(
-            state.evaluate(true, &tail).is_none(),
-            "same dialog stays collapsed"
-        );
-        let changed = lines(&["❯ Another one?", "1. Yes, allow once", "2. No, deny"]);
-        assert!(
-            state.evaluate(true, &changed).is_some(),
-            "new question re-opens"
-        );
-    }
-
-    #[test]
-    fn free_text_transport_follows_status() {
-        assert!(
-            free_text_via_composer(false),
-            "unblocked -> composer submit"
-        );
-        assert!(!free_text_via_composer(true), "blocked -> raw keystrokes");
     }
 
     #[test]
@@ -826,5 +621,21 @@ mod tests {
         let card = parse_prompt(&lines(&["allow\u{2028}it?", "enter your response"]))
             .expect("free-text parses");
         assert_eq!(card.title, "allow it");
+    }
+
+    #[test]
+    fn prompt_marker_capture_that_trims_to_nothing_is_skipped() {
+        // A marker line of only spaces ("❯   ": the lazy capture is a
+        // bare space that trims to empty) falls through the prompt-marked
+        // pass instead of producing an empty title; the title comes from
+        // the next real line.
+        let lines = lines(&["❯   ", "esc cancel", "1. Postgres", "2. MySQL"]);
+        let card = parse_prompt(&lines).expect("dialog parses");
+        // Every other line is noise (cancel hint, options): the empty
+        // capture must not leak as the title, the dialog default applies.
+        assert_eq!(
+            card.title, "Select an option",
+            "an empty capture never becomes the title; the default applies"
+        );
     }
 }

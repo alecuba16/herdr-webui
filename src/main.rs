@@ -5330,7 +5330,7 @@ fn conversation_error(message: &str) -> (StatusCode, String) {
 /// Reuses the same server-side tail the TUI parses over its transport
 /// (`pane.read`), ANSI-stripped to the last 16 non-empty-bottom lines
 /// (the same window the desktop's prompt_cards.js reads from its local
-/// terminal grid), and runs the shared parser (tui/prompt_cards.rs
+/// terminal grid), and runs the shared parser (src/prompt_cards.rs
 /// `parse_prompt`, the Rust port of the JS one). Returns the parse, not
 /// the tail, so the wire carries only the card shape. `blocked` mirrors
 /// the pane's live agent status so an offline fallback client can gate
@@ -5411,7 +5411,7 @@ fn pane_prompt_payload(
     } else {
         lines
     };
-    let prompt = herdr_webui::tui::prompt_cards::parse_prompt(&tail);
+    let prompt = herdr_webui::prompt_cards::parse_prompt(&tail);
     let agents = api
         .request_value(json!({
             "id": "web:agent:list:prompt",
@@ -5433,7 +5433,7 @@ fn pane_prompt_payload(
         .unwrap_or(false);
     Ok(match prompt {
         Some(card) => {
-            use herdr_webui::tui::prompt_cards::PromptCardKind;
+            use herdr_webui::prompt_cards::PromptCardKind;
             let kind = match card.kind {
                 PromptCardKind::Options => "options",
                 PromptCardKind::Text => "text",

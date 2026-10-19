@@ -42,21 +42,24 @@ and attach mode stays.
 
 ## Lens (chat transcript view)
 
-`Ctrl+B Shift+L` opens a reading view over the selected pane's tail:
-user turns (❯-marked prompt lines) render as accent-bold chat bubbles
-with gap folding, everything else as output. Terminal-screen surface
-only; it never opens over Files or Git.
+`Ctrl+B Shift+L` opens a reading view over the selected pane's deep
+scrollback (the same buffer the pane scrolls): user turns (❯-marked
+prompt lines) render as accent-bold chat bubbles with gap folding,
+everything else as output. Terminal-screen surface only; it never
+opens over Files or Git.
 
 | Key | Action |
 | --- | --- |
-| `j` / `Down` | one line away from the tail (pause follow) |
-| `k` / `Up` | one line back toward the tail |
-| `PgDn` / `PgUp` | ten lines away / toward the tail |
+| `k` / `Up` | one line toward older output (pause follow) |
+| `j` / `Down` | one line back toward the tail |
+| `PgUp` / `PgDn` | ten lines older / back toward the tail |
 | `G` / `End` | jump to the tail, re-arm follow |
 | `Esc`, `q`, `i` | close the lens |
 
-While scrolled away from the tail the meta line shows a scrolled/new
-output hint instead of the following state.
+Scrolling past the oldest held line lazy-fetches older scrollback
+(the window grows geometrically, up to 40k lines). While scrolled
+away from the tail the meta line shows a scrolled/new output hint
+instead of the following state.
 
 ## Chat composer
 
@@ -76,39 +79,13 @@ characters. A blocked pane's `agent_blocked` 409 shows the server note
 verbatim (`Not sent: the agent is waiting for an answer in the
 terminal. Answer it first.`) and the draft stays.
 
-## Prompt cards (blocked panes)
+## Blocked panes
 
-When the selected pane's agent status is `blocked` and the tail parses
-as a question dialog (numbered option list, ↑↓ nav hints, an
-"enter your response" free-text shape, or the jcode Permissions
-viewer with its `a approve · d deny · A approve all · D deny all`
-help row), a card floats at the bottom-right of the terminal pane: no
-backdrop dim, it slides under open modals, webui anchor parity.
-
-| Key | Action |
-| --- | --- |
-| `j` / `k` (arrows) | move the option cursor |
-| `Enter` | answer the highlighted option (raw `N` + Enter into the pane) |
-| `1`-`9` | jump to option N and answer in one key (like a button click) |
-| `a` / `d` / `A` / `D` | jcode viewer card: jump to that option and answer in one key |
-| `Esc` | dismiss the card until the question or blocked episode changes |
-| `q` | NOT consumed: plain q stays the TUI quit key, card never steals it |
-
-Free-text cards open an answer prompt (`CardAnswer`) whose submit picks
-the transport from the pane's live status: the composer submit route
-when the pane is unblocked, raw typed text + Enter when still blocked
-(the composer route refuses blocked panes by design). Every raw send
-re-parses the tail first: if the dialog moved on, nothing is sent and
-the status says `question changed, not sent`.
-
-The jcode Permissions viewer parses from both markers the backend
-block detector uses (help row + waiting line), so a transcript or
-doc quote of either line alone never floats a card. Its letter
-options reach the viewer verbatim: `a` + Enter approve, `d` + Enter
-deny, `A`/`D` bulk. Webui parity: the desktop card and the mobile
-sheet render the same four options, and Settings carries a
-`promptCardsEnabled` toggle to turn the cards off (TUI cards stay;
-the TUI has its own `Esc`).
+The TUI has no question-card overlay: a blocked pane's dialog owns the
+keyboard, so answers are typed straight into the pane (attach mode) or
+answered from the webui's chat lens card. The server-side parser
+(`src/prompt_cards.rs`) still backs the webui's
+`/api/panes/{pane_id}/prompt` endpoint.
 
 ## Prefix shortcuts (`Ctrl+B` then key)
 
@@ -172,5 +149,4 @@ stash, `t`/`R`/`b` tag/reset/rebase.
   their own footer hint line; every hint ends with the `Ctrl+B ?`
   discovery tail.
 - Quit is always `q` (plus `Ctrl+B q`); every quit path goes through
-  the y/n confirmation overlay. The prompt card is the one floating
-  element that never intercepts it.
+  the y/n confirmation overlay.

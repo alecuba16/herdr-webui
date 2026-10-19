@@ -2,7 +2,6 @@ pub mod keys;
 pub mod lens;
 pub mod model;
 pub mod panels;
-pub mod prompt_cards;
 pub mod render;
 pub mod search;
 pub mod terminal;
@@ -57,6 +56,11 @@ impl PromptKind {
 
 const TAIL_LINES: usize = 240;
 const TERMINAL_RAW_BUFFER_BYTES: usize = 512 * 1024;
+/// Lines kept in the scroll-up history on the first deep fetch. Grows
+/// geometrically per fetch (`PANE_HISTORY_MAX_LINES` cap) so a plain
+/// scroll-up never walks the whole 8 MiB backend scrollback at once.
+const PANE_HISTORY_START_LINES: usize = 2000;
+const PANE_HISTORY_MAX_LINES: usize = 40_000;
 /// Tail poll cadence while the terminal screen is NOT attached: 1/5th
 /// of the default snapshot interval. The preview keeps flowing at a
 /// readable rate without hammering the backend with pane.read per event
@@ -107,9 +111,6 @@ pub(crate) enum FooterContext {
     /// Chat lens overlay (prefix `L`): transcript reading view over the
     /// terminal pane; j/k scroll, follow re-arms at the bottom.
     Lens,
-    /// Prompt card over a blocked pane (webui prompt cards): j/k
-    /// cursor, Enter answers, digits jump, Esc dismisses.
-    PromptCard,
     /// Commit message modal: typing, Enter commits, Esc cancels.
     CommitInput,
     /// Any typed prompt (rename, confirm, new file, ...).
@@ -151,9 +152,6 @@ impl FooterContext {
             }
             Self::Lens => {
                 " j/k scroll · G bottom resumes follow · Esc closes · Ctrl+B ? help "
-            }
-            Self::PromptCard => {
-                " j/k option · Enter answers · 1-9 jump · Esc hides · Ctrl+B ? help "
             }
             Self::CommitInput => {
                 " type the message · Enter commits · Esc cancels · Ctrl+U clears · Ctrl+B ? help "
@@ -239,7 +237,6 @@ impl FooterContext {
             Self::TerminalMain => " Enter attach · . , focus · Ctrl+B ? help ",
             Self::Terminal(TuiMode::Attach) => " Ctrl+B ? help · Ctrl-G detach ",
             Self::Lens => " j/k scroll · G bottom · Esc close · Ctrl+B ? help ",
-            Self::PromptCard => " j/k · Enter · 1-9 · Esc · Ctrl+B ? help ",
             Self::Terminal(_) => " j/k select · Enter attach · q quit · Ctrl+B ? help ",
             Self::Files(_) => " j/k · Enter · e edit · Ctrl+B ? help ",
             Self::Git(_, GitView::Changes) => " s stage · d discard · c commit · Ctrl+B ? help ",
@@ -298,6 +295,21 @@ pub struct TuiApp {
     pub prompt_input: Option<PromptInput>,
     pub pane_tail: Vec<String>,
     pub(crate) pane_tail_styles: Vec<Vec<TuiTextSpan>>,
+    /// Scroll-up offset over the pane view in lines-above-tail
+    /// (0 = following the newest line, the lens uses the same shape).
+    /// Kept across tail refills: the offset is bottom-anchored, so new
+    /// output streams in below the frozen view instead of moving it.
+    pub pane_scroll: usize,
+    /// Full pane scrollback lines beyond `pane_tail`, filled by the
+    /// deep `pane.read` fetch the first scroll-up past the tail
+    /// triggers. Both the pane view and the lens read from it.
+    pub(crate) pane_history: Vec<String>,
+    /// Pane id the tail/history buffers belong to; a switch drops the
+    /// scroll offset and the deep history instead of mixing panes.
+    pub(crate) pane_buffers_pane_id: Option<String>,
+    /// The backend served its whole scrollback (or the retention cap
+    /// was reached): further deep fetches cannot grow the buffer.
+    pub(crate) pane_history_exhausted: bool,
     terminal_raw_output: String,
     terminal_raw_terminal_id: Option<String>,
     /// Full TUI screen size (cols, rows), set by the binary loop at
@@ -358,14 +370,6 @@ pub struct TuiApp {
     /// Per-pane composer drafts (webui composer box keeps its content
     /// per pane, not per view). Keyed by pane id.
     pub composer_drafts: std::collections::HashMap<String, String>,
-    /// Prompt-card state (webui prompt cards): the parsed question
-    /// dialog of the selected blocked pane, its dismissal, and the
-    /// option cursor. Derived state only — re-evaluated on every tail
-    /// refresh and status change.
-    pub prompt_card: prompt_cards::PromptCardState,
-    /// Option cursor for the visible prompt card (webui highlights the
-    /// hovered button; the TUI cursor is j/k moved).
-    pub prompt_card_cursor: usize,
     /// Mode the user was in when the quit overlay opened; restored on cancel.
     pub(crate) quit_prev_mode: TuiMode,
     /// Modes the user was in before each overlay (help/settings/worktree)
@@ -455,12 +459,6 @@ pub enum PromptKind {
     /// is submitted through the server's pane submit route (agent.prompt
     /// semantics). Per-pane draft like the webui composer box.
     ComposerMessage,
-    /// Free-text answer to the prompt card of a blocked pane (webui
-    /// prompt cards): routed through the hybrid transport — composer
-    /// submit when the pane is unblocked, raw keystrokes into the
-    /// dialog when blocked. Not a composer draft: the answer targets
-    /// the dialog, so the draft must not be touched.
-    CardAnswer,
 }
 
 impl PromptKind {
@@ -503,7 +501,6 @@ impl PromptKind {
             Self::CreateDirectory => "New directory",
             Self::ReplaceInFile => "Replace in file",
             Self::ComposerMessage => "Send a message",
-            Self::CardAnswer => "Answer the question",
         }
     }
 
@@ -527,7 +524,6 @@ impl PromptKind {
                 "type the replacement, Enter replaces the current match (! = all)"
             }
             Self::ComposerMessage => "type the message, Enter sends it to the selected panel",
-            Self::CardAnswer => "type the answer, Enter answers the question (Esc cancels)",
             Self::ConfirmCleanupDelete => {
                 "y deletes the selected items, yb also deletes their branches"
             }
@@ -579,6 +575,10 @@ impl TuiApp {
             prompt_input: None,
             pane_tail: Vec::new(),
             pane_tail_styles: Vec::new(),
+            pane_scroll: 0,
+            pane_history: Vec::new(),
+            pane_buffers_pane_id: None,
+            pane_history_exhausted: false,
             terminal_raw_output: String::new(),
             terminal_raw_terminal_id: None,
             terminal_size: (0, 0),
@@ -604,8 +604,6 @@ impl TuiApp {
             search_palette: search::SearchPalette::default(),
             lens: LensState::default(),
             composer_drafts: std::collections::HashMap::new(),
-            prompt_card: prompt_cards::PromptCardState::default(),
-            prompt_card_cursor: 0,
             quit_prev_mode: TuiMode::Navigate,
             overlay_stack: Vec::new(),
             dirty: true,
@@ -732,14 +730,6 @@ impl TuiApp {
         if self.lens.active && self.screen == TuiScreen::Terminal {
             return FooterContext::Lens;
         }
-        // The prompt card floats over the terminal pane in Navigate
-        // mode; its answer keys win while it is visible.
-        if self.prompt_card.visible
-            && self.screen == TuiScreen::Terminal
-            && self.mode == TuiMode::Navigate
-        {
-            return FooterContext::PromptCard;
-        }
         // Screens and sub-views.
         match self.screen {
             TuiScreen::Terminal => {
@@ -787,20 +777,6 @@ impl TuiApp {
         // every other shortcut stay reachable.
         if self.lens.active && self.screen == TuiScreen::Terminal {
             self.handle_lens_key(key);
-            self.mark_dirty();
-            return false;
-        }
-        // The prompt card floats over the terminal pane (webui prompt
-        // cards): while visible it owns the answer keys. It sits below
-        // the modal inputs above (the webui card renders under the
-        // modals too) and only arms on the Terminal screen. Keys the
-        // card does not consume fall through to navigation so
-        // pane/list movement still works while the card is visible.
-        if self.prompt_card.visible
-            && self.screen == TuiScreen::Terminal
-            && self.mode == TuiMode::Navigate
-            && self.handle_prompt_card_key(key)
-        {
             self.mark_dirty();
             return false;
         }
@@ -1207,12 +1183,6 @@ impl TuiApp {
             }
             PromptKind::ComposerMessage => {
                 self.submit_composer_message(text);
-            }
-            PromptKind::CardAnswer => {
-                // Hybrid transport (user decision on the port): the
-                // answer path re-checks the pane status and the dialog
-                // freshness itself.
-                self.answer_prompt_card_text(text);
             }
         }
     }
@@ -3238,6 +3208,29 @@ impl TuiApp {
                 KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
                 KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
                 KeyCode::Enter => self.attach_selected(),
+                // Pane scroll (main region owns the pane): arrows and
+                // vim keys walk the scrollback, page keys jump by ten,
+                // G/End snap back to the newest line, g/Home to the
+                // oldest held one.
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.scroll_pane_up(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.scroll_pane_down(1);
+                }
+                KeyCode::PageUp => {
+                    self.scroll_pane_up(10);
+                }
+                KeyCode::PageDown => {
+                    self.scroll_pane_down(10);
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    self.scroll_pane_down(usize::MAX);
+                }
+                KeyCode::Char('g') | KeyCode::Home => {
+                    let len = self.pane_scrollback_lines().len();
+                    self.scroll_pane_up(len);
+                }
                 _ => {}
             }
             return;
@@ -3252,6 +3245,15 @@ impl TuiApp {
             KeyCode::Char('r') => self.refresh_active_screen(),
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
+            // Page keys scroll the pane even with the sidebar focused:
+            // the pane is the main surface, the lists have no page
+            // semantics to shadow.
+            KeyCode::PageUp => {
+                self.scroll_pane_up(10);
+            }
+            KeyCode::PageDown => {
+                self.scroll_pane_down(10);
+            }
             KeyCode::Tab | KeyCode::BackTab => self.toggle_sidebar_focus(),
             KeyCode::Char('a') => self.sidebar_focus = SidebarFocus::Agents,
             KeyCode::Char('w') => self.sidebar_focus = SidebarFocus::Workspaces,
@@ -3260,218 +3262,57 @@ impl TuiApp {
         }
     }
 
-    /// Lens overlay keys (webui scroller focus): j/k or arrows
-    /// scroll, G jumps back to the tail, Esc closes. Anything else is
-    /// swallowed so no navigation or attach input fires under the
-    /// reading view.
+    /// Lens overlay keys, same directions as the pane view: k/Up
+    /// scrolls toward older lines (deep-fetching past the held top),
+    /// j/Down toward newer, G jumps back to the tail, g the oldest
+    /// held line, Esc closes. Anything else is swallowed so no
+    /// navigation or attach input fires under the reading view.
     fn handle_lens_key(&mut self, key: KeyEvent) {
-        let len = self.pane_tail.len();
+        let len = self.pane_scrollback_lines().len();
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') => {
                 self.lens.close();
                 self.status = "lens closed".to_string();
             }
-            KeyCode::Char('j') | KeyCode::Down => self.lens.scroll_up(1, len),
-            KeyCode::Char('k') | KeyCode::Up => self.lens.scroll_down(1, len),
-            KeyCode::PageDown => self.lens.scroll_up(10, len),
-            KeyCode::PageUp => self.lens.scroll_down(10, len),
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.scroll_lens_up(1);
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.lens.scroll_down(1, len),
+            KeyCode::PageDown => {
+                self.lens.scroll_down(10, len);
+            }
+            KeyCode::PageUp => {
+                self.scroll_lens_up(10);
+            }
             KeyCode::Char('G') | KeyCode::End => self.lens.scroll_down(usize::MAX, len),
+            KeyCode::Char('g') | KeyCode::Home => {
+                self.scroll_lens_up(len);
+            }
             _ => {}
         }
     }
 
-    /// Answer the selected option of the prompt card (webui `answer`):
-    /// raw keystrokes into the dialog (option key + Enter). The stale
-    /// guard re-parses the CURRENT tail so a moved-on dialog is never
-    /// answered (webui stale-send guard).
-    fn answer_prompt_card_option(&mut self) {
-        let tail: Vec<String> = self.pane_tail.clone();
-        let Some(card) = self.prompt_card.stale_guard(&tail) else {
-            self.status = "question changed, not sent".to_string();
-            return;
-        };
-        // Defensive: the card was Options when the key was pressed, but
-        // a tail refresh between press and answer could have swapped the
-        // kind; a Text card has no option payload to send (its Enter
-        // opens the answer modal instead of calling here).
-        if card.kind != crate::tui::prompt_cards::PromptCardKind::Options {
-            return;
-        }
-        // Defensive: evaluate_prompt_card keeps the cursor inside the
-        // option list on every card update, so an out-of-range cursor
-        // needs a mid-press tail swap; refuse rather than panic.
-        let Some(option) = card.options.get(self.prompt_card_cursor) else {
-            return;
-        };
-        let payload = format!("{}\r", option.key);
-        self.send_pane_input(&payload);
-        self.prompt_card.mark_answered();
-        self.status = format!("answered: {}", option.label);
-        self.refresh_tail();
-    }
-
-    /// Send a free-text answer to the prompt card through the hybrid
-    /// transport (user decision on the port): the composer submit
-    /// route (`submit_pane`, agent.prompt semantics) when the pane is
-    /// UNBLOCKED at answer time, raw typed text + Enter into the
-    /// dialog (`send_input`, webui sendInputData parity) when it is
-    /// still blocked. Status is re-read at answer time, not cached
-    /// from the card render, and never crosses transports: a blocked
-    /// answer never goes through the composer (the server refuses it
-    /// by design) and an unblocked pane never gets dialog keystrokes.
-    fn answer_prompt_card_text(&mut self, text: &str) {
-        let blocked =
-            self.selected_pane().map(|pane| pane.agent_status.as_str()) == Some("blocked");
-        let tail: Vec<String> = self.pane_tail.clone();
-        if blocked {
-            // Raw path: the dialog must still be the one the card
-            // rendered (webui stale-send guard, tail freshness only).
-            if self.prompt_card.stale_guard(&tail).is_none() {
-                self.status = "question changed, not sent".to_string();
+    /// Scroll the lens up, deep-fetching older scrollback when the
+    /// offset reaches the held top, then re-observing the grown buffer
+    /// so the unread hint keeps tracking.
+    fn scroll_lens_up(&mut self, delta: usize) {
+        let mut remaining = delta;
+        loop {
+            let len = self.pane_scrollback_lines().len();
+            let max = len.saturating_sub(1);
+            let target = self.lens.scroll_up.saturating_add(remaining);
+            if target <= max {
+                self.lens.scroll_up(remaining, len);
+                self.lens.observe_len(len);
                 return;
             }
-        }
-        if text.trim().is_empty() {
-            self.status = "answer empty, nothing sent".to_string();
-            return;
-        }
-        if crate::tui::prompt_cards::free_text_via_composer(blocked) {
-            // Unblocked: the composer route (a plain message to the
-            // agent); the server owns validation and refusal copy.
-            self.submit_composer_message(text);
-        } else {
-            // Blocked: raw typed text + Enter into the dialog, like the
-            // webui's sendInputData path.
-            let payload = format!("{}\r", text);
-            self.send_pane_input(&payload);
-            self.status = "answer sent".to_string();
-        }
-        self.prompt_card.mark_answered();
-        self.refresh_tail();
-    }
-
-    /// Write raw input bytes into the selected pane's terminal (the
-    /// webui sendInputData counterpart): attach, send, detach.
-    fn send_pane_input(&mut self, payload: &str) {
-        // Defensive: no pane selected (empty workspace) cannot coexist
-        // with a visible card (every selection move refreshes the
-        // tail, which collapses the card), so the guard below is
-        // unreachable from the card route; it protects attach-mode
-        // and future callers the same way.
-        let Some(terminal_id) = self.selected_terminal_id().map(str::to_string) else {
-            self.error = Some("selected pane has no terminal".to_string());
-            return;
-        };
-        let (attach_cols, attach_rows) = self.attach_viewport();
-        match self
-            .client
-            .attach_terminal(&terminal_id, attach_cols, attach_rows)
-        {
-            Ok(mut terminal) => {
-                // Production-reachable error arm (the backend dies
-                // between the input and detach writes) but not
-                // deterministically injectable from tests: the two
-                // writes are adjacent with no blocking point between
-                // them, so no fake server can land its close inside
-                // that window on demand. The attach-failure arm
-                // below is the tested deterministic surrogate.
-                let send = terminal
-                    .send_input(payload.as_bytes())
-                    .and_then(|_| terminal.detach());
-                if let Err(err) = send {
-                    self.error = Some(err.to_string());
-                }
+            let advance = max.saturating_sub(self.lens.scroll_up);
+            self.lens.scroll_up(advance, len);
+            remaining = remaining.saturating_sub(advance);
+            if self.deepen_pane_history() == 0 {
+                self.lens.observe_len(len);
+                return;
             }
-            Err(err) => self.error = Some(err.to_string()),
-        }
-    }
-
-    /// Keys while the prompt card is visible (webui prompt cards):
-    /// j/k (and arrows) move the option cursor — the TUI counterpart of
-    /// hovering the option buttons — Enter answers the highlighted
-    /// option, digits jump straight to option N, Esc dismisses the
-    /// card until the question changes. Free-text cards open the
-    /// CardAnswer prompt (a separate modal kind; its Enter runs the
-    /// hybrid transport). Returns true when the key was consumed.
-    fn handle_prompt_card_key(&mut self, key: KeyEvent) -> bool {
-        // Defensive: handle_key only routes here while the card is
-        // visible, and evaluate keeps `current` populated whenever it
-        // is; a visible card without a parsed card is a state bug, and
-        // falling through (returning false) degrades to navigation
-        // instead of a panic.
-        let Some(card) = self.prompt_card.current_card().cloned() else {
-            return false;
-        };
-        match key.code {
-            // Esc dismisses the card until the question changes (webui
-            // × button). q is NOT consumed: plain q is the TUI-wide
-            // quit key and stays available even while the card floats
-            // (the webui quit control lives outside the card too).
-            KeyCode::Esc => {
-                self.prompt_card.dismiss();
-                self.status = "card dismissed".to_string();
-                true
-            }
-            KeyCode::Char('j') | KeyCode::Down
-                if card.kind == crate::tui::prompt_cards::PromptCardKind::Options =>
-            {
-                let len = card.options.len();
-                self.prompt_card_cursor = (self.prompt_card_cursor + 1).min(len.saturating_sub(1));
-                true
-            }
-            KeyCode::Char('k') | KeyCode::Up
-                if card.kind == crate::tui::prompt_cards::PromptCardKind::Options =>
-            {
-                self.prompt_card_cursor = self.prompt_card_cursor.saturating_sub(1);
-                true
-            }
-            KeyCode::Enter => {
-                match card.kind {
-                    crate::tui::prompt_cards::PromptCardKind::Options => {
-                        self.answer_prompt_card_option();
-                    }
-                    crate::tui::prompt_cards::PromptCardKind::Text => {
-                        // Free-text card: open the answer prompt; its
-                        // Enter runs the hybrid transport (composer when
-                        // unblocked, raw input into the dialog when
-                        // blocked).
-                        self.prompt_input = Some(PromptInput::new(PromptKind::CardAnswer));
-                        self.status = "type your answer".to_string();
-                    }
-                }
-                true
-            }
-            KeyCode::Char(digit)
-                if digit.is_ascii_digit()
-                    && card.kind == crate::tui::prompt_cards::PromptCardKind::Options =>
-            {
-                // Direct option jump: the digit keys mirror the webui's
-                // clickable buttons for users who know the number.
-                let index = digit as usize - '0' as usize;
-                if index >= 1 && index <= card.options.len() {
-                    self.prompt_card_cursor = index - 1;
-                    self.answer_prompt_card_option();
-                }
-                true
-            }
-            KeyCode::Char(letter)
-                if matches!(letter, 'a' | 'd' | 'A' | 'D')
-                    && card.kind == crate::tui::prompt_cards::PromptCardKind::Options
-                    && card.options.iter().any(|o| o.key == letter.to_string()) =>
-            {
-                // Letter-key jump for the jcode Permissions viewer card:
-                // same direct-answer shortcut as the digit keys, using
-                // the viewer's own a/d/A/D keys.
-                let index = card
-                    .options
-                    .iter()
-                    .position(|o| o.key == letter.to_string())
-                    .unwrap_or(0);
-                self.prompt_card_cursor = index;
-                self.answer_prompt_card_option();
-                true
-            }
-            _ => false,
         }
     }
 
@@ -3676,12 +3517,21 @@ impl TuiApp {
         let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
             self.pane_tail.clear();
             self.pane_tail_styles.clear();
+            self.pane_scroll = 0;
+            self.pane_history.clear();
+            self.pane_history_exhausted = false;
+            self.pane_buffers_pane_id = None;
             self.reset_terminal_output_buffer();
-            // No pane selected: the card is derived state and must
-            // collapse too (evaluate on the empty tail hides it).
-            self.evaluate_prompt_card();
             return;
         };
+        if self.pane_buffers_pane_id.as_deref() != Some(pane_id.as_str()) {
+            // Pane switch: the old scroll offset and deep history
+            // describe another pane's output, so both start over.
+            self.pane_scroll = 0;
+            self.pane_history.clear();
+            self.pane_history_exhausted = false;
+            self.pane_buffers_pane_id = Some(pane_id.clone());
+        }
         match self.client.read_pane(&pane_id) {
             Ok(value) => {
                 let text = value
@@ -3699,11 +3549,6 @@ impl TuiApp {
             }
             Err(err) => {
                 self.error = Some(err.to_string());
-                // The tail read failed but the STATUS in the snapshot
-                // may have changed (blocked -> idle): re-evaluate the
-                // card against the kept tail so it never lingers a
-                // tick longer than the status says.
-                self.evaluate_prompt_card();
                 self.mark_dirty();
             }
         }
@@ -3712,6 +3557,101 @@ impl TuiApp {
     fn reset_terminal_output_buffer(&mut self) {
         self.terminal_raw_output.clear();
         self.terminal_raw_terminal_id = None;
+    }
+
+    /// Lines the pane view and the lens scroll over: the deep history
+    /// followed by the tail, one contiguous scrollback.
+    pub fn pane_scrollback_lines(&self) -> &[String] {
+        if self.pane_history.is_empty() {
+            &self.pane_tail
+        } else {
+            &self.pane_history
+        }
+    }
+
+    /// Scroll the pane view up (away from the newest line) by `delta`
+    /// lines, deep-fetching older scrollback whenever the offset
+    /// reaches the top of the held buffer. The offset counts lines
+    /// above the buffer end, so growth never moves the anchor.
+    /// Returns how many older lines a deep fetch added (0 if none).
+    pub fn scroll_pane_up(&mut self, delta: usize) -> usize {
+        let mut loaded = 0;
+        let mut remaining = delta;
+        loop {
+            let max = self.pane_scrollback_lines().len().saturating_sub(1);
+            let target = self.pane_scroll.saturating_add(remaining);
+            if target <= max {
+                self.pane_scroll = target;
+                return loaded;
+            }
+            let advance = max.saturating_sub(self.pane_scroll);
+            self.pane_scroll = max;
+            remaining = remaining.saturating_sub(advance);
+            let grew = self.deepen_pane_history();
+            loaded = loaded.saturating_add(grew);
+            if grew == 0 {
+                return loaded;
+            }
+        }
+    }
+
+    /// Scroll back toward the newest line; reaching the bottom re-arms
+    /// following (the lens `follow` semantics on the pane view).
+    pub fn scroll_pane_down(&mut self, delta: usize) {
+        self.pane_scroll = self.pane_scroll.saturating_sub(delta);
+    }
+
+    /// Pull more scrollback through `pane.read` (the backend serves the
+    /// whole scrollback; the TUI just retains a window of it). The
+    /// retained window is suffix-anchored, so the already-held lines
+    /// keep their offsets from the tail and the frozen view does not
+    /// jump. Returns how many new lines the buffer grew by.
+    fn deepen_pane_history(&mut self) -> usize {
+        if self.pane_history_exhausted {
+            return 0;
+        }
+        let Some(pane_id) = self.selected_pane().map(|pane| pane.id.clone()) else {
+            return 0;
+        };
+        let want = if self.pane_history.is_empty() {
+            PANE_HISTORY_START_LINES
+        } else {
+            self.pane_history
+                .len()
+                .saturating_mul(2)
+                .min(PANE_HISTORY_MAX_LINES)
+        };
+        let lines = match self.client.read_pane(&pane_id) {
+            Ok(value) => value
+                .get("read")
+                .and_then(|read| read.get("text"))
+                .and_then(Value::as_str)
+                .or_else(|| value.get("text").and_then(Value::as_str))
+                .map(|text| {
+                    let clean = strip_ansi_lossy(text);
+                    let mut lines: Vec<String> = clean.lines().map(str::to_string).collect();
+                    if lines.len() > want {
+                        let start = lines.len() - want;
+                        lines.drain(..start);
+                    }
+                    lines
+                })
+                .unwrap_or_default(),
+            Err(err) => {
+                self.error = Some(err.to_string());
+                return 0;
+            }
+        };
+        if lines.len() < want || lines.len() >= PANE_HISTORY_MAX_LINES {
+            self.pane_history_exhausted = true;
+        }
+        let before = self.pane_scrollback_lines().len();
+        let grew = lines.len().saturating_sub(before);
+        self.pane_history = lines;
+        if grew > 0 {
+            self.mark_dirty();
+        }
+        grew
     }
 
     fn set_pane_tail_from_text(&mut self, text: &str) {
@@ -3725,7 +3665,7 @@ impl TuiApp {
             .rev()
             .collect();
         self.pane_tail_styles = vec![Vec::new(); self.pane_tail.len()];
-        self.evaluate_prompt_card();
+        self.sync_history_suffix();
     }
 
     fn set_pane_tail_from_styled_lines(&mut self, lines: Vec<Vec<TuiTextSpan>>) {
@@ -3740,38 +3680,20 @@ impl TuiApp {
                     .collect::<String>()
             })
             .collect();
-        self.lens.observe_len(self.pane_tail.len());
-        // The prompt card reads the same tail: keep its derived state
-        // fresh on every tail update (webui evaluate() on frame/status).
-        self.evaluate_prompt_card();
+        self.sync_history_suffix();
     }
 
-    /// Re-evaluate the prompt card against the selected pane's status
-    /// and the current tail (webui `HerdrPromptCards.evaluate`). The
-    /// card is derived state: parse failures hide it, a fresh blocked
-    /// episode re-arms a dismissed question, and the option cursor
-    /// clamps to the new option count.
-    fn evaluate_prompt_card(&mut self) {
-        let blocked =
-            self.selected_pane().map(|pane| pane.agent_status.as_str()) == Some("blocked");
-        let tail: Vec<String> = self.pane_tail.clone();
-        let was_visible = self.prompt_card.visible;
-        if self.prompt_card.evaluate(blocked, &tail).is_some() {
-            let options = self
-                .prompt_card
-                .current_card()
-                .map(|card| card.options.len())
-                .unwrap_or(0);
-            if self.prompt_card_cursor >= options {
-                self.prompt_card_cursor = 0;
-            }
-            if !was_visible {
-                // Fresh card: start the cursor on the first option.
-                self.prompt_card_cursor = 0;
-            }
-        } else {
-            self.prompt_card_cursor = 0;
+    /// The deep history and the live tail share one suffix: the tail is
+    /// always the newest TAIL_LINES of the scrollback, so a refreshed
+    /// tail overwrites the history's suffix instead of leaving two
+    /// diverging copies of the newest output.
+    fn sync_history_suffix(&mut self) {
+        if self.pane_history.len() > self.pane_tail.len() {
+            let keep = self.pane_history.len() - self.pane_tail.len();
+            self.pane_history.truncate(keep);
+            self.pane_history.extend(self.pane_tail.iter().cloned());
         }
+        self.lens.observe_len(self.pane_scrollback_lines().len());
     }
 
     pub fn should_quit(&self) -> bool {
