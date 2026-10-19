@@ -55,6 +55,12 @@
     const NAV_HINT = /↑↓\s*select|↑\/↓/;
     const FREE_TEXT = /enter your response|type your answer|enter send/i;
     const QUESTION_LINE = /^\s*(?:❯|›|➜|\$)\s*(.+?)(?:\?+)?\s*$|^\s*\?+\s*(.+)$/;
+    // jcode ask_user chooser (ui_inline.rs), same guard as desktop
+    // prompt_cards.js: its hint lines carry "Enter sends ..." which
+    // matches FREE_TEXT, so the chooser tail would otherwise parse as
+    // a free-text card with a scraped shell-prompt title. The chooser
+    // is its own answer surface, never a prompt card.
+    const JCODE_CHOOSER = /1-9 or ↑↓ \+ Enter to choose|type on Your answer|\. Your answer/i;
     // jcode Permissions viewer markers, same as desktop prompt_cards.js.
     // Help row AND waiting line must both be present.
     const JCODE_VIEWER_HELP = /a approve.*d deny.*A approve all.*D deny all/i;
@@ -92,6 +98,10 @@
         line.replace(/[\u00a0\u0085\u3000\ufeff\u2028\u2029]/g, " "),
       );
       const joined = lines.join("\n");
+      // jcode ask_user chooser: not a prompt card (its own answer
+      // surface exists), so bail before any branch can scrape a
+      // title from its hint lines.
+      if (JCODE_CHOOSER.test(joined)) return null;
       const blocks = [];
       let current = [];
       for (const line of lines) {
