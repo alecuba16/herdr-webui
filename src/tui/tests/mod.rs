@@ -1558,6 +1558,86 @@ fn prompt_key_flow_types_confirms_and_cancels() {
 }
 
 #[test]
+fn prompt_input_wraps_long_text_and_grows_the_box() {
+    // The reported bug: typing past the box width clipped the input to
+    // one row, so the tail of a long line was invisible. The wrapped
+    // render must show BOTH the head and the tail of a 120-char input
+    // in a 64-col box, and the cursor block must land after the tail.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Files;
+    let long = "fix the login flow so the session cookie survives a ".repeat(2)
+        + "hard refresh on Safari";
+    app.prompt_input = Some(PromptInput {
+        kind: PromptKind::CreateFile,
+        text: long.clone(),
+    });
+    let rendered = draw(&app, 100, 30);
+    assert!(rendered.contains("fix the login flow"), "head visible");
+    assert!(
+        rendered.contains("hard refresh on"),
+        "tail visible: wrapping replaces the old single-row clip"
+    );
+    // Cursor block sits right after the visible tail.
+    assert!(
+        rendered.contains("Safari█"),
+        "cursor renders on the wrapped tail row"
+    );
+    // Multiline paste opens real rows instead of one joined line.
+    app.prompt_input = Some(PromptInput {
+        kind: PromptKind::CreateFile,
+        text: "first line\nsecond line".to_string(),
+    });
+    let rendered = draw(&app, 100, 30);
+    assert!(rendered.contains("first line"));
+    assert!(rendered.contains("second line█"));
+}
+
+#[test]
+fn prompt_input_tail_scrolls_past_eight_rows() {
+    // Past the 8-row budget the window keeps the LAST rows (the ones
+    // around the cursor), exactly like jcode's composer: the head
+    // scrolls away, the tail plus cursor stay visible.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Files;
+    let long = (1..=140).map(|n| format!("w{n:03} ")).collect::<String>() + "end";
+    // -> 12+ wrapped rows at 62 cols, past the 8-row budget
+    app.prompt_input = Some(PromptInput {
+        kind: PromptKind::CreateFile,
+        text: long.clone(),
+    });
+    let rendered = draw(&app, 100, 30);
+    // The first words scroll off; the tail plus cursor stays visible.
+    assert!(
+        !rendered.contains("w001 w002 w003"),
+        "head scrolled away past the row budget"
+    );
+    assert!(
+        rendered.contains("end█"),
+        "cursor stays on the final wrapped row"
+    );
+}
+
+#[test]
+fn commit_input_wraps_long_text_like_the_prompt_modal() {
+    // Same fix for the commit title modal: a long message wraps and the
+    // tail plus cursor stay visible instead of clipping at one row.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Git;
+    app.commit_input = Some(CommitInput {
+        text: "release 0.7.17: prompt cards chat-mode gate, chooser parse guard, "
+            .to_string()
+            + "wrapped composer and commit modals",
+        amend: false,
+    });
+    let rendered = draw(&app, 120, 30);
+    assert!(rendered.contains("release 0.7.17"), "head visible");
+    assert!(
+        rendered.contains("wrapped composer and commit modals█"),
+        "tail visible with cursor"
+    );
+}
+
+#[test]
 fn commit_key_flow_types_saves_and_rejects_empty() {
     let mut app = app_with_snapshot();
     app.screen = TuiScreen::Git;
