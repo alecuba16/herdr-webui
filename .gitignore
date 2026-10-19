@@ -25,3 +25,5 @@ lcov.info
 .jcode/scratch/
 # Scratch dirs for live-drive verification servers (scripts/e2e/.tmp-*)
 scripts/e2e/.tmp*/
+anti-slop/
+.codebase-memory/
