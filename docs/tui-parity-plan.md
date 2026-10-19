@@ -434,11 +434,11 @@ after the original parity phases (tracked on the temporary board
 - Chat composer (`Ctrl+B Shift+C`, webui composer box): per-pane drafts,
   submits through the existing `POST /api/panes/{id}/submit` route
   (server owns validation and refusal copy), `PromptKind::ComposerMessage`.
-- Prompt cards (webui prompt cards): `src/tui/prompt_cards.rs` parses
-  question dialogs from the tail when the pane is `blocked` and renders a
-  bottom-right card; hybrid answer transport (numbered options via raw
-  `send_input`, free text via composer submit when unblocked and raw
-  input when blocked, status read at answer time); `PromptKind::CardAnswer`.
+- Prompt cards (webui prompt cards) were ported in `src/tui/prompt_cards.rs`
+  and later removed: a blocked pane's dialog owns the keyboard, so the TUI
+  answers blocked dialogs by typing into the pane (attach mode). The
+  server-side parser (`src/prompt_cards.rs`) still backs the webui
+  `/api/panes/{pane_id}/prompt` endpoint.
 - All three read the existing `pane_tail` refresh chain; protocol 22
   stayed frozen, no new wire frames. Webui-only concerns stayed
   webui-only (density toggle, a11y attributes, mobile drawer/header,

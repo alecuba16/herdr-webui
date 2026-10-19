@@ -41,7 +41,6 @@ states including tab create/switch/close.
 | `26-terminal-aurora-shell.png` | aurora-demo workspace, shell pane with seeded output |
 | `27-attach-mode.png` | Attach mode: typed input goes to the pane PTY |
 | `28-composer.png` | Chat composer over the selected pane |
-| `29-prompt-card.png` | Prompt card over the claude pane's blocked question with option cursor |
 | `30-sidebar-collapsed.png` | Prefix `B` collapsed sidebar, full-width pane |
 | `31-tab-created.png` | New `scratch` tab created, tab bar shows all tabs |
 | `32-tab-switched-build.png` | View lands on the build tab after a tab closes |
