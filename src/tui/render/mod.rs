@@ -1765,6 +1765,11 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
 /// next word does not fit (jcode's composer wraps the same way), and
 /// hard-break only a word wider than the row. Widths are display
 /// widths, so a double-width glyph never splits mid-cell.
+///
+/// Spacing is preserved exactly as typed: `split_inclusive` keeps each
+/// space glued to the word before it, so wrapping never swallows or
+/// invents spaces. The empty input is exactly one cursor row, so the
+/// box height does not jump when the first character arrives.
 fn wrap_input_with_cursor(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec!["█".to_string()];
@@ -1772,44 +1777,30 @@ fn wrap_input_with_cursor(text: &str, width: usize) -> Vec<String> {
     let mut rows: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut current_width = 0usize;
-    for word in text.split(['\n', '\r']) {
-        if word.is_empty() {
-            // Newline boundary the text itself carries (pasted
-            // multiline): the row ends here, the next word starts fresh.
-            rows.push(std::mem::take(&mut current));
-            current_width = 0;
-            continue;
-        }
-        // Words go to `pending` until they fit the row budget; on
-        // wrap the pending words flush down and rejoin with single
-        // spaces, so the wrapped rows read exactly like the input.
+    // Greedy per source line. Every line except the last ends its own
+    // row (pasted multiline opens real rows); the last line keeps its
+    // text in `current` and becomes the cursor row below.
+    let lines: Vec<&str> = text.split('\n').collect();
+    let last = lines.len().saturating_sub(1);
+    for (i, line) in lines.iter().enumerate() {
         let mut pending = String::new();
         let mut pending_width = 0usize;
-        for token in word.split(' ').map(|t| (t, t.width())) {
-            let (tok, tok_width) = token;
-            let space_width = if pending.is_empty() && !current.is_empty() {
-                1
-            } else {
-                0
-            };
-            if current_width + space_width + pending_width + tok_width > width
-                && !(current.is_empty() && pending.is_empty())
-            {
-                // Flush the current row and move the pending word down.
-                if !current.is_empty() {
+        for token in line.split_inclusive(' ') {
+            let tok_width = token.width();
+            if current_width + pending_width + tok_width > width && !pending.is_empty() {
+                // The next token does not fit: flush the row so far.
+                if current_width < width && pending.ends_with(' ') && !current.ends_with(' ') {
+                    // Break between two words: the trailing space of
+                    // the breaking token belongs to the flushed row.
+                    pending.pop();
                     current.push(' ');
                 }
                 current.push_str(&pending);
                 rows.push(std::mem::take(&mut current));
                 current_width = 0;
                 pending.clear();
-                pending_width = 0;
             }
-            if !pending.is_empty() {
-                pending.push(' ');
-                pending_width += 1;
-            }
-            pending.push_str(tok);
+            pending.push_str(token);
             pending_width += tok_width;
             // A single word wider than the row hard-breaks mid-word;
             // flush what fits so the wrap always progresses.
@@ -1834,14 +1825,13 @@ fn wrap_input_with_cursor(text: &str, width: usize) -> Vec<String> {
                 pending_width = rest_width;
             }
         }
-        // Glue the pending word onto the current row.
-        if !pending.is_empty() {
-            if !current.is_empty() {
-                current.push(' ');
-                current_width += 1;
-            }
-            current.push_str(&pending);
-            current_width += pending_width;
+        current.push_str(&pending);
+        current_width += pending_width;
+        if i < last {
+            // A line the text itself ends: its row ends here, the
+            // next line starts fresh.
+            rows.push(std::mem::take(&mut current));
+            current_width = 0;
         }
     }
     current.push('█');
