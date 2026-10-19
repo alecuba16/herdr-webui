@@ -458,6 +458,12 @@
         if (lens && typeof lens.refreshConversation === "function")
           lens.refreshConversation();
       } catch (error) {
+        // The submit failed: the text never lands in the conversation,
+        // so the pending bubble would never match a real user turn and
+        // would stick until a pane switch. Drop it (desktop parity).
+        const lens = globalThis.HerdrMobileLens;
+        if (lens && typeof lens.setPendingBubble === "function")
+          lens.setPendingBubble(null);
         const details = error && error.details;
         const text = String((error && error.message) || error);
         setNote((details && details.note) || text);

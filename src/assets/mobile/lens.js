@@ -34,6 +34,10 @@
     let lensActive = false;
     let follow = true;
     let unread = false;
+    // Bounded walk-back (over 32 pages of missed history) dropped held
+    // pages; the endcap must say turns were skipped, not claim a
+    // beginning the transcript never reached (desktop parity).
+    let olderTruncated = false;
     // Connect target of the pane the reading state belongs to, same guard
     // as the desktop: repeat connects on the unchanged pane must not
     // reset follow.
@@ -151,6 +155,7 @@
       convError = null;
       loadingChat = true;
       pendingBubble = null;
+      unread = false;
       dropOlderPages();
       pollEtag = null;
       pollUrl = null;
@@ -168,6 +173,7 @@
       olderCursor = null;
       heldFrom = null;
       olderState = "idle";
+      olderTruncated = false;
     }
 
     function ensurePolling() {
@@ -230,13 +236,25 @@
         if (heldFrom !== null && response.cursor && response.cursor !== heldFrom) {
           const moved = await turnsBetween(paneId, heldFrom, response.cursor);
           if (moved === null || moved === "bounded") {
+            // The gap cannot be joined (history changed mid-walk) or the
+            // walk hit its 32-page bound: drop the held pages and
+            // re-anchor on the newest page. A bounded walk marks what
+            // was lost: the endcap says turns were skipped instead of
+            // hiding the truncation (desktop parity).
+            const bounded = moved === "bounded";
             dropOlderPages();
+            olderTruncated = bounded;
             const fresh = await fetchConversation(paneId, {}, null);
             if (fresh.notModified) return;
             if (paneId !== chatPane || !lensActive) return;
             conversation = fresh.body;
             pollUrl = conversationUrl(paneId, {});
             pollEtag = fresh.etag || null;
+            // The gap was too wide to join, but the newest page's own
+            // cursor is a valid walk-back point: keep the load-older
+            // control alive so the reader can page back manually.
+            if (bounded && typeof fresh.body.cursor === "string")
+              olderCursor = fresh.body.cursor;
           } else if (moved.length) {
             olderTurns = olderTurns.concat(moved);
             heldFrom = response.cursor;
@@ -315,7 +333,14 @@
       olderState = "loading";
       try {
         const result = await fetchConversation(paneId, { before }, null);
-        if (paneId !== chatPane || !lensActive) return;
+        // The pane changed or the lens closed mid-fetch: the page belongs
+        // to a state that no longer exists. Drop it and leave olderState
+        // idle, or a same-pane lens reopen would find a dead "loading"
+        // flag and never load older turns again.
+        if (paneId !== chatPane || !lensActive) {
+          olderState = "idle";
+          return;
+        }
         if (result.notModified) {
           olderState = "failed";
           return;
@@ -333,7 +358,10 @@
         if (first) refreshConversation();
         render();
       } catch (error) {
-        if (paneId !== chatPane || !lensActive) return;
+        if (paneId !== chatPane || !lensActive) {
+          olderState = "idle";
+          return;
+        }
         const status = error && error.status;
         const code = error && error.details && error.details.code;
         if (status === 409 || code === "history_changed") {
@@ -510,7 +538,7 @@
           );
         }
         const size = part.output_size
-          ? `<div class="lens-tool-meta">output trimmed: ${part.output_size} chars total</div>`
+          ? `<div class="lens-tool-meta">output trimmed: ${escapeHtml(String(part.output_size))} chars total</div>`
           : "";
         return (
           `<div class="lens-tool lens-tool-open" data-part-key="${escapeAttr(key)}">${head}` +
@@ -829,12 +857,22 @@
     function olderPagesHeaderHtml() {
       if (!conversation) return "";
       if (typeof olderCursor !== "string") {
+        // The endcap only marks a KNOWN beginning: pages were held and
+        // walked to the transcript start. A truncated reset with no
+        // held pages must say turns were skipped, not claim a beginning
+        // (desktop parity).
+        if (olderTruncated)
+          return '<div class="lens-older-done" data-older-truncated="1">Some earlier messages were skipped to catch up</div>';
+        if (!olderTurns.length) return "";
         return '<div class="lens-older-done">Beginning of conversation</div>';
       }
       if (olderState === "loading") return '<button type="button" class="lens-older-load" disabled>Loading…</button>';
       if (olderState === "failed")
         return '<button type="button" class="lens-older-load" data-load-older="1">Retry loading earlier messages</button>';
-      return '<button type="button" class="lens-older-load" data-load-older="1">Load earlier messages</button>';
+      const truncatedNote = olderTruncated
+        ? '<div class="lens-older-done" data-older-truncated="1">Some earlier messages were skipped to catch up</div>'
+        : "";
+      return `${truncatedNote}<button type="button" class="lens-older-load" data-load-older="1">Load earlier messages</button>`;
     }
 
     function loadingHtml() {
@@ -850,6 +888,9 @@
       if (!node || !lensActive) return;
       const content = node.querySelector(".mobile-lens-content");
       if (!content) return;
+      // Captured before the DOM sync so the pill block below can see
+      // whether this render added turns (desktop render parity).
+      const prevCount = Number(content.dataset.renderedTurns || 0);
       if (loadingChat) {
         content.innerHTML = loadingHtml();
         const scroller = node.querySelector("#mobileLensScroller");
@@ -923,6 +964,12 @@
         scroller.scrollTop = scroller.scrollHeight;
       }
       const pill = node.querySelector("#mobileLensNew");
+      // New turns while the reader is scrolled up arm the resume pill
+      // (desktop parity: !follow && newCount > prevCount). The one
+      // mobile addition is !olderPrepended: a load-older render grows
+      // the count without any new output and must not arm the pill.
+      const newCount = Number(content.dataset.renderedTurns || 0);
+      if (!follow && !olderPrepended && newCount > prevCount) unread = true;
       if (pill) pill.hidden = !(unread && !follow);
     }
 

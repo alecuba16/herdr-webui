@@ -58,7 +58,7 @@ function mobileComposerDom() {
   };
 }
 
-function composerContext({ status = "blocked", term = null, options = null, apiResponses = null, apiFails = false, apiError = null, dom = null, dateNow = null } = {}) {
+function composerContext({ status = "blocked", term = null, options = null, apiResponses = null, apiFails = false, apiError = null, dom = null, dateNow = null, extraGlobal = null } = {}) {
   const calls = { api: [], paste: [], renders: 0 };
   const storage = new Map();
   if (options) storage.set("herdr-web-options", JSON.stringify(options));
@@ -92,6 +92,7 @@ function composerContext({ status = "blocked", term = null, options = null, apiR
       removeItem: (k) => storage.delete(k),
     },
   };
+  if (extraGlobal) Object.assign(sandbox, extraGlobal);
   sandbox.globalThis = sandbox;
   const ctx = vm.createContext(sandbox);
   vm.runInContext(composerSource, ctx);
@@ -162,6 +163,35 @@ describe("mobile composer + prompt cards module", () => {
     assert.deepEqual(JSON.parse(calls.api[0].opts.body), { text: "do the thing" });
     assert.equal(dom.input.value, "");
     assert.equal(module.drafts.has("pane-1"), false);
+  });
+
+  it("submit error clears the lens pending bubble", async () => {
+    // The bubble is set before the request; a failed submit never lands
+    // the text in the conversation, so it must not stick around waiting
+    // for a user turn that will never match (desktop composer parity).
+    const refusal = Error("agent is blocked");
+    refusal.details = { note: "This panel is blocked. Answer its question first." };
+    const bubbles = [];
+    const dom = mobileComposerDom();
+    const { module } = composerContext({
+      dom,
+      apiError: refusal,
+      extraGlobal: {
+        HerdrMobileLens: {
+          setPendingBubble: (text) => bubbles.push(text),
+          refreshConversation: () => {},
+        },
+      },
+    });
+    module.syncComposer();
+    dom.input.value = "never lands";
+    dom.input.listeners.input[0]();
+
+    await module.submit();
+
+    assert.equal(bubbles.length, 2, "bubble set then cleared");
+    assert.equal(bubbles[0], "never lands", "bubble carried the sent text");
+    assert.equal(bubbles[1], null, "error path cleared the bubble");
   });
 
   it("keeps the draft and shows the server refusal note", async () => {

@@ -940,4 +940,142 @@ describe("mobile lens", () => {
     lens.showChat();
     equal(lens.isActive(), true, "showChat reopens after terminal view");
   });
+
+  it("new turns while scrolled up arm the unread pill", async () => {
+    const { ctx, registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    lens.showChat();
+    fireTimers(ctx);
+    await settle();
+    const node = lensNode(registry);
+    const scroller = node.querySelector("#mobileLensScroller");
+    // Scrolled up: the scroll listener flips follow off without
+    // reaching the bottom edge (no atBottom reset).
+    scroller.scrollTop = 400;
+    scroller.scrollHeight = 1000;
+    scroller.clientHeight = 300;
+    scroller.listeners.scroll[0]();
+    // A second poll adds one turn (append path).
+    const grown = conversationFixture();
+    grown.turns.push({
+      role: "assistant",
+      ts: "t3",
+      end_ts: "t3",
+      parts: [{ kind: "text", text: "more" }],
+    });
+    ctx.api = async () => grown;
+    ctx.fetch = async () => json200(grown);
+    fireTimers(ctx);
+    await settle();
+    const pill = node.querySelector("#mobileLensNew");
+    equal(pill.hidden, false, "pill visible after new turn while scrolled up");
+    // Landing at the bottom clears it.
+    scroller.scrollTop = 700;
+    scroller.listeners.scroll[0]();
+    equal(pill.hidden, true, "pill hidden again at the bottom");
+  });
+
+  it("older pages prepend does not arm the unread pill", async () => {
+    const { ctx, registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async (url) => {
+        if (url.includes("before=")) {
+          return {
+            source: "jcode-transcript",
+            session_id: "session_x",
+            version: "g0",
+            cursor: null,
+            turns: [
+              {
+                role: "user",
+                ts: "t0",
+                end_ts: "t0",
+                parts: [{ kind: "text", text: "earlier" }],
+              },
+            ],
+          };
+        }
+        return conversationFixture();
+      },
+    });
+    lens.showChat();
+    fireTimers(ctx);
+    await settle();
+    const node = lensNode(registry);
+    const scroller = node.querySelector("#mobileLensScroller");
+    scroller.scrollTop = 10;
+    scroller.scrollHeight = 1000;
+    scroller.clientHeight = 300;
+    scroller.listeners.scroll[0]();
+    fireTimers(ctx);
+    await settle();
+    const pill = node.querySelector("#mobileLensNew");
+    equal(pill.hidden, true, "pill stays hidden when only older pages loaded");
+  });
+
+  it("bounded walk-back drops held pages and says turns were skipped", async () => {
+    // heldFrom set, then the newest page cursor moves beyond the
+    // 32-page walk bound: the reset must mark the skip, keep a valid
+    // olderCursor, and not claim the beginning.
+    const newest = conversationFixture();
+    const pages = [];
+    for (let i = 0; i < 40; i++) {
+      pages.push({
+        role: "user",
+        ts: `t${i}`,
+        end_ts: `t${i}`,
+        parts: [{ kind: "text", text: `turn ${i}` }],
+      });
+    }
+    let held = false;
+    const { ctx, registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async (url) => {
+        if (url.includes("before=") && !held) {
+          held = true;
+          return {
+            source: "jcode-transcript",
+            session_id: "session_x",
+            version: "g0",
+            cursor: "cursor_old",
+            turns: [pages[0]],
+          };
+        }
+        if (url.includes("from=")) {
+          // 33 pages of gap: beyond the 32-page walk bound.
+          const page = { ...newest, cursor: "cursor_far", turns: [pages[1]] };
+          return page;
+        }
+        return { ...newest, cursor: "cursor_new" };
+      },
+    });
+    lens.showChat();
+    fireTimers(ctx);
+    await settle();
+    const node = lensNode(registry);
+    const scroller = node.querySelector("#mobileLensScroller");
+    scroller.scrollTop = 10;
+    scroller.scrollHeight = 1000;
+    scroller.clientHeight = 300;
+    scroller.listeners.scroll[0]();
+    fireTimers(ctx);
+    await settle();
+    // Simulate the cursor moving on the next poll: from cursor_new to
+    // something the walk cannot join in 32 steps.
+    ctx.fetch = async (url) => {
+      if (url.includes("from=")) {
+        return json200({ ...newest, cursor: "cursor_far2", turns: [pages[2]] });
+      }
+      return json200({ ...newest, cursor: "cursor_moved", version: "g2" });
+    };
+    fireTimers(ctx);
+    await settle();
+    const content = lensContent(registry);
+    ok(
+      content.innerHTML.includes("Some earlier messages were skipped"),
+      "truncation note shown after a bounded reset",
+    );
+  });
 });
