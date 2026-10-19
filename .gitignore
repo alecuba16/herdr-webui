@@ -25,6 +25,5 @@ lcov.info
 .jcode/scratch/
 # Scratch dirs for live-drive verification servers (scripts/e2e/.tmp-*)
 scripts/e2e/.tmp*/
-# Agent-generated audit + memory artifacts stay out of the repo (antislop skill writes to $JCODE_SCRATCH_DIR)
 anti-slop/
 .codebase-memory/
