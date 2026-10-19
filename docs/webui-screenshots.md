@@ -3,7 +3,7 @@
 The browser UI of `herdr-webui`, captured from a live session against the
 built-in backend on real workspaces (jcode and herdr-webui itself). The
 animated GIF (`screens/webui/00-webui-tour.gif`) walks the captures slowly,
-five seconds per screen.
+three seconds per screen.
 
 All shots are one Arc window at 960px wide, dark theme, desktop layout. The
 workspace sidebar (WORKSPACES, AGENTS) is present in every capture.
@@ -32,13 +32,13 @@ workspace sidebar (WORKSPACES, AGENTS) is present in every capture.
 ## Notes
 
 The tour GIF is generated from the six PNGs with two-pass ffmpeg
-(`palettegen`/`paletteuse`, 960px, five seconds per frame):
+(`palettegen`/`paletteuse`, 960px, three seconds per frame):
 
 ```bash
 cd docs/screens/webui
-ffmpeg -y -framerate 0.2 -pattern_type glob -i '0*.png' \
+ffmpeg -y -framerate 1/3 -pattern_type glob -i '0*.png' \
   -vf "palettegen=stats_mode=diff" -update 1 palette.png
-ffmpeg -y -framerate 0.2 -pattern_type glob -i '0*.png' -i palette.png \
+ffmpeg -y -framerate 1/3 -pattern_type glob -i '0*.png' -i palette.png \
   -lavfi "[0:v][1:v]paletteuse=dither=bayer:bayer_scale=5" \
   -gifflags -offsetting -loop 0 00-webui-tour.gif && rm palette.png
 ```
