@@ -20,6 +20,7 @@
     "@codemirror/lang-xml": "^6.1.0",
     "@codemirror/lang-yaml": "^6.1.2",
     "@codemirror/language": "^6.11.3",
+    "@codemirror/legacy-modes": "^6.5.5",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.39.5",
     "@lezer/highlight": "^1.2.3",
