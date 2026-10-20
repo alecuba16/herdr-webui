@@ -258,6 +258,15 @@ cycling + jump-to-first.**
   mode is a wall-clock throughput assertion under concurrent compile
   load; this branch's two commits are markdown-only, so they cannot
   affect the compiled binary.
+- Route behavior verified against a real isolated server instance (own
+  XDG_CONFIG_HOME and --session, never touching a running instance):
+  /api/file-browser/tree with q=design over docs/ux returned 6 entries,
+  all name-matching, from 18 unfiltered. Server-side filtering returns
+  only matches, confirming the TUI design premise that after commit
+  every visible row is a match.
+- e2e baseline: scripts/e2e/run-keyboard-guards-e2e.sh PASSED on both
+  layouts (isolated server + headless Chrome against the real served
+  app).
 
 ## 4. Merge overlap with the sibling worktree
 
