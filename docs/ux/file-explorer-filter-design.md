@@ -19,14 +19,21 @@ already a full search mode, not a local type-to-filter:
   (`src/tui/mod.rs:2433-2441`).
 - Commit runs a server-side search: `refresh()` (mod.rs:135) calls
   `api.file_search(cwd, root, filter, 0, 200, dirs_only)` when the filter is
-  non-empty (mod.rs:141-152), replacing `entries` with the result rows. The
-  render header shows `search results for 'q' in Files` plus a matched/total
-  count (`src/tui/render/mod.rs:508,578`); `t` cycles the search kind and
-  content search has its own results view with j/k cycling.
-- So the TUI already filters (via server) and shows counts; it has **no
-  substring highlight in the tree rows and no match-jump/cycle state**.
-  The two gaps for this feature are exactly: yellow match highlight and
-  ↑/↓ (or n/N) match cycling with jump-to-first.
+  non-empty (mod.rs:141-152), replacing `entries` with the result rows.
+  The render header shows `search results for 'q' in Files` while
+  results are up (render/mod.rs:503-510) plus a `searching <kind>` line
+  pre-commit (render/mod.rs:491-505); the tree route already returns
+  only matching entries (verified against a live isolated server, see
+  section 3). No matched/total counter is rendered for the files list
+  (the overlay `filter_query_line` at render/mod.rs:1899 is a different
+  code path, help/worktree overlays only).
+- So the TUI already filters (via server) and shows the query; it has **no
+  substring highlight in the tree rows, no match-jump/cycle state, and
+  no matched/total count in the files list**. `commit_filter` only flips
+  flags (mod.rs:450-452); `refresh()` clamps selection down but never
+  moves it to row 0, so jump-to-first is genuinely a to-build item.
+  The gaps for this feature: yellow match highlight, jump-to-first on
+  commit, and optionally a matched/total count line.
 
 **Webui desktop file browser (`src/assets/desktop/file_browser.js`):**
 per-workspace `stateCache`, `flattenEntries`, `loadTree`, and **no filter
@@ -37,6 +44,26 @@ opts.filterTerm)` at lines 142 and 192, emitting
 git side tree (`git_ui/side_tree.js:51`, `view.fileFilter`) and workspace
 search results (`workspace_search.js:269`, `opts.query`). So the yellow
 mark rendering path is proven; the file browser just never passes it.
+
+**Mobile file browser (`src/assets/mobile/file_browser.js`) already has
+the filter itself**, and it is the strongest precedent for the desktop
+cut:
+
+- Filter state on `local`: `filter`, `filterVisible`, `filterTimer`,
+  `filterOffset`, `filterDone`, `filterKind` (line 10).
+- Input wiring: 500ms debounce (350ms for content search), Enter commits
+  immediately, Esc clears (lines 847-856).
+- Search runs server-side: `loadFiltered` (lines 220-243) calls the tree
+  route with `q=` + `search_kind` + `offset`/`limit` pagination, appends
+  pages, and tracks `filterDone` from `truncated`.
+- `filterKind` cycles file/dir/content scopes.
+- It does **not** pass `filterTerm` to `Tree.renderEntries` (line 634):
+  mobile filters without yellow marks. Desktop adding `filterTerm` would
+  be the delta on top of this pattern.
+- Server payload constraint: the tree route returns `entries`,
+  `truncated`, and `query` but **no total match count**
+  (file_browser.rs:1600-1607), so an "n/total" display cannot be fed from
+  the payload as-is; mobile shows no count for this reason.
 
 **Webui shortcut infrastructure:**
 
@@ -59,10 +86,11 @@ mark rendering path is proven; the file browser just never passes it.
 - Record/Clear capture buttons delegate through
   `data-shortcut-record`/`data-shortcut-reset` (bindings.js:142-158) and
   capture via `shortcutPrefixFromEvent` (shortcuts.js:167).
-- Known dead UI: the Search section's `optSearchShortcutCapture`/`Clear`
-  buttons have no click listener anywhere (checked bindings.js,
-  settings_sections.js, all assets). Not caused by this feature; backlog
-  item.
+- Known dead UI: the Keyboard section's Search shortcut Record/Clear
+  buttons (`optSearchShortcutCapture`/`optSearchShortcutClear`, rendered
+  at core.js:2090) have no click listener anywhere (the global prefix
+  Record at bindings.js:215 is bound; these two are not). Not caused by
+  this feature; backlog item.
 
 **Yellow highlight styling:** `.herdr-tree-hit` gets
 `background: var(--herdr-search-hit-bg)` / `color: var(--herdr-search-hit-fg)`
@@ -110,53 +138,58 @@ on the git view.
 
 ### 1.2 Match scope
 
-**Decision: webui filters the visible flattened tree (flattenEntries
-output), client-side. The TUI keeps its server-side search.**
+**Decision revised after finding the mobile precedent: the desktop
+filter follows mobile's server-side `q=` pattern (debounced, paginated),
+not client-side filtering.**
 
-- Webui trees load lazily (children fetched on expansion), so a
-  full-subtree match would require server round-trips per keystroke.
-  Client-side filtering over the loaded tree is instant and matches the
-  git filterFiles precedent.
-- Deep search already exists in the palette (`runPathSearch` via
-  workspace_search.js) and in the TUI's server-side file_search. The
-  filter's job is the visible tree; the palette's job is deep search.
-- Follow-up: server `search_kind` support already exists in the tree route
-  (file_browser.rs:126, 844), so a recursive mode could reuse it later.
+- Mobile already runs this exact flow in production (section 0): input
+  debounces 500ms, hits the tree route with `q=`, appends pages via
+  `offset`/`limit`, stops on `truncated`. Desktop copying it keeps the
+  two webui surfaces consistent and gives recursive (deep) matching for
+  free; the BFS already exists server-side (file_browser.rs:836-933).
+- Client-side filtering over `flattenEntries` would restrict matches to
+  the loaded tree and diverge from mobile for no gain.
+- The TUI stays as is: it already uses the same route through
+  `file_search` (mod.rs:141-152).
+- Deep search overlap with the palette is accepted: mobile already has
+  both (in-screen filter + palette), so precedent says they coexist.
 
 ### 1.3 Hide vs. highlight
 
-**Decision: hide non-matching rows, and yellow-mark the matched substring
-in matching rows. Plus a distinct treatment for the active match row.**
+**Decision: the filtered view replaces the tree with the server's match
+list (mobile's model: `local.entries` becomes the results), and every
+returned row gets the yellow mark on the matched substring. The active
+match row gets a distinct treatment on top.**
 
-- The shared renderer's `filterTerm` already does the mark; passing
-  `filterTerm: filterText` when rendering gives yellow marks for free.
-- Hiding non-matches matches git filterFiles, settings search, and the
-  TUI's filtered entries list (server already returns only matches).
-- Hide-vs-mark is a data flow difference, not a rendering one: hidden rows
-  stay in state, the flatten step skips them, and the render only sees
-  matching rows. Cleared filter = full list restored, nothing re-fetched.
+- Passing `filterTerm: filterText` to the shared renderer gives the
+  yellow marks; nothing else needs to change in the renderer.
+- The server already returns only matching entries (verified live,
+  section 3), so "hiding" is inherent: `entries` is the match list.
+- Clearing the filter refetches the normal tree (mobile's `clearFilter`
+  does exactly this).
 
 ### 1.4 Filter input placement and behavior (webui)
 
-**Decision: a filter row at the top of the file browser panel, styled
-after `.git-ui-file-filter` (git_ui/layout.css:497-522), between the tree
-header and the tree list. Contains: input, live match count ("3/7" or "No
-matches"), and a clear (×) button.**
+**Decision: a filter row at the top of the file browser panel, after the
+`.file-browser-head` block (the panel is `.file-browser-side` → head →
+body, file_browser.js:1157), styled after `.git-ui-file-filter`
+(git_ui/layout.css:497-522). Contains: input, status text, and a clear
+(×) button.**
 
-- Input events debounce (~150ms, git filterFiles cadence) then recompute
-  matches and re-render the tree with `filterTerm`.
-- Match computation: indices into the flattened visible rows where the
-  entry name contains the query, case-insensitive. Same normalizer family
-  as the palette path search.
-- Jump to first: on commit (debounced recompute), select the first
-  matching row and `scrollIntoView({block:"nearest"})`.
-- Empty state: "No matches" inline; the input keeps focus so the user can
-  fix the query.
-- Esc inside the input clears the filter and restores the full list (TUI
-  parity: Esc cancels the filter).
+- Input wiring copies mobile: 500ms debounce, Enter commits immediately,
+  Esc clears and restores the tree (mobile file_browser.js:847-856).
+- On commit, `loadTree` is called with `q=` (server-side, paginated),
+  replacing entries with the match list. First page replaces, later
+  pages append (mobile `loadFiltered`).
+- Jump to first: on results arrival, select the first result row and
+  `scrollIntoView({block:"nearest"})`.
+- Match count display: the payload has no total (only `truncated`,
+  file_browser.rs:1600-1607), so the count line shows what is real:
+  "N shown · more" when `truncated` is true, "N shown" otherwise.
+  No fabricated totals.
+- Empty state: "No matches" inline; input keeps focus.
 - Active match row gets a class (e.g. `.herdr-tree-row.filter-active`)
-  on top of the yellow mark, so the current match is distinguishable from
-  other matches.
+  on top of the yellow mark.
 
 ### 1.5 Cycling ↑/↓ between matches (webui)
 
@@ -170,9 +203,9 @@ with a filter active, the tree keeps normal keyboard behavior.**
   last).
 - The selection follows the active match (selected row = active match
   row) so Enter opens the file the user is looking at.
-- ‹ › pointer fallback buttons next to the count for pointer users, same
-  cycling, wiring through the existing click-delegation pattern in
-  file_browser.js (no new global listener).
+- ‹ › pointer fallback buttons next to the status text for pointer
+  users, same cycling, wiring through the existing click-delegation
+  pattern in file_browser.js (no new global listener).
 - The scoped chord from 1.1 (`/`) opens/focuses the filter; cycling stays
   on raw arrows in the input. If a later cut wants chord cycling from the
   tree, it is a new scoped entry (`fileBrowserMatchNav`), not built now.
@@ -201,8 +234,7 @@ cycling + jump-to-first.**
 - Highlight: `render_file_tree` (render/mod.rs:469) gains a highlight
   pass. Server rows carry the name; split the displayed name into
   matched/unmatched spans styled with `p.yellow` on the matched part
-  (theme.rs:102; same yellow as the webui token). Active filter header
-  already shows matched/total.
+  (theme.rs:102; same yellow as the webui token).
 - Jump to first: on commit, `selected` moves to row 0 of the filtered
   entries (server already returns only matches), status line unchanged.
 - Cycling: nothing to build. With a committed filter, every visible row
@@ -224,10 +256,11 @@ cycling + jump-to-first.**
 
 ## 2. Implementation order
 
-1. Webui: filter row + debounce + hide-non-matches + yellow marks (pass
-   `filterTerm` to the shared renderer; the yellow tokens already exist).
-2. Webui: match list + jump-to-first + ↑/↓ cycling + count display +
-   pointer buttons.
+1. Webui: filter row + mobile-style wiring (500ms debounce, Enter
+   commit, Esc clear) + server `q=` results replacing entries + yellow
+   marks via `filterTerm` (tokens already exist).
+2. Webui: jump-to-first on results arrival + ↑/↓ cycling in the input
+   + status text (N shown, more indicator) + pointer buttons.
 3. Webui: scoped shortcut table (`fileBrowserShortcuts`, default `/` for
    filter, gated on the file browser being the active pane) + shortcut
    editor "File browser" group + Record/Clear wiring.
@@ -240,9 +273,13 @@ cycling + jump-to-first.**
 ## 3. Tests
 
 - `just test-js`: new cases in desktop_file_browser.test.mjs for filter
-  state, match collection, cycling wraparound, clear/Esc restore, count
-  text. The shared renderer path has no dedicated test file today; its
-  output is covered indirectly via desktop_file_browser.test.mjs and
+  state, server `q=` request shape, debounce commit, clear/Esc restore,
+  jump-to-first on results, ↑/↓ cycling wraparound, status text, and
+  `filterTerm` mark output. Note: the mobile filter has **no test
+  coverage today** (no mobile test file covers filterTimer/loadFiltered/
+  clearFilter), so the desktop cases will be the first tests for this
+  pattern. The shared renderer path has no dedicated test file either;
+  it is covered indirectly via desktop_file_browser.test.mjs and
   git_ui_behavior.test.mjs (both load the real renderer). Observed
   directly: `highlight('README.md','readme')` →
   `<mark class="herdr-tree-hit">README</mark>.md` in the shipped module.
@@ -256,7 +293,7 @@ cycling + jump-to-first.**
   compile jobs ran concurrently, then passed isolated, in the
   single-suite run, and in the final clean full-suite run. Its failure
   mode is a wall-clock throughput assertion under concurrent compile
-  load; this branch's two commits are markdown-only, so they cannot
+  load; this branch's commits are all markdown-only, so they cannot
   affect the compiled binary.
 - Route behavior verified against a real isolated server instance (own
   XDG_CONFIG_HOME and --session, never touching a running instance):
