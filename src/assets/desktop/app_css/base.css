@@ -153,11 +153,44 @@ body.light {
   background: var(--border);
   color: var(--accent);
 }
+/* Full-height grip line: the strip doubles as a drag handle, so the line
+   makes that visible before the cursor ever lands on it. Full-strength
+   currentColor keeps the 3:1 non-text contrast on the panel gradient in
+   both themes. */
+.sidebar-toggle::before {
+  background: currentColor;
+  border-radius: 1px;
+  content: "";
+  height: 64px;
+  margin: 12px 0;
+  width: 2px;
+}
 .sidebar-toggle:hover,
 .sidebar-toggle:focus {
   background: var(--border);
   color: var(--fg);
   outline: none;
+}
+/* "Drag to resize" reads top-to-bottom inside the 18px strip, so the
+   hint never pokes outside the column. Hidden while dragging and while
+   collapsed (the strip then only means collapse/expand). */
+.sidebar-toggle::after {
+  color: var(--fg);
+  content: "Drag to resize";
+  display: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  line-height: 1.1;
+  writing-mode: vertical-rl;
+}
+.sidebar-toggle:hover:not(.dragging)::after,
+.sidebar-toggle:focus:not(.dragging)::after {
+  display: block;
+}
+#app.sidebar-collapsed .sidebar-toggle::after,
+#app.sidebar-collapsed .sidebar-toggle::before {
+  display: none;
 }
 #app.sidebar-collapsed .sidebar-toggle {
   color: var(--accent);

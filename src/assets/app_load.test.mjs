@@ -4762,17 +4762,18 @@ describe("app bundle load", () => {
     equal(cssVars().left, "370px", "cancel commits the pending width");
     equal(optionsOf().sidebarWidth, 370);
 
-    // Ceiling: a huge drag clamps at the shared 560px maximum.
+    // No ceiling: a huge drag commits the full distance instead of clamping
+    // (370 from the prior cancel-commit plus 3600 of drag).
     left.pointerdown[0].fn({ button: 0, clientX: 400, pointerId: 4 });
     left.pointermove[0].fn({ clientX: 4000, pointerId: 4 });
     left.pointerup[0].fn({ pointerId: 4 });
-    equal(cssVars().left, "560px", "560px ceiling on drag");
-    equal(optionsOf().sidebarWidth, 560);
+    equal(cssVars().left, "3970px", "no maximum: full drag width applies");
+    equal(optionsOf().sidebarWidth, 3970);
 
     // Unrelated keys do not resize; the right strip's grow key is the
     // mirrored ArrowLeft (toward the center widens the right sidebar).
     left.keydown[0].fn({ key: "Enter", preventDefault() {} });
-    equal(cssVars().left, "560px", "Enter leaves the width alone");
+    equal(cssVars().left, "3970px", "Enter leaves the width alone");
     const right = listeners.rightSidebarToggle;
     right.keydown[0].fn({ key: "ArrowLeft", preventDefault() {} });
     equal(cssVars().right, "328px", "right grow steps 8px via ArrowLeft");
@@ -4783,7 +4784,7 @@ describe("app bundle load", () => {
 
     // pointermove without a prior pointerdown is a no-op (armed flag).
     left.pointermove[0].fn({ clientX: 480, pointerId: 9 });
-    equal(cssVars().left, "560px", "unarmed move ignored");
+    equal(cssVars().left, "3970px", "unarmed move ignored");
 
     // The right strip's releasePointerCapture threw above; a drag there
     // still commits (the try/catch swallows the throw).
@@ -6316,12 +6317,12 @@ describe("app bundle load", () => {
     vm.runInContext(source, ctx);
 
     equal(ctx.normalizeSidebarWidth(200, 330), 330, "left floor at stock 330");
-    equal(ctx.normalizeSidebarWidth(2000, 320), 560, "shared 560 ceiling");
+    equal(ctx.normalizeSidebarWidth(2000, 320), 2000, "no ceiling: huge widths pass through");
     equal(ctx.normalizeSidebarWidth(455.6, 330), 456, "whole pixels");
     ok(Number.isNaN(ctx.normalizeSidebarWidth("x", 330)) === false);
     equal(ctx.normalizeSidebarWidth("x", 330), 330, "garbage falls back to stock");
     equal(vm.runInContext("normalizeOptions({ sidebarWidth: 90, rightSidebarWidth: 9999 }).sidebarWidth", ctx), 330);
-    equal(vm.runInContext("normalizeOptions({ sidebarWidth: 90, rightSidebarWidth: 9999 }).rightSidebarWidth", ctx), 560);
+    equal(vm.runInContext("normalizeOptions({ sidebarWidth: 90, rightSidebarWidth: 9999 }).rightSidebarWidth", ctx), 9999, "no ceiling in normalizeOptions either");
   });
 
   it("drives the shell grid widths through CSS vars", () => {
@@ -6335,6 +6336,19 @@ describe("app bundle load", () => {
     match(baseCss, /#app\.sidebar-collapsed \{[\s\S]*?grid-template-columns: 0 28px minmax\(0, 1fr\) 18px 44px var\(--right-sidebar-width\);/);
     match(baseCss, /#app\.right-sidebar-collapsed \{[\s\S]*?grid-template-columns: var\(--sidebar-width\) 18px minmax\(0, 1fr\) 28px 44px 0;/);
     match(baseCss, /\.sidebar-toggle \{[\s\S]*?cursor: col-resize;/);
+  });
+
+  it("styles the drag affordance on the toggle strip", () => {
+    const baseCss = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
+
+    // The grip line is visible before hover: full-strength currentColor
+    // keeps 3:1 non-text contrast on the panel gradient in both themes.
+    match(baseCss, /\.sidebar-toggle::before \{[\s\S]*?background: currentColor;[\s\S]*?height: 64px;[\s\S]*?width: 2px;/, "grip line rule");
+    // The hint reads top-to-bottom inside the 18px strip and only shows
+    // on hover or keyboard focus, never mid-drag or collapsed.
+    match(baseCss, /\.sidebar-toggle::after \{[\s\S]*?content: "Drag to resize";[\s\S]*?display: none;[\s\S]*?writing-mode: vertical-rl;/, "hint rule");
+    match(baseCss, /\.sidebar-toggle:hover:not\(\.dragging\)::after,[\s\S]*?\.sidebar-toggle:focus:not\(\.dragging\)::after \{[\s\S]*?display: block;/, "hint shows on hover and focus only");
+    match(baseCss, /#app\.sidebar-collapsed \.sidebar-toggle::after,[\s\S]*?#app\.sidebar-collapsed \.sidebar-toggle::before \{[\s\S]*?display: none;/, "grip and hint hidden while collapsed");
   });
 
   it("drops the orphaned tab activity feature", () => {
@@ -6534,7 +6548,7 @@ describe("app bundle load", () => {
     equal(postedBody.session_expiration_minutes, 0);
   });
 
-  it("flashes a settings applied badge on saveOptions", async () => {
+  it("flashes the applied badge on settings rows only, never on the sidebar strip", async () => {
     const ctx = context();
     // The feedback module is a separate shared bundle file; load it like
     // app_boot does so saveOptions() can reach it.
@@ -6568,8 +6582,10 @@ describe("app bundle load", () => {
       selector.includes("settings-applied") && control.children.length
         ? control.children[control.children.length - 1]
         : null;
+    // optFit is a settings modal row, so both closest() probes resolve:
+    // the row lookup for the badge and the #settingsModal gate.
     control.closest = (selector) =>
-      selector === ".option" ? control : null;
+      selector === ".option" || selector === "#settingsModal" ? control : null;
     ctx.document.activeElement = control;
 
     await ctx.saveOptions();
@@ -6577,8 +6593,23 @@ describe("app bundle load", () => {
       control.children.some(
         (child) => String(child.className) === "settings-applied",
       ),
-      "green applied badge appended to the changed row",
+      "green applied badge appended to the changed settings row",
     );
+
+    // The 18px strip doubles as the sidebar drag handle, so a width commit
+    // fires saveOptions with the strip focused. It is not a settings row,
+    // so the "Applied" badge must never appear inside it.
+    const strip = ctx.document.getElementById("sidebarToggle");
+    const seen = [];
+    strip.appendChild = (child) => {
+      seen.push(child);
+      return child;
+    };
+    strip.closest = () => null;
+    ctx.document.activeElement = strip;
+
+    await ctx.saveOptions();
+    equal(seen.length, 0, "no badge lands on the focused toggle strip");
   });
 
   it("marks server settings saved state green on success and red on failure", async () => {
