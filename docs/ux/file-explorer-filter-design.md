@@ -241,11 +241,16 @@ cycling + jump-to-first.**
 
 - `just test-js`: new cases in desktop_file_browser.test.mjs for filter
   state, match collection, cycling wraparound, clear/Esc restore, count
-  text. Node tests cover the shared renderer path already
-  (file_tree.test.mjs).
+  text. The shared renderer path has no dedicated test file today; its
+  output is covered indirectly via desktop_file_browser.test.mjs and
+  git_ui_behavior.test.mjs (both load the real renderer). Observed
+  directly: `highlight('README.md','readme')` →
+  `<mark class="herdr-tree-hit">README</mark>.md` in the shipped module.
 - TUI: unit test for the highlight split (matched/unmatched spans) and
   the select-first-on-commit transition.
-- `just test` full run must stay green.
+- Baseline verified on this branch before any implementation: node --test
+  src/assets/*.test.mjs → 1303 pass, 0 fail; cargo test → 1156 pass across
+  all suites, 0 fail.
 
 ## 4. Merge overlap with the sibling worktree
 
