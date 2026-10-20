@@ -120,10 +120,20 @@
 .herdr-tree-icon-folder-up { mask-image: url("/assets/icons/folder-up.svg"); }
 .herdr-tree-icon-file { mask-image: url("/assets/icons/file.svg"); }
 
-/* Long tree lists: skip layout/paint for offscreen rows. The rows have a
-   stable single-line height, so the intrinsic size keeps scrollbar math
-   correct while offscreen rows stop costing layout/paint on every update. */
+/* Long tree lists: skip layout/paint for offscreen rows. Rows are
+   single-line by construction (.herdr-tree-name is nowrap), so the
+   explicit height pins the realized box at 29px (17px line box + 10px
+   padding + 2px border, measured) and the intrinsic size must match
+   it: a mismatched placeholder makes virtualization change layout
+   (scrollbar jumps on every innerHTML re-render). The current-row
+   wrapper (.herdr-file-tree-current, 31px measured) sets its own
+   height below. Mobile keeps its own row rules in mobile/app.css. */
 .herdr-tree-row {
   content-visibility: auto;
-  contain-intrinsic-size: auto 26px;
+  contain-intrinsic-size: auto 29px;
+  height: 29px;
+}
+.herdr-file-tree-current > .herdr-tree-row {
+  height: 31px;
+  contain-intrinsic-size: auto 31px;
 }
