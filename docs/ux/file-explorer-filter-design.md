@@ -14,18 +14,18 @@ decisions + implementation notes per item).
 **TUI file explorer (`src/tui/panels/files/mod.rs`):** the filter is
 already a full search mode, not a local type-to-filter:
 
-- `/` calls `start_filter()` (mod.rs:435), which sets `filter_active`.
+- `/` calls `start_filter()` (mod.rs:434), which sets `filter_active`.
 - While active: Enter commits, Esc cancels, Backspace pops, any Char pushes
   (`src/tui/mod.rs:2433-2441`).
 - Commit runs a server-side search: `refresh()` (mod.rs:135) calls
   `api.file_search(cwd, root, filter, 0, 200, dirs_only)` when the filter is
   non-empty (mod.rs:141-152), replacing `entries` with the result rows.
   The render header shows `search results for 'q' in Files` while
-  results are up (render/mod.rs:503-510) plus a `searching <kind>` line
-  pre-commit (render/mod.rs:491-505); the tree route already returns
+  results are up (render/mod.rs:504-513) plus a `searching <kind>` line
+  pre-commit (render/mod.rs:497-503); the tree route already returns
   only matching entries (verified against a live isolated server, see
   section 3). No matched/total counter is rendered for the files list
-  (the overlay `filter_query_line` at render/mod.rs:1899 is a different
+  (the overlay `filter_query_line` at render/mod.rs:1902 is a different
   code path, help/worktree overlays only).
 - So the TUI already filters (via server) and shows the query; it has **no
   substring highlight in the tree rows, no match-jump/cycle state, and
@@ -42,8 +42,9 @@ already supports a `filterTerm` option consumed by `highlight(entry.name,
 opts.filterTerm)` at lines 142 and 192, emitting
 `<mark class="herdr-tree-hit">`. Two production callers pass it today:
 git side tree (`git_ui/side_tree.js:51`, `view.fileFilter`) and workspace
-search results (`workspace_search.js:269`, `opts.query`). So the yellow
-mark rendering path is proven; the file browser just never passes it.
+search results (`shared/workspace_search.js:269`, `opts.query`). So the
+yellow mark rendering path is proven; the file browser just never passes
+it.
 
 **Mobile file browser (`src/assets/mobile/file_browser.js`) already has
 the filter itself**, and it is the strongest precedent for the desktop
@@ -52,8 +53,8 @@ cut:
 - Filter state on `local`: `filter`, `filterVisible`, `filterTimer`,
   `filterOffset`, `filterDone`, `filterKind` (line 10).
 - Input wiring: 500ms debounce (350ms for content search), Enter commits
-  immediately, Esc clears (lines 847-856).
-- Search runs server-side: `loadFiltered` (lines 220-243) calls the tree
+  immediately, Esc clears (lines 846-856).
+- Search runs server-side: `loadFiltered` (lines 220-245) calls the tree
   route with `q=` + `search_kind` + `offset`/`limit` pagination, appends
   pages, and tracks `filterDone` from `truncated`.
 - `filterKind` cycles file/dir/content scopes.
@@ -104,7 +105,7 @@ webui token. Both surfaces already share this yellow.
 
 **Debounce-filter precedent (webui):** git UI `filterFiles`
 (git_ui.js:1997) debounces a text filter over the file list; the settings
-modal search (`filterSettings`, core.js:2340) is the hide-non-matching
+modal search (`filterSettings`, core.js:2332) is the hide-non-matching
 precedent with a `.settings-filter-hidden` class and an empty state. The
 git filter row styling to copy is `.git-ui-file-filter`
 (git_ui/layout.css:497-522).
@@ -161,7 +162,9 @@ not client-side filtering.**
   debounces 500ms, hits the tree route with `q=`, appends pages via
   `offset`/`limit`, stops on `truncated`. Desktop copying it keeps the
   two webui surfaces consistent and gives recursive (deep) matching for
-  free; the BFS already exists server-side (file_browser.rs:836-933).
+  free; the BFS already exists server-side (`push_search_entries`
+  file_browser.rs:836 delegates to `push_search_entries_with_visit_limit`
+  at 859, whose BFS queue loop ends ~932).
 - Client-side filtering over `flattenEntries` would restrict matches to
   the loaded tree and diverge from mobile for no gain.
 - The TUI stays as is: it already uses the same route through
@@ -302,9 +305,11 @@ cycling + jump-to-first.**
   `filterTerm` mark output. Note: the mobile filter has **no test
   coverage today** (no mobile test file covers filterTimer/loadFiltered/
   clearFilter), so the desktop cases will be the first tests for this
-  pattern. The shared renderer path has no dedicated test file either;
-  it is covered indirectly via desktop_file_browser.test.mjs and
-  git_ui_behavior.test.mjs (both load the real renderer). Observed
+  pattern. The shared renderer has no dedicated test file either; the
+  real module is loaded by git_ui_behavior.test.mjs (shared sources
+  bundle, line 157) and app_core.test.mjs (722, 1750, 1811, 1908),
+  while desktop_file_browser.test.mjs stubs the Tree object
+  (renderEntries: () => "", line 83) and does not exercise it. Observed
   directly: `highlight('README.md','readme')` →
   `<mark class="herdr-tree-hit">README</mark>.md` in the shipped module.
 - TUI: unit test for the highlight split (matched/unmatched spans) and
