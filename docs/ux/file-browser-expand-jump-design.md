@@ -99,12 +99,17 @@ Notes on the table:
   (children settle at 29px realized or 38px placeholder, plus the 3px
   grid gap; the run's logged height distribution shows both
   populations). The 900px viewport loses that row entirely: it ends
-  308px below the fold. The first expand measures larger (1147px), but
-  that pass is not a clean comparison: it runs two renders, its click
-  baseline lands mid-realization (marker at 255px, scrollTop clamped to
-  6252), and it settles at a different scrollTop than the cached pass,
-  so the extra 421px mixes the second wipe with the unstable baseline
-  and the logs cannot separate the two.
+  308px below the fold. The first expand measures larger (1147px). The
+  original passes are not directly comparable: the first runs two renders
+  at a clamped scrollTop (6252) while the cached pass sits at 6500, so
+  part of the difference is geometry, not render count. A controlled
+  re-run with the pre-click drift fully settled before the click still
+  measures exactly +1147px (marker 447 to 1594 at scrollTop 6252), so the
+  unstable baseline contributes nothing to the delta: the extra ~421px
+  belongs to the first-expand pass itself (the second wipe lands on a
+  tree with a taller placeholder mix above the viewport), while the
+  exact 421px row-level split stays unobserved because the stored
+  evidence samples only the first 30 indices of each height band.
 - The 3000 rows show a shift with **no insertion above the marker at
   all** in the first expand: `dir-5` sits below the viewport there, so
   the marker is above the insertion point, and the visible content
@@ -296,7 +301,12 @@ cannot anchor across an `innerHTML` replacement).
   `scripts/e2e/expand-jump-experiment.mjs`, and
   `scripts/e2e/run-expand-repro.sh` plus `expand-scroll-repro.mjs`
   (first-pass reproduction), and `scripts/e2e/probe-layout.mjs`
-  (scroller box and ancestor probe).
+  (scroller box and ancestor probe). A second probe suite,
+  `scripts/e2e/run-expand-deep-probes.sh` plus `expand-deep-probes.mjs`,
+  covers the deep-validation round: listener death on the scroller, timer
+  sampling of the post-restore slide, click-task atomicity of the cached
+  expand, and the settled-baseline controlled first expand cited in
+  section 1. Logs under `$JCODE_SCRATCH_DIR/expand-jump-verify/`.
 - The evidence JSONs store the first 30 row indices of each height
   population, not a full per-row dump; row-band claims above are
   bounded by that sampling.
