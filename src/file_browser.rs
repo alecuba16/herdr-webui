@@ -2840,6 +2840,141 @@ mod tests {
     }
 
     #[test]
+    fn path_matcher_rejects_empty_query() {
+        assert!(PathMatcher::new("", false, false).is_err());
+    }
+
+    #[test]
+    fn push_search_entries_returns_when_page_already_full() {
+        // A caller that pre-fills the page (impossible via the HTTP layer,
+        // but the function contract allows it) must not walk at all.
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-search-prefull-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("hit.txt"), "x").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let matcher = PathMatcher::new("hit", false, false).unwrap();
+        let pre: Vec<FileBrowserEntry> = (0..2)
+            .map(|_| FileBrowserEntry {
+                name: "hit.txt".to_string(),
+                path: "hit.txt".to_string(),
+                kind: "file".to_string(),
+                size: None,
+                modified_ms: None,
+                level: 0,
+                expanded: false,
+            })
+            .collect();
+        let mut build = TreeBuild {
+            root: &root,
+            entries: pre,
+            truncated: false,
+        };
+        let mut visited = 0;
+        let mut matched = 0;
+        push_search_entries_with_visit_limit(
+            &mut build,
+            &root,
+            &matcher,
+            0,
+            0,
+            2,
+            &mut visited,
+            &mut matched,
+            Some("file"),
+            3,
+        )
+        .unwrap();
+        assert_eq!(build.entries.len(), 2, "pre-filled page stays untouched");
+        assert_eq!(visited, 0, "no walk happens when the page is already full");
+        assert_eq!(matched, 0, "no matches counted without a walk");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tree_payload_rejects_invalid_search_regex() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-tree-payload-bad-regex-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let query = FileBrowserQuery {
+            cwd: root.to_string_lossy().to_string(),
+            path: None,
+            dirs_only: None,
+            depth: None,
+            q: Some("hit(".to_string()),
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: Some(true),
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        };
+        let err = file_browser_tree_payload(query).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST, "invalid regex must 400");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tree_payload_rejects_walk_errors() {
+        // An unreadable search root makes every directory read fail, which
+        // must surface as a walk error instead of a silent empty page.
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-tree-payload-walk-err-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("hit.txt"), "x").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let query = FileBrowserQuery {
+            cwd: root.to_string_lossy().to_string(),
+            path: None,
+            dirs_only: None,
+            depth: None,
+            q: Some("hit".to_string()),
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        };
+        let err = file_browser_tree_payload(query).unwrap_err();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(
+                err.0,
+                StatusCode::BAD_GATEWAY,
+                "unreadable walk root must surface a walk error"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn tree_payload_dirs_only_search_stays_folder_only() {
         let root = std::env::temp_dir().join(format!(
             "herdr-webui-tree-payload-dirs-only-search-{}",

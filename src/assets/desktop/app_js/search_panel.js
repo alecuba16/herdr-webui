@@ -441,8 +441,8 @@
     },
     loadMorePaths() {
       const state = ensureState();
-      // Same guard as the palette: ignore repeat clicks while a page is in
-      // flight or the walk is finished, or two appends can duplicate rows.
+      // Ignore repeat clicks while a page is in flight or the walk is
+      // finished, or two appends can duplicate rows.
       if (state.pathLoading || state.pathDone) return;
       const helper = window.HerdrWorkspaceSearch;
       const cwd = helper.workspaceCwd(panelSearchWorkspace());

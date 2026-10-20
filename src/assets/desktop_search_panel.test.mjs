@@ -567,6 +567,41 @@ test("panel content expansion uses the per-file search endpoint", async () => {
   assert.equal(requests[0].query, "needle");
   assert.equal(requests[0].contextLines, 2);
   assert.equal(requests[0].matchesPerFile, 500);
+  assert.equal(requests[0].matchCase, false, "content file search inherits the panel mode state");
+  assert.equal(requests[0].regex, false, "content file search inherits the panel regex state");
+});
+
+test("panel content file search reruns with the flipped mode", async () => {
+  const { nodes, document } = buildDom();
+  const requests = [];
+  const helper = {
+    settings: () => ({ searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, searchSectionOrder: ["workspaces", "files", "content"], contentMinChars: 3, contextLines: 2 }),
+    createContentState: () => ({ query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0, contextLines: 2 }),
+    resetContentState: () => {},
+    workspaceCwd: (workspace) => (workspace && workspace.cwd) || "",
+    searchPaths: async () => ({ entries: [], git_status: null, truncated: false }),
+    searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),
+    searchContentFile: async (args) => {
+      requests.push({ matchCase: args.matchCase, regex: args.regex });
+      return { file: { path: args.file, matches: [], truncated: false } };
+    },
+  };
+  const ctx = loadPanel(document, {
+    setTimeout: () => 1,
+    HerdrWorkspaceSearch: helper,
+  });
+
+  await ctx.HerdrSearchPanel.open("ws-1", {});
+  const input = nodes.searchPanelInput;
+  input.value = "needle";
+  input.__fire("input");
+  await ctx.HerdrSearchPanel.panel.setSearchMode("matchCase");
+  await ctx.HerdrSearchPanel.panel.setSearchMode("regex");
+  await ctx.HerdrSearchPanel.content.loadFile(encodeURIComponent("src/app.rs"));
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].matchCase, true, "per-file search reruns with match case on");
+  assert.equal(requests[0].regex, true, "per-file search reruns with regex on");
 });
 
 test("panel repaints while the content search is still running", async () => {

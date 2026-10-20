@@ -252,15 +252,29 @@ function context(pathname = "/", options = {}) {
         return {
           ok: true,
           status: 200,
-          json: async () => ({
-            path: "",
-            entries: [
-              { kind: "file", name: "alpha.txt", path: "docs/alpha.txt" },
-              { kind: "dir", name: "beta", path: "src/beta" },
-            ],
-            truncated: true,
-            git_status: null,
-          }),
+          json: async () => {
+            const visitOffset = Number((String(url).match(/visit_offset=(\d+)/) || [])[1] || 0);
+            // First page: one match at cursor 0, walk still truncated.
+            if (visitOffset === 0)
+              return {
+                path: "",
+                entries: [
+                  { kind: "file", name: "alpha.txt", path: "docs/alpha.txt" },
+                  { kind: "dir", name: "beta", path: "src/beta" },
+                ],
+                truncated: true,
+                visited: 50,
+                git_status: null,
+              };
+            // Resumed page: cursor advances, walk completes.
+            return {
+              path: "",
+              entries: [{ kind: "file", name: "alpha2.txt", path: "docs/alpha2.txt" }],
+              truncated: false,
+              visited: 120,
+              git_status: null,
+            };
+          },
         };
       if (String(url).startsWith("/api/file-browser/content-search"))
         return {
@@ -1585,7 +1599,48 @@ describe("mobile bundle load", () => {
     await ctx.settle();
     html = ctx.document.getElementById("mobileSearchResults").innerHTML;
     const occurrences = html.split("docs/alpha.txt").length - 1;
-    ok(occurrences >= 2, `second page appended (occurrences=${occurrences})`);
+    ok(occurrences === 1, `first page rows survive the append (occurrences=${occurrences})`);
+    ok(html.includes("docs/alpha2.txt"), "resumed page appends its own matches");
+    // The visit cursor is absolute: the resumed request starts at the
+    // first page's cursor, and the completed walk removes the button.
+    const resumed = ctx.requests.find((r) => String(r.url).includes("visit_offset=50"));
+    ok(resumed, "second page resumes from the stored visit cursor");
+    ok(!html.includes("HerdrMobileSearch.loadMorePaths"), "completed walk drops the load more button");
+  });
+
+  it("mobile load more disarms when the walk stalls", async () => {
+    const ctx = context();
+    // Backend stuck reporting truncated with a walk that never advances.
+    ctx.fetch = async (url) => {
+      if (String(url).startsWith("/api/file-browser/tree"))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ path: "", entries: [], truncated: true, visited: 40, git_status: null }),
+        };
+      if (String(url).startsWith("/api/file-browser/content-search"))
+        return { ok: true, status: 200, json: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }) };
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    vm.runInContext(source, ctx);
+
+    ctx.HerdrMobile.showScreen("search");
+    const input = ctx.document.getElementById("mobileSearchInput");
+    input.value = "stuck";
+    input.oninput();
+    await ctx.settle();
+    await ctx.flushTimers();
+    await ctx.settle();
+
+    await ctx.HerdrMobileSearch.loadMorePaths();
+    await ctx.settle();
+    let html = ctx.document.getElementById("mobileSearchResults").innerHTML;
+    ok(!html.includes("HerdrMobileSearch.loadMorePaths"), "stalled walk removes the load more button");
+    const before = ctx.requests.filter((r) => String(r.url).includes("q=stuck")).length;
+    await ctx.HerdrMobileSearch.loadMorePaths();
+    await ctx.settle();
+    const after = ctx.requests.filter((r) => String(r.url).includes("q=stuck")).length;
+    equal(after, before, "disarmed search sends no further pages");
   });
 
   it("mobile content search Load all matches refetches the truncated file (Tr1)", async () => {

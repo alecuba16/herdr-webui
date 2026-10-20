@@ -2623,6 +2623,142 @@ describe("app bundle load", () => {
     equal(vm.runInContext("searchPaletteState.regex", ctx), true, "palette state keeps the regex mode");
   });
 
+  it("palette syncSearchModeToggles mirrors state into the head buttons", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    vm.runInContext("searchPaletteState.matchCase = true; searchPaletteState.regex = false;", ctx);
+    vm.runInContext("syncSearchModeToggles()", ctx);
+    const caseToggle = ctx.document.getElementById("searchPaletteCaseToggle");
+    const regexToggle = ctx.document.getElementById("searchPaletteRegexToggle");
+    ok(caseToggle.classList.contains("active"), "case toggle lights up when match case is on");
+    equal(caseToggle.getAttribute("aria-pressed"), "true", "case toggle carries aria-pressed for screen readers");
+    ok(!regexToggle.classList.contains("active"), "regex toggle stays dark when regex is off");
+    equal(regexToggle.getAttribute("aria-pressed"), "false", "regex toggle carries aria-pressed false");
+
+    vm.runInContext("searchPaletteState.matchCase = false; searchPaletteState.regex = true;", ctx);
+    vm.runInContext("syncSearchModeToggles()", ctx);
+    ok(!caseToggle.classList.contains("active"), "case toggle goes dark after the flip");
+    ok(regexToggle.classList.contains("active"), "regex toggle lights up after the flip");
+  });
+
+  it("palette Alt+C and Alt+R flip the search modes from the keyboard", async () => {
+    const ctx = context();
+    ctx.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false }) });
+    vm.runInContext(source, ctx);
+    vm.runInContext("state.workspaces = []; state.ws = null; state.defaultFolder = '/Users/alejandro.blanco';", ctx);
+    vm.runInContext(
+      "window.HerdrWorkspaceSearch = {" +
+        " workspaceCwd: (w) => (w && w.cwd) || \"\"," +
+        " settings: () => ({})," +
+        " pathSearchAvailable: () => true," +
+        ' searchPaths: async () => ({ entries: [], git_status: null, truncated: false, visited: 0 }),' +
+        ' searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),' +
+        " applyContentResults: () => {}," +
+        " flattenContentMatches: () => []," +
+        " renderPathTree: () => \"<div></div>\"," +
+        " renderContentPicker: () => \"<div></div>\"," +
+        " resetContentState: () => {} };",
+      ctx,
+    );
+
+    vm.runInContext(
+      "window.__press = (name) => {" +
+        "  const e = { key: name, altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };" +
+        "  searchPaletteKeydown(e);" +
+        "  return e.defaultPrevented;" +
+        "};",
+      ctx,
+    );
+
+    vm.runInContext('window.__press("c")', ctx);
+    equal(vm.runInContext("searchPaletteState.matchCase", ctx), true, "Alt+C flips match case on");
+    vm.runInContext('window.__press("r")', ctx);
+    equal(vm.runInContext("searchPaletteState.regex", ctx), true, "Alt+R flips regex on");
+    vm.runInContext('window.__press("c")', ctx);
+    equal(vm.runInContext("searchPaletteState.matchCase", ctx), false, "Alt+C flips match case back off");
+  });
+
+  it("palette loadMorePaths chains the visit cursor and disarms on a stalled walk", async () => {
+    const ctx = context();
+    const requests = [];
+    ctx.requests = requests;
+    ctx.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false }) });
+    vm.runInContext(source, ctx);
+    vm.runInContext("state.workspaces = []; state.ws = null; state.defaultFolder = '/Users/alejandro.blanco';", ctx);
+    vm.runInContext('searchPaletteState.query = "needle";', ctx);
+    vm.runInContext(
+      "window.HerdrWorkspaceSearch = {" +
+        " workspaceCwd: (w) => (w && w.cwd) || \"\"," +
+        " settings: () => ({})," +
+        " pathSearchAvailable: () => true," +
+        ' searchPaths: async (args) => {' +
+        "  requests.push({ offset: args.offset, visitOffset: args.visitOffset });" +
+        "  if (args.visitOffset === 0) return { entries: [{ name: 'a.txt', path: 'a.txt', kind: 'file' }], git_status: null, truncated: true, visited: 100 };" +
+        "  if (args.visitOffset === 100) return { entries: [], git_status: null, truncated: true, visited: 100 };" +
+        "  return { entries: [], git_status: null, truncated: false, visited: 200 };" +
+        " }," +
+        ' searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),' +
+        " applyContentResults: () => {}," +
+        " flattenContentMatches: () => []," +
+        " renderPathTree: () => \"<div></div>\"," +
+        " renderContentPicker: () => \"<div></div>\"," +
+        " resetContentState: () => {} };",
+      ctx,
+    );
+
+    await vm.runInContext("runWorkspaceSearch(false)", ctx);
+    equal(requests.length, 1, "first page requested");
+    equal(requests[0].visitOffset, 0, "first page starts at the walk beginning");
+    equal(vm.runInContext("searchPaletteState.pathVisited", ctx), 100, "first page stores the absolute cursor");
+    equal(vm.runInContext("searchPaletteState.pathDone", ctx), false, "truncated page keeps load more armed");
+
+    await vm.runInContext("HerdrSearchPalette.loadMorePaths()", ctx);
+    equal(requests.length, 2, "second page requested once");
+    equal(requests[1].visitOffset, 100, "second page resumes from the stored cursor");
+    equal(vm.runInContext("searchPaletteState.pathDone", ctx), true, "stalled walk disarms load more");
+
+    await vm.runInContext("HerdrSearchPalette.loadMorePaths()", ctx);
+    equal(requests.length, 2, "disarmed palette sends no third request");
+  });
+
+  it("palette content file search carries the active match mode", async () => {
+    const ctx = context();
+    const fileRequests = [];
+    ctx.fileRequests = fileRequests;
+    ctx.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false }) });
+    vm.runInContext(source, ctx);
+    vm.runInContext("state.workspaces = [{ workspace_id: 'ws-1', cwd: '/repo' }]; state.ws = 'ws-1';", ctx);
+    vm.runInContext('searchPaletteState.query = "needle";', ctx);
+    vm.runInContext(
+      "window.HerdrWorkspaceSearch = {" +
+        " workspaceCwd: (w) => (w && w.cwd) || \"\"," +
+        " settings: () => ({})," +
+        " pathSearchAvailable: () => true," +
+        ' searchPaths: async () => ({ entries: [], git_status: null, truncated: false, visited: 0 }),' +
+        ' searchContent: async () => ({ files: [{ path: "src/app.rs", match_count: 1, truncated: false, matches: [{ line_number: 3, line: "needle", chunks: [{ line: "needle" }] }] }], total_files: 1, total_matches: 1, truncated: false }),' +
+        " applyContentResults: (state, data) => { state.files = data.files || []; state.total_files = data.total_files || 0; state.total_matches = data.total_matches || 0; state.truncated = !!data.truncated; state.done = true; }," +
+        " flattenContentMatches: (files) => []," +
+        " renderPathTree: () => \"<div></div>\"," +
+        " renderContentPicker: () => \"<div></div>\"," +
+        ' searchContentFile: async (args) => { fileRequests.push({ matchCase: args.matchCase, regex: args.regex }); return { file: { path: args.file, matches: [], truncated: false } }; },' +
+        " resetContentState: () => {} };",
+      ctx,
+    );
+
+    await vm.runInContext("runWorkspaceSearch(false)", ctx);
+    await vm.runInContext("HerdrSearchPalette.setSearchMode('matchCase')", ctx);
+    vm.runInContext(
+      "searchPaletteState.content.files = [{ path: 'src/app.rs', match_count: 1, truncated: false, matches: [] }];" +
+        "HerdrSearchPaletteContent.loadFile(encodeURIComponent('src/app.rs'));",
+      ctx,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    equal(fileRequests.length, 1, "per-file expansion requested once");
+    equal(fileRequests[0].matchCase, true, "per-file search inherits the flipped match case");
+    equal(fileRequests[0].regex, false, "per-file search inherits the regex state");
+  });
+
   it("palette head markup ships the aA and regex toggles", () => {
     const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
     const appHtml = read("./app.html");

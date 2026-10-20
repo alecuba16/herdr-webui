@@ -914,8 +914,16 @@ const HerdrSearchPalette = {
     renderSearchPalette();
     runWorkspaceSearch(false);
   },
-  loadMorePaths() { runPathSearch(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(currentSearchWorkspace()), true).then(renderSearchPalette); },
-  loadMoreContent() { runContentSearchForPalette(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(currentSearchWorkspace()), true, { preserveScroll: true }).then(renderSearchPalettePreservingScroll); },
+  // Ignore repeat clicks while a page is in flight or the walk is
+  // finished, or two appends can duplicate rows.
+  loadMorePaths() {
+    if (searchPaletteState.pathLoading || searchPaletteState.pathDone) return;
+    runPathSearch(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(currentSearchWorkspace()), true).then(renderSearchPalette);
+  },
+  loadMoreContent() {
+    if (searchPaletteState.content.loading || searchPaletteState.content.done) return;
+    runContentSearchForPalette(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(currentSearchWorkspace()), true, { preserveScroll: true }).then(renderSearchPalettePreservingScroll);
+  },
 };
 
 const HerdrSearchPaletteTree = {
