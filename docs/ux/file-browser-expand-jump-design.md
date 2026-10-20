@@ -301,14 +301,20 @@ cannot anchor across an `innerHTML` replacement).
   restore via `captureContentScroll` (git_ui.js:1085-1098). Log rows
   append at the bottom, so mechanism A is rare there, but mechanism B
   still perturbs the thumb on every render. Lower priority. Measured
-  live at the final HEAD (git-surfaces-probe): 80 rendered log rows
-  carry computed `content-visibility: auto; contain-intrinsic-size:
-  auto 30px`, confirming the virtualization claim in the running
-  shell. The pixel-restore delta itself could not be measured there:
-  in the headless fixture the git log mounts inside a center-pane tab
-  that stays display:none while the right column owns the shell focus,
-  so no zero-size pixel numbers are reported; that surfacing limit is
-  a property of the fixture, not evidence about the bug.
+  live at the final HEAD (git-surfaces-probe, real user path through
+  the side toolbar log toggle): the pane mount surfaces at 710x865
+  with `git:log` in the pane tree, 80 log rows carry computed
+  `content-visibility: auto; contain-intrinsic-size: auto 30px`
+  (realized rows 32px), and a content-neutral re-render under pinned
+  scrollTop 600 holds the visible marker exactly (delta 0) while the
+  content height shrinks 2753 to 2701 (-52px): offscreen rows below
+  the proximity range reset toward the 30px placeholder, so mechanism
+  B perturbs the thumb without moving visible content in this run.
+  Earlier probe runs reported the mount as unsurfaceable in the
+  headless shell; that was a probe bug, not a product limit: calling
+  `HerdrGitUi.openViewTab` directly skips `paneEnsureGitTab`, so the
+  tab never entered the pane tree and the render parked the mount
+  hidden. The committed probe now goes through the toggle button.
 - **Git side tree**: correction from the live run. Earlier source
   inspection said the side tree is not virtualized; that is stale:
   desktop boots load shared `file-tree.css`, whose `.herdr-tree-row`
@@ -392,9 +398,9 @@ cannot anchor across an `innerHTML` replacement).
   `search-palette-probe.mjs` measure the palette bullet in 3.3. A
   sibling-surface round covers the remaining 3.3 bullets live:
   `run-git-surfaces-probe.sh` plus `git-surfaces-probe.mjs` (git log
-  computed-style confirmation with the headless pane-tab surfacing
-  limit recorded, git side tree cv-auto/26px correction and the
-  pinned-scrollTop delta-0 re-render) and `run-mobile-tree-probe.sh`
+  pixel measurement through the side toolbar toggle, git side tree
+  cv-auto/26px correction and the pinned-scrollTop delta-0 re-render)
+  and `run-mobile-tree-probe.sh`
   plus `mobile-tree-probe.mjs` (mobile layout rows compute
   visible/none, expand navigates rather than splices). The TUI bullet
   is covered by the committed unit tests named in 3.3. Logs under

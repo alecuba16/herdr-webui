@@ -153,26 +153,45 @@ const v26after = await evalJs(`(() => {
 console.log("[V26 side re-render]", JSON.stringify({ before: v26.before, after: v26after }));
 
 // ---------- V25: git log (center pane tab) ----------
-// The log body lives in the center pane's git tab container. While the
-// workspace shell focus is the right column, the pane tree shows only
-// its tab strip, so the mount stays display:none; the user flow that
-// surfaces it is clicking the tab in the strip (activatePaneTab). A
-// sidebar collapse also surfaces the mount but races the tab-creation
-// async chain and heals the git tab out of the pane tree (observed
-// live: tabs lose git:log when the collapse lands inside that chain),
-// so the probe uses the strip click instead.
-await evalJs(`window.HerdrGitUi.openViewTab('log')`);
+// The log body lives in the center pane's git tab container. The real
+// user path is the side toolbar's log toggle (side_tree.js
+// renderGitViewTabs: HerdrGitUi.tab('log') -> workspace_panes
+// openGitTab -> paneEnsureGitTab + git_ui openViewTab), which inserts
+// the git:log tab into the pane tree before git_ui renders into the
+// mount. Calling HerdrGitUi.openViewTab directly skips paneEnsureGitTab,
+// so the tab never joins the pane tree and the next render parks the
+// mount hidden; an earlier probe revision did exactly that and this
+// block used the public toggle path instead.
+const openedLog = await evalJs(`(() => {
+  const btn = [...document.querySelectorAll('.git-ui-view-toggle')].find((b) => (b.getAttribute('onclick') || '').includes("HerdrGitUi.tab('log')"));
+  if (!btn) return { error: 'no log toggle button' };
+  btn.click();
+  return { clicked: true };
+})()`);
+if (openedLog && openedLog.error) {
+  console.log("[V25 log re-render]", JSON.stringify({ skipped: openedLog.error }));
+} else {
 await waitFor(`!!document.querySelector('.git-ui-log-row')`, "log rows rendered");
 await sleep(1500);
-await evalJs(`(() => { const b = document.querySelector('.pane-tab[data-tab-id="git:log"]'); if (b) b.click(); return !!b; })()`);
-await sleep(800);
-// The pane tab mount stays display:none while the workspace shell keeps
-// the right column as the focused surface (strip click activates the tab
-// but does not move the shell focus), and a sidebar collapse heals the
-// git tab away when it lands inside the tab-creation async chain. When
-// the mount cannot be surfaced, the probe still records the live computed
-// styles (virtualization active on the rows) and skips the pixel
-// measurement rather than reporting zero-size numbers as a measurement.
+// Give the center column a real chance to show the mount: the grid
+// gives it minmax(0, 1fr) whenever the right column is not hogging
+// the shell focus; record the geometry either way so a hidden mount
+// is visible as a diagnosis, never as a fake zero measurement.
+const surfacing = await evalJs(`(() => {
+  const panes = window.HerdrWorkspacePanes;
+  const mount = panes && panes.paneGitMountId ? document.getElementById(panes.paneGitMountId('log')) : null;
+  const strip = document.querySelector('.pane-tab[data-tab-id="git:log"]');
+  const paneEl = document.querySelector('#workspacePanes .workspace-pane');
+  return {
+    mountId: mount ? mount.id : null,
+    mountDisplay: mount ? getComputedStyle(mount).display : null,
+    mountRect: mount ? { w: mount.getBoundingClientRect().width, h: mount.getBoundingClientRect().height } : null,
+    stripPresent: !!strip,
+    paneRect: paneEl ? { w: paneEl.getBoundingClientRect().width, h: paneEl.getBoundingClientRect().height } : null,
+    treeTabs: panes && panes.paneTabs ? panes.paneTabs() : null,
+  };
+})()`);
+console.log("[V25 log surfacing]", JSON.stringify(surfacing));
 const mountVisible = await evalJs(`(() => { const p = window.HerdrWorkspacePanes; if (!p || !p.paneGitMountId) return false; const m = document.getElementById(p.paneGitMountId('log')); return !!(m && m.getBoundingClientRect().width > 50); })()`);
 if (!mountVisible) {
   const style = await evalJs(`(() => {
@@ -181,7 +200,7 @@ if (!mountVisible) {
     return { rows: rows.length, cv: cs ? cs.contentVisibility : null, intrinsic: cs ? cs.containIntrinsicSize : null, mountVisible: false };
   })()`);
   console.log("[V25 log state]", JSON.stringify(style));
-    console.log("[V25 log re-render]", JSON.stringify({ skipped: 'mount not surfaceable in headless shell (pane tab hidden behind right-column focus)' }));
+    console.log("[V25 log re-render]", JSON.stringify({ skipped: 'mount not surfaceable in headless shell (pane tab hidden behind right-column focus)', surfacing }));
   } else {
     const logState = await evalJs(`(() => {
       const panes = window.HerdrWorkspacePanes;
@@ -272,6 +291,7 @@ if (!mountVisible) {
     return after;
   })()`);
   console.log("[V25 log re-render]", JSON.stringify({ before: v25, after: v25after }));
+  }
 }
 
 process.exit(0);
