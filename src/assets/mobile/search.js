@@ -29,6 +29,7 @@
       pathError: "",
       pathDone: true,
       pathOffset: 0,
+      pathVisited: 0,
       content: globalThis.HerdrWorkspaceSearch ? globalThis.HerdrWorkspaceSearch.createContentState() : { query: "", files: [], expanded: {}, snippets: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 },
       sectionsExpanded: { actions: true, workspaces: true, files: true, content: true },
     };
@@ -203,6 +204,7 @@
         mobileSearch.pathEntries = [];
         mobileSearch.pathGitStatus = null;
         mobileSearch.pathOffset = 0;
+        mobileSearch.pathVisited = 0;
         mobileSearch.pathDone = true;
         mobileSearch.pathLoading = false;
         mobileSearch.pathError = "";
@@ -220,13 +222,18 @@
       render();
       try {
         const offset = append ? mobileSearch.pathOffset : 0;
-        const data = await helper.searchPaths({ cwd, query, kind: mobileSearch.pathKind, offset });
+        const visitOffset = append ? mobileSearch.pathVisited : 0;
+        const data = await helper.searchPaths({ cwd, query, kind: mobileSearch.pathKind, offset, visitOffset });
         if (seq !== mobileSearch.requestSeq) return;
         const entries = data.entries || [];
         mobileSearch.pathEntries = append ? mobileSearch.pathEntries.concat(entries) : entries;
         mobileSearch.pathGitStatus = data.git_status || null;
         mobileSearch.pathOffset = offset + entries.length;
-        mobileSearch.pathDone = !data.truncated || entries.length === 0;
+        // Visit cursor: data.visited is the absolute walk position, so keep it
+        // as-is and keep paging on truncated pages even with zero entries:
+        // matches may live past the visit cap; only a stalled walk ends here.
+        mobileSearch.pathVisited = Number(data.visited || 0);
+        mobileSearch.pathDone = !data.truncated || (append && entries.length === 0 && mobileSearch.pathVisited <= visitOffset);
         mobileSearch.pathError = "";
       } catch (error) {
         if (seq !== mobileSearch.requestSeq) return;
@@ -359,6 +366,7 @@
         mobileSearch.pathKind = kind === "dir" ? "dir" : "file";
         mobileSearch.pathEntries = [];
         mobileSearch.pathOffset = 0;
+        mobileSearch.pathVisited = 0;
         render();
         runMobileWorkspaceSearch(false);
       },

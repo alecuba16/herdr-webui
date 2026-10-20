@@ -396,9 +396,12 @@ async function runPathSearch(seq, query, cwd, append) {
     searchPaletteState.pathGitStatus = data.git_status || null;
     searchPaletteState.pathOffset = offset + entries.length;
     // Visit cursor: "Load more" resumes the backend walk where this page
-    // stopped, so results past the per-page visit cap surface.
-    searchPaletteState.pathVisited = Number(data.visited || 0) + (append ? visitOffset : 0);
-    searchPaletteState.pathDone = !data.truncated || entries.length === 0;
+    // stopped. data.visited is the absolute walk position (skipped prefix
+    // included), so never re-add visitOffset. Keep paging on truncated pages
+    // even with zero entries: matches may live past the visit cap; only a
+    // walk that stops advancing can end the chain.
+    searchPaletteState.pathVisited = Number(data.visited || 0);
+    searchPaletteState.pathDone = !data.truncated || (append && entries.length === 0 && searchPaletteState.pathVisited <= visitOffset);
     searchPaletteState.pathError = "";
   } catch (error) {
     if (seq !== searchPaletteState.requestSeq) return;

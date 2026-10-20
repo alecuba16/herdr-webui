@@ -162,6 +162,7 @@
           s.pathError = "";
           s.pathGitStatus = null;
           s.pathOffset = 0;
+          s.pathVisited = 0;
           if (window.HerdrWorkspaceSearch) window.HerdrWorkspaceSearch.resetContentState(s.content, "");
           renderPanel();
           if (keepOpen) {
@@ -220,9 +221,11 @@
       state.pathGitStatus = data.git_status || null;
       state.pathOffset = offset + entries.length;
       // Visit cursor: "Load more" resumes the backend walk where this
-      // page stopped, so results past the per-page visit cap surface.
-      state.pathVisited = Number(data.visited || 0) + (append ? visitOffset : 0);
-      state.pathDone = !data.truncated || entries.length === 0;
+      // page stopped. data.visited is absolute, so never re-add visitOffset.
+      // Keep paging on truncated pages even with zero entries: matches may
+      // live past the visit cap; only a stalled walk can end the chain.
+      state.pathVisited = Number(data.visited || 0);
+      state.pathDone = !data.truncated || (append && entries.length === 0 && state.pathVisited <= visitOffset);
     } catch (error) {
       if (seq !== state.requestSeq) return;
       state.pathError = error.message || String(error);
@@ -438,6 +441,9 @@
     },
     loadMorePaths() {
       const state = ensureState();
+      // Same guard as the palette: ignore repeat clicks while a page is in
+      // flight or the walk is finished, or two appends can duplicate rows.
+      if (state.pathLoading || state.pathDone) return;
       const helper = window.HerdrWorkspaceSearch;
       const cwd = helper.workspaceCwd(panelSearchWorkspace());
       runPathSearch(++state.requestSeq, state.query, cwd, true).then(renderPanel);

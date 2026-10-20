@@ -449,6 +449,77 @@ test("load more paths chains the visit cursor so pages can reach deep results", 
   assert.equal(requests[1].visitOffset, 100, "second page resumes from the first page visit cursor");
 });
 
+test("empty truncated pages keep load more armed and the cursor stays absolute", async () => {
+  const { document } = buildDom();
+  const requests = [];
+  const ctx = loadPanel(document, {
+    HerdrWorkspaceSearch: {
+      settings: () => ({ searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, searchSectionOrder: ["workspaces", "files", "content"], contentMinChars: 3, matchCase: false, regex: false }),
+      createContentState: () => ({ query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 }),
+      resetContentState: () => {},
+      workspaceCwd: (w) => (w && w.cwd) || "",
+      searchPaths: async (args) => {
+        requests.push({ offset: args.offset, visitOffset: args.visitOffset });
+        // Walk hits the visit cap with zero matches in the first window,
+        // then a deep page finally finds the match and the walk completes.
+        if (args.visitOffset === 0) return { entries: [], git_status: null, truncated: true, visited: 20000 };
+        if (args.visitOffset === 20000) return { entries: [{ name: "deep.txt", path: "deep.txt", kind: "file" }], git_status: null, truncated: false, visited: 27119 };
+        return { entries: [], git_status: null, truncated: false, visited: 0 };
+      },
+      searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),
+    },
+  });
+
+  await ctx.HerdrSearchPanel.open("ws-1", {});
+  const input = ctx.document.getElementById("searchPanelInput");
+  input.value = "deep";
+  input.__fire("input");
+  await new Promise((resolve) => setTimeout(resolve, 260));
+
+  // First page was empty but truncated: load more must still be armed, so a
+  // click issues the second page at the absolute cursor (not re-added).
+  await ctx.HerdrSearchPanel.panel.loadMorePaths();
+  assert.equal(requests.length, 2, "second page requested after an empty truncated page");
+  assert.equal(requests[1].visitOffset, 20000, "second page resumes at the absolute cursor, no re-adding");
+
+  // The deep page completes the walk: a further click must not request again.
+  await ctx.HerdrSearchPanel.panel.loadMorePaths();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(requests.length, 2, "completed walk disarms load more");
+});
+
+test("a stalled walk ends load more instead of looping forever", async () => {
+  const { document } = buildDom();
+  const requests = [];
+  const ctx = loadPanel(document, {
+    HerdrWorkspaceSearch: {
+      settings: () => ({ searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, searchSectionOrder: ["workspaces", "files", "content"], contentMinChars: 3, matchCase: false, regex: false }),
+      createContentState: () => ({ query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 }),
+      resetContentState: () => {},
+      workspaceCwd: (w) => (w && w.cwd) || "",
+      // Backend stuck reporting truncated with a walk that never advances.
+      searchPaths: async (args) => {
+        requests.push({ visitOffset: args.visitOffset });
+        return { entries: [], git_status: null, truncated: true, visited: 100 };
+      },
+      searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),
+    },
+  });
+
+  await ctx.HerdrSearchPanel.open("ws-1", {});
+  const input = ctx.document.getElementById("searchPanelInput");
+  input.value = "stuck";
+  input.__fire("input");
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  await ctx.HerdrSearchPanel.panel.loadMorePaths();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  assert.equal(requests.length, 2, "second page requested once");
+  await ctx.HerdrSearchPanel.panel.loadMorePaths();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(requests.length, 2, "stalled walk disarms load more");
+});
+
 test("panel result callbacks use panel-local rows and route file opens", async () => {
   const { document } = buildDom();
   const opened = [];
