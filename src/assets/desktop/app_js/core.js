@@ -1501,12 +1501,14 @@ function normalizeSidebarWorkspacePercent(value) {
   ));
 }
 // Min = the layout's stock widths (330/320): narrower breaks the sidebar's
-// dense rows; max keeps the main pane at least half the viewport.
+// dense rows. No ceiling: the sidebar can eat the whole main pane.
 function normalizeSidebarWidth(value, fallback) {
-  return Math.round(Math.max(
-    fallback,
-    Math.min(560, Number.isFinite(Number(value)) ? Number(value) : fallback),
-  ));
+  return Math.round(
+    Math.max(
+      fallback,
+      Number.isFinite(Number(value)) ? Number(value) : fallback,
+    ),
+  );
 }
 function loadOptions() {
   try {
@@ -1848,12 +1850,16 @@ function saveOptions() {
   else localStorage.setItem("herdr-web-options", JSON.stringify(options));
   // The control that triggered this save is the focused element for change
   // events; fall back to the row owning the last settings interaction so
-  // saves from buttons (theme profiles) still get their badge.
+  // saves from buttons (theme profiles) still get their badge. Only rows
+  // inside the settings modal flash: the badge means "settings row saved",
+  // and a focused strip elsewhere (sidebar width drag) must not grow one.
   const control =
     document.activeElement && document.activeElement.closest
       ? document.activeElement
       : null;
-  if (control) flashSettingsApplied(control);
+  const inSettingsModal =
+    control && control.closest ? control.closest("#settingsModal") : null;
+  if (inSettingsModal) flashSettingsApplied(control);
 }
 function loadWorkingDismissals() {
   try {

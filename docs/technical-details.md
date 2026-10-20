@@ -302,8 +302,8 @@ Browser-local settings are stored in `localStorage` under `herdr-web-options` an
 | `agentSortMode` | `off` | Optional attention/status sorting. |
 | `agentStatusOrder` | blocked, idle, done, other, working | Custom status grouping order. |
 | `sidebarWorkspacePercent` | `68` | Clamped 20 to 80. |
-| `sidebarWidth` | `330` | Left sidebar width in px, clamped 330 to 560. Set by dragging the toggle strip. |
-| `rightSidebarWidth` | `320` | Right sidebar column width in px, clamped 320 to 560. Set by dragging its toggle strip. |
+| `sidebarWidth` | `330` | Left sidebar width in px, 330 minimum, no maximum. Set by dragging the toggle strip. |
+| `rightSidebarWidth` | `320` | Right sidebar column width in px, 320 minimum, no maximum. Set by dragging its toggle strip. |
 | `parentCloseMode` | `panels` | Parent close policy. |
 | `stuckWorkingEnabled` | `true` | Stuck-working warnings. |
 | `workingDismissMinutes` | `30` | Clamped 1 to 1440. |
