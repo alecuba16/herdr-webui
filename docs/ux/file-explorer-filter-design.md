@@ -70,7 +70,7 @@ cut:
 
 - Global prefix default `Ctrl+B` (`DEFAULT_GLOBAL_SHORTCUT_PREFIX`,
   core.js:169), with a 5s prefix window and overlay
-  (`showShortcutPrefixOverlay`, shortcuts.js:213 area).
+  (`showShortcutPrefixOverlay`, shortcuts.js:232).
 - `DEFAULT_WEBUI_SHORTCUTS` (core.js:170): prefix+F is already
   `focusTerminal`; prefix+S settings; prefix+/ search. Single-stroke
   prefix+key entries, no multi-key sequences.
@@ -197,7 +197,7 @@ body, file_browser.js:1157), styled after `.git-ui-file-filter`
 (×) button.**
 
 - Input wiring copies mobile: 500ms debounce, Enter commits immediately,
-  Esc clears and restores the tree (mobile file_browser.js:847-856).
+  Esc clears and restores the tree (mobile file_browser.js:846-856).
 - On commit, `loadTree` is called with `q=` (server-side, paginated),
   replacing entries with the match list. First page replaces, later
   pages append (mobile `loadFiltered`).
