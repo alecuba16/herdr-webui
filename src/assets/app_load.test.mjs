@@ -6,6 +6,7 @@ import vm from "node:vm";
 
 function element(id = "") {
   const classes = new Set();
+  const styleProps = {};
   return {
     id,
     classList: {
@@ -24,7 +25,14 @@ function element(id = "") {
         else classes.delete(name);
       },
     },
-    style: { setProperty() {} },
+    style: {
+      setProperty(name, value) {
+        styleProps[name] = String(value);
+      },
+      getPropertyValue(name) {
+        return styleProps[name] || "";
+      },
+    },
     dataset: {},
     value: "",
     checked: false,
@@ -4418,6 +4426,91 @@ describe("app bundle load", () => {
     match(source, /sidebar-count/);
   });
 
+  it("resizes both sidebars from the toggle strips and keeps clicks toggling", () => {
+    // The fake element drops listeners, so record them per strip and drive
+    // the real handlers by hand.
+    const ctx = context();
+    const strips = ["sidebarToggle", "rightSidebarToggle"];
+    const listeners = {};
+    for (const id of strips) {
+      const node = ctx.document.getElementById(id);
+      listeners[id] = {};
+      node.addEventListener = (type, fn, capture) => {
+        listeners[id][type] = listeners[id][type] || [];
+        listeners[id][type].push({ fn, capture });
+      };
+      node.hasPointerCapture = () => true;
+      node.releasePointerCapture = () => {};
+      node.setPointerCapture = () => {};
+    }
+    vm.runInContext(source, ctx);
+
+    const cssVars = () => {
+      const app = ctx.document.getElementById("app");
+      return {
+        left: app.style.getPropertyValue("--sidebar-width"),
+        right: app.style.getPropertyValue("--right-sidebar-width"),
+      };
+    };
+
+    // Boot applies the persisted widths (or stock defaults).
+    equal(cssVars().left, "330px");
+    equal(cssVars().right, "320px");
+
+    // A real click dispatch runs the capture suppressor first, then the
+    // onclick property handler. Mirror that order.
+    const dispatchClick = (id) => {
+      let stopped = false;
+      for (const { fn, capture } of listeners[id].click) {
+        if (!capture) continue;
+        fn({ stopImmediatePropagation() { stopped = true; } });
+      }
+      if (!stopped) ctx.document.getElementById(id).onclick();
+    };
+
+    // Left strip: drag right of 80px grows the sidebar; the drag suppresses
+    // the toggle click that follows pointerup.
+    let clickCalls = 0;
+    ctx.document.getElementById("sidebarToggle").onclick = () => {
+      clickCalls += 1;
+    };
+    const left = listeners.sidebarToggle;
+    left.pointerdown[0].fn({ button: 0, clientX: 400, pointerId: 1 });
+    left.pointermove[0].fn({ clientX: 480, pointerId: 1 });
+    equal(cssVars().left, "410px", "preview during drag");
+    left.pointerup[0].fn({ pointerId: 1 });
+    equal(cssVars().left, "410px", "commit on pointerup");
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options")).sidebarWidth, 410);
+    dispatchClick("sidebarToggle");
+    equal(clickCalls, 0, "the click after a drag is suppressed, not toggled");
+
+    // A click without a prior drag still toggles: no suppressedClick armed.
+    dispatchClick("sidebarToggle");
+    equal(clickCalls, 1, "plain click falls through to the toggle handler");
+
+    // Right strip: dragging right shrinks the right sidebar (mirrored
+    // direction) and clamps at its 320px floor.
+    const right = listeners.rightSidebarToggle;
+    right.pointerdown[0].fn({ button: 0, clientX: 900, pointerId: 2 });
+    right.pointermove[0].fn({ clientX: 1000, pointerId: 2 });
+    equal(cssVars().right, "320px", "right clamps at the 320px minimum");
+    right.pointerup[0].fn({ pointerId: 2 });
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options")).rightSidebarWidth, 320);
+
+    // Keyboard resize: arrows step 8px, clamped the same way.
+    left.keydown[0].fn({ key: "ArrowLeft", preventDefault() {} });
+    equal(cssVars().left, "402px", "arrow shrink applies and persists");
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options")).sidebarWidth, 402);
+
+    // Double-click resets to stock widths.
+    left.dblclick[0].fn({ preventDefault() {}, stopImmediatePropagation() {} });
+    right.dblclick[0].fn({ preventDefault() {}, stopImmediatePropagation() {} });
+    equal(cssVars().left, "330px");
+    equal(cssVars().right, "320px");
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options")).sidebarWidth, 330);
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options")).rightSidebarWidth, 320);
+  });
+
   it("keeps chord tooltips on sidebar toggles across render() polls", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
@@ -5934,6 +6027,32 @@ describe("app bundle load", () => {
     equal(ctx.normalizeSidebarWorkspacePercent(33.6), 34);
     equal(ctx.normalizeSidebarWorkspacePercent(10), 20);
     equal(ctx.normalizeSidebarWorkspacePercent(90), 80);
+  });
+
+  it("normalizes sidebar widths to the stock bounds", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    equal(ctx.normalizeSidebarWidth(200, 330), 330, "left floor at stock 330");
+    equal(ctx.normalizeSidebarWidth(2000, 320), 560, "shared 560 ceiling");
+    equal(ctx.normalizeSidebarWidth(455.6, 330), 456, "whole pixels");
+    ok(Number.isNaN(ctx.normalizeSidebarWidth("x", 330)) === false);
+    equal(ctx.normalizeSidebarWidth("x", 330), 330, "garbage falls back to stock");
+    equal(vm.runInContext("normalizeOptions({ sidebarWidth: 90, rightSidebarWidth: 9999 }).sidebarWidth", ctx), 330);
+    equal(vm.runInContext("normalizeOptions({ sidebarWidth: 90, rightSidebarWidth: 9999 }).rightSidebarWidth", ctx), 560);
+  });
+
+  it("drives the shell grid widths through CSS vars", () => {
+    const baseCss = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
+
+    // The two sidebar tracks read the width vars so the drag can resize
+    // without touching the collapsed variants' literal 0 tracks.
+    match(baseCss, /--sidebar-width: 330px;/);
+    match(baseCss, /--right-sidebar-width: 320px;/);
+    match(baseCss, /grid-template-columns:\s*\n\s*var\(--sidebar-width\) 18px minmax\(0, 1fr\) 18px 44px var\(--right-sidebar-width\);/);
+    match(baseCss, /#app\.sidebar-collapsed \{[\s\S]*?grid-template-columns: 0 28px minmax\(0, 1fr\) 18px 44px var\(--right-sidebar-width\);/);
+    match(baseCss, /#app\.right-sidebar-collapsed \{[\s\S]*?grid-template-columns: var\(--sidebar-width\) 18px minmax\(0, 1fr\) 28px 44px 0;/);
+    match(baseCss, /\.sidebar-toggle \{[\s\S]*?cursor: col-resize;/);
   });
 
   it("drops the orphaned tab activity feature", () => {

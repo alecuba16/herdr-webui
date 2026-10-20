@@ -546,11 +546,13 @@ async function resetWindowLayout({ skipConfirm = false } = {}) {
   if (window.HerdrNotesPanel) window.HerdrNotesPanel.close();
   // Expand both sidebars. The right setter re-stores "0" so the next boot
   // opens expanded (absent now means collapsed); the left one mirrors the
-  // toggle's write path.
+  // toggle's write path. Stock widths come back too: the resize drag is
+  // part of the same window layout this reset restores.
   setRightSidebarCollapsedFlag(false);
   sidebarCollapsed = false;
   storeFlag(SIDEBAR_COLLAPSED_KEY, false);
   applySidebarCollapsed();
+  resetSidebarWidths();
   showTerminalShellMode({ forceOpen: true });
   if (window.HerdrWorkspacePanes) window.HerdrWorkspacePanes.renderWorkspacePanes();
   if (typeof fitTerminalShell === "function") fitTerminalShell();

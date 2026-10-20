@@ -12,6 +12,7 @@ import vm from "node:vm";
 function element(id = "") {
   const classes = new Set();
   const attributes = new Map();
+  const styleProps = {};
   const node = {
     id,
     classList: {
@@ -25,7 +26,14 @@ function element(id = "") {
       },
       contains(name) { return classes.has(name); },
     },
-    style: {},
+    style: {
+      setProperty(name, value) {
+        styleProps[name] = String(value);
+      },
+      getPropertyValue(name) {
+        return styleProps[name] || "";
+      },
+    },
     dataset: {},
     value: "",
     checked: false,

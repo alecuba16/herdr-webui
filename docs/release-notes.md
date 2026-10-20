@@ -1,5 +1,15 @@
 # Release notes
 
+## Unreleased
+- Both desktop sidebars are width-resizable. Dragging the 18px toggle
+  strip resizes its sidebar (left: 330-560px, right: 320-560px) while a
+  plain click keeps toggling collapse; the drag threshold is 4px, arrow
+  keys step 8px with the strip focused, and a double-click restores the
+  stock width. Widths persist in browser options
+  (`sidebarWidth`/`rightSidebarWidth`), boot-applied through the same
+  CSS vars the grid template reads, the terminal grid re-fits on every
+  change, and Reset window layout restores the stock widths.
+
 ## 0.7.9 Release Notes
 - Chat lens panes no longer bind to the wrong jcode session or
   refuse with ambiguous when two sessions share a cwd. The pane's

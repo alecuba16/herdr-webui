@@ -286,10 +286,9 @@ registerSettingsCommit("optSidebarWorkspacePercent", () => {
 const sidebarSplitHandle = el("sidebarSplitHandle");
 if (sidebarSplitHandle) {
   let pendingSidebarWorkspacePercent = null;
-  // The split's bounding rect is read on every pointermove and its layout
-  // does not change during the drag (the percent var only stretches the two
-  // child panels, not the split container). Cache it on pointerdown so the
-  // drag does not force a synchronous layout read per move event.
+  // The split's rect is read per pointermove and its layout never changes
+  // mid-drag (the percent var stretches the two child panels only), so
+  // cache it once on pointerdown to avoid a layout read per move event.
   let sidebarSplitRect = null;
   const resizeFromClientY = (clientY) => {
     if (!sidebarSplitRect) {
@@ -332,6 +331,103 @@ if (sidebarSplitHandle) {
     );
   });
 }
+
+// Both toggle strips double as width drag handles: click toggles the
+// sidebar, a horizontal move past the threshold resizes it instead. The
+// browser fires click after pointerup even for a real drag, so the drag
+// arms a capture-phase suppressor on the strip itself.
+const SIDEBAR_DRAG_THRESHOLD_PX = 4;
+function wireSidebarWidthDrag(strip, readWidth, previewWidth, commitWidth) {
+  if (!strip) return;
+  let startX = 0;
+  let pendingWidth = null;
+  let dragging = false;
+  let suppressedClick = false;
+  let armed = false;
+  let capturedPointer = null;
+  const direction = strip.id === "rightSidebarToggle" ? -1 : 1;
+  const previewFromClientX = (clientX) => {
+    const next = readWidth() + direction * (clientX - startX);
+    pendingWidth = previewWidth(next);
+  };
+  strip.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    startX = e.clientX;
+    pendingWidth = null;
+    dragging = false;
+    armed = true;
+    // Capture keeps pointermove flowing when the cursor leaves the 18px
+    // strip; synthetic and edge-case pointer ids make it throw, and the
+    // drag must not depend on it.
+    try {
+      strip.setPointerCapture(e.pointerId);
+      capturedPointer = e.pointerId;
+    } catch (_) {}
+  });
+  strip.addEventListener("pointermove", (e) => {
+    if (!armed) return;
+    if (!dragging && Math.abs(e.clientX - startX) < SIDEBAR_DRAG_THRESHOLD_PX)
+      return;
+    if (!dragging) {
+      dragging = true;
+      suppressedClick = true;
+      strip.classList.add("dragging");
+      document.body.classList.add("sidebar-resizing");
+    }
+    previewFromClientX(e.clientX);
+  });
+  const stopResize = (e) => {
+    if (capturedPointer !== null) {
+      try {
+        strip.releasePointerCapture(capturedPointer);
+      } catch (_) {}
+      capturedPointer = null;
+    }
+    if (armed) {
+      armed = false;
+      if (dragging) {
+        strip.classList.remove("dragging");
+        document.body.classList.remove("sidebar-resizing");
+        dragging = false;
+        if (pendingWidth !== null) commitWidth(pendingWidth);
+      }
+    }
+    startX = 0;
+    pendingWidth = null;
+  };
+  strip.addEventListener("pointerup", stopResize);
+  strip.addEventListener("pointercancel", stopResize);
+  strip.addEventListener("click", (e) => {
+    if (!suppressedClick) return;
+    suppressedClick = false;
+    e.stopImmediatePropagation();
+  }, true);
+  strip.addEventListener("keydown", (e) => {
+    const grow = direction === 1 ? "ArrowRight" : "ArrowLeft";
+    const shrink = direction === 1 ? "ArrowLeft" : "ArrowRight";
+    if (e.key === grow || e.key === shrink) {
+      e.preventDefault();
+      commitWidth(readWidth() + (e.key === grow ? 8 : -8));
+    }
+  });
+  strip.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    commitWidth(null);
+  });
+}
+wireSidebarWidthDrag(
+  el("sidebarToggle"),
+  () => options.sidebarWidth ?? 330,
+  (value) => applySidebarWidth(value),
+  (value) => setSidebarWidth(value ?? 330),
+);
+wireSidebarWidthDrag(
+  el("rightSidebarToggle"),
+  () => options.rightSidebarWidth ?? 320,
+  (value) => applyRightSidebarWidth(value),
+  (value) => setRightSidebarWidth(value ?? 320),
+);
 el("optParentCloseMode").onchange = () => {
   options.parentCloseMode = el("optParentCloseMode").value;
   saveOptions();

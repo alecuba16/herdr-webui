@@ -1397,6 +1397,8 @@ const defaultOptions = {
   agentSortMode: "off",
   agentStatusOrder: ["blocked", "idle", "done", "other", "working"],
   sidebarWorkspacePercent: 68,
+  sidebarWidth: 330,
+  rightSidebarWidth: 320,
   parentCloseMode: "panels",
   workspaceOpenTerminal: false,
   closeWorkspaceOnLastTerminal: true,
@@ -1498,6 +1500,14 @@ function normalizeSidebarWorkspacePercent(value) {
     Math.min(80, Number.isFinite(Number(value)) ? Number(value) : 68),
   ));
 }
+// Min = the layout's stock widths (330/320): narrower breaks the sidebar's
+// dense rows; max keeps the main pane at least half the viewport.
+function normalizeSidebarWidth(value, fallback) {
+  return Math.round(Math.max(
+    fallback,
+    Math.min(560, Number.isFinite(Number(value)) ? Number(value) : fallback),
+  ));
+}
 function loadOptions() {
   try {
     const stored = window.HerdrOptions ? window.HerdrOptions.read() : {};
@@ -1574,6 +1584,8 @@ function normalizeOptions(value) {
   next.sidebarWorkspacePercent = normalizeSidebarWorkspacePercent(
     next.sidebarWorkspacePercent,
   );
+  next.sidebarWidth = normalizeSidebarWidth(next.sidebarWidth, 330);
+  next.rightSidebarWidth = normalizeSidebarWidth(next.rightSidebarWidth, 320);
   next.workingDismissMinutes = Math.max(
     1,
     Math.min(1440, Number(next.workingDismissMinutes) || 30),
@@ -2480,6 +2492,8 @@ function applyOptions() {
   if (sortAgents) sortAgents.value = options.agentSortMode || "off";
   if (sidebarWorkspacePercent)
     applySidebarWorkspacePercent(options.sidebarWorkspacePercent ?? 68);
+  applySidebarWidth(options.sidebarWidth ?? 330);
+  applyRightSidebarWidth(options.rightSidebarWidth ?? 320);
   renderAgentStatusOrderSettings();
   if (parentCloseMode)
     parentCloseMode.value = options.parentCloseMode || "panels";
@@ -2657,6 +2671,35 @@ function applySidebarWorkspacePercent(value) {
 }
 function previewSidebarWorkspacePercent(value) {
   return applySidebarWorkspacePercent(value);
+}
+// Width state is an inline custom property on #app itself: the element
+// declares the stock fallbacks, so a body-level write would be shadowed by
+// #app's own --sidebar-width when grid-template-columns resolves.
+function applySidebarWidth(value) {
+  const width = normalizeSidebarWidth(value, 330);
+  const app = el("app");
+  if (app) app.style.setProperty("--sidebar-width", `${width}px`);
+  return width;
+}
+function applyRightSidebarWidth(value) {
+  const width = normalizeSidebarWidth(value, 320);
+  const app = el("app");
+  if (app) app.style.setProperty("--right-sidebar-width", `${width}px`);
+  return width;
+}
+function setSidebarWidth(value) {
+  options.sidebarWidth = normalizeSidebarWidth(value, 330);
+  saveOptions();
+  applySidebarWidth(options.sidebarWidth);
+}
+function setRightSidebarWidth(value) {
+  options.rightSidebarWidth = normalizeSidebarWidth(value, 320);
+  saveOptions();
+  applyRightSidebarWidth(options.rightSidebarWidth);
+}
+function resetSidebarWidths() {
+  setSidebarWidth(defaultOptions.sidebarWidth);
+  setRightSidebarWidth(defaultOptions.rightSidebarWidth);
 }
 function syncThemeColorInputs() {
   for (const mode of ["dark", "light"]) {
