@@ -249,8 +249,15 @@ cycling + jump-to-first.**
 - TUI: unit test for the highlight split (matched/unmatched spans) and
   the select-first-on-commit transition.
 - Baseline verified on this branch before any implementation: node --test
-  src/assets/*.test.mjs → 1303 pass, 0 fail; cargo test → 1156 pass across
-  all suites, 0 fail.
+  src/assets/*.test.mjs → 1303 pass, 0 fail; cargo test → 1157 pass
+  across all suites, 0 fail (exit 0). One perf-guard test,
+  `builtin_binary_input_path_is_not_the_bottleneck`, is machine-load
+  sensitive: it failed intermittently in earlier full-suite runs while
+  compile jobs ran concurrently, then passed isolated, in the
+  single-suite run, and in the final clean full-suite run. Its failure
+  mode is a wall-clock throughput assertion under concurrent compile
+  load; this branch's two commits are markdown-only, so they cannot
+  affect the compiled binary.
 
 ## 4. Merge overlap with the sibling worktree
 
