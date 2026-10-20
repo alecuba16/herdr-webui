@@ -5,8 +5,10 @@ large file list visibly shifts the rows on screen, sometimes pushing the
 row the user is reading out of the viewport. Traced through the desktop
 file browser render path and reproduced live against an isolated server
 plus headless Chrome. Both user-visible shifts and their two independent
-mechanisms are measured below. No product code changed in this
-examination; the fix design is section 3.
+mechanisms are measured below. The examination itself changed no product
+code; after the findings were confirmed, the section 3 fix was
+implemented in product source on this branch (see the validation block in
+section 3) and every probe now measures delta 0.
 
 ## 0. What exists today (verified)
 
@@ -27,8 +29,8 @@ container is `.file-browser-side` in both hosted and legacy layouts; the
 old `.file-browser-pane-body` surface exists only in chrome.css scrollbar
 styling and a test fixture list, with zero JS references.
 
-**Rows are CSS-virtualized** (shared/file_tree.css:124-129, added in
-commit 00a3b572):
+**Rows are CSS-virtualized** (shared/file_tree.css, added in
+commit 00a3b572; state before this branch's fix):
 
 ```css
 .herdr-tree-row {
@@ -243,8 +245,43 @@ same guarantee through the identical path (`toggleDir` collapse renders
 once): rows removed above the viewport pull the anchor's doc offset up,
 and the restore pins the anchor row to the same viewport offset.
 
-Validation status of this design, measured live by injecting each half
-into a real boot (no product source touched, probes committed under
+Validation status of this design. The fix is now implemented in product
+source (3.1 in shared/file_tree.css, 3.2 inside renderPreservingScroll
+in desktop/file_browser.js) and validated live by re-running the
+committed probes against the fixed binary (build from this branch):
+
+- 3.1 applied: `.herdr-tree-row` gets `height: 29px` with
+  `contain-intrinsic-size: auto 29px`, and the current-row wrapper
+  (`herdr-file-tree-current > .herdr-tree-row`) gets `height: 31px`
+  with `contain-intrinsic-size: auto 31px`. `content-visibility: auto`
+  stays, so the paint skip survives; only the height ambiguity dies.
+  Mobile is untouched (mobile/app.css owns its own row rules and the
+  mobile boot never loads file-tree.css).
+- 3.2 applied: renderPreservingScroll now captures an anchor (first
+  row intersecting the scroller top edge, keyed by its title) before
+  render(), resolves it after the wipe, and writes
+  `scrollTop = rowDocOffset - viewportOffset`; when the anchor row is
+  gone (filter, rename, navigation) it falls back to the old pixel
+  restore, which is exactly the pre-fix behavior.
+- Measured on the fixed binary, committed probes, three scroll offsets
+  (expand-jump-experiment, first + cached expand at each):
+  1200 control delta 0, 3000 delta 0 both passes (was +331 first),
+  6500 canonical delta 0 both passes (was +1147/+726). The canonical
+  run shows the anchor doing its job: insertion above the viewport
+  moves scrollTop 5676 to 6348 (+672, the exact inserted height) while
+  the marker holds 447 to 447. The collapse probe (removal above the
+  viewport) measures delta 0 too (scrollTop returns 6348 to 5676,
+  marker 447 stable; was -672 before the fix). The first-pass repro
+  scenarios (A/B/C) all report delta 0. Row heights log exactly 29px
+  and 31px with no drift band, and the pre-click drift window is gone.
+- Regression surface: all 47 frontend .test.mjs files pass and the
+  Rust lib suite passes (398 tests) with the fix in place; the search
+  palette probe still reproduces its own (unfixed, separate) 41px
+  placeholder behavior, unchanged by this fix as expected, since
+  the palette bullet is a separate surface listed in 3.3.
+
+History: before implementation, each half was validated by injection
+into a live boot (no product source touched, probes committed under
 `scripts/e2e/`):
 
 - 3.1 injected as page CSS (29px rows, 31px current row, 17px content
@@ -267,7 +304,8 @@ into a real boot (no product source touched, probes committed under
   anchor arithmetic itself is exact once 3.1 holds: with deterministic
   heights, resolving the same row post-render yields the same doc
   offset, so the restore compensates insertion above the anchor fully
-  and the expected marker delta is 0.
+  and the expected marker delta is 0. The implementation above confirms
+  that prediction: all deltas measure 0.
 
 Repo precedent: the mobile lens compensates prepended pages by
 `scrollTop + (scrollHeight - anchorHeight)` (mobile/lens.js:926,

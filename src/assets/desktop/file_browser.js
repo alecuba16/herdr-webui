@@ -308,14 +308,57 @@
     renderIfActive(target, preserveFocus);
   }
 
+  // Anchor-based scroll restore: the viewport is pinned to a row, not
+  // to a pixel distance. The tree re-render is a full innerHTML wipe, so
+  // any insertion or removal above the viewport changes the document
+  // height and a raw scrollTop write lands on the wrong content (the
+  // expand-jump bug). Capturing the first row intersecting the scroller
+  // top edge before the wipe and resolving it by title after lets the
+  // restore compensate whatever happened above it. Falls back to the
+  // pixel value when the anchor row is gone (filter, rename, root
+  // navigation), which is exactly the old behavior.
+  function captureTreeAnchor(side) {
+    if (!side) return null;
+    const sideTop = side.getBoundingClientRect().top;
+    const rows = side.querySelectorAll(".herdr-tree-row");
+    for (const row of rows) {
+      const top = row.getBoundingClientRect().top;
+      if (top >= sideTop - 1) {
+        return {
+          title: row.getAttribute("title"),
+          viewportOffset: top - sideTop,
+        };
+      }
+    }
+    return null;
+  }
+
+  function restoreTreeAnchor(side, anchor, fallbackTop) {
+    if (!side) return;
+    if (!anchor || !anchor.title) {
+      side.scrollTop = fallbackTop;
+      return;
+    }
+    const rows = side.querySelectorAll('.herdr-tree-row[title="' + anchor.title.replace(/"/g, '\\"') + '"]');
+    const row = rows[0];
+    if (!row) {
+      side.scrollTop = fallbackTop;
+      return;
+    }
+    const sideTop = side.getBoundingClientRect().top;
+    const rowDocOffset = row.getBoundingClientRect().top + side.scrollTop - sideTop;
+    side.scrollTop = rowDocOffset - anchor.viewportOffset;
+  }
+
   function renderPreservingScroll() {
     const side = document.querySelector(".file-browser-side");
     const top = side ? side.scrollTop : 0;
+    const anchor = captureTreeAnchor(side);
     const active = document.activeElement;
     const refocusSide = !!(side && active === side);
     render();
     const next = document.querySelector(".file-browser-side");
-    if (next) next.scrollTop = top;
+    if (next) restoreTreeAnchor(next, anchor, top);
     if (refocusSide && next) next.focus({ preventScroll: true });
   }
 
