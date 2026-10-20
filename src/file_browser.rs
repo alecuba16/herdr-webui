@@ -956,11 +956,9 @@ fn push_search_entries_with_visit_limit(
                 // entries earlier pages already returned, not re-rank the tail
                 // window from zero and strand matches in between.
                 *matched += 1;
-                if !skipped {
-                    if build.entries.len() >= limit {
-                        build.truncated = true;
-                        return Ok(());
-                    }
+                if !skipped && build.entries.len() >= limit {
+                    build.truncated = true;
+                    return Ok(());
                 }
             }
             if is_dir {
@@ -2758,6 +2756,85 @@ mod tests {
             collected,
             vec!["a-fill/hit-1.txt", "b-fill/hit-2.txt", "c-fill/hit-3.txt"],
             "paged walk with visit cursor reaches every match past the cap"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn search_offset_ranks_matches_globally_across_visit_pages() {
+        // The UI advances both cursors: offset by returned entries, the visit
+        // cursor by the returned walk position. Pages must then partition the
+        // match list with no gaps and no duplicates, even when a resumed window
+        // opens on a dense prefix it must skip.
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-search-global-offset-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        for i in 0..6 {
+            fs::create_dir_all(root.join(format!("dir-{i}"))).unwrap();
+            for j in 0..3 {
+                fs::write(root.join(format!("dir-{i}/hit-{i}-{j}.txt")), "x").unwrap();
+            }
+        }
+
+        let root = root.canonicalize().unwrap();
+        let matcher = PathMatcher::new("hit-", false, false).unwrap();
+        let mut collected: Vec<String> = Vec::new();
+        let mut offset = 0usize;
+        let mut visit_cursor = 0usize;
+        loop {
+            let mut build = TreeBuild {
+                root: &root,
+                entries: Vec::new(),
+                truncated: false,
+            };
+            let mut visited = 0;
+            let mut matched = 0;
+            push_search_entries_with_visit_limit(
+                &mut build,
+                &root,
+                &matcher,
+                offset,
+                visit_cursor,
+                4,
+                &mut visited,
+                &mut matched,
+                Some("file"),
+                20,
+            )
+            .unwrap();
+            let page: Vec<String> = build
+                .entries
+                .iter()
+                .map(|entry| entry.path.as_str().to_string())
+                .collect();
+            offset += page.len();
+            collected.extend(page);
+            if !build.truncated {
+                break;
+            }
+            assert!(
+                visited > visit_cursor,
+                "the visit cursor must advance or pagination loops forever"
+            );
+            visit_cursor = visited;
+        }
+        let expected: Vec<String> = (0..6)
+            .flat_map(|i| (0..3).map(move |j| format!("dir-{i}/hit-{i}-{j}.txt")))
+            .collect();
+        assert_eq!(
+            collected.len(),
+            expected.len(),
+            "dual-cursor paging must surface every match"
+        );
+        let mut sorted_collected = collected.clone();
+        sorted_collected.sort();
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+        assert_eq!(
+            sorted_collected, sorted_expected,
+            "no gaps and no duplicates across pages"
         );
         let _ = fs::remove_dir_all(root);
     }
