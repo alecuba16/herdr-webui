@@ -12,6 +12,7 @@ import vm from "node:vm";
 function element(id = "") {
   const classes = new Set();
   const attributes = new Map();
+  const styleProps = {};
   const node = {
     id,
     classList: {
@@ -25,7 +26,14 @@ function element(id = "") {
       },
       contains(name) { return classes.has(name); },
     },
-    style: {},
+    style: {
+      setProperty(name, value) {
+        styleProps[name] = String(value);
+      },
+      getPropertyValue(name) {
+        return styleProps[name] || "";
+      },
+    },
     dataset: {},
     value: "",
     checked: false,
@@ -218,6 +226,7 @@ describe("window layout reset integration", () => {
       localStorage.setItem("herdr-web-workspace-shell", JSON.stringify(state.workspaceShell));
       localStorage.setItem("herdr-web-sidebar-collapsed", "1");
       localStorage.setItem("herdr-web-right-sidebar-collapsed", "1");
+      localStorage.setItem("herdr-web-options", JSON.stringify({ sidebarWidth: 500, rightSidebarWidth: 490 }));
       localStorage.setItem("herdr-session-state:builtin:default", JSON.stringify({ ws: "ws-a", tab: "t1", pane: "p1" }));
       localStorage.setItem("herdr-session-state:external-herdr:default", JSON.stringify({ ws: "ws-a", tab: "t1", pane: "p1" }));
       // Instrument what the reset drives.
@@ -257,6 +266,12 @@ describe("window layout reset integration", () => {
     // trees, hosted modes, and collapsed states are gone.
     assert.ok(!keys.includes("herdr-web-sidebar-collapsed") || vm.runInContext("localStorage.getItem('herdr-web-sidebar-collapsed')", ctx) === "0", "left sidebar reset to expanded");
     assert.ok(!keys.includes("herdr-web-right-sidebar-collapsed") || vm.runInContext("localStorage.getItem('herdr-web-right-sidebar-collapsed')", ctx) === "0", "right sidebar reset to expanded");
+    const storedOptions = JSON.parse(vm.runInContext("localStorage.getItem('herdr-web-options')", ctx) || "{}");
+    assert.equal(storedOptions.sidebarWidth, 330, "left sidebar width back to stock 330");
+    assert.equal(storedOptions.rightSidebarWidth, 320, "right sidebar width back to stock 320");
+    const appNode = ctx.document.getElementById("app");
+    assert.equal(appNode.style.getPropertyValue("--sidebar-width"), "330px", "left CSS var back to stock");
+    assert.equal(appNode.style.getPropertyValue("--right-sidebar-width"), "320px", "right CSS var back to stock");
     assert.ok(!keys.some((k) => k.startsWith("herdr-session-state:")), "session selection keys cleared");
     const shellRaw = vm.runInContext("localStorage.getItem('herdr-web-workspace-shell')", ctx);
     const shellFresh = !shellRaw || (() => { try { const parsed = JSON.parse(shellRaw); return Object.values(parsed).every((s) => !s || s.mode === "terminal"); } catch { return false; } })();
