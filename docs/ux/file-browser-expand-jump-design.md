@@ -65,7 +65,9 @@ dirs x 20 files, opens the workspace through the real funnel
 (`POST /api/recent-workspaces` from node, then the routed
 `/session/default/workspace/<id>` URL), expands the sidebar, scrolls, and
 clicks the real caret of `dir-5`. `dir-5` sorts lexicographically at row
-146 of 200 (the `dir-1xx` block), doc offset ~5490px. The marker is the
+146 of 200 (after `dir-49`, before `dir-50`: the `dir-1xx` block takes
+indices 0-110, so `dir-5` lands in the `dir-5x` region), doc offset
+~5490px. The marker is the
 mid-viewport row; the metric is the marker's viewport-Y from caret click
 to settled state. Row-level instrumentation samples heights at every
 mutation and scroll event through a panel-level observer: listeners on

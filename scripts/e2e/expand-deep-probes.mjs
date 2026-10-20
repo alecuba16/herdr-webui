@@ -5,8 +5,9 @@
 // V6:  controlled 6500 first-expand with a SETTLED baseline (wait out the
 //      realization drift before clicking) to separate the second-wipe
 //      contribution from the unstable-baseline confound.
-// V7:  rAF frame sampling of the post-restore slide (3000 cached pass) to
-//      observe the reconvergence the doc claims (1082 -> 542 class motion).
+// V7:  timer-frame sampling (16ms) of the post-restore slide (3000 cached
+//      pass) to observe the reconvergence the doc claims (1082 -> 542 class
+//      motion). rAF is avoided: headless shell can idle-skip animation frames.
 // V9:  event-loop yield check: whether the cached-pass wipe+restore happens
 //      with no intervening task (scrollTop restore synchronous with wipe).
 //
@@ -59,8 +60,9 @@ async function waitFor(expr, label, timeout = 20000) {
 await send("Page.enable");
 await send("Runtime.enable");
 await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
-// Headless shell can idle-skip rAF unless frames are requested. A screencast
-// forces BeginFrame production so animation-frame sampling works.
+// Kept from the rAF experiments: a screencast request forces frame production
+// in some headless builds. Harmless with timer sampling; rAF itself proved
+// unreliable here (idle-skipped), which is why V7 samples on a 16ms timer.
 try { await send("Page.startScreencast", { format: "jpeg", quality: 40, everyNthFrame: 1 }); } catch {}
 
 const open = await fetch(`${ORIGIN}/api/recent-workspaces`, {
@@ -125,9 +127,9 @@ await sleep(400);
 const deathFinal = await evalJs(`(() => ({ probe: window.__deadProbe, sameElement: document.querySelector('.file-browser-side') === window.__oldSide }))()`);
 console.log("[V5b listener-death]", JSON.stringify({ deathSetup, deathAfter, deathFinal }));
 
-// ---------- V7: rAF slide sampling, 3000 cached pass ----------
+// ---------- V7: timer-sampled slide, 3000 cached pass ----------
 // Get to a cached-expand state: expand dir-5 once (fetch), collapse, then
-// instrument rAF and re-expand from cache.
+// instrument a 16ms sampling timer and re-expand from cache.
 await evalJs(`(() => { const side = document.querySelector('.file-browser-side'); side.scrollTop = 3000; return side.scrollTop; })()`);
 await sleep(1500);
 await evalJs(`(() => {
@@ -179,7 +181,7 @@ const slideSetup = await evalJs(`(() => {
 })()`);
 await sleep(2600);
 const slide = await evalJs(`(() => new Promise((res) => setTimeout(() => res({ marker: window.__slideMarker, samples: (window.__slideSamples || []) }), 100)))()`);
-console.log("[V7 rAF slide]", JSON.stringify(slideSetup), "samples:", JSON.stringify((slide.samples || []).slice(0, 12)), "... tail:", JSON.stringify((slide.samples || []).slice(-4)));
+console.log("[V7 timer slide]", JSON.stringify(slideSetup), "samples:", JSON.stringify((slide.samples || []).slice(0, 12)), "... tail:", JSON.stringify((slide.samples || []).slice(-4)));
 
 // ---------- V9: same-task wipe+restore for cached pass ----------
 const yieldProbe = await evalJs(`(() => {
