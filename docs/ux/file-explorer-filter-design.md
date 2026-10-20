@@ -164,7 +164,7 @@ not client-side filtering.**
   two webui surfaces consistent and gives recursive (deep) matching for
   free; the BFS already exists server-side (`push_search_entries`
   file_browser.rs:836 delegates to `push_search_entries_with_visit_limit`
-  at 859, whose BFS queue loop ends ~932).
+  at 859-937, the recursive walk's queue loop ending at 930-936).
 - Client-side filtering over `flattenEntries` would restrict matches to
   the loaded tree and diverge from mobile for no gain.
 - The TUI stays as is: it already uses the same route through
@@ -345,11 +345,14 @@ cycling + jump-to-first.**
   load; this branch's commits are all markdown-only, so they cannot
   affect the compiled binary.
 - Route behavior verified against a real isolated server instance (own
-  XDG_CONFIG_HOME and --session, never touching a running instance):
-  /api/file-browser/tree with q=design over docs/ux returned 6 entries,
-  all name-matching, from 18 unfiltered. Server-side filtering returns
-  only matches, confirming the TUI design premise that after commit
-  every visible row is a match.
+  XDG_CONFIG_HOME and --session, never touching a running instance;
+  evidence re-run and persisted at $JCODE_SCRATCH_DIR/
+  filter-routecheck-r8/): /api/file-browser/tree with path=docs
+  returned 18 entries unfiltered, and q=design over the same docs/
+  path returned 6 entries, all name-matching, recursively found inside
+  docs/ux (the search descends subdirectories; docs/ux itself holds 13
+  files). Server-side filtering returns only matches, confirming the
+  TUI design premise that after commit every visible row is a match.
 - e2e baseline: scripts/e2e/run-keyboard-guards-e2e.sh PASSED on both
   layouts (isolated server + headless Chrome against the real served
   app).
