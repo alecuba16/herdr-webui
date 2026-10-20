@@ -6338,6 +6338,19 @@ describe("app bundle load", () => {
     match(baseCss, /\.sidebar-toggle \{[\s\S]*?cursor: col-resize;/);
   });
 
+  it("styles the drag affordance on the toggle strip", () => {
+    const baseCss = readFileSync(new URL("./desktop/app_css/base.css", import.meta.url), "utf8");
+
+    // The grip line is visible before hover: full-strength currentColor
+    // keeps 3:1 non-text contrast on the panel gradient in both themes.
+    match(baseCss, /\.sidebar-toggle::before \{[\s\S]*?background: currentColor;[\s\S]*?height: 64px;[\s\S]*?width: 2px;/, "grip line rule");
+    // The hint reads top-to-bottom inside the 18px strip and only shows
+    // on hover or keyboard focus, never mid-drag or collapsed.
+    match(baseCss, /\.sidebar-toggle::after \{[\s\S]*?content: "Drag to resize";[\s\S]*?display: none;[\s\S]*?writing-mode: vertical-rl;/, "hint rule");
+    match(baseCss, /\.sidebar-toggle:hover:not\(\.dragging\)::after,[\s\S]*?\.sidebar-toggle:focus:not\(\.dragging\)::after \{[\s\S]*?display: block;/, "hint shows on hover and focus only");
+    match(baseCss, /#app\.sidebar-collapsed \.sidebar-toggle::after,[\s\S]*?#app\.sidebar-collapsed \.sidebar-toggle::before \{[\s\S]*?display: none;/, "grip and hint hidden while collapsed");
+  });
+
   it("drops the orphaned tab activity feature", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
