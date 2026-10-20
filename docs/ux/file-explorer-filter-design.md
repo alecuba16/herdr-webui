@@ -170,7 +170,9 @@ not client-side filtering.**
 - The TUI stays as is: it already uses the same route through
   `file_search` (mod.rs:141-152).
 - Deep search overlap with the palette is accepted: mobile already has
-  both (in-screen filter + palette), so precedent says they coexist.
+  both (in-screen filter + header search palette, gated by the
+  `headerSearchEnabled` setting, mobile/settings.js:229), so precedent
+  says they coexist.
 
 ### 1.3 Hide vs. highlight
 
@@ -215,12 +217,25 @@ body, file_browser.js:1157), styled after `.git-ui-file-filter`
 wraparound, scrolling it into view and selecting it. Outside the input,
 with a filter active, the tree keeps normal keyboard behavior.**
 
-- This is find-bar behavior, matching the editor find bar
-  (files/find.rs TUI precedent) and browser find bars.
+- Arrow keys are the user's explicit request; they are not in-repo
+  find-bar parity. Both existing find bars cycle with Enter/Shift+Enter:
+  the webui editor find bar (shared/editor.js:386-390) and the TUI
+  files find bar (src/tui/panels/files/find.rs:3). Arrows were chosen
+  because Enter keeps its tree meaning (open the selected file) and
+  Shift+Enter stays free for the editor's newline in drafts.
 - Wraparound at both ends (last match + ↓ = first, first match + ↑ =
   last).
 - The selection follows the active match (selected row = active match
   row) so Enter opens the file the user is looking at.
+- One dispatch-order caveat, existing app-wide behavior: while the
+  global prefix window is armed (Ctrl+B, 5s), the global capture-phase
+  handler consumes every keydown unconditionally (shortcuts.js:497-500,
+  `runPrefixedShortcut` has no editable-target guard) and Esc clears
+  the prefix first (shortcuts.js:498). So a keystroke typed into the
+  filter right after arming the prefix is swallowed once, and the first
+  Esc clears the prefix, the second clears the filter. Every input in
+  the app behaves this way today (git filter included); noted, not
+  fixed by this feature.
 - ‹ › pointer fallback buttons next to the status text for pointer
   users, same cycling, wiring through the existing click-delegation
   pattern in file_browser.js (no new global listener).
@@ -265,9 +280,11 @@ cycling + jump-to-first.**
   walk the list (mod.rs:2476-2477), so the selection is the active
   match. Wraparound exists via move_selection. Jump-to-first plus the
   existing movement covers the ↑/↓ requirement.
-- Configurable: TUI shortcuts are hardcoded today (src/tui/keys.rs); the TUI
-  settings overlay is informational only. Rebinding in the TUI is out
-  of scope for this cut. Parity note in docs/tui-shortcuts.md.
+- Configurable: TUI shortcuts are hardcoded today (src/tui/keys.rs); the
+  TUI settings overlay is read-only/informational (render/mod.rs:2301-2305:
+  API base, theme, refresh interval, roots; only `t` cycles theme).
+  Rebinding in the TUI is out of scope for this cut. Parity note in
+  docs/tui-shortcuts.md.
 - Referenced docs verified to exist: docs/tui-shortcuts.md,
   docs/tui-parity-plan.md (the file explorer gaps are numbered 16-21,
   plus 22 for markdown preview; the plan's Phase 4 title says "gaps
@@ -278,8 +295,11 @@ cycling + jump-to-first.**
 - Whether the webui active-match row class also bumps scroll-margin or
   relies on `scrollIntoView({block:"nearest"})` alone. Implementation
   detail.
-- e2e harness check for typing into the filter input; the harness
-  supports text input elsewhere (settings search), so likely fine.
+- e2e harness text input: solved pattern exists, no harness change
+  needed. search-ux-acceptance.mjs types into an input by focus +
+  value assignment + `dispatchEvent(new Event("input"))` (lines 103-110)
+  and synthesizes key chords via `dispatchEvent(new KeyboardEvent(...))`
+  (line 257); the file browser filter tests can copy both.
 
 ## 2. Implementation order
 
