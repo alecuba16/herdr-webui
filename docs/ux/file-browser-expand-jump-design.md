@@ -238,6 +238,32 @@ same guarantee through the identical path (`toggleDir` collapse renders
 once): rows removed above the viewport pull the anchor's doc offset up,
 and the restore pins the anchor row to the same viewport offset.
 
+Validation status of this design, measured live by injecting each half
+into a real boot (no product source touched, probes committed under
+`scripts/e2e/`):
+
+- 3.1 injected as page CSS (29px rows, 31px current row, 17px content
+  intrinsic): row heights come out exactly 29/31, the tree stops
+  drifting (marker holds to the pixel across a 2s no-interaction
+  window, versus the 475-to-211-class pre-click drift today), the
+  setup clamp becomes deterministic (asked 6500 lands 5676 and stays,
+  because the true 29px tree is shorter than the placeholder-inflated
+  one), and the cached-expand delta drops to +672px = 21 children x 29px
+  + 21 x 3px gap, matching the collapse measurement exactly. Mechanism
+  B is gone with 3.1 alone; the remaining 672 is pure mechanism A.
+- 3.2 cannot be validated by patching the DOM from outside:
+  `renderPreservingScroll` is closure-scoped, and an element-level
+  scrollTop interceptor (own-property accessor installed on the
+  scroller) is destroyed by the first innerHTML wipe together with the
+  scroller element itself, the same listener-death mechanism documented
+  in section 1. Probe runs with the interceptor installed reproduce the
+  unfixed baseline (+1147/+726/-672). This confirms the fix must live
+  inside `renderPreservingScroll` in product code, as designed. The
+  anchor arithmetic itself is exact once 3.1 holds: with deterministic
+  heights, resolving the same row post-render yields the same doc
+  offset, so the restore compensates insertion above the anchor fully
+  and the expected marker delta is 0.
+
 Repo precedent: the mobile lens compensates prepended pages by
 `scrollTop + (scrollHeight - anchorHeight)` (mobile/lens.js:926,
 961-963). The file browser cannot use the total-height delta because the
@@ -308,7 +334,13 @@ cannot anchor across an `innerHTML` replacement).
   covers the deep-validation round: listener death on the scroller, timer
   sampling of the post-restore slide, click-task atomicity of the cached
   expand, and the settled-baseline controlled first expand cited in
-  section 1. Logs under `$JCODE_SCRATCH_DIR/expand-jump-verify/`.
+  section 1. `scripts/e2e/run-collapse-probe.sh` plus `collapse-probe.mjs`
+  measure the collapse shift (-672px), and `scripts/e2e/`
+  `run-fix-design-probes.sh` plus `fix-design-probes.mjs` and
+  `run-anchor-restore-probe.sh` plus `anchor-restore-probe.mjs` validate
+  the section 3 design by injection (CSS-fix measurements and the
+  interceptor-death finding). Logs under `$JCODE_SCRATCH_DIR/`
+  `expand-jump-verify/`.
 - The evidence JSONs store the first 30 row indices of each height
   population, not a full per-row dump; row-band claims above are
   bounded by that sampling.
