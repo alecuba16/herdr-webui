@@ -718,7 +718,7 @@ function helpAndShortcutsBodyHtml() {
           <p class="settings-note">Main Herdr areas and what each control does.</p>
           <div class="help-grid">
             <div class="help-row"><strong>Sidebar</strong><span>Workspaces show open roots/worktrees; agents list status. Click to open; double-click names to rename. Drag the workspace/agents separator to resize by percent. Colored badges show blocked, done, working, and idle.</span></div>
-            <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? jumps to Help &amp; Shortcuts; gear opens Settings (both live in one modal); moon/theme toggles color mode; sidebar chevron hides/shows navigation.</span></div>
+            <div class="help-row"><strong>Header</strong><span>＋ opens/creates workspace; ? jumps to Help &amp; Shortcuts; gear opens Settings (both live in one modal); moon/theme toggles color mode; sidebar chevron hides/shows navigation. Each sidebar chevron strip also resizes its sidebar: drag it horizontally, press the arrow keys with it focused (±8px), or double-click to restore the stock width.</span></div>
             <div class="help-row"><strong>Panels/Tabs</strong><span>Each pane has a tab strip: click a tab to activate it, double-click a terminal tab to rename, ✕ closes the tab, + creates a terminal panel in that pane. Editor and git tabs open from the sidebar and can sit beside terminal tabs in any pane.</span></div>
             <div class="help-row"><strong>Panes</strong><span>Split the active pane right or down from the strip ◫/⊟ buttons or shortcuts; drag the divider to resize; close a pane with ✕-promoting its sibling. Editor and git tabs drag between panes with a caret marking the drop slot, or move with a shortcut. The [⋮] menu offers split, maximize/restore, rename, move, and close for the pane's active tab. Maximize hides the layout and shows one pane; toggle again to restore, and the layout survives reloads.</span></div>
             <div class="help-row"><strong>Terminal</strong><span>Desktop and mobile terminals use the shared renderer adapter. Settings → Terminal → Renderer switches between the default Ghostty core and the lightweight wterm core and reconnects the current terminal; the Ghostty core renders Kitty graphics images inline, wterm shows a placeholder summary. Wheel, trackpad, touch, and PageUp/PageDown scroll normal scrollback; external Herdr sessions try backend scroll first, built-in sessions use local renderer scrollback, and alternate-screen apps keep their own scroll keys. Tail appears after scrolling up and jumps back to latest output. Links are enabled by default, mouse reporting is opt-in, paste uses bounded WebSocket chunks, and scroll speed is configurable in Settings → Terminal.</span></div>
@@ -1397,6 +1397,8 @@ const defaultOptions = {
   agentSortMode: "off",
   agentStatusOrder: ["blocked", "idle", "done", "other", "working"],
   sidebarWorkspacePercent: 68,
+  sidebarWidth: 330,
+  rightSidebarWidth: 320,
   parentCloseMode: "panels",
   workspaceOpenTerminal: false,
   closeWorkspaceOnLastTerminal: true,
@@ -1498,6 +1500,14 @@ function normalizeSidebarWorkspacePercent(value) {
     Math.min(80, Number.isFinite(Number(value)) ? Number(value) : 68),
   ));
 }
+// Min = the layout's stock widths (330/320): narrower breaks the sidebar's
+// dense rows; max keeps the main pane at least half the viewport.
+function normalizeSidebarWidth(value, fallback) {
+  return Math.round(Math.max(
+    fallback,
+    Math.min(560, Number.isFinite(Number(value)) ? Number(value) : fallback),
+  ));
+}
 function loadOptions() {
   try {
     const stored = window.HerdrOptions ? window.HerdrOptions.read() : {};
@@ -1574,6 +1584,8 @@ function normalizeOptions(value) {
   next.sidebarWorkspacePercent = normalizeSidebarWorkspacePercent(
     next.sidebarWorkspacePercent,
   );
+  next.sidebarWidth = normalizeSidebarWidth(next.sidebarWidth, 330);
+  next.rightSidebarWidth = normalizeSidebarWidth(next.rightSidebarWidth, 320);
   next.workingDismissMinutes = Math.max(
     1,
     Math.min(1440, Number(next.workingDismissMinutes) || 30),
@@ -2480,6 +2492,8 @@ function applyOptions() {
   if (sortAgents) sortAgents.value = options.agentSortMode || "off";
   if (sidebarWorkspacePercent)
     applySidebarWorkspacePercent(options.sidebarWorkspacePercent ?? 68);
+  applySidebarWidth(options.sidebarWidth ?? 330);
+  applyRightSidebarWidth(options.rightSidebarWidth ?? 320);
   renderAgentStatusOrderSettings();
   if (parentCloseMode)
     parentCloseMode.value = options.parentCloseMode || "panels";
@@ -2657,6 +2671,35 @@ function applySidebarWorkspacePercent(value) {
 }
 function previewSidebarWorkspacePercent(value) {
   return applySidebarWorkspacePercent(value);
+}
+// Width state is an inline custom property on #app itself: the element
+// declares the stock fallbacks, so a body-level write would be shadowed by
+// #app's own --sidebar-width when grid-template-columns resolves.
+function applySidebarWidth(value) {
+  const width = normalizeSidebarWidth(value, 330);
+  const app = el("app");
+  if (app) app.style.setProperty("--sidebar-width", `${width}px`);
+  return width;
+}
+function applyRightSidebarWidth(value) {
+  const width = normalizeSidebarWidth(value, 320);
+  const app = el("app");
+  if (app) app.style.setProperty("--right-sidebar-width", `${width}px`);
+  return width;
+}
+function setSidebarWidth(value) {
+  options.sidebarWidth = normalizeSidebarWidth(value, 330);
+  saveOptions();
+  applySidebarWidth(options.sidebarWidth);
+}
+function setRightSidebarWidth(value) {
+  options.rightSidebarWidth = normalizeSidebarWidth(value, 320);
+  saveOptions();
+  applyRightSidebarWidth(options.rightSidebarWidth);
+}
+function resetSidebarWidths() {
+  setSidebarWidth(defaultOptions.sidebarWidth);
+  setRightSidebarWidth(defaultOptions.rightSidebarWidth);
 }
 function syncThemeColorInputs() {
   for (const mode of ["dark", "light"]) {

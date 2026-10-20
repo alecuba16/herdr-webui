@@ -6,7 +6,7 @@ The browser UI provides workspace navigation, top panel tabs, agent status, term
 
 Sidebar:
 
-- The sidebar can collapse via the divider; state is stored in browser `localStorage` and collapsed mode keeps compact blocked/working/idle/done counters.
+- The sidebar can collapse via the divider; state is stored in browser `localStorage` and collapsed mode keeps compact blocked/working/idle/done counters. Both sidebars are also width-resizable: drag the 18px toggle strip horizontally (a plain click still toggles, a drag resizes), arrow keys resize by 8px when the strip is focused, and double-click restores the stock width. Widths clamp to the stock 330px/320px minimum and 560px maximum, persist in browser options, and the terminal grid re-fits on each change. Reset window layout restores stock widths too.
 - The header exposes unified Search, Theme, No-sleep, Worktree, New workspace, Git, and Files controls. The footer exposes session info, Settings (the merged modal includes the Help & Shortcuts section), and backend status. Built-in backend mode is shown as `built-in` instead of the internal built-in version string.
 - The footer session button opens the session manager. It lists detected external Herdr sessions and built-in sessions together, shows the backend kind for each row, and can target or launch a session in either backend.
 - Theme colors are browser-local and shared with shell controls and embedded Git UI.

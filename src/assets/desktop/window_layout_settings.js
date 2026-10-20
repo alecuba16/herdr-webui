@@ -35,7 +35,7 @@
     <h3>Window layout</h3>
     <p>Panes, splits, maximized panes, open panels, and the remembered workspace and tab selection are saved in this browser. Workspaces, panels, and agents on the server are untouched.</p>
   </div>
-  <div class="option"><span>Reset window layout<small>Clears saved panes and splits, closes open panels, expands both sidebars, and forgets the remembered selection. Asks before resetting.</small></span><button type="button" class="btn" id="windowLayoutReset">Reset window layout</button></div>
+  <div class="option"><span>Reset window layout<small>Clears saved panes and splits, closes open panels, expands both sidebars, restores their stock widths, and forgets the remembered selection. Asks before resetting.</small></span><button type="button" class="btn" id="windowLayoutReset">Reset window layout</button></div>
   <p class="settings-note" id="windowLayoutResetNote" hidden></p>
 </div>`,
     ids: ["windowLayoutReset"],
