@@ -300,15 +300,50 @@ cannot anchor across an `innerHTML` replacement).
 - **Git log**: virtualized rows (git_ui/log.css:514-518) with pixel
   restore via `captureContentScroll` (git_ui.js:1085-1098). Log rows
   append at the bottom, so mechanism A is rare there, but mechanism B
-  still perturbs the thumb on every render. Lower priority.
-- **Git side tree**: not virtualized (no content-visibility on side
-  rows), so its pixel restore is safe today.
+  still perturbs the thumb on every render. Lower priority. Measured
+  live at the final HEAD (git-surfaces-probe): 80 rendered log rows
+  carry computed `content-visibility: auto; contain-intrinsic-size:
+  auto 30px`, confirming the virtualization claim in the running
+  shell. The pixel-restore delta itself could not be measured there:
+  in the headless fixture the git log mounts inside a center-pane tab
+  that stays display:none while the right column owns the shell focus,
+  so no zero-size pixel numbers are reported; that surfacing limit is
+  a property of the fixture, not evidence about the bug.
+- **Git side tree**: correction from the live run. Earlier source
+  inspection said the side tree is not virtualized; that is stale:
+  desktop boots load shared `file-tree.css`, whose `.herdr-tree-row`
+  rule covers the git side rows too, and the live probe measured
+  computed `content-visibility: auto; contain-intrinsic-size: auto
+  26px` on side rows (37 rows, scrollHeight 1160). So the side tree
+  has the same placeholder error exposure as the file browser. The
+  measured pixel restore is still exact today (content-neutral
+  re-render under pinned scrollTop 40: delta 0, marker height stable
+  at the realized 27px, scrollTop restored 40 to 40), but that safety
+  comes from the rows being single-height in this fixture (27px
+  realized vs 26px intrinsic), not from the absence of
+  virtualization; the same cv-auto/26px placeholder risk as 3.1's
+  29-vs-26 gap applies as soon as realized heights diverge from the
+  intrinsic guess.
 - **Mobile file browser**: no content-visibility on tree rows, and the
-  lens already anchors prepends. Unaffected.
+  lens already anchors prepends. Unaffected. Confirmed live
+  (mobile-tree-probe): in the mobile layout the tree rows compute
+  `content-visibility: visible; contain-intrinsic-size: none` (1001
+  rows, no virtualization), and expanding a directory is a navigation,
+  not a splice: the row set changes wholesale (1001 rows at the repo
+  root become 22 child rows in the target dir) and scroll resets with
+  the new screen by design, so there is no in-place insertion above
+  the viewport and no pixel-restore path to break.
 - **TUI**: `toggle_expand` splices children in place below the cursor
   (tui/panels/files/mod.rs:170-200) and the list window is computed from
   the selected row (tui/render/mod.rs:527-531), so the cursor row stays
-  centered by construction. Nothing to change.
+  centered by construction. Nothing to change. Verified at the final
+  HEAD by the committed unit tests:
+  `toggle_expand_merges_children_and_collapses_back` and
+  `open_preview_on_dir_expands_and_ctrl_r_reloads` (expand merges the
+  child entries below the cursor, collapse drains them, both pass;
+  full tui:: suite 349 passed) plus a frame's list window start
+  recomputed from `selected` every render, so insertion cannot shift
+  the viewport the way the DOM surfaces do.
 
 ## 4. Tests
 
@@ -354,8 +389,17 @@ cannot anchor across an `innerHTML` replacement).
   `run-anchor-restore-probe.sh` plus `anchor-restore-probe.mjs` validate
   the section 3 design by injection (CSS-fix measurements and the
   interceptor-death finding), and `run-search-palette-probe.sh` plus
-  `search-palette-probe.mjs` measure the palette bullet in 3.3. Logs
-  under `$JCODE_SCRATCH_DIR/` `expand-jump-verify/`.
+  `search-palette-probe.mjs` measure the palette bullet in 3.3. A
+  sibling-surface round covers the remaining 3.3 bullets live:
+  `run-git-surfaces-probe.sh` plus `git-surfaces-probe.mjs` (git log
+  computed-style confirmation with the headless pane-tab surfacing
+  limit recorded, git side tree cv-auto/26px correction and the
+  pinned-scrollTop delta-0 re-render) and `run-mobile-tree-probe.sh`
+  plus `mobile-tree-probe.mjs` (mobile layout rows compute
+  visible/none, expand navigates rather than splices). The TUI bullet
+  is covered by the committed unit tests named in 3.3. Logs under
+  `$JCODE_SCRATCH_DIR/` `expand-jump-verify/` and
+  `expand-jump-final/`.
 - The evidence JSONs store the first 30 row indices of each height
   population, not a full per-row dump; row-band claims above are
   bounded by that sampling.
