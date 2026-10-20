@@ -4511,6 +4511,103 @@ describe("app bundle load", () => {
     equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options")).rightSidebarWidth, 320);
   });
 
+  it("covers the sidebar drag edge paths: cancel, threshold, ceiling, buttons, classes", () => {
+    const ctx = context();
+    const listeners = {};
+    for (const id of ["sidebarToggle", "rightSidebarToggle"]) {
+      const node = ctx.document.getElementById(id);
+      listeners[id] = {};
+      node.addEventListener = (type, fn, capture) => {
+        listeners[id][type] = listeners[id][type] || [];
+        listeners[id][type].push({ fn, capture });
+      };
+      node.hasPointerCapture = () => true;
+      node.releasePointerCapture = () => {};
+      node.setPointerCapture = () => {};
+    }
+    vm.runInContext(source, ctx);
+
+    // Capture failures must not kill the drag: make the strip throw on
+    // capture and release once each and prove the width still commits.
+    const throwOnce = (obj, method) => {
+      let thrown = false;
+      const orig = obj[method];
+      obj[method] = (...args) => {
+        if (!thrown) { thrown = true; throw new Error("synthetic pointer"); }
+        return orig(...args);
+      };
+    };
+    throwOnce(ctx.document.getElementById("sidebarToggle"), "setPointerCapture");
+    throwOnce(ctx.document.getElementById("rightSidebarToggle"), "releasePointerCapture");
+
+    const cssVars = () => {
+      const app = ctx.document.getElementById("app");
+      return {
+        left: app.style.getPropertyValue("--sidebar-width"),
+        right: app.style.getPropertyValue("--right-sidebar-width"),
+      };
+    };
+    const left = listeners.sidebarToggle;
+    const strip = ctx.document.getElementById("sidebarToggle");
+    const optionsOf = () => JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}");
+
+    // pointerdown with a non-primary button does not arm the drag: moves
+    // are ignored and pointerup commits nothing.
+    left.pointerdown[0].fn({ button: 2, clientX: 400, pointerId: 1 });
+    left.pointermove[0].fn({ clientX: 500, pointerId: 1 });
+    equal(cssVars().left, "330px", "non-primary button never arms");
+    left.pointerup[0].fn({ pointerId: 1 });
+    equal(cssVars().left, "330px");
+
+    // Moves below the 4px threshold never start the drag, so the class
+    // never lands and the following click still toggles.
+    left.pointerdown[0].fn({ button: 0, clientX: 400, pointerId: 2 });
+    left.pointermove[0].fn({ clientX: 402, pointerId: 2 });
+    ok(!strip.classList.contains("dragging"), "below threshold stays a click");
+    left.pointerup[0].fn({ pointerId: 2 });
+    ok(!strip.classList.contains("dragging"), "no drag class after pointerup");
+
+    // A real drag adds the dragging class, and pointercancel commits the
+    // pending width instead of dropping it (same stopResize path).
+    left.pointerdown[0].fn({ button: 0, clientX: 400, pointerId: 3 });
+    left.pointermove[0].fn({ clientX: 440, pointerId: 3 });
+    ok(strip.classList.contains("dragging"), "dragging class while dragging");
+    left.pointercancel[0].fn({ pointerId: 3 });
+    ok(!strip.classList.contains("dragging"), "class cleared on cancel");
+    equal(cssVars().left, "370px", "cancel commits the pending width");
+    equal(optionsOf().sidebarWidth, 370);
+
+    // Ceiling: a huge drag clamps at the shared 560px maximum.
+    left.pointerdown[0].fn({ button: 0, clientX: 400, pointerId: 4 });
+    left.pointermove[0].fn({ clientX: 4000, pointerId: 4 });
+    left.pointerup[0].fn({ pointerId: 4 });
+    equal(cssVars().left, "560px", "560px ceiling on drag");
+    equal(optionsOf().sidebarWidth, 560);
+
+    // Unrelated keys do not resize; the right strip's grow key is the
+    // mirrored ArrowLeft (toward the center widens the right sidebar).
+    left.keydown[0].fn({ key: "Enter", preventDefault() {} });
+    equal(cssVars().left, "560px", "Enter leaves the width alone");
+    const right = listeners.rightSidebarToggle;
+    right.keydown[0].fn({ key: "ArrowLeft", preventDefault() {} });
+    equal(cssVars().right, "328px", "right grow steps 8px via ArrowLeft");
+    right.keydown[0].fn({ key: "ArrowRight", preventDefault() {} });
+    right.keydown[0].fn({ key: "ArrowRight", preventDefault() {} });
+    equal(cssVars().right, "320px", "right shrink clamps at the 320px floor");
+    equal(optionsOf().rightSidebarWidth, 320);
+
+    // pointermove without a prior pointerdown is a no-op (armed flag).
+    left.pointermove[0].fn({ clientX: 480, pointerId: 9 });
+    equal(cssVars().left, "560px", "unarmed move ignored");
+
+    // The right strip's releasePointerCapture threw above; a drag there
+    // still commits (the try/catch swallows the throw).
+    right.pointerdown[0].fn({ button: 0, clientX: 900, pointerId: 5 });
+    right.pointermove[0].fn({ clientX: 880, pointerId: 5 });
+    right.pointerup[0].fn({ pointerId: 5 });
+    equal(cssVars().right, "340px", "commit survives a release-capture throw");
+  });
+
   it("keeps chord tooltips on sidebar toggles across render() polls", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

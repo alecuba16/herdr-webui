@@ -372,7 +372,6 @@ function wireSidebarWidthDrag(strip, readWidth, previewWidth, commitWidth) {
       dragging = true;
       suppressedClick = true;
       strip.classList.add("dragging");
-      document.body.classList.add("sidebar-resizing");
     }
     previewFromClientX(e.clientX);
   });
@@ -387,7 +386,6 @@ function wireSidebarWidthDrag(strip, readWidth, previewWidth, commitWidth) {
       armed = false;
       if (dragging) {
         strip.classList.remove("dragging");
-        document.body.classList.remove("sidebar-resizing");
         dragging = false;
         if (pendingWidth !== null) commitWidth(pendingWidth);
       }
