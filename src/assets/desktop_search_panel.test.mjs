@@ -362,6 +362,164 @@ test("selected workspace folder wins over the default folder", async () => {
   assert.ok(searched.every((s) => s.cwd === "/repo"), "every search used the selected workspace folder");
 });
 
+test("panel renders the aA and regex mode toggles wired to panel state", async () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadPanel(document);
+
+  await ctx.HerdrSearchPanel.open("ws-1", {});
+  const markup = String(nodes.searchPanel.innerHTML);
+  assert.ok(markup.includes('id="searchPanelCaseToggle"'), "case toggle renders in the panel head");
+  assert.ok(markup.includes('id="searchPanelRegexToggle"'), "regex toggle renders in the panel head");
+  assert.ok(markup.includes("HerdrSearchPanel.panel.setSearchMode('matchCase')"), "case toggle routes to the panel api");
+  assert.ok(markup.includes("HerdrSearchPanel.panel.setSearchMode('regex')"), "regex toggle routes to the panel api");
+});
+
+test("setSearchMode flips the mode, re-renders the toggle state, and reruns the search", async () => {
+  const { nodes, document } = buildDom();
+  const calls = [];
+  const ctx = loadPanel(document, {
+    HerdrWorkspaceSearch: {
+      settings: () => ({ searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, searchSectionOrder: ["workspaces", "files", "content"], contentMinChars: 3, matchCase: false, regex: false }),
+      createContentState: () => ({ query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 }),
+      resetContentState: () => {},
+      workspaceCwd: (w) => (w && w.cwd) || "",
+      searchPaths: async (args) => {
+        calls.push({ kind: "paths", matchCase: args.matchCase, regex: args.regex, visitOffset: args.visitOffset });
+        return { entries: [], git_status: null, truncated: false, visited: 3 };
+      },
+      searchContent: async (args) => {
+        calls.push({ kind: "content", matchCase: args.matchCase, regex: args.regex });
+        return { files: [], total_files: 0, total_matches: 0, truncated: false };
+      },
+    },
+  });
+
+  await ctx.HerdrSearchPanel.open("ws-1", {});
+  const input = nodes.searchPanelInput;
+  input.value = "term";
+  input.__fire("input");
+  await new Promise((resolve) => setTimeout(resolve, 260));
+
+  ctx.HerdrSearchPanel.panel.setSearchMode("matchCase");
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const lastPath = calls.filter((c) => c.kind === "paths").pop();
+  assert.equal(lastPath.matchCase, true, "path search reran with match case on");
+  const markup = String(nodes.searchPanel.innerHTML);
+  assert.ok(markup.includes('search-mode-toggle active" id="searchPanelCaseToggle"'), "case toggle renders pressed");
+
+  ctx.HerdrSearchPanel.panel.setSearchMode("regex");
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const lastContent = calls.filter((c) => c.kind === "content").pop();
+  assert.equal(lastContent.regex, true, "content search reran with regex on");
+});
+
+test("load more paths chains the visit cursor so pages can reach deep results", async () => {
+  const { document } = buildDom();
+  const requests = [];
+  const ctx = loadPanel(document, {
+    HerdrWorkspaceSearch: {
+      settings: () => ({ searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, searchSectionOrder: ["workspaces", "files", "content"], contentMinChars: 3, matchCase: false, regex: false }),
+      createContentState: () => ({ query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 }),
+      resetContentState: () => {},
+      workspaceCwd: (w) => (w && w.cwd) || "",
+      searchPaths: async (args) => {
+        requests.push({ offset: args.offset, visitOffset: args.visitOffset });
+        // Page one reports 100 entries visited and stays truncated; page two
+        // resumes at the cursor and finishes.
+        const firstPage = args.visitOffset === 0;
+        return {
+          entries: firstPage ? [{ name: "a.txt", path: "a.txt", kind: "file" }] : [{ name: "b.txt", path: "b.txt", kind: "file" }],
+          git_status: null,
+          truncated: firstPage,
+          visited: firstPage ? 100 : 50,
+        };
+      },
+      searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),
+    },
+  });
+
+  await ctx.HerdrSearchPanel.open("ws-1", {});
+  const input = ctx.document.getElementById("searchPanelInput");
+  input.value = "hit";
+  input.__fire("input");
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  await ctx.HerdrSearchPanel.panel.loadMorePaths();
+
+  assert.equal(requests.length, 2, "two path pages requested");
+  assert.equal(requests[1].visitOffset, 100, "second page resumes from the first page visit cursor");
+});
+
+test("empty truncated pages keep load more armed and the cursor stays absolute", async () => {
+  const { document } = buildDom();
+  const requests = [];
+  const ctx = loadPanel(document, {
+    HerdrWorkspaceSearch: {
+      settings: () => ({ searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, searchSectionOrder: ["workspaces", "files", "content"], contentMinChars: 3, matchCase: false, regex: false }),
+      createContentState: () => ({ query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 }),
+      resetContentState: () => {},
+      workspaceCwd: (w) => (w && w.cwd) || "",
+      searchPaths: async (args) => {
+        requests.push({ offset: args.offset, visitOffset: args.visitOffset });
+        // Walk hits the visit cap with zero matches in the first window,
+        // then a deep page finally finds the match and the walk completes.
+        if (args.visitOffset === 0) return { entries: [], git_status: null, truncated: true, visited: 20000 };
+        if (args.visitOffset === 20000) return { entries: [{ name: "deep.txt", path: "deep.txt", kind: "file" }], git_status: null, truncated: false, visited: 27119 };
+        return { entries: [], git_status: null, truncated: false, visited: 0 };
+      },
+      searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),
+    },
+  });
+
+  await ctx.HerdrSearchPanel.open("ws-1", {});
+  const input = ctx.document.getElementById("searchPanelInput");
+  input.value = "deep";
+  input.__fire("input");
+  await new Promise((resolve) => setTimeout(resolve, 260));
+
+  // First page was empty but truncated: load more must still be armed, so a
+  // click issues the second page at the absolute cursor (not re-added).
+  await ctx.HerdrSearchPanel.panel.loadMorePaths();
+  assert.equal(requests.length, 2, "second page requested after an empty truncated page");
+  assert.equal(requests[1].visitOffset, 20000, "second page resumes at the absolute cursor, no re-adding");
+
+  // The deep page completes the walk: a further click must not request again.
+  await ctx.HerdrSearchPanel.panel.loadMorePaths();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(requests.length, 2, "completed walk disarms load more");
+});
+
+test("a stalled walk ends load more instead of looping forever", async () => {
+  const { document } = buildDom();
+  const requests = [];
+  const ctx = loadPanel(document, {
+    HerdrWorkspaceSearch: {
+      settings: () => ({ searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, searchSectionOrder: ["workspaces", "files", "content"], contentMinChars: 3, matchCase: false, regex: false }),
+      createContentState: () => ({ query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 }),
+      resetContentState: () => {},
+      workspaceCwd: (w) => (w && w.cwd) || "",
+      // Backend stuck reporting truncated with a walk that never advances.
+      searchPaths: async (args) => {
+        requests.push({ visitOffset: args.visitOffset });
+        return { entries: [], git_status: null, truncated: true, visited: 100 };
+      },
+      searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),
+    },
+  });
+
+  await ctx.HerdrSearchPanel.open("ws-1", {});
+  const input = ctx.document.getElementById("searchPanelInput");
+  input.value = "stuck";
+  input.__fire("input");
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  await ctx.HerdrSearchPanel.panel.loadMorePaths();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  assert.equal(requests.length, 2, "second page requested once");
+  await ctx.HerdrSearchPanel.panel.loadMorePaths();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(requests.length, 2, "stalled walk disarms load more");
+});
+
 test("panel result callbacks use panel-local rows and route file opens", async () => {
   const { document } = buildDom();
   const opened = [];
@@ -409,6 +567,41 @@ test("panel content expansion uses the per-file search endpoint", async () => {
   assert.equal(requests[0].query, "needle");
   assert.equal(requests[0].contextLines, 2);
   assert.equal(requests[0].matchesPerFile, 500);
+  assert.equal(requests[0].matchCase, false, "content file search inherits the panel mode state");
+  assert.equal(requests[0].regex, false, "content file search inherits the panel regex state");
+});
+
+test("panel content file search reruns with the flipped mode", async () => {
+  const { nodes, document } = buildDom();
+  const requests = [];
+  const helper = {
+    settings: () => ({ searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, searchSectionOrder: ["workspaces", "files", "content"], contentMinChars: 3, contextLines: 2 }),
+    createContentState: () => ({ query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0, contextLines: 2 }),
+    resetContentState: () => {},
+    workspaceCwd: (workspace) => (workspace && workspace.cwd) || "",
+    searchPaths: async () => ({ entries: [], git_status: null, truncated: false }),
+    searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),
+    searchContentFile: async (args) => {
+      requests.push({ matchCase: args.matchCase, regex: args.regex });
+      return { file: { path: args.file, matches: [], truncated: false } };
+    },
+  };
+  const ctx = loadPanel(document, {
+    setTimeout: () => 1,
+    HerdrWorkspaceSearch: helper,
+  });
+
+  await ctx.HerdrSearchPanel.open("ws-1", {});
+  const input = nodes.searchPanelInput;
+  input.value = "needle";
+  input.__fire("input");
+  await ctx.HerdrSearchPanel.panel.setSearchMode("matchCase");
+  await ctx.HerdrSearchPanel.panel.setSearchMode("regex");
+  await ctx.HerdrSearchPanel.content.loadFile(encodeURIComponent("src/app.rs"));
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].matchCase, true, "per-file search reruns with match case on");
+  assert.equal(requests[0].regex, true, "per-file search reruns with regex on");
 });
 
 test("panel repaints while the content search is still running", async () => {

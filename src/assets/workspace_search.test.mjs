@@ -54,6 +54,25 @@ test("searchContentFile encodes the file query and clamps expansion limits", asy
   assert.match(requests[0].url, /regex=true/);
 });
 
+test("searchPaths forwards per-query match mode and the visit cursor", async () => {
+  const { search, requests } = loadWorkspaceSearch({
+    fileContentSearchMatchCase: true,
+    fileContentSearchRegex: true,
+  });
+
+  // Defaults come from the stored settings.
+  await search.searchPaths({ cwd: "/repo", query: "needle" });
+  assert.match(requests[0].url, /match_case=true/);
+  assert.match(requests[0].url, /regex=true/);
+  assert.match(requests[0].url, /visit_offset=0/);
+
+  // Per-query arguments override the stored settings.
+  await search.searchPaths({ cwd: "/repo", query: "[a-z]+", matchCase: false, regex: false, visitOffset: 150 });
+  assert.match(requests[1].url, /match_case=false/);
+  assert.match(requests[1].url, /regex=false/);
+  assert.match(requests[1].url, /visit_offset=150/);
+});
+
 test("disabled content search does not make a backend request", async () => {
   const { search, requests } = loadWorkspaceSearch({ searchContentEnabled: false });
 

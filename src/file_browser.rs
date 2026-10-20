@@ -126,6 +126,15 @@ struct FileBrowserQuery {
     search_kind: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
+    // Visit-cursor for search pagination: skip this many walk entries
+    // before matching, resuming the previous page's deterministic BFS
+    // walk so entries past the per-page visit cap can surface.
+    visit_offset: Option<usize>,
+    // Filename search matching mode, mirroring content search: match the
+    // query exactly (true) or fold case (false, default).
+    match_case: Option<bool>,
+    // Treat the filename search query as a Rust regex pattern.
+    regex: Option<bool>,
     include_git_status: Option<bool>,
     // "lines" asks the backend to also build the numbered read-only preview
     // markup (gutter + escaped code HTML) so the browser does not have to
@@ -833,42 +842,62 @@ fn push_tree_entries(
     Ok(())
 }
 
-fn push_search_entries(
-    build: &mut TreeBuild,
-    dir: &Path,
-    needle: &str,
-    offset: usize,
-    limit: usize,
-    visited: &mut usize,
-    matched: &mut usize,
-    search_kind: Option<&str>,
-) -> Result<(), String> {
-    push_search_entries_with_visit_limit(
-        build,
-        dir,
-        needle,
-        offset,
-        limit,
-        visited,
-        matched,
-        search_kind,
-        MAX_SEARCH_VISITS,
-    )
+// Filename search matcher: case-insensitive substring (the default),
+// case-sensitive substring, or regex. Mirrors ContentMatcher's builder so
+// both search surfaces behave the same for the same query. Matching runs
+// against the original entry name plus the root-relative path.
+enum PathMatcher {
+    Substring { needle: String, match_case: bool },
+    Regex(Regex),
+}
+
+impl PathMatcher {
+    fn new(query: &str, match_case: bool, regex: bool) -> Result<Self, String> {
+        if query.is_empty() {
+            return Err("empty query".to_string());
+        }
+        if regex {
+            let compiled = RegexBuilder::new(query)
+                .case_insensitive(!match_case)
+                .build()
+                .map_err(|err| format!("invalid regex: {err}"))?;
+            return Ok(Self::Regex(compiled));
+        }
+        Ok(Self::Substring {
+            needle: query.to_string(),
+            match_case,
+        })
+    }
+
+    fn matches(&self, name: &str, path: &str) -> bool {
+        match self {
+            Self::Substring { needle, match_case } => {
+                if *match_case {
+                    name.contains(needle.as_str()) || path.contains(needle.as_str())
+                } else {
+                    let needle = needle.to_lowercase();
+                    name.to_lowercase().contains(needle.as_str())
+                        || path.to_lowercase().contains(needle.as_str())
+                }
+            }
+            Self::Regex(regex) => regex.is_match(name) || regex.is_match(path),
+        }
+    }
 }
 
 fn push_search_entries_with_visit_limit(
     build: &mut TreeBuild,
     dir: &Path,
-    needle: &str,
+    matcher: &PathMatcher,
     offset: usize,
+    visit_offset: usize,
     limit: usize,
     visited: &mut usize,
     matched: &mut usize,
     search_kind: Option<&str>,
     max_visits: usize,
 ) -> Result<(), String> {
-    if build.entries.len() >= limit || *visited >= max_visits {
-        build.truncated = true;
+    if build.entries.len() >= limit {
         return Ok(());
     }
     let mut queue = VecDeque::from([dir.to_path_buf()]);
@@ -888,21 +917,21 @@ fn push_search_entries_with_visit_limit(
             }
         };
         for entry in entries {
-            *visited += 1;
-            if *visited >= max_visits {
+            // Visit-cursor pagination: skip the leading entries the previous
+            // page already walked so this page starts at its resume point.
+            let skipped = *visited < visit_offset;
+            if !skipped && *visited - visit_offset >= max_visits {
                 build.truncated = true;
                 return Ok(());
             }
+            *visited += 1;
             let is_dir = entry.metadata.is_dir();
             let kind = if is_dir { "dir" } else { "file" };
             let kind_matches = search_kind.is_none_or(|wanted| wanted == kind);
             if kind_matches
-                && (entry.sort_name.contains(needle)
-                    || relative_to_root(build.root, &entry.path)
-                        .to_lowercase()
-                        .contains(needle))
+                && matcher.matches(&entry.name, &relative_to_root(build.root, &entry.path))
             {
-                if *matched >= offset && build.entries.len() < limit {
+                if !skipped && *matched >= offset && build.entries.len() < limit {
                     build.entries.push(FileBrowserEntry {
                         name: entry.name.clone(),
                         path: relative_to_root(build.root, &entry.path),
@@ -922,8 +951,12 @@ fn push_search_entries_with_visit_limit(
                         expanded: false,
                     });
                 }
+                // Count skipped-prefix matches too, so `offset` ranks matches
+                // globally across pages: a resumed page must skip exactly the
+                // entries earlier pages already returned, not re-rank the tail
+                // window from zero and strand matches in between.
                 *matched += 1;
-                if build.entries.len() >= limit {
+                if !skipped && build.entries.len() >= limit {
                     build.truncated = true;
                     return Ok(());
                 }
@@ -1527,20 +1560,32 @@ fn file_browser_tree_payload(
     } else {
         query.depth.unwrap_or(0).min(8)
     };
-    let search = query.q.as_deref().unwrap_or("").trim().to_lowercase();
+    let search = query.q.as_deref().unwrap_or("").trim().to_string();
     let mut build = TreeBuild {
         root: &root,
         entries: Vec::new(),
         truncated: false,
     };
+    // Walk position of the search page: 0 when there is no search branch.
+    let mut visited_total = 0usize;
     if !search.is_empty() {
-        let mut visited = 0usize;
+        let matcher = match PathMatcher::new(
+            &search,
+            query.match_case.unwrap_or(false),
+            query.regex.unwrap_or(false),
+        ) {
+            Ok(matcher) => matcher,
+            Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
+        };
         let mut matched = 0usize;
         let limit = query
             .limit
             .unwrap_or(DEFAULT_SEARCH_LIMIT)
             .clamp(1, MAX_SEARCH_LIMIT);
         let offset = query.offset.unwrap_or(0);
+        // Resume cursor from the previous page: lets "Load more" reach
+        // entries past the per-page visit cap instead of replaying page one.
+        let visit_offset = query.visit_offset.unwrap_or(0);
         let search_kind = query
             .search_kind
             .as_deref()
@@ -1549,15 +1594,17 @@ fn file_browser_tree_payload(
             // so their q= searches must stay folder-only even if they
             // forget the explicit kind.
             .or(if dirs_only { Some("dir") } else { None });
-        if let Err(err) = push_search_entries(
+        if let Err(err) = push_search_entries_with_visit_limit(
             &mut build,
             &dir,
-            &search,
+            &matcher,
             offset,
+            visit_offset,
             limit,
-            &mut visited,
+            &mut visited_total,
             &mut matched,
             search_kind,
+            MAX_SEARCH_VISITS,
         ) {
             return Err((StatusCode::BAD_GATEWAY, err));
         }
@@ -1603,6 +1650,8 @@ fn file_browser_tree_payload(
         "entries": build.entries,
         "truncated": build.truncated,
         "query": search,
+        // Walk position of this page: pass back as visit_offset to resume.
+        "visited": visited_total,
         "git_status": git_status,
     }))
 }
@@ -2264,6 +2313,9 @@ mod tests {
             search_kind: None,
             offset: None,
             limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
             include_git_status: None,
             render: None,
             max_bytes: None,
@@ -2290,6 +2342,9 @@ mod tests {
             search_kind: None,
             offset: None,
             limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
             include_git_status: None,
             render: None,
             max_bytes: None,
@@ -2307,6 +2362,9 @@ mod tests {
             search_kind: None,
             offset: None,
             limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
             include_git_status: None,
             render: None,
             max_bytes: None,
@@ -2325,6 +2383,9 @@ mod tests {
             search_kind: None,
             offset: None,
             limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
             include_git_status: None,
             render: None,
             max_bytes: None,
@@ -2505,6 +2566,7 @@ mod tests {
         fs::write(root.join("README.md"), "readme").unwrap();
 
         let root = root.canonicalize().unwrap();
+        let matcher = PathMatcher::new("app", false, false).unwrap();
         let mut build = TreeBuild {
             root: &root,
             entries: Vec::new(),
@@ -2512,15 +2574,17 @@ mod tests {
         };
         let mut visited = 0;
         let mut matched = 0;
-        push_search_entries(
+        push_search_entries_with_visit_limit(
             &mut build,
             &root,
-            "app",
+            &matcher,
+            0,
             0,
             2,
             &mut visited,
             &mut matched,
             Some("file"),
+            MAX_SEARCH_VISITS,
         )
         .unwrap();
 
@@ -2541,15 +2605,17 @@ mod tests {
         };
         let mut visited = 0;
         let mut matched = 0;
-        push_search_entries(
+        push_search_entries_with_visit_limit(
             &mut dir_build,
             &root,
-            "app",
+            &matcher,
+            0,
             0,
             10,
             &mut visited,
             &mut matched,
             Some("dir"),
+            MAX_SEARCH_VISITS,
         )
         .unwrap();
         let dir_paths = dir_build
@@ -2559,6 +2625,352 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(dir_paths.contains(&("dir", "app_dir")));
         assert!(!dir_paths.iter().any(|(_, path)| *path == "src"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn path_search_supports_match_case_and_regex() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-path-search-options-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("Private.txt"), "a").unwrap();
+        fs::write(root.join("private-notes.md"), "b").unwrap();
+        fs::write(root.join("other.txt"), "c").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let search = |q: &str, match_case: bool, regex: bool| {
+            let matcher = PathMatcher::new(q, match_case, regex).unwrap();
+            let mut build = TreeBuild {
+                root: &root,
+                entries: Vec::new(),
+                truncated: false,
+            };
+            let mut visited = 0;
+            let mut matched = 0;
+            push_search_entries_with_visit_limit(
+                &mut build,
+                &root,
+                &matcher,
+                0,
+                0,
+                50,
+                &mut visited,
+                &mut matched,
+                Some("file"),
+                MAX_SEARCH_VISITS,
+            )
+            .unwrap();
+            build
+                .entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>()
+        };
+
+        // Case-insensitive default: uppercase query still matches lowercase.
+        // Walk order sorts dirs/files by lowercase name, so the expectations
+        // below follow that order.
+        assert_eq!(
+            search("PRIVATE", false, false),
+            vec!["private-notes.md", "Private.txt"]
+        );
+        // Case-sensitive: only the exact-case file matches.
+        assert_eq!(search("Private", true, false), vec!["Private.txt"]);
+        // Regex on the full relative path.
+        assert_eq!(
+            search("^private.*\\.md$", false, true),
+            vec!["private-notes.md"]
+        );
+        // Regex stays case-sensitive when match_case is on.
+        assert_eq!(search("^Private\\.txt$", true, true), vec!["Private.txt"]);
+        assert!(search("^private\\.txt$", true, true).is_empty());
+        // Invalid regex is rejected before the walk.
+        assert!(matches!(
+            PathMatcher::new("[", false, true),
+            Err(message) if message.starts_with("invalid regex")
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn search_visit_cursor_resumes_past_the_page_visit_cap() {
+        // Layout: 3 leading filler dirs then matching files, so a walk capped
+        // at 2 visits cannot reach any match on page 1, but resuming with the
+        // returned visit cursor must reach them all.
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-search-visit-cursor-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("a-fill")).unwrap();
+        fs::create_dir_all(root.join("b-fill")).unwrap();
+        fs::create_dir_all(root.join("c-fill")).unwrap();
+        fs::write(root.join("a-fill/hit-1.txt"), "x").unwrap();
+        fs::write(root.join("b-fill/hit-2.txt"), "x").unwrap();
+        fs::write(root.join("c-fill/hit-3.txt"), "x").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let matcher = PathMatcher::new("hit-", false, false).unwrap();
+        let mut collected = Vec::new();
+        let mut visit_cursor = 0usize;
+        loop {
+            let mut build = TreeBuild {
+                root: &root,
+                entries: Vec::new(),
+                truncated: false,
+            };
+            let mut visited = 0;
+            let mut matched = 0;
+            push_search_entries_with_visit_limit(
+                &mut build,
+                &root,
+                &matcher,
+                0,
+                visit_cursor,
+                2,
+                &mut visited,
+                &mut matched,
+                Some("file"),
+                3,
+            )
+            .unwrap();
+            collected.extend(
+                build
+                    .entries
+                    .iter()
+                    .map(|entry| entry.path.as_str().to_string()),
+            );
+            if !build.truncated {
+                break;
+            }
+            assert!(
+                visited > visit_cursor,
+                "the cursor must advance or pagination loops forever"
+            );
+            visit_cursor = visited;
+        }
+        assert_eq!(
+            collected,
+            vec!["a-fill/hit-1.txt", "b-fill/hit-2.txt", "c-fill/hit-3.txt"],
+            "paged walk with visit cursor reaches every match past the cap"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn search_offset_ranks_matches_globally_across_visit_pages() {
+        // The UI advances both cursors: offset by returned entries, the visit
+        // cursor by the returned walk position. Pages must then partition the
+        // match list with no gaps and no duplicates, even when a resumed window
+        // opens on a dense prefix it must skip.
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-search-global-offset-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        for i in 0..6 {
+            fs::create_dir_all(root.join(format!("dir-{i}"))).unwrap();
+            for j in 0..3 {
+                fs::write(root.join(format!("dir-{i}/hit-{i}-{j}.txt")), "x").unwrap();
+            }
+        }
+
+        let root = root.canonicalize().unwrap();
+        let matcher = PathMatcher::new("hit-", false, false).unwrap();
+        let mut collected: Vec<String> = Vec::new();
+        let mut offset = 0usize;
+        let mut visit_cursor = 0usize;
+        loop {
+            let mut build = TreeBuild {
+                root: &root,
+                entries: Vec::new(),
+                truncated: false,
+            };
+            let mut visited = 0;
+            let mut matched = 0;
+            push_search_entries_with_visit_limit(
+                &mut build,
+                &root,
+                &matcher,
+                offset,
+                visit_cursor,
+                4,
+                &mut visited,
+                &mut matched,
+                Some("file"),
+                20,
+            )
+            .unwrap();
+            let page: Vec<String> = build
+                .entries
+                .iter()
+                .map(|entry| entry.path.as_str().to_string())
+                .collect();
+            offset += page.len();
+            collected.extend(page);
+            if !build.truncated {
+                break;
+            }
+            assert!(
+                visited > visit_cursor,
+                "the visit cursor must advance or pagination loops forever"
+            );
+            visit_cursor = visited;
+        }
+        let expected: Vec<String> = (0..6)
+            .flat_map(|i| (0..3).map(move |j| format!("dir-{i}/hit-{i}-{j}.txt")))
+            .collect();
+        assert_eq!(
+            collected.len(),
+            expected.len(),
+            "dual-cursor paging must surface every match"
+        );
+        let mut sorted_collected = collected.clone();
+        sorted_collected.sort();
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+        assert_eq!(
+            sorted_collected, sorted_expected,
+            "no gaps and no duplicates across pages"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn path_matcher_rejects_empty_query() {
+        assert!(PathMatcher::new("", false, false).is_err());
+    }
+
+    #[test]
+    fn push_search_entries_returns_when_page_already_full() {
+        // A caller that pre-fills the page (impossible via the HTTP layer,
+        // but the function contract allows it) must not walk at all.
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-search-prefull-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("hit.txt"), "x").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let matcher = PathMatcher::new("hit", false, false).unwrap();
+        let pre: Vec<FileBrowserEntry> = (0..2)
+            .map(|_| FileBrowserEntry {
+                name: "hit.txt".to_string(),
+                path: "hit.txt".to_string(),
+                kind: "file".to_string(),
+                size: None,
+                modified_ms: None,
+                level: 0,
+                expanded: false,
+            })
+            .collect();
+        let mut build = TreeBuild {
+            root: &root,
+            entries: pre,
+            truncated: false,
+        };
+        let mut visited = 0;
+        let mut matched = 0;
+        push_search_entries_with_visit_limit(
+            &mut build,
+            &root,
+            &matcher,
+            0,
+            0,
+            2,
+            &mut visited,
+            &mut matched,
+            Some("file"),
+            3,
+        )
+        .unwrap();
+        assert_eq!(build.entries.len(), 2, "pre-filled page stays untouched");
+        assert_eq!(visited, 0, "no walk happens when the page is already full");
+        assert_eq!(matched, 0, "no matches counted without a walk");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tree_payload_rejects_invalid_search_regex() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-tree-payload-bad-regex-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let query = FileBrowserQuery {
+            cwd: root.to_string_lossy().to_string(),
+            path: None,
+            dirs_only: None,
+            depth: None,
+            q: Some("hit(".to_string()),
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: Some(true),
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        };
+        let err = file_browser_tree_payload(query).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST, "invalid regex must 400");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tree_payload_rejects_walk_errors() {
+        // An unreadable search root makes every directory read fail, which
+        // must surface as a walk error instead of a silent empty page.
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-tree-payload-walk-err-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("hit.txt"), "x").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let query = FileBrowserQuery {
+            cwd: root.to_string_lossy().to_string(),
+            path: None,
+            dirs_only: None,
+            depth: None,
+            q: Some("hit".to_string()),
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        };
+        let err = file_browser_tree_payload(query).unwrap_err();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(
+                err.0,
+                StatusCode::BAD_GATEWAY,
+                "unreadable walk root must surface a walk error"
+            );
+        }
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2584,6 +2996,9 @@ mod tests {
             search_kind: None,
             offset: None,
             limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
             include_git_status: None,
             render: None,
             max_bytes: None,
@@ -2614,6 +3029,7 @@ mod tests {
         fs::create_dir_all(root.join("projects/herdr")).unwrap();
 
         let root = root.canonicalize().unwrap();
+        let matcher = PathMatcher::new("herdr", false, false).unwrap();
         let mut build = TreeBuild {
             root: &root,
             entries: Vec::new(),
@@ -2624,7 +3040,8 @@ mod tests {
         push_search_entries_with_visit_limit(
             &mut build,
             &root,
-            "herdr",
+            &matcher,
+            0,
             0,
             10,
             &mut visited,
@@ -2695,6 +3112,7 @@ mod tests {
         fs::write(root.join("other.txt"), "other app file").unwrap();
 
         let root = root.canonicalize().unwrap();
+        let matcher = PathMatcher::new("app", false, false).unwrap();
         let mut build = TreeBuild {
             root: &root,
             entries: Vec::new(),
@@ -2704,15 +3122,17 @@ mod tests {
         let mut matched = 0;
         // Searching for "app" must succeed and find src/app.rs, skipping the
         // locked directory instead of returning an error.
-        push_search_entries(
+        push_search_entries_with_visit_limit(
             &mut build,
             &root,
-            "app",
+            &matcher,
+            0,
             0,
             10,
             &mut visited,
             &mut matched,
             Some("file"),
+            MAX_SEARCH_VISITS,
         )
         .unwrap();
 

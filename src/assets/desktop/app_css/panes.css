@@ -415,6 +415,17 @@
   color: var(--text-dim, var(--text));
   opacity: 0.6;
 }
+/* aA / .* mode toggles in the search panel head and the palette head.
+ * Reuse the .mini button look; the active state rides .mini.active. */
+.search-panel-head .search-mode-toggle,
+.search-head .search-mode-toggle {
+  flex: 0 0 auto;
+  font-family: var(--mono-font, ui-monospace, monospace);
+  margin-left: 0;
+  min-width: 28px;
+  padding: 3px 6px;
+  text-align: center;
+}
 .search-panel-results {
   flex: 1 1 auto;
   min-height: 0;

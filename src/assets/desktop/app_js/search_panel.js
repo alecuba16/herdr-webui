@@ -12,14 +12,21 @@
 
   function freshState() {
     const helper = window.HerdrWorkspaceSearch;
+    const opts = helper ? helper.settings() : {};
     return {
       query: "",
       timer: null,
       requestSeq: 0,
       pathKind: "file",
+      // Per-query search mode toggles (aA / .*) shared by path and content
+      // search. They start from the saved settings and flip live without
+      // rewriting them.
+      matchCase: opts.matchCase === true,
+      regex: opts.regex === true,
       pathEntries: [],
       pathGitStatus: null,
       pathOffset: 0,
+      pathVisited: 0,
       pathDone: true,
       pathLoading: false,
       pathError: "",
@@ -103,7 +110,9 @@
       const active = document.activeElement && document.activeElement.id === "searchPanelInput" ? document.activeElement : null;
       const caret = active && typeof active.selectionStart === "number" ? active.selectionStart : 0;
       const caretEnd = active && typeof active.selectionEnd === "number" ? active.selectionEnd : caret;
-      panel.innerHTML = `<div class="search-panel-head"><span class="search-icon" aria-hidden="true">⌕</span><input id="searchPanelInput" class="search-panel-input" placeholder="Search workspaces, files, folders, or file contents..."${inputAttrs("search")} aria-label="Search workspaces, files, folders, or file contents" /><button class="mini settings-close" id="searchPanelClear" title="Clear" aria-label="Clear search"><span aria-hidden="true">✕</span></button></div><div class="search-panel-results" id="searchPanelResults">${typeof renderRecentSection === "function" ? renderRecentSection(recent, cb) : ""}${order.map((key) => sections[key] || "").join("")}</div>`;
+      const caseToggle = `<button type="button" class="mini search-mode-toggle${state.matchCase ? " active" : ""}" id="searchPanelCaseToggle" title="Match case (Alt+C)" aria-label="Match case" aria-pressed="${state.matchCase ? "true" : "false"}" onclick="HerdrSearchPanel.panel.setSearchMode('matchCase')">Aa</button>`;
+      const regexToggle = `<button type="button" class="mini search-mode-toggle${state.regex ? " active" : ""}" id="searchPanelRegexToggle" title="Regular expression (Alt+R)" aria-label="Regular expression" aria-pressed="${state.regex ? "true" : "false"}" onclick="HerdrSearchPanel.panel.setSearchMode('regex')">.*</button>`;
+      panel.innerHTML = `<div class="search-panel-head"><span class="search-icon" aria-hidden="true">⌕</span><input id="searchPanelInput" class="search-panel-input" placeholder="Search workspaces, files, folders, or file contents..."${inputAttrs("search")} aria-label="Search workspaces, files, folders, or file contents" />${caseToggle}${regexToggle}<button class="mini settings-close" id="searchPanelClear" title="Clear" aria-label="Clear search"><span aria-hidden="true">✕</span></button></div><div class="search-panel-results" id="searchPanelResults">${typeof renderRecentSection === "function" ? renderRecentSection(recent, cb) : ""}${order.map((key) => sections[key] || "").join("")}</div>`;
       const input = panel.querySelector("#searchPanelInput");
       const clear = panel.querySelector("#searchPanelClear");
       if (input) {
@@ -128,6 +137,12 @@
               } else if (window.HerdrRightSidebar) {
                 window.HerdrRightSidebar.setCollapsed(true);
               }
+            } else if (e.altKey && e.key && e.key.toLowerCase() === "c") {
+              e.preventDefault();
+              Panel.setSearchMode("matchCase");
+            } else if (e.altKey && e.key && e.key.toLowerCase() === "r") {
+              e.preventDefault();
+              Panel.setSearchMode("regex");
             }
           });
         }
@@ -147,6 +162,7 @@
           s.pathError = "";
           s.pathGitStatus = null;
           s.pathOffset = 0;
+          s.pathVisited = 0;
           if (window.HerdrWorkspaceSearch) window.HerdrWorkspaceSearch.resetContentState(s.content, "");
           renderPanel();
           if (keepOpen) {
@@ -194,16 +210,22 @@
     const helper = window.HerdrWorkspaceSearch;
     const state = ensureState();
     const offset = append ? state.pathOffset : 0;
+    const visitOffset = append ? state.pathVisited : 0;
     state.pathLoading = true;
     state.pathError = "";
     try {
-      const data = await helper.searchPaths({ cwd, query, kind: state.pathKind, offset });
+      const data = await helper.searchPaths({ cwd, query, kind: state.pathKind, offset, visitOffset, matchCase: state.matchCase, regex: state.regex });
       if (seq !== state.requestSeq) return;
       const entries = data.entries || [];
       state.pathEntries = append ? state.pathEntries.concat(entries) : entries;
       state.pathGitStatus = data.git_status || null;
       state.pathOffset = offset + entries.length;
-      state.pathDone = !data.truncated || entries.length === 0;
+      // Visit cursor: "Load more" resumes the backend walk where this
+      // page stopped. data.visited is absolute, so never re-add visitOffset.
+      // Keep paging on truncated pages even with zero entries: matches may
+      // live past the visit cap; only a stalled walk can end the chain.
+      state.pathVisited = Number(data.visited || 0);
+      state.pathDone = !data.truncated || (append && entries.length === 0 && state.pathVisited <= visitOffset);
     } catch (error) {
       if (seq !== state.requestSeq) return;
       state.pathError = error.message || String(error);
@@ -227,7 +249,7 @@
     state.content.loading = true;
     state.content.error = "";
     try {
-      const data = await helper.searchContent({ cwd, query, offset, contextLines: state.content.contextLines });
+      const data = await helper.searchContent({ cwd, query, offset, contextLines: state.content.contextLines, matchCase: state.matchCase, regex: state.regex });
       if (seq !== state.requestSeq) return;
       helper.applyContentResults(state.content, data, append);
     } catch (error) {
@@ -322,7 +344,7 @@
       if (!helper || !path || !query || !cwd || !helper.searchContentFile) return;
       const seq = ++state.requestSeq;
       try {
-        const data = await helper.searchContentFile({ cwd, file: path, query, contextLines: state.content.contextLines, matchesPerFile: 500 });
+        const data = await helper.searchContentFile({ cwd, file: path, query, contextLines: state.content.contextLines, matchesPerFile: 500, matchCase: state.matchCase, regex: state.regex });
         if (seq !== state.requestSeq || !data.file) return;
         const index = state.content.files.findIndex((file) => file.path === path);
         if (index >= 0) state.content.files[index] = data.file;
@@ -399,12 +421,29 @@
       state.pathKind = kind === "dir" ? "dir" : "file";
       state.pathEntries = [];
       state.pathOffset = 0;
+      state.pathVisited = 0;
+      state.pathDone = true;
+      renderPanel();
+      runSearch(false);
+    },
+    // Flip the per-query match mode (aA) or regex (.*). The saved settings
+    // stay untouched; both search kinds rerun with the new mode.
+    setSearchMode(mode) {
+      if (mode !== "matchCase" && mode !== "regex") return;
+      const state = ensureState();
+      state[mode] = !state[mode];
+      state.pathEntries = [];
+      state.pathOffset = 0;
+      state.pathVisited = 0;
       state.pathDone = true;
       renderPanel();
       runSearch(false);
     },
     loadMorePaths() {
       const state = ensureState();
+      // Ignore repeat clicks while a page is in flight or the walk is
+      // finished, or two appends can duplicate rows.
+      if (state.pathLoading || state.pathDone) return;
       const helper = window.HerdrWorkspaceSearch;
       const cwd = helper.workspaceCwd(panelSearchWorkspace());
       runPathSearch(++state.requestSeq, state.query, cwd, true).then(renderPanel);
