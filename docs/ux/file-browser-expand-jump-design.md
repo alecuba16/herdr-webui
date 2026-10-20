@@ -283,6 +283,15 @@ cannot anchor across an `innerHTML` replacement).
   `.search-result` rows that carry their own
   `content-visibility: auto; contain-intrinsic-size: auto 41px`
   (desktop/search.css:199-203). Same bug family, same fix template.
+  Measured live: a content query that fills the palette, scrolled to
+  3000, then a preserveScroll re-render keeps scrollTop pinned at 3000
+  while the container shrinks 486px (scrollHeight 8725 to 8239), so
+  content moves under a constant scrollTop exactly like mechanism B.
+  One scope note from the same probe: the bulk of a content result
+  list is rendered as `.herdr-content-search-*` rows, which are outside
+  the `.search-result` virtualization rule, so the 41px placeholder
+  error specifically needs a result set with many `.search-result`
+  rows to show; the pixel-restore failure shows regardless.
 - **Git log**: virtualized rows (git_ui/log.css:514-518) with pixel
   restore via `captureContentScroll` (git_ui.js:1085-1098). Log rows
   append at the bottom, so mechanism A is rare there, but mechanism B
@@ -339,8 +348,9 @@ cannot anchor across an `innerHTML` replacement).
   `run-fix-design-probes.sh` plus `fix-design-probes.mjs` and
   `run-anchor-restore-probe.sh` plus `anchor-restore-probe.mjs` validate
   the section 3 design by injection (CSS-fix measurements and the
-  interceptor-death finding). Logs under `$JCODE_SCRATCH_DIR/`
-  `expand-jump-verify/`.
+  interceptor-death finding), and `run-search-palette-probe.sh` plus
+  `search-palette-probe.mjs` measure the palette bullet in 3.3. Logs
+  under `$JCODE_SCRATCH_DIR/` `expand-jump-verify/`.
 - The evidence JSONs store the first 30 row indices of each height
   population, not a full per-row dump; row-band claims above are
   bounded by that sampling.
