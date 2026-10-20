@@ -951,8 +951,12 @@ fn push_search_entries_with_visit_limit(
                         expanded: false,
                     });
                 }
+                // Count skipped-prefix matches too, so `offset` ranks matches
+                // globally across pages: a resumed page must skip exactly the
+                // entries earlier pages already returned, not re-rank the tail
+                // window from zero and strand matches in between.
+                *matched += 1;
                 if !skipped {
-                    *matched += 1;
                     if build.entries.len() >= limit {
                         build.truncated = true;
                         return Ok(());
