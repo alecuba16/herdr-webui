@@ -73,10 +73,12 @@ cut:
 - `DEFAULT_WEBUI_SHORTCUTS` (core.js:170): prefix+F is already
   `focusTerminal`; prefix+S settings; prefix+/ search. Single-stroke
   prefix+key entries, no multi-key sequences.
-- Scoped precedent: git UI owns `DEFAULT_GIT_SHORTCUTS` with its own
-  dispatch (`git_ui/shortcuts.js:160-215`) that only fires when the git UI
-  is the active view, same prefix, own toast echo, own settings rows in
-  the shortcut editor via the `gitShortcuts` scope.
+- Scoped precedent: git UI owns `DEFAULT_GIT_SHORTCUTS` (core.js:200-220)
+  with its own capture-phase dispatch registered window-level
+  (git_ui.js:231) that only fires while the git drawer is visible
+  (state.visible gate), keys armed via the same global prefix
+  (Ctrl+B then key, `shortcutPrefixUntil` 5s window), own toast echo,
+  own settings rows in the shortcut editor via the `gitShortcuts` scope.
 - Ctrl+F: `isAppFindShortcut` (shortcuts.js:196) tries
   `openFocusedFileBrowserFind` first when the file browser is focused
   (shortcuts.js:485). But `HerdrFileBrowser.openFocusedFind`
@@ -113,15 +115,21 @@ git filter row styling to copy is `.git-ui-file-filter`
 
 Constraints found by verification: Ctrl+F is taken (editor find handoff,
 shortcuts.js:485), prefix+F is taken (focusTerminal), prefix+B is taken
-(sidebar). Squeezing a new global chord onto the default table costs a
-conflict. The options:
+(sidebar), prefix+/ is taken (search palette, core.js:171). Squeezing a
+new global chord onto the default table costs a conflict. The options:
 
 - **(a) Scoped table, git-style.** New `fileBrowserShortcuts` scope with
   dispatch only when the file browser panel is the active right-sidebar
   pane (`RIGHT_SIDEBAR_PANES.files`, right_sidebar.js:12) or shell mode
-  `files`. Default chord inside the scope can be plain `/` (no browser
-  conflict: `/` is not a tree command; the git scope already uses
-  prefix-free single keys like `KeyC`).
+  `files`. One nuance vs git: the git scoped keys are **prefix-gated**
+  (Ctrl+B then KeyC; `handleGitShortcut` returns early unless
+  `state.shortcutPrefixUntil` is armed, git_ui/shortcuts.js:161-164), so
+  "scoped" there means second-key-of-chord, not bare. Bare `/` is free:
+  global dispatch only consumes Ctrl/Cmd+F (`isAppFindShortcut`,
+  shortcuts.js:196), the palette is prefix+Slash, and a bare Slash with
+  no armed prefix falls through unconsumed today. So the file browser
+  scope can use a genuinely bare `/` (single keydown, no arming),
+  gated on the file browser pane being focused/active.
 - **(b) Global entry, default unset.** One `webuiShortcuts` row
   ("File browser filter", default disabled) that focuses the filter input
   when a workspace is open. No conflict, no new dispatch machinery, but
@@ -130,11 +138,18 @@ conflict. The options:
 
 **Chosen: (a) scoped table with default `/`, plus Record/Clear rows in
 the shortcut editor under a "File browser" group.** Git UI proves the
-pattern end to end (scoped defaults, scoped dispatch, scoped settings
-rows). `/` mirrors the TUI's `/` to start the filter (start_filter), so
-muscle memory carries across surfaces. The scoped dispatch gates on the
-file browser being the active pane, the same way `handleGitShortcut` gates
-on the git view.
+pattern end to end (scoped defaults, scoped capture-phase dispatch
+registered window-level in git_ui.js:231, scoped settings rows) but its
+keys are prefix-gated; the file browser scope deviates deliberately:
+its single default `/` fires bare (no arming), like the TUI's `/` to
+start the filter (start_filter), so muscle memory carries across
+surfaces. The scoped dispatch gates on the file browser being the
+active pane, the same `state.visible`-style gate as `handleGitShortcut`.
+
+Merge note: the shortcut editor renders every row as "prefix then key"
+(one hardcoded note, core.js:967), so the new group's rows need a
+group-specific note ("no prefix needed"), a small additive template
+branch, not new machinery.
 
 ### 1.2 Match scope
 
@@ -218,12 +233,17 @@ if ever chord-cycled; for this cut the arrows live in the input, so the
 row records the down-arrow action and displays but never conflicts with
 global shortcuts because the scope gate fails closed).**
 
-Simplified: one group, two rows. "Filter" opens/focuses the input; "Next
-match" is listed for discoverability, its default (ArrowDown) only applies
-within the filter input, and Record/Clear works on both rows. Everything
-goes through the existing `data-shortcut-record` delegation
-(bindings.js:142-158) and `renderShortcutEditor` (core.js:962); no new
-settings machinery.
+Scope plumbing reality (verified): `shortcutEditorGroups` (core.js:778),
+`shortcutCollisionMap` (core.js:937), and Record/Clear (`recordShortcut`
+core.js:976, `resetShortcut` core.js:998, wired via delegation in
+bindings.js:144-153) are all scope-generic, so the editor group and
+buttons work with just a new entry in `shortcutEditorGroups`. But two
+spots hardcode the existing scopes and need the new one added:
+`defaultShortcutMap` (core.js:841, currently a git/webui ternary) and
+`normalizeOptions` (core.js:1530-1536, normalizes only webuiShortcuts/
+gitShortcuts maps; an unnormalized new scope would keep stale/removed
+actions forever). So "configurable in settings" is three small core.js
+additions: the defaults table, one ternary arm, one normalize line.
 
 ### 1.7 TUI additions
 
@@ -231,7 +251,7 @@ settings machinery.
 missing pieces: yellow substring highlight in tree rows, and match
 cycling + jump-to-first.**
 
-- Highlight: `render_file_tree` (render/mod.rs:469) gains a highlight
+- Highlight: `render_file_tree` (src/tui/render/mod.rs:469) gains a highlight
   pass. Server rows carry the name; split the displayed name into
   matched/unmatched spans styled with `p.yellow` on the matched part
   (theme.rs:102; same yellow as the webui token).
@@ -242,9 +262,13 @@ cycling + jump-to-first.**
   walk the list (mod.rs:2476-2477), so the selection is the active
   match. Wraparound exists via move_selection. Jump-to-first plus the
   existing movement covers the ↑/↓ requirement.
-- Configurable: TUI shortcuts are hardcoded today (keys.rs); the TUI
+- Configurable: TUI shortcuts are hardcoded today (src/tui/keys.rs); the TUI
   settings overlay is informational only. Rebinding in the TUI is out
   of scope for this cut. Parity note in docs/tui-shortcuts.md.
+- Referenced docs verified to exist: docs/tui-shortcuts.md,
+  docs/tui-parity-plan.md (the file explorer gaps are numbered 16-21,
+  plus 22 for markdown preview; the plan's Phase 4 title says "gaps
+  16-21", matching).
 
 ### 1.8 Open question deferred to implementation
 
@@ -267,7 +291,7 @@ cycling + jump-to-first.**
 4. TUI: yellow substring highlight in render_file_tree + jump-to-first on
    commit (cycling is already j/k/↑/↓ over the all-matches list).
 5. Docs: tui-shortcuts.md (files: filter highlight + first-match jump),
-   parity plan (close file explorer gaps 16-22 references), this doc
+   parity plan (file explorer gaps 16-21 references), this doc
    updated with outcomes.
 
 ## 3. Tests
@@ -308,8 +332,11 @@ cycling + jump-to-first.**
 ## 4. Merge overlap with the sibling worktree
 
 The resizable-sidebar session owns bindings.js, core.js, render.js, and
-base.css. This feature touches core.js (shortcut editor group) and
-bindings.js (no changes expected: delegation already generic). Steps 1-2
-touch only file_browser.js, file_tree.js options, and file_tree.css, plus
+base.css. This feature touches core.js in five additive spots
+(shortcutEditorGroups entry, DEFAULT table, defaultShortcutMap arm,
+normalizeOptions line, editor-note template branch) and bindings.js (no
+changes expected: delegation already generic). Steps 1-2 touch only
+file_browser.js, file_tree.js options, and file_tree.css, plus
 test files: no overlap. Step 3 is the collision risk: rebase after the
-sibling lands, keep the shortcut editor change additive (new group only).
+sibling lands, keep every core.js change additive (new constants and
+group entries only, no edits to existing rows).
