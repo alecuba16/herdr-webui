@@ -11,9 +11,12 @@ examination; the fix design is section 3.
 ## 0. What exists today (verified)
 
 **Expand renders twice on first open** (`src/assets/desktop/file_browser.js`):
-`toggleDir` (1231-1250) sets `expanded[path]`, renders a loading state,
-awaits the fetch, then renders again with the children. Collapse and any
-already-cached expand render once.
+`toggleDir` (1231-1250) sets `expanded[path]`, renders once with the
+folder marked expanded but no children yet (`state.loading[path]` gates
+only the fetch; no renderer reads it, so the first render differs from
+the collapsed state only in the caret icon), awaits the fetch, then
+renders again with the children. Collapse and any already-cached expand
+render once.
 
 **Scroll restore is pixel-anchored**: `renderPreservingScroll` (311-321)
 saves `.file-browser-side` scrollTop, `render()` replaces
@@ -54,8 +57,8 @@ shared/file_tree.css:38-42) and 38px as a placeholder.
 
 ## 1. Live reproduction
 
-Harness (in this worktree, currently untracked): `scripts/e2e/`
-`run-expand-jump.sh` boots an isolated server (own XDG_CONFIG_HOME under a
+Harness: `scripts/e2e/run-expand-jump.sh` (committed alongside this
+doc) boots an isolated server (own XDG_CONFIG_HOME under a
 temp dir, unique `--session` and port, `--backend-mode builtin`, self-signed
 HTTPS) plus `chrome-headless-shell` over CDP, builds a fixture repo of 200
 dirs x 20 files, opens the workspace through the real funnel
@@ -65,10 +68,13 @@ clicks the real caret of `dir-5`. `dir-5` sorts lexicographically at row
 146 of 200 (the `dir-1xx` block), doc offset ~5490px. The marker is the
 mid-viewport row; the metric is the marker's viewport-Y from caret click
 to settled state. Row-level instrumentation samples heights at every
-mutation and scroll event through a panel-level observer (listeners on
-the scroller itself die with the first `innerHTML` wipe; earlier session
-numbers taken that way, including a reported "+61px transient", were
-artifacts and are superseded by the numbers below).
+mutation and scroll event through a panel-level observer: listeners on
+the scroller itself die with the first `innerHTML` wipe, which is how
+the early runs in this session produced bogus zero and "+61px transient"
+readings. The corrected harness reproduces a real +61px settled shift for
+the first expand at 3000 (481 to 542px), so the figure itself was right
+even though the first measurement of it was not; all numbers below come
+from the corrected runs.
 
 Evidence JSONs (setup, both passes, full event log with per-row heights,
 settled height distribution):
@@ -93,15 +99,21 @@ Notes on the table:
   (children settle at 29px realized or 38px placeholder, plus the 3px
   grid gap; the run's logged height distribution shows both
   populations). The 900px viewport loses that row entirely: it ends
-  308px below the fold. First expand shifts 1147px because the
-  two-render sequence doubles the wipe churn described below.
+  308px below the fold. The first expand measures larger (1147px), but
+  that pass is not a clean comparison: it runs two renders, its click
+  baseline lands mid-realization (marker at 255px, scrollTop clamped to
+  6252), and it settles at a different scrollTop than the cached pass,
+  so the extra 421px mixes the second wipe with the unstable baseline
+  and the logs cannot separate the two.
 - The 3000 rows show a shift with **no insertion above the marker at
   all** in the first expand: `dir-5` sits below the viewport there, so
   the marker is above the insertion point, and the visible content
   still moved 331px. That shift is mechanism B operating alone. The
-  cached expand at 3000 re-renders with the same placeholder mix already
-  settled from the first pass, so the wipe is height-neutral there and
-  the marker holds at 542px.
+  cached expand at 3000 measures 0 at settle because the same rows
+  re-realize to the same heights around the same viewport; the wipe
+  still resets the band (the render-time sample shows the marker at
+  1082px mid-pass) and the position reconverges, so the flash
+  mechanism below applies there too, just with a zero net landing.
 - Baselines drift before the click (211px and 255px vs the 475-482px
   settled baseline) because the tree was still realizing rows; the drift
   itself is mechanism B and is detailed below.
@@ -140,19 +152,25 @@ placeholder until scrolled to. Consequences, all measured:
   (6252 + 900 client height), so the browser clamped the scroll
   position 248px with zero user interaction.
 - **Every re-render churns the placeholder mix.** The +331px at scroll
-  3000 with the insertion below the marker, and the +421px difference
-  between the first-expand 1147px and the cached 726px, come from the
-  wipe resetting the realized band twice. The transient is visible as a
-  flash: the wipe frame lays the whole tree out at placeholder heights
-  (mutation-time marker at 2176px in the 6500 run, scrollHeight 9253)
-  and the on-screen rows then climb back as realization shrinks them
-  (settled marker 1402px, scrollHeight 8299).
+  3000 with the insertion below the marker shows the reset shifting
+  settled content on its own. After the restore the visible band sits
+  at placeholder-geometry positions and slides while rows re-realize:
+  in the 6500 run the post-wipe samples show the marker at 1928px
+  (cached pass) and 2176px (children render of the first pass) against
+  settled positions of 1208px and 1402px. Mutation samples fire
+  during the DOM churn, so the mid-wipe layout itself may never paint
+  (the cached pass restores scrollTop in the same task); the
+  post-restore slide and the scrollbar resize are the user-visible
+  part, and the 3000 cached pass shows the same 1082px mid-pass
+  sample reconverging to 542px.
 - **The settled height distribution confirms the two row populations.**
-  At scroll 6500 the settled tree holds 122 rows at 38px and 79 at 29px:
-  the 38px block is the first 122 rows, ending near the 5000px doc
-  line, one to two viewports above the scroll position, exactly the
-  rows the browser kept placeholder. At scroll 3000 the split is 90 at
-  38px, 111 at 29px, boundary again tracking the viewport plus margin.
+  At scroll 6500 the settled tree holds 122 rows at 38px and 79 at 29px,
+  and at scroll 3000 the split is 90 at 38px, 111 at 29px. In both runs
+  the topmost rows measure 38px and the first 29px row appears at index
+  122 (6500) and 36 (3000), tracking the viewport plus the browser's
+  realization margin; the stored evidence keeps the first 30 indices of
+  each population, so the band between those boundaries is inferred
+  contiguous from the counts, not sampled row by row.
 
 ### C. Why only huge lists show it
 
@@ -247,15 +265,15 @@ cannot anchor across an `innerHTML` replacement).
 
 ## 4. Tests
 
-- **Acceptance (real browser)**: promote the harness
+- **Acceptance (real browser)**: turn the committed harness
   (`scripts/e2e/run-expand-jump.sh` plus
-  `scripts/e2e/expand-jump-experiment.mjs`) to a committed e2e in the
-  style of `run-keyboard-guards-e2e.sh`, asserting `|marker delta| <=
-  2px` for cached and first expand at the three scroll offsets, plus
-  collapse above the viewport. The runner already isolates its server
-  and Chrome; the result JSON it drops at the repo root should move
-  under its temp dir (or `$JCODE_SCRATCH_DIR`) so it never lands in a
-  commit.
+  `scripts/e2e/expand-jump-experiment.mjs`) into an asserting e2e in
+  the style of `run-keyboard-guards-e2e.sh`, asserting `|marker delta|
+  <= 2px` for cached and first expand at the three scroll offsets,
+  plus collapse above the viewport. The runner already isolates its
+  server and Chrome; the result JSON it drops at the repo root should
+  move under its temp dir (or `$JCODE_SCRATCH_DIR`) so it never lands
+  in a commit.
 - **Source assertions** in the `app_load.test.mjs` style: explicit
   `.herdr-tree-row` height present, current-row height present,
   `renderPreservingScroll` captures a row anchor before `render()`.
@@ -272,12 +290,16 @@ cannot anchor across an `innerHTML` replacement).
   holds the setup geometry, both passes with click-time and settled
   marker positions, the full mutation and scroll event log with sampled
   row heights, and the settled per-row height distribution.
-- Harness scripts: `scripts/e2e/run-expand-jump.sh`,
-  `scripts/e2e/expand-jump-experiment.mjs`, `scripts/e2e/`
-  `run-expand-repro.sh` plus `expand-scroll-repro.mjs` (first-pass
-  reproduction), and `scripts/e2e/probe-layout.mjs` (scroller box and
-  ancestor probe). Untracked in this worktree, proposed as the
-  acceptance test base in section 4.
+- Harness scripts (committed alongside this doc, proposed as the
+  acceptance test base in section 4):
+  `scripts/e2e/run-expand-jump.sh`,
+  `scripts/e2e/expand-jump-experiment.mjs`, and
+  `scripts/e2e/run-expand-repro.sh` plus `expand-scroll-repro.mjs`
+  (first-pass reproduction), and `scripts/e2e/probe-layout.mjs`
+  (scroller box and ancestor probe).
+- The evidence JSONs store the first 30 row indices of each height
+  population, not a full per-row dump; row-band claims above are
+  bounded by that sampling.
 - Source pins cited inline per section. All measurements come from the
   shipped renderer booted from `target/debug/herdr-webui` with the
   desktop layout forced (`herdr-web-layout` = `desktop`), sidebar
