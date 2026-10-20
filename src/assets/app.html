@@ -64,10 +64,12 @@
         <div class="search-head">
           <span class="search-icon">⌕</span>
           <input id="searchPaletteInput" placeholder="Search workspaces, files, folders, or file contents..." autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" writingsuggestions="false" translate="no" enterkeyhint="search" />
+          <button type="button" class="mini search-mode-toggle" id="searchPaletteCaseToggle" title="Match case (Alt+C)" aria-label="Match case" aria-pressed="false" onclick="HerdrSearchPalette.setSearchMode('matchCase')">Aa</button>
+          <button type="button" class="mini search-mode-toggle" id="searchPaletteRegexToggle" title="Regular expression (Alt+R)" aria-label="Regular expression" aria-pressed="false" onclick="HerdrSearchPalette.setSearchMode('regex')">.*</button>
           <button class="mini settings-close" id="searchPaletteClose" title="Close" aria-label="Close search"><span aria-hidden="true">✕</span></button>
         </div>
         <div class="search-results" id="searchPaletteResults"></div>
-        <div class="search-help">Enter opens selection · ↑/↓ moves · Alt+F files · Alt+D folders · Esc closes</div>
+        <div class="search-help">Enter opens selection · ↑/↓ moves · Alt+F files · Alt+D folders · Alt+C match case · Alt+R regex · Esc closes</div>
       </div>
     </div>
     <div class="blocking-overlay" id="blockingOverlay" aria-hidden="true">

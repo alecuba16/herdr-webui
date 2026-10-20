@@ -2588,6 +2588,55 @@ describe("app bundle load", () => {
     ok(searched.some((s) => s.cwd === "/Users/alejandro.blanco" && s.kind === "content"), "palette content search used the default folder");
   });
 
+  it("palette setSearchMode reruns path and content search with the new mode", async () => {
+    const ctx = context();
+    ctx.searched = [];
+    ctx.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false, visited: 0 }) });
+    vm.runInContext(source, ctx);
+    vm.runInContext("state.workspaces = []; state.ws = null; state.defaultFolder = '/Users/alejandro.blanco';", ctx);
+    vm.runInContext('searchPaletteState.query = "needle";', ctx);
+    vm.runInContext(
+      "window.HerdrWorkspaceSearch = {" +
+        ' workspaceCwd: (w) => (w && w.cwd) || "",' +
+        " settings: () => ({})," +
+        " pathSearchAvailable: () => true," +
+        ' searchPaths: async (args) => { searched.push({ kind: "paths", matchCase: args.matchCase, regex: args.regex, visitOffset: args.visitOffset }); return { entries: [], git_status: null, truncated: false, visited: 4 }; },' +
+        ' searchContent: async (args) => { searched.push({ kind: "content", matchCase: args.matchCase, regex: args.regex }); return { files: [], total_files: 0, total_matches: 0, truncated: false }; },' +
+        ' applyContentResults: (state, data) => { state.files = data.files || []; state.total_files = data.total_files || 0; state.total_matches = data.total_matches || 0; state.truncated = !!data.truncated; state.done = true; },' +
+        " flattenContentMatches: (files) => []," +
+        " resetContentState: () => {} };",
+      ctx,
+    );
+    await vm.runInContext("runWorkspaceSearch(false)", ctx);
+    ctx.searched.length = 0;
+
+    await vm.runInContext("HerdrSearchPalette.setSearchMode('matchCase')", ctx);
+    const afterCase = ctx.searched;
+    ok(afterCase.some((s) => s.kind === "paths" && s.matchCase === true), "path search reran with match case");
+    ok(afterCase.some((s) => s.kind === "content" && s.matchCase === true), "content search reran with match case");
+    equal(vm.runInContext("searchPaletteState.matchCase", ctx), true, "palette state keeps the flipped mode");
+
+    ctx.searched.length = 0;
+    await vm.runInContext("HerdrSearchPalette.setSearchMode('regex')", ctx);
+    const afterRegex = ctx.searched;
+    ok(afterRegex.some((s) => s.kind === "paths" && s.regex === true), "path search reran with regex");
+    equal(vm.runInContext("searchPaletteState.regex", ctx), true, "palette state keeps the regex mode");
+  });
+
+  it("palette head markup ships the aA and regex toggles", () => {
+    const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
+    const appHtml = read("./app.html");
+    match(appHtml, /id="searchPaletteCaseToggle"/);
+    match(appHtml, /id="searchPaletteRegexToggle"/);
+    match(appHtml, /HerdrSearchPalette\.setSearchMode\('matchCase'\)/);
+    match(appHtml, /HerdrSearchPalette\.setSearchMode\('regex'\)/);
+    match(appHtml, /Alt\+C match case/);
+    match(appHtml, /Alt\+R regex/);
+    const panesCss = read("./desktop/app_css/panes.css");
+    match(panesCss, /\.search-panel-head \.search-mode-toggle/);
+    match(panesCss, /\.search-head \.search-mode-toggle/);
+  });
+
   it("prefix-P without a workspace opens the seeded worktree modal instead of dying", () => {
     const ctx = context();
     const requests = [];

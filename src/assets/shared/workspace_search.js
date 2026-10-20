@@ -148,13 +148,17 @@
     return body;
   }
 
-  async function searchPaths({ cwd, query, kind = "file", offset = 0, limit, path = "" }) {
+  async function searchPaths({ cwd, query, kind = "file", offset = 0, limit, path = "", visitOffset, matchCase, regex }) {
     const opts = settings();
     const normalizedKind = Tree && Tree.normalizeSearchKind ? Tree.normalizeSearchKind(kind) : kind === "dir" ? "dir" : "file";
     const kindEnabled = normalizedKind === "dir" ? opts.searchFoldersEnabled : opts.searchFilesEnabled;
-    if (!kindEnabled) return { entries: [], git_status: null, truncated: false, disabled: true };
+    if (!kindEnabled) return { entries: [], git_status: null, truncated: false, visited: 0, disabled: true };
     const kindQuery = Tree && Tree.searchKindQuery ? Tree.searchKindQuery(normalizedKind) : `search_kind=${normalizedKind}`;
-    const url = `/api/file-browser/tree?cwd=${encodeURIComponent(cwd || "")}&path=${encodeURIComponent(path || "")}&q=${encodeURIComponent(String(query || "").trim())}&${kindQuery}&offset=${Number(offset) || 0}&limit=${Number(limit || opts.pathPageSize)}${opts.gitStatusEnabled ? "&include_git_status=true" : ""}`;
+    // Per-query toggles override the stored defaults; unset falls back to
+    // the settings so the panel/palette can offer live switches.
+    const useMatchCase = matchCase == null ? opts.matchCase : matchCase === true;
+    const useRegex = regex == null ? opts.regex : regex === true;
+    const url = `/api/file-browser/tree?cwd=${encodeURIComponent(cwd || "")}&path=${encodeURIComponent(path || "")}&q=${encodeURIComponent(String(query || "").trim())}&${kindQuery}&offset=${Number(offset) || 0}&visit_offset=${Number(visitOffset) || 0}&limit=${Number(limit || opts.pathPageSize)}&match_case=${useMatchCase ? "true" : "false"}&regex=${useRegex ? "true" : "false"}${opts.gitStatusEnabled ? "&include_git_status=true" : ""}`;
     return apiJson(url);
   }
 

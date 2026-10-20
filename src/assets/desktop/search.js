@@ -19,11 +19,17 @@ function createSearchPaletteState() {
     requestSeq: 0,
     timer: null,
     pathKind: "file",
+    // Per-query search mode toggles, shared by path and content search.
+    // They default from the stored settings and flip live through the head
+    // toggles (aA / .*), without rewriting the saved options.
+    matchCase: searchSettings().matchCase === true,
+    regex: searchSettings().regex === true,
     recent: [],
     recentLoaded: false,
     pathEntries: [],
     pathGitStatus: null,
     pathOffset: 0,
+    pathVisited: 0,
     pathDone: true,
     pathLoading: false,
     pathError: "",
@@ -378,16 +384,20 @@ async function runWorkspaceSearch(append = false) {
 async function runPathSearch(seq, query, cwd, append) {
   const helper = window.HerdrWorkspaceSearch;
   const offset = append ? searchPaletteState.pathOffset : 0;
+  const visitOffset = append ? searchPaletteState.pathVisited : 0;
   searchPaletteState.pathLoading = true;
   searchPaletteState.pathError = "";
   renderSearchPalette();
   try {
-    const data = await helper.searchPaths({ cwd, query, kind: searchPaletteState.pathKind, offset });
+    const data = await helper.searchPaths({ cwd, query, kind: searchPaletteState.pathKind, offset, visitOffset, matchCase: searchPaletteState.matchCase, regex: searchPaletteState.regex });
     if (seq !== searchPaletteState.requestSeq) return;
     const entries = data.entries || [];
     searchPaletteState.pathEntries = append ? searchPaletteState.pathEntries.concat(entries) : entries;
     searchPaletteState.pathGitStatus = data.git_status || null;
     searchPaletteState.pathOffset = offset + entries.length;
+    // Visit cursor: "Load more" resumes the backend walk where this page
+    // stopped, so results past the per-page visit cap surface.
+    searchPaletteState.pathVisited = Number(data.visited || 0) + (append ? visitOffset : 0);
     searchPaletteState.pathDone = !data.truncated || entries.length === 0;
     searchPaletteState.pathError = "";
   } catch (error) {
@@ -421,7 +431,7 @@ async function runContentSearchForPalette(seq, query, cwd, append, options = {})
   searchPaletteState.content.error = "";
   (options.preserveScroll ? renderSearchPalettePreservingScroll : renderSearchPalette)();
   try {
-    const data = await helper.searchContent({ cwd, query, offset, contextLines: searchPaletteState.content.contextLines });
+    const data = await helper.searchContent({ cwd, query, offset, contextLines: searchPaletteState.content.contextLines, matchCase: searchPaletteState.matchCase, regex: searchPaletteState.regex });
     if (seq !== searchPaletteState.requestSeq) return;
     helper.applyContentResults(searchPaletteState.content, data, append, { preserveExpanded: !!options.preserveExpanded });
   } catch (error) {
@@ -514,11 +524,28 @@ function expandSelectedSearchContent(direction) {
   return true;
 }
 
+function syncSearchModeToggles() {
+  // The palette and the panel share the same look: a pressed toggle lights
+  // up through .mini.active. aria-pressed mirrors the state for screen
+  // readers. The palette owns its own buttons; the panel renders inline.
+  const caseToggle = el("searchPaletteCaseToggle");
+  const regexToggle = el("searchPaletteRegexToggle");
+  if (caseToggle) {
+    caseToggle.classList.toggle("active", searchPaletteState.matchCase === true);
+    caseToggle.setAttribute("aria-pressed", searchPaletteState.matchCase === true ? "true" : "false");
+  }
+  if (regexToggle) {
+    regexToggle.classList.toggle("active", searchPaletteState.regex === true);
+    regexToggle.setAttribute("aria-pressed", searchPaletteState.regex === true ? "true" : "false");
+  }
+}
+
 function renderSearchPalette() {
   const query = searchPaletteState.query || "";
   const actionsOnly = actionsOnlyQuery(query);
   const opts = searchSettings();
   normalizePalettePathKind(opts);
+  syncSearchModeToggles();
   const order = opts.searchSectionOrder || ["workspaces", "files", "content"];
   const actions = searchActionCandidates(query);
   const targets = actionsOnly ? [] : searchCandidates(query);
@@ -776,6 +803,12 @@ function searchPaletteKeydown(e) {
   } else if (e.altKey && e.key && e.key.toLowerCase() === "d") {
     e.preventDefault();
     HerdrSearchPalette.setPathKind("dir");
+  } else if (e.altKey && e.key && e.key.toLowerCase() === "c") {
+    e.preventDefault();
+    HerdrSearchPalette.setSearchMode("matchCase");
+  } else if (e.altKey && e.key && e.key.toLowerCase() === "r") {
+    e.preventDefault();
+    HerdrSearchPalette.setSearchMode("regex");
   }
 }
 
@@ -861,6 +894,19 @@ const HerdrSearchPalette = {
     searchPaletteState.pathKind = kind === "dir" ? "dir" : "file";
     searchPaletteState.pathEntries = [];
     searchPaletteState.pathOffset = 0;
+    searchPaletteState.pathVisited = 0;
+    searchPaletteState.pathDone = true;
+    renderSearchPalette();
+    runWorkspaceSearch(false);
+  },
+  // Flip the per-query match mode (aA) or regex (.*). Both path and content
+  // search rerun with the new mode; the saved settings stay untouched.
+  setSearchMode(mode) {
+    if (mode !== "matchCase" && mode !== "regex") return;
+    searchPaletteState[mode] = !searchPaletteState[mode];
+    searchPaletteState.pathEntries = [];
+    searchPaletteState.pathOffset = 0;
+    searchPaletteState.pathVisited = 0;
     searchPaletteState.pathDone = true;
     renderSearchPalette();
     runWorkspaceSearch(false);
@@ -903,7 +949,7 @@ const HerdrSearchPaletteContent = {
     if (!helper || !path || !query || !cwd || !helper.searchContentFile) return;
     const seq = ++searchPaletteState.requestSeq;
     try {
-      const data = await helper.searchContentFile({ cwd, file: path, query, contextLines: searchPaletteState.content.contextLines, matchesPerFile: 500 });
+      const data = await helper.searchContentFile({ cwd, file: path, query, contextLines: searchPaletteState.content.contextLines, matchesPerFile: 500, matchCase: searchPaletteState.matchCase, regex: searchPaletteState.regex });
       if (seq !== searchPaletteState.requestSeq || !data.file) return;
       const index = searchPaletteState.content.files.findIndex((file) => file.path === path);
       if (index >= 0) searchPaletteState.content.files[index] = data.file;
