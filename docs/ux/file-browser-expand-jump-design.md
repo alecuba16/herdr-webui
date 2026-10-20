@@ -104,14 +104,19 @@ Notes on the table:
   308px below the fold. The first expand measures larger (1147px). The
   original passes are not directly comparable: the first runs two renders
   at a clamped scrollTop (6252) while the cached pass sits at 6500, so
-  part of the difference is geometry, not render count. A controlled
-  re-run with the pre-click drift fully settled before the click still
-  measures exactly +1147px (marker 447 to 1594 at scrollTop 6252), so the
-  unstable baseline contributes nothing to the delta: the extra ~421px
-  belongs to the first-expand pass itself (the second wipe lands on a
-  tree with a taller placeholder mix above the viewport), while the
-  exact 421px row-level split stays unobserved because the stored
-  evidence samples only the first 30 indices of each height band.
+  part of the difference is geometry, not render count. Controlled
+  re-runs with the pre-click drift fully settled before the click
+  measure +1147px (marker 447 to 1594 at scrollTop 6252, reproduced
+  across four settled-baseline runs) and on one later re-run +1120px
+  (marker 447 to 1567 at scrollTop 6279): the settled pre-click mix
+  varies by a few realized rows, moving the clamp and the picked
+  marker row slightly, and the landed marker document offset is the
+  same 7846px in every run. The finding is robust either way: the
+  settled baseline contributes nothing to the delta, so the extra
+  ~421px belongs to the first-expand pass itself (the second wipe
+  lands on a tree with a taller placeholder mix above the viewport),
+  while the exact 421px row-level split stays unobserved because the
+  stored evidence samples only the first 30 indices of each height band.
 - The 3000 rows show a shift with **no insertion above the marker at
   all** in the first expand: `dir-5` sits below the viewport there, so
   the marker is above the insertion point, and the visible content
