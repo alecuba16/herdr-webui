@@ -847,10 +847,7 @@ fn push_tree_entries(
 // both search surfaces behave the same for the same query. Matching runs
 // against the original entry name plus the root-relative path.
 enum PathMatcher {
-    Substring {
-        needle: String,
-        match_case: bool,
-    },
+    Substring { needle: String, match_case: bool },
     Regex(Regex),
 }
 
@@ -874,10 +871,7 @@ impl PathMatcher {
 
     fn matches(&self, name: &str, path: &str) -> bool {
         match self {
-            Self::Substring {
-                needle,
-                match_case,
-            } => {
+            Self::Substring { needle, match_case } => {
                 if *match_case {
                     name.contains(needle.as_str()) || path.contains(needle.as_str())
                 } else {
@@ -935,32 +929,29 @@ fn push_search_entries_with_visit_limit(
             let kind = if is_dir { "dir" } else { "file" };
             let kind_matches = search_kind.is_none_or(|wanted| wanted == kind);
             if kind_matches
-                && matcher.matches(
-                    &entry.name,
-                    &relative_to_root(build.root, &entry.path),
-                )
+                && matcher.matches(&entry.name, &relative_to_root(build.root, &entry.path))
             {
+                if !skipped && *matched >= offset && build.entries.len() < limit {
+                    build.entries.push(FileBrowserEntry {
+                        name: entry.name.clone(),
+                        path: relative_to_root(build.root, &entry.path),
+                        kind: kind.to_string(),
+                        size: if is_dir {
+                            None
+                        } else {
+                            Some(entry.metadata.len())
+                        },
+                        modified_ms: entry
+                            .metadata
+                            .modified()
+                            .ok()
+                            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                            .map(|duration| duration.as_millis() as u64),
+                        level: 0,
+                        expanded: false,
+                    });
+                }
                 if !skipped {
-                    if *matched >= offset && build.entries.len() < limit {
-                        build.entries.push(FileBrowserEntry {
-                            name: entry.name.clone(),
-                            path: relative_to_root(build.root, &entry.path),
-                            kind: kind.to_string(),
-                            size: if is_dir {
-                                None
-                            } else {
-                                Some(entry.metadata.len())
-                            },
-                            modified_ms: entry
-                                .metadata
-                                .modified()
-                                .ok()
-                                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                                .map(|duration| duration.as_millis() as u64),
-                            level: 0,
-                            expanded: false,
-                        });
-                    }
                     *matched += 1;
                     if build.entries.len() >= limit {
                         build.truncated = true;
