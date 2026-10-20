@@ -1,0 +1,285 @@
+# File browser expand jump: findings and fix design
+
+Examination notes for the second examine request: expanding a folder in a
+large file list visibly shifts the rows on screen, sometimes pushing the
+row the user is reading out of the viewport. Traced through the desktop
+file browser render path and reproduced live against an isolated server
+plus headless Chrome. Both user-visible shifts and their two independent
+mechanisms are measured below. No product code changed in this
+examination; the fix design is section 3.
+
+## 0. What exists today (verified)
+
+**Expand renders twice on first open** (`src/assets/desktop/file_browser.js`):
+`toggleDir` (1231-1250) sets `expanded[path]`, renders a loading state,
+awaits the fetch, then renders again with the children. Collapse and any
+already-cached expand render once.
+
+**Scroll restore is pixel-anchored**: `renderPreservingScroll` (311-321)
+saves `.file-browser-side` scrollTop, `render()` replaces
+`panel.innerHTML` wholesale (1158), then writes the same pixel value
+back. `overflow-anchor: none` (desktop/file_browser.css:22) is set so
+Chrome's own scroll anchoring does not fight that restore. The tree
+container is `.file-browser-side` in both hosted and legacy layouts; the
+old `.file-browser-pane-body` surface exists only in chrome.css scrollbar
+styling and a test fixture list, with zero JS references.
+
+**Rows are CSS-virtualized** (shared/file_tree.css:124-129, added in
+commit 00a3b572):
+
+```css
+.herdr-tree-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 26px;
+}
+```
+
+`content-visibility: auto` skips layout and paint for offscreen rows and
+uses `contain-intrinsic-size` as the height estimate until the row comes
+near the viewport. The commit comment assumes a "stable single-line
+height".
+
+**Rows are single-line by construction**: the name cell is
+`white-space: nowrap` with ellipsis (shared/file_tree.css:65-69), the meta
+badge is one 11px span. So row height is genuinely uniform per row kind.
+
+**Measured row geometry** (live, 900px viewport, border-box):
+realized dir row 29px = 17px content + 10px padding + 2px border.
+A row that has never been near the viewport reports the placeholder
+38px = 26px intrinsic content + 10px padding + 2px border. The intrinsic
+constant is 9px taller than the realized content box, so every
+not-yet-rendered row overestimates by 9px. The current-directory row
+measures 31px realized (wrapped by `.herdr-file-tree-current`,
+shared/file_tree.css:38-42) and 38px as a placeholder.
+
+## 1. Live reproduction
+
+Harness (in this worktree, currently untracked): `scripts/e2e/`
+`run-expand-jump.sh` boots an isolated server (own XDG_CONFIG_HOME under a
+temp dir, unique `--session` and port, `--backend-mode builtin`, self-signed
+HTTPS) plus `chrome-headless-shell` over CDP, builds a fixture repo of 200
+dirs x 20 files, opens the workspace through the real funnel
+(`POST /api/recent-workspaces` from node, then the routed
+`/session/default/workspace/<id>` URL), expands the sidebar, scrolls, and
+clicks the real caret of `dir-5`. `dir-5` sorts lexicographically at row
+146 of 200 (the `dir-1xx` block), doc offset ~5490px. The marker is the
+mid-viewport row; the metric is the marker's viewport-Y from caret click
+to settled state. Row-level instrumentation samples heights at every
+mutation and scroll event through a panel-level observer (listeners on
+the scroller itself die with the first `innerHTML` wipe; earlier session
+numbers taken that way, including a reported "+61px transient", were
+artifacts and are superseded by the numbers below).
+
+Evidence JSONs (setup, both passes, full event log with per-row heights,
+settled height distribution):
+`$JCODE_SCRATCH_DIR/expand-jump/expand-jump-{1200,3000,6500}.json`,
+one per scroll offset.
+
+| E2E_SCROLL | dir-5 vs viewport | Pass | Marker at click | Marker settled | Shift |
+|---|---|---|---|---|---|
+| 1200 (control) | below | first expand | 475px | 475px | 0 |
+| 1200 (control) | below | cached expand | 475px | 475px | 0 |
+| 3000 | below | first expand | 211px | 542px | +331px |
+| 3000 | below | cached expand | 542px | 542px | 0 |
+| 6500 (canonical) | above | cached expand | 482px | 1208px | +726px |
+| 6500 (canonical) | above | first expand | 255px | 1402px | +1147px |
+
+Notes on the table:
+
+- The canonical row is the reported bug: expanding a folder **above** the
+  viewport with the marker below the insertion point. The cached expand
+  (single render, no network) shifts the mid-viewport row down 726px,
+  which matches the settled height of the 21 inserted child rows
+  (children settle at 29px realized or 38px placeholder, plus the 3px
+  grid gap; the run's logged height distribution shows both
+  populations). The 900px viewport loses that row entirely: it ends
+  308px below the fold. First expand shifts 1147px because the
+  two-render sequence doubles the wipe churn described below.
+- The 3000 rows show a shift with **no insertion above the marker at
+  all** in the first expand: `dir-5` sits below the viewport there, so
+  the marker is above the insertion point, and the visible content
+  still moved 331px. That shift is mechanism B operating alone. The
+  cached expand at 3000 re-renders with the same placeholder mix already
+  settled from the first pass, so the wipe is height-neutral there and
+  the marker holds at 542px.
+- Baselines drift before the click (211px and 255px vs the 475-482px
+  settled baseline) because the tree was still realizing rows; the drift
+  itself is mechanism B and is detailed below.
+- Scrollbar churn across one first expand at 6500: scrollHeight goes
+  7152 (click) to 8392 (wipe frame, 202 rows all placeholder) to 9253
+  (children wipe, 223 rows all placeholder) to 8299 settled. The thumb
+  resizes through every step.
+
+## 2. Mechanisms
+
+### A. Pixel anchor versus insertion (the reported bug)
+
+scrollTop is a distance from the top of the content, not a pointer to a
+row. `renderPreservingScroll` puts the same pixel value back, so any
+height inserted above the viewport pushes every visible row down by
+exactly that height. The cached-expand 726px measurement is the direct
+proof. The same failure moves content **up** on collapse when the
+collapsed folder is above the viewport, and applies to every re-render
+that inserts or removes rows above the fold, not just expand.
+
+### B. Virtualization reset on every render (independent of insertion)
+
+`content-visibility: auto` remembers the last rendered size per element.
+`render()` wipes `panel.innerHTML`, so all rows are new elements on every
+render: the entire tree resets to the 26px intrinsic estimate, which is
+9px taller per row than reality. Rows near the viewport re-realize
+asynchronously in the following frames; rows far above or below stay
+placeholder until scrolled to. Consequences, all measured:
+
+- **Content moves under a constant scrollTop.** In the 3000 run the
+  marker sat at 1082px in every mutation sample and settled at 542px
+  with no scroll event between them, purely from rows above it
+  switching between placeholder and realized heights. In the 6500 run
+  the scroller was asked for scrollTop 6500 in setup but read 6252 at
+  click time: the tree measured 7152px while partially unrealized
+  (6252 + 900 client height), so the browser clamped the scroll
+  position 248px with zero user interaction.
+- **Every re-render churns the placeholder mix.** The +331px at scroll
+  3000 with the insertion below the marker, and the +421px difference
+  between the first-expand 1147px and the cached 726px, come from the
+  wipe resetting the realized band twice. The transient is visible as a
+  flash: the wipe frame lays the whole tree out at placeholder heights
+  (mutation-time marker at 2176px in the 6500 run, scrollHeight 9253)
+  and the on-screen rows then climb back as realization shrinks them
+  (settled marker 1402px, scrollHeight 8299).
+- **The settled height distribution confirms the two row populations.**
+  At scroll 6500 the settled tree holds 122 rows at 38px and 79 at 29px:
+  the 38px block is the first 122 rows, ending near the 5000px doc
+  line, one to two viewports above the scroll position, exactly the
+  rows the browser kept placeholder. At scroll 3000 the split is 90 at
+  38px, 111 at 29px, boundary again tracking the viewport plus margin.
+
+### C. Why only huge lists show it
+
+The control run (scroll 1200, ~30 rows above the viewport) measures zero
+shift in both passes: everything above the fold sits inside the browser's
+realization margin, so the post-wipe layout matches the pre-wipe layout
+immediately. Mechanism B needs a placeholder band above the viewport,
+mechanism A needs insertion above the viewport, and both need a list
+taller than the viewport. On short trees the bug is invisible, which is
+why it reads as "expanding a folder in a huge list shifts the list".
+
+## 3. Fix design
+
+### 3.1 Deterministic row height (removes mechanism B)
+
+Rows are already single-line (verified in section 0), so an explicit
+height is safe and makes placeholder and realized boxes identical:
+
+- `.herdr-tree-row { height: 29px }` (or the metric-derived value:
+  12px font line box + 10px padding + 2px border; pick from measurement,
+  not a magic number).
+- The current-directory row needs its own explicit height (31px
+  measured) because `.herdr-file-tree-current` wraps it in a padded,
+  bordered block (shared/file_tree.css:38-42); leaving it auto would keep
+  a 7px drift above the viewport.
+- `contain-intrinsic-size` then matches the real box and virtualization
+  stops changing layout at all. Scrollbar math becomes exact, the clamp,
+  the pre-click drift, the transient flash, and the thumb churn all
+  disappear, and mechanism B is gone for every re-render path (refresh,
+  git status arrival, rename), not just expand.
+
+Rejected alternative: correcting only the intrinsic to 17px. It reduces
+the error to font-metric variance across platforms instead of removing
+it, and it leaves nothing testable pinning row height to the font.
+
+### 3.2 Row-anchored restore (removes mechanism A)
+
+Anchor the viewport to a row, not to a pixel distance. In
+`renderPreservingScroll`, before `render()`:
+
+1. Find the anchor row: the first row intersecting the scroller's top
+   edge. Record its `title` (full path, already unique per row) and its
+   viewport offset: `rect.top - side.getBoundingClientRect().top`.
+2. After the wipe, resolve the row by `title` and set
+   `side.scrollTop = rowDocOffset - viewportOffset`, where
+   `rowDocOffset = row.getBoundingClientRect().top + side.scrollTop -
+   side.getBoundingClientRect().top` computed before the assignment.
+3. Fallback to the current scrollTop when the anchor row no longer
+   exists (filtered out, renamed, root navigation). The pixel fallback is
+   exactly today's behavior, so the anchor can only improve on it.
+
+With 3.1 in place the restore is exact in one synchronous step: rows
+above the viewport have identical placeholder and realized heights, so
+the doc offset is stable the moment the DOM is built. Without 3.1 the
+anchor lands on the placeholder layout and realization shifts it again,
+so 3.1 is the prerequisite and 3.2 the correct anchor. Collapse gets the
+same guarantee through the identical path (`toggleDir` collapse renders
+once): rows removed above the viewport pull the anchor's doc offset up,
+and the restore pins the anchor row to the same viewport offset.
+
+Repo precedent: the mobile lens compensates prepended pages by
+`scrollTop + (scrollHeight - anchorHeight)` (mobile/lens.js:926,
+961-963). The file browser cannot use the total-height delta because the
+wipe changes height in both directions and reorders rows; identity-based
+anchoring is the general form.
+
+Rejected alternatives: compensating pixel restore with inserted-height
+arithmetic (fragile once filters, sorts, or the 1000-entry truncation
+from file_browser.rs:25 reorder the list); re-enabling
+`overflow-anchor` (the wipe destroys the browser's anchor node, so Chrome
+cannot anchor across an `innerHTML` replacement).
+
+### 3.3 Surfaces sharing the pattern
+
+- **Search palette**: `renderSearchPalettePreservingScroll`
+  (desktop/search.js:402-407) is the same pixel restore over
+  `.search-result` rows that carry their own
+  `content-visibility: auto; contain-intrinsic-size: auto 41px`
+  (desktop/search.css:199-203). Same bug family, same fix template.
+- **Git log**: virtualized rows (git_ui/log.css:514-518) with pixel
+  restore via `captureContentScroll` (git_ui.js:1085-1098). Log rows
+  append at the bottom, so mechanism A is rare there, but mechanism B
+  still perturbs the thumb on every render. Lower priority.
+- **Git side tree**: not virtualized (no content-visibility on side
+  rows), so its pixel restore is safe today.
+- **Mobile file browser**: no content-visibility on tree rows, and the
+  lens already anchors prepends. Unaffected.
+- **TUI**: `toggle_expand` splices children in place below the cursor
+  (tui/panels/files/mod.rs:170-200) and the list window is computed from
+  the selected row (tui/render/mod.rs:527-531), so the cursor row stays
+  centered by construction. Nothing to change.
+
+## 4. Tests
+
+- **Acceptance (real browser)**: promote the harness
+  (`scripts/e2e/run-expand-jump.sh` plus
+  `scripts/e2e/expand-jump-experiment.mjs`) to a committed e2e in the
+  style of `run-keyboard-guards-e2e.sh`, asserting `|marker delta| <=
+  2px` for cached and first expand at the three scroll offsets, plus
+  collapse above the viewport. The runner already isolates its server
+  and Chrome; the result JSON it drops at the repo root should move
+  under its temp dir (or `$JCODE_SCRATCH_DIR`) so it never lands in a
+  commit.
+- **Source assertions** in the `app_load.test.mjs` style: explicit
+  `.herdr-tree-row` height present, current-row height present,
+  `renderPreservingScroll` captures a row anchor before `render()`.
+- **Perf guard**: the virtualization rule exists to keep long lists
+  cheap (commit 00a3b572). The fix must keep `content-visibility: auto`;
+  explicit height preserves the layout and paint skip while removing the
+  height ambiguity.
+
+## 5. Evidence
+
+- `$JCODE_SCRATCH_DIR/expand-jump/expand-jump-1200.json` (control),
+  `expand-jump-3000.json` (insert below viewport),
+  `expand-jump-6500.json` (canonical insert above viewport). Each file
+  holds the setup geometry, both passes with click-time and settled
+  marker positions, the full mutation and scroll event log with sampled
+  row heights, and the settled per-row height distribution.
+- Harness scripts: `scripts/e2e/run-expand-jump.sh`,
+  `scripts/e2e/expand-jump-experiment.mjs`, `scripts/e2e/`
+  `run-expand-repro.sh` plus `expand-scroll-repro.mjs` (first-pass
+  reproduction), and `scripts/e2e/probe-layout.mjs` (scroller box and
+  ancestor probe). Untracked in this worktree, proposed as the
+  acceptance test base in section 4.
+- Source pins cited inline per section. All measurements come from the
+  shipped renderer booted from `target/debug/herdr-webui` with the
+  desktop layout forced (`herdr-web-layout` = `desktop`), sidebar
+  expanded via `HerdrRightSidebar.setCollapsed(false)` because boot
+  restores it collapsed and a collapsed sidebar renders a 0x0 scroller.
