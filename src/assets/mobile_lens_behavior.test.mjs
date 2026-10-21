@@ -1114,6 +1114,22 @@ describe("mobile lens", () => {
       "saved position is container-relative and clamped");
     // The drag listeners come off after release.
     equal((ctx._docListeners.get("mousemove") || []).length, 0, "move listeners removed on release");
+    // Mid-drag shrink (rotation/keyboard during the drag): the armed
+    // placement math is stale at release, so the save itself must clamp
+    // into the smaller container, both the stored spot and the live
+    // inline position.
+    lens.switchDragStart({ clientX: 200, clientY: 20, preventDefault() {} });
+    fireDoc("mousemove", { clientX: 300, clientY: 300, preventDefault() {} });
+    container._rectWidth = 240;
+    container._rectHeight = 420;
+    fireDoc("mouseup", {});
+    equal(JSON.stringify(JSON.parse(ctx._storage.get("herdr-mobile-lens-switch"))), JSON.stringify({ x: 140, y: 390 }), "save-time clamp persists an in-bounds spot after a mid-drag shrink");
+    equal(switchRow.style.left, "140px", "save-time clamp corrects the live position");
+    equal(switchRow.style.top, "390px", "save-time clamp corrects the live top");
+    // Restore the pre-shrink stub state for the restore-asserts below.
+    container._rectWidth = 400;
+    container._rectHeight = 700;
+    ctx._storage.set("herdr-mobile-lens-switch", JSON.stringify({ x: 300, y: 670 }));
     // applySwitchPosition restores the saved spot on a fresh mount and
     // clears stale inline offsets when nothing is saved.
     switchRow.style.left = "";
@@ -1138,6 +1154,11 @@ describe("mobile lens", () => {
     container._rectHeight = 500;
     observer.callback();
     equal(switchRow.style.top, "470px", "shrunk container re-clamps the saved y");
+    // Rotation: the container narrows, a saved x past the new edge
+    // re-clamps on the next observer tick.
+    container._rectWidth = 320;
+    observer.callback();
+    equal(switchRow.style.left, "220px", "narrowed container re-clamps the saved x");
     switchRow.classList.add("dragging");
     switchRow.style.top = "600px";
     observer.callback();

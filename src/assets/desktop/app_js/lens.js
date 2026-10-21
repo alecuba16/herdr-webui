@@ -2186,11 +2186,19 @@
         const shell = shellElement();
         if (shell) {
           const shellRect = shell.getBoundingClientRect();
+          // Clamp at save: the drag arms its bounds once at pointerdown,
+          // so a shell that changed mid-drag (sidebar strip drag, window
+          // resize) would persist an out-of-bounds spot.
+          const maxX = shellRect.width - rect.width;
+          const maxY = shellRect.height - rect.height;
+          const x = Math.max(0, Math.min(maxX, Math.round(rect.left - shellRect.left)));
+          const y = Math.max(0, Math.min(maxY, Math.round(rect.top - shellRect.top)));
+          if (x !== Math.round(rect.left - shellRect.left) || y !== Math.round(rect.top - shellRect.top)) {
+            node.style.left = `${x}px`;
+            node.style.top = `${y}px`;
+          }
           if (typeof options !== "undefined" && options)
-            options.lensSwitchPos = {
-              x: Math.round(rect.left - shellRect.left),
-              y: Math.round(rect.top - shellRect.top),
-            };
+            options.lensSwitchPos = { x, y };
           if (typeof saveOptions === "function") saveOptions();
         }
       }

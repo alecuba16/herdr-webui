@@ -110,6 +110,10 @@
       if (!state.terminalId) {
         getMobileTerminal().destroy(true);
         screen.innerHTML = renderTerminal();
+        // Fresh switch node in the loading branch too: restore the spot
+        // and arm the container watcher like the first-paint branch.
+        if (lens && lens.applySwitchPosition) lens.applySwitchPosition();
+        if (lens && lens.observeSwitchContainer) lens.observeSwitchContainer();
         return;
       }
       if (!el("terminal")) {

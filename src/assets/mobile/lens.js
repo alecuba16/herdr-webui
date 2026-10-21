@@ -1307,17 +1307,18 @@
 
     function saveSwitchPosition(node) {
       const container = node.offsetParent;
-      const nodeRect = node.getBoundingClientRect();
       if (!container) return;
-      const contRect = container.getBoundingClientRect();
+      // Clamp at save time: the drag arms its placement math once at
+      // pointerdown, so a container that shrank mid-drag (rotation,
+      // keyboard) would otherwise persist an out-of-bounds spot and park
+      // the pill outside; the mid-drag observer skip means nothing else
+      // re-clamps until the next resize.
+      const placement = switchPlacement(node);
+      const x = Math.max(0, Math.min(placement.maxX, placement.baseX));
+      const y = Math.max(0, Math.min(placement.maxY, placement.baseY));
+      if (x !== placement.baseX || y !== placement.baseY) writeSwitchPosition(node, x, y);
       try {
-        localStorage.setItem(
-          SWITCH_DRAG_KEY,
-          JSON.stringify({
-            x: Math.round(nodeRect.left - contRect.left),
-            y: Math.round(nodeRect.top - contRect.top),
-          }),
-        );
+        localStorage.setItem(SWITCH_DRAG_KEY, JSON.stringify({ x: Math.round(x), y: Math.round(y) }));
       } catch (_) {}
     }
 

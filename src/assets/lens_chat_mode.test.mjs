@@ -799,6 +799,22 @@ describe("lens structured chat mode", () => {
     equal(clicksThrough, 0, "click right after a drag is swallowed");
     fire(remounted, "click", { stopImmediatePropagation() {}, preventDefault() {} });
     equal(clicksThrough, 1, "a later normal click reaches button handlers");
+    // Mid-drag shell change (sidebar strip drag or window resize during
+    // the drag): the armed bounds are stale at release, so the save
+    // itself must clamp into the smaller shell, both the stored spot
+    // and the live inline position.
+    const savedBefore = saved().length;
+    fire(remounted, "pointerdown", { button: 0, pointerId: 3, clientX: 700, clientY: 570 });
+    fireDoc("pointermove", { pointerId: 3, clientX: 730, clientY: 600 });
+    shell._rectWidth = 500;
+    shell._rectHeight = 400;
+    fireDoc("pointerup", { pointerId: 3 });
+    equal(saved().length, savedBefore + 1, "release after the shrink persists once");
+    const shrunkSaved = saved()[saved().length - 1];
+    equal(shrunkSaved.x <= 400 && shrunkSaved.y <= 370, true,
+      "saved spot clamped into the smaller shell (got " + JSON.stringify(shrunkSaved) + ")");
+    equal(remounted.style.left, shrunkSaved.x + "px", "save-time clamp corrects the live left");
+    equal(remounted.style.top, shrunkSaved.y + "px", "save-time clamp corrects the live top");
   });
 
   it("renders turns, thinking, tool summary, and empty state", async () => {
