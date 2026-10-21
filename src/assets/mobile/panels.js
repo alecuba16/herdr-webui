@@ -197,7 +197,6 @@
       const lens = globalThis.HerdrMobileLens;
       const lensOn = !!(lens && lens.isActive && lens.isActive());
       const host = lensOn ? el("mobileLens") : el("mobileKeyBar");
-      const keybar = el("mobileKeyBar");
       const wantedBar = deps.renderComposerBar();
       const existingBar = el("mobileComposer");
       if (!wantedBar) {
@@ -206,12 +205,6 @@
         if (host) mountInto(host, wantedBar);
       } else if (host && existingBar.parentNode !== host) {
         host.appendChild(existingBar);
-      }
-      // The keybar keeps its own repaint memo; moving the composer out of
-      // it must invalidate that memo or a later keybar rewrite would
-      // expect the composer back inside (stale HTML comparison).
-      if (keybar && keybar.__lastToolbarHtml !== undefined && existingBar && existingBar.parentNode !== keybar) {
-        keybar.__lastToolbarHtml = undefined;
       }
       if (deps.syncComposer) deps.syncComposer();
       const existingCard = el("mobilePromptCard");
