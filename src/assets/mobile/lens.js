@@ -1158,10 +1158,15 @@
       syncSwitchUi();
       // The prompt card rides the chat-mode gate too (desktop parity):
       // the lens decision chooser owns blocked answering while the chat
-      // view is open, so the card must not fight it.
+      // view is open, so the card must not fight it. The dock hook moves
+      // the composer into the lens (open) or back to the keybar (closed);
+      // the plain sync then refreshes the textarea state in its new home.
       const deps = globalThis.HerdrMobileComposerDeps;
-      if (deps && deps.syncComposer) {
-        try { deps.syncComposer(); } catch (_) {}
+      if (deps) {
+        try {
+          if (deps.syncComposerDock) deps.syncComposerDock();
+          if (deps.syncComposer) deps.syncComposer();
+        } catch (_) {}
       }
     }
 

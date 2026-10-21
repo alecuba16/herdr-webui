@@ -2881,9 +2881,16 @@ describe("mobile bundle load", () => {
     ok(source.indexOf('<div class="mobile-toolbar" id="mobileToolbar" hidden><div id="mobileToolbarKeys"></div></div>') < source.indexOf('<div class="mobile-sheet-backdrop" id="mobileTabsBackdrop"'), "toolbar sits between screen and overlays");
     // The keybar writes into its own #mobileToolbarKeys child so toolbar
     // repaints never wipe the composer bar panels.syncComposer mounts
-    // into the keybar after it.
+    // into the keybar or lens overlay after it.
     match(source, /el\("mobileToolbarKeys"\)/);
-    match(source, /function syncComposer\(screen\) \{[\s\S]*?const keybar = el\("mobileKeyBar"\);[\s\S]*?mountInto\(keybar, wantedBar\)/);
+    match(source, /function syncComposer\(\) \{[\s\S]*?const host = lensOn \? el\("mobileLens"\) : el\("mobileKeyBar"\)/);
+    match(source, /if \(host\) mountInto\(host, wantedBar\)/);
+    match(source, /host\.appendChild\(existingBar\)/);
+    // The app wires the lens toggle to the dock re-parent: the composer
+    // must land inside the overlay when chat opens (the input-box bug).
+    match(source, /syncComposerDock: \(\) => \{[\s\S]*?mobilePanels\.syncComposer\(\)/);
+    const lensSource = readFileSync(new URL("./mobile/lens.js", import.meta.url), "utf8");
+    match(lensSource, /if \(deps\.syncComposerDock\) deps\.syncComposerDock\(\);[\s\S]*?if \(deps\.syncComposer\) deps\.syncComposer\(\);/);
     // Toolbar content mirrors the keybar builder, and syncs per render.
     match(source, /function syncToolbar\(\) \{[\s\S]*?mobilePanels\.renderKeyBar\(\)/);
     // Toggle flips visibility, persists, and updates the fab aria-pressed.
@@ -3010,6 +3017,65 @@ describe("mobile bundle load", () => {
     await ctx2.HerdrMobile.refresh();
     await ctx2.settle();
     equal(ctx2.document.getElementById("mobilePanelsChip").hidden, true, "panels chip hidden without workspace");
+  });
+
+  it("header title names the current panel when the workspace has several", async () => {
+    // Multi-panel regression: with two tabs in the workspace the header
+    // title used to stay the workspace name on every panel, so no header
+    // element identified which panel was open. The title must now carry
+    // the panel label (custom name or #number) on the terminal screen.
+    // Route ids are compact (t1/p1): the app expands them to w1:t1.
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      workspaceCounts: { w1: { tabs: 2, panes: 2 } },
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    equal(
+      ctx.document.getElementById("mobileTitle").textContent,
+      "#1",
+      "terminal screen title names the current panel, default label becomes the panel number",
+    );
+    // Home keeps the workspace identity: the title there names the
+    // workspace, not the panel.
+    ctx.HerdrMobile.showScreen("home");
+    await ctx.settle();
+    equal(
+      ctx.document.getElementById("mobileTitle").textContent,
+      "alpha",
+      "non-terminal screens keep the workspace title",
+    );
+    // A custom panel name wins over the number.
+    const ctx2 = context("/session/default/workspace/w1/tab/t2/pane/p2", {
+      workspaceCounts: { w1: { tabs: 2, panes: 2 } },
+      tabs: [
+        { workspace_id: "w1", tab_id: "w1:t1", number: 1 },
+        { workspace_id: "w1", tab_id: "w1:t2", number: 2, label: "repro job" },
+      ],
+    });
+    vm.runInContext(source, ctx2);
+    await ctx2.HerdrMobile.refresh();
+    ctx2.HerdrMobile.showScreen("terminal");
+    await ctx2.settle();
+    equal(
+      ctx2.document.getElementById("mobileTitle").textContent,
+      "repro job",
+      "custom panel label becomes the title",
+    );
+    // Single-panel workspaces never swap the title.
+    const ctx3 = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      workspaceCounts: { w1: { tabs: 1, panes: 1 } },
+    });
+    vm.runInContext(source, ctx3);
+    await ctx3.HerdrMobile.refresh();
+    ctx3.HerdrMobile.showScreen("terminal");
+    await ctx3.settle();
+    equal(
+      ctx3.document.getElementById("mobileTitle").textContent,
+      "alpha",
+      "single-panel workspace keeps the workspace title",
+    );
   });
 
   it("sends key bar control bytes through the terminal input path", async () => {
