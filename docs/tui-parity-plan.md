@@ -232,6 +232,14 @@ File explorer gaps vs neovim-style:
     shown, `M` again returns to the source), the TUI counterpart of the
     webui eye toggle between rendered preview and source.
 
+    Closed for filter highlight/jump in the file-explorer-filter pass: the
+    Files `/` search now highlights the matched substring of every result
+    name in yellow (same token as the webui tree marks) and jumps the
+    selection to the first match on commit; `j`/`k`/arrows walk the
+    all-matches list with the existing wraparound. Gap 21 (editor
+    find/replace within preview) is separate and stays open; the TUI
+    `/` filter was already the server-side search.
+
 Terminal parity (documented as out of scope in `docs/features.md` line 100):
 layout mutation, copy/search scrollback, mouse/touch, worktree dialogs
 (superseded by this plan), configurable keymaps, notification integrations.

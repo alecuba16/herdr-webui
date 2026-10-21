@@ -566,13 +566,25 @@ fn render_file_tree(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette
         } else {
             "  "
         };
-        rendered.push(Line::from(vec![
+        // Committed search results highlight the matched substring yellow
+        // (webui `herdr-tree-hit` mark); content search returned early above.
+        let highlight = explorer.search_mode;
+        let mut spans = vec![
             Span::styled(prefix, Style::default().fg(p.accent)),
             Span::raw(indent),
             Span::styled(icon, Style::default().fg(p.muted)),
             Span::raw(" "),
-            Span::styled(truncate(&entry.name, 48), name_style),
-        ]));
+        ];
+        for (text, matched) in
+            filter_name_spans(&truncate(&entry.name, 48), &explorer.filter, highlight)
+        {
+            spans.push(if matched {
+                Span::styled(text, name_style.fg(p.yellow))
+            } else {
+                Span::styled(text, name_style)
+            });
+        }
+        rendered.push(Line::from(spans));
     }
     frame.render_widget(Paragraph::new(rendered), list_area);
     if explorer.entries.is_empty() && !explorer.filter_active {
@@ -2421,6 +2433,41 @@ fn status_style(status: &str, p: &Palette) -> Style {
         "done" => Style::default().fg(p.teal),
         _ => Style::default().fg(p.muted),
     }
+}
+
+/// First case-insensitive occurrence, byte offsets valid for slicing
+/// `name`. RegexBuilder folding: folded offsets mis-slice multibyte text.
+fn match_span(name: &str, needle: &str) -> Option<(usize, usize)> {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return None;
+    }
+    let Ok(re) = regex::RegexBuilder::new(&regex::escape(needle))
+        .case_insensitive(true)
+        .build()
+    else {
+        return None;
+    };
+    re.find(name).map(|m| (m.start(), m.end()))
+}
+
+/// Displayed name split into (before, matched, after) spans. A row can
+/// lack a visible occurrence (path matched, name truncated): one plain span.
+pub(crate) fn filter_name_spans(name: &str, needle: &str, filter_on: bool) -> Vec<(String, bool)> {
+    if !filter_on {
+        return vec![(name.to_string(), false)];
+    }
+    let Some((start, end)) = match_span(name, needle) else {
+        return vec![(name.to_string(), false)];
+    };
+    vec![
+        (name[..start].to_string(), false),
+        (name[start..end].to_string(), true),
+        (name[end..].to_string(), false),
+    ]
+    .into_iter()
+    .filter(|(text, _)| !text.is_empty())
+    .collect()
 }
 
 fn truncate(value: &str, max_width: usize) -> String {

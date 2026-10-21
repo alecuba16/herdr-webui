@@ -450,6 +450,12 @@ impl FileExplorer {
     pub fn commit_filter(&mut self) {
         self.filter_active = false;
         self.search_mode = !self.filter.trim().is_empty();
+        // Jump to the first match: the server returns only matches, and
+        // refresh() merely clamps the selection, so without this the
+        // cursor would stay wherever it was in the pre-filter tree.
+        if self.search_mode {
+            self.selected = 0;
+        }
     }
 
     /// Cycle to the next recently opened preview (Tab parity with the
@@ -690,4 +696,105 @@ pub(super) fn move_index(current: usize, len: usize, delta: isize) -> usize {
     }
     let current = current.min(len - 1) as isize;
     (current + delta).clamp(0, len as isize - 1) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            path: name.to_string(),
+            is_dir: false,
+            size: None,
+            level: 0,
+            expanded: false,
+            git_status: None,
+        }
+    }
+
+    #[test]
+    fn filter_name_spans_split_matched_substring() {
+        use crate::tui::render::filter_name_spans;
+
+        let spans = filter_name_spans("README.md", "read", true);
+        // The empty before-span is dropped: only non-empty spans render.
+        assert_eq!(
+            spans,
+            vec![("READ".to_string(), true), ("ME.md".to_string(), false)]
+        );
+
+        // Match in the middle keeps both sides.
+        let spans = filter_name_spans("main.rs", "in", true);
+        assert_eq!(
+            spans,
+            vec![
+                ("ma".to_string(), false),
+                ("in".to_string(), true),
+                (".rs".to_string(), false)
+            ]
+        );
+
+        // Whole-name match: matched span only, no empty edges.
+        let spans = filter_name_spans("read", "read", true);
+        assert_eq!(spans, vec![("read".to_string(), true)]);
+
+        // Multibyte names stay whole after the split.
+        let spans = filter_name_spans("ca\u{f1}\u{f3}n.md", "\u{f1}\u{f3}", true);
+        assert_eq!(
+            spans,
+            vec![
+                ("ca".to_string(), false),
+                ("\u{f1}\u{f3}".to_string(), true),
+                ("n.md".to_string(), false)
+            ]
+        );
+    }
+
+    #[test]
+    fn filter_name_spans_off_and_no_match_fall_back_to_one_span() {
+        use crate::tui::render::filter_name_spans;
+
+        // Highlight off: whole name, unmatched.
+        assert_eq!(
+            filter_name_spans("README.md", "read", false),
+            vec![("README.md".to_string(), false)]
+        );
+        // Whitespace-only query never highlights (refresh trims it).
+        assert_eq!(
+            filter_name_spans("README.md", "   ", true),
+            vec![("README.md".to_string(), false)]
+        );
+        // No occurrence in the displayed name: one plain span (server
+        // matched on the path).
+        assert_eq!(
+            filter_name_spans("main.rs", "mod", true),
+            vec![("main.rs".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn commit_filter_jumps_to_first_match() {
+        let mut explorer = FileExplorer::new("/repo");
+        explorer.entries = vec![entry("design.md"), entry("render.rs"), entry("search.rs")];
+        explorer.selected = 2;
+
+        explorer.start_filter();
+        for ch in "render".chars() {
+            explorer.push_filter_char(ch);
+        }
+        explorer.commit_filter();
+        assert!(explorer.search_mode);
+        assert!(!explorer.filter_active);
+        assert_eq!(explorer.selected, 0, "commit jumps to the first match");
+
+        // Esc-style cancel (empty query) leaves search mode and keeps
+        // the selection where it is: jump-to-first is a commit-only move.
+        explorer.selected = 1;
+        explorer.filter.clear();
+        explorer.commit_filter();
+        assert!(!explorer.search_mode);
+        assert_eq!(explorer.selected, 1);
+    }
 }

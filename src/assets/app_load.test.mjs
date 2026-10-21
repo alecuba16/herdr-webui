@@ -2249,7 +2249,9 @@ describe("app bundle load", () => {
     match(desktopFileBrowserSource, /Herdr needs folder access to browse or search this folder\./);
     // The in-file content search died with the main surface: content
     // search lives in the shared renderer used by the search palette.
-    ok(!desktopFileBrowserSource.includes("filterDone"), "the tree-filter pagination state is gone");
+    // The desktop tree filter is back as a server-side q= search: its
+    // pagination state (filterDone) is expected in the source again.
+    match(desktopFileBrowserSource, /filterDone/);
     ok(!desktopFileBrowserSource.includes("Folder access is required to search file contents"), "the in-file content-search error copy is gone");
     match(directoryPickerSource, /permission_required/);
     match(directoryPickerSource, /Grant folder access/);
