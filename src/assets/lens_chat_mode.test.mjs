@@ -190,10 +190,31 @@ function makeElement(tag, attrText, inner, registry) {
         if (value) this._set.add(name);
         else this._set.delete(name);
       },
+      add(name) {
+        this._set.add(name);
+      },
+      remove(name) {
+        this._set.delete(name);
+      },
       contains(name) {
         return this._set.has(name);
       },
     },
+    // Inline styles (the switch drag writes left/top here) and a rect
+    // stub: an absolutely-positioned node's rect follows its inline
+    // left/top, so the drag math reads back the dragged position the
+    // way the real DOM would.
+    style: {},
+    getBoundingClientRect() {
+      return {
+        width: this._rectWidth || 100,
+        height: this._rectHeight || 30,
+        left: (parseFloat(this.style.left) || 0) + (this._rectLeft || 0),
+        top: (parseFloat(this.style.top) || 0) + (this._rectTop || 0),
+      };
+    },
+    setPointerCapture() {},
+    releasePointerCapture() {},
     parentNode: null,
     registry,
   };
@@ -313,11 +334,24 @@ function matches(node, sel) {
 function makeContext(overrides = {}) {
   const registry = new Map();
   registry._mutSeq = 0;
+  // Document-level drag listeners (the switch drag arms move/up on the
+  // document after pointerdown) land here; the harness fires them the
+  // way the browser would.
+  const docListeners = new Map();
   const doc = {
     registry,
     getElementById: (id) => registry.get(id) || null,
     createElement: () => makeElement("div", "", "", registry),
-    addEventListener() {},
+    addEventListener(type, fn) {
+      (docListeners.get(type) || docListeners.set(type, []).get(type)).push(fn);
+    },
+    removeEventListener(type, fn) {
+      const list = docListeners.get(type);
+      if (list) {
+        const at = list.indexOf(fn);
+        if (at !== -1) list.splice(at, 1);
+      }
+    },
   };
   const shell = makeElement("div", 'id="terminalShell"', "", registry);
   registry.set("terminalShell", shell);
@@ -396,7 +430,7 @@ function makeContext(overrides = {}) {
   vm.runInContext(SHARED_CORE_SOURCE, contextObject);
   vm.runInContext("var term = globalThis.__term;", contextObject);
   vm.runInContext(LENS_SOURCE, contextObject);
-  return { ctx, registry, shell, vmCtx: contextObject };
+  return { ctx, registry, shell, vmCtx: contextObject, docListeners };
 }
 
 function jcodeRow(agentSession) {
@@ -679,6 +713,108 @@ describe("lens structured chat mode", () => {
     refusedPane.ctx.HerdrLens.insertLensSwitch();
     equal(refusedPane.registry.get("terminalLensSwitch").hidden, false,
       "unresolvable jcode pane keeps the switch visible");
+  });
+
+  it("drags the Chat|Terminal switch and persists the position in options", () => {
+    // The vm context carries no bundle-scope options/saveOptions (the
+    // drag code guards for that), so the test injects them the way
+    // core.js would and asserts the drag survives the round trip.
+    const { ctx, registry, vmCtx, docListeners } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+    });
+    vm.runInContext(`
+      var options = { lensSwitchPos: null };
+      var __savedPositions = [];
+      var saveOptions = function () { __savedPositions.push(JSON.parse(JSON.stringify(options.lensSwitchPos))); };
+    `, vmCtx);
+    const saved = () => vm.runInContext("__savedPositions", vmCtx);
+    // Harness rect pins: switch 100x30, shell 800x600, both at 0,0.
+    const shell = registry.get("terminalShell");
+    shell._rectWidth = 800;
+    shell._rectHeight = 600;
+    ctx.HerdrLens.insertLensSwitch();
+    const node = registry.get("terminalLensSwitch");
+    ok(node, "switch node exists");
+    equal(node.getAttribute("aria-label"), "Panel view, drag to move",
+      "switch carries the drag affordance label");
+    // Node-level events arm the drag; the moves and release ride the
+    // document, matching the doc-level listener wiring.
+    const fire = (target, type, event) => {
+      for (const fn of (target.listeners[type] || [])) fn(event);
+    };
+    const fireDoc = (type, event) => {
+      for (const fn of (docListeners.get(type) || [])) fn(event);
+    };
+    // pointerdown arms the drag (left button only).
+    fire(node, "pointerdown", { button: 0, pointerId: 1, clientX: 10, clientY: 5 });
+    // Below the 4px threshold: no drag state yet.
+    fireDoc("pointermove", { pointerId: 1, clientX: 12, clientY: 6 });
+    equal(node.classList.contains("dragging"), false, "sub-threshold move does not drag");
+    // Past the threshold: the pill moves and clamps inside the shell.
+    fireDoc("pointermove", { pointerId: 1, clientX: 70, clientY: 40 });
+    equal(node.classList.contains("dragging"), true, "threshold crossing starts the drag");
+    equal(node.style.left, "60px", "drag writes left in shell coords");
+    equal(node.style.top, "35px", "drag writes top in shell coords");
+    equal(node.style.right, "auto", "drag clears the anchored right");
+    // The pill clamps inside the shell (800x600 minus 100x30).
+    fireDoc("pointermove", { pointerId: 1, clientX: 900, clientY: 900 });
+    equal(node.style.left, "700px", "x clamped to shell width minus pill width");
+    equal(node.style.top, "570px", "y clamped to shell height minus pill height");
+    fireDoc("pointerup", { pointerId: 1 });
+    equal(node.classList.contains("dragging"), false, "drag state cleared on release");
+    equal(saved().length, 1, "release persists the position once");
+    equal(JSON.stringify(saved()[0]), JSON.stringify({ x: 700, y: 570 }),
+      "saved position is shell-relative and clamped");
+    // A fresh mount restores the saved position from options.
+    node.remove();
+    registry.delete("terminalLensSwitch");
+    ctx.HerdrLens.insertLensSwitch();
+    const remounted = registry.get("terminalLensSwitch");
+    equal(remounted.style.left, "700px", "restored x from options");
+    equal(remounted.style.top, "570px", "restored y from options");
+    // Double-click resets to the anchored spot: inline offsets clear
+    // and the stored position goes null.
+    fire(remounted, "dblclick", { preventDefault() {}, stopImmediatePropagation() {} });
+    equal(remounted.style.left, "", "dblclick clears the inline left");
+    equal(remounted.style.top, "", "dblclick clears the inline top");
+    equal(vm.runInContext("options.lensSwitchPos", vmCtx), null, "dblclick resets the stored position");
+    equal(saved().length, 2, "dblclick persists the reset");
+    // The trailing synthetic click after a real drag is suppressed in
+    // the capture phase so releasing over a button never flips the view.
+    // Register a bubble-phase probe AFTER the suppressor and run it:
+    // stopImmediatePropagation is the capture handler's job, and the
+    // probe runs only when the suppressor lets the click through.
+    let clicksThrough = 0;
+    remounted.addEventListener("click", () => { clicksThrough++; });
+    fire(remounted, "pointerdown", { button: 0, pointerId: 2, clientX: 700, clientY: 570 });
+    fireDoc("pointermove", { pointerId: 2, clientX: 740, clientY: 600 });
+    equal(remounted.classList.contains("dragging"), true, "second drag armed");
+    const suppressor = remounted.listeners.click.find(
+      (fn) => fn.toString().includes("stopImmediatePropagation"),
+    );
+    ok(typeof suppressor === "function", "capture-phase click suppressor registered");
+    // Releasing fires the suppressed click path: capture runs first and
+    // consumes it, so the bubble probe never fires on THIS click.
+    fireDoc("pointerup", { pointerId: 2 });
+    equal(clicksThrough, 0, "click right after a drag is swallowed");
+    fire(remounted, "click", { stopImmediatePropagation() {}, preventDefault() {} });
+    equal(clicksThrough, 1, "a later normal click reaches button handlers");
+    // Mid-drag shell change (sidebar strip drag or window resize during
+    // the drag): the armed bounds are stale at release, so the save
+    // itself must clamp into the smaller shell, both the stored spot
+    // and the live inline position.
+    const savedBefore = saved().length;
+    fire(remounted, "pointerdown", { button: 0, pointerId: 3, clientX: 700, clientY: 570 });
+    fireDoc("pointermove", { pointerId: 3, clientX: 730, clientY: 600 });
+    shell._rectWidth = 500;
+    shell._rectHeight = 400;
+    fireDoc("pointerup", { pointerId: 3 });
+    equal(saved().length, savedBefore + 1, "release after the shrink persists once");
+    const shrunkSaved = saved()[saved().length - 1];
+    equal(shrunkSaved.x <= 400 && shrunkSaved.y <= 370, true,
+      "saved spot clamped into the smaller shell (got " + JSON.stringify(shrunkSaved) + ")");
+    equal(remounted.style.left, shrunkSaved.x + "px", "save-time clamp corrects the live left");
+    equal(remounted.style.top, shrunkSaved.y + "px", "save-time clamp corrects the live top");
   });
 
   it("renders turns, thinking, tool summary, and empty state", async () => {

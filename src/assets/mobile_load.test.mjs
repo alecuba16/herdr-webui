@@ -2891,6 +2891,22 @@ describe("mobile bundle load", () => {
     match(source, /syncComposerDock: \(\) => \{[\s\S]*?mobilePanels\.syncComposer\(\)/);
     const lensSource = readFileSync(new URL("./mobile/lens.js", import.meta.url), "utf8");
     match(lensSource, /if \(deps\.syncComposerDock\) deps\.syncComposerDock\(\);[\s\S]*?if \(deps\.syncComposer\) deps\.syncComposer\(\);/);
+    // The composer dock dies with a ReferenceError when syncComposer calls
+    // a helper that does not exist: the throw aborts the mount, and the
+    // lens-open path swallows it (setLens try/catch), so the input box
+    // never appears in the chat view. Pin that every helper syncComposer
+    // names is defined in the same module (mountAfterTerminal was the
+    // dangling one, renamed to mountInto in 33eb6bfd).
+    const panelsSource = readFileSync(new URL("./mobile/panels.js", import.meta.url), "utf8");
+    const syncComposerBody = panelsSource.match(/function syncComposer\(\) \{[\s\S]*?\n    \}/)[0];
+    const called = [...syncComposerBody.matchAll(/\b(mountInto|removeNode|mountAfterTerminal)\(/g)].map((m) => m[1]);
+    for (const name of new Set(called)) {
+      ok(
+        new RegExp(`function ${name}\\(`).test(panelsSource),
+        `syncComposer helper ${name} is defined in panels.js`,
+      );
+    }
+    ok(!called.includes("mountAfterTerminal"), "the renamed mountAfterTerminal helper is gone");
     // Toolbar content mirrors the keybar builder, and syncs per render.
     match(source, /function syncToolbar\(\) \{[\s\S]*?mobilePanels\.renderKeyBar\(\)/);
     // Toggle flips visibility, persists, and updates the fab aria-pressed.

@@ -27,6 +27,10 @@ body {
   --herdr-mobile-viewport-height: 100dvh;
   --bg: #11111b;
   --fg: #cdd6f4;
+  /* Same role as desktop base.css's --fg-dim: dimmed reading text
+     (expanded lens segments). Kept alongside --muted, which matches it
+     today, so the two can drift apart the way desktop's did. */
+  --fg-dim: #a6adc8;
   --panel: #181825;
   --panel2: #1e1e2e;
   --editor-bg: #1e1e2e;
@@ -75,6 +79,7 @@ body {
 body.light {
   --bg: #eff1f5;
   --fg: #363a4f;
+  --fg-dim: #525769;
   --panel: #e6e9ef;
   --panel2: #ccd0da;
   --editor-bg: #ccd0da;
@@ -532,17 +537,16 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
 }
 .mobile-terminal-screen {
   display: grid;
-  /* Two rows: the chat-view switch (auto, collapses to 0 when the row is
-     absent on non-chat panes) and the shell (1fr). The shell always owns
-     row 2 explicitly: without it, a screen without the switch would
-     auto-place the shell into the content-sized auto row and strand the
-     1fr row empty (same trap the old keybar rows had). */
-  grid-template-rows: auto minmax(0, 1fr);
+  /* One row: the lens switch floats over the shell (absolute), so no
+     switch row exists and the shell owns the full height. The explicit
+     1fr stays: the follow button and the floating switch anchor to this
+     container, and auto row placement must not strand it. */
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   min-width: 0;
   padding: 0;
-  /* Positioning context for the follow button overlay. */
+  /* Positioning context for the follow button and lens switch overlays. */
   position: relative;
 }
 .mobile-keybar {
@@ -624,7 +628,9 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
 .mobile-terminal-shell {
   contain: layout paint style;
   display: grid;
-  grid-row: 2;
+  /* The screen is a single-row grid now that the lens switch floats
+     (absolute, out of flow), so the shell owns the whole height. */
+  grid-row: 1;
   grid-template-rows: minmax(0, 1fr) auto;
   position: relative;
   min-height: 0;
@@ -2240,14 +2246,34 @@ body.mobile-keyboard-open .mobile-keys-fab {
 
 /* ---- mobile chat lens (chat view over the terminal) ---- */
 /* The lens overlay covers the terminal surface inside the shell. The
-   switch row above the shell picks Chat or Terminal; the terminal socket
-   stays attached in both views. */
+   switch floats over the screen top-center like the Keys fab (drag to
+   move, position persists); the terminal socket stays attached in
+   both views. */
 
 .mobile-lens-switch {
-  grid-row: 1;
+  /* Floating pill over the shell: clamps against the viewport in the
+     drag math, so the offset parent only needs to be a stable container
+     (the screen), not the viewport itself. */
+  position: absolute;
+  left: 50%;
+  top: 6px;
+  transform: translateX(-50%);
   display: flex;
   gap: 4px;
-  padding: 8px 12px 4px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 4;
+}
+.mobile-lens-switch.dragging {
+  cursor: grabbing;
+  opacity: 0.85;
 }
 .mobile-lens-switch[hidden] {
   display: none;
@@ -2257,11 +2283,11 @@ body.mobile-keyboard-open .mobile-keys-fab {
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--muted);
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   font-size: 13px;
   font-weight: 700;
   min-height: 44px;
-  padding: 6px 10px;
+  padding: 6px 14px;
 }
 .mobile-lens-switch button[aria-pressed="true"] {
   background: var(--accent);
@@ -2408,7 +2434,41 @@ body.mobile-keyboard-open .mobile-keys-fab {
   }
 }
 
-/* Tool rows: one tappable head (44px min), body on expand. */
+/* Thinking rows: same collapsible pattern as tool rows. The label reads
+   magenta (desktop contract: reasoning convention), the body stays dim
+   muted for reading. */
+.lens-thinking {
+  margin: 4px 0;
+}
+.lens-thinking-toggle {
+  align-items: center;
+  color: var(--term-magenta, #cba6f7);
+  cursor: pointer;
+  display: inline-flex;
+  gap: 4px;
+  min-height: 44px;
+  padding: 4px 0;
+  user-select: none;
+}
+.lens-thinking-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.lens-thinking-body {
+  border-left: 2px solid var(--border);
+  color: var(--fg-dim, #a6adc8);
+  font-size: 13px;
+  margin: 2px 0 2px 2px;
+  overflow-wrap: anywhere;
+  padding: 2px 0 2px 10px;
+  white-space: pre-wrap;
+}
+
+/* Tool rows: one tappable head (44px min), body on expand. Segment
+   colors mirror the desktop lens contract (terminal.css): tool names
+   cyan, failed tools danger, running rows amber. Color rides the label
+   glyphs only; reading surfaces stay --fg / --fg-dim so the transcript
+   never loses contrast. */
 .lens-tool {
   margin: 4px 0;
 }
@@ -2426,12 +2486,15 @@ body.mobile-keyboard-open .mobile-keys-fab {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+.lens-tool-name {
+  color: var(--term-cyan, #94e2d5);
+  font-weight: 700;
+}
+/* Failed tool names read danger: the override must follow the cyan rule
+   so it wins the same-specificity cascade (desktop contract pin). */
+.lens-tool-error .lens-tool-name,
 .lens-tool-head.lens-tool-error .lens-tool-name {
   color: var(--danger, #f38ba8);
-}
-.lens-tool-name {
-  color: var(--fg);
-  font-weight: 700;
 }
 .lens-tool-brief {
   color: var(--muted);
@@ -2446,9 +2509,12 @@ body.mobile-keyboard-open .mobile-keys-fab {
   flex: 0 0 auto;
 }
 .lens-tool-running {
-  color: var(--muted);
+  color: var(--status-working, #f9e2af);
   min-height: 44px;
   padding-top: 10px;
+}
+.lens-tool-running .lens-tool-name {
+  color: var(--term-cyan, #94e2d5);
 }
 .lens-tool-output {
   background: var(--panel);
@@ -2660,6 +2726,7 @@ body.mobile-keyboard-open .mobile-keys-fab {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 999px;
+  color: var(--status-working, #f9e2af);
   font-size: 12px;
   padding: 2px 8px;
 }

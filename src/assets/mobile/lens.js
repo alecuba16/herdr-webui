@@ -516,6 +516,20 @@
           `</div>`
         );
       }
+      if (part.kind === "thinking") {
+        // Desktop lens parity: reasoning text collapses behind a tappable
+        // label (expandedThinking on desktop, expandedTools here). The row
+        // carries data-part-key so the same-count DOM sync updates it in
+        // place instead of re-appending on every poll.
+        const key = partKey(turnIndex, partIndex, part);
+        const open = expandedTools.has(key);
+        const head =
+          `<span class="lens-thinking-toggle" data-toggle-thinking="${escapeAttr(key)}" tabindex="0" role="button" aria-expanded="${open}">${open ? "▾" : "▸"} thinking</span>`;
+        const body = open
+          ? `<div class="lens-thinking-body">${escapeHtml(part.text || "")}</div>`
+          : "";
+        return `<div class="lens-thinking" data-part-key="${escapeAttr(key)}">${head}${body}</div>`;
+      }
       if (part.kind === "tool_pending") {
         return `<div class="lens-tool lens-tool-running" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">running <span class="lens-tool-name">${escapeHtml(part.name || "tool")}</span>…</div>`;
       }
@@ -1075,6 +1089,14 @@
         decisionExpand(decisionExpandBtn.getAttribute("data-decision-key"));
         return;
       }
+      const thinkingToggle = target.closest("[data-toggle-thinking]");
+      if (thinkingToggle) {
+        const key = thinkingToggle.getAttribute("data-toggle-thinking");
+        if (expandedTools.has(key)) expandedTools.delete(key);
+        else expandedTools.add(key);
+        render();
+        return;
+      }
       const toolToggle = target.closest("[data-toggle-tool]");
       if (toolToggle) {
         const key = toolToggle.getAttribute("data-toggle-tool");
@@ -1109,7 +1131,7 @@
       const target = event && event.target;
       if (!target || !target.closest) return;
       const toggle =
-        target.closest("[data-toggle-tool]") || target.closest("[data-toggle-working]");
+        target.closest("[data-toggle-tool]") || target.closest("[data-toggle-thinking]") || target.closest("[data-toggle-working]");
       if (!toggle) return;
       if (target !== toggle) return;
       event.preventDefault();
@@ -1179,14 +1201,153 @@
     }
 
     function renderSwitch() {
-      // The segmented control sits at the top of the terminal screen,
-      // above the shell. Hidden on non-chat panes (renderTerminal in
-      // panels.js drops it when chatSupported() is false).
+      // The segmented control floats over the terminal screen like the
+      // Keys fab: the whole pill drags (position persists per layout),
+      // the buttons stay taps. Hidden on non-chat panes (renderTerminal
+      // in panels.js drops it when chatSupported() is false).
       return (
-        `<div class="mobile-lens-switch" id="mobileLensSwitch" role="group" aria-label="Panel view">` +
+        `<div class="mobile-lens-switch" id="mobileLensSwitch" role="group" aria-label="Panel view, drag to move" onmousedown="HerdrMobileLens.switchDragStart(event)" ontouchstart="HerdrMobileLens.switchDragStart(event)">` +
         `<button type="button" id="mobileLensChatToggle" aria-pressed="false" onclick="HerdrMobileLens.showChat()">Chat</button>` +
         `<button type="button" id="mobileLensTerminalToggle" aria-pressed="true" onclick="HerdrMobileLens.showTerminal()">Terminal</button>` +
         `</div>`
+      );
+    }
+
+    // ---- switch drag (Keys fab parity) ----
+
+    // Whole-pill drag: a tap on a button still toggles the view, a move
+    // past the threshold repositions the pill. The switch re-renders on
+    // every pane sync, so the position lives in localStorage and
+    // applySwitchPosition re-reads it after each mount.
+    const SWITCH_DRAG_KEY = "herdr-mobile-lens-switch";
+
+    // Position math runs in the container's coordinate space: the pill
+    // is absolute inside .mobile-terminal-screen, which starts below the
+    // header, so viewport coords (getBoundingClientRect) must be
+    // rebased onto the container before they can be written back as
+    // style.left/top. Clamping stays inside the container: the pill
+    // belongs to the terminal surface and must not park over the header
+    // or the nav bar.
+    function switchPlacement(node) {
+      const container = node.offsetParent;
+      const nodeRect = node.getBoundingClientRect();
+      if (!container) {
+        return { maxX: window.innerWidth - nodeRect.width, maxY: window.innerHeight - nodeRect.height, baseX: 0, baseY: 0 };
+      }
+      const contRect = container.getBoundingClientRect();
+      return {
+        maxX: contRect.width - nodeRect.width,
+        maxY: contRect.height - nodeRect.height,
+        baseX: nodeRect.left - contRect.left,
+        baseY: nodeRect.top - contRect.top,
+      };
+    }
+
+    function writeSwitchPosition(node, x, y) {
+      node.style.left = `${x}px`;
+      node.style.top = `${y}px`;
+      node.style.right = "auto";
+      // The default centering rides on this transform; an explicit
+      // position must not keep shifting the pill by half its width.
+      node.style.transform = "none";
+    }
+
+    function switchDragStart(event) {
+      const node = el("mobileLensSwitch");
+      if (!node) return;
+      const point = event.touches && event.touches[0] ? event.touches[0] : event;
+      const startX = point.clientX;
+      const startY = point.clientY;
+      const base = switchPlacement(node);
+      let moved = false;
+      // Desktop fires click after mouseup even for a real drag; releasing
+      // over a button must not toggle the view. Same capture-phase
+      // suppressor as the sidebar strips (wireSidebarWidthDrag).
+      const suppressClick = (clickEvent) => {
+        clickEvent.stopImmediatePropagation();
+        clickEvent.preventDefault();
+      };
+      node.addEventListener("click", suppressClick, true);
+      const move = (moveEvent) => {
+        const p = moveEvent.touches && moveEvent.touches[0] ? moveEvent.touches[0] : moveEvent;
+        const dx = p.clientX - startX;
+        const dy = p.clientY - startY;
+        if (!moved && Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+        moved = true;
+        node.classList.add("dragging");
+        const x = Math.max(0, Math.min(base.maxX, base.baseX + dx));
+        const y = Math.max(0, Math.min(base.maxY, base.baseY + dy));
+        writeSwitchPosition(node, x, y);
+        moveEvent.preventDefault();
+      };
+      const end = () => {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", end);
+        document.removeEventListener("touchmove", move);
+        document.removeEventListener("touchend", end);
+        node.classList.remove("dragging");
+        if (moved) {
+          saveSwitchPosition(node);
+          // Drop the suppressor after the trailing click: one drag, one
+          // swallowed click, then taps work again.
+          setTimeout(() => node.removeEventListener("click", suppressClick, true), 0);
+        } else {
+          node.removeEventListener("click", suppressClick, true);
+        }
+      };
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", end);
+      document.addEventListener("touchmove", move, { passive: false });
+      document.addEventListener("touchend", end);
+      // No preventDefault on the start event: on touch it would swallow
+      // the synthetic click, and the buttons ARE taps (Chat/Terminal).
+      // The move handler prevents default once the drag threshold passes,
+      // which is also what stops text selection mid-drag.
+    }
+
+    function saveSwitchPosition(node) {
+      const container = node.offsetParent;
+      if (!container) return;
+      // Clamp at save time: the drag arms its placement math once at
+      // pointerdown, so a container that shrank mid-drag (rotation,
+      // keyboard) would otherwise persist an out-of-bounds spot and park
+      // the pill outside; the mid-drag observer skip means nothing else
+      // re-clamps until the next resize.
+      const placement = switchPlacement(node);
+      const x = Math.max(0, Math.min(placement.maxX, placement.baseX));
+      const y = Math.max(0, Math.min(placement.maxY, placement.baseY));
+      if (x !== placement.baseX || y !== placement.baseY) writeSwitchPosition(node, x, y);
+      try {
+        localStorage.setItem(SWITCH_DRAG_KEY, JSON.stringify({ x: Math.round(x), y: Math.round(y) }));
+      } catch (_) {}
+    }
+
+    // Called after every mount of the switch: restores the saved
+    // position or clears inline offsets so a fresh default position is
+    // not fought by stale styles from the previous render. A live drag
+    // owns the pill; the drag class keeps this out of the way until
+    // release.
+    function applySwitchPosition() {
+      const node = el("mobileLensSwitch");
+      if (!node) return;
+      if (node.classList.contains("dragging")) return;
+      let pos = null;
+      try {
+        const raw = localStorage.getItem(SWITCH_DRAG_KEY);
+        if (raw) pos = JSON.parse(raw);
+      } catch (_) {}
+      if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) {
+        node.style.left = "";
+        node.style.top = "";
+        node.style.right = "";
+        node.style.transform = "";
+        return;
+      }
+      const base = switchPlacement(node);
+      writeSwitchPosition(
+        node,
+        Math.max(0, Math.min(base.maxX, pos.x)),
+        Math.max(0, Math.min(base.maxY, pos.y)),
       );
     }
 
@@ -1194,6 +1355,30 @@
       const node = el("mobileLensSwitch");
       if (!node) return;
       node.hidden = !chatSupported();
+    }
+
+    // The pill parks in the terminal screen, and that screen resizes
+    // under it: the soft keyboard hides the header/nav (body class), the
+    // keybar folds, and the app rotates. Clamping at drag time is not
+    // enough, a spot saved with the keyboard open can sit past the
+    // closed-screen edge. One observer on the container re-applies the
+    // saved position (clamped to the fresh bounds) whenever it resizes;
+    // applySwitchPosition skips while a drag owns the pill.
+    let switchContainerObserver = null;
+    let observedSwitchContainer = null;
+
+    function observeSwitchContainer() {
+      const node = el("mobileLensSwitch");
+      const container = node ? node.offsetParent : null;
+      if (observedSwitchContainer === container) return;
+      if (switchContainerObserver && switchContainerObserver.disconnect)
+        switchContainerObserver.disconnect();
+      switchContainerObserver = null;
+      observedSwitchContainer = null;
+      if (!container || typeof ResizeObserver !== "function") return;
+      switchContainerObserver = new ResizeObserver(() => applySwitchPosition());
+      switchContainerObserver.observe(container);
+      observedSwitchContainer = container;
     }
 
     function onPaneChanged(paneKey) {
@@ -1239,6 +1424,9 @@
       isActive,
       render,
       renderSwitch,
+      switchDragStart,
+      applySwitchPosition,
+      observeSwitchContainer,
       syncSwitchUi,
       syncSwitchVisibility,
       onPaneChanged,

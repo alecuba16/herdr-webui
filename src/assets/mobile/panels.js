@@ -106,9 +106,14 @@
     }
 
     function renderTerminalScreen(screen) {
+      const lens = globalThis.HerdrMobileLens;
       if (!state.terminalId) {
         getMobileTerminal().destroy(true);
         screen.innerHTML = renderTerminal();
+        // Fresh switch node in the loading branch too: restore the spot
+        // and arm the container watcher like the first-paint branch.
+        if (lens && lens.applySwitchPosition) lens.applySwitchPosition();
+        if (lens && lens.observeSwitchContainer) lens.observeSwitchContainer();
         return;
       }
       if (!el("terminal")) {
@@ -116,6 +121,13 @@
         // First paint of the terminal shell: mount the composer now too.
         // The early return below would otherwise defer it to the next
         // refresh, and a quiet pane may not produce one for a long time.
+        // The innerHTML write built a fresh switch node: restore the
+        // dragged position onto it now, the same way syncLensSwitchRow
+        // does when it re-inserts the pill later.
+        if (lens && lens.applySwitchPosition) lens.applySwitchPosition();
+        // Same watcher duty as syncLensSwitchRow: keep the saved spot
+        // clamped as the screen resizes under the pill.
+        if (lens && lens.observeSwitchContainer) lens.observeSwitchContainer();
         syncComposer();
         syncLens();
         return;
@@ -158,6 +170,12 @@
         if (screenEl && screenContainer) {
           screenContainer.insertAdjacentHTML("afterbegin", lens.renderSwitch());
           lens.syncSwitchUi();
+          // The switch floats now: restore the dragged position every
+          // mount, or clear stale inline offsets when none is saved.
+          if (lens.applySwitchPosition) lens.applySwitchPosition();
+          // Watch the container so keyboard open/close, keybar folding,
+          // and rotation re-clamp a saved spot into the fresh bounds.
+          if (lens.observeSwitchContainer) lens.observeSwitchContainer();
         }
       } else if (existing) {
         existing.hidden = !supported;
@@ -227,7 +245,9 @@
           removeNode(existingCard);
         }
       } else if (wantedCard) {
-        mountAfterTerminal(el("terminalShell"), wantedCard);
+        // The prompt card is a dialog over the pane (not a toolbar row):
+        // it mounts into the terminal shell, after the terminal div.
+        mountInto(el("terminalShell"), wantedCard);
       }
     }
 

@@ -8194,6 +8194,80 @@ describe("lens chat mode segment colors", () => {
   });
 });
 
+// Mobile lens must ship the same segment colorization contract: the
+// transcript rendered on a phone was fully monochrome (tool names plain
+// --fg, running rows --muted, no thinking rows at all) while desktop
+// scanned by hue. Same tokens, same hue mapping; touch sizes differ.
+describe("mobile lens chat mode segment colors", () => {
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
+  const css = read("./mobile/app.css");
+  const lensSource = read("./mobile/lens.js");
+
+  it("renders thinking parts with the reasoning hue", () => {
+    // The mobile lens must not drop the part kind the server emits for
+    // reasoning text: the row exists, is collapsible, and the label reads
+    // magenta while the body stays muted for reading.
+    match(lensSource, /part\.kind === "thinking"/, "thinking part kind handled");
+    match(lensSource, /data-toggle-thinking/, "thinking toggle is interactive");
+    match(
+      css,
+      /\.lens-thinking-toggle \{[^}]*color: var\(--term-magenta, #cba6f7\);/,
+      "thinking label reads magenta",
+    );
+    match(
+      css,
+      /\.lens-thinking-body \{[^}]*color: var\(--fg-dim, #a6adc8\);/,
+      "thinking body keeps the theme's dim foreground",
+    );
+    // Touch target: the toggle is a tap surface, so it must keep the
+    // 44px minimum like every other lens control.
+    match(css, /\.lens-thinking-toggle \{[^}]*min-height: 44px;/, "44px tap target");
+  });
+
+  it("colors tool names cyan and failed tools danger", () => {
+    match(
+      css,
+      /\.lens-tool-name \{[^}]*color: var\(--term-cyan, #94e2d5\);/,
+      "tool name reads cyan",
+    );
+    match(
+      css,
+      /\.lens-tool-error \.lens-tool-name \{[^}]*color: var\(--danger, #f38ba8\);/,
+      "failed tool name overrides with danger",
+    );
+    // Specificity pin: the error override must come AFTER the cyan rule
+    // so it wins in the cascade (same pin as the desktop contract).
+    const cyanAt = css.indexOf(".lens-tool-name {");
+    const dangerAt = css.indexOf(".lens-tool-error .lens-tool-name {");
+    ok(cyanAt !== -1 && dangerAt > cyanAt, "error override follows the cyan rule");
+    // Running rows keep the cyan anchor on the name while the row reads
+    // amber (in-flight state first, then what is running).
+    match(
+      css,
+      /\.lens-tool-running \{[^}]*color: var\(--status-working, #f9e2af\);/,
+      "running row reads amber",
+    );
+    match(
+      css,
+      /\.lens-tool-running \.lens-tool-name \{[^}]*color: var\(--term-cyan, #94e2d5\);/,
+      "running tool name stays cyan",
+    );
+  });
+
+  it("colors working chips amber", () => {
+    match(
+      css,
+      /\.lens-working-tool \{[^}]*color: var\(--status-working, #f9e2af\);/,
+      "working chip reads amber",
+    );
+  });
+
+  it("keeps reading surfaces at full foreground", () => {
+    match(css, /\.lens-text \{[\s\S]*?color: var\(--fg\);/);
+    match(css, /\.lens-tool-output \{[\s\S]*?color: var\(--fg\);/);
+  });
+});
+
 describe("shortcut hint toast", () => {
   let toastSource;
   let toastBindingsSource;
