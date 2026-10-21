@@ -789,7 +789,13 @@
     updateMobileViewport();
     applyTreeIndent();
     const workspace = currentWorkspace();
-    el("mobileTitle").textContent = workspaceTitle(workspace);
+    // Terminal screens show the current panel name in the title when the
+    // workspace has several panels (workmeta rule); every other screen
+    // keeps the workspace title, matching what the user is acting on.
+    el("mobileTitle").textContent =
+      state.screen === "terminal"
+        ? mobileWorkmeta.workspaceContextTitle(workspace)
+        : workspaceTitle(workspace);
     renderContextMeta(workspace);
     syncBackendBadge();
     // Toolbar above the nav: content depends on screen and terminal, and
@@ -1413,6 +1419,14 @@
     renderComposerBar: (...args) => mobileComposer.renderComposerBar(...args),
     renderComposerNote: (...args) => mobileComposer.renderComposerNote(...args),
     syncComposer: (...args) => mobileComposer.syncComposer(...args),
+    // Lens toggles call this so the composer dock re-parents in/out of the
+    // overlay on open/close. Kept separate from syncComposer (the pure
+    // textarea state refresh): panels.syncComposer ends by calling
+    // syncComposer, so wiring the dock move through the same name would
+    // recurse forever.
+    syncComposerDock: () => {
+      if (mobilePanels && mobilePanels.syncComposer) mobilePanels.syncComposer();
+    },
     renderPromptCard: (...args) => mobileComposer.renderPromptCard(...args),
     draftValue: (paneId) => mobileComposer.drafts.get(paneId) || "",
   };

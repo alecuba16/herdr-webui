@@ -2286,6 +2286,29 @@ body.mobile-keyboard-open .mobile-keys-fab {
 .mobile-lens[hidden] {
   display: none;
 }
+/* The chat composer docks at the bottom of the lens overlay (desktop
+   parity: the desktop composer lives inside the lens shell). Without a
+   docked composer the overlay keeps its scroller full-height; with one,
+   the overlay becomes a column: transcript on top, input box below. */
+.mobile-lens:has(> .mobile-composer) {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+.mobile-lens:has(> .mobile-composer) .mobile-lens-scroller {
+  height: auto;
+  min-height: 0;
+}
+.mobile-lens > .mobile-composer {
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+}
+/* With the composer docked, the New output pill must anchor above the
+   input box: its containing block becomes the first grid row (the
+   transcript), not the whole overlay whose corner the composer now owns. */
+.mobile-lens:has(> .mobile-composer) > .mobile-lens-new {
+  grid-area: 1 / 1;
+}
 /* Follow button belongs to the terminal view: while the lens covers the
    shell the button's scroll tracking would misfire, so it stays hidden. */
 .mobile-terminal-shell.lens-active .mobile-terminal-follow-button {
@@ -2294,9 +2317,8 @@ body.mobile-keyboard-open .mobile-keys-fab {
 .mobile-lens-scroller {
   height: 100%;
   overflow-y: auto;
-  /* The composer is not docked inside the shell on mobile (it lives in
-     the toolbar below), so a small breathing margin is all the bottom
-     padding needs. */
+  /* The composer now docks inside the lens overlay when chat is open,
+     so the bottom breathing margin is the only padding it needs. */
   padding: 12px 12px 24px;
   scroll-behavior: auto;
   overscroll-behavior: contain;

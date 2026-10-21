@@ -116,14 +116,14 @@
         // First paint of the terminal shell: mount the composer now too.
         // The early return below would otherwise defer it to the next
         // refresh, and a quiet pane may not produce one for a long time.
-        syncComposer(screen);
+        syncComposer();
         syncLens();
         return;
       }
       // The switch row rides the screen HTML: on a data refresh with the
       // shell already mounted, only the gate state can have changed.
       syncLensSwitchRow();
-      syncComposer(screen);
+      syncComposer();
       syncLens();
     }
 
@@ -182,24 +182,36 @@
       while (wrap.firstElementChild) parent.appendChild(wrap.firstElementChild);
     }
 
-    function syncComposer(screen) {
+    function syncComposer() {
       const deps = globalThis.HerdrMobileComposerDeps;
       if (!deps) return;
-      // The composer bar lives inside the keybar (#mobileKeyBar) itself:
-      // keys and message box are one unit behind the Keys toggle, so a
-      // folded toolbar gives the terminal the full shell height. Mounting
-      // into the keybar (not the toolbar) is safe because syncToolbar only
-      // rewrites #mobileKeyBar when the built keybar string changed, which
-      // never happens mid-draft: the string depends on screen + terminalId
-      // alone. The prompt card keeps mounting into the terminal shell
-      // because it is a dialog over the pane, not a toolbar row.
+      // The composer bar docks inside the chat lens when it is open and
+      // inside the keybar (#mobileKeyBar) otherwise. The lens overlay
+      // covers the whole shell, so a composer left in the toolbar is both
+      // invisible and unreachable (worse with the toolbar folded), which
+      // made the chat view have no input box at all. Re-parenting the SAME
+      // node (not re-rendering it) keeps the textarea, its listeners and
+      // the draft text alive across the move, so a half-typed message
+      // survives the view switch. Mount order inside the lens: the
+      // composer goes after the scroller, at the overlay bottom.
+      const lens = globalThis.HerdrMobileLens;
+      const lensOn = !!(lens && lens.isActive && lens.isActive());
+      const host = lensOn ? el("mobileLens") : el("mobileKeyBar");
       const keybar = el("mobileKeyBar");
       const wantedBar = deps.renderComposerBar();
       const existingBar = el("mobileComposer");
       if (!wantedBar) {
         if (existingBar) removeNode(existingBar);
       } else if (!existingBar) {
-        mountInto(keybar, wantedBar);
+        if (host) mountInto(host, wantedBar);
+      } else if (host && existingBar.parentNode !== host) {
+        host.appendChild(existingBar);
+      }
+      // The keybar keeps its own repaint memo; moving the composer out of
+      // it must invalidate that memo or a later keybar rewrite would
+      // expect the composer back inside (stale HTML comparison).
+      if (keybar && keybar.__lastToolbarHtml !== undefined && existingBar && existingBar.parentNode !== keybar) {
+        keybar.__lastToolbarHtml = undefined;
       }
       if (deps.syncComposer) deps.syncComposer();
       const existingCard = el("mobilePromptCard");

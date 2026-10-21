@@ -1,6 +1,18 @@
 # Release notes
 
 ## Unreleased
+- Mobile chat view now has its input box. The composer docks inside the
+  chat lens overlay when Chat is active (transcript above, input below,
+  the same node re-parented so a half-typed draft and focus survive the
+  Chat/Terminal switch) and returns to the Keys toolbar when the lens
+  closes, so a folded toolbar can no longer make the chat input
+  unreachable. The `New output` pill anchors above the docked input
+  instead of overlapping it.
+- Mobile header names the open panel when the workspace has several: the
+  title shows the current panel's label (custom name, else `#number`, the
+  same rule as the agents list) on the Terminal screen, so switching
+  panels is visible in the header. Single-panel workspaces and all other
+  screens keep the workspace title.
 - Both desktop sidebars are width-resizable. Dragging the 18px toggle
   strip resizes its sidebar (left: 330px minimum, right: 320px minimum,
   no upper limit) while a plain click keeps toggling collapse; the strip

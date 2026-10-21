@@ -86,6 +86,22 @@
       return workspace.label || workspace.workspace_id;
     }
 
+    // Header title for the terminal context: with several panels in the
+    // workspace the title must name the CURRENT panel, not the workspace,
+    // or the header reads the same for every panel (the reported bug).
+    // Same label rule as the agents list (agentTabLabel): custom name
+    // when the tab carries one, else the panel number. Single-panel and
+    // no-panel workspaces keep the workspace title.
+    function workspaceContextTitle(workspace) {
+      const base = workspaceTitle(workspace);
+      if (!workspace) return base;
+      const counts = tabCountsByWorkspace();
+      if ((counts.get(workspace.workspace_id) || 0) <= 1) return base;
+      const tab = currentTab();
+      if (!tab || tab.workspace_id !== workspace.workspace_id) return base;
+      return agentTabLabel(workspace.workspace_id, tab, counts) || base;
+    }
+
     function worktreeDisplayName(workspace) {
       if (!workspace) return "worktree";
       const worktree = worktreeForWorkspace(workspace);
@@ -176,6 +192,7 @@
       agentTabLabel,
       worktreeForWorkspace,
       workspaceTitle,
+      workspaceContextTitle,
       worktreeDisplayName,
       parentWorkspaceName,
       workspaceMeta,

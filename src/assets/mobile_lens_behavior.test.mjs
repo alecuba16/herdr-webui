@@ -491,6 +491,32 @@ describe("mobile lens", () => {
     equal(lens.chatSupported(), false, "no agents row not chat capable");
   });
 
+  it("setLens re-docks the composer through the dock hook on open and close", async () => {
+    // The chat view had no input box because the composer stayed mounted
+    // in the keybar toolbar, covered by the lens overlay (and unreachable
+    // with the toolbar folded). setLens must call the dock hook so the
+    // composer moves into the overlay on open and back on close.
+    const calls = [];
+    const { registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+      extra: {
+        HerdrMobileComposerDeps: {
+          syncComposerDock: () => calls.push("dock"),
+          syncComposer: () => calls.push("sync"),
+        },
+      },
+    });
+    lens.setLens(true);
+    equal(calls[0], "dock", "open re-docks the composer first");
+    equal(calls[1], "sync", "open then refreshes the composer state");
+    calls.length = 0;
+    lens.setLens(false);
+    equal(calls[0], "dock", "close re-docks the composer back to the keybar");
+    equal(calls[1], "sync", "close then refreshes the composer state");
+    ok(registry.get("mobileLens"), "overlay stays mounted across the toggle");
+  });
+
   it("setLens mounts the overlay in the shell and flips the switch", async () => {
     const { ctx, registry, lens } = makeHarness({
       state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
