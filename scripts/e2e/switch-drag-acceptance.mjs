@@ -16,6 +16,8 @@
 //   m7  a spot saved near the bottom re-clamps inside the screen after
 //       the viewport shrinks (keyboard-open resizes the screen); a live
 //       drag keeps its position until release
+//   m8  a drag still held when the viewport shrinks saves an in-bounds
+//       spot at release (save-time clamp), live position corrected too
 //
 //   desktop
 //   d1  switch mounts top-right over the shell, draggable affordance set
@@ -255,6 +257,40 @@ async function main() {
     ? cl.top >= -1 && cl.x >= -1 && cl.bottom <= cl.contH + 1 && cl.right <= (cl.contW || 9999) + 1
     : false;
   record("m7 shrunk screen re-clamps the pill inside", inside, `${clamped} (pre-shrink screenH ${lp.screenH})`);
+  // m8: mid-drag shrink. A real drag starts (pointer down, past the
+  // threshold), the viewport shrinks while the pointer is still down,
+  // then release. The save must clamp the stored spot into the fresh
+  // bounds even though the drag armed its math at pointerdown.
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  await sleep(1200);
+  const dragStartPill = await evalExpr(`(() => {
+    const n = document.getElementById("mobileLensSwitch");
+    const r = n.getBoundingClientRect();
+    const c = n.offsetParent.getBoundingClientRect();
+    return JSON.stringify({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), contH: Math.round(c.height) });
+  })()`);
+  const sp = JSON.parse(dragStartPill);
+  await mouse("mousePressed", sp.x, sp.y);
+  await mouse("mouseMoved", sp.x + 12, sp.y + 10);
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 560, deviceScaleFactor: 3, mobile: true });
+  await sleep(600);
+  await mouse("mouseMoved", sp.x + 12, sp.y + 10);
+  await mouse("mouseReleased", sp.x + 12, sp.y + 10);
+  await sleep(600);
+  const midSaved = await evalExpr(`(() => {
+    const n = document.getElementById("mobileLensSwitch");
+    const r = n.getBoundingClientRect();
+    const c = n.offsetParent.getBoundingClientRect();
+    const raw = localStorage.getItem("herdr-mobile-lens-switch");
+    const saved = raw ? JSON.parse(raw) : null;
+    return JSON.stringify({ top: Math.round(r.top - c.top), bottom: Math.round(r.bottom - c.top), w: Math.round(r.width), h: Math.round(r.height), contW: Math.round(c.width), contH: Math.round(c.height), saved });
+  })()`);
+  const ms = JSON.parse(midSaved);
+  const savedInside = ms.saved && ms.contH != null &&
+    ms.saved.y + ms.h <= ms.contH + 2 && ms.saved.x + ms.w <= ms.contW + 2;
+  const liveInside = ms.contH != null && ms.bottom <= ms.contH + 2;
+  record("m8 mid-drag shrink clamps the saved spot at release", savedInside && liveInside,
+    `saved ${JSON.stringify(ms.saved)} live bottom ${ms.bottom} contH ${ms.contH}`);
   // Restore the full phone viewport for the desktop leg.
   await cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
   await sleep(1000);
