@@ -227,7 +227,9 @@
           removeNode(existingCard);
         }
       } else if (wantedCard) {
-        mountAfterTerminal(el("terminalShell"), wantedCard);
+        // The prompt card is a dialog over the pane (not a toolbar row):
+        // it mounts into the terminal shell, after the terminal div.
+        mountInto(el("terminalShell"), wantedCard);
       }
     }
 

@@ -516,6 +516,20 @@
           `</div>`
         );
       }
+      if (part.kind === "thinking") {
+        // Desktop lens parity: reasoning text collapses behind a tappable
+        // label (expandedThinking on desktop, expandedTools here). The row
+        // carries data-part-key so the same-count DOM sync updates it in
+        // place instead of re-appending on every poll.
+        const key = partKey(turnIndex, partIndex, part);
+        const open = expandedTools.has(key);
+        const head =
+          `<span class="lens-thinking-toggle" data-toggle-thinking="${escapeAttr(key)}" tabindex="0" role="button" aria-expanded="${open}">${open ? "▾" : "▸"} thinking</span>`;
+        const body = open
+          ? `<div class="lens-thinking-body">${escapeHtml(part.text || "")}</div>`
+          : "";
+        return `<div class="lens-thinking" data-part-key="${escapeAttr(key)}">${head}${body}</div>`;
+      }
       if (part.kind === "tool_pending") {
         return `<div class="lens-tool lens-tool-running" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">running <span class="lens-tool-name">${escapeHtml(part.name || "tool")}</span>…</div>`;
       }
@@ -1075,6 +1089,14 @@
         decisionExpand(decisionExpandBtn.getAttribute("data-decision-key"));
         return;
       }
+      const thinkingToggle = target.closest("[data-toggle-thinking]");
+      if (thinkingToggle) {
+        const key = thinkingToggle.getAttribute("data-toggle-thinking");
+        if (expandedTools.has(key)) expandedTools.delete(key);
+        else expandedTools.add(key);
+        render();
+        return;
+      }
       const toolToggle = target.closest("[data-toggle-tool]");
       if (toolToggle) {
         const key = toolToggle.getAttribute("data-toggle-tool");
@@ -1109,7 +1131,7 @@
       const target = event && event.target;
       if (!target || !target.closest) return;
       const toggle =
-        target.closest("[data-toggle-tool]") || target.closest("[data-toggle-working]");
+        target.closest("[data-toggle-tool]") || target.closest("[data-toggle-thinking]") || target.closest("[data-toggle-working]");
       if (!toggle) return;
       if (target !== toggle) return;
       event.preventDefault();

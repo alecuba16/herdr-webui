@@ -736,6 +736,57 @@ describe("mobile lens", () => {
     ok(!content.innerHTML.includes("lens-working"), "working block gone when idle");
   });
 
+  it("thinking parts render, toggle open, and keep the same DOM node", async () => {
+    // Desktop lens parity: reasoning text arrives as kind "thinking" and
+    // must render as a collapsible row (label magenta in CSS, body dim).
+    // The server emits the part to every client, so a mobile lens that
+    // ignores it silently drops reasoning from the transcript.
+    const withThinking = () => ({
+      ...conversationFixture(),
+      turns: [
+        conversationFixture().turns[0],
+        {
+          role: "assistant",
+          ts: "t2",
+          end_ts: "t2",
+          parts: [
+            { kind: "thinking", text: "should check the config first" },
+            { kind: "text", text: "done" },
+          ],
+        },
+      ],
+    });
+    const { ctx, registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      fetch: async () => json200(withThinking()),
+    });
+    lens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    let content = lensContent(registry);
+    const toggle = content.querySelector("[data-toggle-thinking]");
+    ok(toggle, "thinking toggle rendered");
+    ok(!content.innerHTML.includes("lens-thinking-body"), "thinking collapsed by default");
+    const row = content.querySelector('[data-part-key="1:0:"]');
+    ok(row, "thinking row carries its part key for in-place sync");
+    equal(toggle.getAttribute("aria-expanded"), "false", "collapsed state exposed");
+    const overlayNode = lensNode(registry);
+    const handler = overlayNode.listeners.click[0];
+    handler({ target: { closest: (sel) => (sel.includes("toggle-thinking") ? toggle : null) } });
+    await settle();
+    content = lensContent(registry);
+    ok(content.innerHTML.includes("lens-thinking-body"), "thinking opened");
+    ok(content.innerHTML.includes("should check the config first"), "body text rendered");
+    const openToggle = content.querySelector("[data-toggle-thinking]");
+    equal(openToggle.getAttribute("aria-expanded"), "true", "open state exposed");
+    // Same-count poll with the same part must update the row in place,
+    // not append a duplicate (data-part-key sync path).
+    handler({ target: { closest: (sel) => (sel.includes("toggle-thinking") ? openToggle : null) } });
+    await settle();
+    content = lensContent(registry);
+    equal(content.querySelectorAll("[data-toggle-thinking]").length, 1, "one thinking row after re-polls");
+  });
+
   it("tool expand: head toggles open and output appears", async () => {
     const { ctx, registry, lens } = makeHarness({
       state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },

@@ -1,6 +1,21 @@
 # Release notes
 
 ## Unreleased
+- Mobile chat view had no input box again: the composer dock helper was
+  a dangling `mountAfterTerminal` call (renamed to `mountInto` in an
+  earlier toolbar rework), so every syncComposer pass that hit the
+  prompt-card branch threw a ReferenceError, and the lens-open path
+  swallowed it in its try/catch. The composer never docked into the
+  lens: the input stayed in the hidden Keys toolbar while the chat
+  overlay covered the terminal. The prompt card now mounts through
+  mountInto and a test pins that every helper syncComposer calls is
+  actually defined.
+- Mobile chat transcript was monochrome while desktop colored by part
+  kind. The mobile lens now ships the same segment colors (tool names
+  cyan, running rows amber, failed tools danger, working chips amber)
+  from the same shared palette tokens, so the light theme darkens them
+  for contrast. Thinking parts, previously dropped entirely on mobile,
+  render as collapsible rows with a magenta label like desktop.
 - Mobile chat view now has its input box. The composer docks inside the
   chat lens overlay when Chat is active (transcript above, input below,
   the same node re-parented so a half-typed draft and focus survive the
