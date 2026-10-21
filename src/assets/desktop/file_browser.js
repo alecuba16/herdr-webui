@@ -18,7 +18,227 @@
   let state = createState();
 
   function createState(initial) {
-    return Object.assign({ open: false, cwd: "", root: "", home: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, error: "", permissionRequired: false, contextMenu: null, refreshing: false, gitStatus: null }, initial || {});
+    return Object.assign({
+      open: false, cwd: "", root: "", home: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, error: "", permissionRequired: false, contextMenu: null, refreshing: false, gitStatus: null,
+      filter: "", filterTimer: null, filterEntries: [], filterSelected: "", filterOffset: 0, filterVisited: 0, filterActiveIndex: 0, filterTruncated: false, filterDone: true, filterLoading: false, filterError: "",
+    }, initial || {});
+  }
+
+  // Server-side tree filter (mobile loadFiltered pattern): 500ms debounce,
+  // q= search over the workspace, offset/visit_offset pagination. Filter
+  // state lives on the per-workspace state object so switching panes never
+  // leaks a query into another tree.
+  const FILTER_DEBOUNCE_MS = 500;
+  // Debounce timer id lives on the state object; this sequence number is
+  // module-level so it survives state switches and drops stale responses.
+  let filterSeq = 0;
+
+  function filterActive() {
+    return !!String(state.filter || "").trim();
+  }
+
+  function searchPageSize() {
+    const searchHelpers = window.HerdrWorkspaceSearch;
+    if (!searchHelpers || !searchHelpers.settings) return 100;
+    return Number(searchHelpers.settings().pathPageSize) || 100;
+  }
+
+  function filterEntriesList() {
+    return filterActive() ? state.filterEntries || [] : [];
+  }
+
+  function filterStatusText() {
+    if (!filterActive() || state.filterLoading) return "";
+    if (state.filterError) return String(state.filterError);
+    const shown = filterEntriesList().length;
+    if (!shown) return "No matches";
+    return `${shown} shown${state.filterTruncated ? " · more" : ""}`;
+  }
+
+  // Keyboard-guard attrs for the filter input; falls back to the minimal
+  // attribute set when the shared helper is not loaded yet.
+  function inputAttrs(enterkeyhint) {
+    if (globalThis.HerdrAppHelpers && typeof globalThis.HerdrAppHelpers.inputAttrs === "function") {
+      return globalThis.HerdrAppHelpers.inputAttrs(enterkeyhint);
+    }
+    return " autocomplete=\"off\" spellcheck=\"false\"";
+  }
+
+  function renderFilterRow() {
+    const query = String(state.filter || "");
+    const active = filterActive();
+    const shown = filterEntriesList().length;
+    const status = filterStatusText();
+    const nav = active && shown
+      ? `<button type="button" class="file-browser-filter-nav prev" title="Previous match" aria-label="Previous match" onclick="HerdrFileBrowser.cycleMatch(-1)">▲</button><button type="button" class="file-browser-filter-nav next" title="Next match" aria-label="Next match" onclick="HerdrFileBrowser.cycleMatch(1)">▼</button>`
+      : "";
+    const clear = query
+      ? `<button type="button" class="file-browser-filter-clear" title="Clear filter" aria-label="Clear filter" onclick="HerdrFileBrowser.clearFilter()">×</button>`
+      : "";
+    return `<div class="file-browser-filter-row${active ? " active" : ""}"><label class="file-browser-filter-label"><span class="git-ui-file-filter-icon${state.filterLoading ? " searching" : ""}" aria-hidden="true"></span><input id="fileBrowserFilter" class="file-browser-filter-input" value="${esc(query)}" placeholder="Filter files"${inputAttrs("search")} oninput="HerdrFileBrowser.filterInput(this.value)" onkeydown="HerdrFileBrowser.filterKeydown(event)"></label>${nav}<span class="file-browser-filter-status${state.filterError ? " error" : ""}" role="status" aria-live="polite">${esc(status)}</span>${clear}</div>`;
+  }
+
+  function renderFilteringBody() {
+    // Server search replaces the tree: results are the list, yellow marks
+    // come from the shared renderer's filterTerm pass.
+    return Tree.renderEntries(filterEntriesList(), {
+      callback: "HerdrFileBrowser",
+      showMeta: true,
+      dirClickMethod: "none",
+      dirDoubleClickMethod: "enter",
+      contextMethod: "menu",
+      shiftSelectMode: true,
+      filterTerm: String(state.filter || "").trim(),
+      selectedPath: String(state.filterSelected || ""),
+    });
+  }
+
+  function restoreFilterFocus() {
+    // Full innerHTML wipe per render: refocus by id, mobile pattern.
+    const input = document.getElementById("fileBrowserFilter");
+    if (input && typeof input.focus === "function") input.focus({ preventScroll: true });
+  }
+
+  function focusFilter() {
+    // Pane already renders the row, so just focus the input in place
+    // instead of triggering a full re-render that would steal focus.
+    const input = document.getElementById("fileBrowserFilter");
+    if (input && typeof input.focus === "function") {
+      input.focus({ preventScroll: false });
+      if (typeof input.select === "function") input.select();
+    }
+  }
+
+  function scrollToFilterMatch(path) {
+    if (!path) return;
+    const row = document.querySelector('.herdr-tree-row[title="' + String(path).replace(/"/g, '\\"') + '"]');
+    if (row && typeof row.scrollIntoView === "function") row.scrollIntoView({ block: "nearest" });
+  }
+
+  async function runFilterSearch(append = false) {
+    const target = state;
+    const query = String(target.filter || "").trim();
+    if (!target.cwd || !query) return;
+    const seq = ++filterSeq;
+    if (!append) {
+      target.filterEntries = [];
+      target.filterSelected = "";
+      target.filterOffset = 0;
+      target.filterActiveIndex = 0;
+    }
+    const refocus = !!(document.activeElement && document.activeElement.id === "fileBrowserFilter");
+    target.filterLoading = true;
+    target.filterError = "";
+    renderIfActive(target, true);
+    try {
+      const offset = append ? Number(target.filterOffset) || 0 : 0;
+      const visitOffset = append ? Number(target.filterVisited) || 0 : 0;
+      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(target.path || "")}&q=${encodeURIComponent(query)}&offset=${offset}&visit_offset=${visitOffset}&limit=${searchPageSize()}${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+      if (seq !== filterSeq) return;
+      const entries = data.entries || [];
+      const fresh = !append;
+      target.filterEntries = fresh ? entries : (target.filterEntries || []).concat(entries);
+      target.gitStatus = data.git_status || target.gitStatus;
+      target.filterOffset = offset + entries.length;
+      // "visited" is the server's absolute walk position: the next page
+      // resumes from it without re-adding offset. filterDone follows the
+      // mobile semantics: done unless truncated and the walk still advances.
+      target.filterVisited = Number(data.visited || 0);
+      target.filterDone = !data.truncated || entries.length === 0;
+      target.filterTruncated = !!data.truncated;
+      target.filterError = "";
+      if (fresh) {
+        target.filterActiveIndex = 0;
+        // Jump to first: selection and scroll follow the first result.
+        target.filterSelected = entries.length ? entries[0].path : "";
+        renderIfActive(target, false);
+        scrollToFilterMatch(target.filterSelected);
+      }
+    } catch (error) {
+      if (seq !== filterSeq) return;
+      target.filterError = error.message || String(error);
+      target.filterDone = true;
+      target.filterTruncated = false;
+    }
+    target.filterLoading = false;
+    renderIfActive(target, true);
+    if (refocus) restoreFilterFocus();
+  }
+
+  function cycleMatch(delta) {
+    const entries = filterEntriesList();
+    if (!entries.length) return;
+    const count = entries.length;
+    const current = Number(state.filterActiveIndex) || 0;
+    const next = ((current + (delta === 1 ? 1 : -1)) % count + count) % count;
+    state.filterActiveIndex = next;
+    state.filterSelected = entries[next].path;
+    renderIfActive(state, true);
+    scrollToFilterMatch(state.filterSelected);
+    restoreFilterFocus();
+  }
+
+  function filterInput(value) {
+    state.filter = String(value || "");
+    clearTimeout(state.filterTimer);
+    if (!String(value || "").trim()) {
+      clearFilter();
+      return;
+    }
+    state.filterTimer = setTimeout(() => runFilterSearch(false), FILTER_DEBOUNCE_MS);
+    // In-place update only: a full re-render per keystroke would drop the
+    // caret. The row restyles itself, the list refreshes on commit.
+    syncFilterRowState();
+  }
+
+  // Rows carry the active treatment on commit; while typing only the row
+  // chrome changes, so the input keeps its caret and focus.
+  function syncFilterRowState() {
+    const row = document.querySelector(".file-browser-filter-row");
+    if (!row) return;
+    row.classList.toggle("active", filterActive());
+  }
+
+  function clearFilter() {
+    clearTimeout(state.filterTimer);
+    state.filter = "";
+    state.filterEntries = [];
+    state.filterSelected = "";
+    state.filterOffset = 0;
+    state.filterVisited = 0;
+    state.filterActiveIndex = 0;
+    state.filterTruncated = false;
+    state.filterDone = true;
+    state.filterLoading = false;
+    state.filterError = "";
+    filterSeq++;
+    renderIfActive(state, true);
+    void loadTree(state.path || "", true);
+  }
+
+  function filterKeydown(event) {
+    if (!event) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      clearTimeout(state.filterTimer);
+      void runFilterSearch(false);
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      clearFilter();
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      cycleMatch(event.key === "ArrowDown" ? 1 : -1);
+    }
+  }
+
+  // Mobile parity: near the bottom of the column, fetch the next result
+  // page and append. Gated on the filter so the normal tree scroll path
+  // stays untouched.
+  function sideScroll(node) {
+    if (!node || !filterActive() || state.filterLoading || state.filterDone) return;
+    if (node.scrollTop + node.clientHeight >= node.scrollHeight - 80) void runFilterSearch(true);
   }
 
   function esc(value) { return Tree.esc(value); }
@@ -105,6 +325,43 @@
     else index = (activeIndex + delta + items.length) % items.length;
     const target = items[index];
     if (target && typeof target.focus === "function") target.focus();
+  }, true);
+
+  // Bare "/" focuses the filter while the files view is open. Scoped on
+  // purpose: no prefix, fires only when this pane is the active surface
+  // and visible, so the terminal and other panes keep their "/" keys.
+  // The binding is settings-configurable (Shortcut Editor, File browser
+  // group) and defaults to Slash.
+  function fileBrowserShortcutMap() {
+    const defaults = { filter: "Slash" };
+    try {
+      const stored = window.HerdrOptions ? window.HerdrOptions.read() : {};
+      return Object.assign(defaults, (stored && stored.fileBrowserShortcuts) || {});
+    } catch (_) {
+      return defaults;
+    }
+  }
+
+  function filterPaneVisible() {
+    if (!state.open) return false;
+    const sidebar = window.HerdrRightSidebar;
+    if (!sidebar || typeof sidebar.isHosted !== "function") return true;
+    if (!sidebar.isHosted("fileBrowserPanel")) return true;
+    if (typeof sidebar.collapsed === "function") return !sidebar.collapsed();
+    return true;
+  }
+
+  window.addEventListener("keydown", (event) => {
+    if (!event || event.defaultPrevented || event.altKey || event.metaKey || event.ctrlKey) return;
+    if (!filterPaneVisible()) return;
+    const target = event.target;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+    const key = `${event.shiftKey ? "Shift+" : ""}${event.code || event.key}`;
+    const filterKey = fileBrowserShortcutMap().filter;
+    if (!filterKey || key !== filterKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    focusFilter();
   }, true);
 
   // Cmd/Ctrl-S saves the active editor tab. Editor tabs live in the center
@@ -289,6 +546,22 @@
     const target = state;
     if (!target.cwd) return;
     target.refreshing = true;
+    // Navigating away ends any active server search: the whole filter
+    // state resets here, clearFilter() just reloads through this path.
+    // A pending debounce timer is harmless after this: runFilterSearch
+    // early-returns on the emptied query, and filterSeq++ drops any
+    // in-flight response.
+    filterSeq++;
+    target.filter = "";
+    target.filterEntries = [];
+    target.filterSelected = "";
+    target.filterOffset = 0;
+    target.filterVisited = 0;
+    target.filterActiveIndex = 0;
+    target.filterTruncated = false;
+    target.filterDone = true;
+    target.filterLoading = false;
+    target.filterError = "";
     renderIfActive(target, preserveFocus);
     try {
       target.error = "";
@@ -1195,11 +1468,23 @@
       (shell && shell.parentNode ? shell.parentNode : document.body).appendChild(panel);
     }
     const entries = treeEntries();
-    const currentRow = Tree.renderCurrentDirectoryRow({ callback: "HerdrFileBrowser", canGoUp: canGoUp(), path: currentDirectoryPath(), label: currentDirectoryLabel(), title: currentDirectoryTitle() });
-    const sideBody = `${currentRow}${Tree.renderEntries(entries, { callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}`;
-    const sideHtml = `<aside class="file-browser-side" tabindex="0"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div></div>${renderAccessError()}${sideBody}</aside>`;
+    const filtering = filterActive();
+    const currentRow = filtering ? "" : Tree.renderCurrentDirectoryRow({ callback: "HerdrFileBrowser", canGoUp: canGoUp(), path: currentDirectoryPath(), label: currentDirectoryLabel(), title: currentDirectoryTitle() });
+    const sideBody = filtering
+      ? renderFilteringBody()
+      : `${currentRow}${Tree.renderEntries(entries, { callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}`;
+    const sideHtml = `<aside class="file-browser-side" tabindex="0" onscroll="HerdrFileBrowser.sideScroll(this)"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div></div>${renderFilterRow()}${renderAccessError()}${sideBody}</aside>`;
     panel.innerHTML = `${sideHtml}${renderContextMenu()}`;
+    markFilterActiveRow(panel);
     if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
+  }
+
+  // The shared renderer owns row markup, so the active match gets its
+  // extra class here, after render, from filterSelected.
+  function markFilterActiveRow(panel) {
+    if (!filterActive() || !state.filterSelected) return;
+    const row = panel.querySelector('.herdr-tree-row[title="' + String(state.filterSelected).replace(/"/g, '\\"') + '"]');
+    if (row) row.classList.add("filter-active");
   }
 
   function renderAccessError() {
@@ -1352,6 +1637,13 @@
     refreshLsp() { refreshLspDiagnostics(); },
     requestAccess,
     up() { goUp(); },
+    filterInput,
+    filterKeydown,
+    clearFilter,
+    cycleMatch,
+    focusFilter,
+    filterActive,
+    sideScroll,
     toggle(encodedPath) { toggleDir(decodeURIComponent(encodedPath)); },
     enter(encodedPath) { loadTree(decodeURIComponent(encodedPath)); },
     // Tree clicks route through the pane module so the tab lands in the

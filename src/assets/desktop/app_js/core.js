@@ -218,6 +218,12 @@ const DEFAULT_GIT_SHORTCUTS = {
   focusFile: "KeyI",
   help: "Digit0",
 };
+// Bare keys, no prefix: these fire only while the file browser pane is the
+// active view, so they can stay single-key unlike the prefixed maps.
+const DEFAULT_FILE_BROWSER_SHORTCUTS = {
+  filter: "Slash",
+  nextMatch: "ArrowDown",
+};
 const FAST_REFRESH_EVENTS = new Set([
   "pane.closed",
   "pane.exited",
@@ -835,10 +841,20 @@ const shortcutEditorGroups = [
       ["help", "Git shortcut help"],
     ],
   },
+  {
+    scope: "fileBrowserShortcuts",
+    title: "File Browser Shortcuts",
+    items: [
+      ["filter", "Focus file filter"],
+      ["nextMatch", "Next match"],
+    ],
+  },
 ];
 
 function defaultShortcutMap(scope) {
-  return scope === "gitShortcuts" ? DEFAULT_GIT_SHORTCUTS : DEFAULT_WEBUI_SHORTCUTS;
+  if (scope === "gitShortcuts") return DEFAULT_GIT_SHORTCUTS;
+  if (scope === "fileBrowserShortcuts") return DEFAULT_FILE_BROWSER_SHORTCUTS;
+  return DEFAULT_WEBUI_SHORTCUTS;
 }
 
 function normalizeShortcutMap(value, defaults) {
@@ -963,12 +979,14 @@ function renderShortcutEditor() {
   const target = el("shortcutEditor");
   if (!target) return;
   const collisions = shortcutCollisionMap();
-  target.innerHTML = `<div class="settings-section"><h3>Shortcut Editor</h3><p class="settings-note">All entries below use the configured prefix (${escapeHtml(globalShortcutPrefixLabel())}) first. Recording a duplicate is blocked.</p>${shortcutEditorGroups.map((group) => {
+  target.innerHTML = `<div class="settings-section"><h3>Shortcut Editor</h3><p class="settings-note">Entries use the configured prefix (${escapeHtml(globalShortcutPrefixLabel())}) first, except File Browser entries: those are bare keys, active only while the file browser view is open. Recording a duplicate is blocked.</p>${shortcutEditorGroups.map((group) => {
     const map = options[group.scope] || defaultShortcutMap(group.scope);
+    const bare = group.scope === "fileBrowserShortcuts";
     return `<h4>${escapeHtml(group.title)}</h4><div class="shortcuts-list">${group.items.map(([action, label]) => {
       const key = map[action];
       const duplicate = (collisions[key] || []).length > 1;
-      return `<div class="shortcut-row ${duplicate ? "conflict" : ""}"><kbd>${escapeHtml(globalShortcutPrefixLabel())} then ${escapeHtml(shortcutDisplay(key))}</kbd><span>${escapeHtml(label)}${duplicate ? `<small>Conflict: ${escapeHtml((collisions[key] || []).join("; "))}</small>` : ""}</span><button class="mini" data-shortcut-record="${group.scope}:${action}">Record</button><button class="mini" data-shortcut-reset="${group.scope}:${action}">Reset</button></div>`;
+      const keyLabel = bare ? escapeHtml(shortcutDisplay(key)) : `${escapeHtml(globalShortcutPrefixLabel())} then ${escapeHtml(shortcutDisplay(key))}`;
+      return `<div class="shortcut-row ${duplicate ? "conflict" : ""}"><kbd>${keyLabel}</kbd><span>${escapeHtml(label)}${duplicate ? `<small>Conflict: ${escapeHtml((collisions[key] || []).join("; "))}</small>` : ""}</span><button class="mini" data-shortcut-record="${group.scope}:${action}">Record</button><button class="mini" data-shortcut-reset="${group.scope}:${action}">Reset</button></div>`;
     }).join("")}</div>`;
   }).join("")}</div>`;
 }
@@ -1387,6 +1405,7 @@ const defaultOptions = {
   shortcutHintToasts: true,
   webuiShortcuts: DEFAULT_WEBUI_SHORTCUTS,
   gitShortcuts: DEFAULT_GIT_SHORTCUTS,
+  fileBrowserShortcuts: DEFAULT_FILE_BROWSER_SHORTCUTS,
   searchShortcut: "off",
   headerSearchEnabled: true,
   terminalFontFamily: HerdrAppHelpers.resolveTerminalFontFamily(""),
@@ -1546,6 +1565,10 @@ function normalizeOptions(value) {
   next.gitShortcuts = normalizeShortcutMap(
     next.gitShortcuts,
     DEFAULT_GIT_SHORTCUTS,
+  );
+  next.fileBrowserShortcuts = normalizeShortcutMap(
+    next.fileBrowserShortcuts,
+    DEFAULT_FILE_BROWSER_SHORTCUTS,
   );
   next.searchShortcut =
     String(next.searchShortcut || "").toLowerCase() === "off"

@@ -115,7 +115,8 @@
   width: 14px;
 }
 .file-browser-search-icon.searching,
-.mobile-file-search-icon.searching {
+.mobile-file-search-icon.searching,
+.git-ui-file-filter-icon.searching {
   animation: file-browser-spin 900ms linear infinite;
 }
 .file-browser-searching,
@@ -650,6 +651,79 @@
 .file-browser-side:focus {
   outline: 2px solid color-mix(in srgb, var(--accent), transparent 55%);
   outline-offset: -2px;
+}
+.file-browser-filter-row {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px;
+}
+.file-browser-filter-row .file-browser-filter-label {
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  display: flex;
+  flex: 1 1 120px;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 7px;
+}
+.file-browser-filter-row .file-browser-filter-input {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  font: inherit;
+  min-width: 0;
+  outline: 0;
+  width: 100%;
+}
+.file-browser-filter-row.active .file-browser-filter-label {
+  border-color: var(--accent);
+}
+.file-browser-filter-nav,
+.file-browser-filter-clear {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+.file-browser-filter-nav:hover,
+.file-browser-filter-clear:hover,
+.file-browser-filter-nav:focus-visible,
+.file-browser-filter-clear:focus-visible {
+  background: var(--control-hover, var(--panel2));
+  border-color: var(--accent-1, var(--accent));
+  color: var(--accent-1, var(--accent));
+  outline: 0;
+}
+.file-browser-filter-nav:focus-visible,
+.file-browser-filter-clear:focus-visible {
+  box-shadow: 0 0 0 2px var(--herdr-focus-ring, color-mix(in srgb, var(--accent), transparent 45%)) inset;
+}
+.file-browser-filter-status {
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-browser-filter-status.error {
+  color: #f38ba8;
+}
+.herdr-tree-row.filter-active {
+  box-shadow: inset 0 0 0 1px var(--accent-1, var(--accent));
 }
 .herdr-content-search {
   display: grid;

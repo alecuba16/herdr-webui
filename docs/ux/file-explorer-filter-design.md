@@ -368,3 +368,39 @@ file_browser.js, file_tree.js options, and file_tree.css, plus
 test files: no overlap. Step 3 is the collision risk: rebase after the
 sibling lands, keep every core.js change additive (new constants and
 group entries only, no edits to existing rows).
+## 5. Outcomes (implemented)
+
+All five steps shipped on branch `file_explorer_filter`.
+
+Webui: filter row after `.file-browser-head` (file_browser.css rides
+existing tokens), 500ms debounced server `q=` search with
+offset/visit_offset pagination (the visited cursor from PR #322, not the
+flat offset the design draft assumed), jump-to-first with
+scrollIntoView, up/down wraparound cycling inside the input with
+selection follow, prev/next pointer buttons, clear button, `role=status`
+live region with error variant, "N shown" + "more" from the payload's
+truncated flag (no invented totals), navigation ends the filter, and a
+stale-response guard (module-level sequence number). The shared renderer
+needed no changes: `filterTerm` already emits the yellow
+`herdr-tree-hit` marks; the active match row gets `.filter-active` on
+top, applied post-render since the renderer owns row markup. The scoped
+bare `/` keydown (no prefix, gated on the pane open + sidebar expanded)
+reads `fileBrowserShortcuts` from settings; the shortcut editor gained
+the File Browser group with Record/Reset and a bare-key label.
+
+TUI: `filter_name_spans` splits the displayed name (RegexBuilder
+case-insensitive, byte-offset safe) and `render_file_tree` styles the
+matched span with `p.yellow`; `commit_filter` jumps the selection to
+row 0 when search mode turns on. Cycling stayed untouched (existing
+j/k/arrows + wraparound). Rebinding stayed out of scope (TUI keys are
+hardcoded; settings overlay is read-only).
+
+Tests: 9 new desktop filter cases (request shape with visit cursor,
+debounce, jump-to-first + marks, wraparound, status text, Esc/clear
+restore, scroll append, navigation reset, options merge), 3 TUI unit
+tests for the span split and commit jump, 1 render integration test on
+the yellow cells. Full suites: node 1331 pass, cargo lib green,
+clippy -D warnings clean, fmt clean. The keyboard-guard scan caught one
+real defect during integration: the filter input must interpolate the
+`inputAttrs(...)` helper spelling inside the tag open; fixed with a
+local `inputAttrs` wrapper.

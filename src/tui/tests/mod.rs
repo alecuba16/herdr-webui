@@ -8399,3 +8399,50 @@ fn footer_hint_names_common_files_actions() {
         "files hint keeps the help tail"
     );
 }
+
+#[test]
+fn file_tree_search_rows_highlight_matched_name_in_yellow() {
+    // Committed search results paint the matched substring with the
+    // palette yellow (same token as the webui `herdr-tree-hit` mark);
+    // the rest of the row keeps its normal color.
+    let mut app = app_with_snapshot();
+    app.screen = TuiScreen::Files;
+    app.file_explorer.entries = vec![FileEntry {
+        name: "render_tree.rs".to_string(),
+        path: "src/render_tree.rs".to_string(),
+        is_dir: false,
+        size: None,
+        level: 0,
+        expanded: false,
+        git_status: None,
+    }];
+    app.file_explorer.filter = "tree".to_string();
+    app.file_explorer.search_mode = true;
+
+    let buffer = draw_buffer(&app, 120, 30);
+    let row = rendered_row(&buffer, "render_tree.rs");
+    let matched_x = row.cell_x_of("tree").expect("matched substring rendered");
+    let plain_x = row.cell_x_of("render").expect("name prefix rendered");
+    let yellow = Color::Rgb(249, 226, 175);
+    assert_eq!(
+        buffer[(matched_x as u16, row.y as u16)].fg,
+        yellow,
+        "matched substring uses the palette yellow"
+    );
+    assert_ne!(
+        buffer[(plain_x as u16, row.y as u16)].fg,
+        yellow,
+        "unmatched part keeps its normal color"
+    );
+
+    // Unfiltered tree: no highlight anywhere on the name.
+    app.file_explorer.search_mode = false;
+    let buffer = draw_buffer(&app, 120, 30);
+    let row = rendered_row(&buffer, "render_tree.rs");
+    let name_x = row.cell_x_of("tree").expect("name rendered unfiltered");
+    assert_ne!(
+        buffer[(name_x as u16, row.y as u16)].fg,
+        yellow,
+        "plain tree rows never highlight"
+    );
+}

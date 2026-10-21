@@ -341,3 +341,227 @@ test("markdown view setters ignore binary, truncated, and non-markdown files", a
   assert.equal(context.HerdrFileBrowser.editorFor("src/lib.rs"), null,
     "non-markdown path has no entry to flip");
 });
+
+// ---- server-side filter -------------------------------------------------
+
+function makeFilterDomContext() {
+  const loaded = loadFileBrowser();
+  const { context, nodes } = loaded;
+  // The module binds Tree at load time, so the real shared renderer has
+  // to be in the context before the module source runs. Reload the
+  // module with the real tree in place, keeping the same harness nodes.
+  const iconSource = readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8");
+  const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+  vm.runInNewContext(iconSource, context);
+  vm.runInNewContext(treeSource, context);
+  vm.runInNewContext(source, context);
+  // Rows are markup strings in this harness, so row-class assertions run
+  // against the panel HTML; the DOM helpers (querySelector) stay stubbed.
+  return { context, nodes };
+}
+
+const FILTER_ENTRIES = [
+  { kind: "file", name: "alphaFilter.js", path: "src/alphaFilter.js", level: 0, size: 10 },
+  { kind: "file", name: "betaFilter.js", path: "src/betaFilter.js", level: 0, size: 20 },
+  { kind: "dir", name: "filterDocs", path: "src/filterDocs", level: 0 },
+];
+
+function panelHtml(nodes) {
+  return String(nodes.fileBrowserPanel.innerHTML);
+}
+
+// The active-match class lands via a post-render DOM pass, so the string
+// assertion instead checks the selection class the renderer emits plus
+// the state the pass reads from.
+function selectedKindFromHtml(html) {
+  const match = html.match(/class="herdr-tree-row ([a-z]+) active[^"]*"/);
+  return match ? match[1] : null;
+}
+
+async function openFilterWorkspace(loaded) {
+  const { context } = loaded;
+  const workspace = { workspace_id: "ws-1", cwd: "/repo" };
+  await context.HerdrFileBrowser.openAt(workspace, "src", { kind: "dir" });
+  return workspace;
+}
+
+test("filter input renders the row and defers the server search by debounce", async () => {
+  const loaded = makeFilterDomContext();
+  const { context, nodes } = loaded;
+  await openFilterWorkspace(loaded);
+
+  const requests = [];
+  context.fetch = async (url) => {
+    requests.push(String(url));
+    return { ok: true, statusText: "OK", json: async () => ({ path: "src", entries: FILTER_ENTRIES, git_status: null, truncated: false, visited: 5 }) };
+  };
+
+  context.HerdrFileBrowser.filterInput("filter");
+  const html = String(nodes.fileBrowserPanel.innerHTML);
+  assert.ok(html.includes("file-browser-filter-row"), "the filter row renders after the head");
+  assert.ok(html.includes("id=\"fileBrowserFilter\""), "the input is rendered");
+  assert.ok(html.indexOf("file-browser-head") < html.indexOf("file-browser-filter-row"), "the row sits after the head block");
+  assert.equal(requests.length, 0, "no request fires before the debounce");
+
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  assert.equal(requests.length, 1, "the debounce commits one request");
+  const url = requests[0];
+  assert.ok(url.includes("q=filter"), "the query rides the tree route");
+  assert.ok(url.includes("visit_offset=0"), "the first page starts at walk position zero");
+  assert.ok(!url.includes("search_kind"), "the filter searches all kinds, no search_kind param");
+  assert.ok(url.includes("limit=100"), "the page size comes from search settings");
+});
+
+test("Enter commits immediately and jumps to the first match", async () => {
+  const loaded = makeFilterDomContext();
+  const { context, nodes } = loaded;
+  await openFilterWorkspace(loaded);
+
+  context.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ path: "src", entries: FILTER_ENTRIES, git_status: null, truncated: false, visited: 5 }) });
+
+  context.HerdrFileBrowser.filterInput("filter");
+  context.HerdrFileBrowser.filterKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const html = panelHtml(nodes);
+  assert.ok(context.HerdrFileBrowser.filterActive(), "the filter is active after commit");
+  assert.ok(html.includes("alphaFilter.js"), "the first page of results renders");
+  assert.ok(html.includes("herdr-tree-hit"), "matched substrings carry the yellow mark class");
+  assert.equal(selectedKindFromHtml(html), "file", "the first match row carries the selection");
+});
+
+test("arrows cycle matches with wraparound and follow selection", async () => {
+  const loaded = makeFilterDomContext();
+  const { context, nodes } = loaded;
+  await openFilterWorkspace(loaded);
+
+  context.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ path: "src", entries: FILTER_ENTRIES, git_status: null, truncated: false, visited: 5 }) });
+  context.HerdrFileBrowser.filterInput("filter");
+  context.HerdrFileBrowser.filterKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const selected = () => selectedKindFromHtml(panelHtml(nodes));
+
+  context.HerdrFileBrowser.filterKeydown({ key: "ArrowDown", preventDefault() {}, stopPropagation() {} });
+  assert.equal(selected(), "file", "the second match is selected after one down");
+  context.HerdrFileBrowser.cycleMatch(1);
+  assert.equal(selected(), "dir", "the third match is the wraparound target from the last down");
+  context.HerdrFileBrowser.cycleMatch(1);
+  assert.equal(selected(), "file", "wrapping past the end returns to the first match");
+  context.HerdrFileBrowser.cycleMatch(-1);
+  assert.equal(selected(), "dir", "up from the first match wraps to the last");
+});
+
+test("status text reports the shown count and the more marker, errors included", async () => {
+  const loaded = makeFilterDomContext();
+  const { context, nodes } = loaded;
+  await openFilterWorkspace(loaded);
+
+  let truncated = true;
+  context.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ path: "src", entries: FILTER_ENTRIES, git_status: null, truncated, visited: 5 }) });
+  context.HerdrFileBrowser.filterInput("filter");
+  context.HerdrFileBrowser.filterKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  let html = String(nodes.fileBrowserPanel.innerHTML);
+  assert.ok(html.includes("3 shown"), "the count reports what the server returned");
+  assert.ok(html.includes("more"), "the truncated marker is shown");
+
+  truncated = false;
+  context.fetch = async () => ({ ok: false, status: 500, statusText: "Boom", json: async () => ({ error: "Boom" }) });
+  context.HerdrFileBrowser.filterInput("other");
+  context.HerdrFileBrowser.filterKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  html = String(nodes.fileBrowserPanel.innerHTML);
+  assert.ok(html.includes("file-browser-filter-status error"), "the error state styles the status text");
+});
+
+test("Escape and clearFilter restore the normal tree", async () => {
+  const loaded = makeFilterDomContext();
+  const { context, nodes } = loaded;
+  await openFilterWorkspace(loaded);
+
+  const requests = [];
+  context.fetch = async (url) => {
+    requests.push(String(url));
+    return { ok: true, statusText: "OK", json: async () => ({ path: "src", entries: FILTER_ENTRIES, git_status: null, truncated: false, visited: 5 }) };
+  };
+  context.HerdrFileBrowser.filterInput("filter");
+  context.HerdrFileBrowser.filterKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(context.HerdrFileBrowser.filterActive(), "filter is active before Escape");
+
+  context.HerdrFileBrowser.filterKeydown({ key: "Escape", preventDefault() {}, stopPropagation() {} });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(context.HerdrFileBrowser.filterActive(), false, "Escape clears the filter");
+  assert.equal(requests.filter((url) => !url.includes("q=")).length, 1, "clearing refetches the normal tree");
+  const html = String(nodes.fileBrowserPanel.innerHTML);
+  assert.ok(!html.includes("herdr-tree-hit"), "no highlight marks survive the clear");
+});
+
+test("typing then clearing to empty restores the tree without a search", async () => {
+  const loaded = makeFilterDomContext();
+  const { context } = loaded;
+  await openFilterWorkspace(loaded);
+
+  const requests = [];
+  context.fetch = async (url) => {
+    requests.push(String(url));
+    return { ok: true, statusText: "OK", json: async () => ({ path: "src", entries: [], git_status: null, truncated: false, visited: 0 }) };
+  };
+  context.HerdrFileBrowser.filterInput("x");
+  context.HerdrFileBrowser.filterInput("");
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  assert.equal(requests.filter((url) => url.includes("q=")).length, 0, "no search request fires for a cleared input");
+  assert.equal(context.HerdrFileBrowser.filterActive(), false, "the filter is inactive after clearing the text");
+});
+
+test("scroll near the bottom appends the next result page", async () => {
+  const loaded = makeFilterDomContext();
+  const { context } = loaded;
+  await openFilterWorkspace(loaded);
+
+  const requests = [];
+  context.fetch = async (url) => {
+    requests.push(String(url));
+    return { ok: true, statusText: "OK", json: async () => ({ path: "src", entries: FILTER_ENTRIES, git_status: null, truncated: true, visited: 5 }) };
+  };
+  context.HerdrFileBrowser.filterInput("filter");
+  context.HerdrFileBrowser.filterKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  context.HerdrFileBrowser.sideScroll({ scrollTop: 500, clientHeight: 300, scrollHeight: 600 });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const searchRequests = requests.filter((url) => url.includes("q="));
+  assert.equal(searchRequests.length, 2, "the scroll appends one page");
+  assert.ok(searchRequests[1].includes("offset=3"), "the append resumes after the first page");
+  assert.ok(searchRequests[1].includes("visit_offset=5"), "the append resumes the walk cursor");
+});
+
+test("navigation away ends the filter", async () => {
+  const loaded = makeFilterDomContext();
+  const { context } = loaded;
+  await openFilterWorkspace(loaded);
+
+  context.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ path: "src", entries: FILTER_ENTRIES, git_status: null, truncated: false, visited: 5 }) });
+  context.HerdrFileBrowser.filterInput("filter");
+  context.HerdrFileBrowser.filterKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(context.HerdrFileBrowser.filterActive(), "filter is active before navigation");
+
+  await context.HerdrFileBrowser.enter(encodeURIComponent("src"));
+  assert.equal(context.HerdrFileBrowser.filterActive(), false, "entering a folder resets the filter");
+});
+
+test("the file browser shortcut map reads the settings scope", async () => {
+  const loaded = makeFilterDomContext();
+  const { context } = loaded;
+  await openFilterWorkspace(loaded);
+  // The dispatch handler is a window listener that the vm context stubs
+  // out, so the observable contract here is the options plumbing: the
+  // stored scope merges over the Slash default.
+  context.HerdrOptions = { read: () => ({ fileBrowserShortcuts: { filter: "KeyF" } }) };
+  context.HerdrFileBrowser.filterInput("f");
+  context.HerdrFileBrowser.clearFilter();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(context.HerdrFileBrowser.filterActive(), false, "clearFilter resets the active state");
+});

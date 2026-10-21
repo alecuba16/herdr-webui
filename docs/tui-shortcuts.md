@@ -134,7 +134,11 @@ combinations). The complete list lives in the in-app help overlay;
 `docs/features.md` (Terminal UI section) documents the behavior in
 prose. Highlights: Files `Enter` enters/opens, `e` edits (Ctrl-S save,
 Ctrl-R reload, Ctrl-F find, Ctrl-H replace), `R`/`x` rename/delete,
-`/` filter with `t` scope cycle, `M` markdown outline. Git: `Tab`
+`/` filter with `t` scope cycle, `M` markdown outline. While a
+committed filter shows results, the matched substring of every file
+name is highlighted in yellow (same token as the webui tree marks)
+and the selection jumps to the first match; `j`/`k` and arrows then
+walk the all-matches list, Enter opens the selected match. Git: `Tab`
 cycles views, `s`/`d` stage/discard, `G` toggles stage all in the
 Changes view (webui `KeyG` parity), `Space`/`c` mark and compare
 commits, `J`/`K`/`H` hunk cursor and apply, `D` delete branch or drop
