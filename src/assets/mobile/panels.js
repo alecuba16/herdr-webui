@@ -121,6 +121,9 @@
         // dragged position onto it now, the same way syncLensSwitchRow
         // does when it re-inserts the pill later.
         if (lens && lens.applySwitchPosition) lens.applySwitchPosition();
+        // Same watcher duty as syncLensSwitchRow: keep the saved spot
+        // clamped as the screen resizes under the pill.
+        if (lens && lens.observeSwitchContainer) lens.observeSwitchContainer();
         syncComposer();
         syncLens();
         return;
@@ -166,6 +169,9 @@
           // The switch floats now: restore the dragged position every
           // mount, or clear stale inline offsets when none is saved.
           if (lens.applySwitchPosition) lens.applySwitchPosition();
+          // Watch the container so keyboard open/close, keybar folding,
+          // and rotation re-clamp a saved spot into the fresh bounds.
+          if (lens.observeSwitchContainer) lens.observeSwitchContainer();
         }
       } else if (existing) {
         existing.hidden = !supported;

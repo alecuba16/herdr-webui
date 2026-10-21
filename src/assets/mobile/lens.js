@@ -1323,10 +1323,13 @@
 
     // Called after every mount of the switch: restores the saved
     // position or clears inline offsets so a fresh default position is
-    // not fought by stale styles from the previous render.
+    // not fought by stale styles from the previous render. A live drag
+    // owns the pill; the drag class keeps this out of the way until
+    // release.
     function applySwitchPosition() {
       const node = el("mobileLensSwitch");
       if (!node) return;
+      if (node.classList.contains("dragging")) return;
       let pos = null;
       try {
         const raw = localStorage.getItem(SWITCH_DRAG_KEY);
@@ -1351,6 +1354,30 @@
       const node = el("mobileLensSwitch");
       if (!node) return;
       node.hidden = !chatSupported();
+    }
+
+    // The pill parks in the terminal screen, and that screen resizes
+    // under it: the soft keyboard hides the header/nav (body class), the
+    // keybar folds, and the app rotates. Clamping at drag time is not
+    // enough, a spot saved with the keyboard open can sit past the
+    // closed-screen edge. One observer on the container re-applies the
+    // saved position (clamped to the fresh bounds) whenever it resizes;
+    // applySwitchPosition skips while a drag owns the pill.
+    let switchContainerObserver = null;
+    let observedSwitchContainer = null;
+
+    function observeSwitchContainer() {
+      const node = el("mobileLensSwitch");
+      const container = node ? node.offsetParent : null;
+      if (observedSwitchContainer === container) return;
+      if (switchContainerObserver && switchContainerObserver.disconnect)
+        switchContainerObserver.disconnect();
+      switchContainerObserver = null;
+      observedSwitchContainer = null;
+      if (!container || typeof ResizeObserver !== "function") return;
+      switchContainerObserver = new ResizeObserver(() => applySwitchPosition());
+      switchContainerObserver.observe(container);
+      observedSwitchContainer = container;
     }
 
     function onPaneChanged(paneKey) {
@@ -1398,6 +1425,7 @@
       renderSwitch,
       switchDragStart,
       applySwitchPosition,
+      observeSwitchContainer,
       syncSwitchUi,
       syncSwitchVisibility,
       onPaneChanged,

@@ -353,6 +353,23 @@ function makeHarness(overrides = {}) {
 
   const timers = new Map();
   let timerSeq = 1;
+  // The lens arms a ResizeObserver on the switch container; tests fire
+  // the callbacks by hand (the real one runs on layout changes).
+  const resizeObservers = [];
+  class ResizeObserverStub {
+    constructor(callback) {
+      this.callback = callback;
+      this.targets = [];
+      resizeObservers.push(this);
+    }
+    observe(target) {
+      this.targets.push(target);
+    }
+    disconnect() {
+      this.targets = [];
+      this.callback = null;
+    }
+  }
   const fireTimers = () => {
     const batch = [...timers.values()];
     timers.clear();
@@ -364,6 +381,8 @@ function makeHarness(overrides = {}) {
   const storageBacking = new Map();
   const ctx = {
     console,
+    ResizeObserver: ResizeObserverStub,
+    _resizeObservers: resizeObservers,
     // The switch drag persists its position through localStorage.
     localStorage: {
       getItem: (key) => (storageBacking.has(key) ? storageBacking.get(key) : null),
@@ -1107,6 +1126,27 @@ describe("mobile lens", () => {
     equal(switchRow.style.left, "", "no saved position clears the inline left");
     equal(switchRow.style.top, "", "no saved position clears the inline top");
     equal(switchRow.style.transform, "", "no saved position restores the centering transform");
+    // Keyboard shrink: a spot saved while the soft keyboard hid the
+    // header/nav can sit past the smaller closed-screen edge. The
+    // container observer must clamp it back inside, but a live drag owns
+    // the pill until release.
+    ctx._storage.set("herdr-mobile-lens-switch", JSON.stringify({ x: 300, y: 690 }));
+    lens.observeSwitchContainer();
+    const observer = ctx._resizeObservers[ctx._resizeObservers.length - 1];
+    ok(observer, "container observer armed");
+    equal(observer.targets[0], container, "observer watches the drag container");
+    container._rectHeight = 500;
+    observer.callback();
+    equal(switchRow.style.top, "470px", "shrunk container re-clamps the saved y");
+    switchRow.classList.add("dragging");
+    switchRow.style.top = "600px";
+    observer.callback();
+    equal(switchRow.style.top, "600px", "a live drag keeps its position until release");
+    switchRow.classList.remove("dragging");
+    // A fresh mount re-arms the observer without leaking a second one.
+    lens.observeSwitchContainer();
+    equal(ctx._resizeObservers.length, 1, "re-arming the same container reuses the observer");
+    ok(ctx._resizeObservers[0].callback, "observer stays connected");
   });
 
   it("showTerminal closes an open lens; showChat reopens it", () => {

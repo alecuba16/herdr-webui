@@ -13,6 +13,9 @@
 //   m5  a tap on Chat still opens the lens (drag did not eat the toggle)
 //   m6  a drag followed by release does NOT toggle the view (click
 //       suppression) and a plain tap still does
+//   m7  a spot saved near the bottom re-clamps inside the screen after
+//       the viewport shrinks (keyboard-open resizes the screen); a live
+//       drag keeps its position until release
 //
 //   desktop
 //   d1  switch mounts top-right over the shell, draggable affordance set
@@ -219,6 +222,42 @@ async function main() {
   await sleep(600);
   lens = await lensState();
   record("m5 tap on Chat opens the lens after a drag", lens === "open", `lens ${lens} after tap`);
+
+  // m7: the soft keyboard shrinks the screen (header/nav hide). A spot
+  // saved near the old bottom must re-clamp inside the smaller screen
+  // when the container observer fires; emulate the shrink with the CDP
+  // viewport.
+  const lowPill = await evalExpr(`(() => {
+    const n = document.getElementById("mobileLensSwitch");
+    const r = n.getBoundingClientRect();
+    const screen = n.closest(".mobile-terminal-screen");
+    const sr = screen.getBoundingClientRect();
+    return JSON.stringify({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), saved: localStorage.getItem("herdr-mobile-lens-switch"), screenH: Math.round(sr.height) });
+  })()`);
+  const lp = JSON.parse(lowPill);
+  record("m7 pill carries a saved spot before the shrink", !!lp.saved, `saved ${lp.saved}`);
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 560, deviceScaleFactor: 3, mobile: true });
+  await sleep(1500);
+  const clamped = await evalExpr(`(() => {
+    const n = document.getElementById("mobileLensSwitch");
+    const r = n.getBoundingClientRect();
+    const c = n.offsetParent;
+    const cr = c ? c.getBoundingClientRect() : null;
+    // Container-relative coords: the pill's inline left/top and the
+    // clamp math both live in the container's space, not the viewport.
+    const top = cr ? Math.round(r.top - cr.top) : null;
+    const bottom = cr ? Math.round(r.bottom - cr.top) : null;
+    const right = cr ? Math.round(r.right - cr.left) : null;
+    return JSON.stringify({ x: Math.round(r.left), top, right, bottom, h: Math.round(r.height), contClass: c ? c.className : null, contH: cr ? Math.round(cr.height) : null, contW: cr ? Math.round(cr.width) : null, saved: localStorage.getItem("herdr-mobile-lens-switch") });
+  })()`);
+  const cl = JSON.parse(clamped);
+  const inside = cl.contH != null
+    ? cl.top >= -1 && cl.x >= -1 && cl.bottom <= cl.contH + 1 && cl.right <= (cl.contW || 9999) + 1
+    : false;
+  record("m7 shrunk screen re-clamps the pill inside", inside, `${clamped} (pre-shrink screenH ${lp.screenH})`);
+  // Restore the full phone viewport for the desktop leg.
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  await sleep(1000);
 
   // ---------- desktop ----------
   await evalExpr(`localStorage.setItem("herdr-web-layout", "desktop")`);
