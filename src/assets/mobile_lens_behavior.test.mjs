@@ -135,6 +135,13 @@ function makeElement(tag, attrText, inner, registry) {
     addEventListener(type, fn) {
       (this.listeners[type] ||= []).push(fn);
     },
+    removeEventListener(type, fn) {
+      const list = this.listeners[type];
+      if (list) {
+        const at = list.indexOf(fn);
+        if (at !== -1) list.splice(at, 1);
+      }
+    },
     closest(selector) {
       let node = this;
       while (node) {
@@ -172,10 +179,29 @@ function makeElement(tag, attrText, inner, registry) {
         if (value) this._set.add(name);
         else this._set.delete(name);
       },
+      add(name) {
+        this._set.add(name);
+      },
+      remove(name) {
+        this._set.delete(name);
+      },
       contains(name) {
         return this._set.has(name);
       },
     },
+    // Inline styles (switch drag writes left/top/transform here) and a
+    // rect stub that follows inline left/top like the real DOM does;
+    // offsetParent pins the drag container (.mobile-terminal-screen).
+    style: {},
+    getBoundingClientRect() {
+      return {
+        width: this._rectWidth || 100,
+        height: this._rectHeight || 30,
+        left: (parseFloat(this.style.left) || 0) + (this._rectLeft || 0),
+        top: (parseFloat(this.style.top) || 0) + (this._rectTop || 0),
+      };
+    },
+    offsetParent: null,
     onclick: null,
     parentNode: null,
     registry,
@@ -281,11 +307,23 @@ function matches(node, sel) {
 function makeHarness(overrides = {}) {
   const registry = new Map();
   registry._mutSeq = 0;
+  // Document-level drag listeners (mousemove/mouseup/touch*) land here;
+  // the switch drag registers them on drag start and drops them on end.
+  const docListeners = new Map();
   const doc = {
     registry,
     getElementById: (id) => registry.get(id) || null,
     createElement: () => makeElement("div", "", "", registry),
-    addEventListener() {},
+    addEventListener(type, fn) {
+      (docListeners.get(type) || docListeners.set(type, []).get(type)).push(fn);
+    },
+    removeEventListener(type, fn) {
+      const list = docListeners.get(type);
+      if (list) {
+        const at = list.indexOf(fn);
+        if (at !== -1) list.splice(at, 1);
+      }
+    },
   };
   const shell = makeElement("div", 'id="terminalShell"', "", registry);
   registry.set("terminalShell", shell);
@@ -323,8 +361,17 @@ function makeHarness(overrides = {}) {
       timer.fn();
     }
   };
+  const storageBacking = new Map();
   const ctx = {
     console,
+    // The switch drag persists its position through localStorage.
+    localStorage: {
+      getItem: (key) => (storageBacking.has(key) ? storageBacking.get(key) : null),
+      setItem: (key, value) => storageBacking.set(String(key), String(value)),
+      removeItem: (key) => storageBacking.delete(key),
+    },
+    _docListeners: docListeners,
+    _storage: storageBacking,
     setTimeout(fn, ms) {
       if (typeof fn !== "function") return 0;
       const id = timerSeq++;
@@ -994,11 +1041,72 @@ describe("mobile lens", () => {
     });
     const html = lens.renderSwitch();
     match(html, /id="mobileLensSwitch"/);
-    match(html, /aria-label="Panel view"/);
+    match(html, /aria-label="Panel view, drag to move"/);
+    // The whole pill drags: mousedown/touchstart arm the drag while the
+    // buttons keep their tap toggles.
+    match(html, /onmousedown="HerdrMobileLens\.switchDragStart\(event\)"/);
+    match(html, /ontouchstart="HerdrMobileLens\.switchDragStart\(event\)"/);
     match(html, /HerdrMobileLens\.showChat\(\)/);
     match(html, /HerdrMobileLens\.showTerminal\(\)/);
     match(html, /id="mobileLensChatToggle"/);
     match(html, /id="mobileLensTerminalToggle"/);
+  });
+
+  it("drags the floating switch and persists the position per layout", () => {
+    const { ctx, registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+    });
+    const switchRow = registry.get("mobileLensSwitch");
+    ok(switchRow, "switch node present");
+    // Pin the drag container: the switch is absolute inside
+    // .mobile-terminal-screen, 400x700 at 0,0 in the stub.
+    const container = makeElement("div", 'class="mobile-terminal-screen"', "", registry);
+    container._rectWidth = 400;
+    container._rectHeight = 700;
+    container._rectLeft = 0;
+    container._rectTop = 0;
+    switchRow.offsetParent = container;
+    const fireDoc = (type, event) => {
+      for (const fn of (ctx._docListeners.get(type) || [])) fn(event);
+    };
+    // Tap: no move past the 6px threshold, nothing persists.
+    lens.switchDragStart({ clientX: 200, clientY: 20, preventDefault() {} });
+    fireDoc("mouseup", {});
+    equal(ctx._storage.get("herdr-mobile-lens-switch"), undefined,
+      "a tap stores no position");
+    // Drag past the threshold: the pill moves.
+    lens.switchDragStart({ clientX: 200, clientY: 20, preventDefault() {} });
+    fireDoc("mousemove", { clientX: 260, clientY: 90, preventDefault() {} });
+    equal(switchRow.classList.contains("dragging"), true, "drag past threshold adds the dragging class");
+    // Harness rect: the pill spans 100x30 following its inline left/top,
+    // so 60px of movement lands at left 60, top 70.
+    equal(switchRow.style.left, "60px", "drag writes container-relative left");
+    equal(switchRow.style.top, "70px", "drag writes container-relative top");
+    equal(switchRow.style.transform, "none", "explicit position disables the centering transform");
+    // Clamp inside the container: drag far past the right edge.
+    fireDoc("mousemove", { clientX: 2000, clientY: 2000, preventDefault() {} });
+    equal(switchRow.style.left, "300px", "x clamped to container width minus pill width");
+    equal(switchRow.style.top, "670px", "y clamped to container height minus pill height");
+    fireDoc("mouseup", {});
+    equal(switchRow.classList.contains("dragging"), false, "release clears the dragging class");
+    const saved = ctx._storage.get("herdr-mobile-lens-switch");
+    ok(saved, "drag persists the position");
+    equal(JSON.stringify(JSON.parse(saved)), JSON.stringify({ x: 300, y: 670 }),
+      "saved position is container-relative and clamped");
+    // The drag listeners come off after release.
+    equal((ctx._docListeners.get("mousemove") || []).length, 0, "move listeners removed on release");
+    // applySwitchPosition restores the saved spot on a fresh mount and
+    // clears stale inline offsets when nothing is saved.
+    switchRow.style.left = "";
+    switchRow.style.top = "";
+    lens.applySwitchPosition();
+    equal(switchRow.style.left, "300px", "applySwitchPosition restores x");
+    equal(switchRow.style.top, "670px", "applySwitchPosition restores y");
+    ctx._storage.delete("herdr-mobile-lens-switch");
+    lens.applySwitchPosition();
+    equal(switchRow.style.left, "", "no saved position clears the inline left");
+    equal(switchRow.style.top, "", "no saved position clears the inline top");
+    equal(switchRow.style.transform, "", "no saved position restores the centering transform");
   });
 
   it("showTerminal closes an open lens; showChat reopens it", () => {

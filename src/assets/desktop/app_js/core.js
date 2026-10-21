@@ -1420,6 +1420,9 @@ const defaultOptions = {
   rightSidebarWidth: 320,
   parentCloseMode: "panels",
   workspaceOpenTerminal: false,
+  // Dragged position of the Chat|Terminal lens switch (container-relative
+  // px). null = default anchored spot (top-right over the shell).
+  lensSwitchPos: null,
   closeWorkspaceOnLastTerminal: true,
   stuckWorkingEnabled: true,
   workingDismissMinutes: 30,
@@ -1610,6 +1613,13 @@ function normalizeOptions(value) {
     next.sidebarWorkspacePercent,
   );
   next.sidebarWidth = normalizeSidebarWidth(next.sidebarWidth, 330);
+  // Dragged lens switch position: an object with finite x/y survives,
+  // anything else falls back to the anchored default.
+  const pos = next.lensSwitchPos;
+  next.lensSwitchPos =
+    pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)
+      ? { x: Math.round(pos.x), y: Math.round(pos.y) }
+      : null;
   next.rightSidebarWidth = normalizeSidebarWidth(next.rightSidebarWidth, 320);
   next.workingDismissMinutes = Math.max(
     1,

@@ -391,6 +391,14 @@ input {
   /* Above the lens overlay and composer so the switch stays visible and
    * clickable in BOTH views (the lens covers the shell with inset: 0). */
   z-index: calc(var(--z-popover, 10) + 3);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.terminal-lens-switch.dragging {
+  cursor: grabbing;
+  opacity: 0.85;
 }
 /* Chat|Terminal gate: hidden on panes without chat support (the
  * switch node is created once per shell and toggled per pane). */

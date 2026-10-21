@@ -537,17 +537,16 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
 }
 .mobile-terminal-screen {
   display: grid;
-  /* Two rows: the chat-view switch (auto, collapses to 0 when the row is
-     absent on non-chat panes) and the shell (1fr). The shell always owns
-     row 2 explicitly: without it, a screen without the switch would
-     auto-place the shell into the content-sized auto row and strand the
-     1fr row empty (same trap the old keybar rows had). */
-  grid-template-rows: auto minmax(0, 1fr);
+  /* One row: the lens switch floats over the shell (absolute), so no
+     switch row exists and the shell owns the full height. The explicit
+     1fr stays: the follow button and the floating switch anchor to this
+     container, and auto row placement must not strand it. */
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   min-width: 0;
   padding: 0;
-  /* Positioning context for the follow button overlay. */
+  /* Positioning context for the follow button and lens switch overlays. */
   position: relative;
 }
 .mobile-keybar {
@@ -629,7 +628,9 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
 .mobile-terminal-shell {
   contain: layout paint style;
   display: grid;
-  grid-row: 2;
+  /* The screen is a single-row grid now that the lens switch floats
+     (absolute, out of flow), so the shell owns the whole height. */
+  grid-row: 1;
   grid-template-rows: minmax(0, 1fr) auto;
   position: relative;
   min-height: 0;
@@ -2245,14 +2246,34 @@ body.mobile-keyboard-open .mobile-keys-fab {
 
 /* ---- mobile chat lens (chat view over the terminal) ---- */
 /* The lens overlay covers the terminal surface inside the shell. The
-   switch row above the shell picks Chat or Terminal; the terminal socket
-   stays attached in both views. */
+   switch floats over the screen top-center like the Keys fab (drag to
+   move, position persists); the terminal socket stays attached in
+   both views. */
 
 .mobile-lens-switch {
-  grid-row: 1;
+  /* Floating pill over the shell: clamps against the viewport in the
+     drag math, so the offset parent only needs to be a stable container
+     (the screen), not the viewport itself. */
+  position: absolute;
+  left: 50%;
+  top: 6px;
+  transform: translateX(-50%);
   display: flex;
   gap: 4px;
-  padding: 8px 12px 4px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  z-index: 4;
+}
+.mobile-lens-switch.dragging {
+  cursor: grabbing;
+  opacity: 0.85;
 }
 .mobile-lens-switch[hidden] {
   display: none;
@@ -2262,11 +2283,11 @@ body.mobile-keyboard-open .mobile-keys-fab {
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--muted);
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   font-size: 13px;
   font-weight: 700;
   min-height: 44px;
-  padding: 6px 10px;
+  padding: 6px 14px;
 }
 .mobile-lens-switch button[aria-pressed="true"] {
   background: var(--accent);

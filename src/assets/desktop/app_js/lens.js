@@ -2073,9 +2073,11 @@
 
   function insertLensSwitch() {
     // The segmented Chat|Terminal control overlays the shell's top-right
-    // corner; the terminal surface itself is untouched. Visibility per
-    // pane is owned by syncSwitchVisibility, called on pane change and
-    // after each snapshot.
+    // corner; the terminal surface itself is untouched. The whole pill
+    // drags (position persists in options.lensSwitchPos), taps still
+    // toggle the view. Visibility per pane is owned by
+    // syncSwitchVisibility, called on pane change and after each
+    // snapshot.
     let node = document.getElementById("terminalLensSwitch");
     if (node) return;
     const shell = shellElement();
@@ -2084,12 +2086,132 @@
     node.id = "terminalLensSwitch";
     node.className = "terminal-lens-switch segmented";
     node.setAttribute("role", "group");
-    node.setAttribute("aria-label", "Panel view");
+    node.setAttribute("aria-label", "Panel view, drag to move");
     node.innerHTML =
       '<button type="button" id="lensToggleChat" aria-pressed="false" onclick="HerdrLens.toggle()">Chat</button>' +
       '<button type="button" id="lensToggleTerminal" aria-pressed="true" onclick="HerdrLens.toggle()">Terminal</button>';
     shell.appendChild(node);
+    applyLensSwitchPos(node);
+    wireLensSwitchDrag(node);
     syncSwitchVisibility();
+  }
+
+  // ---- switch drag (mobile Keys fab parity) ----
+
+  const LENS_SWITCH_DRAG_THRESHOLD_PX = 4;
+
+  // The switch anchors with top/right; a dragged position switches to
+  // left/top in the shell's coordinate space and clears the anchor so
+  // the two never fight.
+  function applyLensSwitchPos(node) {
+    // options/saveOptions live in the desktop bundle scope (core.js);
+    // guard so the module still loads where they are absent.
+    const pos = typeof options !== "undefined" && options && options.lensSwitchPos;
+    if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) {
+      node.style.left = "";
+      node.style.top = "";
+      node.style.right = "";
+      return;
+    }
+    const shell = shellElement();
+    const rect = node.getBoundingClientRect();
+    if (!shell) return;
+    const shellRect = shell.getBoundingClientRect();
+    const maxX = shellRect.width - rect.width;
+    const maxY = shellRect.height - rect.height;
+    node.style.left = `${Math.max(0, Math.min(maxX, pos.x))}px`;
+    node.style.top = `${Math.max(0, Math.min(maxY, pos.y))}px`;
+    node.style.right = "auto";
+  }
+
+  function wireLensSwitchDrag(node) {
+    // Document-level move/up listeners (Keys fab pattern on mobile):
+    // explicit pointer capture is the lighter alternative, but some
+    // embedded/webview runtimes drop it mid-drag, and the drag must keep
+    // working when the cursor leaves the pill either way. The armed flag
+    // filters the document stream to the active drag only.
+    let startX = 0;
+    let startY = 0;
+    let baseX = 0;
+    let baseY = 0;
+    let maxX = 0;
+    let maxY = 0;
+    let dragging = false;
+    let suppressedClick = false;
+    let armed = false;
+    node.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || armed) return;
+      const shell = shellElement();
+      if (!shell) return;
+      startX = e.clientX;
+      startY = e.clientY;
+      const rect = node.getBoundingClientRect();
+      const shellRect = shell.getBoundingClientRect();
+      baseX = rect.left - shellRect.left;
+      baseY = rect.top - shellRect.top;
+      maxX = shellRect.width - rect.width;
+      maxY = shellRect.height - rect.height;
+      dragging = false;
+      suppressedClick = false;
+      armed = true;
+      document.addEventListener("pointermove", move);
+      document.addEventListener("pointerup", stopDrag);
+      document.addEventListener("pointercancel", stopDrag);
+    });
+    const move = (e) => {
+      if (!armed) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (!dragging && Math.abs(dx) < LENS_SWITCH_DRAG_THRESHOLD_PX && Math.abs(dy) < LENS_SWITCH_DRAG_THRESHOLD_PX)
+        return;
+      if (!dragging) {
+        dragging = true;
+        suppressedClick = true;
+        node.classList.add("dragging");
+      }
+      node.style.left = `${Math.max(0, Math.min(maxX, baseX + dx))}px`;
+      node.style.top = `${Math.max(0, Math.min(maxY, baseY + dy))}px`;
+      node.style.right = "auto";
+    };
+    const stopDrag = () => {
+      if (!armed) return;
+      armed = false;
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", stopDrag);
+      document.removeEventListener("pointercancel", stopDrag);
+      if (dragging) {
+        node.classList.remove("dragging");
+        dragging = false;
+        const rect = node.getBoundingClientRect();
+        const shell = shellElement();
+        if (shell) {
+          const shellRect = shell.getBoundingClientRect();
+          if (typeof options !== "undefined" && options)
+            options.lensSwitchPos = {
+              x: Math.round(rect.left - shellRect.left),
+              y: Math.round(rect.top - shellRect.top),
+            };
+          if (typeof saveOptions === "function") saveOptions();
+        }
+      }
+    };
+    // The browser fires click after pointerup even for a real drag;
+    // releasing over a button must not flip the view.
+    node.addEventListener("click", (e) => {
+      if (!suppressedClick) return;
+      suppressedClick = false;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }, true);
+    // Double-click resets the pill to its anchored spot: an explicit
+    // escape hatch for a position parked somewhere annoying.
+    node.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (typeof options !== "undefined" && options) options.lensSwitchPos = null;
+      if (typeof saveOptions === "function") saveOptions();
+      applyLensSwitchPos(node);
+    });
   }
 
   // Chat|Terminal visibility gate (design section 6): the switch shows

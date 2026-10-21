@@ -1201,14 +1201,149 @@
     }
 
     function renderSwitch() {
-      // The segmented control sits at the top of the terminal screen,
-      // above the shell. Hidden on non-chat panes (renderTerminal in
-      // panels.js drops it when chatSupported() is false).
+      // The segmented control floats over the terminal screen like the
+      // Keys fab: the whole pill drags (position persists per layout),
+      // the buttons stay taps. Hidden on non-chat panes (renderTerminal
+      // in panels.js drops it when chatSupported() is false).
       return (
-        `<div class="mobile-lens-switch" id="mobileLensSwitch" role="group" aria-label="Panel view">` +
+        `<div class="mobile-lens-switch" id="mobileLensSwitch" role="group" aria-label="Panel view, drag to move" onmousedown="HerdrMobileLens.switchDragStart(event)" ontouchstart="HerdrMobileLens.switchDragStart(event)">` +
         `<button type="button" id="mobileLensChatToggle" aria-pressed="false" onclick="HerdrMobileLens.showChat()">Chat</button>` +
         `<button type="button" id="mobileLensTerminalToggle" aria-pressed="true" onclick="HerdrMobileLens.showTerminal()">Terminal</button>` +
         `</div>`
+      );
+    }
+
+    // ---- switch drag (Keys fab parity) ----
+
+    // Whole-pill drag: a tap on a button still toggles the view, a move
+    // past the threshold repositions the pill. The switch re-renders on
+    // every pane sync, so the position lives in localStorage and
+    // applySwitchPosition re-reads it after each mount.
+    const SWITCH_DRAG_KEY = "herdr-mobile-lens-switch";
+
+    // Position math runs in the container's coordinate space: the pill
+    // is absolute inside .mobile-terminal-screen, which starts below the
+    // header, so viewport coords (getBoundingClientRect) must be
+    // rebased onto the container before they can be written back as
+    // style.left/top. Clamping stays inside the container: the pill
+    // belongs to the terminal surface and must not park over the header
+    // or the nav bar.
+    function switchPlacement(node) {
+      const container = node.offsetParent;
+      const nodeRect = node.getBoundingClientRect();
+      if (!container) {
+        return { maxX: window.innerWidth - nodeRect.width, maxY: window.innerHeight - nodeRect.height, baseX: 0, baseY: 0 };
+      }
+      const contRect = container.getBoundingClientRect();
+      return {
+        maxX: contRect.width - nodeRect.width,
+        maxY: contRect.height - nodeRect.height,
+        baseX: nodeRect.left - contRect.left,
+        baseY: nodeRect.top - contRect.top,
+      };
+    }
+
+    function writeSwitchPosition(node, x, y) {
+      node.style.left = `${x}px`;
+      node.style.top = `${y}px`;
+      node.style.right = "auto";
+      // The default centering rides on this transform; an explicit
+      // position must not keep shifting the pill by half its width.
+      node.style.transform = "none";
+    }
+
+    function switchDragStart(event) {
+      const node = el("mobileLensSwitch");
+      if (!node) return;
+      const point = event.touches && event.touches[0] ? event.touches[0] : event;
+      const startX = point.clientX;
+      const startY = point.clientY;
+      const base = switchPlacement(node);
+      let moved = false;
+      // Desktop fires click after mouseup even for a real drag; releasing
+      // over a button must not toggle the view. Same capture-phase
+      // suppressor as the sidebar strips (wireSidebarWidthDrag).
+      const suppressClick = (clickEvent) => {
+        clickEvent.stopImmediatePropagation();
+        clickEvent.preventDefault();
+      };
+      node.addEventListener("click", suppressClick, true);
+      const move = (moveEvent) => {
+        const p = moveEvent.touches && moveEvent.touches[0] ? moveEvent.touches[0] : moveEvent;
+        const dx = p.clientX - startX;
+        const dy = p.clientY - startY;
+        if (!moved && Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+        moved = true;
+        node.classList.add("dragging");
+        const x = Math.max(0, Math.min(base.maxX, base.baseX + dx));
+        const y = Math.max(0, Math.min(base.maxY, base.baseY + dy));
+        writeSwitchPosition(node, x, y);
+        moveEvent.preventDefault();
+      };
+      const end = () => {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", end);
+        document.removeEventListener("touchmove", move);
+        document.removeEventListener("touchend", end);
+        node.classList.remove("dragging");
+        if (moved) {
+          saveSwitchPosition(node);
+          // Drop the suppressor after the trailing click: one drag, one
+          // swallowed click, then taps work again.
+          setTimeout(() => node.removeEventListener("click", suppressClick, true), 0);
+        } else {
+          node.removeEventListener("click", suppressClick, true);
+        }
+      };
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", end);
+      document.addEventListener("touchmove", move, { passive: false });
+      document.addEventListener("touchend", end);
+      // No preventDefault on the start event: on touch it would swallow
+      // the synthetic click, and the buttons ARE taps (Chat/Terminal).
+      // The move handler prevents default once the drag threshold passes,
+      // which is also what stops text selection mid-drag.
+    }
+
+    function saveSwitchPosition(node) {
+      const container = node.offsetParent;
+      const nodeRect = node.getBoundingClientRect();
+      if (!container) return;
+      const contRect = container.getBoundingClientRect();
+      try {
+        localStorage.setItem(
+          SWITCH_DRAG_KEY,
+          JSON.stringify({
+            x: Math.round(nodeRect.left - contRect.left),
+            y: Math.round(nodeRect.top - contRect.top),
+          }),
+        );
+      } catch (_) {}
+    }
+
+    // Called after every mount of the switch: restores the saved
+    // position or clears inline offsets so a fresh default position is
+    // not fought by stale styles from the previous render.
+    function applySwitchPosition() {
+      const node = el("mobileLensSwitch");
+      if (!node) return;
+      let pos = null;
+      try {
+        const raw = localStorage.getItem(SWITCH_DRAG_KEY);
+        if (raw) pos = JSON.parse(raw);
+      } catch (_) {}
+      if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) {
+        node.style.left = "";
+        node.style.top = "";
+        node.style.right = "";
+        node.style.transform = "";
+        return;
+      }
+      const base = switchPlacement(node);
+      writeSwitchPosition(
+        node,
+        Math.max(0, Math.min(base.maxX, pos.x)),
+        Math.max(0, Math.min(base.maxY, pos.y)),
       );
     }
 
@@ -1261,6 +1396,8 @@
       isActive,
       render,
       renderSwitch,
+      switchDragStart,
+      applySwitchPosition,
       syncSwitchUi,
       syncSwitchVisibility,
       onPaneChanged,
