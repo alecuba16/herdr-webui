@@ -4219,6 +4219,136 @@ describe("app bundle load", () => {
     match(cases.multiNamed, /agent-panel[^>]*title="build"[^>]*>build</, "custom label shows name");
   });
 
+  it("keeps the agent row panel name when the filtered snapshot dropped its tab row", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // Server-filtered snapshot: selected workspace ws1, so tabById holds no
+    // row for ws2's tab. Only the server's tab_labels_by_id map knows the
+    // panel name; the agents list must still render it.
+    const html = vm.runInContext(
+      `const workspace = {
+        workspace_id: "ws1",
+        label: "ws",
+        worktree: { repo_key: "repo", repo_name: "repo", checkout_path: "/tmp/repo" },
+      };
+      const other = {
+        workspace_id: "ws2",
+        label: "other",
+        worktree: { repo_key: "repo", repo_name: "repo", checkout_path: "/tmp/repo" },
+      };
+      state.tabLabelsById = { "tab-other": "build" };
+      renderAgentRow(
+        { workspace_id: "ws2", tab_id: "tab-other", pane_id: "pane1", agent_status: "idle", name: "agent" },
+        { ws1: workspace, ws2: other },
+        {},
+        new Map([["ws2", 2]]),
+      );`,
+      ctx,
+    );
+
+    match(html, /agent-panel[^>]*title="build"[^>]*>build</, "panel name survives the dropped tab row");
+  });
+
+  it("skips the label-map fallback for default panel titles", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // The map carries no tab number, so a synthetic row for a default label
+    // would render every foreign default panel as #1. The fallback must
+    // only fire for custom names; default panels keep the pre-fix look.
+    const cases = vm.runInContext(
+      `const workspace = {
+        workspace_id: "ws1",
+        label: "ws",
+        worktree: { repo_key: "repo", repo_name: "repo", checkout_path: "/tmp/repo" },
+      };
+      const other = {
+        workspace_id: "ws2",
+        label: "other",
+        worktree: { repo_key: "repo", repo_name: "repo", checkout_path: "/tmp/repo" },
+      };
+      const renderCase = (label) => {
+        state.tabLabelsById = { "tab-other": label };
+        return renderAgentRow(
+          { workspace_id: "ws2", tab_id: "tab-other", pane_id: "pane1", agent_status: "idle", name: "agent" },
+          { ws1: workspace, ws2: other },
+          {},
+          new Map([["ws2", 2]]),
+        );
+      };
+      ({ shell: renderCase("Shell"), empty: renderCase(""), named: renderCase("deploy"), nonString: renderCase({ label: "object" }) });`,
+      ctx,
+    );
+
+    match(cases.named, /agent-panel[^>]*title="deploy"[^>]*>deploy</, "custom name still rides the fallback");
+    equal(cases.shell.includes("agent-panel"), false, "default Shell label gets no synthetic panel token");
+    equal(cases.empty.includes("agent-panel"), false, "empty label gets no synthetic panel token");
+    equal(cases.nonString.includes("agent-panel"), false, "non-string map value gets no synthetic panel token");
+  });
+
+  it("drops the closed panel name from the label map", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // tab.closed arrives between snapshots: the local removal must also drop
+    // the tab's label entry, or the stale name outlives the panel.
+    // Cross-realm deepEqual trips on vm prototypes; compare a JSON copy.
+    // Server shape: tab_id -> label string (no workspace id inside).
+    const labels = JSON.parse(
+      vm.runInContext(
+        `state.ws = "ws1";
+         state.workspaces = [{ workspace_id: "ws1", label: "ws" }];
+         state.tabs = [{ workspace_id: "ws1", tab_id: "tab-keep", label: "keep" }];
+         state.allTabs = state.tabs.slice();
+         state.tabLabelsById = {
+           "tab-keep": "keep",
+           "tab-gone": "build",
+         };
+         removeClosedTabFromState("tab-gone");
+         JSON.stringify(state.tabLabelsById);`,
+        ctx,
+      ),
+    );
+
+    deepEqual(
+      labels,
+      { "tab-keep": "keep" },
+      "closed tab id leaves the label map",
+    );
+  });
+
+  it("sweeps a closed workspace's labels from the map", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // The workspace's own tabs went through removeClosedTabFromState first;
+    // entries of other workspaces' tabs are plain label strings with no
+    // workspace id, so they cannot be swept selectively. They must stay
+    // untouched here: the agents leave with the workspace, ids never
+    // repeat, and the event's fast refresh rebuilds the map anyway.
+    const labels = JSON.parse(
+      vm.runInContext(
+        `state.workspaces = [{ workspace_id: "ws1", label: "ws" }];
+         state.tabs = [{ workspace_id: "ws1", tab_id: "tab-local", label: "local" }];
+         state.allTabs = state.tabs.slice();
+         state.tabLabelsById = {
+           "tab-local": "local",
+           "tab-foreign": "build",
+         };
+         removeClosedWorkspaceFromState("ws2");
+         JSON.stringify(state.tabLabelsById);`,
+        ctx,
+      ),
+    );
+
+    deepEqual(
+      labels,
+      { "tab-local": "local", "tab-foreign": "build" },
+      "label strings carry no workspace id; close leaves foreign entries inert",
+    );
+  });
+
   it("memoizes unchanged workspace sidebar render work", () => {
     const ctx = context();
     vm.runInContext(source, ctx);
@@ -5278,6 +5408,52 @@ describe("app bundle load", () => {
     // The snapshot flag survives a shape mismatch (only transport errors
     // disable it); the next refresh can retry the bootstrap.
     equal(vm.runInContext("state.snapshotBootstrap", ctx), true);
+  });
+
+  it("legacy refresh clears a stale label map from the last snapshot", async () => {
+    const ctx = context();
+    ctx.location.pathname = "/session/default/workspace/ws1/tab/t1/pane/p1";
+    ctx.Termal = undefined;
+    ctx.fetch = async (url) => {
+      const text = String(url);
+      // Shape mismatch drives refreshOnline into the legacy path.
+      if (text.startsWith("/api/session-snapshot"))
+        return { ok: true, status: 200, json: async () => ({ result: { agents: [] } }) };
+      const result = text.includes("workspaces")
+        ? { workspaces: [{ workspace_id: "ws1", label: "repo" }] }
+        : text.includes("workspace-order")
+          ? { order: ["ws1"] }
+          : text.includes("worktrees")
+            ? { source: {}, worktrees: [] }
+            : text.includes("tabs")
+              ? { tabs: [{ workspace_id: "ws1", tab_id: "t1", number: 1 }] }
+              : text.includes("panes")
+                ? { panes: [{ workspace_id: "ws1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" }] }
+                : text.includes("pane-layout")
+                  ? { layout: { panes: [] } }
+                  : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+
+    await vm.runInContext(
+      `state.tabLabelsById = { "t9": "stale" };
+       state.workspacesById = { ws1: { workspace_id: "ws1" } };
+       refreshSeq = 1;
+       refreshOnline(1).then(() => state.tabLabelsById);`,
+      ctx,
+    );
+
+    equal(
+      vm.runInContext("state.tabLabelsById", ctx),
+      null,
+      "legacy refresh must null the snapshot label map",
+    );
+    equal(
+      vm.runInContext("state.workspacesById", ctx),
+      null,
+      "legacy refresh must null the sibling workspaces map too",
+    );
   });
 
   it("disables the snapshot bootstrap after a failed request and retries legacy", async () => {

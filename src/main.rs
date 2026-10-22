@@ -3659,6 +3659,24 @@ fn enrich_session_snapshot(
     // clients' Object.fromEntries(workspaces.map(...)), and
     // workspace_counts replaces their per-workspace tab/pane loops.
     // shape: {id: {tabs: n, panes: n}}.
+    // tab_labels_by_id keeps every tab's id -> label so the agents list can
+    // name panels of workspaces whose tab rows the filter just dropped; the
+    // label token vanishes without it when the selected workspace differs
+    // from the agent's one (filtered snapshot, reported bug).
+    let mut tab_labels_by_id = serde_json::Map::new();
+    if let Some(tabs) = value
+        .pointer(&format!("{base}/tabs"))
+        .and_then(serde_json::Value::as_array)
+    {
+        for tab in tabs {
+            if let (Some(tab_id), Some(label)) = (
+                tab.get("tab_id").and_then(serde_json::Value::as_str),
+                tab.get("label").and_then(serde_json::Value::as_str),
+            ) {
+                tab_labels_by_id.insert(tab_id.to_string(), json!(label));
+            }
+        }
+    }
     let tab_counts = snapshot_counts_by_workspace(value.pointer(&format!("{base}/tabs")));
     let pane_counts = snapshot_counts_by_workspace(value.pointer(&format!("{base}/panes")));
     let mut workspace_counts = serde_json::Map::new();
@@ -3710,6 +3728,7 @@ fn enrich_session_snapshot(
         result["worktree_results"] = json!(worktree_results);
         result["workspace_counts"] = serde_json::Value::Object(workspace_counts);
         result["workspaces_by_id"] = workspaces_by_id;
+        result["tab_labels_by_id"] = serde_json::Value::Object(tab_labels_by_id);
     }
 }
 

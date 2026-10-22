@@ -484,6 +484,10 @@ function context(pathname = "/", options = {}) {
               // derivation). Tests opt in via the workspaceCounts fixture;
               // null keeps the legacy fallback path.
               workspace_counts: optionValue("workspaceCounts", null),
+              // Full tab_id -> label map the wrapper derives from the
+              // unfiltered tabs array. Tests opt in via the tabLabelsById
+              // fixture; null keeps the legacy fallback path.
+              tab_labels_by_id: optionValue("tabLabelsById", null),
             },
           }),
         };
@@ -909,6 +913,61 @@ describe("mobile bundle load", () => {
     ok(!/>beta ›/.test(html), "single-panel row hides panel token");
   });
 
+  it("mobile agent row keeps the panel name when the filtered snapshot dropped its tab row", async () => {
+    // Server-filtered snapshot: w1 selected, so the tabs array carries only
+    // w1's rows and the w2 agent has no tab row. Without the server's
+    // tab_labels_by_id fallback its named panel would render with no name.
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: [
+        { workspace_id: "w1", tab_id: "w1:t1", number: 1, label: "Shell" },
+        { workspace_id: "w1", tab_id: "w1:t2", number: 2, label: "Shell" },
+      ],
+      workspaces: [
+        { workspace_id: "w1", label: "alpha", pane_count: 2, cwd: "/tmp/alpha" },
+        { workspace_id: "w2", label: "beta", pane_count: 2, cwd: "/tmp/beta" },
+      ],
+      agents: () => [
+        { workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1", agent_status: "idle", name: "a1" },
+        { workspace_id: "w2", tab_id: "w2:t2", pane_id: "w2:p2", terminal_id: "term4", agent_status: "idle", name: "a3" },
+      ],
+      workspaceCounts: { w1: { tabs: 2, panes: 2 }, w2: { tabs: 2, panes: 2 } },
+      tabLabelsById: { "w1:t1": "Shell", "w1:t2": "Shell", "w2:t2": "deploy" },
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    ctx.HerdrMobile.showScreen("agents");
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("beta › deploy"), "other-workspace panel name survives the filtered snapshot");
+  });
+
+  it("mobile synthetic rows skip default panel titles", async () => {
+    // The label map carries no tab number, so a synthetic row for a default
+    // label would show every foreign default panel as #1. Only custom names
+    // may ride the fallback; the default one keeps no panel token.
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: [
+        { workspace_id: "w1", tab_id: "w1:t1", number: 1, label: "Shell" },
+      ],
+      workspaces: [
+        { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+        { workspace_id: "w2", label: "beta", pane_count: 2, cwd: "/tmp/beta" },
+      ],
+      agents: () => [
+        { workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1", agent_status: "idle", name: "a1" },
+        { workspace_id: "w2", tab_id: "w2:t1", pane_id: "w2:p1", terminal_id: "term4", agent_status: "idle", name: "a3" },
+      ],
+      workspaceCounts: { w1: { tabs: 1, panes: 1 }, w2: { tabs: 2, panes: 2 } },
+      tabLabelsById: { "w1:t1": "Shell", "w2:t1": "Shell" },
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    ctx.HerdrMobile.showScreen("agents");
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(!html.includes("beta › #"), "foreign default label gets no synthetic #N token");
+  });
+
   it("routes mobile backend headers and sockets from selected backend branches", async () => {
     for (const [storedBackend, expected] of [["external", "external-herdr"], ["external-herdr", "external-herdr"], ["builtin", "builtin"]]) {
       const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
@@ -1151,6 +1210,34 @@ describe("mobile bundle load", () => {
       0,
     );
     ok(ctx.requests.slice(before).some((r) => r.url === "/api/workspaces"));
+  });
+
+  it("mobile legacy refresh clears a stale label map from the last snapshot", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1");
+    const originalFetch = ctx.fetch;
+    ctx.fetch = async (url, opt = {}) => {
+      if (String(url).startsWith("/api/session-snapshot"))
+        return { ok: false, status: 500, json: async () => ({ error: "down" }) };
+      return originalFetch(url, opt);
+    };
+    vm.runInContext(source, ctx);
+    await vm.runInContext(
+      `HerdrMobileAppDeps.state.tabLabelsById = { "w9:t9": "stale" };
+       HerdrMobileAppDeps.state.workspacesById = { w1: { workspace_id: "w1" } };`,
+      ctx,
+    );
+    await ctx.HerdrMobile.refresh();
+
+    equal(
+      vm.runInContext("HerdrMobileAppDeps.state.tabLabelsById", ctx),
+      null,
+      "legacy refresh must null the snapshot label map",
+    );
+    equal(
+      vm.runInContext("HerdrMobileAppDeps.state.workspacesById", ctx),
+      null,
+      "legacy refresh must null the sibling workspaces map too",
+    );
   });
 
   it("applies a flat snapshot envelope and unstamped worktree entries", async () => {

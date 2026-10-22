@@ -64,6 +64,9 @@
     // the first snapshot arrives, and null on servers that predate them.
     workspacesById: null,
     workspaceCounts: null,
+    // Full tab_id -> label map from the unfiltered snapshot; the agents list
+    // names panels of other workspaces whose tab rows the filter dropped.
+    tabLabelsById: null,
     tabs: [],
     allTabs: [],
     panes: [],
@@ -961,6 +964,7 @@
       // ones from an earlier snapshot.
       state.workspacesById = null;
       state.workspaceCounts = null;
+      state.tabLabelsById = null;
       const workspaces = await api("/api/workspaces");
       if (seq !== refreshSeq) return;
       state.workspaces = workspaces.result.workspaces || [];
@@ -1027,6 +1031,10 @@
     // Null on an older server; consumers fall back to local derivation.
     state.workspacesById = result.workspaces_by_id || null;
     state.workspaceCounts = result.workspace_counts || null;
+    // Full tab_id -> label map from the unfiltered snapshot (see desktop
+    // applySessionSnapshot): the agents list falls back to it when the
+    // filter dropped the agent's tab row.
+    state.tabLabelsById = result.tab_labels_by_id || null;
     // The request asked the server to filter tabs/panes to the workspace we
     // had THEN. If the selection just moved (vanished workspace, or the
     // auto-pick of the first workspace), the filtered arrays describe the
