@@ -631,10 +631,8 @@ pub(crate) struct WebState {
     /// or upgrade changes the answer.
     herdr_install_cache: Arc<Mutex<Option<(std::time::Instant, HerdrInstall)>>>,
     auth: Arc<Mutex<AuthConfig>>,
-    /// Short-TTL cache for worktree.list results keyed by cwd, shared by
-    /// every session-snapshot enrich pass. Panel switches fire snapshots
-    /// back to back, and the git subprocess round trips behind worktree.list
-    /// do not change between two switches seconds apart.
+    /// Worktree.list results keyed by cwd, short TTL: consecutive
+    /// panel-switch snapshots re-ask the same checkouts.
     worktree_list_cache: Arc<WorktreeListCache>,
     /// Per-IP failed-login throttle backing the /api/login guard.
     login_limiter: Arc<LoginRateLimiter>,
@@ -3531,11 +3529,8 @@ fn filter_snapshot_rows_by_workspace(
 ///   can attribute rows to their source workspace. Failed requests keep
 ///   the same tolerance as the frontend's legacy per-workspace fetch:
 ///   the entry is null and the rest of the snapshot still applies.
-/// Short-lived cache for worktree.list results keyed by cwd, shared by
-/// every session-snapshot enrich pass. Panel switches fire snapshots back
-/// to back, and the git subprocess round trips behind worktree.list do not
-/// change between two switches seconds apart; the TTL keeps a stale window
-/// small enough that worktree create/remove still reflects quickly.
+/// Short-TTL cache keyed by cwd: consecutive panel-switch snapshots
+/// re-ask the same checkouts, and the small TTL keeps worktree changes reflecting.
 #[derive(Default)]
 struct WorktreeListCache {
     entries: Mutex<HashMap<String, WorktreeCacheEntry>>,
@@ -3655,13 +3650,8 @@ fn enrich_session_snapshot(
         })
         .unwrap_or_default();
     let mut worktree_results = Vec::with_capacity(workspace_ids.len());
-    // One git worktree.list per unique cwd, not per workspace: workspaces
-    // on the same checkout answered identical requests before, and each
-    // call spawns git rev-parse + worktree list + one log -1 per worktree
-    // (~45ms each, sequential). At 12 workspaces that was ~0.5s per
-    // session-snapshot, which is the panel-switch round trip. Per-cwd
-    // results fan back out to every workspace that asked, and a 2s TTL
-    // cache absorbs back-to-back snapshots that re-ask the same checkouts.
+    // One worktree.list per unique cwd, fetched in parallel: before, N
+    // workspaces paid N sequential git round trips (~0.5s at 12) per snapshot.
     // Parallel on purpose: each fetch opens its own backend socket, so
     // spawned threads never share framing state.
     let unique_cwds: Vec<(String, Option<String>)> = {
@@ -3696,9 +3686,8 @@ fn enrich_session_snapshot(
                     let cache = cache;
                     let workspace_id = workspace_id.clone();
                     scope.spawn(move || {
-                        // One id per unique cwd: backends that key sessions by
-                        // workspace still see a real id, builtin ignores it
-                        // and resolves cwd either way.
+                        // One id per unique cwd: backends keying sessions by
+                        // workspace still see a real id.
                         let request = json!({
                             "id": "web:worktree:list:snapshot",
                             "method": "worktree.list",
@@ -3706,9 +3695,8 @@ fn enrich_session_snapshot(
                         });
                         let response = match api.request_value(request) {
                             Ok(response) if response.get("error").is_none() => {
-                                // Only cache keyed by real paths; a null cwd
-                                // resolves against the backend's process cwd,
-                                // which is not stable across requests.
+                                // Only real paths are cache keys; a null
+                                // cwd resolves against the unstable process cwd.
                                 if let Some(cwd_key) = &cwd {
                                     cache.put(cwd_key, response.clone());
                                 }

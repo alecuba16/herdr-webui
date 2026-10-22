@@ -6602,12 +6602,8 @@ async fn session_snapshot_handler_proxies_snapshot() {
 
 // Fake API socket that answers any number of requests: one queued response
 // per connection, echoing the request id, and records every request line for
-// assertions. Used by the session-snapshot bootstrap tests where the handler
-// issues session.snapshot plus one worktree.list per unique cwd, fetched in
-// parallel; those worktree.list responses carry a "match_cwd" marker so they
-// route by params.cwd instead of connection order (stripped before
-// replying). The listener exits once every queued response has been served,
-// so callers' handle.join() completes.
+// assertions. match_cwd-marked worktree.list replies route by params.cwd
+// (marker stripped); the listener exits once the queue drains so join() completes.
 #[cfg(unix)]
 fn fake_api_socket_multi_recording(
     responses: Vec<serde_json::Value>,
@@ -6654,9 +6650,9 @@ fn fake_api_socket_multi_recording(
                 .as_ref()
                 .and_then(|request| request["params"]["cwd"].as_str())
                 .map(str::to_string);
-            // worktree.list fetches run in parallel, so pick the queued
-            // response by its cwd marker when one matches; everything else
-            // takes the first queued response, the legacy positional order.
+            // worktree.list fetches run in parallel: pick the queued
+            // response by its cwd marker when one matches, everything else
+            // takes the first queued response (legacy positional order).
             let index = remaining
                 .iter()
                 .position(|resp| {
@@ -6767,8 +6763,8 @@ async fn session_snapshot_includes_order_and_worktree_results() {
         "/tmp/repo-a"
     );
     // The worktree.list requests pinned each workspace's resolved cwd and
-    // carried a workspace id. Parallel fetch order is not deterministic,
-    // so assertions key off cwd, not arrival order.
+    // carried a workspace id. Fetch order is not deterministic, so
+    // assertions key off cwd, not arrival order.
     let requests: Vec<String> = rx.iter().collect();
     assert_eq!(requests.len(), 3);
     let mut worktree_params: Vec<(String, String)> = Vec::new();
@@ -6854,10 +6850,8 @@ async fn session_snapshot_tolerates_worktree_error_entries() {
 }
 
 // Workspaces sharing one checkout must cost a single worktree.list: the
-// enrich step dedupes fetches by cwd and fans the one response back out to
-// every workspace that asked. Before the dedupe, a 12-workspace snapshot
-// paid the git subprocess round trip 12 times even when only 2 checkouts
-// were involved, which was the slow panel-switch bottleneck.
+// enrich step dedupes by cwd. Before, a 12-workspace snapshot paid the git
+// round trip 12 times for 2 checkouts, which was the panel-switch bottleneck.
 #[cfg(unix)]
 #[tokio::test]
 async fn session_snapshot_dedupes_worktree_fetches_per_cwd() {

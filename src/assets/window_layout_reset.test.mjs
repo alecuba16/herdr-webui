@@ -404,10 +404,7 @@ describe("window layout reset integration", () => {
 
   it("dashboard visibility ignores drawer surfaces: only zero workspaces matters", async () => {
     // Boot-clean desktop (no workspace) is the only state where the
-    // dashboard shows. Right-column drawers (files, git, search) host in
-    // the sidebar and never claim the pane slot, so an open drawer must
-    // not hide the dashboard: the center would fall back to a dead
-    // terminal shell with nothing behind it.
+    // dashboard shows; drawers never claim the pane slot.
     const ctx = context();
     try {
       vm.runInContext(loadSource(), ctx);
@@ -421,8 +418,7 @@ describe("window layout reset integration", () => {
       // No drawer open: dashboard shows.
       syncProjectDashboard();
       window.__probe = { dashHidden: document.getElementById("projectDashboard").hidden };
-      // Files drawer open: dashboard stays. The drawer is sidebar
-      // surface, it does not own the center pane slot.
+      // Files drawer open: dashboard stays (drawer is sidebar surface).
       window.HerdrFileBrowser = { isVisible: () => true };
       syncProjectDashboard();
       window.__probe.dashWithFiles = document.getElementById("projectDashboard").hidden;

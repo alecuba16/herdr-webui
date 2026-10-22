@@ -873,10 +873,8 @@ describe("app bundle load", () => {
   });
 
   it("keeps the project dashboard up when Git or file drawer is visible without a workspace", () => {
-    // Zero open workspaces is the only show condition: the right-column
-    // drawers host in the sidebar and never claim the pane slot, so an
-    // open drawer must not hide the dashboard (the center would fall back
-    // to a dead terminal shell with nothing behind it).
+    // Zero open workspaces is the only show condition: drawers never
+    // claim the pane slot, so they must not hide the dashboard.
     const ctx = context();
     vm.runInContext(source, ctx);
     const dashboard = ctx.document.getElementById("projectDashboard");

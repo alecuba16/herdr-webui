@@ -130,10 +130,8 @@ function syncProjectDashboard() {
   const dashboard = el("projectDashboard"),
     shell = el("terminalShell");
   if (!dashboard) return;
-  // Zero workspaces is the only show condition. The right-column drawers
-  // (files, git, search) host in the sidebar and never claim the pane slot,
-  // so they must not hide the dashboard: with a drawer open the center
-  // otherwise falls back to a dead terminal shell with nothing behind it.
+  // Zero workspaces is the only show condition: drawers host in the
+  // sidebar and never claim the pane slot, so they must not hide the dashboard.
   const showDashboard = state.workspaces.length === 0 && !state.ws;
   dashboard.hidden = !showDashboard;
   if (shell) shell.hidden = showDashboard;
