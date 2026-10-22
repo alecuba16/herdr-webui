@@ -4232,6 +4232,7 @@ async function refreshOnline(seq) {
   // no server maps, so clear any stale ones from an earlier snapshot.
   state.workspacesById = null;
   state.workspaceCounts = null;
+  state.tabLabelsById = null;
   const w = await api("/api/workspaces");
   if (seq !== refreshSeq) return;
   state.workspaces = w.result.workspaces || [];
@@ -4380,6 +4381,11 @@ function applySessionSnapshot(response) {
   // an older server, and every consumer falls back to local derivation.
   state.workspacesById = result.workspaces_by_id || null;
   state.workspaceCounts = result.workspace_counts || null;
+  // Full tab_id -> label map from the unfiltered snapshot. The agents list
+  // reads it when the tab row itself is absent: with a workspace_id filter
+  // only the selected workspace's tabs ride the payload, so a panel name
+  // for an agent in another workspace would otherwise vanish.
+  state.tabLabelsById = result.tab_labels_by_id || null;
   if (!state.ws) {
     state.allTabs = [];
     state.tabs = [];

@@ -7026,8 +7026,8 @@ async fn session_snapshot_filters_rows_by_workspace_and_derives_maps() {
                     { "workspace_id": "ws_2", "label": "two", "cwd": "/tmp/repo-b" }
                 ],
                 "tabs": [
-                    { "workspace_id": "ws_1", "tab_id": "tab_1", "number": 1 },
-                    { "workspace_id": "ws_2", "tab_id": "tab_2", "number": 2 }
+                    { "workspace_id": "ws_1", "tab_id": "tab_1", "number": 1, "label": "Shell" },
+                    { "workspace_id": "ws_2", "tab_id": "tab_2", "number": 2, "label": "build" }
                 ],
                 "panes": [
                     { "workspace_id": "ws_1", "tab_id": "tab_1", "pane_id": "pane_1" },
@@ -7064,6 +7064,13 @@ async fn session_snapshot_filters_rows_by_workspace_and_derives_maps() {
     assert_eq!(
         body["result"]["workspace_counts"],
         json!({ "ws_1": { "tabs": 1, "panes": 2 }, "ws_2": { "tabs": 1, "panes": 1 } })
+    );
+    // The label map covers the dropped ws_2 tab: the agents list falls back
+    // to it when its tab row is filtered out, so the panel name survives a
+    // workspace switch.
+    assert_eq!(
+        body["result"]["tab_labels_by_id"],
+        json!({ "tab_1": "Shell", "tab_2": "build" })
     );
     handle.join().unwrap();
     let _ = fs::remove_file(socket);

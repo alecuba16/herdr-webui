@@ -4219,6 +4219,37 @@ describe("app bundle load", () => {
     match(cases.multiNamed, /agent-panel[^>]*title="build"[^>]*>build</, "custom label shows name");
   });
 
+  it("keeps the agent row panel name when the filtered snapshot dropped its tab row", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // Server-filtered snapshot: selected workspace ws1, so tabById holds no
+    // row for ws2's tab. Only the server's tab_labels_by_id map knows the
+    // panel name; the agents list must still render it.
+    const html = vm.runInContext(
+      `const workspace = {
+        workspace_id: "ws1",
+        label: "ws",
+        worktree: { repo_key: "repo", repo_name: "repo", checkout_path: "/tmp/repo" },
+      };
+      const other = {
+        workspace_id: "ws2",
+        label: "other",
+        worktree: { repo_key: "repo", repo_name: "repo", checkout_path: "/tmp/repo" },
+      };
+      state.tabLabelsById = { "tab-other": "build" };
+      renderAgentRow(
+        { workspace_id: "ws2", tab_id: "tab-other", pane_id: "pane1", agent_status: "idle", name: "agent" },
+        { ws1: workspace, ws2: other },
+        {},
+        new Map([["ws2", 2]]),
+      );`,
+      ctx,
+    );
+
+    match(html, /agent-panel[^>]*title="build"[^>]*>build</, "panel name survives the dropped tab row");
+  });
+
   it("memoizes unchanged workspace sidebar render work", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

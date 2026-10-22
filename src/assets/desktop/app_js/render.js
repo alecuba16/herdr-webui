@@ -899,7 +899,16 @@ function renderAgentRow(a, wsById, tabById, tabCountsByWorkspace) {
   const repo = w && w.worktree ? parentWorkspaceName(w, wsById) : null;
   const worktree =
     w && w.worktree ? agentWorktreeDisplayName(w) : w ? w.label : a.workspace_id;
-  const t = tabById[a.tab_id];
+  let t = tabById[a.tab_id];
+  // Filtered snapshots drop other workspaces' tab rows. The server ships
+  // a full tab_id -> label map for exactly this case; a synthetic row with
+  // just the label keeps the panel token working (agentTabLabel only reads
+  // label + number). Without this the panel name vanished whenever the
+  // selected workspace was not the agent's one (reported bug).
+  if (!t && state.tabLabelsById) {
+    const label = state.tabLabelsById[a.tab_id];
+    if (typeof label === "string") t = { workspace_id: a.workspace_id, label };
+  }
   const tab = agentTabLabel(a.workspace_id, t, tabCountsByWorkspace);
   const fullTitle =
     (repo ? `${repo} › ${worktree}` : worktree) + (tab ? ` › ${tab}` : "");
