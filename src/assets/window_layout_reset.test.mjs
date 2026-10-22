@@ -402,10 +402,12 @@ describe("window layout reset integration", () => {
     assert.ok(layoutIdx > -1 && moduleIdx > layoutIdx, "module loads after layout_settings.js");
   });
 
-  it("drawerSurfaceVisible counts the search panel, not just Files and Git", async () => {
-    // Boot-clean desktop (no workspace), the exact surface the search rail
-    // opens on: switching Files to Search must keep the drawer visible so
-    // syncProjectDashboard never flips into dashboard mode mid-session.
+  it("dashboard visibility ignores drawer surfaces: only zero workspaces matters", async () => {
+    // Boot-clean desktop (no workspace) is the only state where the
+    // dashboard shows. Right-column drawers (files, git, search) host in
+    // the sidebar and never claim the pane slot, so an open drawer must
+    // not hide the dashboard: the center would fall back to a dead
+    // terminal shell with nothing behind it.
     const ctx = context();
     try {
       vm.runInContext(loadSource(), ctx);
@@ -419,26 +421,32 @@ describe("window layout reset integration", () => {
       // No drawer open: dashboard shows.
       syncProjectDashboard();
       window.__probe = { dashHidden: document.getElementById("projectDashboard").hidden };
-      // Files drawer open: dashboard hides.
+      // Files drawer open: dashboard stays. The drawer is sidebar
+      // surface, it does not own the center pane slot.
       window.HerdrFileBrowser = { isVisible: () => true };
       syncProjectDashboard();
       window.__probe.dashWithFiles = document.getElementById("projectDashboard").hidden;
-      // Files hidden, Search open instead (the rail switch): the dashboard
-      // must stay hidden. This is the regression: drawerSurfaceVisible used
-      // to answer false here.
+      // Search open instead of Files (the rail switch): still visible.
       window.HerdrFileBrowser = { isVisible: () => false };
       window.HerdrSearchPanel = { isOpen: () => true };
       syncProjectDashboard();
       window.__probe.dashWithSearch = document.getElementById("projectDashboard").hidden;
-      // Search closed too: dashboard comes back.
+      // Git drawer too: same rule for every rail surface.
+      window.HerdrGitUi = { isVisible: () => true };
       window.HerdrSearchPanel = { isOpen: () => false };
       syncProjectDashboard();
-      window.__probe.dashAfterClose = document.getElementById("projectDashboard").hidden;
+      window.__probe.dashWithGit = document.getElementById("projectDashboard").hidden;
+      // A workspace exists: dashboard hides even with every drawer closed.
+      window.HerdrGitUi = { isVisible: () => false };
+      state.workspaces = [{ workspace_id: "ws_1", label: "one" }];
+      syncProjectDashboard();
+      window.__probe.dashWithWorkspace = document.getElementById("projectDashboard").hidden;
     `, ctx);
     const probe = vm.runInContext("window.__probe", ctx);
     assert.equal(probe.dashHidden, false, "no drawer: dashboard shows");
-    assert.equal(probe.dashWithFiles, true, "files drawer: dashboard hides");
-    assert.equal(probe.dashWithSearch, true, "search panel is a drawer surface: dashboard stays hidden");
-    assert.equal(probe.dashAfterClose, false, "search closed: dashboard returns");
+    assert.equal(probe.dashWithFiles, false, "files drawer: dashboard stays visible");
+    assert.equal(probe.dashWithSearch, false, "search panel open: dashboard stays visible");
+    assert.equal(probe.dashWithGit, false, "git drawer: dashboard stays visible");
+    assert.equal(probe.dashWithWorkspace, true, "workspace open: dashboard hides");
   });
 });
