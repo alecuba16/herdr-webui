@@ -4250,6 +4250,42 @@ describe("app bundle load", () => {
     match(html, /agent-panel[^>]*title="build"[^>]*>build</, "panel name survives the dropped tab row");
   });
 
+  it("skips the label-map fallback for default panel titles", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // The map carries no tab number, so a synthetic row for a default label
+    // would render every foreign default panel as #1. The fallback must
+    // only fire for custom names; default panels keep the pre-fix look.
+    const cases = vm.runInContext(
+      `const workspace = {
+        workspace_id: "ws1",
+        label: "ws",
+        worktree: { repo_key: "repo", repo_name: "repo", checkout_path: "/tmp/repo" },
+      };
+      const other = {
+        workspace_id: "ws2",
+        label: "other",
+        worktree: { repo_key: "repo", repo_name: "repo", checkout_path: "/tmp/repo" },
+      };
+      const renderCase = (label) => {
+        state.tabLabelsById = { "tab-other": label };
+        return renderAgentRow(
+          { workspace_id: "ws2", tab_id: "tab-other", pane_id: "pane1", agent_status: "idle", name: "agent" },
+          { ws1: workspace, ws2: other },
+          {},
+          new Map([["ws2", 2]]),
+        );
+      };
+      ({ shell: renderCase("Shell"), empty: renderCase(""), named: renderCase("deploy") });`,
+      ctx,
+    );
+
+    match(cases.named, /agent-panel[^>]*title="deploy"[^>]*>deploy</, "custom name still rides the fallback");
+    equal(cases.shell.includes("agent-panel"), false, "default Shell label gets no synthetic panel token");
+    equal(cases.empty.includes("agent-panel"), false, "empty label gets no synthetic panel token");
+  });
+
   it("drops the closed panel name from the label map", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

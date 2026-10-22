@@ -26,11 +26,12 @@
       );
       // Filtered snapshots drop other workspaces' tab rows; the server ships
       // a full tab_id -> label map for them. A synthetic row keeps the panel
-      // token in the agents list working (agentTabLabel reads label only);
-      // without it a named panel in another workspace showed no name.
+      // token in the agents list working, but only for named panels: a
+      // default label would need the tab's number for the #N token, and the
+      // map carries no number, so every such panel would render as #1.
       if (state.tabLabelsById) {
         for (const [tabId, label] of Object.entries(state.tabLabelsById)) {
-          if (!map[tabId] && typeof label === "string")
+          if (!map[tabId] && typeof label === "string" && !isDefaultTabTitle(label))
             map[tabId] = { tab_id: tabId, label };
         }
       }

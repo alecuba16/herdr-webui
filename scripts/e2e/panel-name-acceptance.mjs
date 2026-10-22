@@ -129,8 +129,26 @@ async function main() {
   })()`);
   record("agentTabLabel renders B's panel name from the fallback", renderCheck === "beta-deploy", `got ${renderCheck}`);
 
-  // Workspace switch sanity: select B, the A-side label must survive the
-  // mirrored direction too.
+  // Gate check: the first tabs keep their default "Shell" label, so the
+  // synthetic-row fallback must skip them (the map carries no tab number;
+  // a synthetic row would render each as a wrong #1). The named panel in
+  // B still gets its token through the same renderAgentRow call.
+  const defaultGate = await evalExpr(`(() => {
+    const counts = new Map([[${JSON.stringify(wsB)}, 2]]);
+    const row = () => renderAgentRow(
+      { workspace_id: ${JSON.stringify(wsB)}, tab_id: "gate-tab", pane_id: "gate-pane", agent_status: "idle", name: "agent" },
+      {},
+      {},
+      counts,
+    );
+    // renderAgentRow reads the map by agent tab_id; set it per case.
+    const shell = (() => { state.tabLabelsById = { "gate-tab": "Shell" }; return row(); })();
+    const named = (() => { state.tabLabelsById = { "gate-tab": "beta-deploy" }; return row(); })();
+    return JSON.stringify({ shellHasToken: shell.includes("agent-panel"), namedHasToken: named.includes("beta-deploy") });
+  })()`);
+  const gate = JSON.parse(defaultGate);
+  record("default-label foreign panel gets no synthetic token", gate.shellHasToken === false && gate.namedHasToken === true, defaultGate);
+  // Restore the real map for the switch check below.
   await reload(`${APP_URL}session/default/workspace/${wsB}/tab/${encodeURIComponent(tabB2Id)}`);
   const loadedB = await evalExpr(`new Promise((resolve) => {
     const started = Date.now();

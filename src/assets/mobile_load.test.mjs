@@ -941,6 +941,33 @@ describe("mobile bundle load", () => {
     ok(html.includes("beta › deploy"), "other-workspace panel name survives the filtered snapshot");
   });
 
+  it("mobile synthetic rows skip default panel titles", async () => {
+    // The label map carries no tab number, so a synthetic row for a default
+    // label would show every foreign default panel as #1. Only custom names
+    // may ride the fallback; the default one keeps no panel token.
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
+      tabs: [
+        { workspace_id: "w1", tab_id: "w1:t1", number: 1, label: "Shell" },
+      ],
+      workspaces: [
+        { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+        { workspace_id: "w2", label: "beta", pane_count: 2, cwd: "/tmp/beta" },
+      ],
+      agents: () => [
+        { workspace_id: "w1", tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1", agent_status: "idle", name: "a1" },
+        { workspace_id: "w2", tab_id: "w2:t1", pane_id: "w2:p1", terminal_id: "term4", agent_status: "idle", name: "a3" },
+      ],
+      workspaceCounts: { w1: { tabs: 1, panes: 1 }, w2: { tabs: 2, panes: 2 } },
+      tabLabelsById: { "w1:t1": "Shell", "w2:t1": "Shell" },
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+
+    ctx.HerdrMobile.showScreen("agents");
+    const html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(!html.includes("beta › #"), "foreign default label gets no synthetic #N token");
+  });
+
   it("routes mobile backend headers and sockets from selected backend branches", async () => {
     for (const [storedBackend, expected] of [["external", "external-herdr"], ["external-herdr", "external-herdr"], ["builtin", "builtin"]]) {
       const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");

@@ -902,12 +902,15 @@ function renderAgentRow(a, wsById, tabById, tabCountsByWorkspace) {
   let t = tabById[a.tab_id];
   // Filtered snapshots drop other workspaces' tab rows. The server ships
   // a full tab_id -> label map for exactly this case; a synthetic row with
-  // just the label keeps the panel token working (agentTabLabel only reads
-  // label + number). Without this the panel name vanished whenever the
-  // selected workspace was not the agent's one (reported bug).
+  // just the label keeps the panel token working. Only named panels ride
+  // the fallback: a default label needs the tab's number for the #N token,
+  // and the map carries no number, so the synthetic row would render every
+  // such panel as #1. Default-label foreign panels keep the pre-fix look
+  // (no token), which workspace_counts still counts correctly.
   if (!t && state.tabLabelsById) {
     const label = state.tabLabelsById[a.tab_id];
-    if (typeof label === "string") t = { workspace_id: a.workspace_id, label };
+    if (typeof label === "string" && !isDefaultPanelTitle(label))
+      t = { workspace_id: a.workspace_id, label };
   }
   const tab = agentTabLabel(a.workspace_id, t, tabCountsByWorkspace);
   const fullTitle =
