@@ -6603,7 +6603,11 @@ async fn session_snapshot_handler_proxies_snapshot() {
 // Fake API socket that answers any number of requests: one queued response
 // per connection, echoing the request id, and records every request line for
 // assertions. Used by the session-snapshot bootstrap tests where the handler
-// issues session.snapshot plus one worktree.list per workspace.
+// issues session.snapshot plus one worktree.list per unique cwd, fetched in
+// parallel; those worktree.list responses carry a "match_cwd" marker so they
+// route by params.cwd instead of connection order (stripped before
+// replying). The listener exits once every queued response has been served,
+// so callers' handle.join() completes.
 #[cfg(unix)]
 fn fake_api_socket_multi_recording(
     responses: Vec<serde_json::Value>,
@@ -6631,20 +6635,7 @@ fn fake_api_socket_multi_recording(
         .unwrap();
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let handle = thread::spawn(move || {
-        // session.snapshot arrives first; every later request is a
-        // worktree.list the enrich step issues in parallel, so responses
-        // route by params.cwd instead of connection order. The first queued
-        // entry is reserved for the snapshot, the rest keyed by their
-        // "match_cwd" marker (stripped before replying).
-        let mut iter = responses.into_iter();
-        let snapshot_response = iter.next();
-        let worktree_responses: Vec<serde_json::Value> = iter.collect();
-        // Serve until every queued worktree response has been handed out;
-        // then exit so the test's handle.join() completes. The snapshot
-        // response alone does not count as served (it is answered on every
-        // session.snapshot connection).
-        let mut served = 0;
-        let total = worktree_responses.len();
+        let mut remaining = responses;
         for conn in listener.incoming() {
             let Ok(mut stream) = conn else {
                 break;
@@ -6655,41 +6646,34 @@ fn fake_api_socket_multi_recording(
                 break;
             }
             let _ = tx.send(line.clone());
-            let request = serde_json::from_str::<serde_json::Value>(&line).ok();
-            let mut resp = match (&request, &snapshot_response) {
-                (Some(request), Some(snapshot_response))
-                    if request["method"] == "session.snapshot" =>
-                {
-                    snapshot_response.clone()
-                }
-                _ => {
-                    // Route worktree.list by cwd so parallel fetches land
-                    // on the right rows; no match means no queued response
-                    // left, which would hang the request until its timeout,
-                    // so the marker-less first match wins as a fallback.
-                    let requested_cwd = request
-                        .as_ref()
-                        .and_then(|request| request["params"]["cwd"].as_str())
-                        .map(str::to_string);
-                    worktree_responses
-                        .iter()
-                        .find(|resp| {
-                            resp.get("match_cwd")
-                                .and_then(serde_json::Value::as_str)
-                                .map(|cwd| Some(cwd) == requested_cwd.as_deref())
-                                .unwrap_or(true)
-                        })
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null)
-                }
-            };
-            if total > 0
-                && request
-                    .as_ref()
-                    .is_some_and(|request| request["method"] == "worktree.list")
-            {
-                served += 1;
+            if remaining.is_empty() {
+                break;
             }
+            let request = serde_json::from_str::<serde_json::Value>(&line).ok();
+            let requested_cwd = request
+                .as_ref()
+                .and_then(|request| request["params"]["cwd"].as_str())
+                .map(str::to_string);
+            // worktree.list fetches run in parallel, so pick the queued
+            // response by its cwd marker when one matches; everything else
+            // takes the first queued response, the legacy positional order.
+            let index = remaining
+                .iter()
+                .position(|resp| {
+                    if request
+                        .as_ref()
+                        .is_some_and(|request| request["method"] == "worktree.list")
+                    {
+                        resp.get("match_cwd")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|cwd| Some(cwd) == requested_cwd.as_deref())
+                            .unwrap_or(false)
+                    } else {
+                        !resp.get("match_cwd").is_some()
+                    }
+                })
+                .unwrap_or(0);
+            let mut resp = remaining.remove(index);
             if let Some(request) = &request {
                 resp["id"] = request["id"].clone();
             }
@@ -6701,9 +6685,7 @@ fn fake_api_socket_multi_recording(
                 .unwrap();
             stream.write_all(b"\n").unwrap();
             stream.flush().unwrap();
-            if total > 0 && served >= total {
-                // All queued responses handed out; stop accepting so the
-                // test's handle.join() completes.
+            if remaining.is_empty() {
                 break;
             }
         }
