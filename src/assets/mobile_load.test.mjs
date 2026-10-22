@@ -1212,6 +1212,34 @@ describe("mobile bundle load", () => {
     ok(ctx.requests.slice(before).some((r) => r.url === "/api/workspaces"));
   });
 
+  it("mobile legacy refresh clears a stale label map from the last snapshot", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1");
+    const originalFetch = ctx.fetch;
+    ctx.fetch = async (url, opt = {}) => {
+      if (String(url).startsWith("/api/session-snapshot"))
+        return { ok: false, status: 500, json: async () => ({ error: "down" }) };
+      return originalFetch(url, opt);
+    };
+    vm.runInContext(source, ctx);
+    await vm.runInContext(
+      `HerdrMobileAppDeps.state.tabLabelsById = { "w9:t9": "stale" };
+       HerdrMobileAppDeps.state.workspacesById = { w1: { workspace_id: "w1" } };`,
+      ctx,
+    );
+    await ctx.HerdrMobile.refresh();
+
+    equal(
+      vm.runInContext("HerdrMobileAppDeps.state.tabLabelsById", ctx),
+      null,
+      "legacy refresh must null the snapshot label map",
+    );
+    equal(
+      vm.runInContext("HerdrMobileAppDeps.state.workspacesById", ctx),
+      null,
+      "legacy refresh must null the sibling workspaces map too",
+    );
+  });
+
   it("applies a flat snapshot envelope and unstamped worktree entries", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     const originalFetch = ctx.fetch;

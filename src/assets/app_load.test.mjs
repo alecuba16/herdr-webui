@@ -4277,13 +4277,14 @@ describe("app bundle load", () => {
           new Map([["ws2", 2]]),
         );
       };
-      ({ shell: renderCase("Shell"), empty: renderCase(""), named: renderCase("deploy") });`,
+      ({ shell: renderCase("Shell"), empty: renderCase(""), named: renderCase("deploy"), nonString: renderCase({ label: "object" }) });`,
       ctx,
     );
 
     match(cases.named, /agent-panel[^>]*title="deploy"[^>]*>deploy</, "custom name still rides the fallback");
     equal(cases.shell.includes("agent-panel"), false, "default Shell label gets no synthetic panel token");
     equal(cases.empty.includes("agent-panel"), false, "empty label gets no synthetic panel token");
+    equal(cases.nonString.includes("agent-panel"), false, "non-string map value gets no synthetic panel token");
   });
 
   it("drops the closed panel name from the label map", () => {
@@ -5407,6 +5408,52 @@ describe("app bundle load", () => {
     // The snapshot flag survives a shape mismatch (only transport errors
     // disable it); the next refresh can retry the bootstrap.
     equal(vm.runInContext("state.snapshotBootstrap", ctx), true);
+  });
+
+  it("legacy refresh clears a stale label map from the last snapshot", async () => {
+    const ctx = context();
+    ctx.location.pathname = "/session/default/workspace/ws1/tab/t1/pane/p1";
+    ctx.Termal = undefined;
+    ctx.fetch = async (url) => {
+      const text = String(url);
+      // Shape mismatch drives refreshOnline into the legacy path.
+      if (text.startsWith("/api/session-snapshot"))
+        return { ok: true, status: 200, json: async () => ({ result: { agents: [] } }) };
+      const result = text.includes("workspaces")
+        ? { workspaces: [{ workspace_id: "ws1", label: "repo" }] }
+        : text.includes("workspace-order")
+          ? { order: ["ws1"] }
+          : text.includes("worktrees")
+            ? { source: {}, worktrees: [] }
+            : text.includes("tabs")
+              ? { tabs: [{ workspace_id: "ws1", tab_id: "t1", number: 1 }] }
+              : text.includes("panes")
+                ? { panes: [{ workspace_id: "ws1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" }] }
+                : text.includes("pane-layout")
+                  ? { layout: { panes: [] } }
+                  : { agents: [] };
+      return { ok: true, status: 200, json: async () => ({ result }) };
+    };
+    vm.runInContext(source, ctx);
+
+    await vm.runInContext(
+      `state.tabLabelsById = { "t9": "stale" };
+       state.workspacesById = { ws1: { workspace_id: "ws1" } };
+       refreshSeq = 1;
+       refreshOnline(1).then(() => state.tabLabelsById);`,
+      ctx,
+    );
+
+    equal(
+      vm.runInContext("state.tabLabelsById", ctx),
+      null,
+      "legacy refresh must null the snapshot label map",
+    );
+    equal(
+      vm.runInContext("state.workspacesById", ctx),
+      null,
+      "legacy refresh must null the sibling workspaces map too",
+    );
   });
 
   it("disables the snapshot bootstrap after a failed request and retries legacy", async () => {
