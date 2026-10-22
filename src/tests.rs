@@ -6775,7 +6775,10 @@ async fn session_snapshot_includes_order_and_worktree_results() {
         }
         assert_eq!(parsed["method"], "worktree.list");
         worktree_params.push((
-            parsed["params"]["workspace_id"].as_str().unwrap().to_string(),
+            parsed["params"]["workspace_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
             parsed["params"]["cwd"].as_str().unwrap().to_string(),
         ));
     }
@@ -6903,7 +6906,10 @@ async fn session_snapshot_dedupes_worktree_fetches_per_cwd() {
         "ws_3"
     );
     for index in [0usize, 1] {
-        assert_eq!(entries[index]["result"]["worktrees"][0]["path"], "/tmp/repo-a");
+        assert_eq!(
+            entries[index]["result"]["worktrees"][0]["path"],
+            "/tmp/repo-a"
+        );
     }
     assert_eq!(entries[2]["result"]["worktrees"][0]["path"], "/tmp/repo-b");
     // One worktree.list per unique cwd: three workspaces, two fetches.
@@ -6912,9 +6918,7 @@ async fn session_snapshot_dedupes_worktree_fetches_per_cwd() {
         .iter()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .filter(|request| request["method"] == "worktree.list")
-        .map(|request| {
-            request["params"]["cwd"].as_str().unwrap().to_string()
-        })
+        .map(|request| request["params"]["cwd"].as_str().unwrap().to_string())
         .collect();
     let mut sorted = worktree_cwds.clone();
     sorted.sort();

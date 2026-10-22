@@ -3704,7 +3704,8 @@ fn enrich_session_snapshot(
                             }
                             _ => None,
                         };
-                        tx.send((cwd, response)).expect("worktree fetch receiver alive");
+                        tx.send((cwd, response))
+                            .expect("worktree fetch receiver alive");
                     });
                 }
             });
@@ -5132,7 +5133,13 @@ async fn session_snapshot(
         let mut value = api.request_value(
             json!({ "id": "web:session:snapshot", "method": "session.snapshot", "params": {} }),
         )?;
-        enrich_session_snapshot(&mut value, &order, workspace_id.as_deref(), &api, &worktree_cache);
+        enrich_session_snapshot(
+            &mut value,
+            &order,
+            workspace_id.as_deref(),
+            &api,
+            &worktree_cache,
+        );
         Ok::<_, String>(value)
     })
     .await;
