@@ -3529,7 +3529,8 @@ fn filter_snapshot_rows_by_workspace(
 ///   can attribute rows to their source workspace. Failed requests keep
 ///   the same tolerance as the frontend's legacy per-workspace fetch:
 ///   the entry is null and the rest of the snapshot still applies.
-/// Short-TTL cache keyed by cwd: consecutive panel-switch snapshots
+///
+/// Short-TTL cache keyed by cwd. Consecutive panel-switch snapshots
 /// re-ask the same checkouts, and the small TTL keeps worktree changes reflecting.
 #[derive(Default)]
 struct WorktreeListCache {
@@ -3683,7 +3684,6 @@ fn enrich_session_snapshot(
                 for (workspace_id, cwd) in &missing {
                     let tx = tx.clone();
                     let cwd = cwd.clone();
-                    let cache = cache;
                     let workspace_id = workspace_id.clone();
                     scope.spawn(move || {
                         // One id per unique cwd: backends keying sessions by
