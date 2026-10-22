@@ -4250,6 +4250,68 @@ describe("app bundle load", () => {
     match(html, /agent-panel[^>]*title="build"[^>]*>build</, "panel name survives the dropped tab row");
   });
 
+  it("drops the closed panel name from the label map", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // tab.closed arrives between snapshots: the local removal must also drop
+    // the tab's label entry, or the stale name outlives the panel.
+    // Cross-realm deepEqual trips on vm prototypes; compare a JSON copy.
+    // Server shape: tab_id -> label string (no workspace id inside).
+    const labels = JSON.parse(
+      vm.runInContext(
+        `state.ws = "ws1";
+         state.workspaces = [{ workspace_id: "ws1", label: "ws" }];
+         state.tabs = [{ workspace_id: "ws1", tab_id: "tab-keep", label: "keep" }];
+         state.allTabs = state.tabs.slice();
+         state.tabLabelsById = {
+           "tab-keep": "keep",
+           "tab-gone": "build",
+         };
+         removeClosedTabFromState("tab-gone");
+         JSON.stringify(state.tabLabelsById);`,
+        ctx,
+      ),
+    );
+
+    deepEqual(
+      labels,
+      { "tab-keep": "keep" },
+      "closed tab id leaves the label map",
+    );
+  });
+
+  it("sweeps a closed workspace's labels from the map", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+
+    // The workspace's own tabs went through removeClosedTabFromState first;
+    // entries of other workspaces' tabs are plain label strings with no
+    // workspace id, so they cannot be swept selectively. They must stay
+    // untouched here: the agents leave with the workspace, ids never
+    // repeat, and the event's fast refresh rebuilds the map anyway.
+    const labels = JSON.parse(
+      vm.runInContext(
+        `state.workspaces = [{ workspace_id: "ws1", label: "ws" }];
+         state.tabs = [{ workspace_id: "ws1", tab_id: "tab-local", label: "local" }];
+         state.allTabs = state.tabs.slice();
+         state.tabLabelsById = {
+           "tab-local": "local",
+           "tab-foreign": "build",
+         };
+         removeClosedWorkspaceFromState("ws2");
+         JSON.stringify(state.tabLabelsById);`,
+        ctx,
+      ),
+    );
+
+    deepEqual(
+      labels,
+      { "tab-local": "local", "tab-foreign": "build" },
+      "label strings carry no workspace id; close leaves foreign entries inert",
+    );
+  });
+
   it("memoizes unchanged workspace sidebar render work", () => {
     const ctx = context();
     vm.runInContext(source, ctx);

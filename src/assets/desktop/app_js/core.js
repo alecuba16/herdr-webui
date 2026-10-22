@@ -62,6 +62,9 @@ let state = {
   // the first snapshot arrives, and null on servers that predate them.
   workspacesById: null,
   workspaceCounts: null,
+  // Same map family: full tab_id -> label map, read by renderAgentRow
+  // when a filtered snapshot dropped the agent's tab row.
+  tabLabelsById: null,
   worktrees: [],
   workspaceBranches: {},
   workspaceOrder: [],
@@ -4777,6 +4780,9 @@ function removeClosedTabFromState(tabId) {
   state.allTabs = (state.allTabs || []).filter((tab) => tab.tab_id !== tabId);
   state.panes = (state.panes || []).filter((pane) => pane.tab_id !== tabId);
   state.agents = (state.agents || []).filter((agent) => agent.tab_id !== tabId);
+  // The label map is snapshot-derived like the counts; keep the event-time
+  // view consistent so a later rename cannot resurrect a closed panel name.
+  if (state.tabLabelsById) delete state.tabLabelsById[tabId];
   const closedWorkspaceId = closedTab && closedTab.workspace_id;
   decrementWorkspaceCount(closedWorkspaceId, "tabs", 1);
   decrementWorkspaceCount(closedWorkspaceId, "panes", closedPaneCount);
@@ -4788,6 +4794,11 @@ function removeClosedWorkspaceFromState(workspaceId) {
     .filter((tab) => tab.workspace_id === workspaceId)
     .map((tab) => tab.tab_id);
   for (const tabId of tabsToRemove) removeClosedTabFromState(tabId);
+  // The label map carries no workspace id (the server ships tab_id ->
+  // label strings), so entries of filtered-out tabs cannot be swept here.
+  // They stay inert: the workspace's agents leave in this same call, tab
+  // ids never repeat (server counter), and the close event's fast refresh
+  // rebuilds the whole map from the next snapshot.
   state.workspaces = (state.workspaces || []).filter(
     (workspace) => workspace.workspace_id !== workspaceId,
   );
