@@ -130,7 +130,9 @@ function syncProjectDashboard() {
   const dashboard = el("projectDashboard"),
     shell = el("terminalShell");
   if (!dashboard) return;
-  const showDashboard = state.workspaces.length === 0 && !state.ws && !drawerSurfaceVisible();
+  // Zero workspaces is the only show condition: drawers host in the
+  // sidebar and never claim the pane slot, so they must not hide the dashboard.
+  const showDashboard = state.workspaces.length === 0 && !state.ws;
   dashboard.hidden = !showDashboard;
   if (shell) shell.hidden = showDashboard;
   // Same decision, pane skeleton placement: the dashboard fills the pane
@@ -175,17 +177,6 @@ function syncWorkspaceEmptyLeaf() {
       emptyLeafFocused = true;
     }
   }
-}
-function drawerSurfaceVisible() {
-  // All three rail surfaces count, not just Files/Git: the search panel
-  // is a drawer too, and leaving it out flipped the boot-clean desktop
-  // into dashboard mode the moment Search replaced an open Files drawer
-  // (dashboard popped in and the pane strip hid under it).
-  return !!(
-    (window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible()) ||
-    (window.HerdrFileBrowser && window.HerdrFileBrowser.isVisible && window.HerdrFileBrowser.isVisible()) ||
-    (window.HerdrSearchPanel && window.HerdrSearchPanel.isOpen && window.HerdrSearchPanel.isOpen())
-  );
 }
 function renderProjectDashboard() {
   const actionsMenu = window.HerdrActionRegistry.action("actions-menu");

@@ -631,6 +631,9 @@ pub(crate) struct WebState {
     /// or upgrade changes the answer.
     herdr_install_cache: Arc<Mutex<Option<(std::time::Instant, HerdrInstall)>>>,
     auth: Arc<Mutex<AuthConfig>>,
+    /// Worktree.list results keyed by cwd, short TTL: consecutive
+    /// panel-switch snapshots re-ask the same checkouts.
+    worktree_list_cache: Arc<WorktreeListCache>,
     /// Per-IP failed-login throttle backing the /api/login guard.
     login_limiter: Arc<LoginRateLimiter>,
     server_settings: Arc<Mutex<RuntimeServerSettings>>,
@@ -1003,6 +1006,7 @@ async fn main() -> io::Result<()> {
         herdr_bin: std::env::var("HERDR_WEB_HERDR_BIN").unwrap_or_else(|_| "herdr".to_string()),
         herdr_install_cache: Arc::new(Mutex::new(None)),
         auth,
+        worktree_list_cache: Arc::new(WorktreeListCache::default()),
         login_limiter: Arc::new(LoginRateLimiter::new()),
         server_settings,
         no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
@@ -3525,11 +3529,53 @@ fn filter_snapshot_rows_by_workspace(
 ///   can attribute rows to their source workspace. Failed requests keep
 ///   the same tolerance as the frontend's legacy per-workspace fetch:
 ///   the entry is null and the rest of the snapshot still applies.
+///
+/// Short-TTL cache keyed by cwd. Consecutive panel-switch snapshots
+/// re-ask the same checkouts, and the small TTL keeps worktree changes reflecting.
+#[derive(Default)]
+struct WorktreeListCache {
+    entries: Mutex<HashMap<String, WorktreeCacheEntry>>,
+}
+
+#[derive(Clone)]
+struct WorktreeCacheEntry {
+    fetched_at: std::time::Instant,
+    value: serde_json::Value,
+}
+
+impl WorktreeListCache {
+    fn get(&self, cwd: &Option<String>) -> Option<WorktreeCacheEntry> {
+        let cwd = cwd.as_deref()?;
+        let guard = self.entries.lock().ok()?;
+        let entry = guard.get(cwd)?;
+        // 2s TTL: consecutive switches hit the cache, stale data never
+        // outlives a user noticing a missing fresh worktree for long.
+        if entry.fetched_at.elapsed() < Duration::from_secs(2) {
+            Some(entry.clone())
+        } else {
+            None
+        }
+    }
+
+    fn put(&self, cwd: &str, value: serde_json::Value) {
+        if let Ok(mut guard) = self.entries.lock() {
+            guard.insert(
+                cwd.to_string(),
+                WorktreeCacheEntry {
+                    fetched_at: std::time::Instant::now(),
+                    value,
+                },
+            );
+        }
+    }
+}
+
 fn enrich_session_snapshot(
     value: &mut serde_json::Value,
     workspace_order: &[String],
     workspace_id: Option<&str>,
     api: &ApiClient,
+    worktree_cache: &WorktreeListCache,
 ) {
     if value
         .get("result")
@@ -3605,27 +3651,77 @@ fn enrich_session_snapshot(
         })
         .unwrap_or_default();
     let mut worktree_results = Vec::with_capacity(workspace_ids.len());
+    // One worktree.list per unique cwd, fetched in parallel: before, N
+    // workspaces paid N sequential git round trips (~0.5s at 12) per snapshot.
+    // Parallel on purpose: each fetch opens its own backend socket, so
+    // spawned threads never share framing state.
+    let unique_cwds: Vec<(String, Option<String>)> = {
+        let mut seen = HashSet::new();
+        workspace_ids
+            .iter()
+            .filter(|(_, cwd)| seen.insert(cwd.clone()))
+            .cloned()
+            .collect()
+    };
+    let cwd_results: HashMap<Option<String>, Option<serde_json::Value>> = {
+        let cache = worktree_cache;
+        let (tx, rx) = mpsc::channel::<(Option<String>, Option<serde_json::Value>)>();
+        let missing: Vec<(String, Option<String>)> = unique_cwds
+            .iter()
+            .filter(|(_, cwd)| {
+                if let Some(hit) = cache.get(cwd) {
+                    tx.send((cwd.clone(), Some(hit.value.clone())))
+                        .expect("worktree cache receiver alive");
+                    false
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            std::thread::scope(|scope| {
+                for (workspace_id, cwd) in &missing {
+                    let tx = tx.clone();
+                    let cwd = cwd.clone();
+                    let workspace_id = workspace_id.clone();
+                    scope.spawn(move || {
+                        // One id per unique cwd: backends keying sessions by
+                        // workspace still see a real id.
+                        let request = json!({
+                            "id": "web:worktree:list:snapshot",
+                            "method": "worktree.list",
+                            "params": { "workspace_id": workspace_id, "cwd": cwd },
+                        });
+                        let response = match api.request_value(request) {
+                            Ok(response) if response.get("error").is_none() => {
+                                // Only real paths are cache keys; a null
+                                // cwd resolves against the unstable process cwd.
+                                if let Some(cwd_key) = &cwd {
+                                    cache.put(cwd_key, response.clone());
+                                }
+                                Some(response)
+                            }
+                            _ => None,
+                        };
+                        tx.send((cwd, response))
+                            .expect("worktree fetch receiver alive");
+                    });
+                }
+            });
+        }
+        drop(tx);
+        rx.into_iter().collect()
+    };
     for (workspace_id, cwd) in &workspace_ids {
-        let request = json!({
-            "id": format!("web:worktree:list:snapshot:{workspace_id}"),
-            "method": "worktree.list",
-            "params": { "workspace_id": workspace_id, "cwd": cwd },
-        });
-        let mut response = match api.request_value(request) {
-            Ok(response) => response,
-            Err(_) => {
-                worktree_results.push(serde_json::Value::Null);
-                continue;
-            }
-        };
-        // Backend-level errors become null entries, matching the legacy
+        // Backend-level errors stay null entries, matching the legacy
         // per-workspace fetch where /api/worktrees returned 502 and the
         // frontend catch() produced null. A null entry must not break the
         // rest of the snapshot.
-        if response.get("error").is_some() {
+        let Some(mut response) = cwd_results.get(cwd).cloned().flatten() else {
             worktree_results.push(serde_json::Value::Null);
             continue;
-        }
+        };
         // The wrapper, not the backend, knows which workspace produced each
         // result (builtin ignores workspace_id and resolves cwd instead, and
         // never sets source_workspace_id). Stamp it so the frontend can
@@ -5051,11 +5147,18 @@ async fn session_snapshot(
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty());
     let api = api_for_headers_ensured(&state, &headers).await;
+    let worktree_cache = state.worktree_list_cache.clone();
     let response = tokio::task::spawn_blocking(move || {
         let mut value = api.request_value(
             json!({ "id": "web:session:snapshot", "method": "session.snapshot", "params": {} }),
         )?;
-        enrich_session_snapshot(&mut value, &order, workspace_id.as_deref(), &api);
+        enrich_session_snapshot(
+            &mut value,
+            &order,
+            workspace_id.as_deref(),
+            &api,
+            &worktree_cache,
+        );
         Ok::<_, String>(value)
     })
     .await;

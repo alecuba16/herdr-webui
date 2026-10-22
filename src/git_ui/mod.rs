@@ -1394,6 +1394,7 @@ mod tests {
                 sessions_rev: 1,
                 session_expiration_minutes: crate::auth::DEFAULT_SESSION_EXPIRATION_MINUTES,
             })),
+            worktree_list_cache: Arc::new(crate::WorktreeListCache::default()),
             login_limiter: Arc::new(crate::auth::LoginRateLimiter::new()),
             server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
                 bind,

@@ -44,6 +44,7 @@ fn test_state() -> WebState {
             sessions_rev: 1,
             session_expiration_minutes: DEFAULT_SESSION_EXPIRATION_MINUTES,
         })),
+        worktree_list_cache: Arc::new(WorktreeListCache::default()),
         login_limiter: Arc::new(LoginRateLimiter::new()),
         server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
             bind,
@@ -6601,8 +6602,8 @@ async fn session_snapshot_handler_proxies_snapshot() {
 
 // Fake API socket that answers any number of requests: one queued response
 // per connection, echoing the request id, and records every request line for
-// assertions. Used by the session-snapshot bootstrap tests where the handler
-// issues session.snapshot plus one worktree.list per workspace.
+// assertions. match_cwd-marked worktree.list replies route by params.cwd
+// (marker stripped); the listener exits once the queue drains so join() completes.
 #[cfg(unix)]
 fn fake_api_socket_multi_recording(
     responses: Vec<serde_json::Value>,
@@ -6630,8 +6631,9 @@ fn fake_api_socket_multi_recording(
         .unwrap();
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let handle = thread::spawn(move || {
-        for mut resp in responses {
-            let Ok(mut stream) = listener.accept() else {
+        let mut remaining = responses;
+        for conn in listener.incoming() {
+            let Ok(mut stream) = conn else {
                 break;
             };
             let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -6640,14 +6642,48 @@ fn fake_api_socket_multi_recording(
                 break;
             }
             let _ = tx.send(line.clone());
-            if let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) {
+            if remaining.is_empty() {
+                break;
+            }
+            let request = serde_json::from_str::<serde_json::Value>(&line).ok();
+            let requested_cwd = request
+                .as_ref()
+                .and_then(|request| request["params"]["cwd"].as_str())
+                .map(str::to_string);
+            // worktree.list fetches run in parallel: pick the queued
+            // response by its cwd marker when one matches, everything else
+            // takes the first queued response (legacy positional order).
+            let index = remaining
+                .iter()
+                .position(|resp| {
+                    if request
+                        .as_ref()
+                        .is_some_and(|request| request["method"] == "worktree.list")
+                    {
+                        resp.get("match_cwd")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|cwd| Some(cwd) == requested_cwd.as_deref())
+                            .unwrap_or(false)
+                    } else {
+                        !resp.get("match_cwd").is_some()
+                    }
+                })
+                .unwrap_or(0);
+            let mut resp = remaining.remove(index);
+            if let Some(request) = &request {
                 resp["id"] = request["id"].clone();
+            }
+            if let Some(object) = resp.as_object_mut() {
+                object.remove("match_cwd");
             }
             stream
                 .write_all(serde_json::to_string(&resp).unwrap().as_bytes())
                 .unwrap();
             stream.write_all(b"\n").unwrap();
             stream.flush().unwrap();
+            if remaining.is_empty() {
+                break;
+            }
         }
     });
     (path, handle, rx)
@@ -6678,8 +6714,8 @@ async fn session_snapshot_includes_order_and_worktree_results() {
                 "type": "session_snapshot"
             }
         }),
-        json!({ "result": { "worktrees": [ { "path": "/tmp/repo-a", "branch": "main" } ], "source": { "repo_name": "repo-a" } } }),
-        json!({ "result": { "worktrees": [ { "path": "/tmp/repo-b", "branch": "dev" } ], "source": { "source_workspace_id": null, "repo_name": "repo-b" } } }),
+        json!({ "match_cwd": "/tmp/repo-a", "result": { "worktrees": [ { "path": "/tmp/repo-a", "branch": "main" } ], "source": { "repo_name": "repo-a" } } }),
+        json!({ "match_cwd": "/tmp/repo-b", "result": { "worktrees": [ { "path": "/tmp/repo-b", "branch": "dev" } ], "source": { "source_workspace_id": null, "repo_name": "repo-b" } } }),
     ]);
     let mut state = test_state();
     state.api_socket = Some(socket.clone());
@@ -6727,19 +6763,33 @@ async fn session_snapshot_includes_order_and_worktree_results() {
         "/tmp/repo-a"
     );
     // The worktree.list requests pinned each workspace's resolved cwd and
-    // asked for the right workspace ids.
+    // carried a workspace id. Fetch order is not deterministic, so
+    // assertions key off cwd, not arrival order.
     let requests: Vec<String> = rx.iter().collect();
     assert_eq!(requests.len(), 3);
-    let first: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
-    assert_eq!(first["method"], "session.snapshot");
-    let second: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
-    assert_eq!(second["method"], "worktree.list");
-    assert_eq!(second["params"]["workspace_id"], "ws_1");
-    assert_eq!(second["params"]["cwd"], "/tmp/repo-a");
-    let third: serde_json::Value = serde_json::from_str(&requests[2]).unwrap();
-    assert_eq!(third["method"], "worktree.list");
-    assert_eq!(third["params"]["workspace_id"], "ws_2");
-    assert_eq!(third["params"]["cwd"], "/tmp/repo-b");
+    let mut worktree_params: Vec<(String, String)> = Vec::new();
+    for line in &requests {
+        let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+        if parsed["method"] == "session.snapshot" {
+            continue;
+        }
+        assert_eq!(parsed["method"], "worktree.list");
+        worktree_params.push((
+            parsed["params"]["workspace_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            parsed["params"]["cwd"].as_str().unwrap().to_string(),
+        ));
+    }
+    worktree_params.sort();
+    assert_eq!(
+        worktree_params,
+        vec![
+            ("ws_1".to_string(), "/tmp/repo-a".to_string()),
+            ("ws_2".to_string(), "/tmp/repo-b".to_string())
+        ]
+    );
     handle.join().unwrap();
     let _ = fs::remove_file(socket);
 }
@@ -6750,7 +6800,7 @@ async fn session_snapshot_includes_order_and_worktree_results() {
 #[cfg(unix)]
 #[tokio::test]
 async fn session_snapshot_tolerates_worktree_error_entries() {
-    let (socket, handle) = fake_api_socket_multi(vec![
+    let (socket, handle, _rx) = fake_api_socket_multi_recording(vec![
         json!({
             "result": {
                 "snapshot": {
@@ -6763,8 +6813,8 @@ async fn session_snapshot_tolerates_worktree_error_entries() {
                 }
             }
         }),
-        json!({ "error": { "message": "worktree.list failed" } }),
-        json!({ "result": { "worktrees": [ { "path": "/tmp/repo-b", "branch": "dev" } ], "source": { "repo_name": "repo-b" } } }),
+        json!({ "match_cwd": "/tmp/repo-a", "error": { "message": "worktree.list failed" } }),
+        json!({ "match_cwd": "/tmp/repo-b", "result": { "worktrees": [ { "path": "/tmp/repo-b", "branch": "dev" } ], "source": { "repo_name": "repo-b" } } }),
     ]);
     let mut state = test_state();
     state.api_socket = Some(socket.clone());
@@ -6802,13 +6852,92 @@ async fn session_snapshot_tolerates_worktree_error_entries() {
     let _ = fs::remove_file(socket);
 }
 
+// Workspaces sharing one checkout must cost a single worktree.list: the
+// enrich step dedupes by cwd. Before, a 12-workspace snapshot paid the git
+// round trip 12 times for 2 checkouts, which was the panel-switch bottleneck.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_dedupes_worktree_fetches_per_cwd() {
+    let (socket, handle, rx) = fake_api_socket_multi_recording(vec![
+        json!({
+            "result": {
+                "snapshot": {
+                    "workspaces": [
+                        { "workspace_id": "ws_1", "label": "one", "cwd": "/tmp/repo-a" },
+                        { "workspace_id": "ws_2", "label": "two", "cwd": "/tmp/repo-a" },
+                        { "workspace_id": "ws_3", "label": "three", "cwd": "/tmp/repo-b" }
+                    ],
+                    "tabs": [],
+                    "panes": []
+                }
+            }
+        }),
+        json!({ "match_cwd": "/tmp/repo-a", "result": { "worktrees": [ { "path": "/tmp/repo-a", "branch": "main" } ], "source": { "repo_name": "repo-a" } } }),
+        json!({ "match_cwd": "/tmp/repo-b", "result": { "worktrees": [ { "path": "/tmp/repo-b", "branch": "dev" } ], "source": { "repo_name": "repo-b" } } }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let entries = body["result"]["worktree_results"].as_array().unwrap();
+    assert_eq!(entries.len(), 3);
+    // Both /tmp/repo-a workspaces carry the same fetched rows, each
+    // stamped with its own workspace id.
+    assert_eq!(
+        entries[0]["result"]["source"]["source_workspace_id"],
+        "ws_1"
+    );
+    assert_eq!(
+        entries[1]["result"]["source"]["source_workspace_id"],
+        "ws_2"
+    );
+    assert_eq!(
+        entries[2]["result"]["source"]["source_workspace_id"],
+        "ws_3"
+    );
+    for index in [0usize, 1] {
+        assert_eq!(
+            entries[index]["result"]["worktrees"][0]["path"],
+            "/tmp/repo-a"
+        );
+    }
+    assert_eq!(entries[2]["result"]["worktrees"][0]["path"], "/tmp/repo-b");
+    // One worktree.list per unique cwd: three workspaces, two fetches.
+    let requests: Vec<String> = rx.iter().collect();
+    let worktree_cwds: Vec<String> = requests
+        .iter()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|request| request["method"] == "worktree.list")
+        .map(|request| request["params"]["cwd"].as_str().unwrap().to_string())
+        .collect();
+    let mut sorted = worktree_cwds.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted,
+        vec!["/tmp/repo-a".to_string(), "/tmp/repo-b".to_string()],
+        "three workspaces across two checkouts must issue exactly two fetches"
+    );
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
 // A worktree.list whose response already carries source_workspace_id from the
 // backend (protocol 16 external sets it) must keep that value: the wrapper
 // only fills missing or null stamps, it never overwrites backend truth.
 #[cfg(unix)]
 #[tokio::test]
 async fn session_snapshot_preserves_backend_source_workspace_id() {
-    let (socket, handle) = fake_api_socket_multi(vec![
+    let (socket, handle, _rx) = fake_api_socket_multi_recording(vec![
         json!({
             "result": {
                 "snapshot": {
@@ -6825,6 +6954,7 @@ async fn session_snapshot_preserves_backend_source_workspace_id() {
         // attribute by repo, not by the asking workspace). The wrapper must
         // keep the backend value, not the positional assumption.
         json!({
+            "match_cwd": "/tmp/repo-a",
             "result": {
                 "worktrees": [ { "path": "/tmp/repo-b", "branch": "dev" } ],
                 "source": { "source_workspace_id": "ws_2", "repo_name": "repo-b" }
@@ -6833,6 +6963,7 @@ async fn session_snapshot_preserves_backend_source_workspace_id() {
         // Backend stamp for a different workspace than the request params:
         // backend truth wins over the wrapper's positional assumption.
         json!({
+            "match_cwd": "/tmp/repo-b",
             "result": {
                 "worktrees": [ { "path": "/tmp/repo-a", "branch": "main" } ],
                 "source": { "source_workspace_id": "ws_9", "repo_name": "repo-a" }
@@ -6910,8 +7041,11 @@ async fn session_snapshot_sends_null_cwd_for_workspace_without_cwd() {
     );
     let requests: Vec<String> = rx.iter().collect();
     assert_eq!(requests.len(), 2);
-    let worktree_request: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
-    assert_eq!(worktree_request["method"], "worktree.list");
+    let worktree_request: serde_json::Value = requests
+        .iter()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|request| request["method"] == "worktree.list")
+        .unwrap();
     assert_eq!(worktree_request["params"]["workspace_id"], "ws_1");
     assert!(worktree_request["params"]["cwd"].is_null());
     handle.join().unwrap();

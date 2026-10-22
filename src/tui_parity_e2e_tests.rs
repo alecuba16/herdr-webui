@@ -187,6 +187,7 @@ fn localhost_no_auth_state(default_folder: PathBuf) -> WebState {
             sessions_rev: 1,
             session_expiration_minutes: crate::auth::DEFAULT_SESSION_EXPIRATION_MINUTES,
         })),
+        worktree_list_cache: Arc::new(WorktreeListCache::default()),
         login_limiter: Arc::new(LoginRateLimiter::new()),
         server_settings: Arc::new(Mutex::new(RuntimeServerSettings {
             bind,

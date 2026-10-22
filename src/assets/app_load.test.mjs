@@ -872,7 +872,9 @@ describe("app bundle load", () => {
     ok(!dashboard.innerHTML.includes("Start a shell without creating"));
   });
 
-  it("hides project dashboard when Git or file drawer is visible without a workspace", () => {
+  it("keeps the project dashboard up when Git or file drawer is visible without a workspace", () => {
+    // Zero open workspaces is the only show condition: drawers never
+    // claim the pane slot, so they must not hide the dashboard.
     const ctx = context();
     vm.runInContext(source, ctx);
     const dashboard = ctx.document.getElementById("projectDashboard");
@@ -881,19 +883,27 @@ describe("app bundle load", () => {
     ctx.window.HerdrGitUi = { isVisible: () => true };
     ctx.window.HerdrFileBrowser = { isVisible: () => false };
     ctx.syncProjectDashboard();
-    equal(dashboard.hidden, true);
-    equal(shell.hidden, false);
+    equal(dashboard.hidden, false, "git drawer: dashboard stays visible");
+    equal(shell.hidden, true, "git drawer: shell stays hidden");
 
     ctx.window.HerdrGitUi = { isVisible: () => false };
     ctx.window.HerdrFileBrowser = { isVisible: () => true };
     ctx.syncProjectDashboard();
-    equal(dashboard.hidden, true);
-    equal(shell.hidden, false);
+    equal(dashboard.hidden, false, "files drawer: dashboard stays visible");
+    equal(shell.hidden, true, "files drawer: shell stays hidden");
 
     ctx.window.HerdrFileBrowser = { isVisible: () => false };
     ctx.syncProjectDashboard();
-    equal(dashboard.hidden, false);
-    equal(shell.hidden, true);
+    equal(dashboard.hidden, false, "no drawer: dashboard still visible");
+    equal(shell.hidden, true, "no drawer: shell stays hidden");
+
+    vm.runInContext(
+      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }];`,
+      ctx,
+    );
+    ctx.syncProjectDashboard();
+    equal(dashboard.hidden, true, "workspace open: dashboard hides");
+    equal(shell.hidden, false, "workspace open: shell shows");
   });
 
   it("keeps the zero-tab workspace card up with a drawer open", () => {
