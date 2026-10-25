@@ -171,16 +171,19 @@ async function main() {
     JSON.stringify(parkedMut).slice(0, 300));
 
   // ---- ap5: un-park shows the whole stream (no data loss) -------------
-  // The pause must defer, not drop. Each tick line carries `date +%s%N`
-  // nanos; while parked no new paints happen, so the newest nano visible
-  // in the DOM freezes. After clicking the real pane-tab back, the DOM
-  // must show ticks NEWER than the parked window's last paint: the max
-  // nano growing means buffered frames were rendered, not dropped. The
-  // visible tick COUNT cannot be the signal: wterm virtualizes rows, so
-  // old ticks scroll out of the DOM as new ones land and the count
-  // plateaus while the tail keeps advancing. textContent tail is no
-  // better: wterm's a11y help span sits after the rows in DOM order, so
-  // slice(-N) reads that chrome, never terminal output.
+  // The pause must defer, not drop. Tick lines carry `date +%s%N` nanos.
+  // While parked the DOM freezes at its last painted tick; the decisive
+  // signal is what happens to ticks that streamed WHILE parked: after
+  // clicking the real pane-tab back and scrolling to the TOP of the
+  // scrollback (the real user path for "did I lose output?"), the DOM
+  // must show ticks newer than the parked paint but older than the
+  // unpark click (page clock minus a 500ms in-flight guard). Those ticks
+  // streamed while hidden, so they can only render if the frames were
+  // buffered into the scrollback model; a drop loses them at the source
+  // and no scroll can recover them. The tail-only DOM check (maxNano
+  // growth) cannot tell defer from drop: post-unpark live ticks grow it
+  // too. The tick COUNT is no better: wterm virtualizes rows out of the
+  // DOM, so the count plateaus while the tail advances.
   const parkedTicks = await evalExpr(`(() => {
     const shell = document.getElementById("terminalShell");
     if (!shell) return { err: "no shell" };
@@ -192,19 +195,100 @@ async function main() {
     // attribute selector without extra quoting layers.
     const tabBtn = document.querySelector('.pane-tab[data-tab-kind="terminal"][data-tab-id="${tabId}"]');
     if (!tabBtn) return { err: "no terminal pane-tab", tabs: Array.from(document.querySelectorAll(".pane-tab")).map((b) => b.dataset.tabId).join(",") };
+    // page clock right before the click; ticks older than this
+    // (minus the guard) streamed while the shell was still parked
+    const beforeNanos = Date.now() * 1e6;
     tabBtn.click();
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 800));
     const shell = document.getElementById("terminalShell");
     if (!shell) return { err: "no shell" };
     const visible = getComputedStyle(shell).display !== "none";
-    const nanos = Array.from((shell.textContent || "").matchAll(/tick (\\d{10,})/g)).map((m) => Number(m[1]));
-    return { visible, count: nanos.length, maxNano: nanos.length ? Math.max(...nanos) : 0 };
+    return { visible, beforeNanos };
   })()`);
+  // stop the stream through the real key pipeline before scrolling: while
+  // it runs, wterm's follow-scroll snaps scrollTop back to the bottom on
+  // every frame and a programmatic scrollTop=0 never sticks.
+  // wterm listens on its own hidden textarea (#terminalImeInput); focusing
+  // it is the same landing zone a physical keyboard hit, so a real
+  // dispatchKeyEvent Ctrl+C reaches the PTY. but the git rail drawer is
+  // still open here and its window-capture keydown mutes every key whose
+  // target sits outside the git ui (git_ui/shortcuts.js consume()), so the
+  // rail must close first or the Ctrl+C is swallowed.
+  const railClosed = await evalExpr(`(() => {
+    const btn = document.getElementById("rightRailGit");
+    if (!btn) return { err: "no rightRailGit" };
+    btn.click();
+    return { clicked: true };
+  })()`);
+  await sleep(400);
+  const focusDiag = await evalExpr(`(() => {
+    const ta = document.querySelector("#terminalShell #terminalImeInput") || document.getElementById("terminalImeInput");
+    if (ta) ta.focus();
+    return { focused: document.activeElement === ta, gitVisible: !!(window.HerdrGitUi && window.HerdrGitUi.isVisible && window.HerdrGitUi.isVisible()) };
+  })()`);
+  await sleep(200);
+  await keyDown("KeyC", "c", 67, 2);
+  await keyUp("KeyC", "c", 67, 2);
+  await sleep(700);
+  // prove the stream actually stopped before trusting the scroll: two
+  // maxNano samples 600ms apart must agree
+  const stopped = await evalExpr(`(async () => {
+    const sample = () => {
+      const shell = document.getElementById("terminalShell");
+      const nanos = Array.from((shell.textContent || "").matchAll(/tick (\\d{10,})/g)).map((m) => Number(m[1]));
+      return nanos.length ? Math.max(...nanos) : 0;
+    };
+    const a = sample();
+    await new Promise((r) => setTimeout(r, 600));
+    const b = sample();
+    return { a, b, frozen: a === b && a > 0 };
+  })()`);
+  const scrolled = await evalExpr(`(async () => {
+    const shell = document.getElementById("terminalShell");
+    if (!shell) return { err: "no shell" };
+    // walk the whole scrollback top-to-bottom and collect every tick the
+    // surface paints along the way: this is the real user path for "did I
+    // lose output while parked?" (scan the buffer), and it is the only way
+    // to see rows the virtualizer keeps out of any single viewport. a
+    // one-shot scrollTop=0 only repaints the oldest window and leaves the
+    // parked middle unpainted.
+    const surface = shell.querySelector(".terminal") || shell;
+    const step = Math.max(200, Math.floor(surface.clientHeight * 0.8));
+    const collected = new Set();
+    let last = -1;
+    let scrolledTo = 0;
+    let reachedBottom = false;
+    for (let pos = 0; ; pos = Math.min(surface.scrollHeight - surface.clientHeight, pos + step)) {
+      surface.scrollTop = pos;
+      await new Promise((r) => setTimeout(r, 120));
+      Array.from((shell.textContent || "").matchAll(/tick (\\d{10,})/g)).forEach((m) => collected.add(Number(m[1])));
+      scrolledTo = surface.scrollTop;
+      if (scrolledTo === last || pos >= surface.scrollHeight - surface.clientHeight) break;
+      last = scrolledTo;
+    }
+    reachedBottom = scrolledTo >= surface.scrollHeight - surface.clientHeight - 2 || surface.scrollHeight <= surface.clientHeight;
+    const nanos = Array.from(collected);
+    const guardNanos = ${JSON.stringify(unpark.beforeNanos)} - 500000000;
+    const parkedMaxNano = ${parkedTicks.maxNano};
+    const parkedWindowTicks = nanos.filter((n) => n > parkedMaxNano && n < guardNanos).length;
+    // bucket shape for the detail line: a hole between the parked paint
+    // and the guard means the parked window was dropped, not deferred
+    const belowParked = nanos.filter((n) => n <= parkedMaxNano).length;
+    const aboveGuard = nanos.filter((n) => n >= guardNanos).length;
+    const sorted = nanos.slice().sort((a, b) => a - b);
+    return { count: nanos.length, maxNano: nanos.length ? Math.max(...nanos) : 0, parkedWindowTicks, belowParked, aboveGuard, lo: sorted[0], hi: sorted[sorted.length - 1], scrolledTo, reachedBottom };
+  })()`);
+  const after = Object.assign({}, scrolled, { visible: unpark.visible }, { focus: focusDiag, railClosed, stopped });
+  // fullRange: the walk started at the top and reached the bottom edge,
+  // so the parked middle was actually visited, not skipped
+  const fullRange = scrolled.reachedBottom === true && stopped.frozen === true;
   record("ap5 un-park repaints with the full parked stream (defer, not drop)",
-    unpark.visible === true && unpark.maxNano > parkedTicks.maxNano,
-    JSON.stringify({ parked: parkedTicks, after: unpark }).slice(0, 250));
-  // stop the stream so later checks run quiet
-  await typeText("\u0003");
+    after.visible === true && after.parkedWindowTicks > 0 && fullRange,
+    JSON.stringify({ parked: parkedTicks, after }).slice(0, 600));
+  // stop the stream so later checks run quiet (same key path as above:
+  // insertText cannot deliver a control char as a key)
+  await keyDown("KeyC", "c", 67, 2);
+  await keyUp("KeyC", "c", 67, 2);
   await sleep(300);
 
   // ---- ap6: rail-status (real HTTP) -----------------------------------
@@ -265,6 +349,7 @@ async function main() {
   const { mkdtempSync } = await import("node:fs");
   const os = await import("node:os");
   const plainDir = mkdtempSync(`${os.tmpdir()}/probe-plain-`);
+  const multiStart = Date.now();
   const multi = await evalExpr(`fetch("/api/git-ui/rail-status", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({workspaces: [
     {workspace_id: "wA", cwd: ${JSON.stringify(REPO)}},
     {workspace_id: "wB", cwd: ${JSON.stringify(plainDir)}},
@@ -273,7 +358,7 @@ async function main() {
   const multiOk = multi && multi.items && multi.items.length === 3;
   record("ap9 rail-status multi-cwd keeps order, dedups, isolates failures",
     multiOk && multi.items[0].workspace_id === "wA" && multi.items[1].workspace_id === "wB" && multi.items[2].workspace_id === "wC" && multi.items[0].state === multi.items[2].state && (multi.items[1].state === "unknown" || multi.items[1].state === "cleanup only"),
-    multiOk ? `states=[${multi.items.map((i) => i.state).join(",")}] ids=[${multi.items.map((i) => i.workspace_id).join(",")}]` : JSON.stringify(multi).slice(0, 200));
+    multiOk ? `ms=${Date.now() - multiStart} states=[${multi.items.map((i) => i.state).join(",")}] ids=[${multi.items.map((i) => i.workspace_id).join(",")}]` : JSON.stringify(multi).slice(0, 200));
   const fsMod = await import("node:fs");
   fsMod.rmSync(plainDir, { recursive: true, force: true });
 

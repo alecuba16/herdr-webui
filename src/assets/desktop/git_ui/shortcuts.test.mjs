@@ -182,17 +182,37 @@ describe("git_ui shortcuts: Escape contract", () => {
     equal(event._stopped, undefined, "pane-hosted rows keep receiving keys");
   });
 
+  it("passes terminal-surface keys through to the focused pane", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const { shortcuts } = makeShortcuts(ctx);
+
+    // The wterm textarea is the keyboard input path for the terminal
+    // behind the drawer; muting it left the focused terminal dead. Enter
+    // must reach wterm's own keydown handler on the textarea.
+    const taTarget = { id: "terminalImeInput", closest: (sel) => (sel === "#terminalShell" ? {} : null) };
+    const taEvent = keyEvent({ key: "Enter", code: "Enter", target: taTarget });
+    shortcuts.handleKeydown(taEvent);
+    equal(taEvent._stopped, undefined, "terminal textarea keys reach the pane");
+
+    // Same for a key whose target sits anywhere inside the shell.
+    const shellTarget = { closest: (sel) => (sel === "#terminalShell" ? {} : null) };
+    const shellEvent = keyEvent({ key: "c", code: "KeyC", ctrlKey: true, target: shellTarget });
+    shortcuts.handleKeydown(shellEvent);
+    equal(shellEvent._stopped, undefined, "ctrl combos in the shell are not eaten");
+  });
+
   it("mutes unconsumed keys aimed outside the drawer", () => {
     const ctx = makeContext();
     loadShortcuts(ctx);
     const { shortcuts } = makeShortcuts(ctx);
 
-    // Enter with focus left in the terminal behind the drawer stays muted so
-    // typed keys never leak into the terminal.
+    // Enter with focus left in the page body stays muted so typed keys
+    // never leak into random handlers.
     const target = { closest: () => null };
     const event = keyEvent({ key: "Enter", code: "Enter", target });
     shortcuts.handleKeydown(event);
-    ok(event._stopped, "outside-drawer keys never reach the terminal");
+    ok(event._stopped, "outside-drawer keys never reach the page");
   });
 
   it("ignores keys while the drawer is hidden", () => {
