@@ -11,8 +11,25 @@
   whole drawer. Keys targeted at the terminal surface (the wterm textarea
   or anything inside the terminal shell) now pass through; other
   outside-drawer keys stay muted so page shortcuts do not leak. The
-  acceptance probe drives the regression through the real key pipeline:
-  a dispatchKeyEvent Ctrl+C reaches the PTY with the drawer open.
+  rail-collapse hole got the same treatment: the toggle hides the whole
+  sidebar column while the drawer state stays open, so the capture
+  handler now reads visible as on screen (state.visible plus the sidebar
+  not collapsed), and hiding the column hands a focus stuck inside it to
+  the terminal. The acceptance probe drives the regression through the
+  real key pipeline (a dispatchKeyEvent Ctrl+C reaches the PTY with the
+  drawer open), and a headed Chrome pass covers the rest: real rail
+  clicks, drawer state staying open behind the collapsed column, a real
+  Ctrl+C stopping the stream, re-expand restoring the drawer, and typing
+  reaching the PTY with the drawer open.
+- The parallel bin-suite flake is fixed at the source. The PTY tests
+  (client socket attach/re-attach, flood, fanout, events) spawned the
+  user's login shell, whose rc-file init can stall past every 20s
+  deadline when the full suite spawns dozens of panes at once; the seed
+  poll then failed with nothing but the kernel's input echo as evidence.
+  Those tests exercise the PTY/scrollback/fanout protocol, not any shell
+  program, so they now run /bin/sh with no rc file. Three consecutive
+  full parallel runs are green (742/742 each, ~47s where the login-shell
+  runs took ~61s).
 - Parked terminal panels no longer render. The wterm adapter grew a
   setRenderingPaused flag, and every terminal surface carries an
   IntersectionObserver (the primary shell, every split pane, every

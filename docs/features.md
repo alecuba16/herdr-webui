@@ -89,7 +89,12 @@ Browser terminal:
   visible the focused terminal behind it accepted no input at all and
   neither the rail toggle nor closing the git center tab released it.
   Keys aimed at the terminal surface now pass through while the drawer
-  is up; other outside-drawer keys stay muted.
+  is up; other outside-drawer keys stay muted. The same capture handler
+  treats visible as on screen: when the rail toggle collapses the sidebar
+  column the drawer state stays open, but the handler stops owning keys
+  until the column expands again, and hiding the column moves a focus
+  stuck inside it into the terminal so keystrokes land on what the user
+  is looking at.
 - The desktop question modal keeps keyboard flow: focus lands on the
   confirm button on open (the primary action, danger or not; the dialog
   is shown before it takes focus, since focusing a node inside a
