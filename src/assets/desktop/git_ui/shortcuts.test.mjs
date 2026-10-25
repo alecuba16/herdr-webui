@@ -246,4 +246,49 @@ describe("git_ui shortcuts: Escape contract", () => {
     equal(bodyEvent._stopped, undefined, "body keys unmuted with the column collapsed");
     equal(calls.hides, 0, "no hide side effect");
   });
+
+  it("keeps owning keys while a center git tab is active behind a collapsed column", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const { shortcuts } = makeShortcuts(ctx);
+    // The drawer has two hosts: the sidebar column and the center git
+    // pane tab. Collapsing the column hides only the first; a git log in
+    // the center stays on screen, and its shortcuts must survive the
+    // collapse. paneActiveTab/isGitTab are the same accessors render.js
+    // reads (HerdrWorkspacePanes exports).
+    ctx.window.HerdrRightSidebar = { collapsed: () => true };
+    ctx.window.HerdrWorkspacePanes = {
+      paneActiveTab: () => "git:log",
+      isGitTab: (id) => String(id).startsWith("git:"),
+    };
+    const paneTarget = { closest: (sel) => (sel === ".pane-git-container" ? {} : null) };
+
+    const event = keyEvent({ key: "Enter", code: "Enter", target: paneTarget });
+    shortcuts.handleKeydown(event);
+    equal(event._stopped, undefined, "pane-hosted rows still receive keys (pass-through)");
+
+    const bodyEvent = keyEvent({ key: "Enter", code: "Enter", target: { closest: () => null } });
+    shortcuts.handleKeydown(bodyEvent);
+    ok(bodyEvent._stopped, "body keys stay muted while the git tab is on screen");
+  });
+
+  it("releases the keyboard again once the active tab leaves the git view", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const { shortcuts } = makeShortcuts(ctx);
+    ctx.window.HerdrRightSidebar = { collapsed: () => true };
+    let activeTab = "git:log";
+    ctx.window.HerdrWorkspacePanes = {
+      paneActiveTab: () => activeTab,
+      isGitTab: (id) => String(id).startsWith("git:"),
+    };
+    const event = keyEvent({ key: "Enter", code: "Enter", target: { closest: () => null } });
+    shortcuts.handleKeydown(event);
+    ok(event._stopped, "muted while the git tab is active");
+
+    activeTab = "tab_1";
+    const after = keyEvent({ key: "Enter", code: "Enter", target: { closest: () => null } });
+    shortcuts.handleKeydown(after);
+    equal(after._stopped, undefined, "released once the active tab is the terminal");
+  });
 });

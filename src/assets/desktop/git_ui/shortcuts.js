@@ -36,14 +36,24 @@
     alertFn,
     getGitUi,
   }) {
-    // "Visible" for the keyboard means on screen: the rail collapse can
-    // hide the whole sidebar column while the drawer state stays open, and
-    // a keyboard handler owning keys for a panel nobody can see is exactly
-    // the stale-visible mute the terminal pass-through fixed.
+    // "Visible" for the keyboard means on screen, and the drawer can be
+    // on screen through two hosts: the sidebar column (hidden when the
+    // rail collapses it while state.visible stays true) and a center git
+    // pane tab (.pane-git-container), which the collapse does not hide.
+    // Releasing the keyboard while a center git tab is the active view
+    // would strand its shortcuts, so the gate keeps owning keys until
+    // neither host shows a git surface.
     function visible() {
-      return !!state.visible && !(window.HerdrRightSidebar
+      if (!state.visible) return false;
+      if (window.HerdrRightSidebar
         && window.HerdrRightSidebar.collapsed
-        && window.HerdrRightSidebar.collapsed());
+        && window.HerdrRightSidebar.collapsed()) {
+        const panes = window.HerdrWorkspacePanes;
+        const activeTab = panes && panes.paneActiveTab ? panes.paneActiveTab() : "";
+        const gitTabActive = !!(panes && panes.isGitTab && activeTab && panes.isGitTab(activeTab));
+        return gitTabActive;
+      }
+      return true;
     }
     function globalModalOpen() {
       // app-level overlays (question/settings/create/palette) live outside
