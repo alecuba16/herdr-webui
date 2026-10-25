@@ -71,7 +71,16 @@ function applyRightSidebarHost() {
     );
   }
   const visible = rightSidebarVisibleFor() && visibleChildren.length > 0;
-  if (host) host.hidden = !visible;
+  if (host) {
+    const wasHidden = host.hidden;
+    host.hidden = !visible;
+    // A column that just left the screen must not keep the keyboard: focus
+    // left inside a hidden panel targets the hidden node, keys go nowhere
+    // visible, and the git drawer's window-capture handler reads that as
+    // a key aimed at itself. Hand the focus to the shell so the keyboard
+    // lands on the surface the user is actually looking at.
+    if (wasHidden !== host.hidden && !visible) releaseColumnFocus();
+  }
   if (typeof syncRightSidebarRail === "function") syncRightSidebarRail();
   // The workspace pane tree owns #terminalShell's visibility while a
   // non-terminal tab (editor, git) is active (Phase 3b/3c); do not force
@@ -87,6 +96,29 @@ function applyRightSidebarHost() {
 // sync (empty column must not hold grid space) without a full shell render.
 function rightSidebarAfterDrawerRender() {
   applyRightSidebarHost();
+}
+
+// Re-homes the keyboard after the column leaves the screen: a focus stuck
+// on a hidden panel node is ghost focus (keys target the hidden git ui and
+// the git capture handler mutes them), and the user's next keystrokes
+// should land in the terminal they are looking at. Best effort: no shell
+// (vm harnesses) or a failed focus leaves focus alone, the visible() gate
+// in git_ui still releases the keyboard.
+function releaseColumnFocus() {
+  const shell = typeof el === "function" ? el("terminalShell") : null;
+  const active = typeof document !== "undefined" && document.activeElement;
+  if (shell && active && hostContains(active)) {
+    const preferred = shell.querySelector("#terminalImeInput") || shell;
+    if (typeof preferred.focus === "function") preferred.focus();
+  }
+}
+
+// True when the node sits inside the hosted column: the local `host` in
+// applyRightSidebarHost is the same node this reads back from the DOM.
+function hostContains(node) {
+  const host = rightSidebarHostNode();
+  if (!host || !node || typeof host.contains !== "function") return false;
+  return host.contains(node);
 }
 
 // Opens a hosted view. ensurePanel is a drawer callback that returns its

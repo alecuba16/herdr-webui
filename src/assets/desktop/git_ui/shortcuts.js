@@ -36,6 +36,15 @@
     alertFn,
     getGitUi,
   }) {
+    // "Visible" for the keyboard means on screen: the rail collapse can
+    // hide the whole sidebar column while the drawer state stays open, and
+    // a keyboard handler owning keys for a panel nobody can see is exactly
+    // the stale-visible mute the terminal pass-through fixed.
+    function visible() {
+      return !!state.visible && !(window.HerdrRightSidebar
+        && window.HerdrRightSidebar.collapsed
+        && window.HerdrRightSidebar.collapsed());
+    }
     function globalModalOpen() {
       // app-level overlays (question/settings/create/palette) live outside
       // this bundle; their open state is readable from the DOM without
@@ -47,7 +56,7 @@
       );
     }
     function handleKeydown(event) {
-      if (!state.visible || !event) return;
+      if (!visible() || !event) return;
       // a global app overlay (confirm dialogs, settings, palette) owns the
       // keyboard while it is up; muting keys here would strand Escape and
       // lock the user inside the overlay.

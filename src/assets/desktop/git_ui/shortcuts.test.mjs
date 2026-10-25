@@ -225,4 +225,25 @@ describe("git_ui shortcuts: Escape contract", () => {
     equal(event._stopped, undefined, "hidden drawer releases keys");
     equal(calls.hides, 0);
   });
+
+  it("releases the keyboard when the rail collapse hides the column", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const { shortcuts, calls } = makeShortcuts(ctx);
+    // The rail toggle flips the global collapse flag without touching the
+    // drawer state: state.visible stays true while the column is off
+    // screen. The keyboard must follow the screen, not the flag.
+    ctx.window.HerdrRightSidebar = { collapsed: () => true };
+    const shellTarget = { closest: (sel) => (sel === "#terminalShell" ? {} : null) };
+    const bodyTarget = { closest: () => null };
+
+    const shellEvent = keyEvent({ key: "c", code: "KeyC", ctrlKey: true, target: shellTarget });
+    shortcuts.handleKeydown(shellEvent);
+    equal(shellEvent._stopped, undefined, "terminal keys pass with the column collapsed");
+
+    const bodyEvent = keyEvent({ key: "Enter", code: "Enter", target: bodyTarget });
+    shortcuts.handleKeydown(bodyEvent);
+    equal(bodyEvent._stopped, undefined, "body keys unmuted with the column collapsed");
+    equal(calls.hides, 0, "no hide side effect");
+  });
 });
