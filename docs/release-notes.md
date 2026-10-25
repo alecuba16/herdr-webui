@@ -1,6 +1,72 @@
 # Release notes
 
 ## Unreleased
+- Parked terminal panels no longer render. The wterm adapter grew a
+  setRenderingPaused flag, and every terminal surface carries an
+  IntersectionObserver (the primary shell, every split pane, every
+  workspace pane surface): a hidden surface (behind the git/files tab,
+  parked in #workspacePanes) stops all renderer writes while its PTY
+  keeps streaming into the scrollback buffer, and the moment it becomes
+  visible again it repaints once. The observers also cover the
+  scrolled-away case (a pane technically visible but off-screen), and
+  a surface parked before its first paint starts paused. The e2e probe
+  measures the effect: a shell streaming in the background used to
+  cost 5146 DOM mutations per 3s behind a hidden tab, now 0.
+  Breakpoints and scrollback survive un-parking: nothing is dropped,
+  only deferred.
+- Mobile shows an honest offline banner. Connected state is now
+  notified on the events WebSocket's real onopen; previously the
+  connect notification fired optimistically at socket construction and
+  nothing ever notified disconnected, so during a server outage the dot
+  kept saying connected for as long as the outage lasted. A banner
+  strip ("Connection lost · retrying…") shows under the header once
+  the stream has been down for 1.5s or more, but only after the first
+  successful connect, and never for intentional closes (session
+  switches pair their close with a reconnect). The dot itself tracks
+  the same states as desktop: connected, connecting (with retry
+  language), and disconnected. The probe verifies the whole chain:
+  SIGKILL the fixture server and the banner is visible in every sample
+  for the full outage window.
+- Empty and loading states are split on mobile. Workspaces, agents,
+  the git file sections, branches, notes, and search results now show
+  a short empty message (a dim glyph plus text: "No workspaces",
+  "None", "No notes yet. Create one to get started.") instead of a
+  full-height spinner when the server answered with an empty list, so
+  an empty workspace no longer looks like a hung request. Search keeps
+  its conditional spinner while a path walk is genuinely loading.
+- The desktop confirm modal restores focus. Opening a question modal
+  captures the opener and puts focus on the confirm button, and every
+  close path (confirm, cancel, Escape, overlay click) returns focus to
+  the element that opened it. Keyboard flow no longer lands on <body>
+  after dismissing a modal.
+- The TUI footer says when the backend is slow. The periodic snapshot
+  refresh moved off the draw path (worker thread plus channel, polled
+  per tick), so a dead or hung backend no longer freezes the frame
+  loop: after 500ms in flight the footer status shows a spinner
+  ("waiting for backend...") next to the refresh hint, using the same
+  width guards as the rest of the footer (safe on a 20x6 terminal).
+  The connect timeout for the TUI's HTTP client dropped to 2s (a live
+  loopback server accepts in milliseconds), while read/write keep the
+  20s window for slow replies. Key-triggered refreshes stay
+  synchronous as before.
+- Git endpoints batch their subprocess calls. The rail-status probe
+  now runs one git status per unique cwd in parallel (std::thread::scope,
+  chunks of 8, one thread for a single-cwd request) instead of
+  serially per workspace, so several open workspaces overlap their
+  scans instead of queueing them, and a failed or non-git cwd degrades
+  to state "unknown" per item instead of failing the endpoint. The
+  branch popover list replaces one git show per branch with a single
+  git for-each-ref batch carrying the same fields (author, committer
+  date, subject) in the same order; a parity test proves both paths
+  agree. The probe measures rail-status at 34ms and the branch payload
+  at 153ms against the fixture repo.
+- The audit probe is committed (scripts/e2e/audit-probe.mjs plus
+  run-audit-probe.sh): a 12-check acceptance drive of the real release
+  binary in headless Chrome covering the parked-shell mutation count,
+  the mobile outage banner, virtualized scrollback, and the two
+  batched git endpoints. The runner fails fast if its fixture port is
+  occupied (the outage step kills whatever listens on it, so a
+  squatter would be an unrelated victim).
 - Mobile chat view had no input box again: the composer dock helper was
   a dangling `mountAfterTerminal` call (renamed to `mountInto` in an
   earlier toolbar rework), so every syncComposer pass that hit the
