@@ -76,8 +76,20 @@ Browser terminal:
   the git/files center tab) stops all renderer writes while the PTY keeps
   streaming into scrollback, and repaints once on return; a scrolled-away
   pane pauses the same way. Surfaces that start hidden begin paused, so
-  nothing renders a frame before its first paint. Breakpoints and
-  scrollback survive un-parking: output is deferred, not dropped.
+  nothing renders a frame before its first paint. Scrollback survives
+  un-parking: output is deferred, not dropped. The acceptance probe
+  proves the defer half directly: it parks a streaming shell, un-parks
+  it, stops the stream with a real Ctrl+C through the terminal's own
+  textarea, walks the full scrollback, and counts the ticks that
+  streamed only while parked (roughly 480 in recent runs) present
+  after un-parking.
+- The git drawer never eats the terminal's keys. Its window-capture
+  keydown used to consume every key whose target sat outside the drawer,
+  which includes the terminal's input textarea, so with the drawer
+  visible the focused terminal behind it accepted no input at all and
+  neither the rail toggle nor closing the git center tab released it.
+  Keys aimed at the terminal surface now pass through while the drawer
+  is up; other outside-drawer keys stay muted.
 - The desktop question modal keeps keyboard flow: focus lands on the
   confirm button on open (the primary action, danger or not; the dialog
   is shown before it takes focus, since focusing a node inside a

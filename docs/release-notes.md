@@ -1,6 +1,18 @@
 # Release notes
 
 ## Unreleased
+- The git drawer no longer mutes keyboard input aimed at the terminal.
+  Its window-capture keydown handler consumed every key whose target sat
+  outside the drawer, including the wterm textarea that carries all
+  terminal input, so with the drawer visible the focused terminal behind
+  it was completely keyboard-dead: no Ctrl+C, no typing, nothing, and
+  neither the rail toggle nor closing the git center tab cleared the
+  drawer's visible state, so there was no escape short of hiding the
+  whole drawer. Keys targeted at the terminal surface (the wterm textarea
+  or anything inside the terminal shell) now pass through; other
+  outside-drawer keys stay muted so page shortcuts do not leak. The
+  acceptance probe drives the regression through the real key pipeline:
+  a dispatchKeyEvent Ctrl+C reaches the PTY with the drawer open.
 - Parked terminal panels no longer render. The wterm adapter grew a
   setRenderingPaused flag, and every terminal surface carries an
   IntersectionObserver (the primary shell, every split pane, every
@@ -12,8 +24,7 @@
   a surface parked before its first paint starts paused. The e2e probe
   measures the effect: a shell streaming in the background used to
   cost 5146 DOM mutations per 3s behind a hidden tab, now 0.
-  Breakpoints and scrollback survive un-parking: nothing is dropped,
-  only deferred.
+  Scrollback survives un-parking: nothing is dropped, only deferred.
 - Mobile shows an honest offline banner. Connected state is now
   notified on the events WebSocket's real onopen; previously the
   connect notification fired optimistically at socket construction and
@@ -65,10 +76,13 @@
   binary in headless Chrome covering the parked-shell mutation count,
   the mobile outage banner (including the reconnect after the fixture
   server is killed and restarted in-probe), virtualized scrollback,
-  the un-park repaint (parked-window lines must reappear, not drop),
-  the confirm modal's focus handoff through real key events, and the
-  batched git endpoints. The runner fails fast if its fixture port is
-  occupied (the outage step kills whatever listens on it, so a
+  the un-park defer proof (the probe parks a streaming shell, un-parks
+  it, stops the loop with a real Ctrl+C through the focused terminal
+  textarea, then walks the full scrollback: ticks that streamed only
+  while parked must be present, and recent runs see roughly 480 of
+  them), the confirm modal's focus handoff through real key events,
+  and the batched git endpoints. The runner fails fast if its fixture
+  port is occupied (the outage step kills whatever listens on it, so a
   squatter would be an unrelated victim) and ends with a warn-only
   TUI `--once` smoke run against the restarted fixture server (the
   probe's outage step kills the original one, so the smoke verifies
