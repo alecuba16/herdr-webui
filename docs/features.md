@@ -90,9 +90,10 @@ Browser terminal:
   neither the rail toggle nor closing the git center tab released it.
   Keys aimed at the terminal surface now pass through while the drawer
   is up; other outside-drawer keys stay muted. The same capture handler
-  treats visible as on screen: when the rail toggle collapses the sidebar
-  column the drawer state stays open, but the handler stops owning keys
-  until the column expands again, and hiding the column moves a focus
+  treats visible as on screen across the drawer's two hosts: collapsing the
+  sidebar column with the rail toggle releases the keyboard (the drawer
+  state stays open), unless a center git pane tab is the active view,
+  which the collapse does not hide. Hiding the column also moves a focus
   stuck inside it into the terminal so keystrokes land on what the user
   is looking at.
 - The desktop question modal keeps keyboard flow: focus lands on the

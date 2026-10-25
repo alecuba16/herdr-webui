@@ -13,14 +13,17 @@
   outside-drawer keys stay muted so page shortcuts do not leak. The
   rail-collapse hole got the same treatment: the toggle hides the whole
   sidebar column while the drawer state stays open, so the capture
-  handler now reads visible as on screen (state.visible plus the sidebar
-  not collapsed), and hiding the column hands a focus stuck inside it to
-  the terminal. The acceptance probe drives the regression through the
-  real key pipeline (a dispatchKeyEvent Ctrl+C reaches the PTY with the
-  drawer open), and a headed Chrome pass covers the rest: real rail
-  clicks, drawer state staying open behind the collapsed column, a real
-  Ctrl+C stopping the stream, re-expand restoring the drawer, and typing
-  reaching the PTY with the drawer open.
+  handler now reads visible as on screen (state.visible, the sidebar not
+  collapsed, and a center git pane tab active counts as visible too since
+  the collapse does not hide it), and hiding the column hands a focus
+  stuck inside it to the terminal. The acceptance probe drives the
+  regression through the real key pipeline (a dispatchKeyEvent Ctrl+C
+  reaches the PTY with the drawer open), and a headed Chrome pass covers
+  the rest: real rail clicks, drawer state staying open behind the
+  collapsed column, a real Ctrl+C stopping the stream, re-expand
+  restoring the drawer, typing reaching the PTY with the drawer open,
+  and the center git tab keeping its prefix chords alive behind the
+  collapse.
 - The parallel bin-suite flake is fixed at the source. The PTY tests
   (client socket attach/re-attach, flood, fanout, events) spawned the
   user's login shell, whose rc-file init can stall past every 20s
