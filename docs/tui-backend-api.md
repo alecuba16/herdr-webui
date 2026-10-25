@@ -189,15 +189,15 @@ Parity checked against the Herdr native TUI implementation in the `jcode-support
 | --- | --- | --- |
 | Terminal attach/output/input | In-process terminal runtime with Ghostty VT parser, live render patches, keyboard protocol tracking, paste, resize, detach | Supported over built-in terminal socket with live background reader/writer, ANSI rewrite handling, SGR colors/styles, input, resize, detach |
 | Jcode/agent status | Manifest-driven detection, sidebar state icons, priority sorting, unseen/done state handling, custom labels | Basic agent list/status from built-in snapshot, focused agent selected by default, Jcode output visible |
-| Workspace navigation | Workspace picker, direct numeric switching, previous/next, rename, close, new workspace | Basic workspace list and selection only |
-| Tabs | Full tab bar, create/rename/close/switch 1-9, previous/next | Tab list display only |
+| Workspace navigation | Workspace picker, direct numeric switching, previous/next, rename, close, new workspace | Sidebar list with j/k selection, prefix `J`/`K` walk, `N` creates a workspace through a folder-browser prompt, `Shift+S` renames, `X`/`q`-style close guards |
+| Tabs | Full tab bar, create/rename/close/switch 1-9, previous/next | Tab bar with selection; prefix `p` creates a tab, `x` closes it (closing the last tab closes the workspace), `Shift+R` renames, `]`/`[` walk panels with wraparound |
 | Panes/layout | Split horizontal/vertical, focus by direction, cycle, resize mode, zoom, rename, close, last pane | Single selected pane display, no split/layout mutation yet |
-| Scrollback/copy/search | Host scrollback, scroll metrics, scrollbar, copy mode, edit scrollback, text search/matches | Recent pane text plus live terminal text, no scroll/copy/search UI yet |
+| Scrollback/copy/search | Host scrollback, scroll metrics, scrollbar, copy mode, edit scrollback, text search/matches | Pane view scrolls through a 240-line live tail and lazy-fetches older history up to 40k lines (`pane.read`); no copy/search UI yet |
 | Mouse/touch | Mouse pane focus, scroll, selection, dialogs, mobile layout | Keyboard-only prototype |
 | File explorer | Not in native Herdr TUI | Files screen over the WebUI HTTP API: lazy tree, filter, preview, rename, delete |
 | Git management | Not in native Herdr TUI | Git screen over the WebUI HTTP API: Changes/Log/Branches/Stash tabs, stage/unstage/discard/commit/pull/push/fetch/switch/stash |
-| Worktrees | New/open/remove worktree dialogs with validation | Backend client supports list/open/create wrappers, no interactive TUI dialogs yet |
-| Settings/config/keybinds | Config reload, settings overlay, custom commands, prefix mode, configurable keybinds | Fixed keymap and help overlay |
+| Worktrees | New/open/remove worktree dialogs with validation | `W` opens the worktree browser overlay (filter + `Enter` opens through `worktree.open` with already-open focus), `Shift+T` creates a worktree, `Delete`/`Backspace` removes after confirmation |
+| Settings/config/keybinds | Config reload, settings overlay, custom commands, prefix mode, configurable keybinds | Settings overlay (prefix `s`, theme cycle) and filterable help; keymap stays fixed |
 | Notifications/integrations | Notification targets, release notes, integrations/settings panels | Not implemented |
 
 The current pairing is therefore **backend/protocol paired**, not **feature-complete Herdr UI paired**. The TUI is ready as a foundation for Herdr-like workflows, but it intentionally does not yet replace the native Herdr app.
@@ -208,14 +208,15 @@ Still pending:
 - typed event wrappers in `BackendClient`; built-in `events.subscribe` now has a server-side event hub, but the Rust client layer does not yet expose a high-level typed subscription API
 - observe/control/takeover semantics for multiple terminal clients
 - server-side scroll offsets, scroll metrics, search, and selection/copy APIs
-- named built-in session registry and persistence after WebUI restart
+- persistence of the named built-in session registry (`/api/sessions` with launch/cleanup exists in-memory) across WebUI restarts; auth sessions themselves already survive a restart
 - layout split/move/resize/zoom parity
-- safe built-in worktree remove
-- stress tests for large output, large paste, reconnect, and multi-client attach
+- stress tests for large output, large paste, reconnect, and multi-client attach at the Rust backend level (the browser reconnect backoff is covered by `src/assets/terminal_reconnect_backoff.test.mjs`)
+
+Shipped since the list was written: safe built-in `worktree.remove` (local `git worktree remove` with workspace teardown and `worktree.removed` events, covered by tests in `src/builtin_backend.rs`).
 
 ## Tests
 
-`src/backend_client.rs`, `src/tui.rs`, `src/tui_web_api.rs`, `src/tui_keys.rs`, `src/tui_panels.rs`, and `src/bin/herdr-webui-tui.rs` include unit tests for:
+`src/backend_client.rs`, `src/tui/` (app, keys, model, web_api, panels, terminal, render), and `src/bin/herdr-webui-tui.rs` include unit tests for:
 
 - built-in socket discovery path convention
 - JSON API request/result unwrapping for TUI clients

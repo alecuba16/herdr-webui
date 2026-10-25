@@ -98,17 +98,19 @@ The README is the project summary and documentation index. Detailed functionalit
 ## Functionality summary
 
 - Multi-workspace terminal UI with desktop and mobile layouts, backed by the built-in backend by default.
-- Browser terminals use a shared wterm/Ghostty renderer adapter with Settings-backed renderer choice, link detection, mouse-reporting opt-in, scroll speed, Tail follow, large-paste chunking, and temporary terminal parity.
+- Browser terminals use a shared wterm/Ghostty renderer adapter with Settings-backed renderer choice, link detection, mouse-reporting opt-in, scroll speed, Tail follow, large-paste chunking, and inline Kitty graphics on the Ghostty core.
 - Backend-aware session manager that detects built-in and external Herdr sessions, switches between them, and can create or launch sessions in either backend.
 - Built-in backend agent detection with Herdr-style argv/process-tree labels and screen status rules for visible idle, working, and blocked states across common coding agents.
 - First-party `herdr-webui-tui` for terminal-native workspace/agent navigation, live attach/input/resize/detach, ANSI colors/styles, `--theme dark|light|system`, Ctrl-B help/menu, and smoke-friendly summary/once modes.
-- Workspace and linked worktree navigation with per-panel terminal state.
+- Desktop workspaces use a split pane tree: terminal, editor, and Git tabs can sit in any leaf, with split right/down, move tab, maximize/restore, and per-pane terminals that persist per workspace.
 - Git UI for status, diffs, staging, commits, stash, branches, cleanup, worktrees, conflicts, blame, and file history.
+- Language server (LSP) integration: per-language opt-in servers (rust-analyzer, vtsls, ty/pyright/pylsp, and more), diagnostics, hover, completion, definition, and document symbols in the file editor.
 - Unified header search for workspaces/worktrees, panels, file names, folder names, and file-content matches, including match-case and regex options for content search.
 - File explorer with backend Git status colors, parent-aware backend file/folder search, backend content search, type icons, CodeMirror editing (text files open editable by default with a lock toggle for read-only, plus dirty tab indicators and Cmd/Ctrl+S save), line numbers, matched-line opening, folding, in-editor find, and editable find/replace.
+- Theme customizer with per-mode color pickers and named profiles (Catppuccin, Tokyo Night, Nord, Dracula, Monokai, Apple), plus a density toggle for compact layout.
 - Per-workspace file explorer state while workspaces/worktrees are open, including selected files, search selections, lock state, split panes, and drafts.
 - Settings for keyboard shortcuts, theme colors, terminal renderer/input behavior, notifications, worktree defaults, file browser behavior, enabled search sections, search section ordering, and content-search defaults.
-- Help button documents visible features and shortcuts in-app, including the terminal renderer switch, Tail behavior, copy/paste, PageUp/PageDown, and temporary terminal shortcuts.
+- Help button documents visible features and shortcuts in-app, including the terminal renderer switch, Tail behavior, copy/paste, PageUp/PageDown, and the split pane keys.
 
 See [Features](docs/features.md) for full behavior details.
 

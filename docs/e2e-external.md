@@ -1,8 +1,13 @@
 # External real-browser e2e
 
-The in-repo CDP harness (driver, acceptance suites, run scripts, CI steps)
-was removed. Extension installs are not always available, and the same
-coverage comes from a self-contained headless Chrome driven externally.
+This guide drives a browser from outside the repo with the `cdp-chrome`
+skill. It is for spot checks against a deployed instance or flows the
+in-repo suites do not cover. The in-repo CDP harness lives under
+`scripts/e2e/` again (~80 acceptance suites and run scripts, wired into
+`make test-e2e`); the earlier removal brought it back as the CI-facing
+layer, and this external path remains the manual option (extension
+installs are not always available on CI machines, so the same coverage
+runs through a self-contained headless Chrome).
 
 ## Setup
 

@@ -1,38 +1,44 @@
-# Terminal image display: feasibility analysis
+# Terminal image display: implementation status
 
-Status: implementation round 4 steps 1-5 COMPLETE for the builtin
-backend (2026-09-18). DCS/APC/SOS/PM payloads are skipped until ST in
+Status: implemented on both backends (rounds 1-6 complete).
+DCS/APC/SOS/PM payloads are skipped until ST in
 all three text-strip sites, builtin `pane.read` strips ANSI to match
-external herdr's default, @wterm is upgraded to 0.5.0, Kitty sequences
+external herdr's default, the @wterm packages ship at 0.5.4, Kitty sequences
 pass through to the Ghostty core (iTerm2/Sixel stay filtered), builtin
 panes advertise `TERM_PROGRAM=ghostty` with inherited `KITTY_WINDOW_ID`
-scrubbed at PTY spawn, and the full real flow is E2E-verified: a real
+scrubbed at PTY spawn, and the builtin flow is E2E-verified: a real
 jcode `read`-tool PNG renders in the browser terminal on the Ghostty
-core (placeholder on wterm). The external-herdr backend remains open
-(phase-2 bridge rearchitecture, see the round-3 plan). The document
-answers "can the WebUI terminal display images (e.g. jcode-generated),
-and what are the implications and technical decisions?"
+core (placeholder on wterm). The external-herdr backend gets the same
+Kitty graphics through the shipped `/ws/terminal-graphics` bridge
+(round-6: ClientShell-mode relay with a browser canvas overlay, 16/16
+live checks on desktop and mobile). The document
+records the decisions behind "can the WebUI terminal display images
+(e.g. jcode-generated), and what are the implications and technical
+decisions?"
 
 ## Short answer
 
-Yes for the builtin backend, and the cheapest correct path is already 80%
-built. The renderer stack (@wterm/dom + @wterm/ghostty) gained native Kitty
-Graphics Protocol support in 0.5.0, but this repo pins 0.3.0 and strips image
-escapes defensively. Upgrading the wterm packages to 0.5.0, un-stripping
-Kitty sequences on the Ghostty core, and advertising capability to the PTY
-environment would make jcode's inline images appear in the browser
-terminal. iTerm2/Sixel remain non-renderable and must stay filtered.
+Yes on both backends. Builtin backend: the renderer stack
+(@wterm/dom + @wterm/ghostty, pinned at 0.5.4) draws the Kitty Graphics
+Protocol inline on the Ghostty core; the adapter keeps iTerm2/Sixel
+escapes filtered (no renderer draws them) and lets Kitty sequences reach
+the Ghostty core only. External-herdr backend: the round-6 bridge
+(`/ws/terminal-graphics`) connects in ClientShell mode and relays pane
+graphics to a browser canvas overlay, so herdr-served images render too.
+See the round-5/6 sections for the bridge design and the live validation.
 
-For the external-herdr backend the answer is "yes, but only after a bridge
-rearchitecture" (round-3, source- and live-verified): herdr 0.9.0 consumes
-image escapes server-side and relays pane graphics ONLY to ClientShell
-endpoint clients (`endpoint.hello.v1` hello with `direct_graphics`); the
-webui bridge's TerminalAttach mode is structurally excluded from graphics
-delivery - an attach client watching the same pane receives the text but
-zero image bytes. See the External herdr backend section and round-3
-findings for the corrected plan.
+Historical context (round-3 finding, still true of the attach path):
+herdr 0.9.0 consumes image escapes server-side and relays pane graphics
+ONLY to ClientShell endpoint clients (`endpoint.hello.v1` hello with
+`direct_graphics`); a TerminalAttach-mode client watching the same pane
+receives the text but zero image bytes. That is why the bridge uses
+ClientShell mode instead of the attach connection.
 
-## Why images are invisible today
+## Why images were invisible before the implementation
+
+These four gates were the original blockers; the first, third, and
+fourth are now fixed on the builtin backend (rounds 1-5), and the
+section stays as the record of the starting point.
 
 1. PTY env (builtin backend, `src/builtin_backend.rs`): `TERM=xterm-256color`,
    `COLORTERM=truecolor`, and (since round 4 step 4) `TERM_PROGRAM=ghostty`
@@ -43,17 +49,19 @@ findings for the corrected plan.
    path is never selected. Worst case, if ImageMagick (`convert`) is installed,
    `TERM` containing "xterm" makes `detect_sixel()` return true and jcode emits
    Sixel DCS payloads that no web renderer can draw.
-3. Browser adapter (`src/assets/shared/terminal_adapter.js`): every write passes
-   `filterTerminalImageSequences()` which rewrites iTerm2 OSC 1337, Kitty
+3. Browser adapter (`src/assets/shared/terminal_adapter.js`): every write passed
+   `filterTerminalImageSequences()` which rewrote iTerm2 OSC 1337, Kitty
    `ESC_G`, and Sixel DCS into a text placeholder
    ("[inline image omitted: ...]"). This was added in 0.2.80 (see
-   `docs/release-notes.md`) because wterm 0.3.0 cannot render them and raw
-   base64 would leak into scrollback.
-4. Renderer cores at 0.3.0: wterm built-in core consumes but does not draw
-   Kitty APC; Ghostty 0.3.0 WASM pre-dates the graphics API
-   (`getGraphicsState`/`getGraphicsImage` absent).
+   `docs/release-notes.md`) because wterm 0.3.0 could not render them and raw
+   base64 would leak into scrollback. Today the filter keeps stripping iTerm2
+   and Sixel but passes Kitty through on the Ghostty core.
+4. Renderer cores at 0.3.0: the wterm built-in core consumed but did not draw
+   Kitty APC; Ghostty 0.3.0 WASM pre-dated the graphics API
+   (`getGraphicsState`/`getGraphicsImage` absent). Both were fixed by the 0.5.x
+   upgrade (repo pins 0.5.4).
 
-jcode image sources that would benefit once support lands:
+jcode image sources that render inline on the Ghostty core today:
 
 - `read` tool on image files (`handle_image_file`): displays via detected
   protocol, plus returns base64 to the model for vision.
@@ -78,7 +86,7 @@ jcode image sources that would benefit once support lands:
 - Upstream tracking issue for the older renderer: vercel-labs/wterm issue #60
   (still open; superseded in practice by Ghostty-core graphics support).
 
-## Data flow today (all three surfaces: desktop, mobile, temp terminal)
+## Data flow today (desktop and mobile surfaces)
 
 ```
 PTY child (jcode) -> portable-pty master reader thread
@@ -571,7 +579,7 @@ steps 2-5.
    legally contain 0x07, so stopping at BEL would truncate mid-image and
    leak the rest as text. Unterminated sequences consume the remainder of
    the input, mirroring a real terminal holding the string open.
-2. `src/tui_terminal.rs`: the styled-lines parser gained the same match
+2. `src/tui/terminal/` (styled-lines parser, formerly `src/tui_terminal.rs`): gained the same match
    arm, delegating to a local `skip_string_sequence` (kept separate from
    the existing `skip_osc`, which must keep terminating on BEL).
 3. `src/builtin_backend.rs` `read_pane_recent`: now runs

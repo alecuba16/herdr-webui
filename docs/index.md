@@ -19,7 +19,7 @@ The README is the short project summary. This `docs/` directory holds detailed f
 | [Release notes](release-notes.md) | Release policy and release history. |
 | [Code quality audit](code-quality-audit.md) | Baseline quality audit, remediated issues, and deferred risks. |
 | [UX flow proposal](ux-flow-proposal.md) | Proposed UX improvements for desktop and mobile navigation. |
-| [Terminal image support analysis](terminal-image-support.md) | Feasibility study for rendering jcode-generated images in the browser terminal: protocol support, wterm/Ghostty upgrade path, and risks. |
+| [Terminal image support analysis](terminal-image-support.md) | Implementation status and upgrade path for rendering jcode-generated images in the browser terminal: protocol support, wterm/Ghostty renderer paths, and risks. |
 
 ## Topic map
 
@@ -39,6 +39,7 @@ The README is the short project summary. This `docs/` directory holds detailed f
 | TUI keys and overlays | [TUI shortcuts](tui-shortcuts.md) | Prefix shortcuts, attach mode, lens/composer keys, per-screen highlights. |
 | Performance model | [Technical details: Performance decisions](technical-details.md#performance-decisions) | Backend-owned repo work, terminal batching, lazy loading. |
 | Styling and themes | [Technical details: Styling and theme architecture](technical-details.md#styling-and-theme-architecture) | Theme variables, shared color tokens, icon coloring rules. |
+| Language servers in the editor | [Features: Language servers](features.md#webui-features) | Per-language opt-in LSP servers, diagnostics, hover, completion, definition. |
 | Code structure | [Development guide](development.md#project-layout) | Asset modules, shared frontend helpers, desktop/mobile parity. |
 | Release process | [Release notes](release-notes.md) | SemVer tags and release workflow. |
 

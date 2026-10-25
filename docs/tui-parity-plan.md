@@ -64,9 +64,11 @@ Panel/workspace management:
    (prefix `Delete`/`Backspace`).
 4. No workspace rename, no panel rename.
 
-   Partially closed: prefix `Shift+R` renames the selected panel
-   (webui `renamePanel`; plain `r` keeps the refresh binding). Workspace
-   rename stays open.
+   Closed: prefix `Shift+R` renames the selected panel
+   (webui `renamePanel`; plain `r` keeps the refresh binding), and prefix
+   `Shift+S` renames the selected workspace (webui has no default chord
+   for it; `src/tui/keys.rs`),
+   so no rename gap remains.
 5. No search palette (prefix `/`).
 
    Closed: prefix `/` opens the search palette overlay (new module
@@ -126,11 +128,12 @@ Panel/workspace management:
    record-only endpoint `POST /api/recent-workspaces/record` (best
    effort, like the desktop's fire-and-forget record after a
    workspace create, so a dead WebUI server never fails the
-   create/open itself). The same applies to the temporary-terminal
-   promote (`Ctrl+B Shift+P`): the server's promote route records
-   the promoted workspace from the promote result (cwd the backend
-   resolved plus label), and the TUI socket flow POSTs the record
-   endpoint itself with the same shape. The desktop create-flow
+   create/open itself). The same used to apply to the temporary-terminal
+   promote (`Ctrl+B Shift+P`): that flow was removed with the split-pane
+   rework (the temporary terminal overlay and its UI no longer exist on
+   any surface; the server keeps `POST /api/tabs/{id}/promote` and the
+   built-in `tab.promote` as API-only), so the TUI no longer promotes
+   and no longer needs the record endpoint for it. The desktop create-flow
    records by re-POSTing the open endpoint `/api/recent-workspaces`
    (the server records there anyway), while the TUI uses the
    record-only endpoint to skip the redundant reopen — same
@@ -162,15 +165,13 @@ Panel/workspace management:
    `tempTerminalPromote` (Shift+M/Shift+P).
 
    Closed in the gap-8 pass: prefix `Shift+B` collapses/expands the
-   sidebar column (plain `b` stays git branches), prefix `.`/`,` walk
-   the focus regions (sidebar workspaces -> agents -> main, wrapping),
-   prefix `Shift+M` opens or re-focuses the temporary terminal (a tab
-   labeled `temp` in a workspace labeled `temp`, the same labels the
-   backend and webui use so `tab.promote` works), and prefix `Shift+P`
-   promotes it into a workspace at the shell's live cwd via the built-in
-   `tab.promote`. The TUI approximates the webui overlay with the temp
-   tab; the old TUI-only prefix `P` push moved aside (the git screen
-   keeps the in-screen `P`).
+   sidebar column (plain `b` stays git branches) and prefix `.`/`,` walk
+   the focus regions (sidebar workspaces -> agents -> main, wrapping).
+   The `Shift+M` temp terminal and `Shift+P` promote keys shipped then,
+   but the whole temporary-terminal overlay was later removed in the
+   split-pane rework on every surface (desktop, mobile, TUI); no temp
+   keys exist anymore. The old TUI-only prefix `P` push stays moved
+   aside (the git screen keeps the in-screen `P`).
 
 Git management gaps:
 
@@ -283,7 +284,7 @@ src/tui/
     git/cwd.rs               git directory picker (prompt) + cwd badge state
   workspace/          ← NEW panel/workspace management
     mod.rs             create/rename/close workspace, panel nav, tab guards
-    worktrees.rs      worktree list/create dialog, remove, promote
+    worktrees.rs      worktree list/create dialog, remove
   search.rs           ← NEW search palette (workspaces, panels, agents, files,
                         folders, content) reusing files/content_search.rs
   settings.rs         ← NEW minimal settings view (read-only at first:
@@ -329,9 +330,10 @@ New shortcuts in `keys.rs` + dispatch in `tui/mod.rs`, backed by
 | prefix `T` | create worktree | prompt base branch + path → `client.create_worktree*` |
 | prefix `X` | close panel | existing close-tab logic |
 | prefix `Shift+X` | close workspace | confirm prompt → `workspace.close` |
-| prefix `Delete`/`Backspace` | remove worktree | confirm → `worktree.remove` (blocked on built-in → surface error) |
-| prefix `r` | rename panel | prompt → `tab.rename` |
-| prefix `Shift+R` | rename workspace | prompt → `workspace.rename` |
+| prefix `Delete`/`Backspace` | remove worktree | confirm → `worktree.remove` (built-in runs local `git worktree remove` with workspace teardown) |
+| prefix `r` | refresh | snapshot refresh |
+| prefix `Shift+R` | rename panel | prompt → `tab.rename` |
+| prefix `Shift+S` | rename workspace | prompt → `workspace.rename` |
 
 Also: closing the last tab in a workspace calls `workspace.close` (webui
 parity guard); failed removes surface backend errors in the status line.
@@ -480,8 +482,10 @@ noted in code):
 - `focusTerminal: KeyF` — webui-only DOM focus (xterm surface); the TUI
   terminal always owns the keyboard, so no parity key exists. Prefix `f`
   keeps the TUI-era Files screen (the webui has no files shortcut).
-- `stageAll: KeyG` — plain `g` was already the TUI git-screen shortcut
-  from before the parity work, so stage-all lives on `Shift+G`.
+- `stageAll: KeyG`: the TUI git screen keeps its own in-screen plain
+  `G` toggle for stage-all while the webui binds `KeyG`; the earlier
+  temporary-Git-overlay move of stage-all to `Shift+G` went away with
+  the overlay.
 - `sidebar: KeyB` — plain `b` stays git branches; sidebar collapse is
   `Shift+B`.
 - `rightSidebar: KeyQ`: webui-only column toggle (Files/Git/Search rail);
