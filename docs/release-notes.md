@@ -69,8 +69,14 @@
   branch popover list replaces one git show per branch with a single
   git for-each-ref batch carrying the same fields (author, committer
   date, subject) in the same order; a parity test proves both paths
-  agree. The probe measures rail-status at 34ms and the branch payload
-  at 153ms against the fixture repo.
+  agree. A direct before/after timing against the base binary makes the
+  N+1 visible: on a fixture repo with 41 refs the old path answers in
+  ~2.4s and the batched path in ~0.9s, and at 201 refs the old path
+  grows linearly to ~8.4s while the batched path stays flat at ~0.9s
+  with equal branch payloads from both builds. The probe's own numbers
+  (rail-status 34ms, branch payload 153ms) come from its single-branch
+  fixture repo, so they only show the flat per-request cost; the N+1
+  needs the many-branch timing above to show up.
 - The audit probe is committed (scripts/e2e/audit-probe.mjs plus
   run-audit-probe.sh): an 18-check acceptance drive of the real release
   binary in headless Chrome covering the parked-shell mutation count,
