@@ -366,6 +366,23 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
   background: var(--status-idle, #f9e2af);
   animation: mobile-connection-pulse 1.4s ease-in-out infinite;
 }
+/* Offline banner: the connection dot's loud sibling. Sits between header
+   and content as its own grid row; [hidden] collapses it (display: grid
+   on the parent sizes rows auto). Static colors only: the dot already
+   pulses for the retrying state, a pulsing banner on top would be
+   redundant motion. */
+.mobile-offline-banner {
+  display: block;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: #3b2028;
+  color: #f38ba8;
+  font-size: 12px;
+  text-align: center;
+}
+.mobile-offline-banner[hidden] {
+  display: none;
+}
 @keyframes mobile-connection-pulse {
   50% {
     opacity: 0.35;
@@ -772,6 +789,21 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
   place-items: center;
   min-height: 160px;
   color: var(--muted);
+}
+/* Empty is not loading: "No workspaces" reused mobile-loading for months,
+   leaving an empty list indistinguishable from a stuck fetch. The empty
+   variant drops the tall min-height (a settled list needs no placeholder
+   space) and gets an icon so a glance separates "done, nothing here"
+   from "still working". Loading keeps the centered muted text. */
+.mobile-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
 }
 .mobile-error {
   margin: 12px;

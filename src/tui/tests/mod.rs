@@ -2417,6 +2417,21 @@ fn navigation_keys_cover_sidebar_move_focus_and_attach() {
     app.handle_key(KeyEvent::from(KeyCode::F(5)));
 }
 
+/// Pump the event loop until the in-flight refresh worker replies (or a
+/// 5s deadline trips, mirroring the bin loop's poll cadence). Async
+/// refresh means a single `refresh_if_due` only arms the worker; tests
+/// that assert on the refreshed state must wait for the landing.
+fn drain_refresh(app: &mut TuiApp) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.refresh_inflight.is_some() && Instant::now() < deadline {
+        app.refresh_if_due();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // One more tick so the last poll result (already received) is applied
+    // even if the drain loop exited on the deadline boundary.
+    app.refresh_if_due();
+}
+
 /// Scripted fake backend socket for TuiApp tests: one thread accepting
 /// connections in a loop, answering each JSON-line request by method.
 /// Hermetic replacement for the built-in session socket.
@@ -5099,6 +5114,18 @@ fn round2_constructors_prompt_titles_help_and_refresh_errors() {
     assert!(!app.take_dirty());
 
     app.refresh_if_due();
+    // Async refresh: the first tick only arms the worker; the reply (an
+    // error here, the socket does not exist) lands on a later poll.
+    assert!(app.refresh_inflight.is_some(), "first tick starts the worker");
+    assert!(!app.error.is_some());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        app.refresh_if_due();
+        if app.error.is_some() || Instant::now() > deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert!(app.error.is_some());
     assert!(app.take_dirty());
 
@@ -5659,6 +5686,7 @@ fn round3_specific_tui_edges_and_shortcuts() {
     app.snapshot = fixture_snapshot();
 
     app.refresh_if_due();
+    drain_refresh(&mut app);
     assert!(app.error.is_some());
     app.error = Some("visible".to_string());
     assert!(app.text_snapshot().contains("error: visible"));
@@ -5975,6 +6003,7 @@ fn final_round_prompt_titles_options_and_refresh_error_arms() {
     );
     app.snapshot = fixture_snapshot();
     app.refresh_if_due();
+    drain_refresh(&mut app);
     assert!(app.error.as_deref().is_some_and(|err| !err.is_empty()));
 
     let builtin_options = TuiOptions::default();
@@ -5989,6 +6018,45 @@ fn final_round_prompt_titles_options_and_refresh_error_arms() {
     app.last_refresh = Some(Instant::now());
     app.refresh_if_due();
     assert_eq!(app.status, "before", "not-due refresh skips the backend");
+}
+
+#[test]
+fn footer_shows_waiting_hint_while_refresh_is_in_flight() {
+    // Outage feedback: a dead backend no longer freezes the loop for the
+    // full timeout; the in-flight wait must be visible in the footer.
+    // Under 500ms the plain status stays (no flicker on healthy replies);
+    // past it the spinner + hint takes the message slot, and once the
+    // worker's error lands the footer shows the error instead.
+    let mut app = TuiApp::new_with_options(
+        BackendClient::new("/nonexistent.sock", "/nonexistent.sock"),
+        Duration::from_secs(1),
+        TuiTheme::Dark,
+        WebApiClient::new("127.0.0.1", 1),
+    );
+    app.refresh_if_due();
+    assert!(app.refresh_inflight.is_some(), "tick arms the worker");
+    let plain = draw(&app, 80, 24);
+    assert!(
+        !plain.contains("waiting for backend"),
+        "under the 500ms grace the footer stays calm"
+    );
+
+    std::thread::sleep(Duration::from_millis(600));
+    let waiting = draw(&app, 80, 24);
+    assert!(
+        waiting.contains("waiting for backend"),
+        "a stuck refresh must say so in the status line"
+    );
+    // Tiny terminal: the same draw must not panic and the hint still fits.
+    let _cramped = draw(&app, 20, 6);
+
+    drain_refresh(&mut app);
+    assert!(app.error.is_some(), "dead socket lands as an error");
+    let errored = draw(&app, 80, 24);
+    assert!(
+        !errored.contains("waiting for backend"),
+        "the error replaces the waiting hint once it lands"
+    );
 }
 
 #[test]
@@ -8227,8 +8295,10 @@ fn tail_refreshes_between_snapshot_ticks_while_not_attached() {
     let client = BackendClient::new(api_socket.clone(), api_socket.clone());
     let mut app = TuiApp::new(client, Duration::from_secs(1));
     app.refresh_interval = Duration::from_secs(1);
-    // First refresh_if_due fires the full refresh (last_refresh None).
+    // First refresh_if_due arms the async refresh; wait for the reply,
+    // which is what stamps last_refresh/last_tail_refresh.
     app.refresh_if_due();
+    drain_refresh(&mut app);
     assert!(app.last_refresh.is_some(), "first tick does the snapshot");
     let first_tail = app.last_tail_refresh;
     assert!(
@@ -8270,8 +8340,15 @@ fn tail_fast_poll_skips_attach_mode_and_other_screens() {
     app.snapshot = fixture_snapshot();
 
     app.mode = TuiMode::Attach;
-    std::thread::sleep(Duration::from_millis(250));
+    // Drain the async refresh in attach mode: the reply applies (mode
+    // != snapshot gating lives in apply_refresh) without stamping the
+    // tail, which is the observable under test.
     app.refresh_if_due();
+    drain_refresh(&mut app);
+    assert!(
+        app.last_refresh.is_some(),
+        "the snapshot refresh landed"
+    );
     assert!(
         app.last_tail_refresh.is_none(),
         "attach mode never stamps the tail poll"

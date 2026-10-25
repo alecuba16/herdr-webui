@@ -1065,40 +1065,72 @@ fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, St
 /// and stash counts stay in the full /status payload the drawer loads.
 /// Duplicated cwds (several workspaces on one checkout) share one spawn.
 fn git_rail_status_blocking(cwds: Vec<GitUiRailStatusItem>) -> Vec<serde_json::Value> {
-    // Computed payload keyed by cwd: duplicate cwds (several workspaces on
-    // one checkout) reuse the first result. Items echo their own
-    // workspace_id so the client can key results without path math.
-    let mut by_cwd: std::collections::HashMap<String, serde_json::Value> =
-        std::collections::HashMap::new();
-    cwds.into_iter()
+    // One spawn per UNIQUE cwd, capped at 8 threads: 50 worktrees must
+    // not fork-bomb, and the single-cwd case stays one spawn, one thread.
+    // Results land in per-chunk slots so threads never share mutable state.
+    let items: Vec<GitUiRailStatusItem> = cwds
+        .into_iter()
         .filter(|item| !item.cwd.trim().is_empty())
-        .map(|item| {
-            let cached = by_cwd.get(&item.cwd).cloned();
-            if let Some(mut status) = cached {
-                status["workspace_id"] = item.workspace_id.clone().into();
-                return status;
+        .collect();
+    let mut unique: Vec<String> = Vec::new();
+    let mut first_seen: std::collections::HashSet<&str> =
+        std::collections::HashSet::new();
+    for item in &items {
+        if first_seen.insert(item.cwd.as_str()) {
+            unique.push(item.cwd.clone());
+        }
+    }
+    let rail_status = |cwd: &str| -> serde_json::Value {
+        let status = match git_ui_text(cwd, &["status", "--porcelain=v2", "--branch"]) {
+            Ok(text) => text,
+            // Same contract as git_status_blocking: a non-git folder is
+            // a normal rail state, not an error the client logs as 4xx.
+            Err(err) if is_not_git_repository(&err) => {
+                return json!({
+                    "cwd": cwd,
+                    "state": "cleanup only",
+                    "not_git_repository": true,
+                })
             }
-            let cwd = item.cwd.clone();
-            let workspace_id = item.workspace_id.clone();
-            let status = match git_ui_text(&cwd, &["status", "--porcelain=v2", "--branch"]) {
-                Ok(text) => text,
-                // Same contract as git_status_blocking: a non-git folder is
-                // a normal rail state, not an error the client logs as 4xx.
-                Err(err) if is_not_git_repository(&err) => {
-                    return json!({
-                        "workspace_id": workspace_id,
-                        "cwd": cwd,
-                        "state": "cleanup only",
-                        "not_git_repository": true,
-                    })
+            Err(_) => return json!({ "cwd": cwd, "state": "unknown" }),
+        };
+        json!({
+            "cwd": cwd,
+            "branch": rail_branch_from_status(&status),
+            "state": rail_state_from_status(&status),
+        })
+    };
+    let mut computed: Vec<Option<serde_json::Value>> = vec![None; unique.len()];
+    let chunk = unique.len().div_ceil(8);
+    std::thread::scope(|scope| {
+        for (cwds, slots) in unique.chunks(chunk).zip(computed.chunks_mut(chunk)) {
+            scope.spawn(move || {
+                for (cwd, slot) in cwds.iter().zip(slots.iter_mut()) {
+                    *slot = Some(rail_status(cwd));
                 }
-                Err(_) => {
-                    return json!({ "workspace_id": workspace_id, "cwd": cwd, "state": "unknown" })
-                }
+            });
+        }
+    });
+    // Duplicate cwds (several workspaces on one checkout) reuse the
+    // computed payload with their own workspace_id echoed back, in the
+    // caller's original order: no map iteration order leaks into the
+    // response array.
+    items
+        .into_iter()
+        .map(|item| {
+            // position() over a short unique list is cheap next to the git
+            // spawn it feeds. The expects below are true invariants (unique
+            // and computed both derive from items in the same pass), but a
+            // handler thread must never panic over bookkeeping: degrade to
+            // the same unknown state the git failure paths use.
+            let Some(idx) = unique.iter().position(|cwd| cwd == &item.cwd) else {
+                return json!({ "workspace_id": item.workspace_id, "cwd": item.cwd, "state": "unknown" });
             };
-            let state = rail_state_from_status(&status);
-            let status = json!({ "workspace_id": workspace_id, "cwd": cwd, "branch": rail_branch_from_status(&status), "state": state });
-            by_cwd.insert(item.cwd, status.clone());
+            let Some(base) = computed.get(idx).and_then(|slot| slot.clone()) else {
+                return json!({ "workspace_id": item.workspace_id, "cwd": item.cwd, "state": "unknown" });
+            };
+            let mut status = base;
+            status["workspace_id"] = item.workspace_id.clone().into();
             status
         })
         .collect()

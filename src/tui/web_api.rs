@@ -4,6 +4,12 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+/// Connection-establishment budget for the loopback WebUI server. A
+/// live server accepts in milliseconds; a dead endpoint must fail in
+/// seconds, not wait out the 20s request timeout (or the ~75s platform
+/// default) before the TUI can say anything.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Blocking HTTP/1.1 client for the local WebUI JSON API.
 ///
 /// The TUI control plane runs over local sockets (`BackendClient`), but the
@@ -28,6 +34,11 @@ use serde_json::{json, Value};
 pub struct WebApiClient {
     transport: WebApiTransport,
     timeout: Duration,
+    /// Connection establishment budget. Kept separate from `timeout`: a
+    /// live loopback server accepts in milliseconds, so 2s is already
+    /// generous, while the read/write side keeps the full 20s silence
+    /// window for slow-but-alive replies.
+    connect_timeout: Duration,
     /// Cached `herdr_web_session` cookie from a successful login.
     /// Interior mutability so `request_json(&self)` can keep the cookie
     /// after the 401 login retry — without it the cookie would land on
@@ -126,6 +137,7 @@ impl WebApiClient {
                 port,
             },
             timeout: Duration::from_secs(20),
+            connect_timeout: CONNECT_TIMEOUT,
             session_cookie: std::cell::RefCell::new(None),
         }
     }
@@ -139,6 +151,7 @@ impl WebApiClient {
                 api_socket: api_socket.into(),
             },
             timeout: Duration::from_secs(20),
+            connect_timeout: CONNECT_TIMEOUT,
             session_cookie: std::cell::RefCell::new(None),
         }
     }
@@ -305,11 +318,13 @@ impl WebApiClient {
             body_text.len(),
         );
         // connect() without a bound would wait on the platform default
-        // (~75s on macOS) when the WebUI server is unreachable; cap it with
-        // the same request timeout the read/write paths already use.
-        // Accept both literal IPs and hostnames (e.g. "localhost").
+        // (~75s on macOS) when the WebUI server is unreachable; cap the
+        // handshake with the short connect budget (loopback accepts in
+        // milliseconds) so a dead endpoint fails fast, then hand the stream
+        // the full request timeout for reads/writes. Accept both literal
+        // IPs and hostnames (e.g. "localhost").
         let addr = resolve_web_api_addr(host, port)?;
-        let stream = TcpStream::connect_timeout(&addr, self.timeout)
+        let stream = TcpStream::connect_timeout(&addr, self.connect_timeout)
             .map_err(|err| WebApiError::Io(err.to_string()))?;
         stream
             .set_read_timeout(Some(self.timeout))

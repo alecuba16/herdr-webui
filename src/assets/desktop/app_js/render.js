@@ -288,26 +288,52 @@ function renderSpacesCached() {
 }
 
 function workspaceSidebarSignature() {
+  // per-row workspaceBranch/worktreeForWorkspace would scan state.worktrees
+  // twice per workspace; index once per pass instead. byPath keeps empty
+  // keys on purpose: samePath("","") is a match in the original helper,
+  // and the signature must not diverge from what the row renders.
+  const byId = new Map(),
+    byPath = new Map();
+  for (const t of state.worktrees || []) {
+    if (t.open_workspace_id && !byId.has(t.open_workspace_id))
+      byId.set(t.open_workspace_id, t);
+    const p = String(t.path || "").replace(/\/+$/, "");
+    if (!byPath.has(p)) byPath.set(p, t);
+  }
+  const wtFor = (w) => {
+    const wt = w && w.worktree;
+    if (!wt) return null;
+    return (
+      byId.get(w.workspace_id) ||
+      byPath.get(String(wt.checkout_path || "").replace(/\/+$/, "")) ||
+      null
+    );
+  };
   return JSON.stringify({
     session: state.session || "default",
     selected: [state.ws, state.tab, state.pane],
     editing: [state.editingWorkspace, state.editingWorkspaceValue, state.editingTab, state.editingTabValue],
     sort: [options.workspaceSort, state.workspaceOrder],
     shortcuts: [options.globalShortcutPrefix, options.webuiShortcuts || null],
-    workspaces: (state.workspaces || []).map(workspaceSidebarRowSignature),
+    workspaces: (state.workspaces || []).map((w) => workspaceSidebarRowSignature(w, wtFor)),
     worktrees: (state.worktrees || []).map(worktreeSidebarRowSignature),
     tabs: (state.tabs || []).map(tabSidebarRowSignature),
   });
 }
 
-function workspaceSidebarRowSignature(w) {
+function workspaceSidebarRowSignature(w, wtFor) {
   const wt = (w && w.worktree) || {};
+  const match = w && w.worktree ? wtFor(w) : null;
+  const branch =
+    (match && (match.branch || (match.is_detached ? "detached" : ""))) ||
+    state.workspaceBranches[w && w.workspace_id] ||
+    "";
   return [
     w && w.workspace_id,
     w && w.label,
     w && w.pane_count,
     statusClass(w && w.agent_status),
-    workspaceBranch(w),
+    branch,
     wt.is_linked_worktree === true,
     wt.repo_key || "",
     wt.repo_root || "",

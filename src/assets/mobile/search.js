@@ -285,10 +285,10 @@
       const query = String(mobileSearch.query || "").trim();
       const actionRows = mobileSearch.actions.length
         ? mobileSearch.actions.map((row, index) => `<button class="mobile-row" onclick="HerdrMobileSearch.openAction(${index})"><strong>${escapeHtml(row.title)}</strong><span>${escapeHtml(row.subtitle)}</span></button>`).join("")
-        : '<div class="mobile-loading">No matching actions.</div>';
+        : '<div class="mobile-empty"><span aria-hidden="true">◍</span>No matching actions.</div>';
       const targetRows = mobileSearch.targets.length
         ? mobileSearch.targets.map((row, index) => `<button class="mobile-row" onclick="HerdrMobileSearch.openTarget(${index})"><strong>${escapeHtml(row.title)}</strong><span>${escapeHtml(row.subtitle || row.type)}</span></button>`).join("")
-        : '<div class="mobile-loading">No workspace or agent matches.</div>';
+        : '<div class="mobile-empty"><span aria-hidden="true">◍</span>No workspace or agent matches.</div>';
       const pathNoun = mobileSearch.pathKind === "dir" ? "folders" : "files";
       const pathMore = query && !mobileSearch.pathDone && !mobileSearch.pathLoading
         ? `<button class="mobile-btn mobile-search-more" onclick="HerdrMobileSearch.loadMorePaths()">${mobileSearch.pathLoading ? "Searching..." : `Load more ${pathNoun}`}</button>`
@@ -296,7 +296,7 @@
       const pathTree = (query
         ? mobileSearch.pathEntries.length
           ? helper.renderPathTree(mobileSearch.pathEntries, { query, kind: mobileSearch.pathKind, gitStatus: mobileSearch.pathGitStatus, callback: "HerdrMobileSearchTree" })
-          : `<div class="mobile-loading">${mobileSearch.pathLoading ? "Searching..." : "No files or folders found."}</div>`
+          : `<div class="${mobileSearch.pathLoading ? "mobile-loading" : "mobile-empty"}">${mobileSearch.pathLoading ? "Searching..." : '<span aria-hidden="true">◍</span>No files or folders found.'}</div>`
         : '<div class="mobile-loading">Type to search files or folders.</div>') + pathMore;
       const contentBody = !opts.searchContentEnabled
         ? '<div class="mobile-loading">File content search is disabled in Settings.</div>'

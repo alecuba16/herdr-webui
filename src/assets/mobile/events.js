@@ -12,10 +12,15 @@
     let eventRefreshTimer = null;
     let eventReconnectTimer = null;
     let eventStateListeners = [];
+    // closeEventWs is the only intentional disconnect (session switch,
+    // backend retarget). Listeners use the flag to skip outage UX (the
+    // offline banner) that only belongs to real drops: an intentional
+    // close always has a reconnect already scheduled.
+    let eventCloseIntentional = false;
 
     function notifyEventState(connected) {
       for (const listener of eventStateListeners) {
-        try { listener(!!connected); } catch (_) {}
+        try { listener(!!connected, { intentional: !connected && eventCloseIntentional }); } catch (_) {}
       }
     }
 
@@ -62,7 +67,16 @@
       if (eventWs || !globalThisWebSocket || document.hidden) return;
       const ws = new globalThisWebSocket(wsUrl("/ws/events"));
       eventWs = ws;
-      notifyEventState(true);
+      // Optimistic connect: a fresh WebSocket object exists but the
+      // handshake has not run yet, so "connected" would be a lie during
+      // an outage (a dead server accepts nothing: onopen never fires and
+      // onclose arrives only after the browser's own connect timeout,
+      // tens of seconds on some platforms). The dot stays "connecting"
+      // until onopen proves the stream is live; listeners below fire on
+      // the true state transitions only.
+      ws.onopen = () => {
+        if (eventWs === ws) notifyEventState(true);
+      };
       // Tell the shared lsp.js module a page-level events socket exists;
       // while frames keep arriving it will not open its own private one.
       const LspRegister = globalThis.HerdrLsp;
@@ -113,10 +127,16 @@
     function closeEventWs() {
       if (!eventWs) return;
       eventWs.onclose = null;
+      eventCloseIntentional = true;
       try {
         eventWs.close();
       } catch (e) {}
       eventWs = null;
+      // Intentional close (session switch, backend retarget) must not
+      // leave listeners believing the stream is live: the reconnect that
+      // follows re-notifies on its own onopen.
+      notifyEventState(false);
+      eventCloseIntentional = false;
     }
 
     return {

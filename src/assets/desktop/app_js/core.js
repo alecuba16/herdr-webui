@@ -2910,11 +2910,19 @@ function askQuestion({ title = "Confirm action", message = "Continue?", confirmT
   if (!modal) return Promise.resolve(confirm(message));
   el("questionTitle").textContent = title;
   el("questionMessage").textContent = message;
+  // remember the opener before confirm steals focus so closeQuestion can
+  // hand it back on every close path (confirm, cancel, x, esc, enter)
+  state.questionOpener =
+    document.activeElement && typeof document.activeElement.focus === "function"
+      ? document.activeElement
+      : null;
   const confirmButton = el("questionConfirm");
-  confirmButton.textContent = confirmText;
-  confirmButton.classList.toggle("danger", !!danger);
+  if (confirmButton) {
+    confirmButton.textContent = confirmText;
+    confirmButton.classList.toggle("danger", !!danger);
+    confirmButton.focus();
+  }
   modal.style.display = "grid";
-  confirmButton.focus();
   return new Promise((resolve) => {
     state.questionResolve = resolve;
   });
@@ -2924,6 +2932,9 @@ function closeQuestion(answer) {
   if (modal) modal.style.display = "none";
   const resolve = state.questionResolve;
   state.questionResolve = null;
+  const opener = state.questionOpener;
+  state.questionOpener = null;
+  if (opener && document.contains(opener)) opener.focus();
   if (resolve) resolve(!!answer);
 }
 function gitUiEnabled() {

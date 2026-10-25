@@ -427,6 +427,7 @@
         <header class="mobile-header">
           <div class="mobile-context"><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button><button type="button" id="mobileTitle" class="mobile-title-btn" aria-haspopup="dialog" title="Switch workspace">Herdr</button><button type="button" id="mobilePanelsChip" class="mobile-panels-chip" aria-haspopup="dialog" title="Panels" hidden onclick="HerdrMobile.openTabsSheet()">0 panes</button><span id="mobileMeta" class="mobile-meta-text" role="status" aria-live="polite">Loading</span></div>
         </header>
+        <div id="mobileOfflineBanner" class="mobile-offline-banner" hidden role="status" aria-live="polite">Connection lost · retrying…</div>
         <main class="mobile-screen" id="mobileScreen"></main>
         <div class="mobile-search-sheet" id="mobileSearchSheet" hidden>
           <div class="mobile-search-card">
@@ -1471,7 +1472,35 @@
     },
   });
   // Connection dot in the header context: reflects the events stream state.
-  mobileEvents.onEventState((connected) => {
+  // The offline banner is the loud sibling: the dot is small by design (the
+  // audit's point), so an outage during a phone session is otherwise only
+  // an 8px color change. Debounce both edges: a banner that flashes on
+  // every transient reconnect (sub-second network blips, the 1.5s retry
+  // loop) reads as noise and gets ignored, so it appears only once the
+  // stream has been down ~1.5s and hides the moment onopen fires. It
+  // never shows before the first successful connect: a boot against a
+  // dead server stays in normal loading state, not error state.
+  let eventsEverConnected = false;
+  let offlineBannerTimer = null;
+  mobileEvents.onEventState((connected, meta) => {
+    if (connected) {
+      eventsEverConnected = true;
+      if (offlineBannerTimer) {
+        clearTimeout(offlineBannerTimer);
+        offlineBannerTimer = null;
+      }
+      const banner = el("mobileOfflineBanner");
+      if (banner && !banner.hidden) banner.hidden = true;
+    } else if (eventsEverConnected && !offlineBannerTimer && !(meta && meta.intentional)) {
+      // Intentional closes (session switch, backend retarget) skip the
+      // banner: their reconnect is already scheduled, and the banner timer
+      // would race it into a one-paint flash.
+      offlineBannerTimer = setTimeout(() => {
+        offlineBannerTimer = null;
+        const banner = el("mobileOfflineBanner");
+        if (banner) banner.hidden = false;
+      }, 1500);
+    }
     const dot = el("mobileConnectionDot");
     if (dot) {
       dot.dataset.state = connected ? "connected" : "connecting";

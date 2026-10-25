@@ -3,6 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
+use std::time::Duration;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::tui::panels::files::{content_rows, ContentRow, SearchKind};
@@ -1855,7 +1856,26 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     } else {
         fit_hint(context.compact_hint(), hint_budget)
     };
-    let message = app.error.as_deref().unwrap_or(&app.status);
+    // Backend wait feedback: past the 500ms grace a healthy loopback
+    // reply never needs, the message slot animates a spinner + hint so a
+    // silent backend is visible while the 20s read timeout still runs.
+    // Errors outrank the spinner; the animated frame reuses `app.tick`, so
+    // it costs nothing when no request is in flight.
+    let message = if app.error.is_some() {
+        app.error.as_deref().unwrap_or(&app.status).to_string()
+    } else if let Some(inflight) = &app.refresh_inflight {
+        if inflight.started.elapsed() >= Duration::from_millis(500) {
+            format!(
+                "{} waiting for backend...",
+                SPINNERS[((app.tick / 2) as usize) % SPINNERS.len()]
+            )
+        } else {
+            app.status.clone()
+        }
+    } else {
+        app.status.clone()
+    };
+    let message = message.as_str();
     let used = label_width + help.chars().count() + prefix.chars().count();
     let status_budget = area.width.saturating_sub(used as u16) as usize;
     let line = Line::from(vec![

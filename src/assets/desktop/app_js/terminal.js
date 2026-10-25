@@ -355,6 +355,30 @@ async function connectTerminal(fitOverride = null) {
     terminal.addEventListener("touchmove", handleTerminalTouchMove, { passive: false, capture: true });
     terminal.addEventListener("touchend", handleTerminalTouchEnd, { passive: true, capture: true });
     terminal.addEventListener("touchcancel", handleTerminalTouchEnd, { passive: true, capture: true });
+    // Parked-shell render pause. workspace_panes parks #terminalShell
+    // display:none in #workspacePanes whenever a git/editor tab owns the
+    // leaf; the ws stays open and wterm keeps its per-RAF rebuild running
+    // (document visibility is the only gate wterm checks itself). The
+    // IntersectionObserver watches the terminal element: not intersecting
+    // means parked, and un-park triggers one repaint of the buffered rows.
+    // isIntersecting alone is the signal: ratio alone would also trip on a
+    // visible zero-area element before its first paint (ratio 0 while
+    // isIntersecting true per spec), which would deadlock a fresh terminal.
+    // The observer outlives the term instance and re-reads the current
+    // `term` per callback, so pane moves and session switches need no
+    // rewiring. Off-screen (scrolled-away) pause comes free with the same
+    // signal and repaints on return, so it is allowed.
+    if (typeof IntersectionObserver === "function") {
+      new IntersectionObserver((entries) => {
+        if (!term) return;
+        // One element observed, but a report may still batch stale records
+        // after re-parks; pick by target so the signal is never the
+        // wrong element's.
+        const entry = entries.find((candidate) => candidate.target === terminal);
+        const paused = !entry || !entry.isIntersecting;
+        if (typeof term.setRenderingPaused === "function") term.setRenderingPaused(paused);
+      }).observe(terminal);
+    }
     termScrollBound = true;
   }
   try {
