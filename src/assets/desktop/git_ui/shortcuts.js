@@ -36,8 +36,22 @@
     alertFn,
     getGitUi,
   }) {
+    function globalModalOpen() {
+      // app-level overlays (question/settings/create/palette) live outside
+      // this bundle; their open state is readable from the DOM without
+      // importing app symbols. git-ui modals use .git-ui-modal-backdrop,
+      // a different class, so they never trip this guard.
+      return Array.prototype.some.call(
+        document.querySelectorAll(".modal-backdrop"),
+        (m) => m.style.display && m.style.display !== "none",
+      );
+    }
     function handleKeydown(event) {
       if (!state.visible || !event) return;
+      // a global app overlay (confirm dialogs, settings, palette) owns the
+      // keyboard while it is up; muting keys here would strand Escape and
+      // lock the user inside the overlay.
+      if (globalModalOpen()) return;
       const view = active();
       if (!view) return;
       // Keys this handler consumes are stopped so terminal/global shortcuts

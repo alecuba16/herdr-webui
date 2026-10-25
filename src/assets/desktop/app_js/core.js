@@ -2920,9 +2920,13 @@ function askQuestion({ title = "Confirm action", message = "Continue?", confirmT
   if (confirmButton) {
     confirmButton.textContent = confirmText;
     confirmButton.classList.toggle("danger", !!danger);
-    confirmButton.focus();
   }
+  // display flips before focus: focusing a node inside a display:none
+  // subtree is a silent no-op, which strands keyboard users on the
+  // element behind the modal (Escape then routes to that surface's own
+  // keydown handler instead of the modal cascade).
   modal.style.display = "grid";
+  if (confirmButton) confirmButton.focus();
   return new Promise((resolve) => {
     state.questionResolve = resolve;
   });

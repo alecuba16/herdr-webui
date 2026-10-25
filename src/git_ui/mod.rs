@@ -1595,6 +1595,53 @@ mod tests {
     }
 
     #[test]
+    fn rail_status_multi_cwd_keeps_caller_order_across_chunk_boundary() {
+        // 9 unique cwds crosses the 8-slot chunking (div_ceil(8) -> 2
+        // chunks), the reassembly must still answer in caller order with
+        // each item echoing its own workspace_id. One cwd is a non-git
+        // dir: it must degrade per item, never reorder or fail the call.
+        let mut repos = Vec::new();
+        for i in 0..8 {
+            let repo = TempRepo::new();
+            repo.commit_initial();
+            repos.push((format!("w{i}"), repo));
+        }
+        let plain = std::env::temp_dir().join(format!(
+            "herdr-webui-rail-multi-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&plain).unwrap();
+        let items: Vec<GitUiRailStatusItem> = repos
+            .iter()
+            .map(|(id, repo)| GitUiRailStatusItem {
+                workspace_id: Some(id.clone()),
+                cwd: repo.path.to_string_lossy().to_string(),
+            })
+            .chain(std::iter::once(GitUiRailStatusItem {
+                workspace_id: Some("plain".to_string()),
+                cwd: plain.to_string_lossy().to_string(),
+            }))
+            .collect();
+        let out = git_rail_status_blocking(items);
+        fs::remove_dir_all(&plain).unwrap();
+
+        assert_eq!(out.len(), 9);
+        for (i, entry) in out.iter().take(8).enumerate() {
+            assert_eq!(entry["workspace_id"].as_str().unwrap(), format!("w{i}"));
+            assert_eq!(entry["state"].as_str().unwrap(), "clean");
+        }
+        // the non-git item stays LAST even though thread scheduling is
+        // unordered: caller order, not completion order
+        assert_eq!(out[8]["workspace_id"].as_str().unwrap(), "plain");
+        assert_eq!(out[8]["state"].as_str().unwrap(), "cleanup only");
+        assert!(out[8]["not_git_repository"].as_bool().unwrap());
+    }
+
+    #[test]
     fn rail_status_flags_conflicts() {
         // Porcelain parse through the real helper: an unmerged `u ` row
         // must outrank dirty, AA/DD both-sides rows count as conflicts too.

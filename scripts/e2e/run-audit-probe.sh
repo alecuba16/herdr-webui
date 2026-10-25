@@ -13,6 +13,10 @@ KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
 SERVER_PID=""
 CHROME_PID=""
+# The probe SIGKILLs the fixture server mid-run for the outage check
+# (ap4) and restarts it for the recovery check (ap4R). The restarted
+# server's PID lands in this pidfile so cleanup never leaks it.
+SERVER_PIDFILE="$WORK/server-restart.pid"
 
 chrome_bin() {
   if [[ -n "${CHROME_BIN:-}" ]]; then
@@ -26,6 +30,7 @@ chrome_bin() {
 
 cleanup() {
   [[ $KEEP -eq 1 ]] && { echo "--keep: leaving $WORK"; return; }
+  if [[ -f "$SERVER_PIDFILE" ]]; then kill -9 "$(cat "$SERVER_PIDFILE")" 2>/dev/null || true; fi
   [[ -n "$CHROME_PID" ]] && kill -9 "$CHROME_PID" 2>/dev/null || true
   [[ -n "$SERVER_PID" ]] && kill -9 "$SERVER_PID" 2>/dev/null || true
   rm -rf "$WORK" 2>/dev/null || true
@@ -80,6 +85,32 @@ done
 export APP_URL="http://127.0.0.1:$PORT/"
 export CDP_HTTP="http://127.0.0.1:$CDP"
 export REPO
+export SERVER_PIDFILE
+# the probe publishes the restarted fixture's session name here; the
+# TUI smoke below must target the server that is actually still alive
+export RESTART_SESSION_FILE="$WORK/server-restart.session"
+# the probe restarts the fixture server in-process (ap4R): give it the
+# absolute binary and the isolated XDG_CONFIG_HOME so the fresh server is
+# the same fixture, never the user's config.
+export HERDR_WEBUI_BIN="$ROOT/target/debug/herdr-webui"
+export XDG_CONFIG_HOME="$WORK/xdg"
 export PROBE_OUT="${PROBE_OUT:-$HOME/.jcode/scratch/herdr-perf-ux-audit/probe/audit_probe_result.json}"
 
 node "$ROOT/scripts/e2e/audit-probe.mjs"
+PROBE_STATUS=$?
+
+# TUI smoke against the live fixture (Fix D real connect path): --once
+# drives the real built-in socket connect + HTTP snapshot print. The
+# runner still exits with the probe status; a TUI failure only warns so
+# probe regressions stay distinguishable.
+if [[ $PROBE_STATUS -eq 0 ]]; then
+  SMOKE_SESSION="audit-probe-$$"
+  if [[ -s "$RESTART_SESSION_FILE" ]]; then SMOKE_SESSION="$(cat "$RESTART_SESSION_FILE")"; fi
+  if timeout 30 "$ROOT/target/debug/herdr-webui-tui" --webui-api "127.0.0.1:$PORT" --session "$SMOKE_SESSION" --once >/dev/null 2>&1; then
+    echo "tui --once smoke: ok"
+  else
+    echo "tui --once smoke: FAILED (probe still green)" >&2
+  fi
+fi
+
+exit $PROBE_STATUS

@@ -282,6 +282,7 @@ pub(super) async fn git_ui_switch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn split_branch_tip_details_parses_all_fields() {
@@ -368,6 +369,80 @@ mod tests {
             let per_ref = branch_tip_details(root.to_str().unwrap(), refname);
             assert_eq!(batched, per_ref, "tip mismatch for {name}");
         }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn branch_tip_parity_survives_hostile_subjects() {
+        // The batch format is NUL-delimited, one for-each-ref record per
+        // ref, so the hazards are: whitespace-trimmed subjects (git strips
+        // %s), multi-byte unicode through both paths, and an empty subject
+        // (--allow-empty with -m ""). All must give byte-identical
+        // author/date/subject between the batched for-each-ref path and
+        // the per-ref git show path.
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-branch-hostile-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for args in [
+            ["init", "-b", "main"],
+            ["config", "user.email", "t@t"],
+            ["config", "user.name", "\u{00dc}nicode \u{00c0}uthor"],
+        ] {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        let subjects = [
+            "plain subject",
+            "unicode snowman \u{2603} and accents caf\u{00e9}",
+            "",
+        ];
+        for subject in subjects {
+            let mut args = vec!["commit", "--allow-empty"];
+            // git refuses -m "" without --allow-empty-message; that refusal
+            // is exactly the empty-subject shape the parity must survive.
+            if subject.is_empty() {
+                args.push("--allow-empty-message");
+            }
+            args.push("-m");
+            args.push(subject);
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(&args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "commit {:?} failed", subject);
+        }
+        let tips = collect_branch_tip_details(root.to_str().unwrap());
+        // main points at the empty-subject commit: parity must hold for it.
+        let batched = tips.get("refs/heads/main").cloned();
+        let per_ref = branch_tip_details(root.to_str().unwrap(), "refs/heads/main");
+        assert_eq!(batched, per_ref, "batched vs per-ref mismatch on empty subject");
+        // a branch pinned to the unicode-subject commit covers that case too
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["branch", "uni-tip", "HEAD~1"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let tips = collect_branch_tip_details(root.to_str().unwrap());
+        let batched_uni = tips.get("refs/heads/uni-tip").cloned();
+        let per_ref_uni = branch_tip_details(root.to_str().unwrap(), "refs/heads/uni-tip");
+        assert_eq!(batched_uni, per_ref_uni, "unicode-subject tip mismatch");
 
         let _ = std::fs::remove_dir_all(&root);
     }

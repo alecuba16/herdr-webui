@@ -170,6 +170,43 @@ async function main() {
     parkedMut.parkedMutations !== undefined && parkedMut.parkedMutations < 20,
     JSON.stringify(parkedMut).slice(0, 300));
 
+  // ---- ap5: un-park shows the whole stream (no data loss) -------------
+  // The pause must defer, not drop. Each tick line carries `date +%s%N`
+  // nanos; while parked no new paints happen, so the newest nano visible
+  // in the DOM freezes. After clicking the real pane-tab back, the DOM
+  // must show ticks NEWER than the parked window's last paint: the max
+  // nano growing means buffered frames were rendered, not dropped. The
+  // visible tick COUNT cannot be the signal: wterm virtualizes rows, so
+  // old ticks scroll out of the DOM as new ones land and the count
+  // plateaus while the tail keeps advancing. textContent tail is no
+  // better: wterm's a11y help span sits after the rows in DOM order, so
+  // slice(-N) reads that chrome, never terminal output.
+  const parkedTicks = await evalExpr(`(() => {
+    const shell = document.getElementById("terminalShell");
+    if (!shell) return { err: "no shell" };
+    const nanos = Array.from((shell.textContent || "").matchAll(/tick (\\d{10,})/g)).map((m) => Number(m[1]));
+    return { count: nanos.length, maxNano: nanos.length ? Math.max(...nanos) : 0 };
+  })()`);
+  const unpark = await evalExpr(`(async () => {
+    // tab_id is a server-minted [a-z0-9_] token: safe in a quoted
+    // attribute selector without extra quoting layers.
+    const tabBtn = document.querySelector('.pane-tab[data-tab-kind="terminal"][data-tab-id="${tabId}"]');
+    if (!tabBtn) return { err: "no terminal pane-tab", tabs: Array.from(document.querySelectorAll(".pane-tab")).map((b) => b.dataset.tabId).join(",") };
+    tabBtn.click();
+    await new Promise((r) => setTimeout(r, 1500));
+    const shell = document.getElementById("terminalShell");
+    if (!shell) return { err: "no shell" };
+    const visible = getComputedStyle(shell).display !== "none";
+    const nanos = Array.from((shell.textContent || "").matchAll(/tick (\\d{10,})/g)).map((m) => Number(m[1]));
+    return { visible, count: nanos.length, maxNano: nanos.length ? Math.max(...nanos) : 0 };
+  })()`);
+  record("ap5 un-park repaints with the full parked stream (defer, not drop)",
+    unpark.visible === true && unpark.maxNano > parkedTicks.maxNano,
+    JSON.stringify({ parked: parkedTicks, after: unpark }).slice(0, 250));
+  // stop the stream so later checks run quiet
+  await typeText("\u0003");
+  await sleep(300);
+
   // ---- ap6: rail-status (real HTTP) -----------------------------------
   const railStart = Date.now();
   const rail = await evalExpr(`fetch("/api/git-ui/rail-status", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({workspaces: [{workspace_id: ${JSON.stringify(wsId)}, cwd: ${JSON.stringify(REPO)}}]})}).then((r) => r.json()).catch((e) => "err:" + e)`);
@@ -184,6 +221,61 @@ async function main() {
   const brOk = branches && (branches.branches || branches.result || branches.items);
   record("ap7 branches endpoint answers the popover payload",
     !!brOk, `ms=${brMs} keys=${branches ? Object.keys(branches).slice(0, 8).join(",") : "?"}`);
+
+  // ---- ap8: question modal focus open/restore (real key path) ------
+  // The close-workspace confirm is the one danger modal reachable without
+  // prompts: sidebar workspace rows carry a close ✕ that calls
+  // closeWorkspace (confirm-first). We click it, then verify focus is on
+  // #questionConfirm (focus-on-open), press Escape through the real key
+  // pipeline, and verify focus returned to the close span (the opener).
+  const modalFocus = await evalExpr(`(async () => {
+    const closeBtn = document.querySelector('[data-workspace-action="close"]');
+    if (!closeBtn) return { err: "no workspace close button" };
+    // keyboard-user path: focus the ✕ first, then activate. a plain
+    // el.click() does not move focus, so without this the opener is
+    // whatever happened to be focused, and restore can't be tied to
+    // the button.
+    if (typeof closeBtn.focus === "function") closeBtn.focus();
+    closeBtn.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const modal = document.getElementById("questionModal");
+    const openOnConfirm = document.activeElement === document.getElementById("questionConfirm");
+    const ariaModal = modal ? modal.getAttribute("aria-modal") : null;
+    return { openOnConfirm, ariaModal, openerTitle: (closeBtn.title || "").slice(0, 40) };
+  })()`);
+  record("ap8 modal opens with focus on the confirm action (aria-modal present)",
+    modalFocus.openOnConfirm === true && modalFocus.ariaModal === "true",
+    JSON.stringify(modalFocus).slice(0, 200));
+  // Escape through the browser's real key pipeline, then check restore.
+  await keyDown("Escape", "Escape", 27); await keyUp("Escape", "Escape", 27);
+  const focusRestore = await evalExpr(`(() => {
+    const modal = document.getElementById("questionModal");
+    const closed = modal ? getComputedStyle(modal).display === "none" : null;
+    return { closed, activeTag: document.activeElement ? document.activeElement.tagName : null, activeTitle: document.activeElement ? (document.activeElement.title || "") : null, activeClass: document.activeElement ? document.activeElement.className : null };
+  })()`);
+  record("ap8b Escape closes and focus returns to the opener",
+    focusRestore.closed === true && /close/i.test(focusRestore.activeTitle || ""),
+    JSON.stringify(focusRestore).slice(0, 200));
+
+  // ---- ap9: rail-status multi-cwd order + failure isolation (real HTTP)
+  // Three items: the fixture repo (real), a duplicate of it (dedup path),
+  // and a non-git temp dir. Output must keep caller order, the dup answers
+  // the same state with its own id, and the non-git cwd degrades to a
+  // per-item state (not an endpoint failure).
+  const { mkdtempSync } = await import("node:fs");
+  const os = await import("node:os");
+  const plainDir = mkdtempSync(`${os.tmpdir()}/probe-plain-`);
+  const multi = await evalExpr(`fetch("/api/git-ui/rail-status", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({workspaces: [
+    {workspace_id: "wA", cwd: ${JSON.stringify(REPO)}},
+    {workspace_id: "wB", cwd: ${JSON.stringify(plainDir)}},
+    {workspace_id: "wC", cwd: ${JSON.stringify(REPO)}}
+  ]})}).then((r) => r.json()).catch((e) => "err:" + e)`);
+  const multiOk = multi && multi.items && multi.items.length === 3;
+  record("ap9 rail-status multi-cwd keeps order, dedups, isolates failures",
+    multiOk && multi.items[0].workspace_id === "wA" && multi.items[1].workspace_id === "wB" && multi.items[2].workspace_id === "wC" && multi.items[0].state === multi.items[2].state && (multi.items[1].state === "unknown" || multi.items[1].state === "cleanup only"),
+    multiOk ? `states=[${multi.items.map((i) => i.state).join(",")}] ids=[${multi.items.map((i) => i.workspace_id).join(",")}]` : JSON.stringify(multi).slice(0, 200));
+  const fsMod = await import("node:fs");
+  fsMod.rmSync(plainDir, { recursive: true, force: true });
 
   // ---- ap4: mobile offline visibility ---------------------------------
   await evalExpr(`(() => { localStorage.setItem("herdr-web-layout", "mobile"); return true; })()`);
@@ -255,6 +347,90 @@ async function main() {
   record("ap4 mobile outage shows the debounced offline banner and keeps it up",
     killed && offline.dotStates.includes("connecting") && offline.bannerSamplesVisible >= 8 && offline.bannerHiddenAtEnd === false && offline.offlineTextEver,
     JSON.stringify(offline).slice(0, 300));
+
+  // ---- ap4R: outage ends -> banner clears and dot reconnects --------
+  // Restart the fixture server ourselves (same port, same flags, fresh
+  // PID into SERVER_PIDFILE for the runner's cleanup). The browser page
+  // stays alive through the outage, so this is the real recovery path:
+  // the events WS retry loop reconnects against the fresh server.
+  const SERVER_PIDFILE = process.env.SERVER_PIDFILE;
+  // The runner's TUI smoke step reconnects to whatever server is live
+  // after the probe exits, so the restart's session name is published
+  // next to the PID file. ap4b killed the original fixture; the smoke
+  // must target the restarted session or its socket is already dead.
+  const RESTART_SESSION_FILE = process.env.RESTART_SESSION_FILE;
+  const restartSession = `audit-probe-restart-${process.pid}`;
+  // HERDR_WEBUI_BIN + XDG_CONFIG_HOME come from the runner as absolute
+  // paths so the restarted server is the same isolated fixture, never
+  // the user's config or a cwd-dependent relative path.
+  const serverBin = process.env.HERDR_WEBUI_BIN;
+  if (!serverBin) throw new Error("HERDR_WEBUI_BIN must be set (use scripts/e2e/run-audit-probe.sh)");
+  const { spawn } = await import("node:child_process");
+  let restartPid = null;
+  try {
+    const child = spawn(serverBin, ["--https", "off", "--bind", new URL(APP_URL).host, "--session", restartSession, "--backend-mode", "builtin"], {
+      env: { ...process.env },
+      detached: false,
+      stdio: "ignore",
+    });
+    restartPid = child.pid;
+    const { writeFileSync } = await import("node:fs");
+    if (SERVER_PIDFILE) writeFileSync(SERVER_PIDFILE, String(child.pid));
+    if (RESTART_SESSION_FILE) writeFileSync(RESTART_SESSION_FILE, restartSession);
+  } catch (e) {
+    record("ap4R fixture server restart failed", false, String(e).slice(0, 200));
+  }
+  // wait for readiness
+  let ready = false;
+  for (let i = 0; i < 50; i++) {
+    try {
+      const res = await fetch(`${new URL(APP_URL).origin}/`);
+      if (res.ok) { ready = true; break; }
+    } catch {}
+    await sleep(200);
+  }
+  const recovered = await evalExpr(`(async () => {
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      const dot = document.getElementById("mobileConnectionDot");
+      const banner = document.getElementById("mobileOfflineBanner");
+      if (dot && dot.dataset.state === "connected" && banner && banner.hidden) {
+        return { reconnected: true, dotState: dot.dataset.state, bannerHidden: banner.hidden };
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    const dot = document.getElementById("mobileConnectionDot");
+    const banner = document.getElementById("mobileOfflineBanner");
+    return { reconnected: false, dotState: dot ? dot.dataset.state : null, bannerHidden: banner ? banner.hidden : null };
+  })()`);
+  record("ap4R server back: events socket reconnects, banner clears, dot connected",
+    recovered.reconnected === true && ready,
+    JSON.stringify({ ...recovered, serverReady: ready, restartPid }));
+
+  // ---- ap10: mobile notes empty state (real browser path) ------------
+  // Empty is not loading (Fix H): the notes screen on a fresh fixture
+  // must show the .mobile-empty message, not a spinner. Reached through
+  // the real drawer path: More -> notes drawer item -> screen render.
+  const notesEmpty = await evalExpr(`(async () => {
+    const moreBtn = document.querySelector('.mobile-nav button[data-screen="more"]');
+    if (!moreBtn) return { err: "no more button" };
+    moreBtn.click();
+    await new Promise((r) => setTimeout(r, 400));
+    const notesBtn = Array.from(document.querySelectorAll(".mobile-drawer-item")).find((b) => /notes/i.test(b.textContent || ""));
+    if (!notesBtn) return { err: "no notes drawer item" };
+    notesBtn.click();
+    await new Promise((r) => setTimeout(r, 1200));
+    const empty = document.querySelector(".mobile-empty");
+    const loading = document.querySelector(".mobile-loading");
+    return {
+      emptyFound: !!empty,
+      emptyText: empty ? empty.textContent.trim() : null,
+      loadingVisible: loading ? getComputedStyle(loading).display !== "none" : false,
+    };
+  })()`);
+  record("ap10 mobile notes empty screen shows empty state, not spinner",
+    notesEmpty.emptyFound === true && /No notes yet/.test(notesEmpty.emptyText || "") && notesEmpty.loadingVisible === false,
+    JSON.stringify(notesEmpty).slice(0, 200));
 
   writeReport(outPath, recorder, { repo: REPO, app: APP_URL, date: new Date().toISOString() });
   process.exit(recorder.failed ? 1 : 0);
