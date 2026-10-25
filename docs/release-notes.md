@@ -61,12 +61,26 @@
   agree. The probe measures rail-status at 34ms and the branch payload
   at 153ms against the fixture repo.
 - The audit probe is committed (scripts/e2e/audit-probe.mjs plus
-  run-audit-probe.sh): a 12-check acceptance drive of the real release
+  run-audit-probe.sh): an 18-check acceptance drive of the real release
   binary in headless Chrome covering the parked-shell mutation count,
-  the mobile outage banner, virtualized scrollback, and the two
+  the mobile outage banner (including the reconnect after the fixture
+  server is killed and restarted in-probe), virtualized scrollback,
+  the un-park repaint (parked-window lines must reappear, not drop),
+  the confirm modal's focus handoff through real key events, and the
   batched git endpoints. The runner fails fast if its fixture port is
   occupied (the outage step kills whatever listens on it, so a
-  squatter would be an unrelated victim).
+  squatter would be an unrelated victim) and ends with a warn-only
+  TUI `--once` smoke run against the restarted fixture server (the
+  probe's outage step kills the original one, so the smoke verifies
+  the real TUI connect path against the server that is still live).
+- The extended probe drive found and fixed two modal bugs the unit
+  tests missed: the confirm dialog focused its confirm button while
+  the dialog was still display:none (focus on a hidden node is a
+  silent no-op, so the keyboard stayed behind the dialog), and the git
+  panel's keydown handler muted every key while a global dialog was
+  open, so Escape could never close the dialog with the git drawer
+  up. The dialog now shows before it takes focus, and the git handler
+  yields to any open app-level overlay first.
 - Mobile chat view had no input box again: the composer dock helper was
   a dangling `mountAfterTerminal` call (renamed to `mountInto` in an
   earlier toolbar rework), so every syncComposer pass that hit the

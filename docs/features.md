@@ -79,9 +79,14 @@ Browser terminal:
   nothing renders a frame before its first paint. Breakpoints and
   scrollback survive un-parking: output is deferred, not dropped.
 - The desktop question modal keeps keyboard flow: focus lands on the
-  confirm button on open (the primary action, danger or not), and every
-  close path (confirm, cancel, Escape, overlay click) restores focus to
-  the element that opened the modal. The modal carries `aria-modal`.
+  confirm button on open (the primary action, danger or not; the dialog
+  is shown before it takes focus, since focusing a node inside a
+  display:none subtree is a no-op), and every close path (confirm,
+  cancel, Escape, overlay click) restores focus to the element that
+  opened the modal. The modal carries `aria-modal`. The git panel's
+  window-level keydown handler yields to any open app-level overlay
+  (confirm dialogs, settings, palette) before consuming keys, so
+  Escape reaches the modal even with the git drawer open behind it.
 - CodeMirror loads only when the file editor is opened. Git, Files, and large
   markdown renderer assets remain feature-lazy, while the terminal renderer
   stays eager because it is needed for the initial workspace surface.
