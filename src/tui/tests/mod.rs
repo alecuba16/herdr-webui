@@ -5116,7 +5116,10 @@ fn round2_constructors_prompt_titles_help_and_refresh_errors() {
     app.refresh_if_due();
     // Async refresh: the first tick only arms the worker; the reply (an
     // error here, the socket does not exist) lands on a later poll.
-    assert!(app.refresh_inflight.is_some(), "first tick starts the worker");
+    assert!(
+        app.refresh_inflight.is_some(),
+        "first tick starts the worker"
+    );
     assert!(!app.error.is_some());
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -8345,10 +8348,7 @@ fn tail_fast_poll_skips_attach_mode_and_other_screens() {
     // tail, which is the observable under test.
     app.refresh_if_due();
     drain_refresh(&mut app);
-    assert!(
-        app.last_refresh.is_some(),
-        "the snapshot refresh landed"
-    );
+    assert!(app.last_refresh.is_some(), "the snapshot refresh landed");
     assert!(
         app.last_tail_refresh.is_none(),
         "attach mode never stamps the tail poll"
@@ -8535,16 +8535,17 @@ fn poll_refresh_arms_waiting_and_survives_a_silent_worker_drop() {
 
     // waiting arm: a channel with no reply yet stays in flight, and the
     // next tick marks the frame dirty so the spinner keeps animating.
-    let (tx, rx) = std::sync::mpsc::channel::<
-        Result<(Value, Value), BackendClientError>,
-    >();
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(Value, Value), BackendClientError>>();
     app.refresh_inflight = Some(RefreshInflight {
         started: Instant::now(),
         receiver: rx,
     });
     assert!(app.take_dirty(), "arming the test state reads dirty first");
     app.poll_refresh();
-    assert!(app.refresh_inflight.is_some(), "empty channel keeps the worker armed");
+    assert!(
+        app.refresh_inflight.is_some(),
+        "empty channel keeps the worker armed"
+    );
     assert!(app.take_dirty(), "waiting arm feeds the spinner");
     assert!(app.error.is_none());
 
@@ -8553,8 +8554,14 @@ fn poll_refresh_arms_waiting_and_survives_a_silent_worker_drop() {
     // and no error (a crashed refresh worker is not a backend outage).
     drop(tx);
     app.poll_refresh();
-    assert!(app.refresh_inflight.is_none(), "disconnected worker is discarded");
-    assert!(app.error.is_none(), "dropped worker is not reported as an error");
+    assert!(
+        app.refresh_inflight.is_none(),
+        "disconnected worker is discarded"
+    );
+    assert!(
+        app.error.is_none(),
+        "dropped worker is not reported as an error"
+    );
 
     // Debug impl: TuiApp derives Debug, so the channel end must render
     // through the manual impl instead of failing to compile or leaking
@@ -8564,6 +8571,12 @@ fn poll_refresh_arms_waiting_and_survives_a_silent_worker_drop() {
         receiver: std::sync::mpsc::channel::<Result<(Value, Value), BackendClientError>>().1,
     });
     let rendered = format!("{:?}", app.refresh_inflight);
-    assert!(rendered.contains("started"), "Debug shows the started instant");
-    assert!(!rendered.contains("Receiver"), "channel internals stay hidden");
+    assert!(
+        rendered.contains("started"),
+        "Debug shows the started instant"
+    );
+    assert!(
+        !rendered.contains("Receiver"),
+        "channel internals stay hidden"
+    );
 }

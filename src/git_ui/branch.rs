@@ -88,7 +88,10 @@ pub(super) fn git_ui_branches_blocking(
     let local_json = local
         .iter()
         .map(|b| {
-            let details = tips.get(&format!("refs/heads/{}", b.name)).map(String::as_str).unwrap_or("");
+            let details = tips
+                .get(&format!("refs/heads/{}", b.name))
+                .map(String::as_str)
+                .unwrap_or("");
             let (author, date, subject) = split_branch_tip_details(details);
             json!({
                 "name": b.name,
@@ -371,7 +374,10 @@ mod tests {
             assert!(out.status.success());
         }
         let tips = collect_branch_tip_details(root.to_str().unwrap());
-        for (refname, name) in [("refs/heads/main", "main"), ("refs/heads/feature", "feature")] {
+        for (refname, name) in [
+            ("refs/heads/main", "main"),
+            ("refs/heads/feature", "feature"),
+        ] {
             let batched = tips.get(refname).cloned();
             let per_ref = branch_tip_details(root.to_str().unwrap(), refname);
             assert_eq!(batched, per_ref, "tip mismatch for {name}");
@@ -437,7 +443,10 @@ mod tests {
         // main points at the empty-subject commit: parity must hold for it.
         let batched = tips.get("refs/heads/main").cloned();
         let per_ref = branch_tip_details(root.to_str().unwrap(), "refs/heads/main");
-        assert_eq!(batched, per_ref, "batched vs per-ref mismatch on empty subject");
+        assert_eq!(
+            batched, per_ref,
+            "batched vs per-ref mismatch on empty subject"
+        );
         // a branch pinned to the unicode-subject commit covers that case too
         let out = std::process::Command::new("git")
             .arg("-C")
@@ -458,7 +467,10 @@ mod tests {
         let malformed = "refs/heads/no-delimiter\nrefs/heads/other\0author\0date\0subject";
         let parsed = parse_branch_tip_lines(malformed);
         assert_eq!(parsed.len(), 1, "delimiter-less line skipped");
-        assert_eq!(parsed.get("refs/heads/other").unwrap(), "author\0date\0subject");
+        assert_eq!(
+            parsed.get("refs/heads/other").unwrap(),
+            "author\0date\0subject"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

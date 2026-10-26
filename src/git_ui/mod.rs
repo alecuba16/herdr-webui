@@ -1073,8 +1073,7 @@ fn git_rail_status_blocking(cwds: Vec<GitUiRailStatusItem>) -> Vec<serde_json::V
         .filter(|item| !item.cwd.trim().is_empty())
         .collect();
     let mut unique: Vec<String> = Vec::new();
-    let mut first_seen: std::collections::HashSet<&str> =
-        std::collections::HashSet::new();
+    let mut first_seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for item in &items {
         if first_seen.insert(item.cwd.as_str()) {
             unique.push(item.cwd.clone());
@@ -1115,14 +1114,26 @@ fn git_rail_status_blocking(cwds: Vec<GitUiRailStatusItem>) -> Vec<serde_json::V
     // computed payload with their own workspace_id echoed back, in the
     // caller's original order: no map iteration order leaks into the
     // response array.
+    rail_status_reassemble(items, &unique, &computed)
+}
+
+/// Reassemble the per-item response from the per-unique-cwd payloads:
+/// caller order preserved, duplicate cwds echo their own workspace_id.
+/// A bookkeeping mismatch (an item missing from the unique list, or a
+/// computed slot that never filled) degrades that one item to unknown
+/// instead of panicking; unique and computed derive from the same items
+/// pass in the live handler, so the mismatch arms only guard future
+/// edits. Split out so the degrade contract is testable directly.
+fn rail_status_reassemble(
+    items: Vec<GitUiRailStatusItem>,
+    unique: &[String],
+    computed: &[Option<serde_json::Value>],
+) -> Vec<serde_json::Value> {
     items
         .into_iter()
         .map(|item| {
             // position() over a short unique list is cheap next to the git
-            // spawn it feeds. The expects below are true invariants (unique
-            // and computed both derive from items in the same pass), but a
-            // handler thread must never panic over bookkeeping: degrade to
-            // the same unknown state the git failure paths use.
+            // spawn it feeds.
             let Some(idx) = unique.iter().position(|cwd| cwd == &item.cwd) else {
                 return json!({ "workspace_id": item.workspace_id, "cwd": item.cwd, "state": "unknown" });
             };
@@ -1592,6 +1603,41 @@ mod tests {
         // not a dedupe marker the rail cannot tint by.
         assert_eq!(out[3]["state"].as_str().unwrap(), "dirty");
         assert_eq!(out[3]["workspace_id"].as_str().unwrap(), "dup");
+    }
+
+    #[test]
+    fn rail_status_reassemble_degrades_bookkeeping_mismatches_per_item() {
+        // The reassembly arms the live handler can never hit (unique and
+        // computed derive from the same items pass) still carry a
+        // contract: a future edit that breaks the pairing must degrade
+        // that one item to unknown, never panic, never reorder, never
+        // drop a workspace_id.
+        let mk = |id: &str, cwd: &str| GitUiRailStatusItem {
+            workspace_id: Some(id.to_string()),
+            cwd: cwd.to_string(),
+        };
+        let unique = vec!["/repo/a".to_string(), "/repo/b".to_string()];
+        let computed = vec![
+            Some(json!({ "cwd": "/repo/a", "state": "clean" })),
+            None, // bookkeeping hole: the second slot never filled
+        ];
+        let items = vec![
+            mk("ok", "/repo/a"),
+            mk("hole", "/repo/b"),
+            mk("unlisted", "/repo/c"),
+        ];
+        let out = rail_status_reassemble(items, &unique, &computed);
+
+        assert_eq!(out.len(), 3);
+        // healthy pairing echoes the payload with its own id
+        assert_eq!(out[0]["workspace_id"].as_str().unwrap(), "ok");
+        assert_eq!(out[0]["state"].as_str().unwrap(), "clean");
+        // unfilled slot -> unknown, id preserved
+        assert_eq!(out[1]["workspace_id"].as_str().unwrap(), "hole");
+        assert_eq!(out[1]["state"].as_str().unwrap(), "unknown");
+        // cwd missing from the unique list entirely -> unknown too
+        assert_eq!(out[2]["workspace_id"].as_str().unwrap(), "unlisted");
+        assert_eq!(out[2]["state"].as_str().unwrap(), "unknown");
     }
 
     #[test]
