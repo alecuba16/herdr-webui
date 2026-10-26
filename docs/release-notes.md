@@ -1,6 +1,126 @@
 # Release notes
 
 ## Unreleased
+- The git drawer no longer mutes keyboard input aimed at the terminal.
+  Its window-capture keydown handler consumed every key whose target sat
+  outside the drawer, including the wterm textarea that carries all
+  terminal input, so with the drawer visible the focused terminal behind
+  it was completely keyboard-dead: no Ctrl+C, no typing, nothing, and
+  neither the rail toggle nor closing the git center tab cleared the
+  drawer's visible state, so there was no escape short of hiding the
+  whole drawer. Keys targeted at the terminal surface (the wterm textarea
+  or anything inside the terminal shell) now pass through; other
+  outside-drawer keys stay muted so page shortcuts do not leak. The
+  rail-collapse hole got the same treatment: the toggle hides the whole
+  sidebar column while the drawer state stays open, so the capture
+  handler now reads visible as on screen (state.visible, the sidebar not
+  collapsed, and a center git pane tab active counts as visible too since
+  the collapse does not hide it), and hiding the column hands a focus
+  stuck inside it to the terminal. The acceptance probe drives the
+  regression through the real key pipeline (a dispatchKeyEvent Ctrl+C
+  reaches the PTY with the drawer open), and a headed Chrome pass covers
+  the rest: real rail clicks, drawer state staying open behind the
+  collapsed column, a real Ctrl+C stopping the stream, re-expand
+  restoring the drawer, typing reaching the PTY with the drawer open,
+  and the center git tab keeping its prefix chords alive behind the
+  collapse.
+- The parallel bin-suite flake is fixed at the source. The PTY tests
+  (client socket attach/re-attach, flood, fanout, events) spawned the
+  user's login shell, whose rc-file init can stall past every 20s
+  deadline when the full suite spawns dozens of panes at once; the seed
+  poll then failed with nothing but the kernel's input echo as evidence.
+  Those tests exercise the PTY/scrollback/fanout protocol, not any shell
+  program, so they now run /bin/sh with no rc file. Three consecutive
+  full parallel runs are green (742/742 each, ~47s where the login-shell
+  runs took ~61s).
+- Parked terminal panels no longer render. The wterm adapter grew a
+  setRenderingPaused flag, and every terminal surface carries an
+  IntersectionObserver (the primary shell, every split pane, every
+  workspace pane surface): a hidden surface (behind the git/files tab,
+  parked in #workspacePanes) stops all renderer writes while its PTY
+  keeps streaming into the scrollback buffer, and the moment it becomes
+  visible again it repaints once. The observers also cover the
+  scrolled-away case (a pane technically visible but off-screen), and
+  a surface parked before its first paint starts paused. The e2e probe
+  measures the effect: a shell streaming in the background used to
+  cost 5146 DOM mutations per 3s behind a hidden tab, now 0.
+  Scrollback survives un-parking: nothing is dropped, only deferred.
+- Mobile shows an honest offline banner. Connected state is now
+  notified on the events WebSocket's real onopen; previously the
+  connect notification fired optimistically at socket construction and
+  nothing ever notified disconnected, so during a server outage the dot
+  kept saying connected for as long as the outage lasted. A banner
+  strip ("Connection lost · retrying…") shows under the header once
+  the stream has been down for 1.5s or more, but only after the first
+  successful connect, and never for intentional closes (session
+  switches pair their close with a reconnect). The dot itself tracks
+  the same states as desktop: connected, connecting (with retry
+  language), and disconnected. The probe verifies the whole chain:
+  SIGKILL the fixture server and the banner is visible in every sample
+  for the full outage window.
+- Empty and loading states are split on mobile. Workspaces, agents,
+  the git file sections, branches, notes, and search results now show
+  a short empty message (a dim glyph plus text: "No workspaces",
+  "None", "No notes yet. Create one to get started.") instead of a
+  full-height spinner when the server answered with an empty list, so
+  an empty workspace no longer looks like a hung request. Search keeps
+  its conditional spinner while a path walk is genuinely loading.
+- The desktop confirm modal restores focus. Opening a question modal
+  captures the opener and puts focus on the confirm button, and every
+  close path (confirm, cancel, Escape, overlay click) returns focus to
+  the element that opened it. Keyboard flow no longer lands on <body>
+  after dismissing a modal.
+- The TUI footer says when the backend is slow. The periodic snapshot
+  refresh moved off the draw path (worker thread plus channel, polled
+  per tick), so a dead or hung backend no longer freezes the frame
+  loop: after 500ms in flight the footer status shows a spinner
+  ("waiting for backend...") next to the refresh hint, using the same
+  width guards as the rest of the footer (safe on a 20x6 terminal).
+  The connect timeout for the TUI's HTTP client dropped to 2s (a live
+  loopback server accepts in milliseconds), while read/write keep the
+  20s window for slow replies. Key-triggered refreshes stay
+  synchronous as before.
+- Git endpoints batch their subprocess calls. The rail-status probe
+  now runs one git status per unique cwd in parallel (std::thread::scope,
+  chunks of 8, one thread for a single-cwd request) instead of
+  serially per workspace, so several open workspaces overlap their
+  scans instead of queueing them, and a failed or non-git cwd degrades
+  to state "unknown" per item instead of failing the endpoint. The
+  branch popover list replaces one git show per branch with a single
+  git for-each-ref batch carrying the same fields (author, committer
+  date, subject) in the same order; a parity test proves both paths
+  agree. A direct before/after timing against the base binary makes the
+  N+1 visible: on a fixture repo with 41 refs the old path answers in
+  ~2.4s and the batched path in ~0.9s, and at 201 refs the old path
+  grows linearly to ~8.4s while the batched path stays flat at ~0.9s
+  with equal branch payloads from both builds. The probe's own numbers
+  (rail-status 34ms, branch payload 153ms) come from its single-branch
+  fixture repo, so they only show the flat per-request cost; the N+1
+  needs the many-branch timing above to show up.
+- The audit probe is committed (scripts/e2e/audit-probe.mjs plus
+  run-audit-probe.sh): an 18-check acceptance drive of the real release
+  binary in headless Chrome covering the parked-shell mutation count,
+  the mobile outage banner (including the reconnect after the fixture
+  server is killed and restarted in-probe), virtualized scrollback,
+  the un-park defer proof (the probe parks a streaming shell, un-parks
+  it, stops the loop with a real Ctrl+C through the focused terminal
+  textarea, then walks the full scrollback: ticks that streamed only
+  while parked must be present, and recent runs see roughly 480 of
+  them), the confirm modal's focus handoff through real key events,
+  and the batched git endpoints. The runner fails fast if its fixture
+  port is occupied (the outage step kills whatever listens on it, so a
+  squatter would be an unrelated victim) and ends with a warn-only
+  TUI `--once` smoke run against the restarted fixture server (the
+  probe's outage step kills the original one, so the smoke verifies
+  the real TUI connect path against the server that is still live).
+- The extended probe drive found and fixed two modal bugs the unit
+  tests missed: the confirm dialog focused its confirm button while
+  the dialog was still display:none (focus on a hidden node is a
+  silent no-op, so the keyboard stayed behind the dialog), and the git
+  panel's keydown handler muted every key while a global dialog was
+  open, so Escape could never close the dialog with the git drawer
+  up. The dialog now shows before it takes focus, and the git handler
+  yields to any open app-level overlay first.
 - Mobile chat view had no input box again: the composer dock helper was
   a dangling `mountAfterTerminal` call (renamed to `mountInto` in an
   earlier toolbar rework), so every syncComposer pass that hit the
