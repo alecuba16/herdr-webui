@@ -4711,6 +4711,17 @@ mod tests {
     use super::*;
     use interprocess::local_socket::traits::Stream as _;
 
+    // PTY tests run their shells through this, not the user's login shell:
+    // default_shell() resolves $SHELL (zsh + .zshrc here), whose fork-heavy
+    // init (pyenv/jenv/oh-my-posh/zoxide) stalls past the 20s deadlines when
+    // the whole bin suite spawns dozens of panes in parallel, and the seed
+    // poll then trips with nothing but the kernel's input echo. /bin/sh runs
+    // no rc file; these tests exercise the PTY/scrollback/fanout protocol,
+    // not any shell program.
+    fn hermetic_test_shell() -> String {
+        "/bin/sh".to_string()
+    }
+
     #[test]
     fn client_disconnect_marker_matches_only_eof_kind() {
         // The handler routes errors to `Ok(())` on a clean disconnect and
@@ -9201,7 +9212,7 @@ mod tests {
             api_socket: api_socket.clone(),
             client_socket,
             cwd: std::env::temp_dir(),
-            shell: Some(default_shell()),
+            shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
         })
         .unwrap();
@@ -9287,7 +9298,7 @@ mod tests {
             api_socket: api_socket.clone(),
             client_socket,
             cwd: std::env::temp_dir(),
-            shell: Some(default_shell()),
+            shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
         })
         .unwrap();
@@ -9497,7 +9508,7 @@ mod tests {
             api_socket: api_socket.clone(),
             client_socket,
             cwd: std::env::temp_dir(),
-            shell: Some(default_shell()),
+            shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
         })
         .unwrap();
@@ -9655,7 +9666,7 @@ mod tests {
             api_socket: api_socket.clone(),
             client_socket,
             cwd: std::env::temp_dir(),
-            shell: Some(default_shell()),
+            shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
         })
         .unwrap();
@@ -9940,7 +9951,7 @@ mod tests {
             api_socket: api_socket.clone(),
             client_socket,
             cwd: std::env::temp_dir(),
-            shell: Some(default_shell()),
+            shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
         })
         .unwrap();
@@ -10072,7 +10083,7 @@ mod tests {
             api_socket: api_socket.clone(),
             client_socket,
             cwd: std::env::temp_dir(),
-            shell: Some(default_shell()),
+            shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
         })
         .unwrap();
@@ -10235,7 +10246,7 @@ mod tests {
             api_socket: api_socket.clone(),
             client_socket,
             cwd: std::env::temp_dir(),
-            shell: Some(default_shell()),
+            shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
         })
         .unwrap();
@@ -10297,7 +10308,7 @@ mod tests {
             api_socket: api_socket.clone(),
             client_socket: client_socket.clone(),
             cwd: std::env::temp_dir(),
-            shell: Some(default_shell()),
+            shell: Some(hermetic_test_shell()),
             jcode_detection_variant: JcodeDetectionVariant::Vanilla,
         })
         .unwrap();

@@ -2910,11 +2910,23 @@ function askQuestion({ title = "Confirm action", message = "Continue?", confirmT
   if (!modal) return Promise.resolve(confirm(message));
   el("questionTitle").textContent = title;
   el("questionMessage").textContent = message;
+  // remember the opener before confirm steals focus so closeQuestion can
+  // hand it back on every close path (confirm, cancel, x, esc, enter)
+  state.questionOpener =
+    document.activeElement && typeof document.activeElement.focus === "function"
+      ? document.activeElement
+      : null;
   const confirmButton = el("questionConfirm");
-  confirmButton.textContent = confirmText;
-  confirmButton.classList.toggle("danger", !!danger);
+  if (confirmButton) {
+    confirmButton.textContent = confirmText;
+    confirmButton.classList.toggle("danger", !!danger);
+  }
+  // display flips before focus: focusing a node inside a display:none
+  // subtree is a silent no-op, which strands keyboard users on the
+  // element behind the modal (Escape then routes to that surface's own
+  // keydown handler instead of the modal cascade).
   modal.style.display = "grid";
-  confirmButton.focus();
+  if (confirmButton) confirmButton.focus();
   return new Promise((resolve) => {
     state.questionResolve = resolve;
   });
@@ -2924,6 +2936,9 @@ function closeQuestion(answer) {
   if (modal) modal.style.display = "none";
   const resolve = state.questionResolve;
   state.questionResolve = null;
+  const opener = state.questionOpener;
+  state.questionOpener = null;
+  if (opener && document.contains(opener)) opener.focus();
   if (resolve) resolve(!!answer);
 }
 function gitUiEnabled() {

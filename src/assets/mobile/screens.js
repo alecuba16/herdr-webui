@@ -72,7 +72,7 @@
       const bootSkeleton = skeleton("workspaces", 3);
       if (bootSkeleton) return bootSkeleton;
       if (!state.workspaces.length)
-        return '<div class="mobile-loading">No workspaces</div>';
+        return '<div class="mobile-empty"><span aria-hidden="true">◍</span>No workspaces</div>';
       return state.workspaces
         .map((workspace) => {
           const active = workspace.workspace_id === state.ws ? " active" : "";
@@ -86,7 +86,7 @@
     // closes (app.js owns that part).
     function renderWorkspacesSheetList() {
       if (!state.workspaces.length)
-        return '<div class="mobile-loading">No workspaces</div>';
+        return '<div class="mobile-empty"><span aria-hidden="true">◍</span>No workspaces</div>';
       return state.workspaces
         .map((workspace) => {
           const active = workspace.workspace_id === state.ws;
@@ -162,7 +162,7 @@
       const bootSkeleton = skeleton("agents", 2);
       if (bootSkeleton) return bootSkeleton;
       if (!state.agents.length)
-        return '<div class="mobile-loading">No agents</div>';
+        return '<div class="mobile-empty"><span aria-hidden="true">◍</span>No agents</div>';
       const workingDismissals = getWorkingDismissals();
       if (workingDismissals) workingDismissals.cleanup(state.agents);
       const byId = workspacesById();

@@ -321,6 +321,10 @@ pub struct TuiApp {
     terminal_size: (u16, u16),
     pub status: String,
     pub error: Option<String>,
+    /// Pending background refresh: worker channel plus the instant the
+    /// round-trip left, so the footer can animate a spinner once the wait
+    /// outgrows a normal sub-500ms reply. Consumed by `poll_refresh`.
+    pub(crate) refresh_inflight: Option<RefreshInflight>,
     pub last_refresh: Option<Instant>,
     /// When the pane tail was last polled outside the snapshot refresh
     /// (live preview loop, `TAIL_REFRESH_INTERVAL` cadence).
@@ -532,6 +536,26 @@ impl PromptKind {
     }
 }
 
+/// In-flight background refresh: the worker's reply channel plus the
+/// instant the round-trip started. `started` drives the footer spinner:
+/// under the 500ms threshold a healthy loopback reply shows no spinner,
+/// beyond it the status line animates until the reply (or the backend
+/// timeout error) lands.
+pub(crate) struct RefreshInflight {
+    pub(crate) started: Instant,
+    pub(crate) receiver: std::sync::mpsc::Receiver<Result<(Value, Value), BackendClientError>>,
+}
+
+impl std::fmt::Debug for RefreshInflight {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // TuiApp derives Debug; the channel end is opaque, the started
+        // instant is the useful part.
+        f.debug_struct("RefreshInflight")
+            .field("started", &self.started)
+            .finish_non_exhaustive()
+    }
+}
+
 impl TuiApp {
     pub fn new(client: BackendClient, refresh_interval: Duration) -> Self {
         Self::new_with_theme(client, refresh_interval, TuiTheme::Dark)
@@ -584,6 +608,7 @@ impl TuiApp {
             terminal_size: (0, 0),
             status: "connecting".to_string(),
             error: None,
+            refresh_inflight: None,
             last_refresh: None,
             last_tail_refresh: None,
             refresh_interval,
@@ -630,9 +655,92 @@ impl TuiApp {
     }
 
     pub fn refresh(&mut self) -> Result<(), BackendClientError> {
-        let first_refresh = self.last_refresh.is_none();
         let ping = self.client.ping()?;
         let snapshot = self.client.snapshot()?;
+        self.apply_refresh(ping, snapshot);
+        Ok(())
+    }
+
+    pub fn refresh_if_due(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
+        self.poll_refresh();
+        let due = self
+            .last_refresh
+            .map(|loaded| loaded.elapsed() >= self.refresh_interval)
+            .unwrap_or(true);
+        if due && self.refresh_inflight.is_none() {
+            self.spawn_refresh();
+        } else if !due {
+            // Live preview while not attached (ux fix): the tail used to
+            // refresh only with the snapshot cadence (default 1s), so the
+            // pane preview looked frozen compared to the webui terminal.
+            // The tail read is a single pane.read round-trip, cheap enough
+            // to poll 5x faster than the snapshot; attach mode owns the
+            // screen through the live pty instead, and the tail is also
+            // skipped while a modal/prompt would fight the redraw.
+            let tail_due = self
+                .last_tail_refresh
+                .map(|loaded| loaded.elapsed() >= TAIL_REFRESH_INTERVAL)
+                .unwrap_or(true);
+            if tail_due && self.mode != TuiMode::Attach && self.screen == TuiScreen::Terminal {
+                self.refresh_tail();
+                self.last_tail_refresh = Some(Instant::now());
+            }
+        }
+    }
+
+    /// Start the ping+snapshot round-trip off-loop. The old inline call
+    /// froze the whole event loop for the full backend timeout when the
+    /// backend went silent — no redraws, no keys — and the footer could
+    /// not say anything about it. A short-lived worker keeps the loop
+    /// alive; the reply lands in `poll_refresh` on a later tick.
+    fn spawn_refresh(&mut self) {
+        let client = self.client.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = client
+                .ping()
+                .and_then(|ping| client.snapshot().map(|snapshot| (ping, snapshot)));
+            let _ = tx.send(result);
+        });
+        self.refresh_inflight = Some(RefreshInflight {
+            started: Instant::now(),
+            receiver: rx,
+        });
+    }
+
+    /// Non-blocking drain of a pending refresh worker. One round-trip
+    /// per worker; the next `refresh_if_due` re-arms only after a reply
+    /// (or error) lands, so a dead backend costs one worker per refresh
+    /// interval, not per tick.
+    fn poll_refresh(&mut self) {
+        let Some(inflight) = self.refresh_inflight.take() else {
+            return;
+        };
+        match inflight.receiver.try_recv() {
+            Ok(Ok((ping, snapshot))) => self.apply_refresh(ping, snapshot),
+            Ok(Err(err)) => {
+                self.error = Some(err.to_string());
+                self.last_refresh = Some(Instant::now());
+                self.refresh_inflight = None;
+                self.mark_dirty();
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // Still waiting: keep the worker, keep the footer spinner
+                // fed. The bin loop redraws every 100ms unconditionally,
+                // so no extra wake-up source is needed.
+                self.refresh_inflight = Some(inflight);
+                self.mark_dirty();
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
+    }
+
+    /// Commit a finished round-trip. Split from the blocking `refresh`
+    /// (key/shortcut actions still want the synchronous path) so the two
+    /// cannot drift apart on the post-processing steps.
+    fn apply_refresh(&mut self, ping: Value, snapshot: Value) {
+        let first_refresh = self.last_refresh.is_none();
         self.snapshot = TuiSnapshot::from_backend_response(&snapshot);
         if first_refresh {
             self.select_focused_items();
@@ -652,37 +760,6 @@ impl TuiApp {
         self.error = None;
         self.last_refresh = Some(Instant::now());
         self.mark_dirty();
-        Ok(())
-    }
-
-    pub fn refresh_if_due(&mut self) {
-        self.tick = self.tick.wrapping_add(1);
-        let due = self
-            .last_refresh
-            .map(|loaded| loaded.elapsed() >= self.refresh_interval)
-            .unwrap_or(true);
-        if due {
-            if let Err(err) = self.refresh() {
-                self.error = Some(err.to_string());
-                self.mark_dirty();
-            }
-        } else {
-            // Live preview while not attached (ux fix): the tail used to
-            // refresh only with the snapshot cadence (default 1s), so the
-            // pane preview looked frozen compared to the webui terminal.
-            // The tail read is a single pane.read round-trip, cheap enough
-            // to poll 5x faster than the snapshot; attach mode owns the
-            // screen through the live pty instead, and the tail is also
-            // skipped while a modal/prompt would fight the redraw.
-            let tail_due = self
-                .last_tail_refresh
-                .map(|loaded| loaded.elapsed() >= TAIL_REFRESH_INTERVAL)
-                .unwrap_or(true);
-            if tail_due && self.mode != TuiMode::Attach && self.screen == TuiScreen::Terminal {
-                self.refresh_tail();
-                self.last_tail_refresh = Some(Instant::now());
-            }
-        }
     }
 
     /// Focused UI context for the statusbar hint (lazygit-style context

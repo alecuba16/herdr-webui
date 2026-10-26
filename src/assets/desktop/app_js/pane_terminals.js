@@ -61,6 +61,11 @@
 
   function dispose(entry) {
     if (!entry) return;
+    entry.disposed = true;
+    try {
+      if (entry.observer && typeof entry.observer.disconnect === "function")
+        entry.observer.disconnect();
+    } catch (e) {}
     try {
       if (entry.ws) {
         entry.ws.onclose = null;
@@ -77,6 +82,38 @@
         entry.container.parentNode.removeChild(entry.container);
     } catch (e) {}
     if (surfaces.get(entry.key) === entry) surfaces.delete(entry.key);
+  }
+
+  // Parked aux surfaces keep their socket and wterm alive (maximize rescue
+  // parks the container in #workspacePanes display:none, the registry only
+  // disposes when the tab stops rendering). Same pause mechanism as the
+  // primary shell: not intersecting means not visible, wterm buffers the
+  // frames, one repaint on un-park. The observer is disconnected in
+  // dispose(); the callback checks the disposed flag because the initial
+  // visibility report can land after the surface was torn down.
+  function watchVisibility(entry, container) {
+    if (typeof IntersectionObserver !== "function") return null;
+    const observer = new IntersectionObserver((entries) => {
+      if (entry.disposed || !entry.term) return;
+      const io = entries.find((candidate) => candidate.target === container);
+      const paused = !io || !io.isIntersecting;
+      if (typeof entry.term.setRenderingPaused === "function")
+        entry.term.setRenderingPaused(paused);
+    });
+    observer.observe(container);
+    // The observer's first report is async: a surface that mounts already
+    // hidden (rescued into #workspacePanes before its first paint) would
+    // render one frame unpauseed. offsetParent is null for display:none
+    // subtrees, so it covers the parking case synchronously; a live
+    // surface leaves rendering on and the first report confirms it.
+    if (
+      entry.term &&
+      typeof entry.term.setRenderingPaused === "function" &&
+      container.offsetParent === null
+    ) {
+      entry.term.setRenderingPaused(true);
+    }
+    return observer;
   }
 
   async function createSurface(pane, leaf, activeTab) {
@@ -134,6 +171,7 @@
       return null;
     }
     entry.term = term;
+    entry.observer = watchVisibility(entry, container);
     const ws = new WebSocket(
       wsUrlFor(
         `/ws/terminal?terminal_id=${encodeURIComponent(terminalId)}&cols=${size.cols}&rows=${size.rows}`,

@@ -36,16 +36,53 @@
     alertFn,
     getGitUi,
   }) {
+    // "Visible" for the keyboard means on screen, and the drawer can be
+    // on screen through two hosts: the sidebar column (hidden when the
+    // rail collapses it while state.visible stays true) and a center git
+    // pane tab (.pane-git-container), which the collapse does not hide.
+    // Releasing the keyboard while a center git tab is the active view
+    // would strand its shortcuts, so the gate keeps owning keys until
+    // neither host shows a git surface.
+    function visible() {
+      if (!state.visible) return false;
+      if (window.HerdrRightSidebar
+        && window.HerdrRightSidebar.collapsed
+        && window.HerdrRightSidebar.collapsed()) {
+        const panes = window.HerdrWorkspacePanes;
+        const activeTab = panes && panes.paneActiveTab ? panes.paneActiveTab() : "";
+        const gitTabActive = !!(panes && panes.isGitTab && activeTab && panes.isGitTab(activeTab));
+        return gitTabActive;
+      }
+      return true;
+    }
+    function globalModalOpen() {
+      // app-level overlays (question/settings/create/palette) live outside
+      // this bundle; their open state is readable from the DOM without
+      // importing app symbols. git-ui modals use .git-ui-modal-backdrop,
+      // a different class, so they never trip this guard.
+      return Array.prototype.some.call(
+        document.querySelectorAll(".modal-backdrop"),
+        (m) => m.style.display && m.style.display !== "none",
+      );
+    }
     function handleKeydown(event) {
-      if (!state.visible || !event) return;
+      if (!visible() || !event) return;
+      // a global app overlay (confirm dialogs, settings, palette) owns the
+      // keyboard while it is up; muting keys here would strand Escape and
+      // lock the user inside the overlay.
+      if (globalModalOpen()) return;
       const view = active();
       if (!view) return;
       // Keys this handler consumes are stopped so terminal/global shortcuts
-      // behind the drawer do not double-fire. Keys aimed outside the git UI
-      // (terminal behind it, page body) are muted unconditionally, same as
-      // before. Keys inside the git UI propagate when unconsumed: tree rows,
-      // stash entries and log commits carry inline keydown handlers that
-      // only run at target phase, after this capture handler returns.
+      // behind the drawer do not double-fire. Keys aimed at the terminal
+      // surface pass through: the wterm textarea (#terminalImeInput) and
+      // anything inside #terminalShell are the keyboard input path for the
+      // pane the drawer covers, and muting them left the focused terminal
+      // completely dead while the drawer was up. Other outside-git keys
+      // (page body) stay muted. Keys inside the git UI propagate when
+      // unconsumed: tree rows, stash entries and log commits carry inline
+      // keydown handlers that only run at target phase, after this capture
+      // handler returns.
       // The git UI has two hosting roots: the right-sidebar #gitUiPanel and
       // the workspace pane .pane-git-container mount. Log rows render in
       // whichever root hosts the current view.
@@ -53,12 +90,18 @@
         event.stopPropagation();
         if (event.stopImmediatePropagation) event.stopImmediatePropagation();
       };
+      const targetInTerminal = !!(
+        event.target &&
+        event.target.closest &&
+        (event.target.id === "terminalImeInput" ||
+          event.target.closest("#terminalShell"))
+      );
       const targetInGitUi = !!(
         event.target &&
         event.target.closest &&
         (event.target.closest("#gitUiPanel") || event.target.closest(".pane-git-container"))
       );
-      if (!targetInGitUi) consume();
+      if (!targetInGitUi && !targetInTerminal) consume();
       if (handleDiffSearchShortcut(event, view)) { consume(); return; }
       if (isGitShortcutPrefix(event)) {
         consume();

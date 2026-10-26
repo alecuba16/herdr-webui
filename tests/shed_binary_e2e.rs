@@ -441,12 +441,24 @@ fn builtin_binary_reattach_survives_output_flood() {
     // FL""OOD quoting: the PTY echo shows the quotes while the shell's
     // output shows the plain marker. A per-burst deadline surfaces a shed
     // instead of hanging forever.
+    //
+    // Deadline budget: a burst is ~55KB of output through one PTY, well
+    // under the 16MB shed cap, and the test only sends burst N+1 after
+    // burst N's marker arrived, so a healthy run never has more than one
+    // burst in flight and needs low single-digit seconds even on a slow
+    // machine. But GitHub's shared macOS runners stall for tens of
+    // seconds under load (observed: bursts 11-13 and 35 hitting the old
+    // 30s wall on runs whose every other burst was fast), and a timeout
+    // there is a scheduling stall, not a shed — a real shed answers
+    // with the Overflow shutdown frame and then closes the socket (the
+    // poll loop panics on EOF), it never leaves the client waiting in
+    // silence. 120s keeps the shed-vs-stall distinction honest.
     let flood_cmd = "for i in $(seq 1 1000); do echo FL\"\"OOD-$i-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345; done; echo FL\"\"OOD-DONE-$RANDOM\n";
     let marker: &[u8] = b"FLOOD-DONE-";
     let bursts = 40u32;
     for burst in 0..bursts {
         write_frame(&mut client, &encode_input(flood_cmd.as_bytes()));
-        let burst_deadline = Instant::now() + Duration::from_secs(30);
+        let burst_deadline = Instant::now() + Duration::from_secs(120);
         let mut saw_marker = false;
         while Instant::now() < burst_deadline && !saw_marker {
             client
@@ -461,7 +473,9 @@ fn builtin_binary_reattach_survives_output_flood() {
         }
         assert!(
             saw_marker,
-            "burst {burst} never finished; client likely shed mid-flood"
+            "burst {burst} never finished; a shed answers with an Overflow \
+             shutdown frame then EOF, so silence past this deadline is a \
+             runner stall (or a hang), not a shed"
         );
     }
 
@@ -493,7 +507,7 @@ fn builtin_binary_reattach_survives_output_flood() {
     // counter when it processes the re-attach replay, wrapping only when
     // the counter is zero at that instant. Drain until the shell goes
     // silent so the re-attach replay is the only thing in flight.
-    let quiesce_deadline = Instant::now() + Duration::from_secs(10);
+    let quiesce_deadline = Instant::now() + Duration::from_secs(30);
     let mut last_frame = Instant::now();
     while Instant::now() < quiesce_deadline {
         if last_frame.elapsed() < Duration::from_secs(1) {
@@ -531,7 +545,7 @@ fn builtin_binary_reattach_survives_output_flood() {
         let probe_cmd = format!("echo PROBE{round}-AL\"\"IVE-OK\n");
         let probe_marker = format!("PROBE{round}-ALIVE-OK");
         write_frame(&mut client, &encode_input(probe_cmd.as_bytes()));
-        let probe_deadline = Instant::now() + Duration::from_secs(10);
+        let probe_deadline = Instant::now() + Duration::from_secs(60);
         let mut probe_ok = false;
         while Instant::now() < probe_deadline && !probe_ok {
             client

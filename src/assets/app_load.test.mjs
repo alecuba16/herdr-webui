@@ -1230,11 +1230,14 @@ describe("app bundle load", () => {
     match(desktopTerminalSource, /globalThis\.HerdrScheduleTerminalResize = scheduleTerminalResize;/);
   });
 
-  it("keeps Git UI keyboard input away from the terminal", () => {
-    // The capture handler mutes keys aimed outside the git UI (terminal
-    // behind the drawer) while letting drawer-internal rows receive
-    // unconsumed keys for their inline activation handlers.
-    match(gitShortcutsSource, /Keys aimed outside the git UI/);
+  it("keeps Git UI keyboard input away from stray handlers", () => {
+    // The capture handler mutes keys aimed at neither the git UI nor the
+    // terminal surface (page body) while the drawer is up, lets
+    // drawer-internal rows receive unconsumed keys for their inline
+    // activation handlers, and never eats the terminal's own keys
+    // (#terminalImeInput / #terminalShell): muting those left the focused
+    // terminal dead behind the drawer.
+    match(gitShortcutsSource, /Keys aimed at the terminal[\s\S]*surface pass through/);
     match(gitShortcutsSource, /Keys this handler consumes are stopped/);
     match(gitShortcutsSource, /event\.stopImmediatePropagation/);
     match(gitShortcutsSource, /function handleGitShortcut\(event, view\)/);

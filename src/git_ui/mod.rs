@@ -1065,40 +1065,83 @@ fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, St
 /// and stash counts stay in the full /status payload the drawer loads.
 /// Duplicated cwds (several workspaces on one checkout) share one spawn.
 fn git_rail_status_blocking(cwds: Vec<GitUiRailStatusItem>) -> Vec<serde_json::Value> {
-    // Computed payload keyed by cwd: duplicate cwds (several workspaces on
-    // one checkout) reuse the first result. Items echo their own
-    // workspace_id so the client can key results without path math.
-    let mut by_cwd: std::collections::HashMap<String, serde_json::Value> =
-        std::collections::HashMap::new();
-    cwds.into_iter()
+    // One spawn per UNIQUE cwd, capped at 8 threads: 50 worktrees must
+    // not fork-bomb, and the single-cwd case stays one spawn, one thread.
+    // Results land in per-chunk slots so threads never share mutable state.
+    let items: Vec<GitUiRailStatusItem> = cwds
+        .into_iter()
         .filter(|item| !item.cwd.trim().is_empty())
-        .map(|item| {
-            let cached = by_cwd.get(&item.cwd).cloned();
-            if let Some(mut status) = cached {
-                status["workspace_id"] = item.workspace_id.clone().into();
-                return status;
+        .collect();
+    let mut unique: Vec<String> = Vec::new();
+    let mut first_seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for item in &items {
+        if first_seen.insert(item.cwd.as_str()) {
+            unique.push(item.cwd.clone());
+        }
+    }
+    let rail_status = |cwd: &str| -> serde_json::Value {
+        let status = match git_ui_text(cwd, &["status", "--porcelain=v2", "--branch"]) {
+            Ok(text) => text,
+            // Same contract as git_status_blocking: a non-git folder is
+            // a normal rail state, not an error the client logs as 4xx.
+            Err(err) if is_not_git_repository(&err) => {
+                return json!({
+                    "cwd": cwd,
+                    "state": "cleanup only",
+                    "not_git_repository": true,
+                })
             }
-            let cwd = item.cwd.clone();
-            let workspace_id = item.workspace_id.clone();
-            let status = match git_ui_text(&cwd, &["status", "--porcelain=v2", "--branch"]) {
-                Ok(text) => text,
-                // Same contract as git_status_blocking: a non-git folder is
-                // a normal rail state, not an error the client logs as 4xx.
-                Err(err) if is_not_git_repository(&err) => {
-                    return json!({
-                        "workspace_id": workspace_id,
-                        "cwd": cwd,
-                        "state": "cleanup only",
-                        "not_git_repository": true,
-                    })
+            Err(_) => return json!({ "cwd": cwd, "state": "unknown" }),
+        };
+        json!({
+            "cwd": cwd,
+            "branch": rail_branch_from_status(&status),
+            "state": rail_state_from_status(&status),
+        })
+    };
+    let mut computed: Vec<Option<serde_json::Value>> = vec![None; unique.len()];
+    let chunk = unique.len().div_ceil(8);
+    std::thread::scope(|scope| {
+        for (cwds, slots) in unique.chunks(chunk).zip(computed.chunks_mut(chunk)) {
+            scope.spawn(move || {
+                for (cwd, slot) in cwds.iter().zip(slots.iter_mut()) {
+                    *slot = Some(rail_status(cwd));
                 }
-                Err(_) => {
-                    return json!({ "workspace_id": workspace_id, "cwd": cwd, "state": "unknown" })
-                }
+            });
+        }
+    });
+    // Duplicate cwds (several workspaces on one checkout) reuse the
+    // computed payload with their own workspace_id echoed back, in the
+    // caller's original order: no map iteration order leaks into the
+    // response array.
+    rail_status_reassemble(items, &unique, &computed)
+}
+
+/// Reassemble the per-item response from the per-unique-cwd payloads:
+/// caller order preserved, duplicate cwds echo their own workspace_id.
+/// A bookkeeping mismatch (an item missing from the unique list, or a
+/// computed slot that never filled) degrades that one item to unknown
+/// instead of panicking; unique and computed derive from the same items
+/// pass in the live handler, so the mismatch arms only guard future
+/// edits. Split out so the degrade contract is testable directly.
+fn rail_status_reassemble(
+    items: Vec<GitUiRailStatusItem>,
+    unique: &[String],
+    computed: &[Option<serde_json::Value>],
+) -> Vec<serde_json::Value> {
+    items
+        .into_iter()
+        .map(|item| {
+            // position() over a short unique list is cheap next to the git
+            // spawn it feeds.
+            let Some(idx) = unique.iter().position(|cwd| cwd == &item.cwd) else {
+                return json!({ "workspace_id": item.workspace_id, "cwd": item.cwd, "state": "unknown" });
             };
-            let state = rail_state_from_status(&status);
-            let status = json!({ "workspace_id": workspace_id, "cwd": cwd, "branch": rail_branch_from_status(&status), "state": state });
-            by_cwd.insert(item.cwd, status.clone());
+            let Some(base) = computed.get(idx).and_then(|slot| slot.clone()) else {
+                return json!({ "workspace_id": item.workspace_id, "cwd": item.cwd, "state": "unknown" });
+            };
+            let mut status = base;
+            status["workspace_id"] = item.workspace_id.clone().into();
             status
         })
         .collect()
@@ -1560,6 +1603,123 @@ mod tests {
         // not a dedupe marker the rail cannot tint by.
         assert_eq!(out[3]["state"].as_str().unwrap(), "dirty");
         assert_eq!(out[3]["workspace_id"].as_str().unwrap(), "dup");
+    }
+
+    #[test]
+    fn rail_status_reassemble_degrades_bookkeeping_mismatches_per_item() {
+        // The reassembly arms the live handler can never hit (unique and
+        // computed derive from the same items pass) still carry a
+        // contract: a future edit that breaks the pairing must degrade
+        // that one item to unknown, never panic, never reorder, never
+        // drop a workspace_id.
+        let mk = |id: &str, cwd: &str| GitUiRailStatusItem {
+            workspace_id: Some(id.to_string()),
+            cwd: cwd.to_string(),
+        };
+        let unique = vec!["/repo/a".to_string(), "/repo/b".to_string()];
+        let computed = vec![
+            Some(json!({ "cwd": "/repo/a", "state": "clean" })),
+            None, // bookkeeping hole: the second slot never filled
+        ];
+        let items = vec![
+            mk("ok", "/repo/a"),
+            mk("hole", "/repo/b"),
+            mk("unlisted", "/repo/c"),
+        ];
+        let out = rail_status_reassemble(items, &unique, &computed);
+
+        assert_eq!(out.len(), 3);
+        // healthy pairing echoes the payload with its own id
+        assert_eq!(out[0]["workspace_id"].as_str().unwrap(), "ok");
+        assert_eq!(out[0]["state"].as_str().unwrap(), "clean");
+        // unfilled slot -> unknown, id preserved
+        assert_eq!(out[1]["workspace_id"].as_str().unwrap(), "hole");
+        assert_eq!(out[1]["state"].as_str().unwrap(), "unknown");
+        // cwd missing from the unique list entirely -> unknown too
+        assert_eq!(out[2]["workspace_id"].as_str().unwrap(), "unlisted");
+        assert_eq!(out[2]["state"].as_str().unwrap(), "unknown");
+    }
+
+    #[test]
+    fn rail_status_unknown_states_never_reorder_or_lose_ids() {
+        // Two degrades the threaded handler must survive without panicking
+        // or dropping an id: a cwd git cannot even enter (missing dir, so
+        // the spawn fails with something other than "not a git
+        // repository"), and an empty cwd, which the filter drops before
+        // the spawn so the rail never tints an entry for a phantom dir.
+        let missing = std::env::temp_dir().join(format!(
+            "herdr-webui-rail-missing-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let items = vec![
+            GitUiRailStatusItem {
+                workspace_id: Some("gone".to_string()),
+                cwd: missing.to_string_lossy().to_string(),
+            },
+            GitUiRailStatusItem {
+                workspace_id: Some("phantom".to_string()),
+                cwd: String::new(),
+            },
+        ];
+        let out = git_rail_status_blocking(items);
+
+        // the empty cwd never reaches git; only the missing dir answers,
+        // as unknown (not the not-git "cleanup only" state: the error is
+        // a spawn failure, not the repository probe).
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["workspace_id"].as_str().unwrap(), "gone");
+        assert_eq!(out[0]["state"].as_str().unwrap(), "unknown");
+    }
+
+    #[test]
+    fn rail_status_multi_cwd_keeps_caller_order_across_chunk_boundary() {
+        // 9 unique cwds crosses the 8-slot chunking (div_ceil(8) -> 2
+        // chunks), the reassembly must still answer in caller order with
+        // each item echoing its own workspace_id. One cwd is a non-git
+        // dir: it must degrade per item, never reorder or fail the call.
+        let mut repos = Vec::new();
+        for i in 0..8 {
+            let repo = TempRepo::new();
+            repo.commit_initial();
+            repos.push((format!("w{i}"), repo));
+        }
+        let plain = std::env::temp_dir().join(format!(
+            "herdr-webui-rail-multi-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&plain).unwrap();
+        let items: Vec<GitUiRailStatusItem> = repos
+            .iter()
+            .map(|(id, repo)| GitUiRailStatusItem {
+                workspace_id: Some(id.clone()),
+                cwd: repo.path.to_string_lossy().to_string(),
+            })
+            .chain(std::iter::once(GitUiRailStatusItem {
+                workspace_id: Some("plain".to_string()),
+                cwd: plain.to_string_lossy().to_string(),
+            }))
+            .collect();
+        let out = git_rail_status_blocking(items);
+        fs::remove_dir_all(&plain).unwrap();
+
+        assert_eq!(out.len(), 9);
+        for (i, entry) in out.iter().take(8).enumerate() {
+            assert_eq!(entry["workspace_id"].as_str().unwrap(), format!("w{i}"));
+            assert_eq!(entry["state"].as_str().unwrap(), "clean");
+        }
+        // the non-git item stays LAST even though thread scheduling is
+        // unordered: caller order, not completion order
+        assert_eq!(out[8]["workspace_id"].as_str().unwrap(), "plain");
+        assert_eq!(out[8]["state"].as_str().unwrap(), "cleanup only");
+        assert!(out[8]["not_git_repository"].as_bool().unwrap());
     }
 
     #[test]

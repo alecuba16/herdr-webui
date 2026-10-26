@@ -29,13 +29,39 @@ pub(super) struct GitUiBranchDeleteRequest {
     pub(super) confirmed: Option<bool>,
 }
 
-/// One git call per branch keeps this simple and correct; branch lists are
-/// small and the endpoint is invoked when the popover opens, not per render.
+/// Test-only per-ref `git show` tip lookup (the endpoint batches via
+/// for-each-ref): the parity test proves both paths agree, and a one-off
+/// debug caller reads easier on it than on the batch collector.
+#[cfg(test)]
 fn branch_tip_details(cwd: &str, ref_name: &str) -> Option<String> {
     git_ui_text(cwd, &["show", "-s", "--format=%an%x00%cI%x00%s", ref_name])
         .ok()
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
+}
+
+/// refname -> NUL-delimited "author\0date\0subject" for every local and
+/// remote ref, from a single for-each-ref process. %(committerdate:iso-strict)
+/// is the same strict ISO 8601 format as git show's %cI. broken refs are
+/// skipped by for-each-ref, matching the old git-show fallback to empty.
+fn collect_branch_tip_details(cwd: &str) -> HashMap<String, String> {
+    let format = "%(refname)%00%(authorname)%00%(committerdate:iso-strict)%00%(contents:subject)";
+    let raw = git_ui_text(cwd, &["for-each-ref", "--format", format]).unwrap_or_default();
+    parse_branch_tip_lines(&raw)
+}
+
+/// One NUL-delimited record per line: refname, then author/date/subject
+/// details kept verbatim (splitting happens per ref on demand). A line
+/// without the separator is skipped, not keyed under a wrong name.
+fn parse_branch_tip_lines(raw: &str) -> HashMap<String, String> {
+    let mut tips = HashMap::new();
+    for line in raw.lines() {
+        let Some((refname, details)) = line.split_once('\0') else {
+            continue;
+        };
+        tips.insert(refname.to_string(), details.to_string());
+    }
+    tips
 }
 
 /// Splits the NUL-delimited tip details into (author, ISO date, subject).
@@ -58,11 +84,14 @@ pub(super) fn git_ui_branches_blocking(
         Ok(branches) => branches,
         Err(err) => return Err((StatusCode::BAD_GATEWAY, err)),
     };
+    let tips = collect_branch_tip_details(&cwd);
     let local_json = local
         .iter()
         .map(|b| {
-            let tip = branch_tip_details(&cwd, &format!("refs/heads/{}", b.name));
-            let details = tip.as_deref().unwrap_or("");
+            let details = tips
+                .get(&format!("refs/heads/{}", b.name))
+                .map(String::as_str)
+                .unwrap_or("");
             let (author, date, subject) = split_branch_tip_details(details);
             json!({
                 "name": b.name,
@@ -89,8 +118,10 @@ pub(super) fn git_ui_branches_blocking(
                 return None;
             }
             let local = local_branch_name_for_remote(name);
-            let tip = branch_tip_details(&cwd, &format!("refs/remotes/{name}"));
-            let details = tip.as_deref().unwrap_or("");
+            let details = tips
+                .get(&format!("refs/remotes/{name}"))
+                .map(String::as_str)
+                .unwrap_or("");
             let (author, date, subject) = split_branch_tip_details(details);
             Some(json!({
                 "name": name,
@@ -261,6 +292,7 @@ pub(super) async fn git_ui_switch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn split_branch_tip_details_parses_all_fields() {
@@ -321,6 +353,124 @@ mod tests {
         assert_eq!(author, "T");
         assert!(date.starts_with("20"), "date: {date}");
         assert_eq!(subject, "hello");
+
+        // parity: batched for-each-ref path must match the per-ref git show
+        // path on the same fixture, two branches on purpose.
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["switch", "-c", "feature"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        std::fs::write(root.join("b.txt"), "feature\n").unwrap();
+        for args in [vec!["add", "-A"], vec!["commit", "-m", "feature work"]] {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        let tips = collect_branch_tip_details(root.to_str().unwrap());
+        for (refname, name) in [
+            ("refs/heads/main", "main"),
+            ("refs/heads/feature", "feature"),
+        ] {
+            let batched = tips.get(refname).cloned();
+            let per_ref = branch_tip_details(root.to_str().unwrap(), refname);
+            assert_eq!(batched, per_ref, "tip mismatch for {name}");
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn branch_tip_parity_survives_hostile_subjects() {
+        // The batch format is NUL-delimited, one for-each-ref record per
+        // ref, so the hazards are: whitespace-trimmed subjects (git strips
+        // %s), multi-byte unicode through both paths, and an empty subject
+        // (--allow-empty with -m ""). All must give byte-identical
+        // author/date/subject between the batched for-each-ref path and
+        // the per-ref git show path.
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-branch-hostile-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for args in [
+            ["init", "-b", "main"],
+            ["config", "user.email", "t@t"],
+            ["config", "user.name", "\u{00dc}nicode \u{00c0}uthor"],
+        ] {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        let subjects = [
+            "plain subject",
+            "unicode snowman \u{2603} and accents caf\u{00e9}",
+            "",
+        ];
+        for subject in subjects {
+            let mut args = vec!["commit", "--allow-empty"];
+            // git refuses -m "" without --allow-empty-message; that refusal
+            // is exactly the empty-subject shape the parity must survive.
+            if subject.is_empty() {
+                args.push("--allow-empty-message");
+            }
+            args.push("-m");
+            args.push(subject);
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(&args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "commit {:?} failed", subject);
+        }
+        let tips = collect_branch_tip_details(root.to_str().unwrap());
+        // main points at the empty-subject commit: parity must hold for it.
+        let batched = tips.get("refs/heads/main").cloned();
+        let per_ref = branch_tip_details(root.to_str().unwrap(), "refs/heads/main");
+        assert_eq!(
+            batched, per_ref,
+            "batched vs per-ref mismatch on empty subject"
+        );
+        // a branch pinned to the unicode-subject commit covers that case too
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["branch", "uni-tip", "HEAD~1"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let tips = collect_branch_tip_details(root.to_str().unwrap());
+        let batched_uni = tips.get("refs/heads/uni-tip").cloned();
+        let per_ref_uni = branch_tip_details(root.to_str().unwrap(), "refs/heads/uni-tip");
+        assert_eq!(batched_uni, per_ref_uni, "unicode-subject tip mismatch");
+
+        // malformed line guard: a for-each-ref record without the NUL
+        // separator (none is produced by the fixed format, but a future
+        // format edit must degrade by skipping, not panic or mis-key) is
+        // dropped instead of landing in the map under a wrong ref name.
+        let malformed = "refs/heads/no-delimiter\nrefs/heads/other\0author\0date\0subject";
+        let parsed = parse_branch_tip_lines(malformed);
+        assert_eq!(parsed.len(), 1, "delimiter-less line skipped");
+        assert_eq!(
+            parsed.get("refs/heads/other").unwrap(),
+            "author\0date\0subject"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

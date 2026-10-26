@@ -71,6 +71,17 @@ function makeNode(id, className) {
       };
       return walk(node);
     },
+    contains(other) {
+      let cur = other;
+      while (cur) {
+        if (cur === node) return true;
+        cur = cur.parentNode;
+      }
+      return false;
+    },
+    focus() {
+      node.__focused = (node.__focused || 0) + 1;
+    },
   };
   Object.defineProperty(node, "childNodes", {
     get() {
@@ -99,6 +110,7 @@ function buildDom() {
   const document = {
     createElement: () => makeNode("", ""),
     getElementById: (id) => (nodes[id] ? nodes[id] : null),
+    activeElement: null,
   };
   return { nodes, document };
 }
@@ -233,4 +245,37 @@ test("openView hosts the search panel like files and git", async () => {
   // The old modal contract kept the Search rail button inactive; the
   // hosted mode reads it like files/git do.
   assert.equal(ctx.HerdrRightSidebar.isHosted("searchPanel"), true);
+});
+
+test("collapsing the column hands a stuck panel focus to the terminal shell", () => {
+  const { nodes, document } = buildDom();
+  const ctx = loadHost(document);
+  ctx.__mode = "git";
+  ctx.__herdrRightSidebarCollapsed = false;
+  const ensurePanel = makeDrawerPanelFactory(document, nodes, "gitUiPanel", "git-ui-panel");
+  // the hosting path is what moves the panel into the column
+  ctx.HerdrRightSidebar.openView("git", "ws-1", ensurePanel);
+  // the shell hosts the wterm textarea: the real landing zone for keys
+  const ime = makeNode("terminalImeInput", "");
+  nodes.terminalShell.appendChild(ime);
+  // focus sits inside the git panel, like a click on a file row left it
+  const row = makeNode("gitRow", "git-ui-file");
+  nodes.gitUiPanel.appendChild(row);
+  document.activeElement = row;
+
+  ctx.HerdrRightSidebar.apply();
+  assert.equal(nodes.rightSidebarContent.hidden, false, "expanded column stays visible");
+  assert.equal(ime.__focused, undefined, "expanded column never steals focus");
+
+  // rail toggle: collapse hides the column while the drawer state stays open
+  ctx.__herdrRightSidebarCollapsed = true;
+  ctx.HerdrRightSidebar.apply();
+  assert.equal(nodes.rightSidebarContent.hidden, true, "collapsed column hidden");
+  assert.equal(ime.__focused, 1, "focus moved into the shell keyboard path");
+
+  // expanding back must not move focus on its own; the user's next click
+  // or panel open decides
+  ctx.__herdrRightSidebarCollapsed = false;
+  ctx.HerdrRightSidebar.apply();
+  assert.equal(ime.__focused, 1, "expand path does not refocus the shell");
 });

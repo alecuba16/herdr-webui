@@ -354,6 +354,7 @@
       this.rows = options.rows || 24;
       this.core = normalizeCore(options.core);
       this._destroyed = false;
+      this._renderingPaused = false;
       this._linkClick = null;
       this._wheelScroll = null;
       this._imageFallbackState = {
@@ -492,6 +493,33 @@
       }
       this._inputGate = null;
       this._inputGateFocusHandler = null;
+    }
+
+    // Rendering pause for hidden surfaces. wterm's own visibility gate
+    // covers the whole document only: a surface parked display:none inside
+    // a live document still runs its per-RAF DOM rebuild, so a parked
+    // terminal burns main-thread time proportional to its pty output
+    // while nobody sees it. The owner module watches its element and
+    // flips this flag; wterm keeps parsing frames into wasm and buffers
+    // the row state, so un-pausing renders the missed output without
+    // data loss. The adapter never observes visibility itself: it has no
+    // opinion on layout, and the same surface can be parked by different
+    // owners (primary shell, aux pane container) over its lifetime.
+    setRenderingPaused(paused) {
+      paused = !!paused;
+      if (
+        this._destroyed ||
+        !this.wterm ||
+        typeof this.wterm.setRenderingPaused !== "function" ||
+        this._renderingPaused === paused
+      )
+        return;
+      this.wterm.setRenderingPaused(paused);
+      this._renderingPaused = paused;
+    }
+
+    isRenderingPaused() {
+      return !!this._renderingPaused;
     }
 
     write(data, callback) {

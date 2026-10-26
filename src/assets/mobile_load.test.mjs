@@ -1183,6 +1183,84 @@ describe("mobile bundle load", () => {
     equal(ctx.pendingTimers.filter((timer) => !timer.cleared).length, 2);
   });
 
+  it("shows the offline banner only after a real connect and a debounce delay", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    // The fake DOM auto-creates elements with hidden:false, but the real
+    // shell markup carries [hidden] on the banner. Seed the registry with
+    // the real initial state so assertions read app behavior, not the
+    // stub default.
+    ctx.document.getElementById("mobileOfflineBanner").hidden = true;
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    const banner = () => ctx.document.getElementById("mobileOfflineBanner");
+    // The fake socket never fires onopen by itself, and ctx.sockets mixes
+    // events and terminal sockets. Take the LATEST events socket: a
+    // flushTimers reconnect leaves earlier handles stale (their handlers
+    // no-op behind the eventWs guard).
+    const currentSocket = () =>
+      ctx.sockets
+        .filter((socket) => String(socket.url).includes("/ws/events"))
+        .slice(-1)[0];
+
+    // Before any successful connect the banner never shows: a boot
+    // against a dead server is loading state, not an outage. The drop
+    // schedules the 1.5s reconnect but the flush only reconnects; no
+    // banner timer exists because events never connected.
+    currentSocket().onclose();
+    equal(banner().hidden, true, "no banner before first connect");
+    await ctx.flushTimers();
+    equal(banner().hidden, true, "still no banner after reconnect flush");
+
+    // A real connect arms the outage path. A dropped stream schedules
+    // reconnect + banner debounce; a recovery that lands inside the
+    // debounce window cancels the banner and only the pending reconnect
+    // bookkeeping remains. Real sockets never reopen after onclose, so
+    // the recovery path is: reconnect timer fires, fresh socket, onopen.
+    currentSocket().onopen();
+    currentSocket().onclose();
+    equal(
+      ctx.pendingTimers.filter((timer) => !timer.cleared).length,
+      2,
+      "reconnect + banner debounce scheduled",
+    );
+    // Quick recovery inside the debounce window: the banner timer is
+    // cancelled while the reconnect still runs (two pending drops to
+    // one when the reconnect fires and its fresh socket opens).
+    currentSocket().onopen();
+    equal(banner().hidden, true, "no banner during quick recovery");
+    await ctx.flushTimers();
+    currentSocket().onopen();
+    equal(banner().hidden, true, "banner stays hidden after quick recovery");
+
+    // Sustained outage: the debounce fires and the banner shows; the
+    // eventual reconnect hides it again.
+    currentSocket().onclose();
+    await ctx.flushTimers();
+    equal(banner().hidden, false, "banner visible after sustained outage");
+    currentSocket().onopen();
+    equal(banner().hidden, true, "banner hides on reconnect");
+
+    // Intentional close (session switch, backend retarget) never arms the
+    // banner: the caller schedules the reconnect itself, and a banner
+    // timer here would race it into a one-paint flash. Drive it through
+    // the public selectSession path (switchSession -> closeEventWs),
+    // same route a tap on another session takes.
+    const beforeTimers = ctx.pendingTimers.filter((timer) => !timer.cleared).length;
+    ctx.HerdrMobile.selectSession("other");
+    await ctx.settle();
+    equal(
+      banner().hidden,
+      true,
+      "intentional close keeps the banner down",
+    );
+    equal(
+      ctx.pendingTimers.filter((timer) => !timer.cleared).some((timer) => !beforeTimers.includes(timer)),
+      false,
+      "intentional close arms no banner timer beyond switch bookkeeping",
+    );
+  });
+
   it("sticks to the legacy refresh path after a failed snapshot bootstrap", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     const originalFetch = ctx.fetch;

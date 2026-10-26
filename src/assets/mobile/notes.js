@@ -347,7 +347,7 @@
           ? `<div class="mobile-error">${escapeHtml(local.error)}</div>`
           : notes.length
             ? notes.map(rowHtml).join("")
-            : '<div class="mobile-loading">No notes yet. Create one to get started.</div>';
+            : '<div class="mobile-empty"><span aria-hidden="true">◍</span>No notes yet. Create one to get started.</div>';
       const syncLabel = local.syncFailed
         ? "Sync failed"
         : local.syncing ? "Syncing…" : "Sync";
