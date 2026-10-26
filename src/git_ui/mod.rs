@@ -1595,6 +1595,41 @@ mod tests {
     }
 
     #[test]
+    fn rail_status_unknown_states_never_reorder_or_lose_ids() {
+        // Two degrades the threaded handler must survive without panicking
+        // or dropping an id: a cwd git cannot even enter (missing dir, so
+        // the spawn fails with something other than "not a git
+        // repository"), and an empty cwd, which the filter drops before
+        // the spawn so the rail never tints an entry for a phantom dir.
+        let missing = std::env::temp_dir().join(format!(
+            "herdr-webui-rail-missing-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let items = vec![
+            GitUiRailStatusItem {
+                workspace_id: Some("gone".to_string()),
+                cwd: missing.to_string_lossy().to_string(),
+            },
+            GitUiRailStatusItem {
+                workspace_id: Some("phantom".to_string()),
+                cwd: String::new(),
+            },
+        ];
+        let out = git_rail_status_blocking(items);
+
+        // the empty cwd never reaches git; only the missing dir answers,
+        // as unknown (not the not-git "cleanup only" state: the error is
+        // a spawn failure, not the repository probe).
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["workspace_id"].as_str().unwrap(), "gone");
+        assert_eq!(out[0]["state"].as_str().unwrap(), "unknown");
+    }
+
+    #[test]
     fn rail_status_multi_cwd_keeps_caller_order_across_chunk_boundary() {
         // 9 unique cwds crosses the 8-slot chunking (div_ceil(8) -> 2
         // chunks), the reassembly must still answer in caller order with

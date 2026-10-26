@@ -543,7 +543,7 @@ impl PromptKind {
 /// timeout error) lands.
 pub(crate) struct RefreshInflight {
     pub(crate) started: Instant,
-    receiver: std::sync::mpsc::Receiver<Result<(Value, Value), BackendClientError>>,
+    pub(crate) receiver: std::sync::mpsc::Receiver<Result<(Value, Value), BackendClientError>>,
 }
 
 impl std::fmt::Debug for RefreshInflight {

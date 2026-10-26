@@ -8523,3 +8523,47 @@ fn file_tree_search_rows_highlight_matched_name_in_yellow() {
         "plain tree rows never highlight"
     );
 }
+
+#[test]
+fn poll_refresh_arms_waiting_and_survives_a_silent_worker_drop() {
+    // The three poll arms past the happy reply: a still-empty channel
+    // keeps the worker armed and feeds the spinner (dirty), and a
+    // worker that exits without sending (disconnected channel) must
+    // silently stop waiting instead of erroring or wedging the loop.
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+
+    // waiting arm: a channel with no reply yet stays in flight, and the
+    // next tick marks the frame dirty so the spinner keeps animating.
+    let (tx, rx) = std::sync::mpsc::channel::<
+        Result<(Value, Value), BackendClientError>,
+    >();
+    app.refresh_inflight = Some(RefreshInflight {
+        started: Instant::now(),
+        receiver: rx,
+    });
+    assert!(app.take_dirty(), "arming the test state reads dirty first");
+    app.poll_refresh();
+    assert!(app.refresh_inflight.is_some(), "empty channel keeps the worker armed");
+    assert!(app.take_dirty(), "waiting arm feeds the spinner");
+    assert!(app.error.is_none());
+
+    // disconnected arm: the worker died without a reply (dropped sender).
+    // poll must swallow that and stop waiting, leaving no inflight state
+    // and no error (a crashed refresh worker is not a backend outage).
+    drop(tx);
+    app.poll_refresh();
+    assert!(app.refresh_inflight.is_none(), "disconnected worker is discarded");
+    assert!(app.error.is_none(), "dropped worker is not reported as an error");
+
+    // Debug impl: TuiApp derives Debug, so the channel end must render
+    // through the manual impl instead of failing to compile or leaking
+    // the receiver's internals.
+    app.refresh_inflight = Some(RefreshInflight {
+        started: Instant::now(),
+        receiver: std::sync::mpsc::channel::<Result<(Value, Value), BackendClientError>>().1,
+    });
+    let rendered = format!("{:?}", app.refresh_inflight);
+    assert!(rendered.contains("started"), "Debug shows the started instant");
+    assert!(!rendered.contains("Receiver"), "channel internals stay hidden");
+}

@@ -47,6 +47,13 @@ fn branch_tip_details(cwd: &str, ref_name: &str) -> Option<String> {
 fn collect_branch_tip_details(cwd: &str) -> HashMap<String, String> {
     let format = "%(refname)%00%(authorname)%00%(committerdate:iso-strict)%00%(contents:subject)";
     let raw = git_ui_text(cwd, &["for-each-ref", "--format", format]).unwrap_or_default();
+    parse_branch_tip_lines(&raw)
+}
+
+/// One NUL-delimited record per line: refname, then author/date/subject
+/// details kept verbatim (splitting happens per ref on demand). A line
+/// without the separator is skipped, not keyed under a wrong name.
+fn parse_branch_tip_lines(raw: &str) -> HashMap<String, String> {
     let mut tips = HashMap::new();
     for line in raw.lines() {
         let Some((refname, details)) = line.split_once('\0') else {
@@ -443,6 +450,15 @@ mod tests {
         let batched_uni = tips.get("refs/heads/uni-tip").cloned();
         let per_ref_uni = branch_tip_details(root.to_str().unwrap(), "refs/heads/uni-tip");
         assert_eq!(batched_uni, per_ref_uni, "unicode-subject tip mismatch");
+
+        // malformed line guard: a for-each-ref record without the NUL
+        // separator (none is produced by the fixed format, but a future
+        // format edit must degrade by skipping, not panic or mis-key) is
+        // dropped instead of landing in the map under a wrong ref name.
+        let malformed = "refs/heads/no-delimiter\nrefs/heads/other\0author\0date\0subject";
+        let parsed = parse_branch_tip_lines(malformed);
+        assert_eq!(parsed.len(), 1, "delimiter-less line skipped");
+        assert_eq!(parsed.get("refs/heads/other").unwrap(), "author\0date\0subject");
 
         let _ = std::fs::remove_dir_all(&root);
     }
