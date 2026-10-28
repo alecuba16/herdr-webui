@@ -8,7 +8,9 @@
 //        the default 3 and the range input 1-20
 //   ss2  driving the slider persists herdr-web-options.scrollLines
 //        without a settings DOM swap (debounced commit path)
+//   ss2b an input-only drive (drag mid-gesture) commits via debounce
 //   ss3  reload restores the slider and label from storage
+//   ss3b corrupt and out-of-range stored values render clamped controls
 //   ss4  a wheel row-step on the live terminal scrolls scrollLines rows
 //   ss4b a wheel-up from the bottom scrolls back the same 7 rows
 //   ss4c two half-row pixel deltas accumulate into exactly one step
@@ -176,6 +178,25 @@ async function main() {
   const aliveParsed = JSON.parse(labelAlive);
   record("ss2 row survives the commit without DOM swap", aliveParsed.hasRow, labelAlive);
 
+  // ss2b: an input-only drive (no change event, like a real drag
+  // mid-gesture) must persist through the debounced path alone.
+  await evalExpr(`(() => {
+    const input = document.querySelector('[data-settings-id="scrollLines"] input[type=range]');
+    input.focus();
+    input.value = "12";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    return "driven";
+  })()`);
+  await sleep(400);
+  const storedEarly = await evalExpr(`JSON.parse(localStorage.getItem("herdr-web-options") || "{}").scrollLines`);
+  await sleep(1200); // past the 800ms debounce
+  const storedLate = await evalExpr(`JSON.parse(localStorage.getItem("herdr-web-options") || "{}").scrollLines`);
+  record(
+    "ss2b input-only drive commits through the debounce",
+    String(storedEarly) === "7" && String(storedLate) === "12",
+    `at+400ms ${storedEarly}, at+1600ms ${storedLate}`,
+  );
+
   // ss3: reload and confirm the slider restores from storage.
   await cdp.send("Page.navigate", { url: APP_URL });
   await sleep(3500);
@@ -196,11 +217,36 @@ async function main() {
     return JSON.stringify({ value: input ? input.value : null, text: label ? label.textContent.slice(0, 80) : null });
   })()`);
   const reloadParsed = JSON.parse(afterReload);
-  record("ss3 reload restores slider at 7", reloadParsed.value === "7", afterReload);
+  record("ss3 reload restores slider at 12", reloadParsed.value === "12", afterReload);
+
+  // ss3b: corrupt and out-of-range stored values must render clamped
+  // working values, never a blank or broken control (R-27 live check).
+  const corruptProbe = await evalExpr(`(async () => {
+    const results = [];
+    for (const value of ["banana", 999, 0, -4]) {
+      localStorage.setItem("herdr-web-options", JSON.stringify({ scrollLines: value }));
+      HerdrMobile.showScreen("settings");
+      await new Promise((r) => setTimeout(r, 300));
+      const label = document.querySelector('[data-settings-id="scrollLines"]');
+      const input = label && label.querySelector("input[type=range]");
+      const text = label ? label.textContent : "";
+      results.push({ value: String(value), rendered: input ? input.value : null, text: text.slice(0, 60) });
+    }
+    localStorage.setItem("herdr-web-options", JSON.stringify({ scrollLines: 12 }));
+    HerdrMobile.showScreen("settings");
+    return JSON.stringify(results);
+  })()`);
+  let corruptParsed = null;
+  try { corruptParsed = JSON.parse(corruptProbe); } catch { corruptParsed = null; }
+  record(
+    "ss3b corrupt and out-of-range values render clamped",
+    !!corruptParsed && corruptParsed.every((r) => r.rendered !== null && Number(r.rendered) >= 1 && Number(r.rendered) <= 20),
+    corruptProbe,
+  );
 
   // ss4: wheel speed on the live terminal. Fill scrollback through the
   // adapter, then a synthetic wheel row-step must move scrollTop by
-  // scrollLines * rowHeight (7 rows at the stored speed 7).
+  // scrollLines * rowHeight at whatever speed the earlier checks stored.
   const mintOk = /1 panes?/.test(mintInfo.chip || "");
   await evalExpr(`HerdrMobile.showScreen("terminal")`);
   await sleep(2000);
@@ -214,6 +260,7 @@ async function main() {
     }
     await new Promise((r) => setTimeout(r, 400));
     const rowHeight = adapter.rowHeight();
+    const speed = Number(JSON.parse(localStorage.getItem("herdr-web-options") || "{}").scrollLines) || 3;
     // Start from the top so the downward wheel step has scrollback room:
     // wterm clamps scrollTop at the bottom, where the fill loop leaves it.
     if (term.wterm && typeof term.wterm._setScrollTop === "function") {
@@ -226,11 +273,11 @@ async function main() {
     term.dispatchEvent(new WheelEvent("wheel", { deltaY: rowHeight, bubbles: true, cancelable: true }));
     await new Promise((r) => setTimeout(r, 150));
     const after = term.scrollTop;
-    return JSON.stringify({ rowHeight, delta: after - before, expected: rowHeight * 7, before, after });
+    return JSON.stringify({ rowHeight, speed, delta: after - before, expected: rowHeight * speed, before, after });
   })()`);
   const wheelParsed = JSON.parse(wheelProbe);
   record(
-    "ss4 wheel row-step scrolls 7 rows at speed 7",
+    "ss4 wheel row-step scrolls speed rows per step",
     mintOk && wheelParsed.delta !== undefined && wheelParsed.delta === wheelParsed.expected,
     wheelProbe,
   );
@@ -243,6 +290,7 @@ async function main() {
     const adapter = term.__herdrTerminalAdapter;
     if (!adapter) return JSON.stringify({ error: "no adapter" });
     const rowHeight = adapter.rowHeight();
+    const speed = Number(JSON.parse(localStorage.getItem("herdr-web-options") || "{}").scrollLines) || 3;
     if (term.wterm && typeof term.wterm._scrollToBottom === "function") {
       term.wterm._scrollToBottom();
     } else {
@@ -253,11 +301,11 @@ async function main() {
     term.dispatchEvent(new WheelEvent("wheel", { deltaY: -rowHeight, bubbles: true, cancelable: true }));
     await new Promise((r) => setTimeout(r, 150));
     const after = term.scrollTop;
-    return JSON.stringify({ delta: before - after, expected: rowHeight * 7, before, after });
+    return JSON.stringify({ delta: before - after, expected: rowHeight * speed, before, after });
   })()`);
   const upParsed = JSON.parse(upProbe);
   record(
-    "ss4b wheel-up from bottom scrolls back 7 rows",
+    "ss4b wheel-up from bottom scrolls back speed rows",
     mintOk && upParsed.delta !== undefined && upParsed.delta === upParsed.expected,
     upProbe,
   );
@@ -270,6 +318,7 @@ async function main() {
     const adapter = term.__herdrTerminalAdapter;
     if (!adapter) return JSON.stringify({ error: "no adapter" });
     const rowHeight = adapter.rowHeight();
+    const speed = Number(JSON.parse(localStorage.getItem("herdr-web-options") || "{}").scrollLines) || 3;
     if (term.wterm && typeof term.wterm._setScrollTop === "function") {
       term.wterm._setScrollTop(0);
     } else {
@@ -283,11 +332,11 @@ async function main() {
     term.dispatchEvent(new WheelEvent("wheel", { deltaY: rowHeight / 2, bubbles: true, cancelable: true }));
     await new Promise((r) => setTimeout(r, 150));
     const after = term.scrollTop;
-    return JSON.stringify({ firstHalfDelta: mid - before, totalDelta: after - before, expected: rowHeight * 7, before, mid, after });
+    return JSON.stringify({ firstHalfDelta: mid - before, totalDelta: after - before, expected: rowHeight * speed, before, mid, after });
   })()`);
   const accParsed = JSON.parse(accProbe);
   record(
-    "ss4c two half-row deltas accumulate into one 7-row step",
+    "ss4c two half-row deltas accumulate into one speed-sized step",
     mintOk && accParsed.firstHalfDelta === 0 && accParsed.totalDelta === accParsed.expected,
     accProbe,
   );
