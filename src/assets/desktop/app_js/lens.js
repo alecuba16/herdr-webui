@@ -602,6 +602,47 @@
     return `${turnIndex}:${partIndex}:${part.name || ""}`;
   }
 
+  // Consecutive same-name tool calls form one visual run: the first
+  // row keeps the tool name plus a count, the tail rows list their
+  // briefs (the "bash and a list of commands" look). tool_pending
+  // counts as the same call in flight: the kind flips in place at the
+  // same part index, so grouping by name alone is stable. Runs are
+  // recomputed from the turn's parts on EVERY render on purpose - the
+  // same-count DOM sync re-serializes each row per poll and must reach
+  // the identical form from the parts array alone, so run membership
+  // can never live in mutable state. Any other part kind (text,
+  // thinking, decision) or a different tool name breaks the run.
+  function toolRunInfo(parts, partIndex) {
+    const list = parts || [];
+    const part = list[partIndex];
+    if (!part || (part.kind !== "tool" && part.kind !== "tool_pending"))
+      return null;
+    const name = part.name || "";
+    let start = partIndex;
+    while (start > 0) {
+      const prev = list[start - 1];
+      if (
+        !prev ||
+        (prev.kind !== "tool" && prev.kind !== "tool_pending") ||
+        (prev.name || "") !== name
+      )
+        break;
+      start--;
+    }
+    let end = partIndex;
+    while (end + 1 < list.length) {
+      const next = list[end + 1];
+      if (
+        !next ||
+        (next.kind !== "tool" && next.kind !== "tool_pending") ||
+        (next.name || "") !== name
+      )
+        break;
+      end++;
+    }
+    return { first: start === partIndex, size: end - start + 1 };
+  }
+
   // Duration label for one assistant turn: "Worked for 2m 36s" style,
   // rendered as a muted meta line ABOVE the turn body (reference puts it
   // on the folded work block; we have no work blocks yet, so the meta
@@ -653,7 +694,7 @@
       (turn.parts || []).forEach((part, partIndex) => {
         // Part keys are GLOBAL turn indices; a chunk render must keep
         // the indices of the conversation it came from, not restart at 0.
-        parts.push(partHtml(part, globalIndex, partIndex));
+        parts.push(partHtml(part, globalIndex, partIndex, turn.parts));
       });
       const body = parts.join("");
       // Assistant turns carry the turn's wall-clock span (ts -> end_ts)
@@ -682,7 +723,7 @@
     return out.join("");
   }
 
-  function partHtml(part, turnIndex, partIndex) {
+  function partHtml(part, turnIndex, partIndex, turnParts) {
     if (part.kind === "text") {
       // Text parts carry the key too: the same-count sync must FIND them
       // (a miss would append a duplicate on every poll), and a text part
@@ -723,19 +764,38 @@
       return `<div class="lens-thinking" data-part-key="${escapeAttr(key)}">${head}${body}</div>`;
     }
     if (part.kind === "tool_pending") {
+      // A run of same-name calls renders one "running name…" head; the
+      // tail rows mark the queue depth without repeating the label.
+      const run = toolRunInfo(turnParts, partIndex);
+      if (run && !run.first)
+        return `<div class="lens-tool lens-tool-running lens-tool-run-continuation" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">…</div>`;
       // The name gets the tool-name span so the cyan anchor holds while a
       // call runs (the row itself is amber: in-flight state reads first,
       // then what is running).
-      return `<div class="lens-tool lens-tool-running" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">running <span class="lens-tool-name">${escapeHtml(part.name || "tool")}</span>…</div>`;
+      const count = run && run.size > 1 ? ` <span class="lens-tool-count">×${run.size}</span>` : "";
+      return `<div class="lens-tool lens-tool-running" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">running <span class="lens-tool-name">${escapeHtml(part.name || "tool")}</span>${count}…</div>`;
     }
     if (part.kind === "tool") {
       const key = partKey(turnIndex, partIndex, part);
       const open = expandedTools.has(key);
       const label = part.is_error ? "lens-tool-error" : "";
+      const run = toolRunInfo(turnParts, partIndex);
+      // Run tail rows (same-name consecutive calls after the first) drop
+      // the head entirely: the brief IS the row, reading as a command
+      // list under the one head that carries the tool name. The row keeps
+      // its own toggle carrier so each command in the list still expands
+      // its output individually (same key semantics as the head rows).
+      if (run && !run.first && !open) {
+        const briefClass = part.is_error
+          ? "lens-tool-run-item lens-tool-run-item-error"
+          : "lens-tool-run-item";
+        return `<div class="lens-tool lens-tool-run-item" data-part-key="${escapeAttr(key)}" data-toggle-tool="${escapeAttr(key)}" tabindex="0" role="button" aria-expanded="false"><span class="${briefClass}">${escapeHtml(part.brief || part.input || "")}</span></div>`;
+      }
       // data-part-key sits on the OUTER row (not the head) so the
       // pending -> resolved swap finds and replaces the whole row.
       const head = `<div class="lens-tool-head ${label}" data-toggle-tool="${escapeAttr(key)}" tabindex="0" role="button" aria-expanded="${open}">` +
         `<span class="lens-tool-name">${escapeHtml(part.name || "tool")}</span>` +
+        (run && run.size > 1 ? `<span class="lens-tool-count">×${run.size}</span>` : "") +
         `<span class="lens-tool-brief">${escapeHtml(part.brief || "")}</span>` +
         `<span class="lens-tool-caret">${open ? "▾" : "▸"}</span></div>`;
       if (!open)
@@ -1441,7 +1501,7 @@
         const key = partKey(turnIndex, partIndex, part);
         const row = content.querySelector(`[data-part-key="${cssEscape(key)}"]`);
         if (row) {
-          const fresh = partHtml(part, turnIndex, partIndex);
+          const fresh = partHtml(part, turnIndex, partIndex, turn.parts);
           // Compare SERIALIZED forms on both sides: template text keeps
           // entities (&quot;) that the DOM serializer would not emit for
           // text nodes, so a raw string compare would swap unchanged rows
@@ -1460,7 +1520,7 @@
         // turn (parts stream while the turn is open — text included).
         if (!turnEl) return;
         const at = document.createElement("div");
-        at.innerHTML = partHtml(part, turnIndex, partIndex);
+        at.innerHTML = partHtml(part, turnIndex, partIndex, turn.parts);
         while (at.firstChild) turnEl.appendChild(at.firstChild);
       });
     });

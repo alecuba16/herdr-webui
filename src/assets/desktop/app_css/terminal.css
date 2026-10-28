@@ -576,6 +576,44 @@ input {
   font-size: var(--fs-2xs, 11px);
   padding: 1px 0;
 }
+/* Same-name run tail rows: indented quiet items under the one head
+   that carries the tool name, so a burst of bash calls reads as one
+   block with a command list. Errors keep the danger hue so a failed
+   call still scans red in the list. */
+.lens-tool.lens-tool-run-item {
+  margin-left: 10px;
+  padding: 0;
+}
+.lens-tool-run-item .lens-tool-run-item {
+  color: var(--fg-dim, #a6adc8);
+  cursor: pointer;
+  display: block;
+  font-size: var(--fs-2xs, 11px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lens-tool-run-item .lens-tool-run-item:hover {
+  color: var(--fg);
+}
+.lens-tool-run-item .lens-tool-run-item-error {
+  color: var(--danger, #f38ba8);
+}
+.lens-tool-run-item:focus-visible {
+  /* Keyboard route for the run-item toggles: same ring convention as
+     the tool head so the two carriers read as one family. */
+  outline: 1px solid var(--border2, #585b70);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.lens-tool-count {
+  flex: none;
+  color: var(--fg-dim, #a6adc8);
+  font-weight: 400;
+}
+.lens-tool-running.lens-tool-run-continuation {
+  padding: 0;
+}
 .lens-tool-output {
   margin: 6px 0 2px;
   padding: 8px 10px;
