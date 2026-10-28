@@ -14,7 +14,10 @@
 //   ss4  a wheel row-step on the live terminal scrolls scrollLines rows
 //   ss4b a wheel-up from the bottom scrolls back the same 7 rows
 //   ss4c two half-row pixel deltas accumulate into exactly one step
+//   ss4d deltaMode 1 (line) scrolls exactly the speed setting
+//   ss4e deltaMode 2 (page) scrolls one terminal grid page
 //   ss5  the lens global exists with the paste-guard surface
+//   ss5b the paste takeover claims a paste with the lens closed
 //   ss6  lens focusTypingSurface lands the caret on the composer
 //   ss7  zero console errors across the whole run
 import { fetchJson, attach, sleep, makeRecorder, writeReport, writeCrashReport } from "./cdp-driver-helpers.mjs";
@@ -341,12 +344,70 @@ async function main() {
     accProbe,
   );
 
+  // ss4d/ss4e: deltaMode 1 and 2 on the live adapter. Line mode scrolls
+  // exactly the speed setting; page mode scrolls one grid page (term.rows),
+  // not the setting (unit-tested parity, here on the real terminal).
+  const modeProbe = await evalExpr(`(async () => {
+    const term = document.getElementById("terminal");
+    if (!term) return JSON.stringify({ error: "no terminal element" });
+    const adapter = term.__herdrTerminalAdapter;
+    if (!adapter) return JSON.stringify({ error: "no adapter" });
+    const rowHeight = adapter.rowHeight();
+    const speed = Number(JSON.parse(localStorage.getItem("herdr-web-options") || "{}").scrollLines) || 3;
+    const pageRows = Math.max(1, (adapter.rows || term.rows) || 24);
+    const reset = async () => {
+      if (term.wterm && typeof term.wterm._setScrollTop === "function") term.wterm._setScrollTop(0);
+      else term.scrollTop = 0;
+      await new Promise((r) => setTimeout(r, 150));
+      return term.scrollTop;
+    };
+    const beforeLine = await reset();
+    term.dispatchEvent(new WheelEvent("wheel", { deltaY: 1, deltaMode: 1, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 150));
+    const afterLine = term.scrollTop;
+    const beforePage = await reset();
+    term.dispatchEvent(new WheelEvent("wheel", { deltaY: 1, deltaMode: 2, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 150));
+    const afterPage = term.scrollTop;
+    return JSON.stringify({ speed, pageRows, lineDelta: afterLine - beforeLine, lineExpected: rowHeight * speed, pageDelta: afterPage - beforePage, pageExpected: rowHeight * pageRows });
+  })()`);
+  const modeParsed = JSON.parse(modeProbe);
+  record(
+    "ss4d line-mode wheel scrolls exactly the speed setting",
+    mintOk && modeParsed.lineDelta !== undefined && modeParsed.lineDelta === modeParsed.lineExpected,
+    modeProbe,
+  );
+  record(
+    "ss4e page-mode wheel scrolls one grid page",
+    mintOk && modeParsed.pageDelta !== undefined && modeParsed.pageDelta === modeParsed.pageExpected,
+    modeProbe,
+  );
+
   // ss5: the lens global exposes the surface the paste guard reads.
   const pasteProbe = await evalExpr(`(() => {
     const lens = window.HerdrMobileLens;
     return JSON.stringify({ hasLens: !!lens, hasIsActive: !!(lens && typeof lens.isActive === "function") });
   })()`);
   record("ss5 lens surface present for paste guard", JSON.parse(pasteProbe).hasIsActive === true, pasteProbe);
+
+  // ss5b: with the lens closed, the paste takeover claims a paste on the
+  // terminal (preventDefault + stopImmediatePropagation, PR #333 parity).
+  // The lens-open yield half stays unit-tested: the fixture pane runs a
+  // plain shell, no chat agent, so the lens never opens here.
+  const pasteClaim = await evalExpr(`(() => {
+    const term = document.getElementById("terminal");
+    if (!term) return JSON.stringify({ error: "no terminal element" });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    event.clipboardData = { getData: () => "e2e paste probe" };
+    term.dispatchEvent(event);
+    return JSON.stringify({ defaulted: event.defaultPrevented, stopped: event.__herdrStopped === true });
+  })()`);
+  const claimParsed = JSON.parse(pasteClaim);
+  record(
+    "ss5b paste takeover claims the event with lens closed",
+    mintOk && claimParsed.defaulted === true,
+    pasteClaim,
+  );
 
   // ss6: caret re-landing on the composer through the exported surface.
   const focusProbe = await evalExpr(`(() => {
