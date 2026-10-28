@@ -1715,6 +1715,7 @@
     setTerminalFontFamily: mobileSettings.setTerminalFontFamily,
     setTerminalLinks: mobileSettings.setTerminalLinks,
     setTerminalMouseReporting: mobileSettings.setTerminalMouseReporting,
+    setTerminalScrollLines: mobileSettings.setTerminalScrollLines,
     setWorktreeDefaultDirectory: mobileSettings.setWorktreeDefaultDirectory,
     setWorkspaceOpenTerminal: mobileSettings.setWorkspaceOpenTerminal,
     setCloseWorkspaceOnLastTerminal: mobileSettings.setCloseWorkspaceOnLastTerminal,

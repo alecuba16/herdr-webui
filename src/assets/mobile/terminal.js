@@ -398,6 +398,13 @@
     }
 
     function handlePaste(event) {
+      // PR #333 parity (desktop terminalFocusBlocked): while the chat lens
+      // covers the shell, a paste landing on the covered wterm textarea
+      // must not reach the hidden pty. The composer and lens scroller sit
+      // outside #terminal so their pastes never arrive here; this guard
+      // only fires for the covered surface itself.
+      const lens = globalThis.HerdrMobileLens;
+      if (lens && lens.isActive && lens.isActive()) return;
       const text = event.clipboardData && event.clipboardData.getData("text/plain");
       if (!text || !termWs || termWs.readyState !== 1) return;
       event.preventDefault();
@@ -418,7 +425,12 @@
       )
         return;
       event.preventDefault();
-      const lines = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, term.rowHeight ? term.rowHeight() : 17)));
+      // Same speed contract as the desktop wheel handler: one wheel step
+      // (one row of pixels) scrolls options.scrollLines rows, clamped
+      // 1-20 with default 3. Touch pan stays finger-follow and ignores this.
+      const stepLines = Math.max(1, Number(options().scrollLines) || 3);
+      const rows = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, term.rowHeight ? term.rowHeight() : 17)));
+      const lines = rows * stepLines;
       term.scrollLines(event.deltaY < 0 ? -lines : lines);
       setTerminalFollowPaused(!terminalAtBottom());
     }

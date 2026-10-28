@@ -583,6 +583,58 @@ describe("mobile lens", () => {
     ok(registry.get("mobileLens"), "overlay stays mounted across the toggle");
   });
 
+  it("setLens re-lands the caret on the composer on open (PR #333 parity)", async () => {
+    // Desktop parity (focusTypingSurface): the overlay covers the
+    // terminal while open, so the caret must move off the covered wterm
+    // textarea. On mobile the composer textarea is the typing surface.
+    const focusCalls = [];
+    const { registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    const composer = makeElement("textarea", 'id="mobileComposerInput"', "", registry);
+    composer.focus = (opts) => focusCalls.push(opts);
+    registry.set("mobileComposerInput", composer);
+    lens.setLens(true);
+    equal(focusCalls.length, 1, "open focuses the composer textarea once");
+    equal(focusCalls[0] && focusCalls[0].preventScroll, true, "focus call does not scroll the overlay");
+    lens.setLens(false);
+    equal(focusCalls.length, 1, "close does not steal focus back");
+  });
+
+  it("focusTypingSurface skips a disabled composer", async () => {
+    const focusCalls = [];
+    const { registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    const composer = makeElement("textarea", 'id="mobileComposerInput"', "", registry);
+    composer.focus = (opts) => focusCalls.push(opts);
+    composer.disabled = true;
+    registry.set("mobileComposerInput", composer);
+    equal(typeof lens.focusTypingSurface, "function", "parity export exists");
+    lens.focusTypingSurface();
+    equal(focusCalls.length, 0, "disabled composer never takes the caret");
+  });
+
+  it("pane switch re-lands the caret while the lens is open (PR #333 parity)", async () => {
+    // Desktop parity: a pane switch re-runs the terminal connect while
+    // the lens is open, which can leave the caret on the covered wterm
+    // textarea. onPaneChanged must re-land it on the composer.
+    const focusCalls = [];
+    const { registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    const composer = makeElement("textarea", 'id="mobileComposerInput"', "", registry);
+    composer.focus = (opts) => focusCalls.push(opts);
+    registry.set("mobileComposerInput", composer);
+    lens.setLens(true);
+    focusCalls.length = 0;
+    lens.onPaneChanged("pane_2");
+    equal(focusCalls.length, 1, "pane switch re-focuses the composer while the lens is open");
+  });
+
   it("setLens mounts the overlay in the shell and flips the switch", async () => {
     const { ctx, registry, lens } = makeHarness({
       state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },

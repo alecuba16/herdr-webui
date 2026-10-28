@@ -1246,6 +1246,20 @@
           if (deps.syncComposer) deps.syncComposer();
         } catch (_) {}
       }
+      if (lensActive) focusTypingSurface();
+    }
+
+    // Desktop focusTypingSurface parity: the overlay covers the terminal
+    // while open, so the caret must not stay on the covered wterm textarea
+    // (typing and paste would land in the hidden pty). Mobile has no
+    // keyboard-only scroller mode to keep alive, so the composer textarea
+    // is the only typing surface; on touch devices focus() is a no-op
+    // until the user taps, which is fine: there is no caret to steal.
+    function focusTypingSurface() {
+      const composerInput = el("mobileComposerInput");
+      if (composerInput && !composerInput.disabled) {
+        try { composerInput.focus({ preventScroll: true }); } catch (_) {}
+      }
     }
 
     function syncSwitchUi() {
@@ -1452,6 +1466,10 @@
         if (chatSupported() && paneId !== chatPane) resetChatState(paneId);
         render();
         ensurePolling();
+        // Desktop parity: a pane switch re-runs the terminal connect while
+        // the lens is open, which can leave the caret on the covered wterm
+        // textarea. Re-land it on the lens's own typing surface.
+        focusTypingSurface();
       }
       syncSwitchVisibility();
     }
@@ -1490,6 +1508,9 @@
       refreshConversation,
       setPendingBubble,
       loadOlder,
+      // Desktop parity export: caret re-landing after open and pane
+      // switches, exposed for tests the same way HerdrLens exports it.
+      focusTypingSurface,
       // Test/diagnostic surface.
       chatSupported,
       paneBlockedNow,

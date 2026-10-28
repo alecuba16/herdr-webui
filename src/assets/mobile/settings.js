@@ -56,6 +56,10 @@
           return Math.round(
             Math.max(0, Math.min(1, Number(options.notificationVolume) || 0)) * 100,
           );
+        case "scrollLines":
+          // Normalize the same way the setter does so the rollback diff
+          // sees 3 for a missing value, not "" against "3".
+          return Math.max(1, Math.min(20, Number(options.scrollLines) || 3));
         default: {
           const value = options[settingsId];
           return value === undefined ? "" : value;
@@ -85,6 +89,12 @@
           const parsed = readOptions();
           parsed.notificationVolume =
             Math.max(0, Math.min(100, Number(baseline) || 0)) / 100;
+          writeOptions(parsed);
+          break;
+        }
+        case "scrollLines": {
+          const parsed = readOptions();
+          parsed.scrollLines = Math.max(1, Math.min(20, Number(baseline) || 3));
           writeOptions(parsed);
           break;
         }
@@ -179,6 +189,7 @@
       const links = terminalLinksEnabled();
       const core = terminalCoreValue();
       const mouseReporting = terminalMouseReportingEnabled();
+      const scrollLines = terminalScrollLinesValue();
       const editorEnhanced = editorEnhancedEnabled();
       const editorWordWrap = editorWordWrapEnabled();
       const editorTabSize = editorTabSizeValue();
@@ -192,7 +203,7 @@
         { title: "Alerts", keywords: "alerts notifications sound volume scope", html: alertsSection(notifications, volume, soundScope) },
         { title: "Agents", keywords: "agents sorting stuck working dismiss blocked done idle prompt cards", html: agentsSection(agentSortMode, stuckWorking, promptCards, dismissMinutes) },
         { title: "Energy", keywords: "no sleep energy coffee awake power", html: energySection(noSleep.mode, noSleep.error, noSleep.supported === false) },
-        { title: "Terminal", keywords: "terminal renderer core ghostty font links mouse reporting", html: terminalSection(font, core, links, mouseReporting) },
+        { title: "Terminal", keywords: "terminal renderer core ghostty font links mouse reporting scroll speed wheel lines", html: terminalSection(font, core, links, mouseReporting, scrollLines) },
         { title: "Data", keywords: "refresh reload data logout sign out", html: dataSection() },
       ];
       const anyVisible = groups.some(settingsGroupVisible);
@@ -264,8 +275,8 @@
       return `<div class="mobile-settings-group"><h3>Energy</h3><label data-settings-id="noSleepMode">${appliedFlashHtml("noSleepMode")}<span>No-sleep mode</span><select onchange="HerdrMobile.setNoSleepMode(this.value)" ${noSleepUnsupported ? "disabled" : ""}><option value="off" ${mode === "off" ? "selected" : ""}>Off</option><option value="auto" ${mode === "auto" ? "selected" : ""}>Auto</option><option value="1h" ${mode === "1h" ? "selected" : ""}>1 hour</option><option value="2h" ${mode === "2h" ? "selected" : ""}>2 hours</option><option value="4h" ${mode === "4h" ? "selected" : ""}>4 hours</option><option value="infinite" ${mode === "infinite" ? "selected" : ""}>Infinite</option></select><small>Prevent computer sleep from the WebUI server. Auto keeps the host awake while agents work.</small></label>${note}</div>`;
     }
 
-    function terminalSection(font, core, links, mouseReporting) {
-      return `<div class="mobile-settings-group"><h3>Terminal</h3><label data-settings-id="terminalCore">${rollbackHtml("terminalCore")}${appliedFlashHtml("terminalCore")}<span>Terminal renderer</span><select onchange="HerdrMobile.setTerminalCore(this.value)"><option value="ghostty" ${core === "ghostty" ? "selected" : ""}>Ghostty VT core</option><option value="wterm" ${core === "wterm" ? "selected" : ""}>wterm VT core</option></select><small>Ghostty renders Kitty graphics inline; wterm shows a placeholder. One-time default switch: wterm flips to Ghostty unless you chose wterm after this change. Reload the page after switching.</small></label><label data-settings-id="terminalFontFamily">${rollbackHtml("terminalFontFamily")}${appliedFlashHtml("terminalFontFamily")}<span>Terminal font</span><input placeholder="JetBrainsMono Nerd Font, monospace"${inputAttrs()} value="${escapeHtml(font)}" oninput="HerdrMobile.setSettingDebounced('terminalFontFamily', this.value)" onchange="HerdrMobile.commitSettingFromChange('terminalFontFamily', this.value)"></label><label data-settings-id="terminalLinks">${rollbackHtml("terminalLinks")}${appliedFlashHtml("terminalLinks")}<input type="checkbox" ${links ? "checked" : ""} onchange="HerdrMobile.setTerminalLinks(this.checked)"><span>Terminal links</span><small>Detect http/https URLs and open them when tapped.</small></label><label data-settings-id="terminalMouseReporting">${rollbackHtml("terminalMouseReporting")}${appliedFlashHtml("terminalMouseReporting")}<input type="checkbox" ${mouseReporting ? "checked" : ""} onchange="HerdrMobile.setTerminalMouseReporting(this.checked)"><span>Terminal mouse reporting</span><small>Forward mouse input to terminal apps. Disabled by default; scrolling still works.</small></label><small>Add a Nerd Font family name so icon glyphs render. Leave blank for the default stack.</small></div>`;
+    function terminalSection(font, core, links, mouseReporting, scrollLines) {
+      return `<div class="mobile-settings-group"><h3>Terminal</h3><label data-settings-id="terminalCore">${rollbackHtml("terminalCore")}${appliedFlashHtml("terminalCore")}<span>Terminal renderer</span><select onchange="HerdrMobile.setTerminalCore(this.value)"><option value="ghostty" ${core === "ghostty" ? "selected" : ""}>Ghostty VT core</option><option value="wterm" ${core === "wterm" ? "selected" : ""}>wterm VT core</option></select><small>Ghostty renders Kitty graphics inline; wterm shows a placeholder. One-time default switch: wterm flips to Ghostty unless you chose wterm after this change. Reload the page after switching.</small></label><label data-settings-id="terminalFontFamily">${rollbackHtml("terminalFontFamily")}${appliedFlashHtml("terminalFontFamily")}<span>Terminal font</span><input placeholder="JetBrainsMono Nerd Font, monospace"${inputAttrs()} value="${escapeHtml(font)}" oninput="HerdrMobile.setSettingDebounced('terminalFontFamily', this.value)" onchange="HerdrMobile.commitSettingFromChange('terminalFontFamily', this.value)"></label><label data-settings-id="scrollLines">${rollbackHtml("scrollLines")}${appliedFlashHtml("scrollLines")}<span>Scroll speed<small>${scrollLines} terminal lines per wheel step.</small></span><input type="range" min="1" max="20" step="1" value="${scrollLines}" oninput="HerdrMobile.setTerminalScrollLines(this.value)"></label><label data-settings-id="terminalLinks">${rollbackHtml("terminalLinks")}${appliedFlashHtml("terminalLinks")}<input type="checkbox" ${links ? "checked" : ""} onchange="HerdrMobile.setTerminalLinks(this.checked)"><span>Terminal links</span><small>Detect http/https URLs and open them when tapped.</small></label><label data-settings-id="terminalMouseReporting">${rollbackHtml("terminalMouseReporting")}${appliedFlashHtml("terminalMouseReporting")}<input type="checkbox" ${mouseReporting ? "checked" : ""} onchange="HerdrMobile.setTerminalMouseReporting(this.checked)"><span>Terminal mouse reporting</span><small>Forward mouse input to terminal apps. Disabled by default; scrolling still works.</small></label><small>Add a Nerd Font family name so icon glyphs render. Leave blank for the default stack.</small></div>`;
     }
 
     function dataSection() {
@@ -463,6 +474,18 @@
 
     function terminalMouseReportingEnabled() {
       return readOptions().terminalMouseReporting === true;
+    }
+
+    function terminalScrollLinesValue() {
+      return Math.max(1, Math.min(20, Number(readOptions().scrollLines) || 3));
+    }
+
+    function setTerminalScrollLines(value) {
+      const parsed = readOptions();
+      parsed.scrollLines = Math.max(1, Math.min(20, Number(value) || 3));
+      writeOptions(parsed);
+      queueAppliedFlash("scrollLines");
+      mobileSettingRefresh();
     }
 
     function setWorktreeDefaultDirectory(value) {
@@ -924,6 +947,7 @@
       setTerminalCore,
       setTerminalLinks,
       setTerminalMouseReporting,
+      setTerminalScrollLines,
       setThemeMode,
       setWorktreeDefaultDirectory,
       setCloseWorkspaceOnLastTerminal,

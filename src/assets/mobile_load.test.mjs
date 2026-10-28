@@ -2154,6 +2154,51 @@ describe("mobile bundle load", () => {
     ok(!source.includes('.paste(text)'));
   });
 
+  it("drops the terminal paste takeover while the chat lens is open (PR #333 parity)", async () => {
+    // Desktop parity (terminalFocusBlocked): the capture-phase paste on
+    // the terminal element must not reach the hidden pty while the chat
+    // lens covers the shell, even when the caret sits on the covered wterm
+    // textarea (hardware keyboard case).
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await Promise.resolve();
+    const lens = { isActive: () => true };
+    ctx.HerdrMobileLens = lens;
+    const terminalEl = ctx.document.getElementById("terminal");
+    ok(terminalEl.listeners.paste && terminalEl.listeners.paste.length, "paste listener bound");
+    const event = {
+      clipboardData: { getData: () => "pasted text" },
+      preventDefault() { this.defaulted = true; },
+      stopImmediatePropagation() {},
+    };
+    terminalEl.listeners.paste[0](event);
+    ok(!event.defaulted, "lens open: paste never reaches the pty pipeline");
+    lens.isActive = () => false;
+    terminalEl.listeners.paste[0](event);
+    ok(event.defaulted, "lens closed: paste takeover claims the event again");
+  });
+
+  it("applies the scroll speed setting to mobile terminal wheel steps", async () => {
+    // Parity with the desktop Scroll speed setting: options.scrollLines
+    // multiplies the rows-per-wheel-step, clamped 1-20 with default 3.
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await Promise.resolve();
+    ctx.lastTerminal.rowHeight = () => 17;
+    const terminalEl = ctx.document.getElementById("terminal");
+    ok(terminalEl.listeners.wheel && terminalEl.listeners.wheel.length, "wheel listener bound");
+    const event = { deltaY: 17, preventDefault() {}, stopPropagation() {} };
+    terminalEl.listeners.wheel[0](event);
+    equal(ctx.lastTerminal.scrolledLines, 3, "default speed scrolls 3 lines per row step");
+    ctx.HerdrOptions.update((next) => { next.scrollLines = 10; });
+    terminalEl.listeners.wheel[0](event);
+    equal(ctx.lastTerminal.scrolledLines, 10, "setting multiplies the wheel step");
+  });
+
   it("opens mobile Git file diff with scrollable hunk markup", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
