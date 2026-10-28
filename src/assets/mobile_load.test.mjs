@@ -2125,7 +2125,7 @@ describe("mobile bundle load", () => {
     ctx.HerdrMobile.showScreen("terminal");
     await Promise.resolve();
     ok(source.includes("mobileTerminalFollowButton"));
-    ok(source.includes('terminal.addEventListener("wheel", handleWheel, { passive: false })'));
+    ok(source.includes('terminal.addEventListener("wheel", handleWheel, { passive: false, capture: true })'));
     ok(source.includes("term.usesNormalBuffer"));
     ok(source.includes("term.scrollLines"));
     // Wheel routing keys on mouse mode, not buffer: inline TUIs (jcode,
@@ -2182,7 +2182,9 @@ describe("mobile bundle load", () => {
 
   it("applies the scroll speed setting to mobile terminal wheel steps", async () => {
     // Parity with the desktop Scroll speed setting: options.scrollLines
-    // multiplies the rows-per-wheel-step, clamped 1-20 with default 3.
+    // multiplies whole row steps, clamped 1-20 with default 3, and
+    // sub-row pixel deltas accumulate across events like the desktop
+    // accumulator so trackpads never stall a row short per event.
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     vm.runInContext(source, ctx);
     await ctx.HerdrMobile.refresh();
@@ -2191,12 +2193,28 @@ describe("mobile bundle load", () => {
     ctx.lastTerminal.rowHeight = () => 17;
     const terminalEl = ctx.document.getElementById("terminal");
     ok(terminalEl.listeners.wheel && terminalEl.listeners.wheel.length, "wheel listener bound");
-    const event = { deltaY: 17, preventDefault() {}, stopPropagation() {} };
-    terminalEl.listeners.wheel[0](event);
-    equal(ctx.lastTerminal.scrolledLines, 3, "default speed scrolls 3 lines per row step");
+    const event = (deltaY) => ({ deltaY, deltaMode: 0, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+    terminalEl.listeners.wheel[0](event(17));
+    equal(ctx.lastTerminal.scrolledLines, 3, "one row step scrolls the default 3 lines");
+    terminalEl.listeners.wheel[0](event(17));
+    equal(ctx.lastTerminal.scrolledLines, 3, "second row step scrolls 3 more lines");
+    // Sub-row deltas accumulate: two half-row events produce one step.
+    ctx.lastTerminal.scrolledLines = 0;
+    terminalEl.listeners.wheel[0](event(8.5));
+    equal(ctx.lastTerminal.scrolledLines, 0, "half-row delta alone scrolls nothing");
+    terminalEl.listeners.wheel[0](event(8.5));
+    equal(ctx.lastTerminal.scrolledLines, 3, "accumulated half-row deltas produce one 3-line step");
     ctx.HerdrOptions.update((next) => { next.scrollLines = 10; });
-    terminalEl.listeners.wheel[0](event);
-    equal(ctx.lastTerminal.scrolledLines, 10, "setting multiplies the wheel step");
+    ctx.lastTerminal.scrolledLines = 0;
+    terminalEl.listeners.wheel[0](event(17));
+    equal(ctx.lastTerminal.scrolledLines, 10, "setting multiplies the whole row step");
+    // Line-mode wheels carry the setting per event; page mode scrolls a grid page.
+    ctx.lastTerminal.scrolledLines = 0;
+    terminalEl.listeners.wheel[0]({ deltaY: 1, deltaMode: 1, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+    equal(ctx.lastTerminal.scrolledLines, 10, "line-mode step carries the speed setting");
+    ctx.lastTerminal.rows = 40;
+    terminalEl.listeners.wheel[0]({ deltaY: 1, deltaMode: 2, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+    equal(ctx.lastTerminal.scrolledLines, 40, "page-mode scrolls the grid page, not the setting");
   });
 
   it("opens mobile Git file diff with scrollable hunk markup", async () => {

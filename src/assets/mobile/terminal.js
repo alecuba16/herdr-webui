@@ -19,7 +19,8 @@
       pendingTerminalResize = null,
       terminalShellResizeObserver = null,
       observedTerminalShell = null,
-      terminalShellResizeTimer = null;
+      terminalShellResizeTimer = null,
+      terminalWheelDeltaPixels = 0;
 
     const IMMEDIATE_WRITE_THRESHOLD = 8192;
     const LARGE_FRAME_THRESHOLD = 32768;
@@ -305,7 +306,11 @@
       }
       if (!terminalScrollBound) {
         terminal.addEventListener("paste", handlePaste, true);
-        terminal.addEventListener("wheel", handleWheel, { passive: false });
+        // Desktop parity: capture registration so this handler runs at
+        // target-capture phase, before the adapter's bubble-phase wheel
+        // fallback, and stopImmediatePropagation inside keeps that fallback
+        // from adding its own row on top of the scrollLines step.
+        terminal.addEventListener("wheel", handleWheel, { passive: false, capture: true });
         terminal.addEventListener("scroll", () => setTerminalFollowPaused(!terminalAtBottom()), { passive: true });
         terminalScrollBound = true;
       }
@@ -425,14 +430,34 @@
       )
         return;
       event.preventDefault();
-      // Same speed contract as the desktop wheel handler: one wheel step
-      // (one row of pixels) scrolls options.scrollLines rows, clamped
-      // 1-20 with default 3. Touch pan stays finger-follow and ignores this.
+      // Desktop parity (handleTerminalWheel): once this handler scrolls,
+      // the adapter's own fallback wheel listener must not run too, or
+      // every step scrolls scrollLines rows plus one extra row from the
+      // adapter's default wheelLines math. stopImmediatePropagation on the
+      // capture registration below kills that second scroll.
       const stepLines = Math.max(1, Number(options().scrollLines) || 3);
-      const rows = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, term.rowHeight ? term.rowHeight() : 17)));
-      const lines = rows * stepLines;
-      term.scrollLines(event.deltaY < 0 ? -lines : lines);
+      const rowHeight = Math.max(1, term.rowHeight ? term.rowHeight() : 17);
+      if (event.deltaMode === 1) {
+        term.scrollLines(event.deltaY < 0 ? -stepLines : stepLines);
+        setTerminalFollowPaused(!terminalAtBottom());
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (event.deltaMode === 2) {
+        const pageRows = Math.max(1, term.rows || 24);
+        term.scrollLines(event.deltaY < 0 ? -pageRows : pageRows);
+        setTerminalFollowPaused(!terminalAtBottom());
+        event.stopImmediatePropagation();
+        return;
+      }
+      terminalWheelDeltaPixels += event.deltaY;
+      if (Math.abs(terminalWheelDeltaPixels) < rowHeight) return;
+      const steps = Math.trunc(terminalWheelDeltaPixels / rowHeight);
+      terminalWheelDeltaPixels -= steps * rowHeight;
+      const lines = steps * stepLines;
+      term.scrollLines(lines);
       setTerminalFollowPaused(!terminalAtBottom());
+      event.stopImmediatePropagation();
     }
 
     function disconnect(clear) {
