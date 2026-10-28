@@ -423,4 +423,23 @@ describe("chat/terminal focus + paste routing (bug_chat_terminal_paste_inputfocu
     drainPastePipeline();
     equal(pastedText(), "shell paste");
   });
+
+  it("multi-chunk paste drains fully: every chunk of a >4096-char payload reaches the pty", async () => {
+    const { nodes, firePaste, setLensActive, pastedText, drainPastePipeline, attachSocket } = await loadTerminalModule();
+    setLensActive(false);
+    // PASTE_TEXT_CHUNK_SIZE is 4096: 3 chunks plus a partial. Newline
+    // normalization (CR to LF) must not corrupt the reconstruction.
+    const payload = "x".repeat(4095) + "\n" + "y".repeat(4095) + "\n" + "z".repeat(4095) + "\n" + "tail";
+    const result = firePaste(nodes.terminalShell, payload, null);
+    equal(result.defaultPrevented, true, "large paste is claimed");
+    drainPastePipeline();
+    equal(pastedText(), payload, "all chunks reassemble byte-for-byte after chunked flushing");
+    // The drain must fully consume the paste job: a job left mid-flight
+    // would keep re-arming timers (and re-sending) forever.
+    const socket = attachSocket();
+    const chunkCount = socket
+      ? socket.sent.filter((c) => c instanceof Uint8Array).length
+      : 0;
+    ok(chunkCount >= 4, "payload actually split into chunks (got " + chunkCount + ")");
+  });
 });
