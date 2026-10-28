@@ -10,8 +10,11 @@
 //        without a settings DOM swap (debounced commit path)
 //   ss3  reload restores the slider and label from storage
 //   ss4  a wheel row-step on the live terminal scrolls scrollLines rows
+//   ss4b a wheel-up from the bottom scrolls back the same 7 rows
+//   ss4c two half-row pixel deltas accumulate into exactly one step
 //   ss5  the lens global exists with the paste-guard surface
 //   ss6  lens focusTypingSurface lands the caret on the composer
+//   ss7  zero console errors across the whole run
 import { fetchJson, attach, sleep, makeRecorder, writeReport, writeCrashReport } from "./cdp-driver-helpers.mjs";
 
 const CDP_HTTP = process.env.CDP_HTTP || "http://127.0.0.1:9229";
@@ -26,6 +29,9 @@ if (!REPO) {
 
 const recorder = makeRecorder();
 const record = recorder.record.bind(recorder);
+// R-35 evidence: every console error the page emits during the run,
+// collected via Runtime.consoleAPICalled and asserted at the end.
+const consoleErrors = [];
 
 async function main() {
   const targets = await fetchJson(`${CDP_HTTP}/json`);
@@ -33,6 +39,12 @@ async function main() {
   if (!page) throw new Error(`no page target for ${APP_URL}; open it first`);
   const cdp = await attach(page.webSocketDebuggerUrl);
   await cdp.send("Page.enable");
+  await cdp.send("Runtime.enable");
+  cdp.on("Runtime.consoleAPICalled", (params) => {
+    if (params.type === "error") {
+      consoleErrors.push((params.args || []).map((a) => a.value || a.description || "").join(" ").slice(0, 200));
+    }
+  });
 
   const evalExpr = async (expression) => {
     const r = await cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
@@ -223,6 +235,63 @@ async function main() {
     wheelProbe,
   );
 
+  // ss4b: wheel-up from the bottom moves back the same distance (the
+  // handler is direction-symmetric and the accumulator drains both ways).
+  const upProbe = await evalExpr(`(async () => {
+    const term = document.getElementById("terminal");
+    if (!term) return JSON.stringify({ error: "no terminal element" });
+    const adapter = term.__herdrTerminalAdapter;
+    if (!adapter) return JSON.stringify({ error: "no adapter" });
+    const rowHeight = adapter.rowHeight();
+    if (term.wterm && typeof term.wterm._scrollToBottom === "function") {
+      term.wterm._scrollToBottom();
+    } else {
+      term.scrollTop = term.scrollHeight || 0;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+    const before = term.scrollTop;
+    term.dispatchEvent(new WheelEvent("wheel", { deltaY: -rowHeight, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 150));
+    const after = term.scrollTop;
+    return JSON.stringify({ delta: before - after, expected: rowHeight * 7, before, after });
+  })()`);
+  const upParsed = JSON.parse(upProbe);
+  record(
+    "ss4b wheel-up from bottom scrolls back 7 rows",
+    mintOk && upParsed.delta !== undefined && upParsed.delta === upParsed.expected,
+    upProbe,
+  );
+
+  // ss4c: live accumulator: two half-row deltas must produce exactly one
+  // scrollLines step (trackpad parity, no row lost to rounding per event).
+  const accProbe = await evalExpr(`(async () => {
+    const term = document.getElementById("terminal");
+    if (!term) return JSON.stringify({ error: "no terminal element" });
+    const adapter = term.__herdrTerminalAdapter;
+    if (!adapter) return JSON.stringify({ error: "no adapter" });
+    const rowHeight = adapter.rowHeight();
+    if (term.wterm && typeof term.wterm._setScrollTop === "function") {
+      term.wterm._setScrollTop(0);
+    } else {
+      term.scrollTop = 0;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+    const before = term.scrollTop;
+    term.dispatchEvent(new WheelEvent("wheel", { deltaY: rowHeight / 2, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 100));
+    const mid = term.scrollTop;
+    term.dispatchEvent(new WheelEvent("wheel", { deltaY: rowHeight / 2, bubbles: true, cancelable: true }));
+    await new Promise((r) => setTimeout(r, 150));
+    const after = term.scrollTop;
+    return JSON.stringify({ firstHalfDelta: mid - before, totalDelta: after - before, expected: rowHeight * 7, before, mid, after });
+  })()`);
+  const accParsed = JSON.parse(accProbe);
+  record(
+    "ss4c two half-row deltas accumulate into one 7-row step",
+    mintOk && accParsed.firstHalfDelta === 0 && accParsed.totalDelta === accParsed.expected,
+    accProbe,
+  );
+
   // ss5: the lens global exposes the surface the paste guard reads.
   const pasteProbe = await evalExpr(`(() => {
     const lens = window.HerdrMobileLens;
@@ -244,6 +313,14 @@ async function main() {
     "ss6 lens focusTypingSurface lands on composer (live DOM)",
     mintOk && focusParsed.active === true,
     focusProbe,
+  );
+
+  // ss7: no console errors across the whole run (R-35 click-through
+  // evidence: the driven surfaces never threw).
+  record(
+    "ss7 zero console errors across the run",
+    consoleErrors.length === 0,
+    consoleErrors.length ? JSON.stringify(consoleErrors.slice(0, 5)) : "none",
   );
 
   console.log(`\n${recorder.passed}/${recorder.results.length} checks passed`);
