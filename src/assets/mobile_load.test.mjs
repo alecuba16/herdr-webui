@@ -2125,7 +2125,7 @@ describe("mobile bundle load", () => {
     ctx.HerdrMobile.showScreen("terminal");
     await Promise.resolve();
     ok(source.includes("mobileTerminalFollowButton"));
-    ok(source.includes('terminal.addEventListener("wheel", handleWheel, { passive: false })'));
+    ok(source.includes('terminal.addEventListener("wheel", handleWheel, { passive: false, capture: true })'));
     ok(source.includes("term.usesNormalBuffer"));
     ok(source.includes("term.scrollLines"));
     // Wheel routing keys on mouse mode, not buffer: inline TUIs (jcode,
@@ -2152,6 +2152,69 @@ describe("mobile bundle load", () => {
     match(source, /sendInputData\(normalized, \{ chunkSize: 16 \* 1024, maxBufferedAmount: 64 \* 1024 \}\)/);
     ok(!source.includes('JSON.stringify({ type: "paste"'));
     ok(!source.includes('.paste(text)'));
+  });
+
+  it("drops the terminal paste takeover while the chat lens is open (PR #333 parity)", async () => {
+    // Desktop parity (terminalFocusBlocked): the capture-phase paste on
+    // the terminal element must not reach the hidden pty while the chat
+    // lens covers the shell, even when the caret sits on the covered wterm
+    // textarea (hardware keyboard case).
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await Promise.resolve();
+    const lens = { isActive: () => true };
+    ctx.HerdrMobileLens = lens;
+    const terminalEl = ctx.document.getElementById("terminal");
+    ok(terminalEl.listeners.paste && terminalEl.listeners.paste.length, "paste listener bound");
+    const event = {
+      clipboardData: { getData: () => "pasted text" },
+      preventDefault() { this.defaulted = true; },
+      stopImmediatePropagation() {},
+    };
+    terminalEl.listeners.paste[0](event);
+    ok(!event.defaulted, "lens open: paste never reaches the pty pipeline");
+    lens.isActive = () => false;
+    terminalEl.listeners.paste[0](event);
+    ok(event.defaulted, "lens closed: paste takeover claims the event again");
+  });
+
+  it("applies the scroll speed setting to mobile terminal wheel steps", async () => {
+    // Parity with the desktop Scroll speed setting: options.scrollLines
+    // multiplies whole row steps, clamped 1-20 with default 3, and
+    // sub-row pixel deltas accumulate across events like the desktop
+    // accumulator so trackpads never stall a row short per event.
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    ctx.HerdrMobile.showScreen("terminal");
+    await Promise.resolve();
+    ctx.lastTerminal.rowHeight = () => 17;
+    const terminalEl = ctx.document.getElementById("terminal");
+    ok(terminalEl.listeners.wheel && terminalEl.listeners.wheel.length, "wheel listener bound");
+    const event = (deltaY) => ({ deltaY, deltaMode: 0, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+    terminalEl.listeners.wheel[0](event(17));
+    equal(ctx.lastTerminal.scrolledLines, 3, "one row step scrolls the default 3 lines");
+    terminalEl.listeners.wheel[0](event(17));
+    equal(ctx.lastTerminal.scrolledLines, 3, "second row step scrolls 3 more lines");
+    // Sub-row deltas accumulate: two half-row events produce one step.
+    ctx.lastTerminal.scrolledLines = 0;
+    terminalEl.listeners.wheel[0](event(8.5));
+    equal(ctx.lastTerminal.scrolledLines, 0, "half-row delta alone scrolls nothing");
+    terminalEl.listeners.wheel[0](event(8.5));
+    equal(ctx.lastTerminal.scrolledLines, 3, "accumulated half-row deltas produce one 3-line step");
+    ctx.HerdrOptions.update((next) => { next.scrollLines = 10; });
+    ctx.lastTerminal.scrolledLines = 0;
+    terminalEl.listeners.wheel[0](event(17));
+    equal(ctx.lastTerminal.scrolledLines, 10, "setting multiplies the whole row step");
+    // Line-mode wheels carry the setting per event; page mode scrolls a grid page.
+    ctx.lastTerminal.scrolledLines = 0;
+    terminalEl.listeners.wheel[0]({ deltaY: 1, deltaMode: 1, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+    equal(ctx.lastTerminal.scrolledLines, 10, "line-mode step carries the speed setting");
+    ctx.lastTerminal.rows = 40;
+    terminalEl.listeners.wheel[0]({ deltaY: 1, deltaMode: 2, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+    equal(ctx.lastTerminal.scrolledLines, 40, "page-mode scrolls the grid page, not the setting");
   });
 
   it("opens mobile Git file diff with scrollable hunk markup", async () => {

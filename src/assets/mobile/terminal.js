@@ -19,7 +19,8 @@
       pendingTerminalResize = null,
       terminalShellResizeObserver = null,
       observedTerminalShell = null,
-      terminalShellResizeTimer = null;
+      terminalShellResizeTimer = null,
+      terminalWheelDeltaPixels = 0;
 
     const IMMEDIATE_WRITE_THRESHOLD = 8192;
     const LARGE_FRAME_THRESHOLD = 32768;
@@ -305,7 +306,11 @@
       }
       if (!terminalScrollBound) {
         terminal.addEventListener("paste", handlePaste, true);
-        terminal.addEventListener("wheel", handleWheel, { passive: false });
+        // Desktop parity: capture registration so this handler runs at
+        // target-capture phase, before the adapter's bubble-phase wheel
+        // fallback, and stopImmediatePropagation inside keeps that fallback
+        // from adding its own row on top of the scrollLines step.
+        terminal.addEventListener("wheel", handleWheel, { passive: false, capture: true });
         terminal.addEventListener("scroll", () => setTerminalFollowPaused(!terminalAtBottom()), { passive: true });
         terminalScrollBound = true;
       }
@@ -398,6 +403,13 @@
     }
 
     function handlePaste(event) {
+      // PR #333 parity (desktop terminalFocusBlocked): while the chat lens
+      // covers the shell, a paste landing on the covered wterm textarea
+      // must not reach the hidden pty. The composer and lens scroller sit
+      // outside #terminal so their pastes never arrive here; this guard
+      // only fires for the covered surface itself.
+      const lens = globalThis.HerdrMobileLens;
+      if (lens && lens.isActive && lens.isActive()) return;
       const text = event.clipboardData && event.clipboardData.getData("text/plain");
       if (!text || !termWs || termWs.readyState !== 1) return;
       event.preventDefault();
@@ -418,9 +430,33 @@
       )
         return;
       event.preventDefault();
-      const lines = Math.max(1, Math.round(Math.abs(event.deltaY) / Math.max(1, term.rowHeight ? term.rowHeight() : 17)));
-      term.scrollLines(event.deltaY < 0 ? -lines : lines);
+      // Desktop parity (handleTerminalWheel): after scrolling, stop the
+      // event so the adapter's own wheel fallback does not add one more
+      // row on top of the scrollLines step (capture registration above
+      // guarantees this handler runs first).
+      const stepLines = Math.max(1, Number(options().scrollLines) || 3);
+      const rowHeight = Math.max(1, term.rowHeight ? term.rowHeight() : 17);
+      if (event.deltaMode === 1) {
+        term.scrollLines(event.deltaY < 0 ? -stepLines : stepLines);
+        setTerminalFollowPaused(!terminalAtBottom());
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (event.deltaMode === 2) {
+        const pageRows = Math.max(1, term.rows || 24);
+        term.scrollLines(event.deltaY < 0 ? -pageRows : pageRows);
+        setTerminalFollowPaused(!terminalAtBottom());
+        event.stopImmediatePropagation();
+        return;
+      }
+      terminalWheelDeltaPixels += event.deltaY;
+      if (Math.abs(terminalWheelDeltaPixels) < rowHeight) return;
+      const steps = Math.trunc(terminalWheelDeltaPixels / rowHeight);
+      terminalWheelDeltaPixels -= steps * rowHeight;
+      const lines = steps * stepLines;
+      term.scrollLines(lines);
       setTerminalFollowPaused(!terminalAtBottom());
+      event.stopImmediatePropagation();
     }
 
     function disconnect(clear) {
