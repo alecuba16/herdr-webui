@@ -424,6 +424,31 @@ describe("chat/terminal focus + paste routing (bug_chat_terminal_paste_inputfocu
     equal(pastedText(), "shell paste");
   });
 
+  it("paste takeover stays silent when a plain INPUT holds focus inside the shell", async () => {
+    const { nodes, firePaste, setLensActive, pastedText, drainPastePipeline } = await loadTerminalModule();
+    setLensActive(false);
+    // The guard list is ["INPUT", "TEXTAREA", "SELECT"]: an INPUT
+    // (question card field, search box) owns the caret, the paste
+    // belongs to it, not the pty. Pins the first entry of the list.
+    const input = { tagName: "INPUT", isContentEditable: false };
+    const result = firePaste(nodes.terminalShell, "card text", input);
+    equal(result.defaultPrevented, false, "INPUT-focused paste is not hijacked");
+    drainPastePipeline();
+    equal(pastedText(), "", "INPUT-focused paste never reaches the pty");
+  });
+
+  it("paste takeover stays silent when a contentEditable node holds focus", async () => {
+    const { nodes, firePaste, setLensActive, pastedText, drainPastePipeline } = await loadTerminalModule();
+    setLensActive(false);
+    // The isContentEditable sub-branch: no tagName, only the editable
+    // flag. A rich editor inside the shell must keep its paste.
+    const editable = { tagName: "DIV", isContentEditable: true };
+    const result = firePaste(nodes.terminalShell, "rich text", editable);
+    equal(result.defaultPrevented, false, "contentEditable paste is not hijacked");
+    drainPastePipeline();
+    equal(pastedText(), "", "contentEditable paste never reaches the pty");
+  });
+
   it("multi-chunk paste drains fully: every chunk of a >4096-char payload reaches the pty", async () => {
     const { nodes, firePaste, setLensActive, pastedText, drainPastePipeline, attachSocket } = await loadTerminalModule();
     setLensActive(false);

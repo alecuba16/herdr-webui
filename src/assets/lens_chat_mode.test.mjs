@@ -2649,6 +2649,31 @@ describe("lens cursor paging and poll contract", () => {
     equal(scrollerFocus[0] && scrollerFocus[0].preventScroll, true, "scroller focus must not scroll");
   });
 
+  it("lens open on a scrollback pane focuses the scroller even with a live composer element", async () => {
+    // The non-chat branch of focusTypingSurface: chatSupported() is false
+    // (agent-less pane), so the composer must be skipped even when the
+    // element exists and is enabled (a stale DOM row from an earlier
+    // chat-capable pane). The scroller is the only correct target on a
+    // scrollback pane.
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_shell", agents: [] },
+      api: async () => conversationFixture(),
+    });
+    const composerFocus = [];
+    const scrollerFocus = [];
+    ctx.document.getElementById = (id) => {
+      if (id === "terminalComposerInput")
+        return { tagName: "TEXTAREA", disabled: false, focus() { composerFocus.push(1); } };
+      if (id === "terminalLensScroller")
+        return { focus(arg) { scrollerFocus.push(arg); } };
+      return registry.get(id) || null;
+    };
+    ctx.HerdrLens.setLens(true);
+    equal(composerFocus.length, 0, "composer is skipped on a scrollback pane even if present and enabled");
+    equal(scrollerFocus.length, 1, "scroller takes the caret in scrollback mode");
+    equal(scrollerFocus[0] && scrollerFocus[0].preventScroll, true, "scroller focus must not scroll");
+  });
+
   it("image parts render the byte route with an escaped ref", async () => {
     const fixture = {
       ...conversationFixture(),
