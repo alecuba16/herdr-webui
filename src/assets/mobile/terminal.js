@@ -430,11 +430,10 @@
       )
         return;
       event.preventDefault();
-      // Desktop parity (handleTerminalWheel): once this handler scrolls,
-      // the adapter's own fallback wheel listener must not run too, or
-      // every step scrolls scrollLines rows plus one extra row from the
-      // adapter's default wheelLines math. stopImmediatePropagation on the
-      // capture registration below kills that second scroll.
+      // Desktop parity (handleTerminalWheel): after scrolling, stop the
+      // event so the adapter's own wheel fallback does not add one more
+      // row on top of the scrollLines step (capture registration above
+      // guarantees this handler runs first).
       const stepLines = Math.max(1, Number(options().scrollLines) || 3);
       const rowHeight = Math.max(1, term.rowHeight ? term.rowHeight() : 17);
       if (event.deltaMode === 1) {
