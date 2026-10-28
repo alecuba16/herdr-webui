@@ -1953,8 +1953,12 @@
       // overlay. Re-enabled on close; wterm re-checks visibility on its
       // own for background tabs.
       setCoveredRendering(true);
-      const scroller = node.querySelector("#terminalLensScroller");
-      if (scroller) scroller.focus({ preventScroll: true });
+      // Focus follows the surface: structured chat mode parks the caret in
+      // the composer textarea (the typing target the user sees), while
+      // scrollback mode keeps the scroller. Without this the previous
+      // surface kept the caret (often the hidden terminal's textarea),
+      // and typing/paste landed on the pane behind the lens.
+      focusTypingSurface();
       // The terminal keeps its socket; refit is unnecessary because the
       // terminal element stays at its geometry (the lens overlays it).
     } else {
@@ -2088,6 +2092,13 @@
       contentDirty();
       render();
       ensurePolling();
+      // A pane switch re-ran connectTerminal while the lens was open:
+      // re-land the caret on the lens's own typing surface so the next
+      // keystroke or paste cannot fall through to the covered terminal
+      // (connectTerminal's idempotent path only preserves focus that
+      // already sits on an interactive element, which excludes the
+      // wterm textarea case the pane switch just left behind).
+      focusTypingSurface();
     }
     syncSwitchVisibility();
   }
@@ -2110,6 +2121,21 @@
 
   function isActive() {
     return lensActive;
+  }
+
+  // The typing surface the lens owns: the composer textarea in structured
+  // chat mode, the scroller otherwise. One place so open and pane-switch
+  // paths cannot drift apart on where the caret belongs.
+  function focusTypingSurface() {
+    const composerInput = document.getElementById("terminalComposerInput");
+    if (chatSupported() && composerInput && !composerInput.disabled) {
+      try { composerInput.focus({ preventScroll: true }); } catch (e) {}
+      return;
+    }
+    const scroller = document.getElementById("terminalLensScroller");
+    if (scroller) {
+      try { scroller.focus({ preventScroll: true }); } catch (e) {}
+    }
   }
 
   function onTerminalFrame() {
@@ -2306,6 +2332,10 @@
     refreshConversation,
     setPendingBubble,
     loadOlder,
+    // Focus the lens's own typing surface (composer in structured chat
+    // mode, scroller otherwise). Called after pane switches and syncs so
+    // the caret never stays on the covered terminal surface.
+    focusTypingSurface,
     // Test/diagnostic surface: older-page internals.
     _olderState: () => ({ olderCursor, heldFrom, olderState, olderTurns, olderTruncated }),
     _dropOlderPages: dropOlderPages,

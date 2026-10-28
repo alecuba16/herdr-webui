@@ -868,6 +868,12 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     copySelection();
   } else if (pasteKey) {
+    // The chat lens covers the terminal while open: keystrokes belong to
+    // the lens scroller / composer, and its own surfaces own paste. The
+    // terminal clipboard read here used to fire mid-chat and paste the
+    // clipboard into the hidden pty (focus/paste routing bug).
+    if (globalThis.HerdrLens && globalThis.HerdrLens.isActive && globalThis.HerdrLens.isActive())
+      return;
     e.preventDefault();
     pasteClipboard();
   }
