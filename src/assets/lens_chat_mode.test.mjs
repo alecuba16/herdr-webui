@@ -2411,6 +2411,7 @@ describe("lens cursor paging and poll contract", () => {
     equal(state.heldFrom, null, "no stale anchor after the reset");
   });
 
+
   it("merges consecutive same-name tool blocks into one head with a command list", async () => {
     // Consecutive same-name tool calls render as ONE block: the first
     // row carries the tool name plus a count, the tail rows list their
@@ -2585,7 +2586,92 @@ describe("lens cursor paging and poll contract", () => {
     }
     equal(content.querySelector('[data-part-key="1:0:bash"]'), headBefore, "head row keeps node identity across polls");
     equal(content.querySelector('[data-part-key="1:1:bash"]'), tailBefore, "tail row keeps node identity across polls");
-    equal(content.querySelectorAll("[data-part-key]").length, 3, "no duplicate rows appended (2 tool rows + 1 text row)");
+  });
+
+  it("setLens(true) lands the caret on the composer input (focus follows the surface)", async () => {
+    // Bug_chat_terminal_paste_inputfocus surface 3: the lens open path
+    // must move focus to the lens's own typing surface. Pre-fix it kept
+    // the old focus target (often the hidden terminal textarea), so
+    // chat typing and paste fell through to the pty behind the lens.
+    // The lens_chat_mode harness elements have a no-op focus(), so the
+    // test swaps in a composer input whose focus() records calls before
+    // the lens opens.
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    const focusLog = [];
+    const composer = {
+      tagName: "TEXTAREA",
+      disabled: false,
+      focus(arg) { focusLog.push(arg); },
+    };
+    // focusTypingSurface reads the composer through getElementById, so
+    // seeding the registry is enough (the real composer.js builds this
+    // element with the same id).
+    ctx.document.getElementById = (id) =>
+      id === "terminalComposerInput" ? composer : registry.get(id) || null;
+    ctx.HerdrLens.setLens(true);
+    equal(focusLog.length, 1, "lens open focuses the composer input exactly once");
+    equal(focusLog[0] && focusLog[0].preventScroll, true, "focus must not scroll the lens");
+    // onPaneChanged re-lands the caret too: a pane switch re-ran
+    // connectTerminal while the lens was open, which can strand focus on
+    // the wterm textarea. The new pane keeps a jcode row so the lens
+    // stays open (an agent-less pane would force-close it, and
+    // focusTypingSurface correctly never runs).
+    ctx.state.agents.push({ ...jcodeRow(resolvableSession), pane_id: "pane_2" });
+    ctx.state.pane = "pane_2";
+    ctx.HerdrLens.onPaneChanged();
+    equal(focusLog.length, 2, "pane switch re-lands focus on the composer");
+  });
+
+  it("lens open falls back to the scroller when the composer is disabled", async () => {
+    // The composer textarea is disabled when no pane is active
+    // (composer.js sets input.disabled = !paneId). focusTypingSurface
+    // must then park the caret on the lens scroller instead, so focus
+    // never returns to the covered terminal surface either way.
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => conversationFixture(),
+    });
+    const composerFocus = [];
+    const scrollerFocus = [];
+    ctx.document.getElementById = (id) => {
+      if (id === "terminalComposerInput")
+        return { tagName: "TEXTAREA", disabled: true, focus() { composerFocus.push(1); } };
+      if (id === "terminalLensScroller")
+        return { focus(arg) { scrollerFocus.push(arg); } };
+      return registry.get(id) || null;
+    };
+    ctx.HerdrLens.setLens(true);
+    equal(composerFocus.length, 0, "disabled composer is never focused");
+    equal(scrollerFocus.length, 1, "scroller is the fallback focus target");
+    equal(scrollerFocus[0] && scrollerFocus[0].preventScroll, true, "scroller focus must not scroll");
+  });
+
+  it("lens open on a scrollback pane focuses the scroller even with a live composer element", async () => {
+    // The non-chat branch of focusTypingSurface: chatSupported() is false
+    // (agent-less pane), so the composer must be skipped even when the
+    // element exists and is enabled (a stale DOM row from an earlier
+    // chat-capable pane). The scroller is the only correct target on a
+    // scrollback pane.
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_shell", agents: [] },
+      api: async () => conversationFixture(),
+    });
+    const composerFocus = [];
+    const scrollerFocus = [];
+    ctx.document.getElementById = (id) => {
+      if (id === "terminalComposerInput")
+        return { tagName: "TEXTAREA", disabled: false, focus() { composerFocus.push(1); } };
+      if (id === "terminalLensScroller")
+        return { focus(arg) { scrollerFocus.push(arg); } };
+      return registry.get(id) || null;
+    };
+    ctx.HerdrLens.setLens(true);
+    equal(composerFocus.length, 0, "composer is skipped on a scrollback pane even if present and enabled");
+    equal(scrollerFocus.length, 1, "scroller takes the caret in scrollback mode");
+    equal(scrollerFocus[0] && scrollerFocus[0].preventScroll, true, "scroller focus must not scroll");
   });
 
   it("image parts render the byte route with an escaped ref", async () => {

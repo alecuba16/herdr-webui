@@ -292,6 +292,22 @@ async function connectTerminal(fitOverride = null) {
     el("terminalShell").addEventListener(
       "paste",
       (e) => {
+        // Capture-phase paste takeover: only claim the event when the
+        // terminal surface is the typing target. While the chat lens is
+        // open, or focus sits in another input inside the shell (composer,
+        // question card), the paste belongs to that surface; claiming it
+        // here sent the clipboard into the hidden pty instead. The wterm
+        // textarea lives inside term's own element, so that one still
+        // takes the chunked-paste pipeline.
+        if (terminalFocusBlocked()) return;
+        const active = document.activeElement;
+        if (
+          active &&
+          (active.isContentEditable ||
+            ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) &&
+          !(term && term.element && term.element.contains(active))
+        )
+          return;
         const text = e.clipboardData && e.clipboardData.getData("text/plain");
         if (!text) return;
         e.preventDefault();
@@ -944,11 +960,21 @@ function preserveActiveElementFocus() {
   if (active.isContentEditable) return true;
   return !!active.closest("input, select, textarea, button, [role='button']");
 }
+// Whether the terminal surface may take keyboard focus right now. The
+// lens overlay covers the terminal while the Chat view is open, so a
+// focusTerminal() landing then would put typing and paste back on the
+// hidden terminal instead of the lens scroller / composer the user sees.
+// The wterm textarea lives inside the same shell, so a caret parked there
+// is exactly the "I type in chat and it goes to the terminal" bug.
+function terminalFocusBlocked() {
+  return !!(globalThis.HerdrLens && globalThis.HerdrLens.isActive && globalThis.HerdrLens.isActive());
+}
 function focusTerminal(force = false) {
   if (
     state.editingTab ||
     state.editingWorkspace ||
     modalOpen() ||
+    terminalFocusBlocked() ||
     (!force && preserveActiveElementFocus()) ||
     !term
   )
