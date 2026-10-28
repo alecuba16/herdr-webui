@@ -2411,6 +2411,183 @@ describe("lens cursor paging and poll contract", () => {
     equal(state.heldFrom, null, "no stale anchor after the reset");
   });
 
+  it("merges consecutive same-name tool blocks into one head with a command list", async () => {
+    // Consecutive same-name tool calls render as ONE block: the first
+    // row carries the tool name plus a count, the tail rows list their
+    // briefs (the "bash and a list of commands" look). Each tail row
+    // keeps its own data-part-key so the sync paths still find it.
+    const fixture = conversationFixture();
+    fixture.turns[1].parts = [
+      { kind: "tool", name: "bash", brief: "cd src", input: "{}", output: "", is_error: false },
+      { kind: "tool", name: "bash", brief: "cargo test", input: "{}", output: "ok", is_error: false },
+      { kind: "tool", name: "bash", brief: "git status", input: "{}", output: "", is_error: false },
+      { kind: "text", text: "done" },
+    ];
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => fixture,
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    equal(content.querySelectorAll(".lens-tool-head").length, 1, "one head for the whole run");
+    ok(content.innerHTML.includes("×3"), "the head carries the run count");
+    // The run-item class sits on BOTH the outer row div and the inner
+    // span: count outer rows only (they carry the part key).
+    const runItems = content.querySelectorAll("div.lens-tool-run-item");
+    equal(runItems.length, 2, "the two tail rows render as list items");
+    ok(content.innerHTML.includes("cargo test"), "tail briefs render");
+    // Only ONE row repeats the tool name: the head. Tails are brief-only.
+    equal(content.innerHTML.split(">bash<").length - 1, 1, "tool name appears once, on the head");
+  });
+
+  it("a text part breaks the run: same-name tools around it stay separate", async () => {
+    // Merging is strictly CONSECUTIVE: interleaved text or a different
+    // tool name must not merge.
+    const fixture = conversationFixture();
+    fixture.turns[1].parts = [
+      { kind: "tool", name: "bash", brief: "first", input: "{}", output: "", is_error: false },
+      { kind: "text", text: "interlude" },
+      { kind: "tool", name: "bash", brief: "second", input: "{}", output: "", is_error: false },
+      { kind: "tool", name: "edit", brief: "fix file", input: "{}", output: "", is_error: false },
+    ];
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => fixture,
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    equal(content.querySelectorAll(".lens-tool-head").length, 3, "three heads: no cross-text or cross-name merge");
+    equal(content.querySelectorAll(".lens-tool-run-item").length, 0, "no tail items when nothing is consecutive");
+    ok(!content.innerHTML.includes("×"), "no count badge outside a run");
+  });
+
+  it("tail rows expand their own output on click (per-command output)", async () => {
+    const fixture = conversationFixture();
+    fixture.turns[1].parts = [
+      { kind: "tool", name: "bash", brief: "first cmd", input: "{}", output: "out1", is_error: false },
+      { kind: "tool", name: "bash", brief: "second cmd", input: "{}", output: "out2", is_error: false },
+    ];
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => fixture,
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    const tail = content.querySelector(".lens-tool-run-item");
+    ok(tail, "tail row exists");
+    // The tail carries its own toggle: clicking it expands THAT row.
+    for (const fn of lens.listeners.click || []) fn({ target: tail });
+    ok(content.innerHTML.includes("out2"), "the clicked tail expands its own output");
+    ok(!content.innerHTML.includes("out1"), "the head row stays collapsed");
+  });
+
+  it("tool_pending runs render one running head and quiet continuations", async () => {
+    const fixture = conversationFixture();
+    fixture.turns[1].parts = [
+      { kind: "tool_pending", name: "bash" },
+      { kind: "tool_pending", name: "bash" },
+      { kind: "tool_pending", name: "edit" },
+    ];
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => fixture,
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    // One "running bash ×2…" head, one quiet continuation, and the
+    // edit stays its own row (different name).
+    equal(content.querySelectorAll(".lens-tool-running").length, 3, "all three running rows render");
+    equal(content.querySelectorAll(".lens-tool-run-continuation").length, 1, "only the second bash row is a continuation");
+    ok(content.innerHTML.includes("×2"), "running head carries the count");
+    const continuations = content.querySelectorAll(".lens-tool-run-continuation");
+    equal(continuations[0] && continuations[0].getAttribute("data-part-key"), "1:1:bash", "continuation keeps its own part key");
+  });
+
+  it("pending->resolved kind flip inside a run swaps the row in place", async () => {
+    // The core sync invariant under merging: a tool_pending resolves
+    // into a tool at the SAME part index. The run layout must survive
+    // the kind flip (key is name-based, the sync finds the row, swaps
+    // it, and the merged layout recomputes from parts).
+    const fixture = conversationFixture();
+    const open = {
+      kind: "tool_pending", name: "bash",
+    };
+    fixture.turns[1].parts = [
+      { kind: "tool", name: "bash", brief: "done cmd", input: "{}", output: "done out", is_error: false },
+      open,
+    ];
+    let resolved = false;
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => fixture,
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    ok(content.querySelector('[data-part-key="1:1:bash"]'), "the pending row is rendered");
+    ok(content.innerHTML.includes("lens-tool-running"), "pending row renders as running");
+    // Resolve it: same part index, kind flip.
+    open.kind = "tool";
+    open.brief = "flipped cmd";
+    open.input = "{}";
+    open.output = "flipped out";
+    open.is_error = false;
+    resolved = true;
+    fireTimers(ctx);
+    await settle();
+    const row = content.querySelector('[data-part-key="1:1:bash"]');
+    ok(row, "the row still exists after the kind flip");
+    equal(row.className.includes("lens-tool-run-item"), true, "the resolved tail renders as a run item");
+    ok(content.innerHTML.includes("flipped cmd"), "the swapped row shows the resolved brief");
+    ok(!content.innerHTML.includes("lens-tool-running"), "no running row remains");
+  });
+
+  it("merged runs stay stable across same-count polls (no rewrite churn)", async () => {
+    // The same-count sync path re-serializes every row per poll. A run
+    // row whose serialized form differs between the full render and the
+    // sync path would be swapped every 2s: node identity must hold.
+    const fixture = conversationFixture();
+    fixture.turns[1].parts = [
+      { kind: "tool", name: "bash", brief: "cmd a", input: "{}", output: "a out", is_error: false },
+      { kind: "tool", name: "bash", brief: "cmd b", input: "{}", output: "b out", is_error: false },
+    ];
+    const { ctx, registry } = makeContext({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      api: async () => fixture,
+    });
+    ctx.HerdrLens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const lens = registry.get("terminalLens");
+    const content = lens.querySelector(".terminal-lens-content");
+    const headRow = content.querySelector('[data-part-key="1:0:bash"]');
+    const tailRow = content.querySelector('[data-part-key="1:1:bash"]');
+    ok(headRow && tailRow, "both run rows rendered");
+    const headBefore = headRow;
+    const tailBefore = tailRow;
+    for (let i = 0; i < 3; i++) {
+      fireTimers(ctx);
+      await settle();
+    }
+    equal(content.querySelector('[data-part-key="1:0:bash"]'), headBefore, "head row keeps node identity across polls");
+    equal(content.querySelector('[data-part-key="1:1:bash"]'), tailBefore, "tail row keeps node identity across polls");
+    equal(content.querySelectorAll("[data-part-key]").length, 3, "no duplicate rows appended (2 tool rows + 1 text row)");
+  });
+
   it("image parts render the byte route with an escaped ref", async () => {
     const fixture = {
       ...conversationFixture(),

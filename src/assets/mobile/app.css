@@ -2528,6 +2528,39 @@ body.mobile-keyboard-open .mobile-keys-fab {
 .lens-tool-head.lens-tool-error .lens-tool-name {
   color: var(--danger, #f38ba8);
 }
+/* Same-name run tail rows (desktop parity): indented quiet items under
+   the one head carrying the tool name, so a burst of bash calls reads
+   as one block with a command list. Errors keep the danger hue. */
+.lens-tool.lens-tool-run-item {
+  margin: 0 0 0 10px;
+  min-height: 44px;
+  padding: 4px 0;
+}
+.lens-tool-run-item .lens-tool-run-item {
+  color: var(--muted);
+  display: block;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lens-tool-run-item.lens-tool-run-item-error .lens-tool-run-item,
+.lens-tool-run-item .lens-tool-run-item-error {
+  color: var(--danger, #f38ba8);
+}
+.lens-tool-run-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.lens-tool-count {
+  color: var(--muted);
+  flex: none;
+  font-weight: 400;
+}
+.lens-tool-running.lens-tool-run-continuation {
+  min-height: 0;
+  padding: 0;
+}
 .lens-tool-brief {
   color: var(--muted);
   flex: 1 1 50%;

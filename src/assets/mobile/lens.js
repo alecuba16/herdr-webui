@@ -437,6 +437,45 @@
       return `${turnIndex}:${partIndex}:${part && part.name ? String(part.name) : ""}`;
     }
 
+    // Consecutive same-name tool calls form one visual run (desktop
+    // parity): the first row keeps the name plus a count, tail rows list
+    // their briefs. tool_pending counts as the same call in flight - the
+    // kind flips in place at the same part index. Runs are recomputed
+    // from the parts array on every render: the same-count DOM sync
+    // must reach the identical row form from parts alone, so run
+    // membership can never live in mutable state. Any other part kind or
+    // a different name breaks the run.
+    function toolRunInfo(parts, partIndex) {
+      const list = parts || [];
+      const part = list[partIndex];
+      if (!part || (part.kind !== "tool" && part.kind !== "tool_pending"))
+        return null;
+      const name = part.name || "";
+      let start = partIndex;
+      while (start > 0) {
+        const prev = list[start - 1];
+        if (
+          !prev ||
+          (prev.kind !== "tool" && prev.kind !== "tool_pending") ||
+          (prev.name || "") !== name
+        )
+          break;
+        start--;
+      }
+      let end = partIndex;
+      while (end + 1 < list.length) {
+        const next = list[end + 1];
+        if (
+          !next ||
+          (next.kind !== "tool" && next.kind !== "tool_pending") ||
+          (next.name || "") !== name
+        )
+          break;
+        end++;
+      }
+      return { first: start === partIndex, size: end - start + 1 };
+    }
+
     function turnSpanSeconds(turn) {
       if (!turn || !turn.ts) return null;
       const start = Date.parse(String(turn.ts));
@@ -476,7 +515,7 @@
         const globalIndex = fromTurn + turnIndex;
         const parts = [];
         (turn.parts || []).forEach((part, partIndex) => {
-          parts.push(partHtml(part, globalIndex, partIndex));
+          parts.push(partHtml(part, globalIndex, partIndex, turn.parts));
         });
         const body = parts.join("");
         const metaHtml = turn.role === "assistant" ? turnDurationHtml(turn) : "";
@@ -498,7 +537,7 @@
       return out.join("");
     }
 
-    function partHtml(part, turnIndex, partIndex) {
+    function partHtml(part, turnIndex, partIndex, turnParts) {
       if (part.kind === "text") {
         return `<div class="lens-text" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">${escapeHtml(part.text || "")}</div>`;
       }
@@ -531,15 +570,32 @@
         return `<div class="lens-thinking" data-part-key="${escapeAttr(key)}">${head}${body}</div>`;
       }
       if (part.kind === "tool_pending") {
-        return `<div class="lens-tool lens-tool-running" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">running <span class="lens-tool-name">${escapeHtml(part.name || "tool")}</span>…</div>`;
+        // One "running name…" head per same-name run; tail rows mark
+        // the queue depth without repeating the label (desktop parity).
+        const run = toolRunInfo(turnParts, partIndex);
+        if (run && !run.first)
+          return `<div class="lens-tool lens-tool-running lens-tool-run-continuation" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">…</div>`;
+        const count = run && run.size > 1 ? ` <span class="lens-tool-count">×${run.size}</span>` : "";
+        return `<div class="lens-tool lens-tool-running" data-part-key="${escapeAttr(partKey(turnIndex, partIndex, part))}">running <span class="lens-tool-name">${escapeHtml(part.name || "tool")}</span>${count}…</div>`;
       }
       if (part.kind === "tool") {
         const key = partKey(turnIndex, partIndex, part);
         const open = expandedTools.has(key);
         const label = part.is_error ? "lens-tool-error" : "";
+        const run = toolRunInfo(turnParts, partIndex);
+        // Run tail rows: the brief IS the row (the command-list look,
+        // desktop parity). The row keeps its own toggle carrier so each
+        // command still expands its output individually.
+        if (run && !run.first && !open) {
+          const briefClass = part.is_error
+            ? "lens-tool-run-item lens-tool-run-item-error"
+            : "lens-tool-run-item";
+          return `<div class="lens-tool lens-tool-run-item" data-part-key="${escapeAttr(key)}" data-toggle-tool="${escapeAttr(key)}" tabindex="0" role="button" aria-expanded="false"><span class="${briefClass}">${escapeHtml(part.brief || part.input || "")}</span></div>`;
+        }
         const head =
           `<div class="lens-tool-head ${label}" data-toggle-tool="${escapeAttr(key)}" tabindex="0" role="button" aria-expanded="${open}">` +
           `<span class="lens-tool-name">${escapeHtml(part.name || "tool")}</span>` +
+          (run && run.size > 1 ? `<span class="lens-tool-count">×${run.size}</span>` : "") +
           `<span class="lens-tool-brief">${escapeHtml(part.brief || "")}</span>` +
           `<span class="lens-tool-caret">${open ? "▾" : "▸"}</span></div>`;
         if (!open)
@@ -851,7 +907,7 @@
           const key = partKey(turnIndex, partIndex, part);
           const row = content.querySelector(`[data-part-key="${cssEscape(key)}"]`);
           if (row) {
-            const fresh = partHtml(part, turnIndex, partIndex);
+            const fresh = partHtml(part, turnIndex, partIndex, turn.parts);
             const probe = document.createElement("div");
             probe.innerHTML = fresh;
             const freshSerialized = probe.firstChild ? probe.firstChild.outerHTML : fresh;
@@ -862,7 +918,7 @@
           }
           if (!turnEl) return;
           const at = document.createElement("div");
-          at.innerHTML = partHtml(part, turnIndex, partIndex);
+          at.innerHTML = partHtml(part, turnIndex, partIndex, turn.parts);
           while (at.firstChild) turnEl.appendChild(at.firstChild);
         });
       });

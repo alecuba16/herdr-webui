@@ -627,6 +627,29 @@ describe("mobile lens", () => {
     ok(content.innerHTML.includes("done"), "assistant text rendered");
   });
 
+  it("merges consecutive same-name tool runs (desktop parity)", async () => {
+    const fixture = conversationFixture();
+    fixture.turns[1].parts = [
+      { kind: "tool", name: "bash", brief: "cd src", input: "{}", output: "", is_error: false },
+      { kind: "tool", name: "bash", brief: "cargo test", input: "{}", output: "ok", is_error: false },
+      { kind: "tool", name: "edit", brief: "fix file", input: "{}", output: "", is_error: false },
+    ];
+    const { ctx, registry, lens } = makeHarness({
+      state: { pane: "pane_1", agents: [jcodeRow(resolvableSession)] },
+      fetch: async () => json200(fixture),
+    });
+    lens.setLens(true);
+    fireTimers(ctx);
+    await settle();
+    const content = lensContent(registry);
+    equal(content.querySelectorAll(".lens-tool-head").length, 2, "bash head + edit head, no cross-name merge");
+    ok(content.innerHTML.includes("×2"), "the bash head carries the run count");
+    const runItems = content.querySelectorAll("div.lens-tool-run-item");
+    equal(runItems.length, 1, "the bash tail renders as a list item");
+    equal(runItems[0] && runItems[0].getAttribute("data-part-key"), "1:1:bash", "the tail keeps its own part key");
+    ok(content.innerHTML.includes("cargo test"), "tail brief renders");
+  });
+
   it("loading skeleton before the first poll lands", async () => {
     let gate = false;
     const { ctx, registry, lens } = makeHarness({
