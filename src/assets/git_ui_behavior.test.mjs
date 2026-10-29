@@ -3102,3 +3102,80 @@ test("syncFilesToGitCwd moves the Files panel to the Git cwd", async () => {
   assert.equal(opened[0].workspace.cwd, "/tmp/other-repo", "the Files panel receives the Git cwd");
   assert.equal(opened[0].options.kind, "dir", "the sync opens the folder tree, not a file");
 });
+
+// ---- Gate on the remaining two cwd-move surfaces ----
+
+test("applyBranchModalCwd refuses a plain folder and keeps the Git cwd", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/branches": { local: [], remote: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/rail-status": (params, init) => {
+      const body = JSON.parse((init && init.body) || "{}");
+      const item = ((body.workspaces || [])[0]) || {};
+      const notGit = item.cwd === "/tmp/plain-dir";
+      return { items: [{ workspace_id: null, cwd: item.cwd, state: notGit ? "cleanup only" : "clean", not_git_repository: notGit }] };
+    },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/ws-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  // The vm document hands out a fresh stub per getElementById call, so the
+  // test pins one stable input node for the modal's cwd reads.
+  const modalInput = element();
+  modalInput.value = "";
+  const rawGetElementById = ctx.document.getElementById;
+  ctx.document.getElementById = (id) => (id === "gitUiBranchCwd" ? modalInput : rawGetElementById.call(ctx.document, id));
+  // Open the branch modal so branchModal state exists, then hand-type a
+  // plain folder into the cwd input the way a user would.
+  await ui.openBranchModal();
+  await settle();
+  assert.ok(ctxHtml(booted).includes("gitUiBranchCwd"), "the branch modal renders its cwd input");
+  modalInput.value = "/tmp/plain-dir";
+  await ui.applyBranchModalCwd();
+  await settle();
+  assert.equal(ui.currentCwd(), "/tmp/ws-repo", "applyBranchModalCwd keeps the cwd on a plain folder");
+  assert.match(ctxHtml(booted), /is not a git repository/, "the refusal toast renders for the modal move");
+  // A repo folder moves.
+  await ui.openBranchModal();
+  await settle();
+  modalInput.value = "/tmp/other-repo";
+  await ui.applyBranchModalCwd();
+  await settle();
+  assert.equal(ui.currentCwd(), "/tmp/other-repo", "applyBranchModalCwd moves on a repo folder");
+});
+
+test("selectWorktree runs the repo gate after the confirm dialog", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/rail-status": (params, init) => {
+      const body = JSON.parse((init && init.body) || "{}");
+      const item = ((body.workspaces || [])[0]) || {};
+      const notGit = item.cwd === "/tmp/plain-dir";
+      return { items: [{ workspace_id: null, cwd: item.cwd, state: notGit ? "cleanup only" : "clean", not_git_repository: notGit }] };
+    },
+  });
+  const { ui, ctx } = booted;
+  const confirms = [];
+  const rawConfirm = ctx.window.confirm;
+  ctx.window.confirm = (message) => { confirms.push(String(message)); return true; };
+  await ui.open({ cwd: "/tmp/ws-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  // Refused: the target is not a repository, so the move never happens
+  // even though the confirm dialog was accepted.
+  await ui.selectWorktree(encodeURIComponent("/tmp/plain-dir"));
+  await settle();
+  assert.equal(confirms.length, 1, "the confirm dialog ran before the probe");
+  assert.equal(ui.currentCwd(), "/tmp/ws-repo", "selectWorktree keeps the cwd on a plain folder");
+  assert.match(ctxHtml(booted), /is not a git repository/, "the refusal toast renders for the worktree pick");
+  // Accepted: a real repository moves.
+  await ui.selectWorktree(encodeURIComponent("/tmp/other-repo"));
+  await settle();
+  assert.equal(ui.currentCwd(), "/tmp/other-repo", "selectWorktree moves on a repo folder");
+  if (rawConfirm) ctx.window.confirm = rawConfirm;
+});
