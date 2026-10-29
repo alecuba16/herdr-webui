@@ -12,11 +12,22 @@
   collapsed bar keeps the same contract: an outward drag previews the
   reopen at the dragged width and commits it on release (floored at the
   stock minimum), an inward drag on the open bar previews, and a
-  release closer to closed collapses. Click toggles, arrow-key steps,
+  release closer to closed collapses. The ghost carries a px label so the
+  target size reads before release, and crossing into the collapse zone
+  swaps it for a strip the width of the collapsed bar labeled `close`:
+  backing out restores the full ghost at the pointer width, so the
+  collapse stays reversible while the button is held. The drag also
+  listens on window while armed (some browsers deliver pointermove to
+  the element under the cursor instead of the capturing one), and a move
+  with no button held commits the pending width instead of dragging on.
+  Click suppression is one-shot per gesture, so a plain click after a
+  drag still toggles. Click toggles, arrow-key steps,
   and double-click reset stay instant (they never ride the transition
   class). Unit tests pin the contract on both strips (frozen grid
-  mid-drag, ghost width, snap-to-closest, expand-from-collapsed commit,
-  cancel commits the pending width, persistence, click suppression).
+  mid-drag, ghost width and label, closing strip, reversible collapse,
+  snap-to-closest, expand-from-collapsed commit,
+  cancel commits the pending width, persistence, click suppression,
+  missed-release commit, window-pipe drag).
 - The git drawer no longer mutes keyboard input aimed at the terminal.
   Its window-capture keydown handler consumed every key whose target sat
   outside the drawer, including the wterm textarea that carries all
