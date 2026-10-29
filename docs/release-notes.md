@@ -1,6 +1,20 @@
 # Release notes
 
 ## Unreleased
+- Both sidebar toggle strips now own the full collapse gesture. Dragging
+  a collapsed strip outward unhides the sidebar and the width follows the
+  pointer from the first move; dragging inward past a 96px threshold
+  collapses the bar mid-drag instead of shrinking it under the stock
+  minimum, and a shorter inward drag still resizes down to the 330/320px
+  floor. On hide the committed width is re-applied so a later unhide drag
+  follows from the width the user chose, not a stale preview. The drag
+  expand/collapse paths sit next to the click handlers in core.js and keep
+  the same side effects: hosted-view resolution on the right strip,
+  terminal refit, localStorage persistence, and no hint toast mid-drag.
+  Unit tests pin the contract on both strips (unhide-follows-pointer,
+  threshold hide, min-clamp, persistence, click suppression) and a CDP
+  acceptance driver drove the served bundle with real pointer events
+  (11/11).
 - The git drawer no longer mutes keyboard input aimed at the terminal.
   Its window-capture keydown handler consumed every key whose target sat
   outside the drawer, including the wterm textarea that carries all
