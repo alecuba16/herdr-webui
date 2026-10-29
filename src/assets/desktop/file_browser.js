@@ -492,6 +492,7 @@
     if (window.syncShellModeButtons) window.syncShellModeButtons();
     activateState(key, cwd);
     state.open = true;
+    state.workspaceCwd = cwd || "";
     if (options.kind === "dir") {
       render();
       await loadTree(path || "");

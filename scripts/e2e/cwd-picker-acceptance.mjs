@@ -14,7 +14,9 @@
 //     moves the Git panel to REPO_B: status refetches for the new cwd and the
 //     return button (git-ui-return-cwd-icon) appears next to the title.
 //  4. Clicking the return button restores REPO_A and the button disappears.
-//  5. The cleanup-only view (plain folder) keeps a clickable path title.
+//  5. Selecting a plain (non-repo) folder is refused by the repo gate:
+//     the panel stays on the repo, a kept toast parks the refusal, the
+//     picker closes, and the path title stays clickable.
 import { writeFileSync } from "node:fs";
 import { fetchJson, attach, sleep, makeRecorder, writeReport, writeCrashReport } from "./cdp-driver-helpers.mjs";
 
@@ -192,9 +194,9 @@ async function main() {
   })`);
   record("return button restores the workspace folder and disappears", step4.clicked && !step4.timeout, JSON.stringify(step4));
 
-  // 5. Cleanup-only view (plain folder): keep the clickable title.
+  // 5. Repo gate refusal (plain folder): panel stays, toast parks it.
   // Same real flow as step 3 (title click -> picker -> Select), then assert
-  // the no-repo view keeps the title and hides the diff layout toggle.
+  // the gate refused the move instead of entering the no-repo view.
   await evalExpr(`document.querySelector("#gitUiPanel .git-ui-path-title").click()`);
   const modal5 = await evalExpr(`new Promise((resolve) => {
     const started = Date.now();
@@ -214,32 +216,39 @@ async function main() {
     const select = Array.from(modal.querySelectorAll("button")).find((b) => /Select this folder/.test(b.textContent || ""));
     if (!select) return { reopened: true, selected: false };
     select.click();
-    // The no-repo status fetch for the plain folder is async; poll for the
-    // cleanup-only view instead of trusting a fixed sleep (it lost the race
-    // once under a busy server and failed the suite spuriously).
-    const head = document.querySelector("#gitUiPanel .git-ui-side-bottom-head");
-    const title = head && head.querySelector(".git-ui-path-title");
+    // The repo gate probes the folder before moving: a plain folder is
+    // refused. Poll for the refusal toast instead of trusting a fixed
+    // sleep (it lost the race once under a busy server).
     const started = Date.now();
-    let cleanup = !!document.querySelector("#gitUiPanel .git-ui-status-cleanup-only");
-    while (!cleanup && Date.now() - started < 10000) {
+    let toast = "";
+    let titleText = "";
+    const readToast = () => {
+      const node = document.querySelector("#gitUiPanel .git-ui-toast");
+      toast = node ? (node.textContent || "") : "";
+      const head = document.querySelector("#gitUiPanel .git-ui-side-bottom-head");
+      const title = head && head.querySelector(".git-ui-path-title");
+      titleText = title ? (title.getAttribute("title") || "") : "";
+    };
+    readToast();
+    while (!toast && Date.now() - started < 10000) {
       await new Promise((r) => setTimeout(r, 300));
-      cleanup = !!document.querySelector("#gitUiPanel .git-ui-status-cleanup-only");
+      readToast();
     }
     return {
       reopened: true, selected: true,
-      titleIsButton: !!(title && title.tagName === "BUTTON"),
-      layoutToggleGone: !document.querySelector("#gitUiPanel .git-ui-diff-layout-toggle"),
-      noRepoBanner: cleanup,
+      refusalToast: toast,
+      titleStillOnRepo: titleText.includes(${JSON.stringify(REPO_A)}),
+      pickerClosed: !document.getElementById("directoryPickerModal"),
     };
   })()`);
   if (modal5 !== "open") {
     // The title click must reopen the picker; fail loudly instead of running
-    // the cleanup-only assertions against whatever panel state remained.
+    // the refusal assertions against whatever panel state remained.
     record("step 5: title click reopens the picker", false, `got ${modal5}`);
   } else {
-    record("cleanup-only view keeps the clickable path title", step5.reopened && step5.selected && step5.titleIsButton, JSON.stringify(step5));
-    record("cleanup-only view hides the diff layout toggle", step5.layoutToggleGone === true, "");
-    record("cleanup-only view really entered the no-repo state", step5.noRepoBanner === true, JSON.stringify(step5.noRepoBanner));
+    record("picker refusal keeps the git panel on the repo folder", step5.reopened && step5.selected && step5.titleStillOnRepo === true, JSON.stringify({ titleStillOnRepo: step5.titleStillOnRepo }));
+    record("plain-folder refusal parks the kept toast", /not a git repository/.test(step5.refusalToast || ""), (step5.refusalToast || "").slice(0, 160));
+    record("picker closed after the refused select", step5.pickerClosed === true, JSON.stringify(step5.pickerClosed));
   }
 
   const screenshot = await cdp.send("Page.captureScreenshot", { format: "png" });

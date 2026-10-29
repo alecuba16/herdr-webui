@@ -568,7 +568,7 @@ test("the file browser shortcut map reads the settings scope", async () => {
 
 // ---- Files desync row: divergence signal between the two explorers ----
 
-function makeDesyncDomContext({ gitCwd = "/repo" } = {}) {
+function makeDesyncDomContext({ gitCwd = "/repo", parentFolders = false, gitUi = "full" } = {}) {
   const nodes = { rightSidebarContent: stubNode("rightSidebarContent") };
   const sidebar = stubNode("rightSidebarContent");
   function stubNode(id) {
@@ -613,7 +613,11 @@ function makeDesyncDomContext({ gitCwd = "/repo" } = {}) {
       arg: (value) => encodeURIComponent(String(value == null ? "" : value)),
       formatBytes: (value) => `${value} B`,
       basename: (value) => String(value || "").split("/").pop() || "",
-      parentDirectory: (value) => String(value || "/"),
+      parentDirectory: (value) => {
+        const parts = String(value || "/").replace(/\\/g, "/").replace(/\/+$/, "").split("/");
+        if (parts.length <= 1) return parts[0] === "" ? "/" : parts[0];
+        return parts.slice(0, -1).join("/") || "/";
+      },
       parentPath: (value) => String(value || "").split("/").slice(0, -1).join("/"),
       applyGitStatus: (entries) => entries,
       renderCurrentDirectoryRow: () => "",
@@ -621,11 +625,16 @@ function makeDesyncDomContext({ gitCwd = "/repo" } = {}) {
     },
     HerdrOptions: { read: () => ({}) },
     HerdrEditor: { isMarkdownPath: () => false },
-    HerdrGitUi: {
-      hide() {},
-      currentCwd: () => gitCwd,
-      openForCwd: async (dir) => { gitCalls.push({ dir }); },
-    },
+    // Option readers bind at module load; the git_ui stub shape decides
+    // which anchor the desync row reads.
+    HerdrWorkspaceSearch: parentFolders ? { fileBrowserParentFoldersEnabled: () => true } : {},
+    HerdrGitUi: gitUi === "hidden"
+      ? { hide() {} }
+      : {
+          hide() {},
+          currentCwd: () => gitCwd,
+          openForCwd: async (dir) => { gitCalls.push({ dir }); },
+        },
     HerdrSearchPanel: { close: () => {} },
     HerdrRightSidebar: {
       openView: async (_mode, _workspace, ensurePanel) => { sidebar.appendChild(ensurePanel()); return "hosted"; },
@@ -687,4 +696,31 @@ test("returnToWorkspaceCwd brings the panel back to the anchor", async () => {
   assert.equal(context.HerdrFileBrowser.cwd ? context.HerdrFileBrowser.cwd() : undefined, undefined, "cwd accessor is not part of the public surface; state check follows");
   const html = context.document.getElementById("fileBrowserPanel") ? context.document.getElementById("fileBrowserPanel").innerHTML : "";
   assert.ok(!html.includes("file-browser-desync"), "the desync row disappears after returning to the anchor");
+});
+
+test("the desync row falls back to the workspace folder when git_ui is not loaded", async () => {
+  const { context } = makeDesyncDomContext({ gitUi: "hidden", parentFolders: true });
+  const workspace = { workspace_id: "ws-1", cwd: "/repo" };
+  await context.HerdrFileBrowser.openAt(workspace, "", { kind: "dir" });
+  const html = () => {
+    const panel = context.document.getElementById("fileBrowserPanel");
+    return panel ? panel.innerHTML : "";
+  };
+  assert.ok(!html().includes("file-browser-desync"), "no desync row while the panel sits on the workspace folder");
+  // The real divergence path for the fallback anchor is navigation: the
+  // panel root leaves the workspace folder via go-up, without git_ui
+  // loaded the anchor stays on the workspace folder the panel opened with.
+  context.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ path: "", entries: [], git_status: null }) });
+  // The panel opened at the workspace root but the tree stub answered
+  // path "src"; the first up() climbs that in-tree path level. The hop
+  // lets it land before the second up() reads state, because up()
+  // fires goUp() without awaiting it, same as a real click-to-click gap.
+  await context.HerdrFileBrowser.up();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await context.HerdrFileBrowser.up();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.match(html(), /file-browser-desync/, "the desync row renders on the fallback anchor");
+  await context.HerdrFileBrowser.returnToWorkspaceCwd();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(!html().includes("file-browser-desync"), "the return arrow restores the fallback anchor");
 });

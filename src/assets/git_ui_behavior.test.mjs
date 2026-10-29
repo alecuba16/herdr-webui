@@ -3179,3 +3179,91 @@ test("selectWorktree runs the repo gate after the confirm dialog", async () => {
   assert.equal(ui.currentCwd(), "/tmp/other-repo", "selectWorktree moves on a repo folder");
   if (rawConfirm) ctx.window.confirm = rawConfirm;
 });
+
+// ---- Probe failure and the worktree-data switch paths ----
+
+test("a failed rail probe blocks the move with a verification toast", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    // The probe itself throws: a dead backend or a network drop.
+    "/api/git-ui/rail-status": () => { throw new Error("probe dropped"); },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/ws-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.openForCwd("/tmp/other-repo");
+  await settle();
+  assert.equal(ui.currentCwd(), "/tmp/ws-repo", "a failed probe keeps the cwd");
+  assert.match(ctxHtml(booted), /could not verify/, "the verification-failure toast renders");
+});
+
+test("switchBranchFromModal moves to a worktree path without a probe and gates a typed cwd", async () => {
+  const posts = [];
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/branches": { local: [{ name: "feature-x", author: "Bob", date: "2026-01-03T03:04:05Z", subject: "wip" }], remote: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/switch": (params, init) => {
+      posts.push(JSON.parse((init && init.body) || "{}"));
+      return { ok: true };
+    },
+    "/api/git-ui/rail-status": (params, init) => {
+      const body = JSON.parse((init && init.body) || "{}");
+      const item = ((body.workspaces || [])[0]) || {};
+      const notGit = item.cwd === "/tmp/plain-dir";
+      return { items: [{ workspace_id: null, cwd: item.cwd, state: notGit ? "cleanup only" : "clean", not_git_repository: notGit }] };
+    },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/ws-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  // Stable modal nodes: the vm document hands out fresh stubs per call.
+  const modalInput = element();
+  modalInput.value = "";
+  const branchSelect = element();
+  branchSelect.value = "branch:feature-x";
+  branchSelect.selectedIndex = 0;
+  branchSelect.options = [{ dataset: { worktreePath: "/tmp/other-repo" } }];
+  const rawGetElementById = ctx.document.getElementById;
+  ctx.document.getElementById = (id) => {
+    if (id === "gitUiBranchCwd") return modalInput;
+    if (id === "gitUiBranchSelect") return branchSelect;
+    return rawGetElementById.call(ctx.document, id);
+  };
+  // Worktree-path option: git reported the checkout, so no probe runs,
+  // the view resets onto the worktree folder, and no switch posts (the
+  // branch list reloads for the new checkout).
+  modalInput.value = "/tmp/ws-repo";
+  await ui.switchBranchFromModal();
+  await settle();
+  assert.equal(posts.length, 0, "the worktree option moves without posting a switch");
+  assert.equal(ui.currentCwd(), "/tmp/other-repo", "the worktree option moves the cwd without a probe");
+  // A matching worktree option with a typed repo folder posts the switch.
+  posts.length = 0;
+  branchSelect.value = "branch:feature-x";
+  branchSelect.selectedIndex = 0;
+  branchSelect.options = [{ dataset: { worktreePath: "/tmp/third-repo" } }];
+  modalInput.value = "/tmp/third-repo";
+  await ui.switchBranchFromModal();
+  await settle();
+  assert.equal(posts.length, 1, "a repo folder with a matching worktree posts one switch");
+  assert.equal(posts[0].cwd, "/tmp/third-repo", "the switch targets the typed repo folder");
+  assert.equal(posts[0].branch, "feature-x", "the switch carries the selected branch");
+  assert.equal(ui.currentCwd(), "/tmp/third-repo", "the typed repo folder moves the cwd");
+  // Typed plain folder: the probe refuses, no switch posts.
+  posts.length = 0;
+  branchSelect.value = "branch:feature-x";
+  branchSelect.selectedIndex = 0;
+  branchSelect.options = [{ dataset: { worktreePath: "" } }];
+  modalInput.value = "/tmp/plain-dir";
+  await ui.switchBranchFromModal();
+  await settle();
+  assert.equal(posts.length, 0, "a refused typed cwd posts no switch");
+  assert.equal(ui.currentCwd(), "/tmp/third-repo", "the refused typed cwd keeps the current folder");
+  assert.match(ctxHtml(booted), /is not a git repository/, "the refusal toast renders for the typed cwd");
+});
