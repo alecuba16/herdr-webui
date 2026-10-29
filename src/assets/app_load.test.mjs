@@ -4828,7 +4828,7 @@ describe("app bundle load", () => {
     equal(cssVars().left, "330px", "grid frozen mid-drag (window pipe)");
     equal(preview().style.getPropertyValue("width"), "410px", "ghost tracks the pending width (window pipe)");
     equal(preview().hidden, false, "ghost visible mid-drag (window pipe)");
-    equal(preview().dataset.label, "410px", "ghost labels the target size");
+    equal(preview().dataset.label, undefined, "ghost stays unlabeled");
     windowListeners.pointerup[0]({ pointerId: 1 });
     equal(cssVars().left, "410px", "commit on pointerup (window pipe)");
     ok(removedWindowListeners.includes("pointermove"), "window listeners drop on release");

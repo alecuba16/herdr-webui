@@ -129,7 +129,7 @@ async function main() {
   record("s1 grid frozen mid-drag", mid.width === widthBefore, `width mid-drag ${mid.width}, expected ${widthBefore}`);
   record("s1 ghost visible mid-drag", mid.ghostHidden === false && mid.ghostW > 0, JSON.stringify(mid));
   record("s1 ghost sized to the pending width", Math.abs(mid.ghostW - (Number(widthBefore.replace("px", "")) + 260)) <= 2, `ghost ${mid.ghostW}`);
-  record("s1 ghost labels the pending size", mid.ghostLabel === `${Number(widthBefore.replace("px", "")) + 260}px`, `label ${mid.ghostLabel}`);
+  record("s1 ghost carries no text label", mid.ghostLabel === "", `label "${mid.ghostLabel}"`);
   record("s1 ghost anchored to the viewport edge", mid.ghostLeft === 0, `left ${mid.ghostLeft}`);
   record("s1 dragging class rides the strip", mid.dragging === true, JSON.stringify(mid));
 

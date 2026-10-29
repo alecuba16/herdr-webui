@@ -384,9 +384,6 @@ function wireSidebarWidthDrag(
       commitTimer = null;
     }
   };
-  // The fade rides the same 120ms ease the commit transition uses, then a
-  // timer drops the ghost out of layout. transitionend alone would strand
-  // the ghost if the tab backgrounds mid-fade; the timer always lands.
   // showPreview clears the closing hint so a re-entry from the collapse
   // zone restores the full ghost.
   const showPreview = () => {
@@ -397,7 +394,6 @@ function wireSidebarWidthDrag(
     ghost.classList.remove("fading");
     ghost.classList.toggle("right", direction === -1);
     ghost.style.setProperty("width", `${pendingWidth}px`);
-    ghost.dataset.label = `${Math.round(pendingWidth)}px`;
     ghost.hidden = false;
   };
   // The fade rides the same 120ms ease the commit transition uses, then a
@@ -425,7 +421,6 @@ function wireSidebarWidthDrag(
     ghost.classList.remove("fading");
     ghost.classList.add("closing");
     ghost.style.setProperty("width", "28px");
-    ghost.dataset.label = "close";
     ghost.hidden = false;
   };
   const hideClosingHint = () => {
