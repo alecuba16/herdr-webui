@@ -4782,6 +4782,7 @@ describe("app bundle load", () => {
         right: app.style.getPropertyValue("--right-sidebar-width"),
       };
     };
+    const preview = () => ctx.document.getElementById("sidebarPreview");
 
     // Boot applies the persisted widths (or stock defaults).
     equal(cssVars().left, "330px");
@@ -4798,8 +4799,9 @@ describe("app bundle load", () => {
       if (!stopped) ctx.document.getElementById(id).onclick();
     };
 
-    // Left strip: drag right of 80px grows the sidebar; the drag suppresses
-    // the toggle click that follows pointerup.
+    // Left strip: the drag previews a ghost column and leaves the grid
+    // frozen; pointerup commits the pending width and suppresses the
+    // toggle click that follows.
     let clickCalls = 0;
     ctx.document.getElementById("sidebarToggle").onclick = () => {
       clickCalls += 1;
@@ -4807,10 +4809,14 @@ describe("app bundle load", () => {
     const left = listeners.sidebarToggle;
     left.pointerdown[0].fn({ button: 0, clientX: 400, pointerId: 1 });
     left.pointermove[0].fn({ clientX: 480, pointerId: 1 });
-    equal(cssVars().left, "410px", "preview during drag");
+    equal(cssVars().left, "330px", "grid frozen mid-drag");
+    equal(preview().style.getPropertyValue("width"), "410px", "ghost tracks the pending width");
+    equal(preview().hidden, false, "ghost visible mid-drag");
     left.pointerup[0].fn({ pointerId: 1 });
     equal(cssVars().left, "410px", "commit on pointerup");
     equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options")).sidebarWidth, 410);
+    ok(ctx.document.getElementById("app").classList.contains("sidebar-resizing"), "commit rides the transition class");
+    ok(preview().classList.contains("fading"), "ghost fades over the commit");
     dispatchClick("sidebarToggle");
     equal(clickCalls, 0, "the click after a drag is suppressed, not toggled");
 
@@ -4818,12 +4824,13 @@ describe("app bundle load", () => {
     dispatchClick("sidebarToggle");
     equal(clickCalls, 1, "plain click falls through to the toggle handler");
 
-    // Right strip: dragging right shrinks the right sidebar (mirrored
-    // direction) and clamps at its 320px floor.
+    // Right strip: dragging inward on the default-collapsed bar is a no-op
+    // (nothing left to close), so nothing commits on release.
     const right = listeners.rightSidebarToggle;
     right.pointerdown[0].fn({ button: 0, clientX: 900, pointerId: 2 });
     right.pointermove[0].fn({ clientX: 1000, pointerId: 2 });
-    equal(cssVars().right, "320px", "right clamps at the 320px minimum");
+    equal(cssVars().right, "320px", "collapsed bar does not shrink further");
+    ok(vm.runInContext("rightSidebarCollapsed", ctx) === true, "inward drag keeps the bar collapsed");
     right.pointerup[0].fn({ pointerId: 2 });
     equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options")).rightSidebarWidth, 320);
 
@@ -4877,6 +4884,7 @@ describe("app bundle load", () => {
         right: app.style.getPropertyValue("--right-sidebar-width"),
       };
     };
+    const preview = () => ctx.document.getElementById("sidebarPreview");
     const left = listeners.sidebarToggle;
     const strip = ctx.document.getElementById("sidebarToggle");
     const optionsOf = () => JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}");
@@ -4890,18 +4898,21 @@ describe("app bundle load", () => {
     equal(cssVars().left, "330px");
 
     // Moves below the 4px threshold never start the drag, so the class
-    // never lands and the following click still toggles.
+    // never lands, the ghost never shows, and the following click still
+    // toggles.
     left.pointerdown[0].fn({ button: 0, clientX: 400, pointerId: 2 });
     left.pointermove[0].fn({ clientX: 402, pointerId: 2 });
     ok(!strip.classList.contains("dragging"), "below threshold stays a click");
+    ok(preview().hidden !== false, "no ghost below the threshold");
     left.pointerup[0].fn({ pointerId: 2 });
     ok(!strip.classList.contains("dragging"), "no drag class after pointerup");
 
-    // A real drag adds the dragging class, and pointercancel commits the
-    // pending width instead of dropping it (same stopResize path).
+    // A real drag adds the dragging class and shows the ghost, and
+    // pointercancel commits the pending width (same stopResize path).
     left.pointerdown[0].fn({ button: 0, clientX: 400, pointerId: 3 });
     left.pointermove[0].fn({ clientX: 440, pointerId: 3 });
     ok(strip.classList.contains("dragging"), "dragging class while dragging");
+    equal(preview().hidden, false, "ghost visible while dragging");
     left.pointercancel[0].fn({ pointerId: 3 });
     ok(!strip.classList.contains("dragging"), "class cleared on cancel");
     equal(cssVars().left, "370px", "cancel commits the pending width");
@@ -4933,28 +4944,32 @@ describe("app bundle load", () => {
 
     // The right strip's releasePointerCapture threw above; a drag there
     // still commits (the try/catch swallows the throw). The strip starts on
-    // the default-collapsed right sidebar, so the 880 < 900 move toward
-    // center unhides it. This is the same drag the contract test pins;
-    // here it doubles as the release-throw regression check, and the
-    // unhid bar releases at the stored 320px floor (the gesture follows
-    // the pointer outward only after the next pointerdown re-anchors).
+    // the default-collapsed right sidebar: the inward 900 -> 880 move is
+    // outward for the mirrored strip, so release expands at the stored
+    // 320px floor and rides the commit transition. The throw regression
+    // rides the same drag.
     ok(vm.runInContext("rightSidebarCollapsed", ctx) === true, "right sidebar starts collapsed");
     right.pointerdown[0].fn({ button: 0, clientX: 900, pointerId: 5 });
     right.pointermove[0].fn({ clientX: 880, pointerId: 5 });
-    ok(vm.runInContext("rightSidebarCollapsed", ctx) === false, "drag from the collapsed strip unhides");
+    ok(vm.runInContext("rightSidebarCollapsed", ctx) === true, "collapsed stays collapsed mid-drag");
+    equal(cssVars().right, "320px", "grid frozen while the ghost previews the reopen");
+    equal(preview().style.getPropertyValue("width"), "320px", "ghost floors at the stock minimum");
     right.pointerup[0].fn({ pointerId: 5 });
-    equal(cssVars().right, "320px", "unhide releases at the stored floor despite the release-throw");
-    // A second drag now follows the pointer: +20px outward from 900.
+    ok(vm.runInContext("rightSidebarCollapsed", ctx) === false, "release expands from the collapsed strip");
+    equal(cssVars().right, "320px", "expand commits at the stored floor despite the release-throw");
+    // A second drag now follows the pointer from the open bar: +20px.
     right.pointerdown[0].fn({ button: 0, clientX: 900, pointerId: 6 });
     right.pointermove[0].fn({ clientX: 880, pointerId: 6 });
     right.pointerup[0].fn({ pointerId: 6 });
     equal(cssVars().right, "340px", "followed drag commits, capture throws swallowed");
   });
 
-  it("drag unhides a collapsed sidebar and drag past the threshold hides it", () => {
-    // Full contract on both strips: a collapsed sidebar follows the pointer
-    // out on the first move past the threshold; dragging inward past the
-    // hide threshold collapses; releasing short of it keeps the minimum.
+  it("drag previews out of a collapsed sidebar, and release snaps to minimum or closed", () => {
+    // Full contract on both strips: the drag previews a ghost column and
+    // commits on release. Out of a collapsed strip an outward drag reopens
+    // at the dragged width; an inward drag on an open bar that lands below
+    // the stock minimum snaps to whichever edge is closer to the pointer
+    // (the minimum, or fully closed).
     const scenarios = [
       {
         id: "sidebarToggle",
@@ -4962,9 +4977,11 @@ describe("app bundle load", () => {
         collapsedFlag: "sidebarCollapsed",
         collapsedClass: "sidebar-collapsed",
         stock: 330,
-        grow: 60, // outward: expands then resizes
-        hide: -200, // inward: crosses the hide threshold
-        hold: -20, // inward: below the threshold, clamps at stock
+        reopened: 400,
+        held: 380,
+        grow: 400, // outward from collapsed: reopens at 400px
+        hold: -20, // inward from 400: lands at 380px, above the minimum
+        close: -500, // inward from 380: closed is closer than the minimum
       },
       {
         id: "rightSidebarToggle",
@@ -4972,9 +4989,11 @@ describe("app bundle load", () => {
         collapsedFlag: "rightSidebarCollapsed",
         collapsedClass: "right-sidebar-collapsed",
         stock: 320,
-        grow: -60, // mirrored: outward is negative
-        hide: 200,
-        hold: 20,
+        reopened: 400,
+        held: 380,
+        grow: -400, // mirrored: outward is negative, reopens at 400px
+        hold: 20, // inward from 400: lands at 380px
+        close: 500, // inward from 380: closed is closer than the minimum
       },
     ];
     for (const scenario of scenarios) {
@@ -4995,14 +5014,15 @@ describe("app bundle load", () => {
       const strip = ctx.document.getElementById(scenario.id);
       const handler = listeners[scenario.id];
       const app = ctx.document.getElementById("app");
+      const ghost = () => ctx.document.getElementById("sidebarPreview");
       const cssVar = () =>
         app.style.getPropertyValue(
           scenario.id === "sidebarToggle" ? "--sidebar-width" : "--right-sidebar-width",
         );
 
-      // Normalize to expanded first (left starts expanded, right starts
-      // collapsed by default), then collapse: the drag contract is the same
-      // no matter which path set the collapsed flag.
+      // Normalize to collapsed first (left starts expanded, right starts
+      // collapsed by default): the drag contract is the same no matter which
+      // path set the collapsed flag.
       if (vm.runInContext(scenario.collapsedFlag, ctx) === false) strip.click();
       if (vm.runInContext(scenario.collapsedFlag, ctx) === false) strip.click();
       ok(
@@ -5010,27 +5030,40 @@ describe("app bundle load", () => {
         `${scenario.id}: collapsed before the drag`,
       );
 
-      // Drag out of the collapsed strip: the sidebar unhides on the first
-      // move past the threshold and then follows the pointer.
+      // Drag out of the collapsed strip: the grid stays frozen (the sidebar
+      // is still collapsed mid-drag) while the ghost previews the reopen at
+      // the dragged width; release expands and commits.
       handler.pointerdown[0].fn({ button: 0, clientX: 500, pointerId: 1 });
       handler.pointermove[0].fn({ clientX: 500 + scenario.grow, pointerId: 1 });
       ok(
-        vm.runInContext(scenario.collapsedFlag, ctx) === false,
-        `${scenario.id}: drag from collapsed unhides`,
+        vm.runInContext(scenario.collapsedFlag, ctx) === true,
+        `${scenario.id}: collapsed stays collapsed while dragging`,
       );
       ok(
-        !app.classList.contains(scenario.collapsedClass),
-        `${scenario.id}: collapse class gone while dragging`,
+        app.classList.contains(scenario.collapsedClass),
+        `${scenario.id}: collapse class intact while dragging`,
+      );
+      equal(ghost().hidden, false, `${scenario.id}: ghost previews the reopen`);
+      equal(
+        ghost().style.getPropertyValue("width"),
+        `${scenario.reopened}px`,
+        `${scenario.id}: ghost carries the dragged width`,
       );
       handler.pointerup[0].fn({ pointerId: 1 });
       ok(
         vm.runInContext(scenario.collapsedFlag, ctx) === false,
-        `${scenario.id}: stays expanded after pointerup`,
+        `${scenario.id}: release expands from the collapsed strip`,
+      );
+      ok(
+        !app.classList.contains(scenario.collapsedClass),
+        `${scenario.id}: collapse class gone after release`,
       );
       ok(
         ctx.localStorage.getItem(scenario.collapsedKey) === "0",
         `${scenario.id}: expansion persisted`,
       );
+      equal(cssVar(), `${scenario.reopened}px`, `${scenario.id}: reopen commits the dragged width`);
+      ok(app.classList.contains("sidebar-resizing"), `${scenario.id}: commit rides the transition class`);
       // The following click is suppressed: the drag owned this gesture.
       let toggled = 0;
       strip.onclick = () => { toggled += 1; };
@@ -5042,38 +5075,58 @@ describe("app bundle load", () => {
       if (!stopped) strip.onclick();
       equal(toggled, 0, `${scenario.id}: click after drag suppressed`);
 
-      // Drag inward past the hide threshold: the sidebar collapses
-      // mid-drag and pointerup commits nothing further.
+      // Drag inward but land above the minimum: the ghost tracks the width
+      // and release commits it; nothing snaps, nothing collapses.
       handler.pointerdown[0].fn({ button: 0, clientX: 500, pointerId: 2 });
-      handler.pointermove[0].fn({ clientX: 500 + scenario.hide, pointerId: 2 });
+      handler.pointermove[0].fn({ clientX: 500 + scenario.hold, pointerId: 2 });
+      ok(
+        vm.runInContext(scenario.collapsedFlag, ctx) === false,
+        `${scenario.id}: inward drag above the minimum never collapses`,
+      );
+      equal(cssVar(), `${scenario.reopened}px`, `${scenario.id}: grid frozen until release`);
+      equal(
+        ghost().style.getPropertyValue("width"),
+        `${scenario.held}px`,
+        `${scenario.id}: ghost tracks the held width`,
+      );
+      handler.pointerup[0].fn({ pointerId: 2 });
+      equal(cssVar(), `${scenario.held}px`, `${scenario.id}: held width commits on release`);
+      ok(
+        vm.runInContext(scenario.collapsedFlag, ctx) === false,
+        `${scenario.id}: still expanded after the held release`,
+      );
+
+      // Drag inward far enough that closed is closer to the pointer than the
+      // stock minimum: the ghost fades out (the snap targets the collapse)
+      // and release collapses instead of committing a sub-minimum width.
+      handler.pointerdown[0].fn({ button: 0, clientX: 500, pointerId: 3 });
+      handler.pointermove[0].fn({ clientX: 500 + scenario.close, pointerId: 3 });
+      ok(
+        vm.runInContext(scenario.collapsedFlag, ctx) === false,
+        `${scenario.id}: collapse lands on release, not mid-drag`,
+      );
+      ok(
+        ghost().classList.contains("fading"),
+        `${scenario.id}: ghost fades when the snap targets the collapse`,
+      );
+      handler.pointerup[0].fn({ pointerId: 3 });
       ok(
         vm.runInContext(scenario.collapsedFlag, ctx) === true,
-        `${scenario.id}: drag past the threshold hides`,
+        `${scenario.id}: release snaps to collapsed`,
       );
       ok(
         app.classList.contains(scenario.collapsedClass),
-        `${scenario.id}: collapse class re-applied`,
+        `${scenario.id}: collapse class applied on the snap`,
       );
-      handler.pointerup[0].fn({ pointerId: 2 });
       ok(
         ctx.localStorage.getItem(scenario.collapsedKey) === "1",
         `${scenario.id}: collapse persisted`,
       );
-
-      // Drag inward but short of the threshold: the sidebar stays visible
-      // and the width holds at the stock minimum.
-      handler.pointerdown[0].fn({ button: 0, clientX: 500, pointerId: 3 });
-      handler.pointermove[0].fn({ clientX: 500 + scenario.hold, pointerId: 3 });
-      ok(
-        vm.runInContext(scenario.collapsedFlag, ctx) === false,
-        `${scenario.id}: short drag unhides without hiding again`,
-      );
-      equal(cssVar(), `${scenario.stock}px`, `${scenario.id}: width holds at the minimum`);
-      handler.pointerup[0].fn({ pointerId: 3 });
+      // The width store keeps the last committed width, not the dragged one.
       equal(
         JSON.parse(ctx.localStorage.getItem("herdr-web-options"))[scenario.id === "sidebarToggle" ? "sidebarWidth" : "rightSidebarWidth"],
-        scenario.stock,
-        `${scenario.id}: minimum committed on pointerup`,
+        scenario.held,
+        `${scenario.id}: snap-close keeps the stored width untouched`,
       );
     }
   });

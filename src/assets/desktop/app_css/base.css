@@ -115,6 +115,13 @@ body.light {
 #app.sidebar-collapsed.right-sidebar-collapsed {
   grid-template-columns: 0 28px minmax(0, 1fr) 28px 44px 0;
 }
+/* Drag commits ride this class: the class is present in the same style
+   pass as the collapse toggle or the width change, so the grid animates
+   between the two computed states. Click toggles and keyboard steps skip
+   it and land instantly. */
+#app.sidebar-resizing {
+  transition: grid-template-columns 120ms ease;
+}
 .side {
   border-right: 1px solid var(--border);
   background: var(--panel);
@@ -194,6 +201,45 @@ body.light {
 }
 #app.sidebar-collapsed .sidebar-toggle {
   color: var(--accent);
+}
+/* Resize drag preview: a ghost column that tracks the pointer while the
+   real grid stays frozen; it fades out over the commit transition. It
+   never intercepts pointer events, and prefers-reduced-motion drops the
+   fade so the commit lands instantly. */
+.sidebar-preview {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-right: 2px solid var(--accent);
+  bottom: 0;
+  display: block;
+  left: 0;
+  opacity: 1;
+  pointer-events: none;
+  position: fixed;
+  top: 0;
+  transition: none;
+  z-index: 60;
+}
+.sidebar-preview.right {
+  border-left: 2px solid var(--accent);
+  border-right: 0;
+  left: auto;
+  right: 0;
+}
+.sidebar-preview[hidden] {
+  display: none;
+}
+.sidebar-preview.fading {
+  opacity: 0;
+  transition:
+    opacity 120ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-preview {
+    transition: none !important;
+  }
+  #app.sidebar-resizing {
+    transition: none !important;
+  }
 }
 .sidebar-toggle-arrow {
   display: block;

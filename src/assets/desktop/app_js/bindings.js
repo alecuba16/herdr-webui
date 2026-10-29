@@ -333,13 +333,16 @@ if (sidebarSplitHandle) {
 }
 
 // Both toggle strips double as width drag handles: click toggles the
-// sidebar, a horizontal move past the threshold resizes it instead. A
-// collapsed sidebar expands on the first outward move and then follows the
-// pointer; dragging inward past the hide threshold collapses it. The
+// sidebar, a horizontal move past the threshold resizes it instead. The
+// drag never touches the grid mid-gesture: a ghost column (the preview
+// overlay) shows where the sidebar would land, and the width commits only
+// on release. A release below the stock minimum snaps to whichever edge is
+// closer to the pointer: the minimum itself, or fully collapsed. The
 // browser fires click after pointerup even for a real drag, so the drag
 // arms a capture-phase suppressor on the strip itself.
 const SIDEBAR_DRAG_THRESHOLD_PX = 4;
-const SIDEBAR_DRAG_HIDE_THRESHOLD_PX = 96;
+const SIDEBAR_PREVIEW_FADE_MS = 140;
+const SIDEBAR_RESIZING_MS = 180;
 function wireSidebarWidthDrag(
   strip,
   readWidth,
@@ -350,40 +353,123 @@ function wireSidebarWidthDrag(
   if (!strip) return;
   let startX = 0;
   let pendingWidth = null;
+  let pendingCollapse = false;
+  let startCollapsed = false;
   let dragging = false;
   let suppressedClick = false;
   let armed = false;
   let capturedPointer = null;
+  let previewNodeCache = null;
+  let fadeTimer = null;
+  let commitTimer = null;
   const direction = strip.id === "rightSidebarToggle" ? -1 : 1;
   const expand = hooks && hooks.expand;
   const collapse = hooks && hooks.collapse;
-  const previewFromClientX = (clientX) => {
-    // Against the live edge, not the armed width: a drag that starts on a
-    // collapsed strip expands mid-drag, and re-reading keeps the preview
-    // anchored to what the user actually sees.
-    const base = readWidth();
-    const next = base + direction * (clientX - startX);
-    if (next < base && collapse) {
-      // Below the hide threshold the preview clamps at the stock minimum.
-      // Past it the collapse drops the pending width (no commit behind the
-      // hidden bar) and re-applies the committed one, so no stale clamped-down
-      // preview survives the hide.
-      const hidden = (base - next) >= SIDEBAR_DRAG_HIDE_THRESHOLD_PX;
-      if (hidden) {
-        collapse();
-        pendingWidth = null;
-        previewWidth(readWidth());
-      } else {
-        pendingWidth = previewWidth(next);
-      }
-    } else {
-      pendingWidth = previewWidth(next);
+  const isCollapsed = hooks && hooks.isCollapsed;
+  const minimum = (hooks && hooks.minimum) || 0;
+  const previewNode = () => {
+    if (!previewNodeCache) previewNodeCache = el("sidebarPreview");
+    return previewNodeCache;
+  };
+  const clearFadeTimer = () => {
+    if (fadeTimer !== null) {
+      clearTimeout(fadeTimer);
+      fadeTimer = null;
     }
+  };
+  const clearCommitTimer = () => {
+    if (commitTimer !== null) {
+      clearTimeout(commitTimer);
+      commitTimer = null;
+    }
+  };
+  // The ghost overlays the exact column the sidebar would occupy after
+  // release: anchored to the viewport edge the sidebar grows from, as wide
+  // as the pending width. No layout reads, so mid-drag moves stay cheap.
+  const showPreview = () => {
+    const ghost = previewNode();
+    if (!ghost) return;
+    clearFadeTimer();
+    ghost.classList.remove("fading");
+    ghost.classList.toggle("right", direction === -1);
+    ghost.style.setProperty("width", `${pendingWidth}px`);
+    ghost.hidden = false;
+  };
+  // The fade rides the same 120ms ease the commit transition uses, then a
+  // timer drops the ghost out of layout. transitionend alone would strand
+  // the ghost if the tab backgrounds mid-fade; the timer always lands.
+  const hidePreview = () => {
+    const ghost = previewNode();
+    if (!ghost || ghost.hidden) return;
+    ghost.classList.add("fading");
+    clearFadeTimer();
+    fadeTimer = setTimeout(() => {
+      fadeTimer = null;
+      ghost.hidden = true;
+      ghost.classList.remove("fading");
+    }, SIDEBAR_PREVIEW_FADE_MS);
+  };
+  // The commit transition runs on the real columns only while this class
+  // rides #app: click toggles and keyboard steps keep snapping instantly.
+  const armCommitTransition = () => {
+    const app = el("app");
+    if (!app) return;
+    clearCommitTimer();
+    app.classList.add("sidebar-resizing");
+    commitTimer = setTimeout(() => {
+      commitTimer = null;
+      app.classList.remove("sidebar-resizing");
+    }, SIDEBAR_RESIZING_MS);
+  };
+  const previewFromClientX = (clientX) => {
+    const base = readWidth();
+    const delta = direction * (clientX - startX);
+    if (startCollapsed) {
+      // Out of a collapsed bar only outward drags mean anything; the drag
+      // distance alone sizes the reopened column. Pulling further closed is
+      // a no-op (nothing to preview, nothing to commit).
+      if (delta <= 0) {
+        pendingCollapse = false;
+        pendingWidth = null;
+        hidePreview();
+        return;
+      }
+      // Below the minimum the commit snaps the column open at the stock
+      // minimum (never back closed: the user just pulled it open), and the
+      // ghost floors with it so it shows where the release lands.
+      pendingCollapse = false;
+      pendingWidth = previewWidth(delta);
+      showPreview();
+      return;
+    }
+    // One px of pointer travel is one px of width, so the snap distances
+    // below are cursor distances from the release point to each edge.
+    const next = base + delta;
+    if (next < minimum && collapse) {
+      // The release would land below the stock minimum, so the commit
+      // snaps to whichever edge is closer to the pointer: the minimum
+      // itself, or fully collapsed (width 0). pendingCollapse holds the
+      // winner; the ghost hides for the collapse so the snap reads as
+      // intentional.
+      const distanceToMinimum = minimum - next;
+      const distanceToCollapsed = Math.abs(next);
+      if (distanceToCollapsed < distanceToMinimum) {
+        pendingCollapse = true;
+        pendingWidth = null;
+        hidePreview();
+        return;
+      }
+    }
+    pendingCollapse = false;
+    pendingWidth = previewWidth(next);
+    showPreview();
   };
   strip.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     startX = e.clientX;
     pendingWidth = null;
+    pendingCollapse = false;
+    startCollapsed = !!(isCollapsed && isCollapsed());
     dragging = false;
     armed = true;
     // Capture keeps pointermove flowing when the cursor leaves the 18px
@@ -402,12 +488,6 @@ function wireSidebarWidthDrag(
       dragging = true;
       suppressedClick = true;
       strip.classList.add("dragging");
-      // A drag out of the collapsed strip expands first, so the sidebar
-      // follows the pointer from its first move instead of after release.
-      if (expand && expand()) {
-        pendingWidth = previewWidth(readWidth());
-        return;
-      }
     }
     previewFromClientX(e.clientX);
   });
@@ -423,11 +503,20 @@ function wireSidebarWidthDrag(
       if (dragging) {
         strip.classList.remove("dragging");
         dragging = false;
-        if (pendingWidth !== null) commitWidth(pendingWidth);
+        hidePreview();
+        if (pendingCollapse) {
+          if (collapse && collapse()) armCommitTransition();
+        } else if (pendingWidth !== null) {
+          if (startCollapsed && expand) expand();
+          commitWidth(pendingWidth);
+          armCommitTransition();
+        }
       }
     }
     startX = 0;
     pendingWidth = null;
+    pendingCollapse = false;
+    startCollapsed = false;
   };
   strip.addEventListener("pointerup", stopResize);
   strip.addEventListener("pointercancel", stopResize);
@@ -453,21 +542,25 @@ function wireSidebarWidthDrag(
 wireSidebarWidthDrag(
   el("sidebarToggle"),
   () => options.sidebarWidth ?? 330,
-  (value) => applySidebarWidth(value),
+  (value) => normalizeSidebarWidth(value, 330),
   (value) => setSidebarWidth(value ?? 330),
   {
     expand: () => expandLeftSidebarFromDrag(),
     collapse: () => collapseLeftSidebarFromDrag(),
+    isCollapsed: () => sidebarCollapsed,
+    minimum: 330,
   },
 );
 wireSidebarWidthDrag(
   el("rightSidebarToggle"),
   () => options.rightSidebarWidth ?? 320,
-  (value) => applyRightSidebarWidth(value),
+  (value) => normalizeSidebarWidth(value, 320),
   (value) => setRightSidebarWidth(value ?? 320),
   {
     expand: () => expandRightSidebarFromDrag(),
     collapse: () => collapseRightSidebarFromDrag(),
+    isCollapsed: () => rightSidebarCollapsed,
+    minimum: 320,
   },
 );
 el("optParentCloseMode").onchange = () => {
@@ -982,4 +1075,3 @@ loadVersions();
 loadServerSettings();
 refresh();
 connectEvents();
-
