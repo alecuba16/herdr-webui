@@ -364,13 +364,10 @@ function wireSidebarWidthDrag(
     const base = readWidth();
     const next = base + direction * (clientX - startX);
     if (next < base && collapse) {
-      // Inward movement short of the hide threshold still resizes, and
-      // previewWidth clamps it at the stock minimum: the bar follows the
-      // pointer down to min but never under. Crossing the threshold
-      // collapses instead: the pending preview drops so pointerup commits
-      // no width behind the hidden bar, and the committed width is
-      // re-applied so the clamped-down preview does not survive the hide
-      // (a later unhide drag follows from the width the user chose).
+      // Below the hide threshold the preview clamps at the stock minimum.
+      // Past it the collapse drops the pending width (no commit behind the
+      // hidden bar) and re-applies the committed one, so no stale clamped-down
+      // preview survives the hide.
       const hidden = (base - next) >= SIDEBAR_DRAG_HIDE_THRESHOLD_PX;
       if (hidden) {
         collapse();
