@@ -2954,3 +2954,151 @@ test("cleanup delete rescans on partial failure and keeps the error message", as
   assert.ok(cleanupPosts(calls, "/api/git-ui/cleanup-scan", before).length > 0, "partial success still rescans");
   assert.match(ctxHtml(booted), /running processes/, "the surviving failure is reported");
 });
+
+// ---- Git folder move gate: refuse non-repo targets without moving ----
+
+function makePickerInput(ctx) {
+  const makeInput = () => {
+    const listeners = {};
+    return {
+      type: "", style: {}, value: "/tmp/ws-repo",
+      parentNode: { removeChild() {} },
+      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+      removeEventListener(type, fn) { if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn); },
+      dispatch(type) { (listeners[type] || []).slice().forEach((fn) => fn({ target: this })); },
+    };
+  };
+  const rawCreate = ctx.document.createElement;
+  let pickerInput = null;
+  ctx.document.createElement = (tag) => {
+    const node = tag === "input" ? makeInput() : rawCreate(tag);
+    if (tag === "input") pickerInput = node;
+    return node;
+  };
+  return () => pickerInput;
+}
+
+test("cwd picker refuses a non-repo folder and keeps the Git cwd", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    // The gate probe answers not_git_repository for the plain folder.
+    "/api/git-ui/rail-status": (params, init) => {
+      const body = JSON.parse((init && init.body) || "{}");
+      const item = ((body.workspaces || [])[0]) || {};
+      const notGit = item.cwd === "/tmp/plain-dir";
+      return { items: [{ workspace_id: null, cwd: item.cwd, state: notGit ? "cleanup only" : "clean", not_git_repository: notGit }] };
+    },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/ws-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const getPickerInput = makePickerInput(ctx);
+  ctx.window.HerdrDirectoryPicker = { open() {} };
+  ctx.window.addEventListener = () => {};
+  ctx.window.removeEventListener = () => {};
+  ui.openCwdPicker();
+  const pickerInput = getPickerInput();
+  pickerInput.value = "/tmp/plain-dir";
+  pickerInput.dispatch("change");
+  await settle();
+  // Refusal keeps the cwd and renders the message toast.
+  assert.equal(ui.currentCwd(), "/tmp/ws-repo", "the Git cwd stays on the workspace folder");
+  assert.match(ctxHtml(booted), /is not a git repository/, "the refusal toast renders");
+  const head = ctxHtml(booted).split("git-ui-side-bottom-head")[1] || "";
+  assert.ok(!head.includes("returnToWorkspaceCwd"), "no divergence marker appears after a refused move");
+  // A repo folder still moves (the hidden input listener is one-shot, so
+  // the picker opens again for the second pick).
+  ui.openCwdPicker();
+  const secondInput = getPickerInput();
+  secondInput.value = "/tmp/other-repo";
+  secondInput.dispatch("change");
+  await settle();
+  assert.equal(ui.currentCwd(), "/tmp/other-repo", "a repo folder moves the Git cwd");
+});
+
+test("openForCwd refuses a plain folder and moves on a repo folder", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/rail-status": (params, init) => {
+      const body = JSON.parse((init && init.body) || "{}");
+      const item = ((body.workspaces || [])[0]) || {};
+      const notGit = item.cwd === "/tmp/plain-dir";
+      return { items: [{ workspace_id: null, cwd: item.cwd, state: notGit ? "cleanup only" : "clean", not_git_repository: notGit }] };
+    },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/ws-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.openForCwd("/tmp/plain-dir");
+  await settle();
+  assert.equal(ui.currentCwd(), "/tmp/ws-repo", "openForCwd keeps the cwd on a plain folder");
+  assert.match(ctxHtml(booted), /is not a git repository/, "openForCwd refusal renders the toast");
+  await ui.openForCwd("/tmp/other-repo");
+  await settle();
+  assert.equal(ui.currentCwd(), "/tmp/other-repo", "openForCwd moves on a repo folder");
+});
+
+test("the diverged selector renders both sync arrows", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/ws-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const getPickerInput = makePickerInput(ctx);
+  ctx.window.HerdrDirectoryPicker = { open() {} };
+  ctx.window.addEventListener = () => {};
+  ctx.window.removeEventListener = () => {};
+  ui.openCwdPicker();
+  const pickerInput = getPickerInput();
+  pickerInput.value = "/tmp/other-repo";
+  pickerInput.dispatch("change");
+  await settle();
+  const html = ctxHtml(booted);
+  assert.match(html, /syncFilesToGitCwd/, "the Files sync arrow renders while diverged");
+  assert.match(html, /syncWorkspaceToGitCwd/, "the workspace sync arrow renders while diverged");
+  // Returning to the workspace folder hides both.
+  ui.returnToWorkspaceCwd();
+  await settle();
+  const restored = ctxHtml(booted);
+  assert.ok(!restored.includes("syncFilesToGitCwd"), "the Files arrow disappears after return");
+  assert.ok(!restored.includes("syncWorkspaceToGitCwd"), "the workspace arrow disappears after return");
+});
+
+test("syncFilesToGitCwd moves the Files panel to the Git cwd", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/ws-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const getPickerInput = makePickerInput(ctx);
+  ctx.window.HerdrDirectoryPicker = { open() {} };
+  ctx.window.addEventListener = () => {};
+  ctx.window.removeEventListener = () => {};
+  ui.openCwdPicker();
+  const pickerInput = getPickerInput();
+  pickerInput.value = "/tmp/other-repo";
+  pickerInput.dispatch("change");
+  await settle();
+  const opened = [];
+  ctx.window.HerdrFileBrowser = {
+    openAt: async (workspace, path, options) => { opened.push({ workspace, path, options }); },
+  };
+  await ui.syncFilesToGitCwd();
+  assert.equal(opened.length, 1, "syncFilesToGitCwd routes through the Files openAt funnel");
+  assert.equal(opened[0].workspace.cwd, "/tmp/other-repo", "the Files panel receives the Git cwd");
+  assert.equal(opened[0].options.kind, "dir", "the sync opens the folder tree, not a file");
+});

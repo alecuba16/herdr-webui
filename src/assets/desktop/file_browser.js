@@ -20,6 +20,7 @@
   function createState(initial) {
     return Object.assign({
       open: false, cwd: "", root: "", home: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, error: "", permissionRequired: false, contextMenu: null, refreshing: false, gitStatus: null,
+      workspaceCwd: "",
       filter: "", filterTimer: null, filterEntries: [], filterSelected: "", filterOffset: 0, filterVisited: 0, filterActiveIndex: 0, filterTruncated: false, filterDone: true, filterLoading: false, filterError: "",
     }, initial || {});
   }
@@ -466,6 +467,7 @@
     if (window.HerdrGitUi) window.HerdrGitUi.hide();
     activateState(key, cwd);
     state.open = true;
+    state.workspaceCwd = cwd || "";
     // Desktop host takes the panel into the right sidebar column before
     // the first render so the tree renders hosted from the start. Test
     // harnesses and temp overlays fall back to the legacy surface
@@ -1473,7 +1475,7 @@
     const sideBody = filtering
       ? renderFilteringBody()
       : `${currentRow}${Tree.renderEntries(entries, { callback: "HerdrFileBrowser", showMeta: true, dirClickMethod: "none", dirDoubleClickMethod: "enter", contextMethod: "menu", shiftSelectMode: true })}`;
-    const sideHtml = `<aside class="file-browser-side" tabindex="0" onscroll="HerdrFileBrowser.sideScroll(this)"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div></div>${renderFilterRow()}${renderAccessError()}${sideBody}</aside>`;
+    const sideHtml = `<aside class="file-browser-side" tabindex="0" onscroll="HerdrFileBrowser.sideScroll(this)"><div class="file-browser-head"><div class="file-browser-title-row"><div class="file-browser-title">Files</div><div class="file-browser-actions">${appRefreshIconButton({ className: "file-browser-refresh", title: "Refresh", label: "Refresh files", spinning: !!state.refreshing, onclick: "HerdrFileBrowser.refresh()" })}</div></div><div class="file-browser-subtitle">${esc(state.path || state.cwd || "No workspace")}</div>${renderDesyncRow()}</div>${renderFilterRow()}${renderAccessError()}${sideBody}</aside>`;
     panel.innerHTML = `${sideHtml}${renderContextMenu()}`;
     markFilterActiveRow(panel);
     if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
@@ -1527,6 +1529,52 @@
 
   function currentDirectoryTitle() {
     return state.path ? `${state.cwd.replace(/\/+$/, "")}/${state.path}` : state.cwd;
+  }
+
+  // The Files panel desyncs when its root leaves the folder the Git
+  // panel points at (workspace folder by default, picker moves included).
+  // sameMenuPath compares both sides normalized, so a go-up that lands
+  // back on the anchor stays hidden.
+  function filesCwdMatchesWorkspace() {
+    const anchor = gitCwdAnchor();
+    if (!anchor || !state.cwd) return true;
+    return sameMenuPath(state.cwd, anchor);
+  }
+
+  // The desync anchor is the Git panel cwd when git_ui has loaded (its
+  // picker moves are user state), else the workspace folder the panel
+  // opened with.
+  function gitCwdAnchor() {
+    if (window.HerdrGitUi && typeof window.HerdrGitUi.currentCwd === "function") {
+      const cwd = window.HerdrGitUi.currentCwd();
+      if (cwd) return cwd;
+    }
+    return state.workspaceCwd;
+  }
+
+  function renderDesyncRow() {
+    if (filesCwdMatchesWorkspace()) return "";
+    const where = state.path ? `${state.cwd.replace(/\/+$/, "")}/${state.path}` : state.cwd;
+    return `<div class="file-browser-desync" role="status"><span class="file-browser-desync-path" title="${esc(where)}">${esc(Tree.basename(state.cwd) || state.cwd)}</span><span class="file-browser-desync-arrows"><button class="file-browser-desync-arrow" type="button" title="Move the Git panel to this folder" aria-label="Move the Git panel to this folder" onclick="HerdrFileBrowser.syncGitToFilesCwd()">→ Git</button><button class="file-browser-desync-arrow" type="button" title="Back to workspace folder" aria-label="Back to workspace folder" onclick="HerdrFileBrowser.returnToWorkspaceCwd()">↩</button></span></div>`;
+  }
+
+  // Git ← arrow: move the Git panel onto the Files cwd. The Git panel owns
+  // its own repo guard (it refuses a plain folder with a message), so this
+  // only forwards the target.
+  async function syncGitToFilesCwd() {
+    const dir = state.cwd;
+    const git = window.HerdrGitUi;
+    if (!dir || !git || typeof git.openForCwd !== "function") return;
+    await git.openForCwd(dir);
+  }
+
+  // ↩ arrow: bring the Files panel back to the anchor folder (Git cwd
+  // when loaded, else the workspace folder).
+  async function returnToWorkspaceCwd() {
+    const anchor = gitCwdAnchor();
+    if (!anchor || sameMenuPath(state.cwd, anchor)) return;
+    state.cwd = anchor;
+    await loadTree("");
   }
 
   function canGoUp() {
@@ -1636,6 +1684,8 @@
     refresh() { loadTree(state.path); },
     refreshLsp() { refreshLspDiagnostics(); },
     requestAccess,
+    syncGitToFilesCwd,
+    returnToWorkspaceCwd,
     up() { goUp(); },
     filterInput,
     filterKeydown,

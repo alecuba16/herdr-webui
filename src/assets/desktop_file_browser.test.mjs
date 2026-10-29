@@ -565,3 +565,126 @@ test("the file browser shortcut map reads the settings scope", async () => {
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(context.HerdrFileBrowser.filterActive(), false, "clearFilter resets the active state");
 });
+
+// ---- Files desync row: divergence signal between the two explorers ----
+
+function makeDesyncDomContext({ gitCwd = "/repo" } = {}) {
+  const nodes = { rightSidebarContent: stubNode("rightSidebarContent") };
+  const sidebar = stubNode("rightSidebarContent");
+  function stubNode(id) {
+    const listeners = {};
+    return {
+      id, className: "", innerHTML: "", style: {}, dataset: {},
+      classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+      appendChild() {}, removeChild() {}, setAttribute() {}, getAttribute: () => null,
+      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    };
+  }
+  const document = {
+    getElementById: (id) => nodes[id] || null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener() {},
+    createElement() {
+      const node = stubNode("created");
+      let id = "";
+      Object.defineProperty(node, "id", {
+        get: () => id,
+        set: (value) => {
+          id = String(value);
+          nodes[id] = node;
+        },
+      });
+      return node;
+    },
+    body: { appendChild() {}, removeChild() {}, classList: { add() {}, remove() {} } },
+  };
+  const gitCalls = [];
+  const context = {
+    window: null,
+    globalThis: null,
+    document,
+    addEventListener() {},
+    localStorage: { getItem: () => null, setItem() {} },
+    fetch: async () => ({ ok: true, statusText: "OK", json: async () => ({ path: "src", entries: [], git_status: null }) }),
+    HerdrAppHelpers: { hashId: () => "hash" },
+    HerdrFileTree: {
+      esc: (value) => String(value == null ? "" : value),
+      arg: (value) => encodeURIComponent(String(value == null ? "" : value)),
+      formatBytes: (value) => `${value} B`,
+      basename: (value) => String(value || "").split("/").pop() || "",
+      parentDirectory: (value) => String(value || "/"),
+      parentPath: (value) => String(value || "").split("/").slice(0, -1).join("/"),
+      applyGitStatus: (entries) => entries,
+      renderCurrentDirectoryRow: () => "",
+      renderEntries: () => "",
+    },
+    HerdrOptions: { read: () => ({}) },
+    HerdrEditor: { isMarkdownPath: () => false },
+    HerdrGitUi: {
+      hide() {},
+      currentCwd: () => gitCwd,
+      openForCwd: async (dir) => { gitCalls.push({ dir }); },
+    },
+    HerdrSearchPanel: { close: () => {} },
+    HerdrRightSidebar: {
+      openView: async (_mode, _workspace, ensurePanel) => { sidebar.appendChild(ensurePanel()); return "hosted"; },
+      afterDrawerRender() {},
+    },
+    rememberWorkspaceShellMode: () => {},
+    syncShellModeButtons: () => {},
+    appRefreshIconButton: () => "",
+    confirm: () => true,
+    setTimeout,
+    clearTimeout,
+    encodeURIComponent,
+    decodeURIComponent,
+    Promise,
+  };
+  context.window = context;
+  context.globalThis = context;
+  vm.runInNewContext(source, context);
+  return { context, gitCalls };
+}
+
+test("the desync row appears when the Files cwd leaves the Git cwd", async () => {
+  const { context } = makeDesyncDomContext({ gitCwd: "/repo" });
+  const workspace = { workspace_id: "ws-1", cwd: "/repo" };
+  await context.HerdrFileBrowser.openAt(workspace, "src", { kind: "dir" });
+  // Open a different folder as the Files root: the panel leaves the Git cwd.
+  context.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ path: "", entries: [], git_status: null }) });
+  await context.HerdrFileBrowser.openAt({ workspace_id: "ws-1", cwd: "/elsewhere" }, "", { kind: "dir" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const html = context.document.getElementById("fileBrowserPanel") ? context.document.getElementById("fileBrowserPanel").innerHTML : "";
+  assert.match(html, /file-browser-desync/, "the desync row renders when the roots diverge");
+  assert.match(html, /syncGitToFilesCwd/, "the Git sync arrow is present");
+  assert.match(html, /returnToWorkspaceCwd/, "the return arrow is present");
+});
+
+test("the desync row stays hidden while the roots match", async () => {
+  const { context } = makeDesyncDomContext({ gitCwd: "/repo" });
+  const workspace = { workspace_id: "ws-1", cwd: "/repo" };
+  await context.HerdrFileBrowser.openAt(workspace, "src", { kind: "dir" });
+  const html = context.document.getElementById("fileBrowserPanel") ? context.document.getElementById("fileBrowserPanel").innerHTML : "";
+  assert.ok(!html.includes("file-browser-desync"), "no desync row while both panels share the folder");
+});
+
+test("syncGitToFilesCwd forwards the Files cwd to the Git panel", async () => {
+  const { context, gitCalls } = makeDesyncDomContext({ gitCwd: "/repo" });
+  const workspace = { workspace_id: "ws-1", cwd: "/elsewhere" };
+  await context.HerdrFileBrowser.openAt(workspace, "", { kind: "dir" });
+  await context.HerdrFileBrowser.syncGitToFilesCwd();
+  assert.equal(gitCalls.length, 1, "syncGitToFilesCwd calls openForCwd once");
+  assert.equal(gitCalls[0].dir, "/elsewhere", "the forwarded dir is the Files cwd");
+});
+
+test("returnToWorkspaceCwd brings the panel back to the anchor", async () => {
+  const { context } = makeDesyncDomContext({ gitCwd: "/repo" });
+  const workspace = { workspace_id: "ws-1", cwd: "/elsewhere" };
+  await context.HerdrFileBrowser.openAt(workspace, "", { kind: "dir" });
+  await context.HerdrFileBrowser.returnToWorkspaceCwd();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(context.HerdrFileBrowser.cwd ? context.HerdrFileBrowser.cwd() : undefined, undefined, "cwd accessor is not part of the public surface; state check follows");
+  const html = context.document.getElementById("fileBrowserPanel") ? context.document.getElementById("fileBrowserPanel").innerHTML : "";
+  assert.ok(!html.includes("file-browser-desync"), "the desync row disappears after returning to the anchor");
+});

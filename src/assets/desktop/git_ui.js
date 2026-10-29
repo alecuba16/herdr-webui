@@ -488,6 +488,35 @@
     return body;
   }
 
+  // Moving the Git panel to another folder only lands on a real
+  // repository: the rail-status probe answers not_git_repository for a
+  // plain directory, so ask it before resetting the view. Returns true
+  // when the move may proceed, false after parking a refusal message.
+  async function ensureRepoCwd(view, cwd, label) {
+    if (!view || !cwd) return false;
+    if (samePath(cwd, view.cwd)) return true;
+    try {
+      const payload = await api("/api/git-ui/rail-status", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspaces: [{ workspace_id: null, cwd }] }),
+      });
+      const item = (payload.items || []).find((entry) => entry && samePath(entry.cwd || "", cwd));
+      if (!item || item.not_git_repository) {
+        state.gitToast = { id: Date.now(), message: `${label} kept: ${compactPath(cwd)} is not a git repository.` };
+        if (state.visible) render();
+        return false;
+      }
+      return true;
+    } catch (err) {
+      // A failed probe is not a verdict: block the move rather than move
+      // the panel onto a folder the backend could not read.
+      state.gitToast = { id: Date.now(), message: `${label} kept: could not verify ${compactPath(cwd)} (${err.message || "probe failed"}).` };
+      if (state.visible) render();
+      return false;
+    }
+  }
+
   function ensurePanel() {
     let panel = document.getElementById("gitUiPanel");
     if (panel) return panel;
@@ -1376,6 +1405,11 @@
     open,
     hide,
     close,
+    // Files desync reads the live Git cwd without touching the view.
+    currentCwd() {
+      const view = active();
+      return (view && view.cwd) || "";
+    },
     openViewTab,
     releaseViewTab,
     forgetWorkspace(workspace) {
@@ -2395,12 +2429,19 @@
       }
       render();
     },
-    selectWorktree(encodedPath) {
+    async selectWorktree(encodedPath) {
       const view = active();
       const path = decodeURIComponent(encodedPath || "");
       if (!view || !path || samePath(path, view.cwd)) return;
-      if (!window.confirm(`Switch Git to worktree folder "${path}"?`)) return;
       state.worktreeList = null;
+      if (!window.confirm(`Switch Git to worktree folder "${path}"?`)) {
+        render();
+        return;
+      }
+      if (!(await ensureRepoCwd(view, path, "Git folder"))) {
+        render();
+        return;
+      }
       resetGitViewForCwd(view, path);
       render();
       refresh();
@@ -2560,12 +2601,17 @@
       state.branchModal = null;
       render();
     },
-    applyBranchModalCwd() {
+    async applyBranchModalCwd() {
       const view = active();
       const input = document.getElementById("gitUiBranchCwd");
-      const cwd = (input && input.value.trim()) || (state.branchModal && state.branchModal.cwd) || "";
-      if (!view || !cwd) return;
+      const cwd = normalizePathForCompare((input && input.value.trim()) || (state.branchModal && state.branchModal.cwd) || "");
+      if (!view || !cwd || samePath(cwd, view.cwd)) {
+        state.branchModal = null;
+        render();
+        return;
+      }
       state.branchModal = null;
+      if (!(await ensureRepoCwd(view, cwd, "Git folder"))) return;
       resetGitViewForCwd(view, cwd);
       render();
       refresh();
@@ -2577,9 +2623,80 @@
       render();
       refresh();
     },
+    // Desync arrows. Both live in the Git selector row and only render
+    // while the Git cwd sits outside the workspace folder.
+    // filesArrow: move the Files panel to the Git cwd (workspace-aware,
+    // same funnel a git reveal uses, so the pane tree owns the tab).
+    async syncFilesToGitCwd() {
+      const view = active();
+      if (!view || !view.cwd || gitCwdMatchesWorkspace(view)) return;
+      const browser = window.HerdrFileBrowser;
+      if (!browser || typeof browser.openAt !== "function") return;
+      if (window.rememberWorkspaceShellMode) window.rememberWorkspaceShellMode("files", state.ws);
+      if (window.syncShellModeButtons) window.syncShellModeButtons();
+      await browser.openAt(
+        { workspace_id: `git-file-explorer:${view.cwd}`, cwd: view.cwd, label: compactPath(view.cwd) },
+        "",
+        { kind: "dir" }
+      );
+    },
+    // workspaceArrow: open the Git cwd as a workspace (existing checkout
+    // reuses its workspace, plain folder gets a new one), mirroring the
+    // file browser's openWorkspaceHere flow.
+    async syncWorkspaceToGitCwd() {
+      const view = active();
+      if (!view || !view.cwd || gitCwdMatchesWorkspace(view)) return;
+      const dir = view.cwd;
+      if (typeof showBlocking === "function") showBlocking("Opening folder...");
+      try {
+        const data = await api(`/api/worktrees?cwd=${encodeURIComponent(dir)}`);
+        const rows = ((data && data.result) || {}).worktrees || [];
+        const row = rows.find((candidate) => String(candidate.path || "").replace(/\\/g, "/").replace(/\/+$/, "") === String(dir).replace(/\\/g, "/").replace(/\/+$/, "")) || null;
+        if (row) {
+          const response = await api("/api/worktrees/open", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ workspace_id: null, cwd: null, path: row.path, label: null, branch: null, open_terminal: typeof workspaceOpenTerminalFlag === "function" && workspaceOpenTerminalFlag() }),
+          });
+          const result = (response && response.result) || {};
+          if (typeof go === "function") go(result.workspace && result.workspace.workspace_id, result.tab && result.tab.tab_id, result.root_pane && result.root_pane.pane_id);
+          return;
+        }
+        const created = await api("/api/workspaces", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ label: pathBasename(dir) || dir, cwd: dir, open_terminal: typeof workspaceOpenTerminalFlag === "function" && workspaceOpenTerminalFlag() }),
+        });
+        try {
+          await api("/api/recent-workspaces/record", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ path: dir, label: compactPath(dir) }),
+          });
+        } catch (_) {} // recents are a nice-to-have; the workspace is open
+        const result = (created && created.result) || {};
+        if (typeof go === "function") go(result.workspace && result.workspace.workspace_id, result.tab && result.tab.tab_id, result.root_pane && result.root_pane.pane_id);
+      } catch (err) {
+        state.gitToast = { id: Date.now(), message: `Could not open workspace: ${err.message || String(err)}` };
+        if (state.visible) render();
+      } finally {
+        if (typeof hideBlocking === "function") hideBlocking();
+      }
+    },
     // Path title entry: opens the directory picker on the current Git folder.
     // The picker writes into a hidden input node and applies the selected
     // folder immediately, so no extra modal input has to live in the panel.
+    // External callers (Files desync arrow) skip the picker: openForCwd
+    // applies the guard and the move directly.
+    async openForCwd(rawCwd) {
+      const view = active();
+      const cwd = normalizePathForCompare(String(rawCwd || ""));
+      if (!view || !cwd || samePath(cwd, view.cwd)) return;
+      if (!(await ensureRepoCwd(view, cwd, "Git folder"))) return;
+      resetGitViewForCwd(view, cwd);
+      render();
+      refresh();
+    },
     openCwdPicker() {
       const view = active();
       if (!view) return;
@@ -2590,12 +2707,12 @@
       input.style.display = "none";
       input.value = String(view.cwd || "");
       let closed = false;
-      const onChange = () => {
+      const onChange = async () => {
         closed = true;
         cleanup();
         const cwd = normalizePathForCompare(input.value || "");
-        if (!cwd) return;
-        if (samePath(cwd, view.cwd)) return;
+        if (!cwd || samePath(cwd, view.cwd)) return;
+        if (!(await ensureRepoCwd(view, cwd, "Git folder"))) return;
         resetGitViewForCwd(view, cwd);
         render();
         refresh();
@@ -2625,7 +2742,7 @@
       };
       poll(0);
     },
-    switchBranchFromModal() {
+    async switchBranchFromModal() {
       const view = active();
       const select = document.getElementById("gitUiBranchSelect");
       if (!view || !select || !select.value) return;
@@ -2637,11 +2754,14 @@
       const modalCwd = (input && input.value.trim()) || (state.branchModal && state.branchModal.cwd) || view.cwd;
       state.branchModal = null;
       if (worktreePath && !samePath(worktreePath, modalCwd)) {
+        // Worktree options come from the repo itself, so the move target is
+        // a checkout git already knows: no extra probe needed.
         resetGitViewForCwd(view, worktreePath);
         render();
         refresh();
         return;
       }
+      if (!samePath(modalCwd, view.cwd) && !(await ensureRepoCwd(view, modalCwd, "Git folder"))) return;
       view.cwd = modalCwd;
       if (kind === "remote") post("/api/git-ui/switch", { cwd: view.cwd, branch: localNameForRemote(branch), create: true, base: branch }, "Switching branch");
       else post("/api/git-ui/switch", { cwd: view.cwd, branch }, "Switching branch");

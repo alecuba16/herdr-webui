@@ -42,7 +42,13 @@
         const worktreeChip = `<button class="git-ui-branch-chip git-ui-worktree-chip" title="Choose worktree" onclick="HerdrGitUi.openWorktreeList(event)"><span class="git-ui-branch-chip-name">${esc(worktreeName)}</span><b class="git-ui-chip-caret">▾</b></button>`;
         const branchChip = branch ? `<button class="git-ui-branch-chip" title="${esc(titleWithGitShortcut("Switch branch", "branch"))}" onclick="HerdrGitUi.openBranchList(event)"><span class="git-ui-branch-chip-name">${esc(branch)}</span><b class="git-ui-chip-caret">▾</b></button>` : "";
         const folderDiffers = ctx.workspaceCwd && !samePath(ctx.cwd, ctx.workspaceCwd);
-        const pathNotice = folderDiffers ? `<span class="git-ui-folder-different" title="Git is operating in a different folder than the current workspace: ${esc(ctx.cwd)}">${esc(compactPath(ctx.cwd))}</span><button class="git-ui-btn git-ui-return-cwd" title="Return Git to the current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()">↩</button>` : "";
+        // The desync row: while Git operates outside the workspace folder,
+        // both sync arrows render. → Files moves the Files panel to the
+        // Git cwd; → Workspace adopts the Git cwd as the workspace.
+        const syncArrows = folderDiffers
+          ? `<span class="git-ui-desync-arrows"><button class="git-ui-btn git-ui-sync-arrow" type="button" title="Move the Files panel to this folder" aria-label="Move the Files panel to this folder" onclick="HerdrGitUi.syncFilesToGitCwd()">→ Files</button><button class="git-ui-btn git-ui-sync-arrow" type="button" title="Open this folder as the workspace" aria-label="Open this folder as the workspace" onclick="HerdrGitUi.syncWorkspaceToGitCwd()">→ Workspace</button></span>`
+          : "";
+        const pathNotice = folderDiffers ? `<span class="git-ui-folder-different" title="Git is operating in a different folder than the current workspace: ${esc(ctx.cwd)}">${esc(compactPath(ctx.cwd))}</span>${syncArrows}<button class="git-ui-btn git-ui-return-cwd" title="Return Git to the current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()">↩</button>` : "";
         return `${worktreeChip}<span class="git-ui-selector-separator">/</span>${branchChip}${pathNotice}`;
       }
 
