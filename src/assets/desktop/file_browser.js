@@ -408,6 +408,12 @@
     activeKey = key;
     if (!stateCache[key]) stateCache[key] = createState({ cwd });
     state = stateCache[key];
+    // The relative tree position only exists under the root it was
+    // loaded from. Re-pinning the root without dropping it sends the
+    // stale position to the backend, which answers "path is not a
+    // directory" and strands the panel on a red error row (rail reopen
+    // after a folder change is the common case).
+    if (!sameMenuPath(state.cwd, cwd || state.cwd)) state.path = "";
     state.cwd = cwd || state.cwd;
     stopTransientWork(state);
   }
@@ -1554,10 +1560,20 @@
     return state.workspaceCwd;
   }
 
+  function gitAnchorIsGitCwd() {
+    if (!(window.HerdrGitUi && typeof window.HerdrGitUi.currentCwd === "function")) return false;
+    return !!window.HerdrGitUi.currentCwd();
+  }
+
+  function returnLabel() {
+    return gitAnchorIsGitCwd() ? "Back to Git panel folder" : "Back to workspace folder";
+  }
+
   function renderDesyncRow() {
     if (filesCwdMatchesWorkspace()) return "";
     const where = state.path ? `${state.cwd.replace(/\/+$/, "")}/${state.path}` : state.cwd;
-    return `<div class="file-browser-desync" role="status"><span class="file-browser-desync-path" title="${esc(where)}">${esc(Tree.basename(state.cwd) || state.cwd)}</span><span class="file-browser-desync-arrows"><button class="file-browser-desync-arrow" type="button" title="Move the Git panel to this folder" aria-label="Move the Git panel to this folder" onclick="HerdrFileBrowser.syncGitToFilesCwd()">→ Git</button><button class="file-browser-desync-arrow" type="button" title="Back to workspace folder" aria-label="Back to workspace folder" onclick="HerdrFileBrowser.returnToWorkspaceCwd()">↩</button></span></div>`;
+    const back = returnLabel();
+    return `<div class="file-browser-desync" role="status"><span class="file-browser-desync-path" title="${esc(where)}">${esc(Tree.basename(state.cwd) || state.cwd)}</span><span class="file-browser-desync-arrows"><button class="file-browser-desync-arrow" type="button" title="Move the Git panel to this folder" aria-label="Move the Git panel to this folder" onclick="HerdrFileBrowser.syncGitToFilesCwd()">→ Git</button><button class="file-browser-desync-arrow" type="button" title="${esc(back)}" aria-label="${esc(back)}" onclick="HerdrFileBrowser.returnToWorkspaceCwd()">↩</button></span></div>`;
   }
 
   // Rail dot contract: the shell reads this to tint the Files rail button
@@ -1572,6 +1588,10 @@
       desynced,
       cwd: desynced ? state.cwd || "" : "",
       anchor: desynced ? gitCwdAnchor() || "" : "",
+      // Which anchor the return arrow targets: the Git panel folder once
+      // git_ui has a live view, else the workspace folder. The rail
+      // tooltip words the desync after it.
+      anchorKind: desynced ? (gitAnchorIsGitCwd() ? "git" : "workspace") : "",
     };
   }
 

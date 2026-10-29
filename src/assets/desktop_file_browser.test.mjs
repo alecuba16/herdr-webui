@@ -725,6 +725,35 @@ test("the desync row falls back to the workspace folder when git_ui is not loade
   assert.ok(!html().includes("file-browser-desync"), "the return arrow restores the fallback anchor");
 });
 
+// ---- Stale tree position after a root re-pin: the rail reopen path ----
+
+test("rail reopen after a folder change drops the stale tree position", async () => {
+  const { context } = makeDesyncDomContext({ gitCwd: "/repo" });
+  const workspace = { workspace_id: "ws-1", cwd: "/repo" };
+  await context.HerdrFileBrowser.openAt(workspace, "src", { kind: "dir" });
+  const treeCalls = [];
+  // Backend behavior for the bug: a stale relative path joined onto the
+  // new root misses and answers "path is not a directory".
+  context.fetch = async (url) => {
+    treeCalls.push(String(url));
+    const stale = /path=src(&|$)/.test(String(url)) && String(url).includes("cwd=%2Felsewhere");
+    if (stale) return { ok: false, statusText: "Bad Request", json: async () => ({ error: "path is not a directory" }) };
+    const keep = /path=src(&|$)/.test(String(url));
+    return { ok: true, statusText: "OK", json: async () => ({ path: keep ? "src" : "", entries: [], git_status: null }) };
+  };
+  // Same root reopen keeps the tree position.
+  await context.HerdrFileBrowser.open(workspace, { forceOpen: true });
+  assert.ok(treeCalls.some((call) => /path=src(&|$)/.test(call)), "same-root reopen keeps the tree position");
+  // Root change reopen must not carry the old position over.
+  await context.HerdrFileBrowser.open({ workspace_id: "ws-1", cwd: "/elsewhere" }, { forceOpen: true });
+  const last = treeCalls[treeCalls.length - 1] || "";
+  assert.ok(last.includes("cwd=%2Felsewhere"), "the reopen asks for the new root");
+  assert.ok(!/path=src(&|$)/.test(last), "the reopen drops the stale tree position");
+  const html = context.document.getElementById("fileBrowserPanel") ? context.document.getElementById("fileBrowserPanel").innerHTML : "";
+  assert.ok(!html.includes("file-browser-error"), "no red error row after the reopen");
+  assert.ok(html.includes("elsewhere"), "the panel renders the new root");
+});
+
 // ---- Rail desync dot: the shell reads desyncState() to tint the Files
 // rail button amber while the panel root sits outside the anchor ----
 
@@ -753,4 +782,35 @@ test("desyncState stays quiet while the roots match", async () => {
   assert.equal(info.desynced, false, "no desync flag while the roots match");
   assert.equal(info.cwd, "", "no cwd carried while synced");
   assert.equal(info.anchor, "", "no anchor carried while synced");
+});
+
+test("the desync return arrow names the git folder as its target", async () => {
+  // git_ui loaded with a live view: the anchor is the Git panel folder.
+  const { context } = makeDesyncDomContext({ gitCwd: "/repo" });
+  const workspace = { workspace_id: "ws-1", cwd: "/repo" };
+  await context.HerdrFileBrowser.openAt(workspace, "src", { kind: "dir" });
+  context.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ path: "", entries: [], git_status: null }) });
+  await context.HerdrFileBrowser.openAt({ workspace_id: "ws-1", cwd: "/elsewhere" }, "", { kind: "dir" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const html = context.document.getElementById("fileBrowserPanel").innerHTML;
+  assert.match(html, /Back to Git panel folder/, "the return arrow says where it goes when git_ui holds the anchor");
+  const info = context.HerdrFileBrowser.desyncState();
+  assert.equal(info.anchorKind, "git", "desyncState reports the git anchor kind");
+});
+
+test("the desync return arrow keeps the workspace wording on the fallback anchor", async () => {
+  // No git_ui: the anchor is the workspace folder the panel opened with,
+  // and the real divergence path is a go-up out of that folder.
+  const { context } = makeDesyncDomContext({ gitUi: "hidden", parentFolders: true });
+  const workspace = { workspace_id: "ws-1", cwd: "/repo" };
+  await context.HerdrFileBrowser.openAt(workspace, "", { kind: "dir" });
+  context.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ path: "", entries: [], git_status: null }) });
+  await context.HerdrFileBrowser.up();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await context.HerdrFileBrowser.up();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const html = context.document.getElementById("fileBrowserPanel").innerHTML;
+  assert.match(html, /Back to workspace folder/, "the fallback anchor keeps the workspace wording");
+  const info = context.HerdrFileBrowser.desyncState();
+  assert.equal(info.anchorKind, "workspace", "desyncState reports the workspace anchor kind");
 });

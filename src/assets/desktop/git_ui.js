@@ -1134,9 +1134,10 @@
     if (!state.visible) return;
     saveSideEditorFromDom();
     const activeView = active() || {};
-    // The git cwd anchors the Files rail desync dot; a git picker move
-    // can re-point it while the Files panel sits idle.
+    // Both rail dots read panel state on every render: the git cwd is
+    // the Files dot's anchor, and the git dot tracks the git cwd itself.
     if (typeof window.HerdrSyncFilesRailDesync === "function") window.HerdrSyncFilesRailDesync();
+    if (typeof window.HerdrSyncGitRailDesync === "function") window.HerdrSyncGitRailDesync();
     // Scroll capture must precede every innerHTML write below: the menu
     // open path sets state then re-renders, and the content node the
     // restore reads from is wiped a few lines down.
@@ -1435,6 +1436,18 @@
     currentCwd() {
       const view = active();
       return (view && view.cwd) || "";
+    },
+    // Rail dot contract, mirroring the Files side: the shell reads this
+    // to dot the Git rail button while the panel operates outside the
+    // workspace folder (the same state its selector renders the sync
+    // arrows in). cwd carries where Git sits, workspaceCwd where it
+    // belongs. Hidden drawers keep reporting: the view stays parked.
+    desyncState() {
+      const view = active();
+      const cwd = (view && view.cwd) || "";
+      const workspaceCwd = (view && view.workspaceCwd) || "";
+      const desynced = !!(cwd && workspaceCwd && !gitCwdMatchesWorkspace(view));
+      return { desynced, cwd: desynced ? cwd : "", workspaceCwd: desynced ? workspaceCwd : "" };
     },
     openViewTab,
     releaseViewTab,
@@ -2686,6 +2699,12 @@
             body: JSON.stringify({ workspace_id: null, cwd: null, path: row.path, label: null, branch: null, open_terminal: typeof workspaceOpenTerminalFlag === "function" && workspaceOpenTerminalFlag() }),
           });
           const result = (response && response.result) || {};
+          // Adoption reconciles the state the arrows and rail dot describe:
+          // the folder just became the workspace, so Git operates on the
+          // workspace folder. Park it on the view before navigating, or
+          // the dot lingers when the new workspace hosts another view and
+          // this drawer never re-opens to update it.
+          view.workspaceCwd = dir;
           if (typeof go === "function") go(result.workspace && result.workspace.workspace_id, result.tab && result.tab.tab_id, result.root_pane && result.root_pane.pane_id);
           return;
         }
@@ -2702,6 +2721,8 @@
           });
         } catch (_) {} // recents are a nice-to-have; the workspace is open
         const result = (created && created.result) || {};
+        // Same reconciliation as the worktree path above.
+        view.workspaceCwd = dir;
         if (typeof go === "function") go(result.workspace && result.workspace.workspace_id, result.tab && result.tab.tab_id, result.root_pane && result.root_pane.pane_id);
       } catch (err) {
         state.gitToast = { id: Date.now(), message: `Could not open workspace: ${err.message || String(err)}` };

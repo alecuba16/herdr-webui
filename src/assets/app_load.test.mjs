@@ -8038,6 +8038,31 @@ describe("app bundle load", () => {
     const panesCss = readFileSync(new URL("./desktop/app_css/panes.css", import.meta.url), "utf8");
     match(panesCss, /\.right-sidebar-rail-button\[data-desync="true"\]::after/);
   });
+
+  it("mirrors the git panel desync onto the Git rail button", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const button = ctx.document.getElementById("rightRailGit");
+    // No git_ui yet: the rail stays neutral.
+    ctx.window.HerdrSyncGitRailDesync();
+    equal(button.dataset.desync || "", "", "no dot before git_ui loads");
+    equal(button.title, "Show or hide Git view", "status title untouched while neutral");
+    // Diverged: the rail mirrors the desync and says where git sits.
+    ctx.window.HerdrGitUi = {
+      desyncState: () => ({ desynced: true, cwd: "/other-repo", workspaceCwd: "/ws" }),
+    };
+    ctx.window.HerdrSyncGitRailDesync();
+    equal(button.dataset.desync, "true", "dot on while diverged");
+    match(button.title, /Git panel is at \/other-repo, outside the workspace folder/);
+    match(button.getAttribute("aria-label"), /outside the workspace folder/);
+    // Back in sync: the dot clears and the plain status title returns.
+    ctx.window.HerdrGitUi = {
+      desyncState: () => ({ desynced: false, cwd: "", workspaceCwd: "" }),
+    };
+    ctx.window.HerdrSyncGitRailDesync();
+    equal(button.dataset.desync, "", "dot off once git sits on the workspace folder");
+    equal(button.title, "Show or hide Git view", "plain status title restored");
+  });
 });
 
 describe("workspace sidebar order", () => {

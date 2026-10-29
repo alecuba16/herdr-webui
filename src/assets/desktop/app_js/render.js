@@ -521,8 +521,38 @@ function syncGitWorkspaceToggle() {
     button.setAttribute("aria-label", ariaLabel);
   if (button.title !== title) button.title = title;
   button.disabled = status === "nogit";
+  syncGitRailDesync();
   syncShellModeButtons();
 }
+
+// Git rail desync dot, mirroring the Files side: amber dot while the Git
+// panel operates outside the workspace folder, the state its selector
+// shows the sync arrows in. git_ui owns the truth; the rail mirrors it.
+function syncGitRailDesync() {
+  const button = el("rightRailGit");
+  if (!button) return;
+  const info = window.HerdrGitUi && typeof window.HerdrGitUi.desyncState === "function"
+    ? window.HerdrGitUi.desyncState()
+    : null;
+  const desynced = !!(info && info.desynced);
+  button.dataset.desync = desynced ? "true" : "";
+  // Desync titles must not outlive the desync: the hook runs from git
+  // renders without a shell render, so restore the plain status title
+  // here (disabled rail = nogit wording).
+  const label = desynced
+    ? gitDesyncTitle(info)
+    : button.disabled ? "No Git repository detected" : "Show or hide Git view";
+  if (button.title !== label) {
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  }
+}
+
+function gitDesyncTitle(info) {
+  const cwd = (info && info.cwd) || "";
+  return cwd ? `Git panel is at ${cwd}, outside the workspace folder` : "Git panel is outside the workspace folder";
+}
+window.HerdrSyncGitRailDesync = () => syncGitRailDesync();
 
 // Reset the desktop window layout to its fresh-boot shape: one pane per
 // workspace, no splits, no maximized pane, terminal as the hosted view,
@@ -705,7 +735,11 @@ function syncFilesRailDesync(hasPath = true) {
 
 function filesDesyncTitle(info) {
   const cwd = (info && info.cwd) || "";
-  return cwd ? `Files panel is at ${cwd}, outside the workspace folder` : "Files panel is outside the workspace folder";
+  if (!cwd) return "Files panel is outside the workspace folder";
+  // The anchor is the Git panel folder once git_ui holds a live view:
+  // name that divergence, not the workspace folder Files may still sit on.
+  if ((info && info.anchorKind) === "git") return `Files panel is at ${cwd}, not following the Git panel folder`;
+  return `Files panel is at ${cwd}, outside the workspace folder`;
 }
 window.HerdrSyncFilesRailDesync = () => syncFilesRailDesync(true);
 

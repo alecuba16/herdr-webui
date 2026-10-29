@@ -458,9 +458,9 @@
   cursor: default;
 }
 
-/* Files rail desync dot (dataset.desync drives this): amber corner dot
- * while the Files panel root sits outside the anchor folder. Same
- * working-state amber the in-panel desync row uses. */
+/* Rail desync dot (dataset.desync drives this, Files and Git buttons
+ * alike): amber corner dot while a panel root sits outside its anchor
+ * folder. Same working-state amber the in-panel desync row uses. */
 .right-sidebar-rail-button[data-desync="true"]::after {
   content: "";
   position: absolute;

@@ -3267,3 +3267,34 @@ test("switchBranchFromModal moves to a worktree path without a probe and gates a
   assert.equal(ui.currentCwd(), "/tmp/third-repo", "the refused typed cwd keeps the current folder");
   assert.match(ctxHtml(booted), /is not a git repository/, "the refusal toast renders for the typed cwd");
 });
+
+test("desyncState reports the git rail dot contract", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/rail-status": (params, init) => {
+      const body = JSON.parse((init && init.body) || "{}");
+      const item = ((body.workspaces || [])[0]) || {};
+      return { items: [{ workspace_id: null, cwd: item.cwd, state: "clean" }] };
+    },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/ws-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  // Synced view: cwd matches the workspace folder, no dot.
+  let info = ui.desyncState();
+  assert.equal(info.desynced, false, "no desync while the git cwd sits on the workspace folder");
+  await ui.openForCwd("/tmp/other-repo");
+  await settle();
+  // Diverged view: dot on, cwd and workspaceCwd both named.
+  info = ui.desyncState();
+  assert.equal(info.desynced, true, "desync once the git cwd leaves the workspace folder");
+  assert.equal(info.cwd, "/tmp/other-repo", "desyncState carries the git cwd");
+  assert.equal(info.workspaceCwd, "/tmp/ws-repo", "desyncState carries the workspace folder");
+  await ui.returnToWorkspaceCwd();
+  await settle();
+  info = ui.desyncState();
+  assert.equal(info.desynced, false, "the return arrow clears the dot");
+});
