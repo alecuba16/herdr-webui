@@ -4952,19 +4952,40 @@ describe("app bundle load", () => {
     ok(!strip.classList.contains("dragging"), "class cleared on cancel");
     equal(cssVars().left, "370px", "cancel commits the pending width");
     equal(optionsOf().sidebarWidth, 370);
+    // A cancelled gesture produces no trailing click, so the suppressor must
+    // not survive it: the next Enter-key click (no pointerdown to clear it)
+    // still toggles.
+    let cancelClicks = 0;
+    ctx.document.getElementById("sidebarToggle").onclick = () => { cancelClicks += 1; };
+    let cancelStopped = false;
+    for (const { fn, capture } of left.click) {
+      if (!capture) continue;
+      fn({ stopImmediatePropagation() { cancelStopped = true; } });
+    }
+    if (!cancelStopped) ctx.document.getElementById("sidebarToggle").onclick();
+    equal(cancelClicks, 1, "click after a cancelled drag is not swallowed");
+
+    // The strip pipe gates on the captured pointer: a second finger's
+    // moves must not feed the width while the first pointer owns the drag.
+    left.pointerdown[0].fn({ button: 0, clientX: 400, pointerId: 10 });
+    left.pointermove[0].fn({ clientX: 440, pointerId: 10 });
+    left.pointermove[0].fn({ clientX: 3000, pointerId: 11 });
+    equal(preview().style.getPropertyValue("width"), "410px", "a second pointer's moves do not feed the drag");
+    left.pointerup[0].fn({ pointerId: 10 });
+    equal(cssVars().left, "410px", "the first pointer's width commits on release");
 
     // No ceiling: a huge drag commits the full distance instead of clamping
-    // (370 from the prior cancel-commit plus 3600 of drag).
+    // (410 from the prior pointer-gate drag plus 3600 of drag).
     left.pointerdown[0].fn({ button: 0, clientX: 400, pointerId: 4 });
     left.pointermove[0].fn({ clientX: 4000, pointerId: 4 });
     left.pointerup[0].fn({ pointerId: 4 });
-    equal(cssVars().left, "3970px", "no maximum: full drag width applies");
-    equal(optionsOf().sidebarWidth, 3970);
+    equal(cssVars().left, "4010px", "no maximum: full drag width applies");
+    equal(optionsOf().sidebarWidth, 4010);
 
     // Unrelated keys do not resize; the right strip's grow key is the
     // mirrored ArrowLeft (toward the center widens the right sidebar).
     left.keydown[0].fn({ key: "Enter", preventDefault() {} });
-    equal(cssVars().left, "3970px", "Enter leaves the width alone");
+    equal(cssVars().left, "4010px", "Enter leaves the width alone");
     const right = listeners.rightSidebarToggle;
     right.keydown[0].fn({ key: "ArrowLeft", preventDefault() {} });
     equal(cssVars().right, "328px", "right grow steps 8px via ArrowLeft");
@@ -4975,7 +4996,7 @@ describe("app bundle load", () => {
 
     // pointermove without a prior pointerdown is a no-op (armed flag).
     left.pointermove[0].fn({ clientX: 480, pointerId: 9 });
-    equal(cssVars().left, "3970px", "unarmed move ignored");
+    equal(cssVars().left, "4010px", "unarmed move ignored");
 
     // The right strip's releasePointerCapture threw above; a drag there
     // still commits (the try/catch swallows the throw). The strip starts on

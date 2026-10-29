@@ -510,19 +510,28 @@ function wireSidebarWidthDrag(
     if (e.pointerId !== undefined && capturedPointer !== null && e.pointerId !== capturedPointer) return;
     stopResize(e);
   };
+  // A cancelled gesture produces no trailing click, so the one-shot
+  // suppressor must drop: the next real click (keyboard Enter fires one
+  // with no pointerdown to clear it) would otherwise be swallowed once.
+  const onWindowCancel = (e) => {
+    if (!armed) return;
+    if (e.pointerId !== undefined && capturedPointer !== null && e.pointerId !== capturedPointer) return;
+    suppressedClick = false;
+    stopResize(e);
+  };
   const armWindowListeners = () => {
     if (windowListeners) return;
     windowListeners = true;
     window.addEventListener("pointermove", onWindowMove);
     window.addEventListener("pointerup", onWindowUp);
-    window.addEventListener("pointercancel", onWindowUp);
+    window.addEventListener("pointercancel", onWindowCancel);
   };
   const disarmWindowListeners = () => {
     if (!windowListeners) return;
     windowListeners = false;
     window.removeEventListener("pointermove", onWindowMove);
     window.removeEventListener("pointerup", onWindowUp);
-    window.removeEventListener("pointercancel", onWindowUp);
+    window.removeEventListener("pointercancel", onWindowCancel);
   };
   const handleMove = (clientX) => {
     if (!armed) return;
@@ -535,7 +544,13 @@ function wireSidebarWidthDrag(
     }
     previewFromClientX(clientX);
   };
-  strip.addEventListener("pointermove", (e) => handleMove(e.clientX));
+  // The strip pipe gates on the captured pointer id like the window
+  // pipe: where capture silently fails, a second finger's moves must not
+  // feed the width.
+  strip.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== undefined && capturedPointer !== null && e.pointerId !== capturedPointer) return;
+    handleMove(e.clientX);
+  });
   strip.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     startX = e.clientX;
@@ -588,7 +603,12 @@ function wireSidebarWidthDrag(
     startCollapsed = false;
   };
   strip.addEventListener("pointerup", stopResize);
-  strip.addEventListener("pointercancel", stopResize);
+  strip.addEventListener("pointercancel", (e) => {
+    // Same as the window cancel path: no trailing click follows, so the
+    // suppressor must not survive the gesture.
+    suppressedClick = false;
+    stopResize(e);
+  });
   strip.addEventListener("click", (e) => {
     if (!suppressedClick) return;
     suppressedClick = false;
