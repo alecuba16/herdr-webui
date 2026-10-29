@@ -364,6 +364,57 @@ if (rightSidebarToggle)
     if (typeof globalThis.HerdrScheduleTerminalResize === "function")
       globalThis.HerdrScheduleTerminalResize();
   };
+// Drag-driven versions of the two toggles above for the width strips
+// (bindings.js). Unlike the click handlers they stay silent (no shortcut
+// hint toast mid-drag) and return whether the collapsed state actually
+// changed, so a drag that expands keeps following the pointer while a
+// drag on an already-visible bar does not re-run the expand side effects.
+function expandLeftSidebarFromDrag() {
+  if (!sidebarCollapsed) return false;
+  sidebarCollapsed = false;
+  storeFlag(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed);
+  applySidebarCollapsed();
+  syncShortcutTooltips();
+  if (typeof globalThis.HerdrScheduleTerminalResize === "function")
+    globalThis.HerdrScheduleTerminalResize();
+  return true;
+}
+function collapseLeftSidebarFromDrag() {
+  if (sidebarCollapsed) return false;
+  sidebarCollapsed = true;
+  storeFlag(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed);
+  applySidebarCollapsed();
+  syncShortcutTooltips();
+  if (typeof globalThis.HerdrScheduleTerminalResize === "function")
+    globalThis.HerdrScheduleTerminalResize();
+  return true;
+}
+function expandRightSidebarFromDrag() {
+  if (!rightSidebarCollapsed) return false;
+  setRightSidebarCollapsedFlag(false);
+  syncShortcutTooltips();
+  // Same hosted-view contract as the click: a drag-expand out of terminal
+  // mode opens the workspace's last view so the column never sits empty.
+  if (currentWorkspaceShellMode() === "terminal") {
+    const mode = typeof resolveHostedShellMode === "function" ? resolveHostedShellMode() : "files";
+    if (mode === "git") openWorkspaceGitUi(state.ws, { forceOpen: true });
+    else if (mode === "search") openWorkspaceSearchPanel(state.ws, { forceOpen: true });
+    else if (mode === "notes") openWorkspaceNotesPanel(state.ws, { forceOpen: true });
+    else openWorkspaceFileBrowser(state.ws, { forceOpen: true });
+  }
+  if (typeof globalThis.HerdrScheduleTerminalResize === "function")
+    globalThis.HerdrScheduleTerminalResize();
+  return true;
+}
+function collapseRightSidebarFromDrag() {
+  if (rightSidebarCollapsed) return false;
+  setRightSidebarCollapsedFlag(true);
+  syncShortcutTooltips();
+  if (window.HerdrRightSidebar) window.HerdrRightSidebar.apply();
+  if (typeof globalThis.HerdrScheduleTerminalResize === "function")
+    globalThis.HerdrScheduleTerminalResize();
+  return true;
+}
 function storedFlag(key) {
   try {
     return localStorage.getItem(key) === "1";
