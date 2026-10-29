@@ -137,6 +137,7 @@ function context() {
     WebSocket: class {},
     fetch: async () => ({ status: 200, json: async () => ({}) }),
     addEventListener() {},
+    removeEventListener() {},
     prompt: () => null,
     confirm: () => true,
     alert: () => {},
@@ -4806,19 +4807,53 @@ describe("app bundle load", () => {
     ctx.document.getElementById("sidebarToggle").onclick = () => {
       clickCalls += 1;
     };
+    // The drag also arms window-level listeners (some environments deliver
+    // pointermove to the element under the cursor instead of the capturing
+    // strip), so capture them and prove that pipe drives the same drag.
+    const windowListeners = {};
+    ctx.window.addEventListener = (type, fn) => {
+      windowListeners[type] = windowListeners[type] || [];
+      windowListeners[type].push(fn);
+    };
+    const removedWindowListeners = [];
+    ctx.window.removeEventListener = (type, fn) => {
+      removedWindowListeners.push(type);
+      windowListeners[type] = (windowListeners[type] || []).filter((f) => f !== fn);
+    };
     const left = listeners.sidebarToggle;
     left.pointerdown[0].fn({ button: 0, clientX: 400, pointerId: 1 });
-    left.pointermove[0].fn({ clientX: 480, pointerId: 1 });
-    equal(cssVars().left, "330px", "grid frozen mid-drag");
-    equal(preview().style.getPropertyValue("width"), "410px", "ghost tracks the pending width");
-    equal(preview().hidden, false, "ghost visible mid-drag");
-    left.pointerup[0].fn({ pointerId: 1 });
-    equal(cssVars().left, "410px", "commit on pointerup");
+    // Window pipe: the move lands on whatever element sits under the
+    // cursor, but the armed window listener still drives the drag.
+    windowListeners.pointermove[0]({ clientX: 480, pointerId: 1, buttons: 1 });
+    equal(cssVars().left, "330px", "grid frozen mid-drag (window pipe)");
+    equal(preview().style.getPropertyValue("width"), "410px", "ghost tracks the pending width (window pipe)");
+    equal(preview().hidden, false, "ghost visible mid-drag (window pipe)");
+    equal(preview().dataset.label, "410px", "ghost labels the target size");
+    windowListeners.pointerup[0]({ pointerId: 1 });
+    equal(cssVars().left, "410px", "commit on pointerup (window pipe)");
+    ok(removedWindowListeners.includes("pointermove"), "window listeners drop on release");
+    ok((windowListeners.pointermove || []).length === 0, "no window listener left after release");
     equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options")).sidebarWidth, 410);
     ok(ctx.document.getElementById("app").classList.contains("sidebar-resizing"), "commit rides the transition class");
     ok(preview().classList.contains("fading"), "ghost fades over the commit");
     dispatchClick("sidebarToggle");
     equal(clickCalls, 0, "the click after a drag is suppressed, not toggled");
+
+    // Strip pipe (pointer capture): the same drag through the strip's own
+    // pointermove listener still works where capture is honored.
+    left.pointerdown[0].fn({ button: 0, clientX: 400, pointerId: 7 });
+    left.pointermove[0].fn({ clientX: 450, pointerId: 7 });
+    equal(cssVars().left, "410px", "grid frozen mid-drag (strip pipe)");
+    left.pointerup[0].fn({ pointerId: 7 });
+    equal(cssVars().left, "460px", "commit on pointerup (strip pipe)");
+
+    // A move with no buttons held mid-drag means the release was missed
+    // elsewhere: the pending width commits instead of dragging on.
+    left.pointerdown[0].fn({ button: 0, clientX: 500, pointerId: 8 });
+    windowListeners.pointermove[0]({ clientX: 560, pointerId: 8, buttons: 1 });
+    windowListeners.pointermove[0]({ clientX: 600, pointerId: 8, buttons: 0 });
+    equal(cssVars().left, "520px", "buttonless move commits the pending width");
+    ok((windowListeners.pointermove || []).length === 0, "window listeners dropped after the missed release");
 
     // A click without a prior drag still toggles: no suppressedClick armed.
     dispatchClick("sidebarToggle");
@@ -4836,8 +4871,8 @@ describe("app bundle load", () => {
 
     // Keyboard resize: arrows step 8px, clamped the same way.
     left.keydown[0].fn({ key: "ArrowLeft", preventDefault() {} });
-    equal(cssVars().left, "402px", "arrow shrink applies and persists");
-    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options")).sidebarWidth, 402);
+    equal(cssVars().left, "512px", "arrow shrink applies and persists");
+    equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options")).sidebarWidth, 512);
 
     // Double-click resets to stock widths.
     left.dblclick[0].fn({ preventDefault() {}, stopImmediatePropagation() {} });
@@ -5097,8 +5132,9 @@ describe("app bundle load", () => {
       );
 
       // Drag inward far enough that closed is closer to the pointer than the
-      // stock minimum: the ghost fades out (the snap targets the collapse)
-      // and release collapses instead of committing a sub-minimum width.
+      // stock minimum: the ghost swaps to the closing strip (28px, the
+      // collapsed bar's width) and release collapses instead of committing
+      // a sub-minimum width.
       handler.pointerdown[0].fn({ button: 0, clientX: 500, pointerId: 3 });
       handler.pointermove[0].fn({ clientX: 500 + scenario.close, pointerId: 3 });
       ok(
@@ -5106,8 +5142,35 @@ describe("app bundle load", () => {
         `${scenario.id}: collapse lands on release, not mid-drag`,
       );
       ok(
-        ghost().classList.contains("fading"),
-        `${scenario.id}: ghost fades when the snap targets the collapse`,
+        ghost().classList.contains("closing"),
+        `${scenario.id}: closing strip replaces the ghost when the snap targets the collapse`,
+      );
+      equal(
+        ghost().style.getPropertyValue("width"),
+        "28px",
+        `${scenario.id}: closing strip matches the collapsed bar width`,
+      );
+      // Reversible while held: moving back out of the collapse zone
+      // restores the full ghost, so the user can cancel the collapse
+      // without releasing and dragging again. The close drag started from
+      // the held width, and the hold move always lands 20px inside it
+      // (the mirrored right strip flips the clientX sign, not the width
+      // delta).
+      handler.pointermove[0].fn({ clientX: 500 + scenario.hold, pointerId: 3 });
+      ok(
+        !ghost().classList.contains("closing"),
+        `${scenario.id}: backing out of the collapse zone clears the closing strip`,
+      );
+      equal(
+        ghost().style.getPropertyValue("width"),
+        `${scenario.held - 20}px`,
+        `${scenario.id}: ghost restored at the pointer width after backing out`,
+      );
+      // Re-enter the collapse zone and release: still closes.
+      handler.pointermove[0].fn({ clientX: 500 + scenario.close, pointerId: 3 });
+      ok(
+        ghost().classList.contains("closing"),
+        `${scenario.id}: closing strip back inside the collapse zone`,
       );
       handler.pointerup[0].fn({ pointerId: 3 });
       ok(

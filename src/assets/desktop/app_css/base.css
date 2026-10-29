@@ -203,9 +203,11 @@ body.light {
   color: var(--accent);
 }
 /* Resize drag preview: a ghost column that tracks the pointer while the
-   real grid stays frozen; it fades out over the commit transition. It
-   never intercepts pointer events, and prefers-reduced-motion drops the
-   fade so the commit lands instantly. */
+   real grid stays frozen; it fades out over the commit transition. A px
+   label rides its far edge so the target size reads before release; the
+   closing variant (release will collapse) shrinks to the collapsed strip
+   width instead. It never intercepts pointer events, and
+   prefers-reduced-motion drops the fade so the commit lands instantly. */
 .sidebar-preview {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   border-right: 2px solid var(--accent);
@@ -219,11 +221,41 @@ body.light {
   transition: none;
   z-index: 60;
 }
+.sidebar-preview::after {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent);
+  content: attr(data-label);
+  font-size: 11px;
+  font-weight: 600;
+  left: 100%;
+  line-height: 1.2;
+  padding: 2px 6px;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+.sidebar-preview.closing::after {
+  left: 100%;
+  transform: translate(-100%, -50%);
+}
 .sidebar-preview.right {
   border-left: 2px solid var(--accent);
   border-right: 0;
   left: auto;
   right: 0;
+}
+.sidebar-preview.right::after {
+  left: auto;
+  right: 100%;
+  transform: translateY(-50%);
+}
+.sidebar-preview.right.closing::after {
+  left: 0;
+  right: auto;
+  transform: translate(0, -50%);
 }
 .sidebar-preview[hidden] {
   display: none;
@@ -232,6 +264,9 @@ body.light {
   opacity: 0;
   transition:
     opacity 120ms ease;
+}
+.sidebar-preview.fading::after {
+  opacity: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   .sidebar-preview {

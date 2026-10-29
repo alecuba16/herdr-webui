@@ -100,6 +100,7 @@ async function main() {
       ghostHidden: ghost.hidden,
       ghostClass: ghost.className,
       ghostW: Math.round(g.width), ghostLeft: Math.round(g.left),
+      ghostLabel: ghost.dataset.label || "",
       ghostBorderRight: cs.borderRightWidth !== "0px",
       ghostOpacity: cs.opacity,
       resizing: app.classList.contains("sidebar-resizing"),
@@ -128,12 +129,15 @@ async function main() {
   record("s1 grid frozen mid-drag", mid.width === widthBefore, `width mid-drag ${mid.width}, expected ${widthBefore}`);
   record("s1 ghost visible mid-drag", mid.ghostHidden === false && mid.ghostW > 0, JSON.stringify(mid));
   record("s1 ghost sized to the pending width", Math.abs(mid.ghostW - (Number(widthBefore.replace("px", "")) + 260)) <= 2, `ghost ${mid.ghostW}`);
+  record("s1 ghost labels the pending size", mid.ghostLabel === `${Number(widthBefore.replace("px", "")) + 260}px`, `label ${mid.ghostLabel}`);
   record("s1 ghost anchored to the viewport edge", mid.ghostLeft === 0, `left ${mid.ghostLeft}`);
   record("s1 dragging class rides the strip", mid.dragging === true, JSON.stringify(mid));
 
   // ---------- s2: release commits and the ghost fades out ----------
+  // Read the release state before the 180ms sidebar-resizing window
+  // closes: the check asserts the class rides the commit, not that it
+  // lingers afterwards.
   await mouse("mouseReleased", targetX, startY);
-  await sleep(150);
   let rel = JSON.parse(await stripState());
   const expectedW = Number(widthBefore.replace("px", "")) + 260;
   record("s2 release commits the width", rel.width === `${expectedW}px`, `width ${rel.width}`);
@@ -150,8 +154,7 @@ async function main() {
 
   // ---------- s3: inward snaps to the closer edge ----------
   // Short inward drag: release lands below the stock minimum but closer
-  // to it than to closed (590 - 280 = 310; 20px to the floor, 310 to
-  // closed), so the commit floors at 330px.
+  // to it than to closed, so the commit floors at 330px.
   st = JSON.parse(await stripState());
   await drag(st.stripX, st.stripY, st.stripX - 280, st.stripY);
   await sleep(200);
@@ -159,21 +162,44 @@ async function main() {
   record("s3 short inward release floors at the stock minimum", held.width === "330px", `width ${held.width}`);
   record("s3 short inward release never collapses", held.collapsed === false, JSON.stringify(held));
 
-  // Far inward drag: closed is closer than the minimum, so the release
-  // collapses and the stored width survives untouched.
+  // Far inward drag: closed is closer than the minimum, so the ghost
+  // swaps to the closing strip mid-drag (reversible while held), and
+  // release collapses with the stored width untouched. The far point
+  // stays inside the viewport: CDP input cannot dispatch negative
+  // coordinates, and 0 is far enough left that 0 < 330 - 330 stays in
+  // the collapse zone.
   st = JSON.parse(await stripState());
-  const storedBefore = st.stored;
   await mouse("mousePressed", st.stripX, st.stripY);
   await mouse("mouseMoved", st.stripX + 2, st.stripY + 2);
-  await mouse("mouseMoved", st.stripX - 300, st.stripY);
+  await mouse("mouseMoved", Math.max(0, st.stripX - 500), st.stripY);
   let snap = JSON.parse(await stripState());
-  record("s3 far inward drag hides the ghost mid-drag", snap.ghostClass.includes("fading") || snap.ghostHidden === true, `class ${snap.ghostClass}`);
+  record("s3 far inward drag shows the closing strip", snap.ghostClass.includes("closing") && snap.ghostHidden === false, JSON.stringify(snap));
+  record("s3 closing strip matches the collapsed bar width", Math.abs(snap.ghostW - 28) <= 2, `ghost ${snap.ghostW}`);
   record("s3 collapse lands on release, not mid-drag", snap.collapsed === false, JSON.stringify(snap));
-  await mouse("mouseReleased", st.stripX - 300, st.stripY);
+  // Back out of the collapse zone while still holding: the ghost
+  // restores at the pointer width (the collapse is reversible).
+  await mouse("mouseMoved", st.stripX - 60, st.stripY);
+  let backed = JSON.parse(await stripState());
+  record("s3 backing out clears the closing strip", !backed.ghostClass.includes("closing"), JSON.stringify(backed));
+  record("s3 ghost restores after backing out", backed.ghostHidden === false && backed.ghostW > 100, JSON.stringify(backed));
+  await mouse("mouseReleased", st.stripX - 60, st.stripY);
+  await sleep(250);
+  let undone = JSON.parse(await stripState());
+  record("s3 release after backing out commits the width, not the collapse", undone.collapsed === false, JSON.stringify(undone));
+
+  // Re-enter the collapse zone and release there: still closes.
+  st = JSON.parse(await stripState());
+  const storedBeforeClose = st.stored;
+  await mouse("mousePressed", st.stripX, st.stripY);
+  await mouse("mouseMoved", st.stripX + 2, st.stripY + 2);
+  await mouse("mouseMoved", Math.max(0, st.stripX - 500), st.stripY);
+  let snap2 = JSON.parse(await stripState());
+  record("s3 closing strip back inside the collapse zone", snap2.ghostClass.includes("closing"), JSON.stringify(snap2));
+  await mouse("mouseReleased", Math.max(0, st.stripX - 500), st.stripY);
   await sleep(250);
   let closed = JSON.parse(await stripState());
   record("s3 far inward release snaps to collapsed", closed.collapsed === true, JSON.stringify(closed));
-  record("s3 snap-close keeps the stored width untouched", closed.stored === storedBefore, `stored ${closed.stored}, before ${storedBefore}`);
+  record("s3 snap-close keeps the stored width untouched", closed.stored === storedBeforeClose, `stored ${closed.stored}, before ${storedBeforeClose}`);
 
   // ---------- s4: outward drag from the collapsed strip ----------
   st = JSON.parse(await stripState());
@@ -192,7 +218,12 @@ async function main() {
   record("s4 reopen commits the dragged width", reopened.width === `${expectedReopen}px`, `width ${reopened.width}, expected ${expectedReopen}px`);
 
   // ---------- s5: a plain click still toggles ----------
-  await evalExpr(`document.getElementById("sidebarToggle").click()`);
+  // Real press+release on the strip: a synthetic .click() skips pointerdown
+  // and would not exercise the one-shot click suppressor armed by the
+  // s4 drag's trailing click path.
+  st = JSON.parse(await stripState());
+  await mouse("mousePressed", st.stripX, st.stripY);
+  await mouse("mouseReleased", st.stripX, st.stripY);
   await sleep(400);
   let toggled = JSON.parse(await stripState());
   record("s5 plain click toggles after a drag", toggled.collapsed === true, JSON.stringify(toggled));

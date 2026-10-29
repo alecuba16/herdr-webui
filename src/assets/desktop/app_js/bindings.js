@@ -362,6 +362,7 @@ function wireSidebarWidthDrag(
   let previewNodeCache = null;
   let fadeTimer = null;
   let commitTimer = null;
+  let windowListeners = false;
   const direction = strip.id === "rightSidebarToggle" ? -1 : 1;
   const expand = hooks && hooks.expand;
   const collapse = hooks && hooks.collapse;
@@ -383,16 +384,20 @@ function wireSidebarWidthDrag(
       commitTimer = null;
     }
   };
-  // The ghost overlays the exact column the sidebar would occupy after
-  // release: anchored to the viewport edge the sidebar grows from, as wide
-  // as the pending width. No layout reads, so mid-drag moves stay cheap.
+  // The fade rides the same 120ms ease the commit transition uses, then a
+  // timer drops the ghost out of layout. transitionend alone would strand
+  // the ghost if the tab backgrounds mid-fade; the timer always lands.
+  // showPreview clears the closing hint so a re-entry from the collapse
+  // zone restores the full ghost.
   const showPreview = () => {
     const ghost = previewNode();
     if (!ghost) return;
+    hideClosingHint();
     clearFadeTimer();
     ghost.classList.remove("fading");
     ghost.classList.toggle("right", direction === -1);
     ghost.style.setProperty("width", `${pendingWidth}px`);
+    ghost.dataset.label = `${Math.round(pendingWidth)}px`;
     ghost.hidden = false;
   };
   // The fade rides the same 120ms ease the commit transition uses, then a
@@ -408,6 +413,25 @@ function wireSidebarWidthDrag(
       ghost.hidden = true;
       ghost.classList.remove("fading");
     }, SIDEBAR_PREVIEW_FADE_MS);
+  };
+  // Crossing into the collapse zone swaps the ghost for a strip the width
+  // of the collapsed bar, so the release state still reads: release inside
+  // closes, moving back out of the zone restores the full ghost (and the
+  // collapse stays reversible while the button is held).
+  const showClosingHint = () => {
+    const ghost = previewNode();
+    if (!ghost) return;
+    clearFadeTimer();
+    ghost.classList.remove("fading");
+    ghost.classList.add("closing");
+    ghost.style.setProperty("width", "28px");
+    ghost.dataset.label = "close";
+    ghost.hidden = false;
+  };
+  const hideClosingHint = () => {
+    const ghost = previewNode();
+    if (!ghost) return;
+    ghost.classList.remove("closing");
   };
   // The commit transition runs on the real columns only while this class
   // rides #app: click toggles and keyboard steps keep snapping instantly.
@@ -456,14 +480,67 @@ function wireSidebarWidthDrag(
       if (distanceToCollapsed < distanceToMinimum) {
         pendingCollapse = true;
         pendingWidth = null;
-        hidePreview();
+        showClosingHint();
         return;
       }
     }
     pendingCollapse = false;
     pendingWidth = previewWidth(next);
+    hideClosingHint();
     showPreview();
   };
+  // Pointer capture is the primary drag pipe, but some environments
+  // (headless browsers, embedded webviews) deliver pointermove to whatever
+  // sits under the cursor instead of the capturing element. The drag
+  // therefore also listens on window while armed (VS Code's sash wires its
+  // move/up on the window the same way), and drops those listeners on
+  // release. A move with no button held means the release was missed
+  // (another window, a system gesture), so it commits the pending width
+  // instead of dragging on.
+  const onWindowMove = (e) => {
+    if (!armed) return;
+    if (e.pointerId !== undefined && capturedPointer !== null && e.pointerId !== capturedPointer) return;
+    if (e.buttons === 0) {
+      // The release happened elsewhere (another window, a system gesture),
+      // so no trailing click follows this commit: drop the suppressor so
+      // the next real click on the strip still toggles.
+      suppressedClick = false;
+      stopResize(e);
+      return;
+    }
+    handleMove(e.clientX);
+  };
+  const onWindowUp = (e) => {
+    if (!armed) return;
+    if (e.pointerId !== undefined && capturedPointer !== null && e.pointerId !== capturedPointer) return;
+    stopResize(e);
+  };
+  const armWindowListeners = () => {
+    if (windowListeners) return;
+    windowListeners = true;
+    window.addEventListener("pointermove", onWindowMove);
+    window.addEventListener("pointerup", onWindowUp);
+    window.addEventListener("pointercancel", onWindowUp);
+  };
+  const disarmWindowListeners = () => {
+    if (!windowListeners) return;
+    windowListeners = false;
+    window.removeEventListener("pointermove", onWindowMove);
+    window.removeEventListener("pointerup", onWindowUp);
+    window.removeEventListener("pointercancel", onWindowUp);
+  };
+  const handleMove = (clientX) => {
+    if (!armed) return;
+    if (!dragging && Math.abs(clientX - startX) < SIDEBAR_DRAG_THRESHOLD_PX)
+      return;
+    if (!dragging) {
+      dragging = true;
+      suppressedClick = true;
+      strip.classList.add("dragging");
+    }
+    previewFromClientX(clientX);
+  };
+  strip.addEventListener("pointermove", (e) => handleMove(e.clientX));
   strip.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     startX = e.clientX;
@@ -472,26 +549,22 @@ function wireSidebarWidthDrag(
     startCollapsed = !!(isCollapsed && isCollapsed());
     dragging = false;
     armed = true;
+    // Suppression is one-shot per gesture: the previous drag's trailing
+    // click has either arrived or landed outside the strip (no capture in
+    // some environments), so a fresh press must not inherit it.
+    suppressedClick = false;
+    armWindowListeners();
     // Capture keeps pointermove flowing when the cursor leaves the 18px
     // strip; synthetic and edge-case pointer ids make it throw, and the
-    // drag must not depend on it.
+    // drag must not depend on it. The window listeners above are the
+    // real guarantee.
     try {
       strip.setPointerCapture(e.pointerId);
       capturedPointer = e.pointerId;
     } catch (_) {}
   });
-  strip.addEventListener("pointermove", (e) => {
-    if (!armed) return;
-    if (!dragging && Math.abs(e.clientX - startX) < SIDEBAR_DRAG_THRESHOLD_PX)
-      return;
-    if (!dragging) {
-      dragging = true;
-      suppressedClick = true;
-      strip.classList.add("dragging");
-    }
-    previewFromClientX(e.clientX);
-  });
   const stopResize = (e) => {
+    disarmWindowListeners();
     if (capturedPointer !== null) {
       try {
         strip.releasePointerCapture(capturedPointer);
@@ -504,6 +577,7 @@ function wireSidebarWidthDrag(
         strip.classList.remove("dragging");
         dragging = false;
         hidePreview();
+        hideClosingHint();
         if (pendingCollapse) {
           if (collapse && collapse()) armCommitTransition();
         } else if (pendingWidth !== null) {
