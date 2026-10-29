@@ -8009,6 +8009,35 @@ describe("app bundle load", () => {
     equal(ctx.localStorage.getItem("herdr-session-backend:work"), "builtin");
     equal(ctx.localStorage.getItem("herdr-session-backend:default"), "external-herdr");
   });
+
+  it("mirrors the file browser desync onto the Files rail button", () => {
+    const ctx = context();
+    vm.runInContext(source, ctx);
+    const button = ctx.document.getElementById("rightRailFiles");
+    button.title = "Show file browser";
+    // No file browser yet: the rail stays neutral.
+    ctx.window.HerdrSyncFilesRailDesync();
+    equal(button.dataset.desync || "", "", "no dot before the file browser loads");
+    equal(button.title, "Show file browser", "title untouched while neutral");
+    // Diverged: the rail mirrors the desync and says where the panel sits.
+    ctx.window.HerdrFileBrowser = {
+      desyncState: () => ({ desynced: true, cwd: "/elsewhere", anchor: "/repo" }),
+    };
+    ctx.window.HerdrSyncFilesRailDesync();
+    equal(button.dataset.desync, "true", "dot on while diverged");
+    match(button.title, /outside the workspace folder/);
+    match(button.getAttribute("aria-label"), /outside the workspace folder/);
+    // Back in sync: the dot clears and the plain title returns.
+    ctx.window.HerdrFileBrowser = {
+      desyncState: () => ({ desynced: false, cwd: "", anchor: "" }),
+    };
+    ctx.window.HerdrSyncFilesRailDesync();
+    equal(button.dataset.desync, "", "dot off once the roots match");
+    equal(button.title, "Show file browser", "plain title restored");
+    // The CSS contract: the dot rides the data-desync attribute.
+    const panesCss = readFileSync(new URL("./desktop/app_css/panes.css", import.meta.url), "utf8");
+    match(panesCss, /\.right-sidebar-rail-button\[data-desync="true"\]::after/);
+  });
 });
 
 describe("workspace sidebar order", () => {

@@ -678,9 +678,36 @@ function syncFileWorkspaceToggle() {
   const workspace = selectedOrDefaultWorkspace();
   const hasPath = !!workspacePath(workspace);
   button.disabled = !hasPath;
-  button.title = hasPath ? "Show file browser" : "No workspace or default folder available";
+  syncFilesRailDesync(hasPath);
   syncShellModeButtons();
 }
+
+// Files rail desync dot: amber dot while the Files panel root sits outside
+// the anchor folder (git cwd once git_ui loads, else the workspace folder).
+// The file browser owns the truth; the rail only mirrors it. Clicking the
+// rail button still just opens the panel, same as before.
+function syncFilesRailDesync(hasPath = true) {
+  const button = el("rightRailFiles");
+  if (!button) return;
+  const info = window.HerdrFileBrowser && typeof window.HerdrFileBrowser.desyncState === "function"
+    ? window.HerdrFileBrowser.desyncState()
+    : null;
+  const desynced = !!(info && info.desynced);
+  button.dataset.desync = desynced ? "true" : "";
+  const label = desynced
+    ? filesDesyncTitle(info)
+    : hasPath ? "Show file browser" : "No workspace or default folder available";
+  if (button.title !== label) {
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  }
+}
+
+function filesDesyncTitle(info) {
+  const cwd = (info && info.cwd) || "";
+  return cwd ? `Files panel is at ${cwd}, outside the workspace folder` : "Files panel is outside the workspace folder";
+}
+window.HerdrSyncFilesRailDesync = () => syncFilesRailDesync(true);
 
 async function openWorkspaceFileBrowser(id, options) {
   const openOptions = options || {};

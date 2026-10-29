@@ -2,6 +2,7 @@
   const state = {
     cache: {},
     activeKey: "",
+    ws: "",
     open: false,
     visible: false,
     renderVersion: 0,
@@ -488,6 +489,23 @@
     return body;
   }
 
+  // The Files bundle lazy-loads with its panel; the desync arrow can
+  // fire from the Git drawer before Files ever opened. Load it on demand
+  // (same scripts the shell's openWorkspaceFileBrowser pulls in), then
+  // hand back the module, or null when the bundle cannot load.
+  async function ensureFileBrowserBundle() {
+    if (!window.HerdrFileBrowser) {
+      try {
+        if (window.HerdrLoadCss) window.HerdrLoadCss("/assets/desktop/file-browser.css");
+        if (!window.HerdrLoadScript) return null;
+        await window.HerdrLoadScript("/assets/desktop/file-browser.js");
+      } catch (_) {
+        return null;
+      }
+    }
+    return window.HerdrFileBrowser || null;
+  }
+
   // Moving the Git panel to another folder only lands on a real
   // repository: the rail-status probe answers not_git_repository for a
   // plain directory, so ask it before resetting the view. Returns true
@@ -684,6 +702,9 @@
     const openOptions = options || {};
     const key = workspaceKey(workspace);
     const nextWorkspaceCwd = workspaceCwd(workspace);
+    // The shell-mode remember calls key off the workspace id: park it on
+    // the panel state so later cwd moves can target the same entry.
+    state.ws = (workspace && workspace.workspace_id) || "";
     if (state.visible && state.activeKey === key && !openOptions.forceOpen) {
       hide();
       return;
@@ -796,6 +817,7 @@
     saveDraftFromDom();
     saveSideEditorFromDom();
     state.visible = false;
+    state.ws = "";
     showPanel(false);
     if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
   }
@@ -806,6 +828,7 @@
     if (state.activeKey) delete state.cache[state.activeKey];
     state.open = false;
     state.visible = false;
+    state.ws = "";
     showPanel(false);
     if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
   }
@@ -1111,6 +1134,9 @@
     if (!state.visible) return;
     saveSideEditorFromDom();
     const activeView = active() || {};
+    // The git cwd anchors the Files rail desync dot; a git picker move
+    // can re-point it while the Files panel sits idle.
+    if (typeof window.HerdrSyncFilesRailDesync === "function") window.HerdrSyncFilesRailDesync();
     // Scroll capture must precede every innerHTML write below: the menu
     // open path sets state then re-renders, and the content node the
     // restore reads from is wiped a few lines down.
@@ -1706,12 +1732,13 @@
       }
       if (action === "showInExplorer") {
         const parentDir = menu.kind === "dir" ? menu.file.replace(/\/+$/, "") : menu.file.split("/").slice(0, -1).join("/");
-        if (window.HerdrFileBrowser && window.HerdrFileBrowser.openAt) {
+        const browser = await ensureFileBrowserBundle();
+        if (browser && typeof browser.openAt === "function") {
           const view = active();
           if (view) {
             if (window.rememberWorkspaceShellMode) window.rememberWorkspaceShellMode("files", state.ws);
             if (window.syncShellModeButtons) window.syncShellModeButtons();
-            await window.HerdrFileBrowser.openAt(
+            await browser.openAt(
               { workspace_id: `git-file-explorer:${view.cwd}`, cwd: view.cwd, label: compactPath(view.cwd) },
               parentDir,
               { kind: "dir" }
@@ -2630,7 +2657,7 @@
     async syncFilesToGitCwd() {
       const view = active();
       if (!view || !view.cwd || gitCwdMatchesWorkspace(view)) return;
-      const browser = window.HerdrFileBrowser;
+      const browser = await ensureFileBrowserBundle();
       if (!browser || typeof browser.openAt !== "function") return;
       if (window.rememberWorkspaceShellMode) window.rememberWorkspaceShellMode("files", state.ws);
       if (window.syncShellModeButtons) window.syncShellModeButtons();

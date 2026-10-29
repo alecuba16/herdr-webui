@@ -1470,6 +1470,7 @@
       const shell = document.getElementById("terminalShell");
       (shell && shell.parentNode ? shell.parentNode : document.body).appendChild(panel);
     }
+    if (typeof window.HerdrSyncFilesRailDesync === "function") window.HerdrSyncFilesRailDesync();
     const entries = treeEntries();
     const filtering = filterActive();
     const currentRow = filtering ? "" : Tree.renderCurrentDirectoryRow({ callback: "HerdrFileBrowser", canGoUp: canGoUp(), path: currentDirectoryPath(), label: currentDirectoryLabel(), title: currentDirectoryTitle() });
@@ -1559,13 +1560,40 @@
     return `<div class="file-browser-desync" role="status"><span class="file-browser-desync-path" title="${esc(where)}">${esc(Tree.basename(state.cwd) || state.cwd)}</span><span class="file-browser-desync-arrows"><button class="file-browser-desync-arrow" type="button" title="Move the Git panel to this folder" aria-label="Move the Git panel to this folder" onclick="HerdrFileBrowser.syncGitToFilesCwd()">→ Git</button><button class="file-browser-desync-arrow" type="button" title="Back to workspace folder" aria-label="Back to workspace folder" onclick="HerdrFileBrowser.returnToWorkspaceCwd()">↩</button></span></div>`;
   }
 
+  // Rail dot contract: the shell reads this to tint the Files rail button
+  // while the panel root sits outside the anchor folder (git cwd once
+  // git_ui loads, else the workspace folder). Same desync truth the
+  // in-panel row uses, one source for both surfaces. No visibility gate:
+  // a hidden panel can stay parked outside the workspace, and the rail
+  // should still say so.
+  function desyncState() {
+    const desynced = !!(state.cwd && !filesCwdMatchesWorkspace());
+    return {
+      desynced,
+      cwd: desynced ? state.cwd || "" : "",
+      anchor: desynced ? gitCwdAnchor() || "" : "",
+    };
+  }
+
   // Git ← arrow: move the Git panel onto the Files cwd. The Git panel owns
   // its own repo guard (it refuses a plain folder with a message), so this
-  // only forwards the target.
+  // only forwards the target. The Git bundle lazy-loads with its drawer,
+  // so a Files-first session pulls it in here before forwarding.
   async function syncGitToFilesCwd() {
     const dir = state.cwd;
-    const git = window.HerdrGitUi;
-    if (!dir || !git || typeof git.openForCwd !== "function") return;
+    if (!dir) return;
+    let git = window.HerdrGitUi;
+    if (!git || typeof git.openForCwd !== "function") {
+      try {
+        if (window.HerdrLoadCss) window.HerdrLoadCss("/assets/desktop/git-ui.css");
+        if (!window.HerdrLoadScript) return;
+        await window.HerdrLoadScript("/assets/desktop/git-ui.js");
+      } catch (_) {
+        return;
+      }
+      git = window.HerdrGitUi;
+    }
+    if (!git || typeof git.openForCwd !== "function") return;
     await git.openForCwd(dir);
   }
 
@@ -1682,6 +1710,7 @@
     close: hide,
     hide,
     forgetWorkspace,
+    desyncState,
     refresh() { loadTree(state.path); },
     refreshLsp() { refreshLspDiagnostics(); },
     requestAccess,

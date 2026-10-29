@@ -458,6 +458,21 @@
   cursor: default;
 }
 
+/* Files rail desync dot (dataset.desync drives this): amber corner dot
+ * while the Files panel root sits outside the anchor folder. Same
+ * working-state amber the in-panel desync row uses. */
+.right-sidebar-rail-button[data-desync="true"]::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-working, #f9e2af);
+  border: 1px solid var(--panel2, var(--panel));
+}
+
 /* ---- editor tabs (Phase 3b) ----
  * One tab per open file. The strip button carries the dirty dot; the
  * per-file container (.pane-editor-container) lives in the pane content

@@ -724,3 +724,33 @@ test("the desync row falls back to the workspace folder when git_ui is not loade
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(!html().includes("file-browser-desync"), "the return arrow restores the fallback anchor");
 });
+
+// ---- Rail desync dot: the shell reads desyncState() to tint the Files
+// rail button amber while the panel root sits outside the anchor ----
+
+test("desyncState reports the rail dot contract while diverged", async () => {
+  const { context } = makeDesyncDomContext({ gitCwd: "/repo" });
+  const workspace = { workspace_id: "ws-1", cwd: "/repo" };
+  await context.HerdrFileBrowser.openAt(workspace, "src", { kind: "dir" });
+  let synced = 0;
+  context.HerdrSyncFilesRailDesync = () => { synced++; };
+  // Open a different folder as the Files root: the panel leaves the Git cwd.
+  context.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ path: "", entries: [], git_status: null }) });
+  await context.HerdrFileBrowser.openAt({ workspace_id: "ws-1", cwd: "/elsewhere" }, "", { kind: "dir" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const info = context.HerdrFileBrowser.desyncState();
+  assert.equal(info.desynced, true, "desyncState flags divergence");
+  assert.equal(info.cwd, "/elsewhere", "desyncState carries the diverged cwd");
+  assert.equal(info.anchor, "/repo", "desyncState carries the git anchor");
+  assert.ok(synced > 0, "the panel render asks the shell to re-sync the rail dot");
+});
+
+test("desyncState stays quiet while the roots match", async () => {
+  const { context } = makeDesyncDomContext({ gitCwd: "/repo" });
+  const workspace = { workspace_id: "ws-1", cwd: "/repo" };
+  await context.HerdrFileBrowser.openAt(workspace, "src", { kind: "dir" });
+  const info = context.HerdrFileBrowser.desyncState();
+  assert.equal(info.desynced, false, "no desync flag while the roots match");
+  assert.equal(info.cwd, "", "no cwd carried while synced");
+  assert.equal(info.anchor, "", "no anchor carried while synced");
+});
