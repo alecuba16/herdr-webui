@@ -333,11 +333,20 @@ if (sidebarSplitHandle) {
 }
 
 // Both toggle strips double as width drag handles: click toggles the
-// sidebar, a horizontal move past the threshold resizes it instead. The
+// sidebar, a horizontal move past the threshold resizes it instead. A
+// collapsed sidebar expands on the first outward move and then follows the
+// pointer; dragging inward past the hide threshold collapses it. The
 // browser fires click after pointerup even for a real drag, so the drag
 // arms a capture-phase suppressor on the strip itself.
 const SIDEBAR_DRAG_THRESHOLD_PX = 4;
-function wireSidebarWidthDrag(strip, readWidth, previewWidth, commitWidth) {
+const SIDEBAR_DRAG_HIDE_THRESHOLD_PX = 96;
+function wireSidebarWidthDrag(
+  strip,
+  readWidth,
+  previewWidth,
+  commitWidth,
+  hooks,
+) {
   if (!strip) return;
   let startX = 0;
   let pendingWidth = null;
@@ -346,9 +355,33 @@ function wireSidebarWidthDrag(strip, readWidth, previewWidth, commitWidth) {
   let armed = false;
   let capturedPointer = null;
   const direction = strip.id === "rightSidebarToggle" ? -1 : 1;
+  const expand = hooks && hooks.expand;
+  const collapse = hooks && hooks.collapse;
   const previewFromClientX = (clientX) => {
-    const next = readWidth() + direction * (clientX - startX);
-    pendingWidth = previewWidth(next);
+    // Against the live edge, not the armed width: a drag that starts on a
+    // collapsed strip expands mid-drag, and re-reading keeps the preview
+    // anchored to what the user actually sees.
+    const base = readWidth();
+    const next = base + direction * (clientX - startX);
+    if (next < base && collapse) {
+      // Inward movement short of the hide threshold still resizes, and
+      // previewWidth clamps it at the stock minimum: the bar follows the
+      // pointer down to min but never under. Crossing the threshold
+      // collapses instead: the pending preview drops so pointerup commits
+      // no width behind the hidden bar, and the committed width is
+      // re-applied so the clamped-down preview does not survive the hide
+      // (a later unhide drag follows from the width the user chose).
+      const hidden = (base - next) >= SIDEBAR_DRAG_HIDE_THRESHOLD_PX;
+      if (hidden) {
+        collapse();
+        pendingWidth = null;
+        previewWidth(readWidth());
+      } else {
+        pendingWidth = previewWidth(next);
+      }
+    } else {
+      pendingWidth = previewWidth(next);
+    }
   };
   strip.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
@@ -372,6 +405,12 @@ function wireSidebarWidthDrag(strip, readWidth, previewWidth, commitWidth) {
       dragging = true;
       suppressedClick = true;
       strip.classList.add("dragging");
+      // A drag out of the collapsed strip expands first, so the sidebar
+      // follows the pointer from its first move instead of after release.
+      if (expand && expand()) {
+        pendingWidth = previewWidth(readWidth());
+        return;
+      }
     }
     previewFromClientX(e.clientX);
   });
@@ -419,12 +458,20 @@ wireSidebarWidthDrag(
   () => options.sidebarWidth ?? 330,
   (value) => applySidebarWidth(value),
   (value) => setSidebarWidth(value ?? 330),
+  {
+    expand: () => expandLeftSidebarFromDrag(),
+    collapse: () => collapseLeftSidebarFromDrag(),
+  },
 );
 wireSidebarWidthDrag(
   el("rightSidebarToggle"),
   () => options.rightSidebarWidth ?? 320,
   (value) => applyRightSidebarWidth(value),
   (value) => setRightSidebarWidth(value ?? 320),
+  {
+    expand: () => expandRightSidebarFromDrag(),
+    collapse: () => collapseRightSidebarFromDrag(),
+  },
 );
 el("optParentCloseMode").onchange = () => {
   options.parentCloseMode = el("optParentCloseMode").value;
