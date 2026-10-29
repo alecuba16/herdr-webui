@@ -1,20 +1,32 @@
 # Release notes
 
 ## Unreleased
-- Both sidebar toggle strips now own the full collapse gesture. Dragging
-  a collapsed strip outward unhides the sidebar and the width follows the
-  pointer from the first move; dragging inward past a 96px threshold
-  collapses the bar mid-drag instead of shrinking it under the stock
-  minimum, and a shorter inward drag still resizes down to the 330/320px
-  floor. On hide the committed width is re-applied so a later unhide drag
-  follows from the width the user chose, not a stale preview. The drag
-  expand/collapse paths sit next to the click handlers in core.js and keep
-  the same side effects: hosted-view resolution on the right strip,
-  terminal refit, localStorage persistence, and no hint toast mid-drag.
-  Unit tests pin the contract on both strips (unhide-follows-pointer,
-  threshold hide, min-clamp, persistence, click suppression) and a CDP
-  acceptance driver drove the served bundle with real pointer events
-  (11/11).
+- Sidebar width drags are preview-driven. The drag no longer resizes the
+  grid mid-gesture: a ghost column (the `.sidebar-preview` overlay, an
+  accent-tinted slab anchored to the viewport edge) tracks where the
+  sidebar would land, and the real grid only moves on release, when the
+  ghost fades out over a 120ms `grid-template-columns` transition on
+  `#app` (skipped under prefers-reduced-motion). A release that would
+  land below the stock 330/320px minimum snaps to whichever edge is
+  closer to the pointer: the minimum itself, or fully collapsed. The
+  collapsed bar keeps the same contract: an outward drag previews the
+  reopen at the dragged width and commits it on release (floored at the
+  stock minimum), an inward drag on the open bar previews, and a
+  release closer to closed collapses. The ghost carries no text; crossing
+  into the collapse zone swaps it for a strip the width of the collapsed
+  bar: backing out restores the full ghost at the pointer width, so the
+  collapse stays reversible while the button is held. The drag also
+  listens on window while armed (some browsers deliver pointermove to
+  the element under the cursor instead of the capturing one), and a move
+  with no button held commits the pending width instead of dragging on.
+  Click suppression is one-shot per gesture, so a plain click after a
+  drag still toggles. Click toggles, arrow-key steps,
+  and double-click reset stay instant (they never ride the transition
+  class). Unit tests pin the contract on both strips (frozen grid
+  mid-drag, ghost width, closing strip, reversible collapse,
+  snap-to-closest, expand-from-collapsed commit,
+  cancel commits the pending width, persistence, click suppression,
+  missed-release commit, window-pipe drag).
 - The git drawer no longer mutes keyboard input aimed at the terminal.
   Its window-capture keydown handler consumed every key whose target sat
   outside the drawer, including the wterm textarea that carries all
