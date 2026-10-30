@@ -36,9 +36,20 @@
   font-weight: 600;
 }
 
+/* Enabled chips answer hover and press; the drawer's chip class ships
+   none, and the bar must not inherit a flat control. */
+.location-bar .git-ui-branch-chip:not([disabled]):hover {
+  border-color: var(--accent);
+  filter: brightness(1.15);
+}
+
+.location-bar .git-ui-branch-chip:not([disabled]):active {
+  filter: brightness(0.9);
+}
+
 .location-bar .location-bar-branch-chip[disabled] {
   background: transparent;
   border-color: var(--border);
   color: var(--muted);
-  cursor: default;
+  cursor: not-allowed;
 }
