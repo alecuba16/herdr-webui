@@ -1,6 +1,56 @@
 # Release notes
 
 ## Unreleased
+- Location-bar popovers are hardened against races and lost focus. Each
+  opening now carries a request id with its workspace and folder, so a
+  close-and-reopen or a workspace switch can no longer land an older
+  fetch into the fresh list, and row actions refuse to run when their
+  opening is gone. Escape hands focus back to the chip that opened the
+  popover, chips and inputs carry aria labels, the popovers are named
+  dialogs, and an anchor near the right viewport edge shifts back so
+  the popover never overflows. The drawer shortcut handler yields to an
+  open bar popover (Escape closes only the popover, Enter reaches the
+  new-branch field), and inline switch arguments percent-encode
+  apostrophes, which are Git-valid in branch names and worktree paths.
+- The bar strip is always present. It renders from boot with a muted
+  hint when no workspace is selected instead of hiding, every chip
+  leads with an icon (folder, link, git), and with no folder at all the
+  empty state is an Open workspace button that triggers the same
+  open-workspace action the palette and dashboard use.
+- Branch rows whose branch is checked out in a sibling worktree
+  reroute through the shared folder-change flow instead of posting a
+  switch git always refuses, and such rows carry a worktree badge
+  naming the folder. Bar folder changes (path picker, worktree rows,
+  the branch reroute) close the workspace left behind when it holds no
+  tabs, reading the same server panel counts the last-terminal
+  autoclose uses. A branch switch or create from the bar also tells
+  the git drawer to drop its cached status and diffs for that folder,
+  so it no longer serves pre-mutation data.
+- The worktree list reports the repository root even when queried from
+  a lane. The builtin derived its source identity from the queried
+  folder's toplevel, which inside a linked worktree names the lane
+  itself, so main-vs-linked was misjudged and a lane stamped as not
+  linked. The porcelain list always leads with the main checkout, so
+  the identity now comes from that first row, and builtin backend
+  workspaces carry the worktree metadata the location bar needs.
+- Mobile gets a location strip under the header mirroring the desktop
+  bar: the path pill opens the folder picker, the worktree pill appears
+  for linked worktree stamps only, and the branch pill prefers the
+  cwd-scoped git status. The pills open bottom sheets pinned to the
+  checkout they were opened for: the branch sheet switches, creates
+  and reroutes branches held by sibling worktrees, the worktree sheet
+  opens sibling checkouts and routes creation to the worktrees
+  screen, and both dismiss themselves when the workspace switches
+  underneath. A folder switch also silently closes the workspace left
+  behind when it holds no panels, matching the desktop autoclose.
+- The TUI tab bar carries the workspace folder, a worktree token for
+  linked lanes, and the branch, mirroring the desktop location bar,
+  and prefix v opens a branch picker overlay: enter switches, reroutes
+  to the worktree already holding the branch, or creates the branch
+  from the typed filter. The linked badge no longer marks the main
+  checkout: the TUI keeps a per-cwd worktree stamp derived from the
+  reply's source envelope, and the parity round trip drives its
+  switch through the git screen Branches view.
 - Sidebar width drags are preview-driven. The drag no longer resizes the
   grid mid-gesture: a ghost column (the `.sidebar-preview` overlay, an
   accent-tinted slab anchored to the viewport edge) tracks where the
