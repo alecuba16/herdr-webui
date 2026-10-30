@@ -767,12 +767,14 @@ fn git_panel_move_selection_covers_every_view() {
             current: true,
             remote: false,
             pushed: true,
+            worktree_path: None,
         },
         GitBranchEntry {
             name: "dev".to_string(),
             current: false,
             remote: false,
             pushed: false,
+            worktree_path: None,
         },
     ];
     panel.stashes = vec![

@@ -22,6 +22,13 @@ pub enum TuiMode {
     /// single-line query over workspaces, panels, agents, files and
     /// content; j/k moves, Enter commits/navigates, Esc closes.
     SearchPalette,
+    /// Branch picker overlay (desktop location-bar branch popover,
+    /// prefix `v`): local branches of the selected workspace repo with
+    /// the current branch pinned first, type-to-filter, j/k cursor.
+    /// Enter switches through `git.switch`, or reroutes to the sibling
+    /// worktree already holding the branch (`worktree.open`), or
+    /// creates the branch when the filter names no existing one.
+    BranchPicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +47,29 @@ pub struct TuiWorkspace {
     pub pane_count: usize,
     pub tab_count: usize,
     pub active_tab_id: Option<String>,
+    /// Git worktree identity of the workspace folder, the client-side
+    /// counterpart of the webui `workspace.worktree` stamp. `None` means
+    /// the folder is a plain directory or the backend has no data yet,
+    /// so callers fall back to pre-stamp rendering.
+    pub worktree: Option<TuiWorktreeStamp>,
+}
+
+/// Worktree identity for a workspace: which repository the checkout
+/// belongs to, whether it is the main checkout or a linked lane, and
+/// the checked-out branch. Mirrors the fields the webui wrapper stamps
+/// per workspace and the external client protocol carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TuiWorktreeStamp {
+    /// Repository root (main checkout path). Drives the main-vs-linked
+    /// call together with the workspace folder itself.
+    pub repo_root: String,
+    /// Display name of the repository (basename of the root).
+    pub repo_name: String,
+    /// Checked-out branch, empty when git reports detached HEAD.
+    pub branch: String,
+    /// True when the workspace folder is a linked worktree checkout
+    /// rather than the repository's main working tree.
+    pub is_linked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,7 +216,109 @@ fn parse_workspace(value: &Value) -> TuiWorkspace {
         pane_count: value_u64(value, &["pane_count"]).unwrap_or(0) as usize,
         tab_count: value_u64(value, &["tab_count"]).unwrap_or(0) as usize,
         active_tab_id: value_str(value, &["active_tab_id"]).map(str::to_string),
+        worktree: parse_worktree_stamp(value),
     }
+}
+
+/// Parse the `worktree` identity stamp a backend may attach to a
+/// workspace row. External sessions and the builtin rows arriving
+/// through the webui wrapper carry `{repo_root, repo_name, branch,
+/// is_linked_worktree, ...}`. The linked flag from the wire can mark
+/// every row linked (the builtin `worktree list` parser cannot tell
+/// main from lane), so the trusted call is the folder-vs-root path
+/// comparison, identical to the wrapper's rule: a checkout that is not
+/// the repository root is a linked lane. Without a repo root the
+/// stamp is malformed and stays unparsed (callers render as before).
+fn parse_worktree_stamp(workspace: &Value) -> Option<TuiWorktreeStamp> {
+    let stamp = workspace.get("worktree")?;
+    let repo_root = value_str(stamp, &["repo_root"])?.to_string();
+    let checkout_path = value_str(stamp, &["checkout_path", "path"])
+        .or_else(|| value_str(workspace, &["cwd"]))?
+        .to_string();
+    Some(TuiWorktreeStamp {
+        repo_name: value_str(stamp, &["repo_name"]).unwrap_or("").to_string(),
+        branch: value_str(stamp, &["branch"]).unwrap_or("").to_string(),
+        is_linked: !same_checkout_path(&checkout_path, &repo_root),
+        repo_root,
+    })
+}
+
+/// Path equality for git checkouts: exact first, then canonicalized on
+/// both sides so a workspace opened through one spelling of a symlinked
+/// prefix (/tmp vs /private/tmp on macOS) still matches the path git
+/// reports under the other spelling. Canonicalize failures fall back
+/// to the exact comparison result.
+pub(crate) fn same_checkout_path(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    let canonical = |path: &str| std::fs::canonicalize(path).ok();
+    match (canonical(left), canonical(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Fold a `worktree.list` reply into the identity stamp for the
+/// workspace folder at `cwd`, applying the wrapper's rule: take the
+/// row whose checkout is the folder, then call it linked when that
+/// checkout is not the repository root the reply's source reports.
+/// The main checkout therefore stamps `is_linked == false` even
+/// though the builtin row flag says linked for every row (the
+/// porcelain parser cannot tell main from lane). A reply whose rows
+/// do not name the folder (plain folder, broken git, or a subfolder
+/// of a checkout opened as workspace) has no identity to stamp.
+///
+/// The branch is a plain copy from the row because `worktree list
+/// --porcelain` reports the checked-out branch; detached rows keep
+/// the empty branch they came with.
+pub(crate) fn parse_worktree_list_response(
+    response: &Value,
+    cwd: &str,
+) -> Option<TuiWorktreeStamp> {
+    let rows = response.get("worktrees").and_then(Value::as_array)?;
+    let repo_root = response
+        .pointer("/source/repo_root")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let repo_name = response
+        .pointer("/source/repo_name")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let row = rows.iter().find(|row| {
+        row.get("path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| same_checkout_path(path, cwd))
+    })?;
+    let checkout_path = row
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or(cwd)
+        .to_string();
+    let branch = row
+        .get("branch")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let repo_root = repo_root.unwrap_or_else(|| checkout_path.clone());
+    let repo_name = repo_name.unwrap_or_else(|| path_basename(&repo_root));
+    let is_linked = !same_checkout_path(&checkout_path, &repo_root);
+    Some(TuiWorktreeStamp {
+        repo_root,
+        repo_name,
+        branch,
+        is_linked,
+    })
+}
+
+/// Final path segment: the checkout folder's display name, matching
+/// the webui worktree row title fallback (basename of the checkout
+/// path).
+fn path_basename(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string())
 }
 
 fn parse_tab(value: &Value) -> TuiTab {

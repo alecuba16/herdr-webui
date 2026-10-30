@@ -151,6 +151,14 @@ pub(crate) fn parse_branch(value: &Value) -> GitBranchEntry {
             .get("pushed")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        // The backend stamps each branch with the worktree folder it is
+        // checked out in (git worktree list porcelain), null when none.
+        // The branch picker reroutes on it: git refuses a second checkout
+        // of a branch another worktree already holds.
+        worktree_path: value
+            .get("worktree_path")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }
 }
 

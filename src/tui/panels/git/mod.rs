@@ -40,6 +40,13 @@ pub(super) use parse::{
     parse_branch, parse_commit, parse_diff_lines_with_meta, parse_diff_old_path, parse_git_files,
     parse_stash,
 };
+/// Parse one `git.branches` row for the workspace branch picker;
+/// public so the workspace overlay can load branches without going
+/// through the git panel. Rows without a name are dropped.
+pub fn parse_branch_value(value: &Value) -> Option<GitBranchEntry> {
+    let entry = parse_branch(value);
+    (!entry.name.is_empty()).then_some(entry)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitView {
@@ -131,6 +138,12 @@ pub struct GitBranchEntry {
     pub current: bool,
     pub remote: bool,
     pub pushed: bool,
+    /// Worktree folder this branch is checked out in (backend stamps
+    /// it from `git worktree list --porcelain`), `None` when the branch
+    /// is not checked out anywhere. The branch picker reroutes to this
+    /// folder when it differs from the workspace cwd: git refuses a
+    /// second checkout of a branch another worktree already holds.
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
