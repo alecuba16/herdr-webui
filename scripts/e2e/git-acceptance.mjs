@@ -15,6 +15,7 @@ import { request as httpsRequest } from "node:https";
 const ORIGIN = process.env.E2E_ORIGIN;
 const REPO = process.env.E2E_REPO;
 const CLEAN = process.env.E2E_CLEAN_REPO;
+const LANE = process.env.E2E_LANE_REPO;
 
 if (!ORIGIN || !REPO) {
   console.error("E2E_ORIGIN and E2E_REPO must be set (use scripts/e2e/run-git-e2e.sh)");
@@ -206,6 +207,9 @@ sources.length = 0;
 sources.push('\nstate = { ws: "accept-ws", workspaces: [{ workspace_id: "accept-ws", cwd: ' + JSON.stringify(REPO) + ' }] };\n');
 // The bar ships inside the eager /assets/desktop/app.js bundle, so it has no
 // standalone route; read the same file the server includes via include_str!.
+// The worktree row select routes through the shared folder-change flow,
+// so boot that module too.
+sources.push(readFileSync(new URL("../../src/assets/desktop/app_js/open_folder_flow.js", import.meta.url), "utf8"));
 sources.push(readFileSync(new URL("../../src/assets/desktop/app_js/location_bar.js", import.meta.url), "utf8"));
 try {
   vm.runInContext(sources.join("\n;\n"), ctx);
@@ -248,15 +252,17 @@ assert(/herdr-tree-row dir/.test(html), "changes tree renders a dir row for scra
 assert(!/title="scratchdir\/"/.test(html), "no phantom file row for scratchdir/");
 assert(/fileMenu\(event,'scratchdir'[^)]*,'dir'\)/.test(html), "dir row wires the dir context menu kind");
 
-// 6. Phase 3: the drawer header keeps no branch chip; the location bar
-// renders it from the git facts. The right side still carries the status
-// split button (Fetch, or Pull ↓N / Push ↑N when diverged).
+// 6. Phases 3 and 4: the drawer header keeps no branch or worktree chip
+// and no subtitle; the location bar renders both from the git facts. The
+// right side still carries the status split button (Fetch, or Pull ↓N /
+// Push ↑N when diverged).
 const chipRes = await httpsJson(`${ORIGIN}/api/git-ui/status?cwd=${encodeURIComponent(REPO)}`);
 const chipStatus = await chipRes.json();
 const panelHtml = () => ctx.document.__panelHtml || "";
 let headerHtml = panelHtml();
 assert(!new RegExp(`git-ui-branch-chip-name">${chipStatus.branch}</span>`).test(headerHtml), "drawer header no longer carries the branch chip");
-assert(/git-ui-branch-chip git-ui-worktree-chip/.test(headerHtml), "worktree chip stays in the drawer header");
+assert(!/git-ui-worktree-chip/.test(headerHtml), "drawer header no longer carries the worktree chip");
+assert(!/git-ui-subtitle/.test(headerHtml), "drawer header no longer carries the subtitle wrapper");
 assert(/data-method="fetchOrigin"[^>]*>Fetch</.test(headerHtml), "status split button renders on the right");
 // The bar paints the branch chip from the status cache park; sync it and
 // read the same DOM a browser would.
@@ -352,6 +358,36 @@ await new Promise((resolve) => setTimeout(resolve, 400));
 const backStatusRes = await httpsJson(`${ORIGIN}/api/git-ui/status?cwd=${encodeURIComponent(CLEAN)}`);
 const backStatus = await backStatusRes.json();
 assert(backStatus.branch === "main", "clean repo switched back to main via the branch list");
+
+// 3b. Phase 4: the bar's worktree popover on a linked worktree. The clean
+// clone is the main checkout; its lane worktree is linked. The popover
+// lists both rows from the real backend, the current one carries the
+// check, and selecting the lane checkout posts /api/worktrees/open.
+{
+  const laneWs = "accept-ws-lane";
+  vm.runInContext(`state.ws = ${JSON.stringify(laneWs)}; state.workspaces = [{ workspace_id: ${JSON.stringify(laneWs)}, cwd: ${JSON.stringify(CLEAN)}, worktree: { is_linked_worktree: true } }];`, ctx);
+  bar.sync();
+  assert(/location-bar-worktree-chip/.test(barHtml()), "bar renders the worktree chip for a linked worktree");
+  const chipHtml = (barHtml().match(/<button[^>]*location-bar-worktree-chip[^>]*>/) || [""])[0];
+  assert(!chipHtml.includes("disabled"), "worktree chip is enabled");
+  await bar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const listHtml = barHtml();
+  assert(/location-bar-worktree-popover/.test(listHtml), "worktree popover opened in the location bar");
+  assert(listHtml.includes("git-clean-lane"), "popover lists the lane checkout");
+  assert(/class="git-ui-worktree-option current"/.test(listHtml), "current checkout row carries the check");
+  assert(/createWorktreeFromPopover/.test(listHtml), "popover wires the create action");
+  const openCallsBefore = calls.filter((c) => c.path === "/api/worktrees/open").length;
+  await bar.selectWorktreeFromPopover(encodeURIComponent(LANE));
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const openCallsAfter = calls.filter((c) => c.path === "/api/worktrees/open");
+  assert(openCallsAfter.length > openCallsBefore, "worktree select posted /api/worktrees/open to the real backend");
+  assert(JSON.parse(openCallsAfter[openCallsAfter.length - 1].init.body).path === LANE, "open posted the lane checkout path");
+  bar.closeWorktreePopover();
+  // Back to the main fixture workspace for the sections that follow.
+  vm.runInContext(`state.ws = "accept-ws"; state.workspaces = [{ workspace_id: "accept-ws", cwd: ${JSON.stringify(REPO)} }];`, ctx);
+  bar.sync();
+}
 
 // 4. Context-menu discard must reach the real backend and mutate real git.
 // The active view is still the clean clone from the switch checks: reopen

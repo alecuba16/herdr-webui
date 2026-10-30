@@ -126,11 +126,6 @@
         render();
         return;
       }
-      if (state.worktreeList) {
-        state.worktreeList = null;
-        render();
-        return;
-      }
       if (state.gitOpModal) {
         state.gitOpModal = null;
         render();

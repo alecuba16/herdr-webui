@@ -7,7 +7,6 @@
     renderVersion: 0,
     contextMenu: null,
     logContextMenu: null,
-    worktreeList: null,
     gitOpModal: null,
     commitModal: null,
     compareSelectedModal: null,
@@ -77,7 +76,6 @@
   const normalizePathForCompare = workspaceNav.normalizePathForCompare;
   const samePath = workspaceNav.samePath;
   const gitCwdMatchesWorkspace = workspaceNav.gitCwdMatchesWorkspace;
-  const resetGitViewForCwd = workspaceNav.resetGitViewForCwd;
   const clonePlain = workspaceNav.clonePlain;
   const viewCrumbs = workspaceNav.viewCrumbs;
   const captureNavigationSnapshot = workspaceNav.captureNavigationSnapshot;
@@ -87,24 +85,12 @@
   const compactPath = workspaceNav.compactPath;
 
   document.addEventListener("click", (event) => {
-    let hadMenu = !!(state.contextMenu || state.logContextMenu || state.headerMenu || state.worktreeList);
+    let hadMenu = !!(state.contextMenu || state.logContextMenu || state.headerMenu);
     state.contextMenu = null;
     state.logContextMenu = null;
     state.headerMenu = null;
-    if (state.worktreeList && !eventInsideWorktreeList(event)) {
-      state.worktreeList = null;
-      hadMenu = true;
-    }
     if (hadMenu && state.visible) render();
   });
-  function eventInsideWorktreeList(event) {
-    let target = event && event.target;
-    while (target && target.classList) {
-      if (target.classList.contains("git-ui-worktree-list") || target.classList.contains("git-ui-worktree-chip")) return true;
-      target = target.parentNode;
-    }
-    return false;
-  }
 
   function active() {
     return state.cache[state.activeKey] || null;
@@ -328,13 +314,8 @@
   const branchList = globalThis.HerdrGitUiBranchListModule.create({
     state,
     esc,
-    arg,
-    samePath,
-    pathBasename,
   });
   const renderWorktreeActions = branchList.renderWorktreeActions;
-  const renderGitLocationSelector = branchList.renderGitLocationSelector;
-  const renderWorktreeList = branchList.renderWorktreeList;
   const renderHeaderMenu = branchList.renderHeaderMenu;
 
   const toasts = globalThis.HerdrGitUiToastsModule.create({
@@ -396,7 +377,6 @@
     filterFiles,
     sideFileCount,
     renderWorktreeActions,
-    renderGitLocationSelector,
     renderDirContextMenu,
     appRefreshIconButton,
   });
@@ -2361,39 +2341,6 @@
     },
     resolve(path, mode) { post("/api/git-ui/conflict-resolve", { cwd: active().cwd, path: decodeURIComponent(path), mode }, "Resolving conflict"); },
     conflictAction(action) { post("/api/git-ui/conflict-action", { cwd: active().cwd, action }, "Continuing operation"); },
-    async openWorktreeList(event) {
-      const view = active();
-      if (!view) return;
-      if (event && event.stopPropagation) event.stopPropagation();
-      if (state.worktreeList) { state.worktreeList = null; render(); return; }
-      state.worktreeList = { loading: true, error: "", worktrees: [], currentPath: view.cwd };
-      render();
-      try {
-        const data = await api(`/api/worktrees?cwd=${encodeURIComponent(view.workspaceCwd || view.cwd)}`);
-        const result = data.result || data;
-        state.worktreeList = { loading: false, error: "", worktrees: result.worktrees || [], currentPath: view.cwd };
-      } catch (err) {
-        state.worktreeList = { loading: false, error: err.message || String(err), worktrees: [] };
-      }
-      render();
-    },
-    selectWorktree(encodedPath) {
-      const view = active();
-      const path = decodeURIComponent(encodedPath || "");
-      if (!view || !path || samePath(path, view.cwd)) return;
-      if (!window.confirm(`Switch Git to worktree folder "${path}"?`)) return;
-      state.worktreeList = null;
-      resetGitViewForCwd(view, path);
-      render();
-      refresh();
-    },
-    createWorktreeFromSelector() {
-      const view = active();
-      state.worktreeList = null;
-      render();
-      if (view && typeof openWorktreeCreateFromGitBranch === "function") openWorktreeCreateFromGitBranch(view.cwd, ((view.status || {}).branch || ""));
-      else if (typeof openWorktreeOpenModal === "function") openWorktreeOpenModal(view && view.cwd, true);
-    },
     toggleHeaderMenu(event) {
       if (event && event.stopPropagation) event.stopPropagation();
       if (state.headerMenu) { state.headerMenu = null; render(); return; }

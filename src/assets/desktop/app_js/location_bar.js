@@ -28,6 +28,7 @@
   // remoteLoaded, remoteLoading, remoteRequestId).
   const bar = {
     branchList: null,
+    worktreeList: null,
   };
 
   function samePath(left, right) {
@@ -109,7 +110,7 @@
 
   function renderSignature(cwd, facts) {
     const list = bar.branchList;
-    const popoverToken = !list
+    const branchToken = !list
       ? "-"
       : [
           "open",
@@ -122,15 +123,19 @@
           list.remoteLoaded ? "R" : "",
           list.remoteLoading ? "r" : "",
         ].join(":");
-    return [state.ws, cwd, facts.branch || "", !!facts.known, !!facts.notGit, popoverToken].join("|");
+    const worktrees = bar.worktreeList;
+    const worktreeToken = !worktrees
+      ? "-"
+      : ["open", worktrees.loading ? "l" : "", worktrees.error || "", (worktrees.worktrees || []).length].join(":");
+    return [state.ws, cwd, facts.branch || "", !!facts.known, !!facts.notGit, branchToken, worktreeToken].join("|");
   }
 
-  // Chip click handlers: path opens the picker (phase 2), branch opens
-  // the branch popover (phase 3); the worktree chip gets its popover in
-  // phase 4.
+  // Chip click handlers: path opens the picker (phase 2), branch and
+  // worktree chips open their popovers (phases 3 and 4).
   function chipClick(name) {
     if (name === "path") return ' onclick="HerdrLocationBar.openPathPicker()"';
     if (name === "branch") return ' onclick="HerdrLocationBar.openBranchPopover(event)"';
+    if (name === "worktree") return ' onclick="HerdrLocationBar.openWorktreePopover(event)"';
     return "";
   }
 
@@ -165,7 +170,11 @@
       else
         chips.push(separator(), chip("branch", "Branch unknown", "branch…", true));
     }
-    return chips.join("") + (bar.branchList ? renderBranchPopover() : "");
+    return (
+      chips.join("") +
+      (bar.branchList ? renderBranchPopover() : "") +
+      (bar.worktreeList ? renderWorktreePopover() : "")
+    );
   }
 
   // ── Branch popover (plan phase 3) ───────────────────────────────
@@ -265,12 +274,12 @@
     return `<div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${loadMore}${empty}</div>`;
   }
 
-  function anchorFromEvent(event) {
+  function anchorFromEvent(event, chipSelector) {
     // Keyboard entry (the b shortcut) passes no event: anchor on the
-    // branch chip itself so the popover still hangs off the bar.
+    // chip itself so the popover still hangs off the bar.
     const target =
       (event && event.currentTarget) ||
-      (document.querySelector && document.querySelector(".location-bar-branch-chip:not([disabled])"));
+      (document.querySelector && document.querySelector(chipSelector || ".location-bar-branch-chip:not([disabled])"));
     const rect = target && target.getBoundingClientRect ? target.getBoundingClientRect() : null;
     if (!rect) return { left: 10, top: 40, width: 360 };
     const maxWidth = Math.min(420, Math.max(280, (window.innerWidth || 1200) - rect.left - 16));
@@ -317,6 +326,8 @@
     const cwd = currentCwd();
     if (!cwd) return;
     if (event && event.stopPropagation) event.stopPropagation();
+    // Only one popover at a time: opening one closes the other.
+    closeWorktreePopover();
     // Re-open toggle: clicking the chip again closes the popover.
     if (bar.branchList && !bar.branchList.loading) {
       closeBranchPopover();
@@ -556,34 +567,38 @@
   // popover or its chip closes it.
   // The listener lives for the module's lifetime; without a popover open
   // it only walks a short classList chain and returns.
-  function eventInsideBranchPopover(event) {
+  function eventInsidePopover(event, popoverClass, chipClass) {
     let target = event && event.target;
     while (target && target.classList) {
-      if (
-        target.classList.contains("location-bar-branch-popover") ||
-        target.classList.contains("location-bar-branch-chip")
-      )
-        return true;
+      if (target.classList.contains(popoverClass) || target.classList.contains(chipClass)) return true;
       target = target.parentNode;
     }
     return false;
+  }
+  function eventInsideBranchPopover(event) {
+    return eventInsidePopover(event, "location-bar-branch-popover", "location-bar-branch-chip");
+  }
+  function eventInsideWorktreePopover(event) {
+    return eventInsidePopover(event, "location-bar-worktree-popover", "location-bar-worktree-chip");
   }
 
   if (typeof document !== "undefined" && document.addEventListener) {
     document.addEventListener("click", (event) => {
       if (bar.branchList && !eventInsideBranchPopover(event)) closeBranchPopover();
+      if (bar.worktreeList && !eventInsideWorktreePopover(event)) closeWorktreePopover();
     });
-    // Esc closes the popover from anywhere. Capture phase: the drawer's
+    // Esc closes any open popover from anywhere. Capture phase: the drawer's
     // own capture handler consumes Escape while it is visible, and the bar
     // registered first, so the bar sees the key first when its popover is
     // the open surface.
     document.addEventListener(
       "keydown",
       (event) => {
-        if (event.key === "Escape" && bar.branchList) {
+        if (event.key === "Escape" && (bar.branchList || bar.worktreeList)) {
           event.stopPropagation();
           event.preventDefault();
           closeBranchPopover();
+          closeWorktreePopover();
         }
       },
       true,
@@ -631,6 +646,111 @@
     lastHtml = html;
   }
 
+  // ── Worktree popover (plan phase 4) ─────────────────────────────
+  // Rows list every checkout of the selected workspace's repository; a
+  // row select routes through the shared folder-change flow, so the whole
+  // shell (terminal, explorer, panes) follows the new checkout while old
+  // workspace panels stay open. Create opens the worktree modal prefilled
+  // with the current branch.
+
+  function worktreePopoverRow(worktree, currentPath) {
+    const path = String(worktree.path || "");
+    const current = samePath(path, currentPath);
+    const label = String(worktree.label || pathBasename(path) || "worktree");
+    const branch = String(worktree.branch || "detached");
+    const check = current ? `<b class="git-ui-worktree-check" title="Current worktree">✓</b>` : "";
+    return `<button class="git-ui-worktree-option${current ? " current" : ""}" onclick="HerdrLocationBar.selectWorktreeFromPopover('${encodeArg(path)}')"><strong>${check}${escapeHtml(label)}</strong><small>${escapeHtml(branch)} · ${escapeHtml(path)}</small></button>`;
+  }
+
+  function renderWorktreePopover() {
+    const list = bar.worktreeList;
+    if (!list) return "";
+    const anchor = list.anchor || { left: 10, top: 40, width: 320 };
+    const style = `left:${Math.max(8, anchor.left)}px;top:${anchor.top}px;width:${anchor.width}px`;
+    if (list.loading)
+      return `<div class="git-ui-branch-list git-ui-worktree-list location-bar-worktree-popover" style="${style}" onclick="event.stopPropagation()"><div class="git-ui-loading"><span></span><strong>Loading worktrees</strong></div></div>`;
+    const rows = (list.worktrees || []).map((worktree) => worktreePopoverRow(worktree, list.currentPath)).join("");
+    const body = list.error
+      ? `<div class="git-ui-error">${escapeHtml(list.error)}</div>`
+      : rows || `<div class="git-ui-muted git-ui-branch-list-empty">No worktrees detected</div>`;
+    return `<div class="git-ui-branch-list git-ui-worktree-list location-bar-worktree-popover" style="${style}" onclick="event.stopPropagation()">${body}<button class="git-ui-worktree-create" onclick="HerdrLocationBar.createWorktreeFromPopover()">＋ Create worktree</button></div>`;
+  }
+
+  function closeWorktreePopover() {
+    if (!bar.worktreeList) return;
+    bar.worktreeList = null;
+    sync();
+  }
+
+  async function openWorktreePopover(event) {
+    const cwd = currentCwd();
+    if (!cwd) return;
+    if (event && event.stopPropagation) event.stopPropagation();
+    // Only one popover at a time: opening one closes the other.
+    closeBranchPopover();
+    if (bar.worktreeList && !bar.worktreeList.loading) {
+      closeWorktreePopover();
+      return;
+    }
+    bar.worktreeList = {
+      loading: true,
+      error: "",
+      worktrees: [],
+      currentPath: cwd,
+      anchor: anchorFromEvent(event, ".location-bar-worktree-chip:not([disabled])"),
+    };
+    sync();
+    try {
+      const data = await api(`/api/worktrees?cwd=${encodeURIComponent(cwd)}`);
+      const result = data.result || data;
+      if (!bar.worktreeList) return; // closed while loading
+      bar.worktreeList = {
+        ...bar.worktreeList,
+        loading: false,
+        error: "",
+        worktrees: result.worktrees || [],
+      };
+    } catch (err) {
+      if (!bar.worktreeList) return;
+      bar.worktreeList = {
+        ...bar.worktreeList,
+        loading: false,
+        error: err.message || String(err),
+        worktrees: [],
+      };
+    }
+    sync();
+  }
+
+  async function selectWorktreeFromPopover(encodedPath) {
+    const path = decodeURIComponent(String(encodedPath || ""));
+    const cwd = currentCwd();
+    if (!path || !cwd || samePath(path, cwd)) return;
+    closeWorktreePopover();
+    if (!window.confirm(`Switch workspace to worktree folder "${path}"?`)) return;
+    if (!window.HerdrOpenFolder || !window.HerdrOpenFolder.openFolderAsWorkspace) {
+      alert("Folder switching is unavailable");
+      return;
+    }
+    try {
+      await window.HerdrOpenFolder.openFolderAsWorkspace(path);
+    } catch (err) {
+      alert(err.message || String(err));
+    }
+  }
+
+  function createWorktreeFromPopover() {
+    const cwd = currentCwd();
+    const workspace = selectedWorkspace();
+    const facts = workspace ? gitFacts(workspace, cwd) : { branch: "" };
+    closeWorktreePopover();
+    if (typeof openWorktreeCreateFromGitBranch === "function") {
+      openWorktreeCreateFromGitBranch(cwd, facts.branch || "");
+    } else if (typeof openWorktreeOpenModal === "function") {
+      openWorktreeOpenModal(cwd, true);
+    }
+  }
+
   // Path chip: opens the directory picker on the workspace folder. The
   // picker's selectCurrent dispatches change on the hidden input (the same
   // contract the worktree selector rows use), and the change
@@ -674,5 +794,9 @@
     newBranchDraft,
     newBranchKeydown,
     createBranchFromPopover,
+    openWorktreePopover,
+    closeWorktreePopover,
+    selectWorktreeFromPopover,
+    createWorktreeFromPopover,
   };
 })();

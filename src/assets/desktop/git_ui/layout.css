@@ -92,7 +92,6 @@
   from { transform: rotate(0deg); }
   to { transform: rotate(720deg); }
 }
-.git-ui-subtitle,
 .git-ui-muted {
   color: var(--muted);
   font-size: 12px;
@@ -102,10 +101,7 @@
 .git-ui-status-dirty { color: #d29922; }
 .git-ui-status-conflicted { color: #f85149; }
 .git-ui-status-icon:not(.git-ui-status-clean):not(.git-ui-status-dirty):not(.git-ui-status-conflicted) { color: var(--muted); }
-.git-ui-subtitle { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; }
-.git-ui-subtitle-state { color: var(--muted); }
-
-/* ── Worktree actions row with branch chip (Zed-style selector) ────── */
+/* ── Worktree actions row (Zed-style selector) ────── */
 .git-ui-worktree-row {
   align-items: center;
   display: flex;
@@ -155,7 +151,6 @@
 }
 .git-ui-chip-caret { font-size: 10px; }
 .git-ui-selector-separator { color: var(--muted); font-weight: 800; }
-.git-ui-worktree-list { left: 10px; right: auto; min-width: 280px; top: 52px; }
 .git-ui-worktree-option, .git-ui-worktree-create { background: transparent; border: 0; color: var(--fg); cursor: pointer; display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; text-align: left; width: 100%; }
 .git-ui-worktree-option:hover, .git-ui-worktree-create:hover { background: var(--panel2); border-radius: 7px; }
 .git-ui-worktree-option small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

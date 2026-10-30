@@ -66,6 +66,14 @@
   right: auto;
 }
 
+/* Worktree popover: same anchoring contract as the branch popover. */
+.location-bar .location-bar-worktree-popover {
+  bottom: auto;
+  max-height: 60vh;
+  position: fixed;
+  right: auto;
+}
+
 .location-bar-branch-popover .git-ui-branch-list-scroll {
   min-height: 96px;
 }

@@ -60,11 +60,14 @@
   until filtered or expanded, a filter input, row trash icons that
   delete non-current local branches, and a new-branch row that creates
   and switches in one step (remote names strip the origin/ prefix, same
-  as the old popover). The Git drawer drops its own folder and branch
-  surfaces with that move: the side path title, its folder picker entry,
-  the differs notice, the return-to-workspace button, the branch chip,
-  and the branch modal are gone (worktree rows in the worktree selector
-  still move the Git cwd to another checkout). The Help & Shortcuts
+  as the old popover). The worktree chip (linked worktrees only) opens
+  a popover that lists every checkout of the repository and switches
+  the whole workspace through the same folder-change flow, with a
+  create shortcut that prefills the current branch. The Git drawer drops
+  its own folder, worktree, and branch surfaces with that move: the
+  side path title, its folder picker entry, the differs notice, the
+  return-to-workspace button, the worktree chip, the subtitle, the
+  branch chip, and the branch modal are gone. The Help & Shortcuts
   modal, the Git shortcut popup, and the feature docs describe the new
   semantics.
 - The parallel bin-suite flake is fixed at the source. The PTY tests

@@ -1,5 +1,5 @@
 (function () {
-  function createGitUiBranchList({ state, esc, arg, samePath, pathBasename }) {
+  function createGitUiBranchList({ state, esc }) {
       // ── Worktree actions row (Zed-style selector rework) ─────────────────
       // Commit button left-justified. Status split button right-justified:
       // Pull ↓N when behind, Push ↑N when ahead, plain Fetch when in sync;
@@ -9,7 +9,6 @@
         const esc = ctx.esc;
         const commitHint = ctx.commitHint || "Commit";
         const commitDisabled = ctx.commitDisabled || "";
-        const branch = String(s.branch || "");
         const ahead = Number(s.ahead) || 0;
         const behind = Number(s.behind) || 0;
         const upstream = String(s.upstream || "").trim();
@@ -30,29 +29,7 @@
         const menuOpen = state.headerMenu ? "true" : "false";
         const statusButton = `<button class="git-ui-btn git-ui-status-label" data-method="${esc(statusMethod)}" title="${esc(statusHint)}" onclick="HerdrGitUi.runStatusAction()">${esc(statusLabel)}</button>`;
         const statusCaret = `<button class="git-ui-btn git-ui-status-caret" title="Pull, fetch and push options" aria-haspopup="menu" aria-expanded="${menuOpen}" onclick="HerdrGitUi.toggleHeaderMenu(event)"><b class="git-ui-chip-caret">▾</b></button>`;
-        return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button></div><div class="git-ui-actions git-ui-worktree-right">${statusButton}${statusCaret}</div></div>${renderWorktreeList()}`;
-      }
-
-      function renderGitLocationSelector(ctx) {
-        const esc = ctx.esc;
-        const worktreeName = String(ctx.worktreeName || pathBasename(ctx.cwd || "") || "worktree");
-        // Branch switching lives in the location bar now (plan phase 3);
-        // worktree rows still diverge the Git cwd until phase 4 moves the
-        // chip.
-        const worktreeChip = `<button class="git-ui-branch-chip git-ui-worktree-chip" title="Choose worktree" onclick="HerdrGitUi.openWorktreeList(event)"><span class="git-ui-branch-chip-name">${esc(worktreeName)}</span><b class="git-ui-chip-caret">▾</b></button>`;
-        return worktreeChip;
-      }
-
-      function renderWorktreeList() {
-        const list = state.worktreeList;
-        if (!list) return "";
-        if (list.loading) return `<div class="git-ui-branch-list git-ui-worktree-list" onclick="event.stopPropagation()"><div class="git-ui-loading"><span></span><strong>Loading worktrees</strong></div></div>`;
-        if (list.error) return `<div class="git-ui-branch-list git-ui-worktree-list" onclick="event.stopPropagation()"><div class="git-ui-error">${esc(list.error)}</div></div>`;
-        const rows = (list.worktrees || []).map((wt) => {
-          const current = samePath(wt.path, list.currentPath);
-          return `<button class="git-ui-worktree-option${current ? " current" : ""}" onclick="HerdrGitUi.selectWorktree('${arg(wt.path)}')"><strong>${current ? `<b class="git-ui-worktree-check" title="Current worktree">✓</b>` : ""}${esc(wt.label || pathBasename(wt.path))}</strong><small>${esc(wt.branch || "detached")} · ${esc(wt.path)}</small></button>`;
-        }).join("");
-        return `<div class="git-ui-branch-list git-ui-worktree-list" onclick="event.stopPropagation()">${rows || `<div class="git-ui-muted git-ui-branch-list-empty">No worktrees detected</div>`}<button class="git-ui-worktree-create" onclick="HerdrGitUi.createWorktreeFromSelector()">＋ Create worktree</button></div>`;
+        return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button></div><div class="git-ui-actions git-ui-worktree-right">${statusButton}${statusCaret}</div></div>`;
       }
 
       // Dropdown next to the status button, exactly seven items: Fetch /
@@ -66,8 +43,6 @@
 
     return {
       renderWorktreeActions,
-      renderGitLocationSelector,
-      renderWorktreeList,
       renderHeaderMenu,
     };
   }

@@ -138,11 +138,12 @@ async function main() {
       sideHead: !!panel.querySelector(".git-ui-side-bottom-head"),
       differsNotice: !!panel.querySelector(".git-ui-folder-different"),
       worktreeChip: !!panel.querySelector(".git-ui-worktree-chip"),
+      subtitle: !!panel.querySelector(".git-ui-subtitle"),
     };
   })()`);
   record("drawer has no path title or return button", !step2.pathTitle && !step2.returnButton && !step2.sideHead, JSON.stringify(step2));
   record("drawer has no differs notice", !step2.differsNotice, "");
-  record("drawer keeps its worktree chip", step2.worktreeChip, "");
+  record("drawer has no worktree chip or subtitle", !step2.worktreeChip && !step2.subtitle, JSON.stringify(step2));
 
   // 3. Click the path chip: the real directory picker opens, seeded with REPO_A.
   await evalExpr(`document.querySelector("#locationBar .location-bar-path-chip").click()`);

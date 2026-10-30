@@ -221,9 +221,9 @@ File browser:
 
 Git UI:
 
-- The Git header has a two-level selector, `worktree / branch`. The worktree selector lists the main worktree and linked worktrees detected for the current repository, and offers a shortcut to create a worktree. Selecting a worktree moves Git operations to that checkout without changing the current workspace. The branch selector switches branches within the selected folder.
+- The Git header keeps the status split button (Fetch, or Pull ↓N / Push ↑N when diverged) with its git-flow menu; folder, worktree, and branch selection live in the location bar.
 - Settings → Git UI includes `Git remote branches to preload`, defaulting to 10. The initial remote list is capped to this value for faster rendering; filtering or loading more reveals the complete remote list.
-- Folder switching lives in the location bar at the top of the workspace panes: its path chip opens the directory picker and switches the workspace to the chosen folder, opening it as a workspace if needed. The bar's branch chip opens a branch popover that switches, creates, and deletes branches in the workspace folder; the Git drawer keeps no branch chip or branch modal. Worktree rows in the worktree selector still move the Git cwd to another checkout.
+- Folder, worktree, and branch switching live in the location bar at the top of the workspace panes: its path chip opens the directory picker and switches the workspace to the chosen folder, opening it as a workspace if needed; its worktree chip (linked worktrees only) opens a popover that lists every checkout of the repository and switches the whole workspace to the chosen one, with a create shortcut that prefills the current branch; its branch chip opens a branch popover that switches, creates, and deletes branches in the workspace folder. The Git drawer keeps no folder, worktree, or branch selector.
 
 - Desktop has an embedded Git drawer backed by Rust API routes and the system `git` CLI; no Node/React/Vite runtime is needed. Mobile has grouped Git status with per-file stage/unstage/discard, a commit sheet for staged changes, branch list and switch, and read-only file diffs; log/stash/cleanup/blame/history and push/pull/rebase stay desktop-only.
 - The drawer blanks hidden DOM to reduce browser work and owns keyboard input while visible so terminal keystrokes do not leak through.

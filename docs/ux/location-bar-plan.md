@@ -280,13 +280,13 @@ The todo tool holds the live plan. This list is the durable copy.
 - [x] 3.7 Verify: full frontend suite plus manual smoke of branch switching and creation.
 
 ### Phase 4: Worktree switching and creation
-- [ ] 4.1 Copy the worktree popover into the bar module; rows from `/api/worktrees?cwd=`; create opens `openWorktreeCreateFromGitBranch(cwd, branch)`.
-- [ ] 4.2 Row select routes through the folder-change flow; old workspace panels stay open.
-- [ ] 4.3 Worktree create navigation unchanged (`go` with workspace, tab, pane).
-- [ ] 4.4 Worktree chip renders only for linked worktrees.
-- [ ] 4.5 Remove the drawer's worktree chip, copied handlers, the subtitle wrapper, and dead CSS the bar does not reuse.
-- [ ] 4.6 Tests: worktree popover tests (list load, select-switch, create prefill); `git_ui_behavior.test.mjs` moved tests re-homed.
-- [ ] 4.7 Verify: full frontend suite plus manual smoke (switch worktree from the bar, old workspace panes intact).
+- [x] 4.1 Copy the worktree popover into the bar module; rows from `/api/worktrees?cwd=`; create opens `openWorktreeCreateFromGitBranch(cwd, branch)`.
+- [x] 4.2 Row select routes through the folder-change flow; old workspace panels stay open.
+- [x] 4.3 Worktree create navigation unchanged (`go` with workspace, tab, pane).
+- [x] 4.4 Worktree chip renders only for linked worktrees.
+- [x] 4.5 Remove the drawer's worktree chip, copied handlers, the subtitle wrapper, and dead CSS the bar does not reuse.
+- [x] 4.6 Tests: worktree popover tests (list load, select-switch, create prefill); `git_ui_behavior.test.mjs` moved tests re-homed.
+- [x] 4.7 Verify: full frontend suite plus manual smoke (switch worktree from the bar, old workspace panes intact).
 
 ### Phase 5: Settings cleanup and removal sweep
 - [ ] 5.1 Remove the "File browser parent folders" setting row and `options.fileBrowserAllowParent` (markup, ids list, binding, default, normalize).

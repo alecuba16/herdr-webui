@@ -517,3 +517,169 @@ describe("location bar branch popover", () => {
     ok(bar.innerHTML.includes("git-ui-error"), "error block renders");
   });
 });
+
+describe("location bar worktree popover", () => {
+  const WORKTREES = [
+    { path: "/repo", label: "repo", branch: "main" },
+    { path: "/repo-lane", label: "repo-lane", branch: "feature-lane" },
+  ];
+
+  function loadWorktreePopover({ routes = {}, state, confirms = true, openFolder } = {}) {
+    const bar = stubNode("locationBar");
+    const calls = [];
+    const document = {
+      getElementById: (id) => (id === "locationBar" ? bar : null),
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      createElement: () => ({ rel: "", href: "", set innerHTML(html) { this._html = html; }, get innerHTML() { return this._html || ""; }, firstElementChild: null, replaceWith() {}, querySelector: () => null }),
+      addEventListener: () => {},
+      head: { appendChild: () => {} },
+    };
+    const ctx = {
+      document,
+      state: state || {
+        ws: "ws1",
+        workspaces: [workspaceOf("/repo", { worktree: { is_linked_worktree: true } })],
+        worktrees: [{ path: "/repo", branch: "main" }],
+      },
+      fetch: (url, init) => {
+        const path = String(url).split("?")[0];
+        calls.push({ path, init });
+        const route = routes[path] || (() => ({}));
+        const body = typeof route === "function" ? route() : route;
+        return Promise.resolve({
+          ok: true,
+          statusText: "OK",
+          json: () => Promise.resolve(body),
+        });
+      },
+      requestAnimationFrame: (fn) => fn(),
+      confirm: () => confirms,
+      alert: () => {},
+      openWorktreeCreateFromGitBranch: undefined,
+      openWorktreeOpenModal: undefined,
+    };
+    ctx.globalThis = ctx;
+    ctx.window = ctx;
+    ctx.HerdrWorkspacePath = (workspace) => workspace.cwd;
+    ctx.HerdrOptions = { read: () => ({}) };
+    ctx.HerdrOpenFolder = {
+      openFolderAsWorkspace: openFolder || (async () => {}),
+    };
+    const contextObject = vm.createContext(ctx);
+    vm.runInContext(SOURCE, contextObject);
+    return { ctx, bar, calls };
+  }
+
+  it("worktree chip renders only for linked worktrees and opens the popover", async () => {
+    const { ctx, bar, calls } = loadWorktreePopover({
+      routes: { "/api/worktrees": { result: { worktrees: WORKTREES } } },
+    });
+    ctx.HerdrLocationBar.sync();
+    ok(bar.innerHTML.includes('onclick="HerdrLocationBar.openWorktreePopover(event)"'), "worktree chip wires the popover");
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+    ok(calls.some((call) => call.path === "/api/worktrees"), "popover fetches the worktree list");
+    ok(bar.innerHTML.includes("location-bar-worktree-popover"), "popover renders in the bar");
+    ok(bar.innerHTML.includes("repo-lane"), "row lists the other checkout");
+    ok(bar.innerHTML.includes('class="git-ui-worktree-option current"'), "current checkout row carries the check");
+    ok(bar.innerHTML.includes("Create worktree"), "create action renders");
+  });
+
+  it("plain checkouts render no worktree chip", () => {
+    const { ctx, bar } = loadWorktreePopover({
+      state: {
+        ws: "ws1",
+        workspaces: [workspaceOf("/repo")],
+        worktrees: [{ path: "/repo", branch: "main" }],
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    ok(!bar.innerHTML.includes("location-bar-worktree-chip"), "plain checkout keeps path + branch chips only");
+  });
+
+  it("row select routes through the folder-change flow after the confirm", async () => {
+    const opened = [];
+    const { ctx, bar } = loadWorktreePopover({
+      routes: { "/api/worktrees": { result: { worktrees: WORKTREES } } },
+      openFolder: async (path) => {
+        opened.push(path);
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+    await ctx.HerdrLocationBar.selectWorktreeFromPopover(encodeURIComponent("/repo-lane"));
+    equal(JSON.stringify(opened), JSON.stringify(["/repo-lane"]), "select runs the shared folder-change flow");
+    ok(!bar.innerHTML.includes("location-bar-worktree-popover"), "popover closes after the select");
+  });
+
+  it("row select refuses the current checkout and a declined confirm", async () => {
+    const opened = [];
+    const { ctx } = loadWorktreePopover({
+      routes: { "/api/worktrees": { result: { worktrees: WORKTREES } } },
+      openFolder: async (path) => {
+        opened.push(path);
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+    await ctx.HerdrLocationBar.selectWorktreeFromPopover(encodeURIComponent("/repo"));
+    equal(opened.length, 0, "current checkout select is a no-op");
+  });
+
+  it("declined confirm keeps the workspace untouched", async () => {
+    const opened = [];
+    const { ctx, bar } = loadWorktreePopover({
+      routes: { "/api/worktrees": { result: { worktrees: WORKTREES } } },
+      confirms: false,
+      openFolder: async (path) => {
+        opened.push(path);
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+    await ctx.HerdrLocationBar.selectWorktreeFromPopover(encodeURIComponent("/repo-lane"));
+    equal(opened.length, 0, "declined confirm never runs the flow");
+  });
+
+  it("create opens the worktree modal prefilled with the current branch", async () => {
+    const created = [];
+    const { ctx, bar } = loadWorktreePopover({
+      routes: { "/api/worktrees": { result: { worktrees: WORKTREES } } },
+    });
+    ctx.openWorktreeCreateFromGitBranch = (cwd, branch) => created.push([cwd, branch]);
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+    ctx.HerdrLocationBar.createWorktreeFromPopover();
+    equal(JSON.stringify(created), JSON.stringify([["/repo", "main"]]), "create prefill carries cwd + current branch");
+    ok(!bar.innerHTML.includes("location-bar-worktree-popover"), "popover closes before the modal opens");
+  });
+
+  it("opening one popover closes the other", async () => {
+    const { ctx, bar } = loadWorktreePopover({
+      routes: {
+        "/api/worktrees": { result: { worktrees: WORKTREES } },
+        "/api/git-ui/branches": { local: [{ name: "main", current: true }], remote: [] },
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes("location-bar-worktree-popover"), "worktree popover opens first");
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ok(!bar.innerHTML.includes("location-bar-worktree-popover"), "branch popover closes the worktree one");
+    ok(bar.innerHTML.includes("location-bar-branch-popover"), "branch popover is open");
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+    ok(!bar.innerHTML.includes("location-bar-branch-popover"), "worktree popover closes the branch one");
+  });
+
+  it("popover shows loading and error states", async () => {
+    const { ctx, bar } = loadWorktreePopover({
+      routes: { "/api/worktrees": () => ({ error: "worktree probe failed" }) },
+    });
+    ctx.HerdrLocationBar.sync();
+    const pending = ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes("Loading worktrees"), "loading state renders");
+    await pending;
+    ok(bar.innerHTML.includes("worktree probe failed"), "error state renders");
+    ok(bar.innerHTML.includes("git-ui-error"), "error block renders");
+  });
+});

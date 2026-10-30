@@ -242,12 +242,7 @@ No external icon assets are copied. The implementation uses local CSS and short 
 
 The Git sidebar separates exclusive view selection from action commands. Changes, log, stash, and cleanup render as a segmented toggle styled like the workspace shell-mode controls. Worktree actions remain in the toolbar below that toggle, and the file filter is rendered under the action toolbar so filtering applies to the visible file lists without visually competing with view switching. Cleanup uses `src/assets/icons/broom.svg` as a single shared mask icon instead of composing broom/trash glyphs in CSS.
 
-Git cwd is independent from workspace selection only when the user explicitly picks a different Git directory. Each cached Git view stores both `workspaceCwd` and current `cwd`:
-
-- initial open sets both values from the selected workspace/worktree or the default-folder pseudo-workspace,
-- selecting a worktree row in the worktree selector moves `cwd` to that checkout without touching the active workspace.
-
-Folder and branch switching both moved to the location bar: the bar's path chip switches the workspace folder through `HerdrOpenFolder` (plan phase 2b), and its branch chip opens a popover that switches, creates, and deletes branches against the workspace cwd (plan phase 3). The drawer keeps no path title, folder picker, return action, branch chip, or branch modal. Divergence remains possible only through the worktree selector until phase 4 moves that chip too. This avoids two competing actions over one path field and keeps Git drawer state predictable when browsing repositories outside the currently selected workspace.
+Folder, worktree, and branch switching all moved to the location bar: the bar's path chip switches the workspace folder through `HerdrOpenFolder` (plan phase 2b), its worktree chip opens a popover whose rows run the same folder-change flow against the chosen checkout (plan phase 4), and its branch chip opens a popover that switches, creates, and deletes branches against the workspace cwd (plan phase 3). The drawer keeps no path title, folder picker, return action, worktree chip, subtitle, branch chip, or branch modal, so no surface can push the Git cwd away from the selected workspace anymore. Each cached Git view still stores both `workspaceCwd` and `cwd` from its initial open; with every divergence source gone the two values stay equal for the life of the view.
 
 ## Editor
 

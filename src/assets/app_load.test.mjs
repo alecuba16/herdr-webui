@@ -2924,14 +2924,19 @@ describe("app bundle load", () => {
     ok(!source.includes('id = "openWorktrees"'));
   });
 
-  it("keeps worktree selection inside the drawer's worktree rows", () => {
-    // Phase 3 removed the branch modal; its worktree-aware options died
-    // with it. The worktree selector rows keep the diverge flow until
-    // phase 4 moves the chip to the bar.
+  it("moves worktree selection wholly into the location bar", () => {
+    // Phase 4: the bar owns worktree switching through the shared
+    // folder-change flow; the drawer keeps no selector surface.
     const modalsSource = readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8");
     ok(!modalsSource.includes("data-worktree-path="), "branch modal worktree options removed");
-    match(readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8"), /HerdrGitUi\.selectWorktree/);
-    match(gitUiSource, /resetGitViewForCwd\(view, path\)/);
+    const branchListSource = readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8");
+    ok(!branchListSource.includes("selectWorktree"), "worktree select handler removed from the drawer");
+    ok(!branchListSource.includes("git-ui-worktree-chip"), "drawer worktree chip removed");
+    ok(!gitUiSource.includes("openWorktreeList"), "worktree popover handler removed from git_ui.js");
+    ok(!gitUiSource.includes("resetGitViewForCwd"), "cwd divergence reset removed from git_ui.js");
+    const barSource = readFileSync(new URL("./desktop/app_js/location_bar.js", import.meta.url), "utf8");
+    match(barSource, /HerdrLocationBar\.selectWorktreeFromPopover/);
+    match(barSource, /openFolderAsWorkspace/);
   });
 
   it("detects diverging fast-forward pull failures", () => {

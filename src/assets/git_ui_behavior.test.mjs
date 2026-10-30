@@ -1227,16 +1227,18 @@ test("modals render commit and git-op flows from module state", async () => {
 });
 
 test("branch list module is registered and wired before git_ui.js consumes it", () => {
-  // Phase 3: the module keeps only the worktree surfaces; the branch
-  // popover moved to the location bar.
+  // Phases 3 and 4: the module keeps only the status actions row and the
+  // header menu; the branch and worktree popovers live in the location bar.
   const branchListSource = readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8");
   assert.match(branchListSource, /globalThis\.HerdrGitUiBranchListModule = \{ create: createGitUiBranchList \}/);
-  assert.match(branchListSource, /renderWorktreeList/);
+  assert.match(branchListSource, /renderWorktreeActions/);
   assert.match(branchListSource, /renderHeaderMenu/);
   assert.ok(!branchListSource.includes("renderBranchList"), "branch popover renderer moved out of the drawer module");
+  assert.ok(!branchListSource.includes("renderWorktreeList"), "worktree popover renderer moved out of the drawer module");
+  assert.ok(!branchListSource.includes("renderGitLocationSelector"), "the drawer renders no location selector");
   const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
   assert.match(gitUiSource, /globalThis\.HerdrGitUiBranchListModule\.create\(\{/);
-  assert.match(gitUiSource, /const renderWorktreeList = branchList\.renderWorktreeList;/);
+  assert.match(gitUiSource, /const renderWorktreeActions = branchList\.renderWorktreeActions;/);
   const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
   const branchListIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/branch_list.js")');
   const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
@@ -1631,7 +1633,6 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
     filterFiles: (paths) => paths,
     sideFileCount: () => 2,
     renderWorktreeActions: () => "ACTIONS",
-    renderGitLocationSelector: () => "LOCATION",
     renderDirContextMenu: (menu) => `DIRMENU[${menu.path}]`,
     gitCwdMatchesWorkspace: () => true,
     compactPath: (p) => p,
@@ -1727,7 +1728,6 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
     filterFiles: (paths) => paths,
     sideFileCount: () => 0,
     renderWorktreeActions: () => "",
-    renderGitLocationSelector: () => "",
     renderDirContextMenu: () => "",
     gitCwdMatchesWorkspace: matchesWorkspace,
     compactPath: (p) => p,
@@ -1981,13 +1981,13 @@ test("the drawer has no folder surfaces; the location bar owns folder switching"
   assert.ok(!html.includes("returnToWorkspaceCwd"), "no return button");
   assert.ok(!ctx.window.HerdrGitUi.openCwdPicker, "openCwdPicker is not part of the API");
   assert.ok(!ctx.window.HerdrGitUi.returnToWorkspaceCwd, "returnToWorkspaceCwd is not part of the API");
-  // The worktree row select still moves the Git cwd (the remaining
-  // divergence entry until phase 4 moves the worktree chip to the bar).
-  ctx.window.confirm = () => true;
-  ui.selectWorktree(encodeURIComponent("/tmp/other-repo"));
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const statusCall = booted.calls.filter((call) => call.path === "/api/git-ui/status").pop();
-  assert.equal(statusCall.params.get("cwd"), "/tmp/other-repo", "status refetches with the selected worktree cwd");
+  // Plan phase 4: the worktree chip and popover live in the location bar,
+  // so the drawer keeps no selector and no cwd divergence entry at all.
+  assert.ok(!html.includes("git-ui-worktree-chip"), "no worktree chip");
+  assert.ok(!html.includes("git-ui-worktree-list"), "no worktree popover");
+  assert.ok(!html.includes("git-ui-subtitle"), "no subtitle wrapper");
+  assert.ok(!ctx.window.HerdrGitUi.selectWorktree, "selectWorktree is not part of the API");
+  assert.ok(!ctx.window.HerdrGitUi.openWorktreeList, "openWorktreeList is not part of the API");
 });
 
 test("Esc pops one navigation level and only hides at the changes root", async () => {
@@ -2006,8 +2006,8 @@ test("Esc pops one navigation level and only hides at the changes root", async (
     lastAction = "";
     const shortcuts = ctx.window.HerdrGitUiShortcuts.create({
       state: {
-        visible: true, contextMenu: null, logContextMenu: null, headerMenu: null, branchList: null,
-        worktreeList: null, branchModal: null, gitOpModal: null, commitModal: null,
+        visible: true, contextMenu: null, logContextMenu: null, headerMenu: null,
+        gitOpModal: null, commitModal: null,
         compareSelectedModal: null, resetSelectedModal: null, tagSelectedModal: null,
         cleanupConfirm: null, shortcutPrefixUntil: 0,
       },
@@ -2055,8 +2055,8 @@ test("Esc closes an open menu or modal before touching the navigation stack", as
   const openWithState = (extra) => {
     const shortcuts = ctx.window.HerdrGitUiShortcuts.create({
       state: Object.assign({
-        visible: true, contextMenu: null, logContextMenu: null, headerMenu: null, branchList: null,
-        worktreeList: null, branchModal: null, gitOpModal: null, commitModal: null,
+        visible: true, contextMenu: null, logContextMenu: null, headerMenu: null,
+        gitOpModal: null, commitModal: null,
         compareSelectedModal: null, resetSelectedModal: null, tagSelectedModal: null,
         cleanupConfirm: null, shortcutPrefixUntil: 0,
       }, extra),
@@ -2078,10 +2078,10 @@ test("Esc closes an open menu or modal before touching the navigation stack", as
     });
     shortcuts.handleKeydown({ key: "Escape", target: {}, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
   };
-  // With the worktree list open mid-flow, Esc closes it and does NOT pop.
-  // (The branch popover moved to the location bar with phase 3 and owns its
-  // Esc handling there.)
-  openWithState({ worktreeList: { open: true } });
+  // With a git op modal open mid-flow, Esc closes it and does NOT pop.
+  // (The branch and worktree popovers live in the location bar with phases
+  // 3 and 4 and own their Esc handling there.)
+  openWithState({ gitOpModal: { open: true } });
   assert.equal(lastAction, "", "Esc with a modal open never reaches the navigation stack");
   assert.equal(rendered, 1, "closing the modal re-renders");
   // Same for the log context menu and the branch popover states.
@@ -2392,116 +2392,62 @@ test("a plain reopen of a hidden drawer with a loaded view refetches the status"
     "the reopened drawer reads the out-of-band state");
 });
 
-test("worktree divergence survives shell-render probes and keeps the rail on the workspace folder", async () => {
-  // The shell probe used to read a diverged cwd as a stale park, killing
-  // the return button. Divergence is deliberate and must survive.
+test("shell-render probes keep the rail parked on the workspace folder", async () => {
+  // A cold probe (drawer never opened) warms the rail through rail-status
+  // and parks a probe-only status the next renders reuse without refetch.
   const wsStatus = { state: "dirty", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["ws.txt"], untracked: [], conflicted: [] };
-  const pickedStatus = { state: "clean", branch: "picked", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
   const booted = await bootGitUi({
     "/api/git-ui/rail-status": (params, init) => {
       const body = JSON.parse(init.body);
       return { items: body.workspaces.map((w) => ({ workspace_id: w.workspace_id || null, cwd: w.cwd, state: "dirty" })) };
     },
-    "/api/git-ui/status": (params) => (params.get("cwd") === "/tmp/picked-repo" ? pickedStatus : wsStatus),
+    "/api/git-ui/status": () => wsStatus,
     "/api/git-ui/diff": { files: [] },
     "/api/git-ui/compare": { files: [] },
     "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
   });
-  const { ui, ctx, calls } = booted;
+  const { ui } = booted;
   const workspace = { cwd: "/tmp/ws-repo", title: "demo" };
-  await ui.open(workspace, { forceOpen: true });
+  // The drawer never opens: only a shell-render probe runs.
+  await ui.probeWorkspaceStatus(workspace);
   await settle();
-  // Diverge through the worktree row select (the picker entry is gone,
-  // plan phase 2b; selectWorktree is the remaining divergence path until
-  // phase 4 moves the worktree chip to the bar).
-  ctx.window.confirm = () => true;
-  ui.selectWorktree(encodeURIComponent("/tmp/picked-repo"));
+  assert.equal(ui.workspaceStatus(null, workspace), "dirty",
+    "a cold probe tints the rail from the rail-status answer");
+  // A second probe parks nothing new: the rail park is fresh.
+  const probeAgain = booted.calls.filter((call) => call.path === "/api/git-ui/rail-status").length;
+  await ui.probeWorkspaceStatus(workspace);
   await settle();
+  assert.equal(booted.calls.filter((call) => call.path === "/api/git-ui/rail-status").length, probeAgain,
+    "a parked rail status is not refetched per render");
   let html = ctxHtml(booted).split("git-ui-side-bottom-head")[1] || "";
   assert.ok(!html, "the side-bottom head is gone with the folder surfaces");
-  // Shell renders re-fire the probe for the workspace folder.
-  await ui.probeWorkspaceStatus(workspace);
-  await settle();
-  const railCalls = calls.filter((call) => call.path === "/api/git-ui/rail-status");
-  assert.deepEqual(JSON.parse(railCalls[railCalls.length - 1].init.body).workspaces,
-    [{ workspace_id: null, cwd: "/tmp/ws-repo" }],
-    "the probe warms the rail for the workspace folder, not the picked one");
-  assert.equal(ui.workspaceStatus(null, workspace), "dirty",
-    "the rail tint describes the workspace folder while diverged");
-  // A second probe parks nothing new: the rail park is fresh.
-  const warmFetches = railCalls.length;
-  await ui.probeWorkspaceStatus(workspace);
-  await settle();
-  assert.equal(calls.filter((call) => call.path === "/api/git-ui/rail-status").length, warmFetches,
-    "a parked rail status is not refetched per render");
 });
 
-test("divergence to a plain folder keeps the rail clickable after the drawer hides", async () => {
-  // Nogit lockout risk: after diverging to a plain folder and hiding the
-  // drawer, the rail must keep the workspace tint or it can never reopen.
+test("a hidden drawer keeps reading the rail from the parked status", async () => {
+  // After the drawer hides, a shell-render probe must not clobber the
+  // loaded status the rail tint reads.
   const wsStatus = { state: "clean", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
-  const plainStatus = { state: "cleanup only", repo_path: "/tmp/plain-dir", branch: "No Git repository", not_git_repository: true, ahead: 0, behind: 0, upstream: "", remote_url: null, staged: [], unstaged: [], untracked: [], conflicted: [], stashes: [] };
   const booted = await bootGitUi({
-    "/api/git-ui/status": (params) => (params.get("cwd") === "/tmp/plain-dir" ? plainStatus : wsStatus),
+    "/api/git-ui/status": () => wsStatus,
     "/api/git-ui/diff": { files: [] },
     "/api/git-ui/compare": { files: [] },
     "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
   });
-  const { ui, ctx } = booted;
+  const { ui, calls } = booted;
   const workspace = { cwd: "/tmp/ws-repo", title: "demo" };
   await ui.open(workspace, { forceOpen: true });
   await settle();
-  // Diverge to the plain folder through the worktree row select (the
-  // picker entry is gone, plan phase 2b).
-  ctx.window.confirm = () => true;
-  ui.selectWorktree(encodeURIComponent("/tmp/plain-dir"));
-  await settle();
-  // The cleanup-only park landed for the picked folder.
-  assert.ok(ctxHtml(booted).includes("cleanup"), "the plain folder renders its cleanup-only view");
-  // While the drawer is visible the rail reads "open" (closable).
-  assert.equal(ui.workspaceStatus(null, workspace), "open", "a visible diverged drawer keeps the rail clickable");
+  // While the drawer is visible the loaded tint outranks the "open" tint.
+  assert.equal(ui.workspaceStatus(null, workspace), "clean", "a visible drawer shows the loaded tint");
   // Hide, then let a shell render probe fire.
+  const loadedFetches = calls.filter((call) => call.path === "/api/git-ui/status").length;
   ui.hide();
   await ui.probeWorkspaceStatus(workspace);
   await settle();
   assert.equal(ui.workspaceStatus(null, workspace), "clean",
-    "a hidden drawer diverged to a plain folder tints the rail from the workspace folder");
-});
-
-test("restoring the workspace folder drops the rail park and refetches the workspace status", async () => {
-  // After the cwd restores to the workspace folder the rail park is stale by
-  // design: the view refetches, so the tint must follow the fresh load.
-  let statusPayload = { state: "dirty", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["back.txt"], untracked: [], conflicted: [] };
-  const pickedStatus = { state: "clean", branch: "picked", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
-  const booted = await bootGitUi({
-    "/api/git-ui/status": (params) => (params.get("cwd") === "/tmp/picked-repo" ? pickedStatus : statusPayload),
-    "/api/git-ui/diff": { files: [] },
-    "/api/git-ui/compare": { files: [] },
-    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
-  });
-  const { ui, ctx, calls } = booted;
-  const workspace = { cwd: "/tmp/ws-repo", title: "demo" };
-  await ui.open(workspace, { forceOpen: true });
-  await settle();
-  // Diverge through the worktree row select (plan phase 2b removed the
-  // picker entry).
-  ctx.window.confirm = () => true;
-  ui.selectWorktree(encodeURIComponent("/tmp/picked-repo"));
-  await settle();
-  // Park the rail status for the workspace folder.
-  await ui.probeWorkspaceStatus(workspace);
-  await settle();
-  statusPayload = { state: "clean", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
-  // Restore the workspace folder: the return button is gone (plan phase
-  // 2b), so the same select path switches the Git cwd back.
-  ui.selectWorktree(encodeURIComponent("/tmp/ws-repo"));
-  await settle();
-  const html = ctxHtml(booted);
-  assert.ok(!html.includes("git-ui-path-title"), "no path title anywhere in the panel");
-  assert.equal(ui.workspaceStatus(null, workspace), "clean",
-    "the rail reads the refetched workspace status after the restore");
-  const lastCall = calls.filter((call) => call.path === "/api/git-ui/status").pop();
-  assert.equal(lastCall.params.get("cwd"), "/tmp/ws-repo", "the restore refetched the workspace folder");
+    "a hidden drawer tints the rail from the parked workspace status");
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, loadedFetches,
+    "the probe never refetches the full status behind a loaded view");
 });
 
 // ---- cleanup delete flow (branch-too option, parallelism, rescan gate) --
