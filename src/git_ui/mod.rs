@@ -3658,4 +3658,818 @@ mod tests {
             assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
         });
     }
+
+    #[test]
+    fn socket_dispatch_rejects_unknown_methods_and_bad_params() {
+        assert_eq!(
+            socket_dispatch("git.nope", json!({})).unwrap_err(),
+            "unknown git-ui method: git.nope"
+        );
+        // Every decode arm shares this error shape: a params object missing
+        // the required fields must fail with the invalid-parameters prefix.
+        let err = socket_dispatch("git.switch", json!({})).unwrap_err();
+        assert!(
+            err.starts_with("invalid parameters:"),
+            "decode failures must carry the invalid-parameters prefix, got {err}"
+        );
+        // The no-cwd arms answer with their own fixed messages.
+        assert_eq!(
+            socket_dispatch("git.status", json!({})).unwrap_err(),
+            "cwd is required"
+        );
+        assert_eq!(
+            socket_dispatch("git.stashes", json!({ "cwd": null })).unwrap_err(),
+            "cwd is required"
+        );
+    }
+
+    #[test]
+    fn socket_dispatch_answers_read_only_git_methods() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        repo.write("tracked.txt", "one\ntwo\n");
+        repo.git(&["add", "tracked.txt"]);
+        let cwd = repo.path.to_str().unwrap().to_string();
+
+        let status = socket_dispatch("git.status", json!({ "cwd": cwd })).unwrap();
+        assert_eq!(status["state"], "dirty");
+        assert_eq!(status["staged"][0], "tracked.txt");
+
+        let branches = socket_dispatch("git.branches", json!({ "cwd": &cwd })).unwrap();
+        assert_eq!(branches["local"][0]["name"], "main");
+        assert!(branches["local"][0]["current"].as_bool().unwrap());
+
+        let log = socket_dispatch("git.log", json!({ "cwd": &cwd, "max": 5 })).unwrap();
+        assert!(log["lines"][0].as_str().unwrap().contains("initial"));
+
+        let diff = socket_dispatch("git.diff", json!({ "cwd": &cwd, "scope": "staged" })).unwrap();
+        assert_eq!(diff["files"][0]["path"], "tracked.txt");
+
+        // Same rev on both sides of the compare yields an empty file list.
+        let compare = socket_dispatch(
+            "git.compare",
+            json!({ "cwd": &cwd, "base": "HEAD", "target": "HEAD" }),
+        )
+        .unwrap();
+        assert!(compare["files"].as_array().unwrap().is_empty());
+
+        let path_info = socket_dispatch(
+            "git.path_info",
+            json!({ "cwd": &cwd, "path": "tracked.txt" }),
+        )
+        .unwrap();
+        assert_eq!(path_info["file"], "tracked.txt");
+
+        repo.git(&["remote", "add", "origin", "git@bitbucket.org:team/repo.git"]);
+        let permalink = socket_dispatch(
+            "git.permalink",
+            json!({ "cwd": &cwd, "path": "tracked.txt" }),
+        )
+        .unwrap();
+        assert_eq!(permalink["service"], "bitbucket");
+        assert!(permalink["url"].as_str().unwrap().contains("/src/"));
+
+        let blame =
+            socket_dispatch("git.blame", json!({ "cwd": &cwd, "file": "tracked.txt" })).unwrap();
+        assert!(blame["text"].as_str().unwrap().contains("\tone"));
+
+        let file =
+            socket_dispatch("git.file", json!({ "cwd": &cwd, "file": "tracked.txt" })).unwrap();
+        assert_eq!(file["content"], "one\ntwo\n");
+
+        let history = socket_dispatch(
+            "git.file_history",
+            json!({ "cwd": &cwd, "file": "tracked.txt" }),
+        )
+        .unwrap();
+        assert_eq!(history["commits"].as_array().unwrap().len(), 1);
+
+        let stashes = socket_dispatch("git.stashes", json!({ "cwd": &cwd })).unwrap();
+        assert_eq!(stashes["stashes"], json!([]));
+
+        let conflicts = socket_dispatch("git.conflicts", json!({ "cwd": &cwd })).unwrap();
+        assert_eq!(conflicts["files"], json!([]));
+        assert_eq!(conflicts["merge"], false);
+        assert_eq!(conflicts["rebase"], false);
+
+        let cleanup = socket_dispatch(
+            "git.cleanup_scan",
+            json!({ "root": repo.path.to_str().unwrap() }),
+        )
+        .unwrap();
+        assert!(cleanup["repos"].as_array().unwrap().iter().any(|repo| {
+            repo["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with("tracked.txt") || path.contains(".git"))
+                || repo["branches"].as_array().is_some_and(|b| !b.is_empty())
+        }));
+        assert_eq!(cleanup["truncated"], false);
+    }
+
+    #[test]
+    fn socket_dispatch_validates_required_cwd_and_file_pairs() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        let cwd = repo.path.to_str().unwrap().to_string();
+
+        // Blame, file and file_history all require the cwd+file pair.
+        for method in ["git.blame", "git.file", "git.file_history"] {
+            let err = socket_dispatch(method, json!({ "cwd": &cwd })).unwrap_err();
+            assert_eq!(err, "cwd and file are required", "method {method}");
+        }
+        // stash_show requires cwd on its own.
+        assert_eq!(
+            socket_dispatch("git.stash_show", json!({ "stash": "stash@{0}" })).unwrap_err(),
+            "cwd is required"
+        );
+        // cleanup_scan needs root or cwd.
+        assert_eq!(
+            socket_dispatch("git.cleanup_scan", json!({})).unwrap_err(),
+            "root is required"
+        );
+        // Path safety is enforced before any git spawn.
+        assert_eq!(
+            socket_dispatch("git.blame", json!({ "cwd": &cwd, "file": "../esc.txt" })).unwrap_err(),
+            "invalid repository path"
+        );
+    }
+
+    #[test]
+    fn socket_dispatch_guards_destructive_confirmation_gates() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        let cwd = repo.path.to_str().unwrap().to_string();
+
+        // Every destructive arm must refuse without its typed confirmation.
+        assert_eq!(
+            socket_dispatch("git.branch.delete", json!({ "cwd": &cwd, "branch": "x" }))
+                .unwrap_err(),
+            "branch deletion requires confirmation"
+        );
+        assert_eq!(
+            socket_dispatch(
+                "git.discard",
+                json!({ "cwd": &cwd, "paths": ["tracked.txt"] })
+            )
+            .unwrap_err(),
+            "discard requires confirmation"
+        );
+        assert_eq!(
+            socket_dispatch("git.stash_drop", json!({ "cwd": &cwd })).unwrap_err(),
+            "stash drop requires confirmation"
+        );
+        assert_eq!(
+            socket_dispatch(
+                "git.reset",
+                json!({ "cwd": &cwd, "mode": "hard", "ref_name": "HEAD" })
+            )
+            .unwrap_err(),
+            "hard reset requires typed confirmation"
+        );
+        assert_eq!(
+            socket_dispatch("git.rebase", json!({ "cwd": &cwd, "upstream": "main" })).unwrap_err(),
+            "rebase requires typed confirmation"
+        );
+        assert_eq!(
+            socket_dispatch(
+                "git.worktree_remove",
+                json!({ "cwd": &cwd, "path": "/tmp" })
+            )
+            .unwrap_err(),
+            "worktree removal requires confirmation"
+        );
+    }
+
+    #[test]
+    fn socket_dispatch_rejects_invalid_tokens_and_modes() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        let cwd = repo.path.to_str().unwrap().to_string();
+
+        assert_eq!(
+            socket_dispatch("git.switch", json!({ "cwd": &cwd, "branch": "-badbranch" }))
+                .unwrap_err(),
+            "invalid branch"
+        );
+        // Whitespace-only branch trims to empty inside the token guard.
+        assert_eq!(
+            socket_dispatch("git.switch", json!({ "cwd": &cwd, "branch": "   " })).unwrap_err(),
+            "invalid branch"
+        );
+        assert_eq!(
+            socket_dispatch(
+                "git.reset",
+                json!({ "cwd": &cwd, "mode": "sideways", "ref_name": "HEAD" })
+            )
+            .unwrap_err(),
+            "invalid reset mode"
+        );
+        assert_eq!(
+            socket_dispatch(
+                "git.tag",
+                json!({ "cwd": &cwd, "tag_name": "v 1.0", "ref_name": "HEAD" })
+            )
+            .unwrap_err(),
+            "invalid tag"
+        );
+        assert_eq!(
+            socket_dispatch("git.fetch", json!({ "cwd": &cwd, "branch": "--evil" })).unwrap_err(),
+            "invalid branch"
+        );
+        assert_eq!(
+            socket_dispatch("git.commit", json!({ "cwd": &cwd, "title": "   " })).unwrap_err(),
+            "commit title is required"
+        );
+        assert_eq!(
+            socket_dispatch(
+                "git.conflict_action",
+                json!({ "cwd": &cwd, "action": "explode" })
+            )
+            .unwrap_err(),
+            "invalid conflict action"
+        );
+        assert_eq!(
+            socket_dispatch("git.apply_patch", json!({ "cwd": &cwd, "patch": "   " })).unwrap_err(),
+            "patch or chunk selector (file, chunk_index) is required"
+        );
+    }
+
+    #[test]
+    fn socket_dispatch_performs_write_operations() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        let cwd = repo.path.to_str().unwrap().to_string();
+
+        repo.write("feature.txt", "feature\n");
+        let staged = socket_dispatch(
+            "git.stage",
+            json!({ "cwd": &cwd, "paths": ["feature.txt"] }),
+        )
+        .unwrap();
+        assert_eq!(staged["ok"], true);
+        assert_eq!(
+            repo.git(&["diff", "--cached", "--name-only"]).trim(),
+            "feature.txt"
+        );
+
+        let unstaged = socket_dispatch(
+            "git.unstage",
+            json!({ "cwd": &cwd, "paths": ["feature.txt"] }),
+        )
+        .unwrap();
+        assert_eq!(unstaged["ok"], true);
+        assert_eq!(repo.git(&["diff", "--cached", "--name-only"]).trim(), "");
+
+        // Stash the edit with an explicit message, then bring it back.
+        let stashed = socket_dispatch(
+            "git.stash",
+            json!({ "cwd": &cwd, "paths": ["feature.txt"], "message": "socket stash" }),
+        )
+        .unwrap();
+        assert_eq!(stashed["ok"], true);
+        let stash_list = socket_dispatch("git.stashes", json!({ "cwd": &cwd })).unwrap();
+        assert_eq!(stash_list["stashes"][0]["message"], "On main: socket stash");
+        assert!(!repo.path.join("feature.txt").exists());
+
+        let applied =
+            socket_dispatch("git.stash_apply", json!({ "cwd": &cwd, "pop": true })).unwrap();
+        assert_eq!(applied["ok"], true);
+        assert!(repo.path.join("feature.txt").exists());
+
+        // Discard the now-dirty file via the confirmed socket arm.
+        let discarded = socket_dispatch(
+            "git.discard",
+            json!({ "cwd": &cwd, "paths": ["feature.txt"], "confirmed": true }),
+        )
+        .unwrap();
+        assert_eq!(discarded["ok"], true);
+        assert!(!repo.path.join("feature.txt").exists());
+
+        // Switch arm: create=false takes the plain switch form.
+        repo.git(&["switch", "-c", "side"]);
+        let switched = socket_dispatch(
+            "git.switch",
+            json!({ "cwd": &cwd, "branch": "main", "create": false }),
+        )
+        .unwrap();
+        assert_eq!(switched["ok"], true);
+        assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "main");
+
+        // Stash the file so the working tree has no staged content yet.
+        // The tag arm runs against whatever HEAD is at this point.
+        let tagged = socket_dispatch(
+            "git.tag",
+            json!({ "cwd": &cwd, "tag_name": "v1.0.0", "ref_name": "HEAD" }),
+        )
+        .unwrap();
+        assert_eq!(tagged["tag"], "v1.0.0");
+        assert!(repo
+            .git(&["tag", "-l"])
+            .lines()
+            .any(|tag| tag.trim() == "v1.0.0"));
+
+        // conflict_resolve mark mode stages a dirty file, giving the
+        // commit arm something to commit.
+        repo.write("tracked.txt", "one\nmodified\n");
+        let resolved = socket_dispatch(
+            "git.conflict_resolve",
+            json!({ "cwd": &cwd, "path": "tracked.txt", "mode": "mark" }),
+        )
+        .unwrap();
+        assert_eq!(resolved["ok"], true);
+        assert_eq!(
+            repo.git(&["diff", "--cached", "--name-only"]).trim(),
+            "tracked.txt"
+        );
+        let committed = socket_dispatch(
+            "git.commit",
+            json!({ "cwd": &cwd, "title": "socket commit", "body": "extra line" }),
+        )
+        .unwrap();
+        assert_eq!(committed["ok"], true);
+        assert_eq!(
+            repo.git(&["log", "-1", "--format=%B"]).trim(),
+            "socket commit\n\nextra line"
+        );
+
+        // write_file + conflict guard via the socket transport.
+        let written = socket_dispatch(
+            "git.file_write",
+            json!({ "cwd": &cwd, "path": "tracked.txt", "content": "one\noverwritten\n" }),
+        )
+        .unwrap();
+        assert_eq!(written["ok"], true);
+        assert!(written["hash"].as_str().unwrap().len() >= 40);
+        assert_eq!(
+            fs::read_to_string(repo.path.join("tracked.txt")).unwrap(),
+            "one\noverwritten\n"
+        );
+        let conflicted = socket_dispatch(
+            "git.file_write",
+            json!({
+                "cwd": &cwd,
+                "path": "tracked.txt",
+                "content": "clobbered\n",
+                "expected_hash": "not-the-current-hash"
+            }),
+        )
+        .unwrap_err();
+        assert!(conflicted.contains("file changed on disk"));
+
+        // worktree prune with dry_run answers ok without touching refs.
+        let pruned = socket_dispatch(
+            "git.worktree_prune",
+            json!({ "cwd": &cwd, "dry_run": true }),
+        )
+        .unwrap();
+        assert_eq!(pruned["ok"], true);
+
+        // Empty paths list is rejected before any git spawn.
+        assert_eq!(
+            socket_dispatch("git.stage", json!({ "cwd": &cwd, "paths": [] })).unwrap_err(),
+            "paths are required"
+        );
+    }
+
+    #[test]
+    fn socket_branch_token_treats_blank_as_absent() {
+        // The pull/push/fetch arms trim the branch: whitespace-only values
+        // must behave like None, not like an empty git argument.
+        assert_eq!(socket_branch_token(None), Ok(None));
+        assert_eq!(socket_branch_token(Some("   ")), Ok(None));
+        let trimmed = socket_branch_token(Some("  main ")).unwrap();
+        assert_eq!(trimmed.as_deref(), Some("main"));
+        assert!(socket_branch_token(Some("--push")).is_err());
+    }
+
+    #[test]
+    fn git_spawn_maps_payload_errors_and_join_failures() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let ok = git_spawn(|| Ok(json!({ "ok": true }))).await;
+            assert_eq!(ok.status(), StatusCode::OK);
+            let bytes = to_bytes(ok.into_body(), 1024).await.unwrap();
+            assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap()["ok"], true);
+
+            // Payload errors keep their status and message body.
+            let err =
+                git_spawn(|| Err((StatusCode::BAD_REQUEST, "bad repo path".to_string()))).await;
+            assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+            let bytes = to_bytes(err.into_body(), 1024).await.unwrap();
+            let body = serde_json::from_slice::<Value>(&bytes).unwrap();
+            assert_eq!(body["error"], "bad repo path");
+
+            // A payload that panics surfaces the join failure as a 500 body.
+            let panicked = git_spawn(|| -> Result<Value, (StatusCode, String)> {
+                panic!("worker exploded");
+            })
+            .await;
+            assert_eq!(panicked.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let bytes = to_bytes(panicked.into_body(), 1024).await.unwrap();
+            let body = serde_json::from_slice::<Value>(&bytes).unwrap();
+            assert!(body["error"].as_str().unwrap().contains("worker exploded"));
+        });
+    }
+
+    #[test]
+    fn git_status_parses_rename_untracked_and_detached_rows() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        // Rename produces a type-2 row whose path field is "new\told".
+        repo.git(&["mv", "tracked.txt", "renamed.txt"]);
+        repo.write("untracked.txt", "fresh\n");
+        let cwd = repo.path.to_str().unwrap().to_string();
+
+        let status = git_status_blocking(cwd.clone()).unwrap();
+        assert_eq!(status["state"], "dirty");
+        // A staged rename shows R. (rename staged, worktree unmodified), so
+        // only the staged list carries the new path.
+        assert_eq!(status["staged"], json!(["renamed.txt"]));
+        assert_eq!(status["unstaged"], json!([]));
+        assert_eq!(status["untracked"], json!(["untracked.txt"]));
+
+        // Detached HEAD keeps the parenthesized branch.head marker.
+        repo.git(&["checkout", "--detach", "HEAD"]);
+        let detached = git_status_blocking(cwd).unwrap();
+        assert_eq!(detached["branch"], "(detached)");
+        assert_eq!(detached["state"], "dirty");
+    }
+
+    #[test]
+    fn git_status_counts_stashes_and_answers_nogit_or_invalid_cwds() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        repo.write("tracked.txt", "two\n");
+        repo.git(&["stash", "push", "-m", "first"]);
+        repo.write("tracked.txt", "three\n");
+        repo.git(&["stash", "push", "-m", "second"]);
+        let cwd = repo.path.to_str().unwrap().to_string();
+
+        // Both stashes landed and the working tree is clean again.
+        let status = git_status_blocking(cwd).unwrap();
+        assert_eq!(status["stashes"], 2);
+        assert_eq!(status["warnings"], json!([]));
+        assert_eq!(status["state"], "clean");
+
+        // A cwd that exists but is not a git work tree answers the nogit
+        // payload through the blocking body too.
+        let (plain, _guard) = crate::tests::temp_guard("herdr-webui-git-ui-block-nogit");
+        let nogit = git_status_blocking(plain.to_string_lossy().to_string()).unwrap();
+        assert_eq!(nogit["state"], "cleanup only");
+        assert_eq!(nogit["branch"], "No Git repository");
+        assert!(nogit["not_git_repository"].as_bool().unwrap());
+
+        // A cwd string that is not a valid token fails validation before
+        // any spawn; a missing folder surfaces git's spawn failure as 502.
+        let invalid = git_status_blocking("-flag".to_string()).unwrap_err();
+        assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
+        assert_eq!(invalid.1, "invalid repository path");
+        let missing = git_status_blocking("definitely-missing-folder-xyz".to_string()).unwrap_err();
+        assert_eq!(missing.0, StatusCode::BAD_GATEWAY);
+        assert!(missing.1.contains("cannot change to"));
+    }
+
+    #[test]
+    fn rail_status_helpers_derive_state_and_branch_from_porcelain() {
+        let clean = "# branch.oid abc\n# branch.head main\n";
+        assert_eq!(rail_state_from_status(clean), "clean");
+        assert_eq!(rail_branch_from_status(clean), "main");
+
+        let dirty = "# branch.head main\n1 .M N... 100644 100644 100644 h h h a.txt\n";
+        assert_eq!(rail_state_from_status(dirty), "dirty");
+
+        let untracked = "# branch.head main\n? new.txt\n";
+        assert_eq!(rail_state_from_status(untracked), "dirty");
+
+        // AA/DD and any U combination outrank dirty for the conflict tint.
+        let both_added = "# branch.head main\n1 AA N... 0 0 0 0 0 0 both.txt\n";
+        assert_eq!(rail_state_from_status(both_added), "conflicts");
+        let staged_unmerged = "# branch.head main\n1 U. N... 0 0 0 0 0 0 u.txt\n";
+        assert_eq!(rail_state_from_status(staged_unmerged), "conflicts");
+        let unmerged_row = "# branch.head main\nu UU N... 0 0 0 0 0 0 0 u.txt\n";
+        assert_eq!(rail_state_from_status(unmerged_row), "conflicts");
+
+        // A branch header without branch.head answers an empty branch name.
+        assert_eq!(rail_branch_from_status("# branch.oid only\n"), "");
+    }
+
+    #[test]
+    fn repo_relative_and_path_info_helpers_cover_the_edge_cases() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        repo.write("nested/deep/file.txt", "x\n");
+        let root = fs::canonicalize(&repo.path).unwrap();
+
+        // Same-dir relative path stays as-is.
+        assert_eq!(
+            repo_relative_path(&root, &root, "tracked.txt").unwrap(),
+            "tracked.txt"
+        );
+        // The file component of a cwd below the root is preserved.
+        let nested = root.join("nested");
+        assert_eq!(
+            repo_relative_path(&root, &nested, "deep/file.txt").unwrap(),
+            "nested/deep/file.txt"
+        );
+        // A path resolving to the repo root itself is rejected.
+        assert_eq!(
+            repo_relative_path(&root, &root, "").unwrap_err(),
+            "file path resolves to the repository root"
+        );
+        // A cwd outside the repo cannot produce a repo-relative path.
+        let outside = std::env::temp_dir();
+        assert_eq!(
+            repo_relative_path(&root, &outside, "tracked.txt").unwrap_err(),
+            "file is outside the git repository"
+        );
+
+        // path_info rejects a cwd that is not a repository.
+        let (plain, _guard) = crate::tests::temp_guard("herdr-webui-git-ui-pathinfo-nogit");
+        let err =
+            git_ui_path_info_blocking(plain.to_string_lossy().to_string(), "some.txt".to_string())
+                .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("not a git repository"));
+    }
+
+    #[test]
+    fn permalink_helpers_reject_unsupported_and_unreadable_remotes() {
+        // No scheme and no user@host:port shape stays unsupported.
+        assert_eq!(normalize_git_remote_url(""), None);
+        assert_eq!(normalize_git_remote_url("   "), None);
+        assert_eq!(normalize_git_remote_url("local-path/repo"), None);
+        // git+ssh:// is normalized like ssh://.
+        assert_eq!(
+            normalize_git_remote_url("git+ssh://git@gitlab.com/team/repo.git").as_deref(),
+            Some("https://gitlab.com/team/repo")
+        );
+        // The user info is stripped from the host half.
+        assert_eq!(
+            normalize_git_remote_url("https://user:pass@example.com/team/repo").as_deref(),
+            Some("https://example.com/team/repo")
+        );
+        // A host with an empty path is rejected.
+        assert_eq!(normalize_git_remote_url("https://example.com/"), None);
+        assert_eq!(normalize_git_remote_url("https:///only-path"), None);
+
+        // The encode helper percent-encodes every non-URL-safe byte per
+        // segment, keeping the separators; + is treated as unsafe and
+        // percent-encoded like any other reserved byte.
+        assert_eq!(
+            encode_git_permalink_path("src/file name.rs"),
+            "src/file%20name.rs"
+        );
+        assert_eq!(
+            encode_git_permalink_path("a+b#c/d\u{00e9}.rs"),
+            "a%2Bb%23c/d%C3%A9.rs"
+        );
+
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        let cwd = repo.path.to_str().unwrap().to_string();
+        // A repo with no origin and no upstream cannot build a permalink.
+        let err = git_ui_permalink_blocking(cwd, "tracked.txt".to_string()).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("no upstream"));
+    }
+
+    #[test]
+    fn socket_dispatch_covers_remaining_write_arms() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        let cwd = repo.path.to_str().unwrap().to_string();
+
+        // rail_status echoes one derived payload per workspace id.
+        let rail = socket_dispatch(
+            "git.rail_status",
+            json!({ "workspaces": [
+                { "workspace_id": "a", "cwd": &cwd },
+                { "workspace_id": "b", "cwd": &cwd }
+            ]}),
+        )
+        .unwrap();
+        assert_eq!(rail["items"].as_array().unwrap().len(), 2);
+        assert_eq!(rail["items"][0]["workspace_id"], "a");
+        assert_eq!(rail["items"][0]["state"], "clean");
+        assert_eq!(rail["items"][1]["workspace_id"], "b");
+
+        // switch with create=true takes the switch -c form.
+        let created = socket_dispatch(
+            "git.switch",
+            json!({ "cwd": &cwd, "branch": "fresh", "create": true }),
+        )
+        .unwrap();
+        assert_eq!(created["ok"], true);
+        assert_eq!(repo.git(&["branch", "--show-current"]).trim(), "fresh");
+
+        // branch.delete with confirmation removes a non-current branch.
+        repo.git(&["switch", "main"]);
+        let deleted = socket_dispatch(
+            "git.branch.delete",
+            json!({ "cwd": &cwd, "branch": "fresh", "confirmed": true }),
+        )
+        .unwrap();
+        assert_eq!(deleted["ok"], true);
+        assert!(!repo
+            .git(&["branch", "--list"])
+            .lines()
+            .any(|line| line.contains("fresh")));
+
+        // stash_show answers a parsed diff for an existing stash.
+        repo.write("tracked.txt", "two\n");
+        repo.git(&["stash", "push", "-m", "wip"]);
+        let shown = socket_dispatch("git.stash_show", json!({ "cwd": &cwd })).unwrap();
+        assert!(shown["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| { file["path"].as_str() == Some("tracked.txt") }));
+
+        // stash_drop with confirmation removes the stash entry.
+        let dropped =
+            socket_dispatch("git.stash_drop", json!({ "cwd": &cwd, "confirmed": true })).unwrap();
+        assert_eq!(dropped["ok"], true);
+        assert_eq!(repo.git(&["stash", "list"]).trim(), "");
+
+        // reset via the socket takes the same mode strings as the HTTP arm.
+        repo.write("tracked.txt", "three\n");
+        repo.git(&["add", "tracked.txt"]);
+        let reset = socket_dispatch(
+            "git.reset",
+            json!({ "cwd": &cwd, "mode": "mixed", "ref_name": "HEAD" }),
+        )
+        .unwrap();
+        assert_eq!(reset["ok"], true);
+        assert_eq!(repo.git(&["diff", "--cached", "--name-only"]).trim(), "");
+        let hard = socket_dispatch(
+            "git.reset",
+            json!({
+                "cwd": &cwd,
+                "mode": "hard",
+                "ref_name": "HEAD",
+                "confirmation": "reset hard"
+            }),
+        )
+        .unwrap();
+        assert_eq!(hard["ok"], true);
+        assert_eq!(
+            fs::read_to_string(repo.path.join("tracked.txt")).unwrap(),
+            "one\n"
+        );
+
+        // apply_patch with a chunk selector regenerates the patch from the
+        // working diff and applies it back to the index.
+        repo.write("tracked.txt", "one\npatched\n");
+        let applied = socket_dispatch(
+            "git.apply_patch",
+            json!({
+                "cwd": &cwd,
+                "scope": "working",
+                "file": "tracked.txt",
+                "chunk_index": 0,
+                "cached": true
+            }),
+        )
+        .unwrap();
+        assert_eq!(applied["ok"], true);
+        assert_eq!(
+            repo.git(&["diff", "--cached", "--name-only"]).trim(),
+            "tracked.txt"
+        );
+        repo.git(&["restore", "--staged", "tracked.txt"]);
+
+        // conflict_action with a valid action reaches the blocking body; a
+        // repo with no merge in progress fails the git call itself.
+        let aborted = socket_dispatch(
+            "git.conflict_action",
+            json!({ "cwd": &cwd, "action": "merge-abort" }),
+        );
+        assert!(aborted.is_err());
+        assert!(aborted.unwrap_err().contains("no merge to abort"));
+
+        // worktree_remove with confirmation protects the primary worktree.
+        let remove = socket_dispatch(
+            "git.worktree_remove",
+            json!({ "cwd": &cwd, "path": &cwd, "confirmed": true }),
+        )
+        .unwrap_err();
+        assert!(remove.contains("primary worktree cannot be removed"));
+
+        // fetch/pull/push without a remote surface the git failure.
+        let fetched = socket_dispatch("git.fetch", json!({ "cwd": &cwd })).unwrap_err();
+        assert!(fetched.contains("does not appear to be a git repository"));
+    }
+
+    #[test]
+    fn map_status_and_decode_shape_the_socket_error_vocabulary() {
+        // map_status keeps only the message half of the HTTP pair.
+        assert_eq!(
+            map_status(Err((StatusCode::BAD_GATEWAY, "boom".to_string()))),
+            Err("boom".to_string())
+        );
+        assert_eq!(
+            map_status(Ok(json!({ "ok": true }))),
+            Ok(json!({ "ok": true }))
+        );
+        // optional_cwd answers the fixed missing-cwd message.
+        assert_eq!(optional_cwd(&json!({ "cwd": "/tmp" })).unwrap(), "/tmp");
+        assert_eq!(optional_cwd(&json!({})).unwrap_err(), "cwd is required");
+    }
+
+    #[test]
+    fn socket_dispatch_covers_pull_push_rebase_and_stash_path_arms() {
+        let repo = TempRepo::new();
+        let cwd = repo.path.to_string_lossy().to_string();
+
+        // pull and push without a remote surface the git failure text.
+        // A fresh repo has no tracking branch, so pull reports the missing
+        // upstream; push reports the missing push destination.
+        let pulled = socket_dispatch("git.pull", json!({ "cwd": &cwd })).unwrap_err();
+        assert!(pulled.contains("no tracking information"));
+        let pushed =
+            socket_dispatch("git.push", json!({ "cwd": &cwd, "mode": "regular" })).unwrap_err();
+        assert!(pushed.contains("No configured push destination"));
+
+        // rebase without the typed confirmation is rejected first.
+        assert_eq!(
+            socket_dispatch("git.rebase", json!({ "cwd": &cwd, "upstream": "main" })).unwrap_err(),
+            "rebase requires typed confirmation"
+        );
+
+        // stash with explicit paths forwards the validated list; a path
+        // escape is rejected before any git call runs.
+        assert_eq!(
+            socket_dispatch("git.stash", json!({ "cwd": &cwd, "paths": ["../escape"] }))
+                .unwrap_err(),
+            "invalid repository path"
+        );
+        let stashed = socket_dispatch(
+            "git.stash",
+            json!({ "cwd": &cwd, "paths": ["a.txt"], "message": "keep" }),
+        );
+        // A repo without an initial commit cannot stash, which still
+        // exercises the paths plumbing end to end.
+        let err = stashed.unwrap_err();
+        assert!(err.contains("You do not have the initial commit"));
+    }
+
+    #[test]
+    fn socket_dispatch_switch_and_checkout_validate_branch_tokens() {
+        let repo = TempRepo::new();
+        let cwd = repo.path.to_string_lossy().to_string();
+
+        // switch with an empty branch hits the token guard first, which
+        // reports the invalid-branch message before the required check.
+        assert_eq!(
+            socket_dispatch("git.switch", json!({ "cwd": &cwd, "branch": "  " })).unwrap_err(),
+            "invalid branch"
+        );
+        // create with a bad base token is rejected by the token guard.
+        assert_eq!(
+            socket_dispatch(
+                "git.switch",
+                json!({ "cwd": &cwd, "branch": "topic", "create": true, "base": "-bad" })
+            )
+            .unwrap_err(),
+            "invalid base"
+        );
+        // A missing branch key fails the shared decode before the guard.
+        assert!(socket_dispatch("git.switch", json!({ "cwd": &cwd }))
+            .unwrap_err()
+            .starts_with("invalid parameters:"));
+    }
+
+    #[test]
+    fn repo_relative_path_and_git_remote_lookup_cover_their_fallbacks() {
+        let repo = TempRepo::new();
+        repo.write("README.md", "hi\n");
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-m", "init"]);
+        let cwd = repo.path.to_string_lossy().to_string();
+
+        // repo_relative_path answers repo-relative text for nested cwd.
+        assert_eq!(
+            repo_relative_path(&repo.path, &repo.path, "README.md").unwrap(),
+            "README.md"
+        );
+        // A file outside the repository is rejected.
+        assert_eq!(
+            repo_relative_path(&repo.path, &std::env::temp_dir(), "x.txt").unwrap_err(),
+            "file is outside the git repository"
+        );
+
+        // git_repo_root errors when the directory is not a git repository.
+        let plain =
+            std::env::temp_dir().join(format!("herdr-webui-git-ui-plain-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&plain);
+        fs::create_dir_all(&plain).unwrap();
+        assert!(git_repo_root(plain.to_str().unwrap()).is_err());
+        let _ = fs::remove_dir_all(plain);
+
+        // git_origin_or_upstream_remote without remotes and without an
+        // upstream answers the fixed not-configured message.
+        assert_eq!(
+            git_origin_or_upstream_remote(&cwd).unwrap_err(),
+            "git remote origin is not configured and current branch has no upstream"
+        );
+    }
 }

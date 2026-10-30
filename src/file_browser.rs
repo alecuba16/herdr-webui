@@ -4142,4 +4142,878 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn socket_dispatch_rejects_unknown_methods_and_bad_params() {
+        assert_eq!(
+            socket_dispatch("file.nope", json!({})).unwrap_err(),
+            "unknown file-browser method: file.nope"
+        );
+        // A params object missing required fields fails the shared decode.
+        let err = socket_dispatch("file.rename", json!({})).unwrap_err();
+        assert!(err.starts_with("invalid parameters:"));
+    }
+
+    #[test]
+    fn socket_dispatch_answers_every_file_method() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-fb-socket-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("readme.md"), "# Title\nbody\n").unwrap();
+        fs::write(root.join("data.txt"), "needle here\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let cwd = root.to_string_lossy().to_string();
+
+        let tree = socket_dispatch("file.tree", json!({ "cwd": &cwd, "depth": Some(1) })).unwrap();
+        let paths: Vec<&str> = tree["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect();
+        assert!(paths.contains(&"sub"));
+        assert!(paths.contains(&"readme.md"));
+
+        let read =
+            socket_dispatch("file.read", json!({ "cwd": &cwd, "path": "data.txt" })).unwrap();
+        assert_eq!(read["content"], "needle here\n");
+        assert_eq!(read["truncated"], false);
+
+        let written = socket_dispatch(
+            "file.write",
+            json!({ "cwd": &cwd, "path": "data.txt", "content": "socket write\n" }),
+        )
+        .unwrap();
+        assert_eq!(written["ok"], true);
+        assert_eq!(
+            fs::read_to_string(root.join("data.txt")).unwrap(),
+            "socket write\n"
+        );
+
+        let searched =
+            socket_dispatch("file.content_search", json!({ "cwd": &cwd, "q": "socket" })).unwrap();
+        assert_eq!(searched["total_files"], 1);
+        assert_eq!(searched["files"][0]["path"], "data.txt");
+
+        let single = socket_dispatch(
+            "file.content_search_file",
+            json!({ "cwd": &cwd, "file": "data.txt", "q": "socket" }),
+        )
+        .unwrap();
+        assert_eq!(single["file"]["path"], "data.txt");
+        assert_eq!(single["file"]["match_count"], 1);
+
+        let outlined =
+            socket_dispatch("file.outline", json!({ "cwd": &cwd, "path": "readme.md" })).unwrap();
+        assert_eq!(outlined["outline"][0][2], "Title");
+
+        let renamed = socket_dispatch(
+            "file.rename",
+            json!({ "cwd": &cwd, "path": "data.txt", "new_name": "data2.txt" }),
+        )
+        .unwrap();
+        assert_eq!(renamed["path"], "data2.txt");
+        assert!(root.join("data2.txt").exists());
+        assert!(!root.join("data.txt").exists());
+
+        let deleted =
+            socket_dispatch("file.delete", json!({ "cwd": &cwd, "path": "data2.txt" })).unwrap();
+        assert_eq!(deleted["ok"], true);
+        assert!(!root.join("data2.txt").exists());
+
+        // The tree branch error paths answer the same message vocabulary as
+        // the HTTP handlers because both share the payload bodies.
+        let err =
+            socket_dispatch("file.read", json!({ "cwd": &cwd, "path": "../esc" })).unwrap_err();
+        assert_eq!(err, "invalid path");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn escape_html_covers_every_replaced_character() {
+        assert_eq!(
+            escape_html("a&b<c>d\"e'f"),
+            "a&amp;b&lt;c&gt;d&quot;e&#39;f"
+        );
+        assert_eq!(escape_html("plain"), "plain");
+        assert_eq!(escape_html(""), "");
+    }
+
+    #[test]
+    fn highlight_line_html_falls_back_when_offsets_are_unusable() {
+        // Offsets beyond the line ignore the mark and search the query.
+        let fallback = highlight_line_html("find me here", 99, 120, "me");
+        assert_eq!(
+            fallback,
+            "find <mark class=\"herdr-content-search-hit\">me</mark> here"
+        );
+        // An empty query in the fallback escapes the line untouched.
+        let plain = highlight_line_html("a < b", 99, 120, "");
+        assert_eq!(plain, "a &lt; b");
+        // Offsets that split a multibyte char are rejected by the boundary
+        // check and fall back to the first case-insensitive query hit.
+        // The \u{00e9} occupies bytes 3-4, so offset 4 cuts inside it.
+        let multibyte = highlight_line_html("caf\u{00e9} latte", 4, 5, "LATTE");
+        assert_eq!(
+            multibyte,
+            "caf\u{00e9} <mark class=\"herdr-content-search-hit\">latte</mark>"
+        );
+        // A query that does not appear anywhere escapes the whole line.
+        let missing = highlight_line_html("nothing", 99, 120, "absent");
+        assert_eq!(missing, "nothing");
+    }
+
+    #[test]
+    fn clean_file_name_and_resolve_helpers_reject_bad_inputs() {
+        assert_eq!(clean_file_name("  ok.txt ").unwrap(), "ok.txt");
+        for bad in ["", "   ", "a/b", "a\\b", ".", "..", "nul\0byte"] {
+            assert!(
+                clean_file_name(bad).is_err(),
+                "name {bad:?} must be rejected"
+            );
+        }
+
+        // A root that does not exist fails resolve_root with the invalid
+        // root prefix.
+        let err = resolve_root("definitely-missing-root-xyz").unwrap_err();
+        assert!(err.starts_with("invalid root:"));
+
+        // resolve_child on a path whose parent cannot canonicalize fails.
+        let tmp =
+            std::env::temp_dir().join(format!("herdr-webui-fb-resolve-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let root = tmp.canonicalize().unwrap();
+        // A path that escapes after canonicalization is rejected.
+        let escaped = resolve_child(&root, "missing/../../outside");
+        assert!(escaped.is_err());
+        let _ = fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn applescript_quote_escapes_backslash_and_quote() {
+        assert_eq!(applescript_quote("plain"), "\"plain\"");
+        assert_eq!(applescript_quote("a\\b"), "\"a\\\\b\"");
+        assert_eq!(applescript_quote("say \"hi\""), "\"say \\\"hi\\\"\"");
+    }
+
+    #[test]
+    fn file_payload_error_branches_answer_the_right_statuses() {
+        let root = std::env::temp_dir().join(format!("herdr-webui-fb-read-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("doc.md"), "# H1\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let cwd = root.to_string_lossy().to_string();
+        let query = |path: Option<&str>| FileBrowserQuery {
+            cwd: cwd.clone(),
+            path: path.map(str::to_string),
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        };
+
+        // Missing path is a 400 with its own message.
+        let err = file_browser_file_payload(query(None)).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "path is required");
+
+        // A directory is not a readable file.
+        fs::create_dir_all(root.join("folder")).unwrap();
+        let err = file_browser_file_payload(query(Some("folder"))).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "path is not a file");
+
+        // A nonexistent path is rejected during child resolution.
+        let err = file_browser_file_payload(query(Some("ghost.txt"))).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+
+        // render=lines attaches the prebuilt gutter and code markup.
+        let mut lines_query = query(Some("doc.md"));
+        lines_query.render = Some("lines".to_string());
+        let payload = file_browser_file_payload(lines_query).unwrap();
+        assert_eq!(payload["lines_gutter_html"], "<span>1</span><span>2</span>");
+        assert_eq!(payload["lines_code_html"], "# H1\n");
+
+        // A bad cwd fails at root resolution before the path is touched.
+        let mut bad_cwd = query(Some("doc.md"));
+        bad_cwd.cwd = "definitely-missing-root-xyz".to_string();
+        let err = file_browser_file_payload(bad_cwd).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1.starts_with("invalid root:"));
+
+        // A file that is not valid UTF-8 answers the binary marker and no
+        // content. Every ASCII byte is valid UTF-8, so the fixture needs a
+        // high byte sequence like 0xff.
+        fs::write(root.join("blob.bin"), b"\xff\xfe\x00").unwrap();
+        let payload = file_browser_file_payload(query(Some("blob.bin"))).unwrap();
+        assert_eq!(payload["binary"], true);
+        assert_eq!(payload["content"], "");
+        assert_eq!(payload["hash"], "");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn write_payload_guards_hash_conflicts_and_directory_targets() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-fb-write-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let cwd = root.to_string_lossy().to_string();
+        let body =
+            |path: &str, content: &str, expected_hash: Option<String>| FileBrowserWriteRequest {
+                cwd: cwd.clone(),
+                path: path.to_string(),
+                content: content.to_string(),
+                expected_hash,
+                create_parents: false,
+            };
+
+        // An empty path is rejected.
+        let err = file_browser_write_file_payload(body("", "x", None)).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "path is required");
+
+        // Writing onto a directory is rejected.
+        fs::create_dir_all(root.join("dir")).unwrap();
+        let err = file_browser_write_file_payload(body("dir", "x", None)).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "path is a directory");
+
+        // A stale expected_hash is a conflict.
+        fs::write(root.join("file.txt"), "current\n").unwrap();
+        let err = file_browser_write_file_payload(body(
+            "file.txt",
+            "new\n",
+            Some("stale-hash".to_string()),
+        ))
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert_eq!(err.1, "file changed on disk; reload before saving");
+        assert_eq!(
+            fs::read_to_string(root.join("file.txt")).unwrap(),
+            "current\n"
+        );
+
+        // The matching hash lets the write through and answers the new hash.
+        let current = file_hash(&root.join("file.txt")).unwrap();
+        let payload =
+            file_browser_write_file_payload(body("file.txt", "new\n", Some(current))).unwrap();
+        assert_eq!(payload["ok"], true);
+        assert_eq!(fs::read_to_string(root.join("file.txt")).unwrap(), "new\n");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rename_and_delete_payloads_cover_existence_and_escape_errors() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-fb-rename-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.txt"), "a\n").unwrap();
+        fs::create_dir_all(root.join("d")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let cwd = root.to_string_lossy().to_string();
+
+        let rename = |path: &str, new_name: &str| {
+            file_browser_rename_payload(FileBrowserRenameRequest {
+                cwd: cwd.clone(),
+                path: path.to_string(),
+                new_name: new_name.to_string(),
+            })
+        };
+
+        // Missing path is a 400.
+        let err = rename("", "b.txt").unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "path is required");
+
+        // A path that does not exist is rejected before any rename.
+        let err = rename("ghost.txt", "b.txt").unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "path does not exist");
+
+        // An invalid new name is rejected by the file name guard.
+        let err = rename("a.txt", "../escape").unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "invalid name");
+
+        // A target that already exists is a conflict, source untouched.
+        fs::write(root.join("b.txt"), "b\n").unwrap();
+        let err = rename("a.txt", "b.txt").unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert_eq!(err.1, "target already exists");
+        assert!(root.join("a.txt").exists());
+
+        // A valid rename answers the new root-relative path.
+        let payload = rename("a.txt", "renamed.txt").unwrap();
+        assert_eq!(payload["ok"], true);
+        assert_eq!(payload["path"], "renamed.txt");
+        assert!(!root.join("a.txt").exists());
+
+        let delete = |path: &str| {
+            file_browser_delete_payload(FileBrowserDeleteRequest {
+                cwd: cwd.clone(),
+                path: path.to_string(),
+            })
+        };
+
+        // Deleting a missing path is a 400.
+        let err = delete("ghost.txt").unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "path does not exist");
+
+        // Deleting a file removes it.
+        let payload = delete("renamed.txt").unwrap();
+        assert_eq!(payload["ok"], true);
+        assert!(!root.join("renamed.txt").exists());
+
+        // Deleting a directory removes the whole subtree.
+        fs::write(root.join("d/inner.txt"), "inner\n").unwrap();
+        let payload = delete("d").unwrap();
+        assert_eq!(payload["ok"], true);
+        assert!(!root.join("d").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn content_search_payload_validates_query_and_regex_errors() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-fb-csearch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let cwd = root.to_string_lossy().to_string();
+
+        // An empty query is rejected before the walk starts.
+        let err = file_browser_content_search_payload(FileContentSearchQuery {
+            cwd: cwd.clone(),
+            path: None,
+            file: None,
+            q: "   ".to_string(),
+            offset: None,
+            limit: None,
+            context_lines: None,
+            max_matches_per_file: None,
+            match_case: None,
+            regex: None,
+        })
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "query is required");
+
+        // An invalid regex is a 400, not a 502.
+        let err = file_browser_content_search_payload(FileContentSearchQuery {
+            cwd: cwd.clone(),
+            path: None,
+            file: None,
+            q: "hit(".to_string(),
+            offset: None,
+            limit: None,
+            context_lines: None,
+            max_matches_per_file: None,
+            match_case: None,
+            regex: Some(true),
+        })
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1.starts_with("invalid regex"));
+
+        // A file target that is not a file is a 400.
+        let err = file_browser_content_search_file_payload(FileContentSearchQuery {
+            cwd: cwd.clone(),
+            path: None,
+            file: None,
+            q: "needle".to_string(),
+            offset: None,
+            limit: None,
+            context_lines: None,
+            max_matches_per_file: None,
+            match_case: None,
+            regex: None,
+        })
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "file is required");
+
+        // A query with no hits answers a null file entry.
+        fs::write(root.join("empty.txt"), "nothing relevant\n").unwrap();
+        let payload = file_browser_content_search_file_payload(FileContentSearchQuery {
+            cwd,
+            path: None,
+            file: Some("empty.txt".to_string()),
+            q: "needle".to_string(),
+            offset: None,
+            limit: None,
+            context_lines: None,
+            max_matches_per_file: None,
+            match_case: None,
+            regex: None,
+        })
+        .unwrap();
+        assert_eq!(payload["query"], "needle");
+        assert_eq!(payload["file"], serde_json::Value::Null);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tree_payload_dirs_only_lists_folders_with_sizes_none() {
+        let root = std::env::temp_dir().join(format!("herdr-webui-fb-dirs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("alpha")).unwrap();
+        fs::create_dir_all(root.join("beta")).unwrap();
+        fs::write(root.join("file.txt"), "x\n").unwrap();
+        let root = root.canonicalize().unwrap();
+
+        let payload = file_browser_tree_payload(FileBrowserQuery {
+            cwd: root.to_string_lossy().to_string(),
+            path: None,
+            dirs_only: Some(true),
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        })
+        .unwrap();
+        let entries = payload["entries"].as_array().unwrap();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["alpha", "beta"]);
+        assert!(entries.iter().all(|entry| {
+            entry["kind"] == "dir"
+                && entry["size"].is_null()
+                && !entry["expanded"].as_bool().unwrap()
+        }));
+        assert_eq!(payload["truncated"], false);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tree_payload_rejects_non_directory_paths_and_bad_roots() {
+        let root = std::env::temp_dir().join(format!("herdr-webui-fb-tree-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("plain.txt"), "x\n").unwrap();
+        let root = root.canonicalize().unwrap();
+
+        // A file target is not a directory.
+        let err = file_browser_tree_payload(FileBrowserQuery {
+            cwd: root.to_string_lossy().to_string(),
+            path: Some("plain.txt".to_string()),
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        })
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "path is not a directory");
+
+        // A nonexistent cwd fails root resolution.
+        let err = file_browser_tree_payload(FileBrowserQuery {
+            cwd: "definitely-missing-root-xyz".to_string(),
+            path: None,
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        })
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1.starts_with("invalid root:"));
+
+        // A path escape is rejected by the relative path guard before the
+        // directory check.
+        let err = file_browser_tree_payload(FileBrowserQuery {
+            cwd: root.to_string_lossy().to_string(),
+            path: Some("../escape".to_string()),
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        })
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "invalid path");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn query_hash_and_basename_helpers_pin_their_outputs() {
+        // The hash is the first 6 bytes of the query's SHA-256 in hex.
+        assert_eq!(query_hash("needle").len(), 12);
+        assert_eq!(query_hash("needle"), query_hash("needle"));
+        assert_ne!(query_hash("needle"), query_hash("other"));
+        assert_eq!(query_hash(""), "e3b0c44298fc");
+
+        assert_eq!(basename_string("a/b/c.txt"), "c.txt");
+        assert_eq!(basename_string("top.txt"), "top.txt");
+        assert_eq!(basename_string(""), "");
+
+        // line_at slices to the next newline or the end.
+        assert_eq!(line_at("one\ntwo\nthree", 0), "one");
+        assert_eq!(line_at("one\ntwo\nthree", 4), "two");
+        assert_eq!(line_at("one\ntwo\nthree", 8), "three");
+        assert_eq!(line_at("no newline", 3), "newline");
+    }
+
+    #[test]
+    fn content_matcher_rejects_empty_and_reports_offsets() {
+        let err = match ContentMatcher::new("", false, false) {
+            Err(e) => e,
+            Ok(_) => panic!("empty query must be rejected"),
+        };
+        assert_eq!(err, "empty query");
+        // Plain needles escape regex metacharacters before matching.
+        let plain = ContentMatcher::new("a.b", true, false).unwrap();
+        assert_eq!(plain.find("xa.by"), Some((1, 4)));
+        assert_eq!(plain.find("aXb"), None);
+        // Regex needles keep their pattern semantics.
+        let regex = ContentMatcher::new("a.b", true, true).unwrap();
+        assert_eq!(regex.find("aXb"), Some((0, 3)));
+        // A zero-width regex match is filtered out of the offsets.
+        let zero_width = ContentMatcher::new("x*", false, true).unwrap();
+        assert_eq!(zero_width.find("abc"), None);
+    }
+
+    #[test]
+    fn content_search_context_helpers_clamp_to_bounds() {
+        assert_eq!(content_search_context_lines(None), 2);
+        assert_eq!(content_search_context_lines(Some(0)), 0);
+        assert_eq!(content_search_context_lines(Some(99)), 20);
+        assert_eq!(content_search_matches_per_file(None), 5);
+        assert_eq!(content_search_matches_per_file(Some(0)), 1);
+        assert_eq!(content_search_matches_per_file(Some(9999)), 500);
+    }
+
+    #[test]
+    fn should_skip_content_dir_matches_the_known_dependency_folders() {
+        for name in [
+            ".git",
+            "node_modules",
+            "target",
+            "dist",
+            "build",
+            ".venv",
+            "venv",
+        ] {
+            assert!(
+                should_skip_content_dir(Path::new(format!("/x/{name}").as_str())),
+                "{name}"
+            );
+        }
+        assert!(!should_skip_content_dir(Path::new("/x/src")));
+        // A path with no file name component is not skipped.
+        assert!(!should_skip_content_dir(Path::new("/")));
+    }
+
+    #[test]
+    fn relative_to_root_answers_empty_outside_the_root() {
+        let root = Path::new("/repo/root");
+        assert_eq!(
+            relative_to_root(root, Path::new("/repo/root/a/b.txt")),
+            "a/b.txt"
+        );
+        assert_eq!(relative_to_root(root, Path::new("/repo/root")), "");
+        assert_eq!(relative_to_root(root, Path::new("/elsewhere")), "");
+    }
+
+    #[test]
+    fn unquote_git_path_decodes_octal_escapes_and_friendly_shortcuts() {
+        // Octal escapes decode to their bytes.
+        assert_eq!(
+            unquote_git_path("\"r\\303\\251sum\\303\\251.rs\""),
+            "r\u{00e9}sum\u{00e9}.rs"
+        );
+        // The friendly shortcuts map to the literal characters.
+        assert_eq!(unquote_git_path("\"a\\nb\\tc\""), "a\nb\tc");
+        // An unknown escape keeps the backslash and the character.
+        assert_eq!(unquote_git_path("\"x\\qy\""), "x\\qy");
+        // A trailing backslash survives.
+        assert_eq!(unquote_git_path("\"end\\\""), "end\\");
+        // Unquoted input passes through untouched.
+        assert_eq!(unquote_git_path("plain/path.txt"), "plain/path.txt");
+    }
+
+    #[test]
+    fn git_status_helpers_map_the_full_vocabulary() {
+        // parse_porcelain_status pins the XY to status word mapping.
+        assert_eq!(parse_porcelain_status("D."), "deleted");
+        assert_eq!(parse_porcelain_status(".D"), "deleted");
+        assert_eq!(parse_porcelain_status("RM"), "modified");
+        assert_eq!(parse_porcelain_status(".A"), "added");
+        assert_eq!(parse_porcelain_status("??"), "untracked");
+        assert_eq!(parse_porcelain_status("UU"), "conflict");
+        assert_eq!(parse_porcelain_status("!!"), "modified");
+
+        // propagated_directory_status maps unknown words to modified.
+        assert_eq!(propagated_directory_status("deleted"), "deleted");
+        assert_eq!(propagated_directory_status("added"), "added");
+        assert_eq!(propagated_directory_status("changed"), "changed");
+        assert_eq!(propagated_directory_status("mystery"), "modified");
+
+        // adjust_git_path trims a workspace prefix and drops outside paths.
+        assert_eq!(
+            adjust_git_path("ws/src/a.rs", "ws"),
+            Some("src/a.rs".to_string())
+        );
+        assert_eq!(adjust_git_path("ws", "ws"), Some(String::new()));
+        assert_eq!(adjust_git_path("other/a.rs", "ws"), None);
+        // Without a prefix every path is kept as-is.
+        assert_eq!(
+            adjust_git_path("src/a.rs", ""),
+            Some("src/a.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn insert_git_status_priority_keeps_the_strongest_signal() {
+        let mut map = serde_json::Map::new();
+        insert_git_status(&mut map, "a.rs", "changed");
+        // A same-priority status does not change the stored value.
+        insert_git_status(&mut map, "a.rs", "changed");
+        assert_eq!(map.get("a.rs").and_then(|v| v.as_str()), Some("changed"));
+        // Deletion outranks modification.
+        insert_git_status(&mut map, "b.rs", "modified");
+        insert_git_status(&mut map, "b.rs", "deleted");
+        assert_eq!(map.get("b.rs").and_then(|v| v.as_str()), Some("deleted"));
+        // An empty path is ignored.
+        insert_git_status(&mut map, "", "deleted");
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn resolve_child_create_builds_parents_and_rejects_escapes() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-fb-create-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+
+        // New intermediate directories are created one at a time.
+        let file = resolve_child_create(&root, "new/deep/target.txt").unwrap();
+        assert!(root.join("new/deep").is_dir());
+        assert!(file.starts_with(&root));
+        // The final component is never created by the resolver.
+        assert!(!file.exists());
+
+        // A .. component is rejected before any mkdir runs.
+        assert_eq!(
+            resolve_child_create(&root, "new/../escape").unwrap_err(),
+            "invalid path"
+        );
+        // resolve_child on a target whose parents do not exist fails,
+        // proving create_parents changes the resolution path.
+        assert!(resolve_child(&root, "other/second.txt").is_err());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_payload_hash_only_and_oversized_answers() {
+        let root = std::env::temp_dir().join(format!("herdr-webui-fb-hash-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("small.txt"), "tiny\n").unwrap();
+        // Oversized needs more than MAX_FILE_BYTES (1 MiB).
+        fs::write(root.join("big.txt"), vec![b'a'; 1024 * 1024 + 1]).unwrap();
+        let root = root.canonicalize().unwrap();
+        let cwd = root.to_string_lossy().to_string();
+        let query =
+            |path: &str, hash_only: Option<bool>, max_bytes: Option<u64>| FileBrowserQuery {
+                cwd: cwd.clone(),
+                path: Some(path.to_string()),
+                dirs_only: None,
+                depth: None,
+                q: None,
+                search_kind: None,
+                offset: None,
+                limit: None,
+                visit_offset: None,
+                match_case: None,
+                regex: None,
+                include_git_status: None,
+                render: None,
+                max_bytes,
+                hash_only,
+            };
+
+        // hash_only skips the content and answers the hash and size.
+        let payload = file_browser_file_payload(query("small.txt", Some(true), None)).unwrap();
+        assert_eq!(payload["content"], "");
+        assert_eq!(payload["size"], 5);
+        assert!(!payload["hash"].as_str().unwrap().is_empty());
+
+        // An oversized file without a budget is truncated, not read.
+        let payload = file_browser_file_payload(query("big.txt", None, None)).unwrap();
+        assert_eq!(payload["truncated"], true);
+        assert_eq!(payload["content"], "");
+
+        // A budget under the minimum is ignored and the read stays truncated.
+        let payload = file_browser_file_payload(query("big.txt", None, Some(1))).unwrap();
+        assert_eq!(payload["truncated"], true);
+
+        // A valid budget inside the allowed range turns the read into a
+        // partial read; the budget minimum is 16 KiB.
+        let payload = file_browser_file_payload(query("big.txt", None, Some(16 * 1024))).unwrap();
+        assert_eq!(payload["truncated"], true);
+        assert_eq!(payload["content"].as_str().unwrap().len(), 16 * 1024);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn outline_payload_errors_and_binary_fallbacks() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-webui-fb-outline-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("dir")).unwrap();
+        fs::write(root.join("doc.md"), "# T\n").unwrap();
+        fs::write(root.join("blob.bin"), b"\xff\xfe").unwrap();
+        // Oversized outline target.
+        fs::write(root.join("big.md"), vec![b'#'; 1024 * 1024 + 1]).unwrap();
+        let root = root.canonicalize().unwrap();
+        let cwd = root.to_string_lossy().to_string();
+        let query = |path: Option<&str>| FileBrowserQuery {
+            cwd: cwd.clone(),
+            path: path.map(str::to_string),
+            dirs_only: None,
+            depth: None,
+            q: None,
+            search_kind: None,
+            offset: None,
+            limit: None,
+            visit_offset: None,
+            match_case: None,
+            regex: None,
+            include_git_status: None,
+            render: None,
+            max_bytes: None,
+            hash_only: None,
+        };
+
+        // Missing path is a 400.
+        let err = file_browser_outline_payload(query(None)).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "path is required");
+
+        // A directory is not outlinable.
+        let err = file_browser_outline_payload(query(Some("dir"))).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "path is not a file");
+
+        // Oversized files are rejected up front.
+        let err = file_browser_outline_payload(query(Some("big.md"))).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1, "file too large");
+
+        // A binary file answers an empty outline, not an error.
+        let payload = file_browser_outline_payload(query(Some("blob.bin"))).unwrap();
+        assert_eq!(payload["outline"].as_array().map(Vec::len), Some(0));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn content_search_skips_binary_and_limits_visits() {
+        let root = std::env::temp_dir().join(format!("herdr-webui-fb-walk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        // A NUL byte in the first 2048 marks the file binary for the walk.
+        fs::write(root.join("bin.txt"), b"needle\0needle").unwrap();
+        fs::write(root.join("text.txt"), "needle found\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let cwd = root.to_string_lossy().to_string();
+
+        let payload = file_browser_content_search_payload(FileContentSearchQuery {
+            cwd,
+            path: None,
+            file: None,
+            q: "needle".to_string(),
+            offset: None,
+            limit: Some(1),
+            context_lines: None,
+            max_matches_per_file: None,
+            match_case: None,
+            regex: None,
+        })
+        .unwrap();
+        // The binary file is skipped entirely.
+        assert_eq!(payload["total_files"], 1);
+        assert_eq!(payload["files"][0]["path"], "text.txt");
+
+        // The single-file variant skips the same binary content.
+        let single = file_browser_content_search_file_payload(FileContentSearchQuery {
+            cwd: root.to_string_lossy().to_string(),
+            path: None,
+            file: Some("bin.txt".to_string()),
+            q: "needle".to_string(),
+            offset: None,
+            limit: None,
+            context_lines: None,
+            max_matches_per_file: None,
+            match_case: None,
+            regex: None,
+        })
+        .unwrap();
+        assert_eq!(single["file"], serde_json::Value::Null);
+
+        let _ = fs::remove_dir_all(root);
+    }
 }
