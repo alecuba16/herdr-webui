@@ -74,6 +74,9 @@ pub(crate) const TAIL_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
 /// enough that a checkout created elsewhere appears without a manual
 /// refresh.
 const STAMP_CACHE_TTL: Duration = Duration::from_secs(2);
+/// How long an action's status line holds against the periodic
+/// backend summary: readable, then the summary regains the line.
+const STATUS_HOLD: Duration = Duration::from_secs(2);
 
 /// Max lines the Help overlay can scroll down: total rows minus whatever
 /// fits in the 50-line centered box (title + border included).
@@ -336,6 +339,9 @@ pub struct TuiApp {
     terminal_size: (u16, u16),
     pub status: String,
     pub error: Option<String>,
+    /// Deadline until which `apply_refresh` leaves the status line
+    /// alone, so action feedback survives the same-pass async drain.
+    pub(crate) status_hold_until: Option<Instant>,
     /// Pending background refresh: worker channel plus the instant the
     /// round-trip left, so the footer can animate a spinner once the wait
     /// outgrows a normal sub-500ms reply. Consumed by `poll_refresh`.
@@ -668,6 +674,7 @@ impl TuiApp {
             terminal_raw_terminal_id: None,
             terminal_size: (0, 0),
             status: "connecting".to_string(),
+            status_hold_until: None,
             error: None,
             refresh_inflight: None,
             stamp_inflight: Vec::new(),
@@ -818,13 +825,21 @@ impl TuiApp {
             self.refresh_tail();
             self.last_tail_refresh = Some(Instant::now());
         }
-        self.status = format!(
-            "backend {} · protocol {} · {} workspaces · {} agents",
-            value_str(&ping, &["version"]).unwrap_or("built-in"),
-            value_u64(&ping, &["protocol"]).unwrap_or_default(),
-            self.snapshot.workspaces.len(),
-            self.snapshot.agents.len(),
-        );
+        // The backend summary is idle-state chrome: an action that
+        // just reported its outcome owns the line for STATUS_HOLD.
+        if !self
+            .status_hold_until
+            .is_some_and(|deadline| Instant::now() < deadline)
+        {
+            self.status_hold_until = None;
+            self.status = format!(
+                "backend {} · protocol {} · {} workspaces · {} agents",
+                value_str(&ping, &["version"]).unwrap_or("built-in"),
+                value_u64(&ping, &["protocol"]).unwrap_or_default(),
+                self.snapshot.workspaces.len(),
+                self.snapshot.agents.len(),
+            );
+        }
         self.error = None;
         self.last_refresh = Some(Instant::now());
         // Worktree identity for the new rows: serve fresh cached
@@ -1014,10 +1029,15 @@ impl TuiApp {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        // A new keypress ends any hold: its own synchronous refresh()
+        // must stay free to rewrite the line (create/close tab prove it).
+        self.status_hold_until = None;
+        let before = self.status.clone();
         // The Ctrl+B prefix wins everywhere, including attach mode, exactly
         // like the WebUI shortcut overlay wins over terminal input.
         if let Some(shortcut) = self.prefix.feed(key) {
             self.run_shortcut(shortcut);
+            self.hold_status_if_changed(&before);
             self.mark_dirty();
             return false;
         }
@@ -1027,11 +1047,13 @@ impl TuiApp {
         }
         if self.commit_input.is_some() {
             self.handle_commit_key(key);
+            self.hold_status_if_changed(&before);
             self.mark_dirty();
             return false;
         }
         if self.prompt_input.is_some() {
             self.handle_prompt_key(key);
+            self.hold_status_if_changed(&before);
             self.mark_dirty();
             return false;
         }
@@ -1041,6 +1063,7 @@ impl TuiApp {
         // every other shortcut stay reachable.
         if self.lens.active && self.screen == TuiScreen::Terminal {
             self.handle_lens_key(key);
+            self.hold_status_if_changed(&before);
             self.mark_dirty();
             return false;
         }
@@ -1146,6 +1169,7 @@ impl TuiApp {
                 }
             }
         }
+        self.hold_status_if_changed(&before);
         self.mark_dirty();
         false
     }
@@ -3357,6 +3381,20 @@ impl TuiApp {
             }
             KeyCode::Esc | KeyCode::Char('q') => self.screen = TuiScreen::Terminal,
             _ => {}
+        }
+    }
+
+    /// Set an action notice and arm the hold; public for the binary
+    /// loop's feedback paths that live outside `handle_key`.
+    pub fn set_status_notice(&mut self, message: String) {
+        self.status = message;
+        self.status_hold_until = Some(Instant::now() + STATUS_HOLD);
+    }
+
+    /// Arm the hold when a key path replaced the status line.
+    fn hold_status_if_changed(&mut self, before: &str) {
+        if self.status != before {
+            self.status_hold_until = Some(Instant::now() + STATUS_HOLD);
         }
     }
 

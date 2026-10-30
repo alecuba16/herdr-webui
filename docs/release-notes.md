@@ -1,6 +1,13 @@
 # Release notes
 
 ## Unreleased
+- TUI: an action's status line now holds for a moment against the
+  periodic backend summary. The event loop drains the background
+  refresh in the same pass that renders key feedback, so a branch
+  switch could be overwritten before the frame appeared, which both
+  hid the outcome from users and stalled the branch-picker acceptance
+  test on CI. A keypress owns the status line: its outcome holds the
+  line for two seconds, then the summary regains it.
 - Location-bar popovers are hardened against races and lost focus. Each
   opening now carries a request id with its workspace and folder, so a
   close-and-reopen or a workspace switch can no longer land an older

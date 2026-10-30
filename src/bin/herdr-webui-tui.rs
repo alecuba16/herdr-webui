@@ -270,7 +270,7 @@ fn dispatch_key(
         ensure_live_terminal(live_terminal, app, cols, rows)?;
         if let Some(live) = live_terminal.as_ref() {
             live.send_input(bytes);
-            app.status = "sent input".to_string();
+            app.set_status_notice("sent input".to_string());
             app.mark_dirty();
         }
         return Ok(());
