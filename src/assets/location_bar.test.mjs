@@ -571,6 +571,59 @@ describe("location bar branch popover", () => {
     equal(JSON.parse(switchPosts[0].init.body).branch, name, "exact ref reaches the endpoint, not a decoded expression");
   });
 
+  it("switch notifies the drawer so its cached view for the folder reloads", async () => {
+    const notified = [];
+    const { ctx, bar, calls } = loadPopover({
+      routes: {
+        "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+        "/api/git-ui/switch": { ok: true },
+      },
+    });
+    ctx.HerdrGitUi = {
+      notifyBranchChanged(cwd) { notified.push(cwd); },
+    };
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("main"), false);
+    equal(JSON.stringify(notified), JSON.stringify(["/repo"]), "drawer notified with the exact cwd after the switch");
+    ok(calls.some((call) => call.path === "/api/git-ui/switch"), "switch POST preceded the notify");
+  });
+
+  it("create notifies the drawer the same way", async () => {
+    const notified = [];
+    const { ctx } = loadPopover({
+      routes: {
+        "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+        "/api/git-ui/switch": { ok: true },
+      },
+    });
+    ctx.HerdrGitUi = {
+      notifyBranchChanged(cwd) { notified.push(cwd); },
+    };
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ctx.HerdrLocationBar.newBranchDraft("fresh-lane");
+    await ctx.HerdrLocationBar.createBranchFromPopover();
+    equal(JSON.stringify(notified), JSON.stringify(["/repo"]), "create notified the drawer with the cwd");
+  });
+
+  it("a failed switch never notifies the drawer", async () => {
+    const notified = [];
+    const { ctx } = loadPopover({
+      routes: {
+        "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+        "/api/git-ui/switch": { error: "conflict" },
+      },
+    });
+    ctx.HerdrGitUi = {
+      notifyBranchChanged(cwd) { notified.push(cwd); },
+    };
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("main"), false);
+    equal(notified.length, 0, "no notify on a failed POST");
+  });
+
   it("filter keeps matching rows and posts nothing", async () => {
     const { ctx, bar, calls } = loadPopover({
       routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },

@@ -80,7 +80,14 @@ function context(fetchImpl) {
       visibilityState: "visible",
       createElement: () => element(),
       execCommand: () => true,
-      querySelector: () => element(),
+      // Truthful for the location-bar popover classes (the git-ui keydown
+      // guard probes them; a blanket truthy stub would swallow every Esc);
+      // the generic stub answers everything else as before.
+      querySelector: (selector) => (
+        selector === ".location-bar-branch-popover" || selector === ".location-bar-worktree-popover"
+          ? null
+          : element()
+      ),
       querySelectorAll: () => [],
       __panelHtml: "",
       getElementById(id) {
@@ -2721,4 +2728,65 @@ test("cleanup delete rescans on partial failure and keeps the error message", as
   assert.equal(cleanupPosts(calls, "/api/git-ui/worktree-remove", before).length, 2);
   assert.ok(cleanupPosts(calls, "/api/git-ui/cleanup-scan", before).length > 0, "partial success still rescans");
   assert.match(ctxHtml(booted), /running processes/, "the surviving failure is reported");
+});
+
+test("notifyBranchChanged invalidates the matching folder and refreshes only the visible match", async () => {
+  // The location bar switches branches outside the drawer. A drawer
+  // displaying that folder must reload its status right away; a drawer
+  // displaying a different folder must not refetch anything for the
+  // mutated one, and a hidden drawer must invalidate without fetching.
+  let repoStatus = { branch: "old", ahead: 0, behind: 0, staged: [], unstaged: ["work.txt"], untracked: [], conflicted: [] };
+  const booted = await bootGitUi({
+    "/api/git-ui/status": () => repoStatus,
+    "/api/git-ui/diff": { files: [{ path: "work.txt", chunks: [] }] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+
+  // Visible drawer on the mutated folder: exactly one status reload.
+  repoStatus = { branch: "new", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
+  const before = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  ui.notifyBranchChanged("/tmp/demo-repo");
+  await settle();
+  assert.equal(
+    calls.filter((call) => call.path === "/api/git-ui/status").length,
+    before + 1,
+    "visible view on the mutated folder reloaded its status exactly once",
+  );
+
+  // A drawer on another folder: the notify must not refetch anything,
+  // for the mutated folder or for the visible one.
+  await ui.open({ cwd: "/tmp/other-repo", title: "other" }, { forceOpen: true });
+  await settle();
+  const otherBefore = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  ui.notifyBranchChanged("/tmp/demo-repo");
+  await settle();
+  assert.equal(
+    calls.filter((call) => call.path === "/api/git-ui/status").length,
+    otherBefore,
+    "no refetch while the visible view is another folder",
+  );
+
+  // Hidden drawer: invalidate without any fetch. The next open reloads
+  // through the needsLoad path (status dropped) instead of reusing the
+  // pre-switch park.
+  ui.hide();
+  const hiddenBefore = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  ui.notifyBranchChanged("/tmp/other-repo");
+  await settle();
+  assert.equal(
+    calls.filter((call) => call.path === "/api/git-ui/status").length,
+    hiddenBefore,
+    "hidden drawer invalidates silently",
+  );
+  repoStatus = { branch: "third", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
+  await ui.open({ cwd: "/tmp/other-repo", title: "other" }, { forceOpen: true });
+  await settle();
+  assert.ok(
+    calls.some((call) => call.path === "/api/git-ui/status" && call.params.get("cwd") === "/tmp/other-repo"),
+    "the invalidated view reloads on the next open",
+  );
 });

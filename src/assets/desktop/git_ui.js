@@ -1468,6 +1468,27 @@
       refresh();
     },
     refreshVisible() { if (state.visible) render(); },
+    // Branch switch/create made from outside the drawer (location bar).
+    // The drawer never made the request, so its cached views still hold
+    // the pre-mutation HEAD: status, diffs, focused-diff parks. Invalidate
+    // every view keyed to this folder and reload the visible one; views
+    // for other folders stay untouched. The shell render that follows the
+    // bar action picks up the fresh state on the next open.
+    notifyBranchChanged(cwd) {
+      const folder = String(cwd || "");
+      if (!folder) return;
+      Object.keys(state.cache || {}).forEach((key) => {
+        const view = state.cache[key];
+        if (!view || !samePath(view.cwd || "", folder)) return;
+        view.focusedDiffCache = {};
+        if (view.status && !view.status.__probedOnly) view.status = null;
+        view.diff = null;
+      });
+      if (state.visible) {
+        const view = active();
+        if (view && samePath(view.cwd || "", folder)) refresh();
+      }
+    },
     isVisible() { return state.visible; },
     isWorkspaceVisible(key) { return state.visible && state.activeKey === key; },
     workspaceStatus,

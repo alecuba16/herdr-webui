@@ -487,6 +487,10 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ cwd, branch: localName }),
       });
+      // HEAD moved outside the drawer: its cached views for this folder
+      // still describe the old branch.
+      if (window.HerdrGitUi && window.HerdrGitUi.notifyBranchChanged)
+        window.HerdrGitUi.notifyBranchChanged(cwd);
     } catch (err) {
       alert(err.message || String(err));
     } finally {
@@ -580,6 +584,10 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ cwd, branch: name, create: true, base }),
       });
+      // Same contract as a plain switch: the drawer must not keep serving
+      // the pre-create status and diffs.
+      if (window.HerdrGitUi && window.HerdrGitUi.notifyBranchChanged)
+        window.HerdrGitUi.notifyBranchChanged(cwd);
       closeBranchPopover();
     } catch (err) {
       list.creating = false;
