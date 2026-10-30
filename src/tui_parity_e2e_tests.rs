@@ -1025,6 +1025,11 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
             crossterm::event::KeyCode::Char(ch),
         ));
     };
+    let press_enter = |app: &mut TuiApp| {
+        app.handle_key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Enter,
+        ));
+    };
 
     // --- Rename prompt: R opens, type new name, Enter confirms.
     // Select the file to rename deterministically (dirs sort first).
@@ -1536,6 +1541,10 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
     app.git_panel
         .refresh_view(&app.web_api)
         .map_err(|e| e.to_string())?;
+    // Prefix v opens the workspace branch picker now, so the git
+    // screen Branches view drives this switch through Enter instead.
+    app.screen = TuiScreen::Git;
+    app.git_panel.view = herdr_webui::tui::panels::GitView::Branches;
     let switch_idx = app
         .git_panel
         .branches
@@ -1543,11 +1552,10 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
         .position(|b| b.name == "tui-switch-tmp")
         .ok_or("switch branch missing")?;
     app.git_panel.branch_selected = switch_idx;
-    app.handle_key(ctrl_b);
-    press(&mut app, 'v');
+    press_enter(&mut app);
     assert!(
         app.status.starts_with("switched to tui-switch-tmp"),
-        "prefix v switches: {}",
+        "branches enter switches: {}",
         app.status
     );
 
@@ -1559,8 +1567,8 @@ fn tui_app_prompt_assertions(port: u16, cwd: &str) -> Result<(), String> {
         .position(|b| b.name == default_branch)
         .ok_or("default branch missing")?;
     app.git_panel.branch_selected = back_idx;
-    app.handle_key(ctrl_b);
-    press(&mut app, 'v');
+    app.screen = TuiScreen::Git;
+    press_enter(&mut app);
     assert_eq!(
         app.status,
         format!("switched to {default_branch}"),
