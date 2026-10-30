@@ -624,6 +624,50 @@ describe("location bar branch popover", () => {
     equal(notified.length, 0, "no notify on a failed POST");
   });
 
+  it("chips and popovers carry accessible names", async () => {
+    const { ctx, bar } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    ok(bar.innerHTML.includes('aria-label="Change workspace folder'), "path chip names its action");
+    ok(bar.innerHTML.includes('aria-label="Switch branch"'), "branch chip names its action");
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes('role="dialog" aria-label="Branches"'), "branch popover is a named dialog");
+    ok(bar.innerHTML.includes('aria-label="Current branch"'), "the current marker is readable, not just a hover title");
+    ok(bar.innerHTML.includes('aria-label="New branch name"'), "the new-branch input is named");
+    ok(bar.innerHTML.includes('aria-label="Filter branches"'), "the filter input is named");
+  });
+
+  it("closing the popover hands focus back to the invoking chip", async () => {
+    const focused = [];
+    const chipNode = { focus() { focused.push("chip"); }, disabled: false };
+    const { ctx, bar } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: chipNode });
+    ctx.HerdrLocationBar.closeBranchPopover();
+    equal(JSON.stringify(focused), JSON.stringify(["chip"]), "close refocused the invoking chip");
+    ok(!bar.innerHTML.includes("location-bar-branch-popover"), "popover closed");
+  });
+
+  it("popover anchors never overflow the right viewport edge", async () => {
+    const { ctx, bar } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.innerWidth = 900;
+    ctx.HerdrLocationBar.sync();
+    // Chip at the far right of a 900px viewport: the anchor must shift
+    // back so the popover fits.
+    const chipAtRightEdge = { getBoundingClientRect: () => ({ left: 880, bottom: 40, right: 900, top: 20, width: 20, height: 20 }) };
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: chipAtRightEdge });
+    const styleMatch = bar.innerHTML.match(/location-bar-branch-popover" role="dialog" aria-label="Branches" style="([^"]*)"/);
+    ok(styleMatch, "popover style renders");
+    const left = Number(/left:(-?\d+(?:\.\d+)?)px/.exec(styleMatch[1])[1]);
+    const width = Number(/width:(\d+(?:\.\d+)?)px/.exec(styleMatch[1])[1]);
+    ok(left + width <= 900, `popover (left ${left} + width ${width}) fits inside 900px`);
+  });
+
   it("filter keeps matching rows and posts nothing", async () => {
     const { ctx, bar, calls } = loadPopover({
       routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
@@ -758,6 +802,29 @@ describe("location bar worktree popover", () => {
     ctx.HerdrOpenFolder.openFolderAsWorkspace = async (dir) => { opened.push(dir); };
     await ctx.HerdrLocationBar.selectWorktreeFromPopover(encodeURIComponent(lane));
     equal(JSON.stringify(opened), JSON.stringify([lane]), "exact path reaches the folder-change flow");
+  });
+
+  it("worktree chips and popovers carry accessible names", async () => {
+    const { ctx, bar } = loadWorktreePopover({
+      routes: { "/api/worktrees": { result: { worktrees: WORKTREES } } },
+    });
+    ctx.HerdrLocationBar.sync();
+    ok(bar.innerHTML.includes('aria-label="Choose worktree"'), "worktree chip names its action");
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes('role="dialog" aria-label="Worktrees"'), "worktree popover is a named dialog");
+    ok(bar.innerHTML.includes('aria-label="Current worktree"'), "the current worktree marker is readable");
+  });
+
+  it("closing the worktree popover hands focus back to its chip", async () => {
+    const focused = [];
+    const chipNode = { focus() { focused.push("wt-chip"); }, disabled: false };
+    const { ctx } = loadWorktreePopover({
+      routes: { "/api/worktrees": { result: { worktrees: WORKTREES } } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: chipNode });
+    ctx.HerdrLocationBar.closeWorktreePopover();
+    equal(JSON.stringify(focused), JSON.stringify(["wt-chip"]), "close refocused the worktree chip");
   });
 
   it("plain checkouts render no worktree chip", () => {

@@ -140,7 +140,7 @@
   }
 
   function chip(name, title, body, disabled) {
-    return `<button class="git-ui-branch-chip location-bar-${name}-chip" type="button"${disabled ? " disabled" : ""}${chipClick(name)} title="${escapeHtml(title)}"><span class="git-ui-branch-chip-name">${body}</span></button>`;
+    return `<button class="git-ui-branch-chip location-bar-${name}-chip" type="button"${disabled ? " disabled" : ""}${chipClick(name)} title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"><span class="git-ui-branch-chip-name">${body}</span></button>`;
   }
 
   function separator() {
@@ -208,7 +208,7 @@
     const subject = String(branch.subject || "");
     const exact = date ? new Date(date).toLocaleString() : "";
     const hover = [author && `${author}`, exact, subject && `"${subject}"`].filter(Boolean).join(" · ");
-    const icon = isCurrent ? `<b class="git-ui-branch-row-check" title="Current branch">✓</b>` : `<b class="git-ui-branch-row-icon" aria-hidden="true"></b>`;
+    const icon = isCurrent ? `<b class="git-ui-branch-row-check" role="img" aria-label="Current branch" title="Current branch">✓</b>` : `<b class="git-ui-branch-row-icon" aria-hidden="true"></b>`;
     const meta = [author, branchRelativeTime(date)].filter(Boolean).join(" · ");
     // Trash only on non-current rows; it stops propagation so the row
     // switch does not fire.
@@ -239,13 +239,13 @@
     const anchor = list.anchor || { left: 10, top: 40, width: 360 };
     const style = `left:${Math.max(8, anchor.left)}px;top:${anchor.top}px;width:${anchor.width}px`;
     if (list.loading)
-      return `<div class="git-ui-branch-list location-bar-branch-popover" style="${style}" onclick="event.stopPropagation()"><div class="git-ui-loading"><span></span><strong>Loading branches</strong></div></div>`;
+      return `<div class="git-ui-branch-list location-bar-branch-popover" role="dialog" aria-label="Branches" style="${style}" onclick="event.stopPropagation()"><div class="git-ui-loading"><span></span><strong>Loading branches</strong></div></div>`;
     const body = list.error
       ? `<div class="git-ui-error">${escapeHtml(list.error)}</div>`
       : branchPopoverRows(list);
     const draft = String(list.newBranch || "");
     const createDisabled = list.creating ? " disabled" : "";
-    return `<div class="git-ui-branch-list location-bar-branch-popover" style="${style}" onclick="event.stopPropagation()">${body}<label class="git-ui-branch-list-new"><span>New branch from ${escapeHtml(list.currentBranch || "HEAD")}</span><div class="git-ui-inline-field"><input value="${escapeHtml(draft)}" placeholder="branch-name"${inputAttrs("done")} oninput="HerdrLocationBar.newBranchDraft(this.value)" onkeydown="HerdrLocationBar.newBranchKeydown(event)"><button class="git-ui-btn" type="button"${createDisabled} onclick="HerdrLocationBar.createBranchFromPopover()">Create</button></div></label><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${escapeHtml(list.filter || "")}" placeholder="Type to filter"${inputAttrs("search")} oninput="HerdrLocationBar.branchPopoverFilter(this.value)"></label></div>`;
+    return `<div class="git-ui-branch-list location-bar-branch-popover" role="dialog" aria-label="Branches" style="${style}" onclick="event.stopPropagation()">${body}<label class="git-ui-branch-list-new"><span>New branch from ${escapeHtml(list.currentBranch || "HEAD")}</span><div class="git-ui-inline-field"><input value="${escapeHtml(draft)}" placeholder="branch-name" aria-label="New branch name"${inputAttrs("done")} oninput="HerdrLocationBar.newBranchDraft(this.value)" onkeydown="HerdrLocationBar.newBranchKeydown(event)"><button class="git-ui-btn" type="button"${createDisabled} onclick="HerdrLocationBar.createBranchFromPopover()">Create</button></div></label><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${escapeHtml(list.filter || "")}" placeholder="Type to filter" aria-label="Filter branches"${inputAttrs("search")} oninput="HerdrLocationBar.branchPopoverFilter(this.value)"></label></div>`;
   }
 
   function branchPopoverRows(list) {
@@ -282,8 +282,12 @@
       (document.querySelector && document.querySelector(chipSelector || ".location-bar-branch-chip:not([disabled])"));
     const rect = target && target.getBoundingClientRect ? target.getBoundingClientRect() : null;
     if (!rect) return { left: 10, top: 40, width: 360 };
-    const maxWidth = Math.min(420, Math.max(280, (window.innerWidth || 1200) - rect.left - 16));
-    return { left: rect.left, top: rect.bottom + 4, width: maxWidth };
+    const viewport = window.innerWidth || 1200;
+    const maxWidth = Math.min(420, Math.max(280, viewport - rect.left - 16));
+    // Never overflow the right edge: shift back and shrink when the chip
+    // sits close to it.
+    const left = Math.min(rect.left, Math.max(8, viewport - maxWidth - 16));
+    return { left, top: rect.bottom + 4, width: maxWidth };
   }
 
   // Same HTTP contract as the shell modules: shared HerdrHttp when the
@@ -333,10 +337,26 @@
     return popoverRequests;
   }
 
+  // The chip that opened the popover, so dismissal can hand focus back.
+  // Opening a popover focuses its input; after Esc the user expects to
+  // land on the chip again, not on a removed element or the page body.
+  let branchChipInvoker = null;
+  let worktreeChipInvoker = null;
+
+  function refocusChip(element) {
+    if (!element || typeof element.focus !== "function") return;
+    try {
+      if (!element.disabled) element.focus();
+    } catch (_) {}
+  }
+
   function closeBranchPopover() {
     if (!bar.branchList) return;
     bar.branchList = null;
+    const chipNode = branchChipInvoker;
+    branchChipInvoker = null;
     sync();
+    refocusChip(chipNode);
   }
 
   async function openBranchPopover(event) {
@@ -350,6 +370,12 @@
       closeBranchPopover();
       return;
     }
+    // Keyboard entry passes no event: fall back to the chip in the DOM so
+    // dismissal still hands focus somewhere on the bar.
+    branchChipInvoker =
+      (event && event.currentTarget) ||
+      (document.querySelector && document.querySelector(".location-bar-branch-chip:not([disabled])")) ||
+      null;
     const workspace = selectedWorkspace();
     const facts = workspace ? gitFacts(workspace, cwd) : { branch: "" };
     bar.branchList = {
@@ -704,7 +730,7 @@
     const current = samePath(path, currentPath);
     const label = String(worktree.label || pathBasename(path) || "worktree");
     const branch = String(worktree.branch || "detached");
-    const check = current ? `<b class="git-ui-worktree-check" title="Current worktree">✓</b>` : "";
+    const check = current ? `<b class="git-ui-worktree-check" role="img" aria-label="Current worktree" title="Current worktree">✓</b>` : "";
     return `<button class="git-ui-worktree-option${current ? " current" : ""}" onclick="HerdrLocationBar.selectWorktreeFromPopover('${encodeArg(path)}')"><strong>${check}${escapeHtml(label)}</strong><small>${escapeHtml(branch)} · ${escapeHtml(path)}</small></button>`;
   }
 
@@ -714,18 +740,21 @@
     const anchor = list.anchor || { left: 10, top: 40, width: 320 };
     const style = `left:${Math.max(8, anchor.left)}px;top:${anchor.top}px;width:${anchor.width}px`;
     if (list.loading)
-      return `<div class="git-ui-branch-list git-ui-worktree-list location-bar-worktree-popover" style="${style}" onclick="event.stopPropagation()"><div class="git-ui-loading"><span></span><strong>Loading worktrees</strong></div></div>`;
+      return `<div class="git-ui-branch-list git-ui-worktree-list location-bar-worktree-popover" role="dialog" aria-label="Worktrees" style="${style}" onclick="event.stopPropagation()"><div class="git-ui-loading"><span></span><strong>Loading worktrees</strong></div></div>`;
     const rows = (list.worktrees || []).map((worktree) => worktreePopoverRow(worktree, list.currentPath)).join("");
     const body = list.error
       ? `<div class="git-ui-error">${escapeHtml(list.error)}</div>`
       : rows || `<div class="git-ui-muted git-ui-branch-list-empty">No worktrees detected</div>`;
-    return `<div class="git-ui-branch-list git-ui-worktree-list location-bar-worktree-popover" style="${style}" onclick="event.stopPropagation()">${body}<button class="git-ui-worktree-create" onclick="HerdrLocationBar.createWorktreeFromPopover()">＋ Create worktree</button></div>`;
+    return `<div class="git-ui-branch-list git-ui-worktree-list location-bar-worktree-popover" role="dialog" aria-label="Worktrees" style="${style}" onclick="event.stopPropagation()">${body}<button class="git-ui-worktree-create" onclick="HerdrLocationBar.createWorktreeFromPopover()">＋ Create worktree</button></div>`;
   }
 
   function closeWorktreePopover() {
     if (!bar.worktreeList) return;
     bar.worktreeList = null;
+    const chipNode = worktreeChipInvoker;
+    worktreeChipInvoker = null;
     sync();
+    refocusChip(chipNode);
   }
 
   async function openWorktreePopover(event) {
@@ -738,6 +767,10 @@
       closeWorktreePopover();
       return;
     }
+    worktreeChipInvoker =
+      (event && event.currentTarget) ||
+      (document.querySelector && document.querySelector(".location-bar-worktree-chip:not([disabled])")) ||
+      null;
     bar.worktreeList = {
       loading: true,
       error: "",
