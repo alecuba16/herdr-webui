@@ -268,16 +268,16 @@ The todo tool holds the live plan. This list is the durable copy.
 - [x] 2b.2 Remove the subtitle path-notice and `returnToWorkspaceCwd()`.
 - [x] 2b.3 Retarget `scripts/e2e/cwd-picker-acceptance.mjs` and the `app_load.test.mjs` pins (~7391-7415) to the bar.
 - [x] 2b.4 Docs: `docs/technical-details.md` folder picker UX and Git UI structure.
-- [ ] 2b.5 Verify: full frontend suite plus manual smoke of the drawer (branch and worktree chips still work).
+- [x] 2b.5 Verify: full frontend suite plus manual smoke of the drawer (branch and worktree chips still work).
 
 ### Phase 3: Branch switching
-- [ ] 3.1 Copy branch popover renderers into the bar module (namespace swap, `git-ui-` classes kept).
-- [ ] 3.2 Branch chip opens the popover; switch posts `/api/git-ui/switch` `{cwd, branch}`; confirm and delete guards kept.
-- [ ] 3.3 New branch: `/api/git-ui/switch` `{cwd, branch, create: true, base}`, same workspace, popover refresh after.
-- [ ] 3.4 `b` shortcut re-target plus help text (`git_ui/shortcuts.js`, `showGitKeyboardHelp`).
-- [ ] 3.5 Remove the drawer's branch chip, copied handlers, branch modal and markup (`modals.js` `gitUiBranchCwd`), modal CSS.
-- [ ] 3.6 Tests: popover, switch, create tests in `location_bar.test.mjs`; shortcut and modal pins retargeted (`app_load.test.mjs`, `keyboard-guards-audit-desktop.mjs` ~444, `git_ui_behavior.test.mjs`).
-- [ ] 3.7 Verify: full frontend suite plus manual smoke of branch switching and creation.
+- [x] 3.1 Copy branch popover renderers into the bar module (namespace swap, `git-ui-` classes kept).
+- [x] 3.2 Branch chip opens the popover; switch posts `/api/git-ui/switch` `{cwd, branch}`; confirm and delete guards kept.
+- [x] 3.3 New branch: `/api/git-ui/switch` `{cwd, branch, create: true, base}`, same workspace, popover refresh after.
+- [x] 3.4 `b` shortcut re-target plus help text (`git_ui/shortcuts.js`, `showGitKeyboardHelp`).
+- [x] 3.5 Remove the drawer's branch chip, copied handlers, branch modal and markup (`modals.js` `gitUiBranchCwd`), modal CSS.
+- [x] 3.6 Tests: popover, switch, create tests in `location_bar.test.mjs`; shortcut and modal pins retargeted (`app_load.test.mjs`, `keyboard-guards-audit-desktop.mjs` ~444, `git_ui_behavior.test.mjs`).
+- [x] 3.7 Verify: full frontend suite plus manual smoke of branch switching and creation.
 
 ### Phase 4: Worktree switching and creation
 - [ ] 4.1 Copy the worktree popover into the bar module; rows from `/api/worktrees?cwd=`; create opens `openWorktreeCreateFromGitBranch(cwd, branch)`.

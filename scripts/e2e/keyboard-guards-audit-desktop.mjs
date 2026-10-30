@@ -80,7 +80,6 @@ const EXPECTED_HINTS = {
   gitCommitTitle: "done",
   gitCommitBody: "done",
   gitUiCleanupRoot: "done",
-  gitUiBranchCwd: "done",
   optEditorTabSize: "done", optFileBrowserSearchPageSize: "done",
   optFileContentSearchMinChars: "done", optFileContentSearchPageSize: "done",
   optFileContentSearchContextLines: "done", optFileContentSearchAutoCollapseFiles: "done",
@@ -440,16 +439,21 @@ async function main() {
       if (!stagedSomething) console.log("SKIP git commit modal: no staged changes in this repo state");
       await evalJs(`(() => { if (window.HerdrGitUi) { HerdrGitUi.closeCommitModal && HerdrGitUi.closeCommitModal(); } return true; })()`);
       await sleep(300);
-      // Branch modal: cwd input + directory picker.
-      await evalJs(`(() => { if (window.HerdrGitUi) { HerdrGitUi.openBranchModal && HerdrGitUi.openBranchModal(); } return true; })()`);
+      // Location bar branch popover (phase 3): filter + new-branch inputs;
+      // Esc and document-click close it.
+      await evalJs(`(() => { if (window.HerdrLocationBar) HerdrLocationBar.openBranchPopover(null); return !!(window.HerdrLocationBar && document.querySelector('.location-bar-branch-popover')); })()`);
       await sleep(500);
-      await auditSurface("git branch modal", ".git-ui-modal");
-      // Directory picker (lazy directory_picker.js): open on the cwd input.
-      await evalJs(`(() => { const i = document.getElementById('gitUiBranchCwd'); if (i && window.HerdrDirectoryPicker) { HerdrDirectoryPicker.openInput('gitUiBranchCwd'); } return !!document.getElementById('directoryPickerSearchInput'); })()`);
+      await auditSurface("location bar branch popover", ".location-bar-branch-popover");
+      await evalJs(`(() => { if (window.HerdrLocationBar) HerdrLocationBar.closeBranchPopover(); return true; })()`);
+      await sleep(300);
+      // Directory picker (lazy directory_picker.js): open through the
+      // cleanup scan input, the drawer's remaining picker entry.
+      await evalJs(`(() => { if (window.HerdrGitUi) HerdrGitUi.tab('cleanup'); return true; })()`);
+      await sleep(400);
+      await evalJs(`(() => { const i = document.getElementById('gitUiCleanupRoot'); if (i && window.HerdrDirectoryPicker) { HerdrDirectoryPicker.openInput('gitUiCleanupRoot'); } return !!document.getElementById('directoryPickerSearchInput'); })()`);
       await sleep(500);
       await auditSurface("directory picker", ".directory-picker");
       await evalJs(`(() => { if (window.HerdrDirectoryPicker) HerdrDirectoryPicker.close(); return true; })()`);
-      await evalJs(`(() => { if (window.HerdrGitUi) { HerdrGitUi.closeBranchModal && HerdrGitUi.closeBranchModal(); } return true; })()`);
       await sleep(300);
       // Log tab: three filter inputs.
       await evalJs(`(() => { if (window.HerdrGitUi) HerdrGitUi.tab('log'); return true; })()`);

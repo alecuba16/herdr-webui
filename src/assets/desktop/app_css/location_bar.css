@@ -1,9 +1,9 @@
 /* Location bar: the folder / worktree / branch strip above the workspace
    panes. The chips reuse the git-ui chip classes (git-ui-branch-chip and
    git-ui-selector-separator) so the chip look comes from the git-ui
-   stylesheet; this file only owns the thin container rule. The bar is a
-   shell surface: it renders on every selected workspace with a path and
-   must not grow when chips overflow. */
+   stylesheet; this file only owns the thin container rule and the bar
+   popover anchoring. The bar is a shell surface: it renders on every
+   selected workspace with a path and must not grow when chips overflow. */
 
 .location-bar {
   display: flex;
@@ -52,4 +52,59 @@
   border-color: var(--border);
   color: var(--muted);
   cursor: not-allowed;
+}
+
+/* Branch popover: rows and filter reuse the drawer's git-ui rules; only
+   the anchoring is bar-owned. Fixed instead of the drawer's absolute
+   because the bar scrolls horizontally and would clip an absolute child.
+   Both selectors carry two classes so this beats the lazy-loaded
+   .git-ui-branch-list rule no matter which stylesheet lands last. */
+.location-bar .location-bar-branch-popover {
+  bottom: auto;
+  max-height: 60vh;
+  position: fixed;
+  right: auto;
+}
+
+.location-bar-branch-popover .git-ui-branch-list-scroll {
+  min-height: 96px;
+}
+
+/* New-branch row above the filter: the same inline-field pattern the
+   Git drawer uses for its scan and cwd inputs. */
+.location-bar-branch-popover .git-ui-branch-list-new {
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 0;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.location-bar-branch-popover .git-ui-branch-list-new span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.location-bar-branch-popover .git-ui-branch-list-new .git-ui-inline-field {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.location-bar-branch-popover .git-ui-branch-list-new input {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  color: var(--fg);
+  flex: 1 1 auto;
+  font: 12px var(--font);
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.location-bar-branch-popover .git-ui-branch-list-new .git-ui-btn {
+  flex: 0 0 auto;
+  width: auto;
 }

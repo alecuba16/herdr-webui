@@ -50,17 +50,23 @@
   restoring the drawer, typing reaching the PTY with the drawer open,
   and the center git tab keeping its prefix chords alive behind the
   collapse.
-- Folder switching moves to the desktop location bar. The new bar above
-  the workspace panes shows the workspace folder as a path chip
+- Folder and branch switching move to the desktop location bar. The new bar
+  above the workspace panes shows the workspace folder as a path chip
   (plus worktree and branch chips for git checkouts); clicking the path
   chip opens the directory picker and switches the workspace to the
   chosen folder, opening it as a workspace when it is not one yet. The
-  Git drawer drops its own folder surfaces with that move: the side
-  path title, its folder picker entry, the differs notice, and the
-  return-to-workspace button are gone (worktree rows in the worktree
-  selector still move the Git cwd to another checkout). The Help &
-  Shortcuts modal, the Git shortcut popup, and the feature docs describe
-  the new semantics.
+  branch chip opens a branch popover: local branches with the current
+  one pinned at the top, remote branches capped by the preload setting
+  until filtered or expanded, a filter input, row trash icons that
+  delete non-current local branches, and a new-branch row that creates
+  and switches in one step (remote names strip the origin/ prefix, same
+  as the old popover). The Git drawer drops its own folder and branch
+  surfaces with that move: the side path title, its folder picker entry,
+  the differs notice, the return-to-workspace button, the branch chip,
+  and the branch modal are gone (worktree rows in the worktree selector
+  still move the Git cwd to another checkout). The Help & Shortcuts
+  modal, the Git shortcut popup, and the feature docs describe the new
+  semantics.
 - The parallel bin-suite flake is fixed at the source. The PTY tests
   (client socket attach/re-attach, flood, fanout, events) spawned the
   user's login shell, whose rc-file init can stall past every 20s

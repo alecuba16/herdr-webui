@@ -852,7 +852,9 @@ describe("app bundle load", () => {
   it("adds configured shortcut labels to Git tooltips", () => {
     match(gitShortcutsSource, /function titleWithGitShortcut\(title, action\)/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /titleWithGitShortcut\("Refresh", "refresh"\)/);
-    match(readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8"), /titleWithGitShortcut\("Switch branch", "branch"\)/);
+    // Phase 3: the branch chip moved to the location bar, which renders a
+    // plain Switch branch title (the b shortcut help lives in the popover).
+    match(readFileSync(new URL("./desktop/app_js/location_bar.js", import.meta.url), "utf8"), /chip\("branch", "Switch branch"/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /titleWithGitShortcut\("File history", "history"\)/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /titleWithGitShortcut\("Blame", "blame"\)/);
   });
@@ -2922,12 +2924,14 @@ describe("app bundle load", () => {
     ok(!source.includes('id = "openWorktrees"'));
   });
 
-  it("wires Git branch options checked out in worktrees to switch Git directory", () => {
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /data-worktree-path=/);
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Checked out at/);
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /worktree: \$\{esc\(compactPath\(worktreePath\)\)\}/);
-    match(gitUiSource, /resetGitViewForCwd\(view, worktreePath\)/);
-    match(gitUiSource, /if \(worktreePath && !samePath\(worktreePath, modalCwd\)\)/);
+  it("keeps worktree selection inside the drawer's worktree rows", () => {
+    // Phase 3 removed the branch modal; its worktree-aware options died
+    // with it. The worktree selector rows keep the diverge flow until
+    // phase 4 moves the chip to the bar.
+    const modalsSource = readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8");
+    ok(!modalsSource.includes("data-worktree-path="), "branch modal worktree options removed");
+    match(readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8"), /HerdrGitUi\.selectWorktree/);
+    match(gitUiSource, /resetGitViewForCwd\(view, path\)/);
   });
 
   it("detects diverging fast-forward pull failures", () => {
@@ -7411,12 +7415,23 @@ describe("app bundle load", () => {
     ok(!gitDiffViewSource.includes("${returnToCurrentChanges}${returnToWorkspace}"), "no second return button in the title actions");
     ok(!gitUiSource.includes('${compareButton}<button'));
     match(gitLayoutCss, /\.git-ui-current-changes-icon span \{[\s\S]*?git\.svg/);
-    // Branch modal and cleanup scan keep their own picker entries (removed
-    // only when phases 3 and 5 retire the modal).
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /id="gitUiBranchCwd"[^`]*data-directory-picker-after-select="HerdrGitUi\.applyBranchModalCwd"/);
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker\.openInput\('gitUiBranchCwd'\)"/);
-    match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
-    match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
+    // Plan phase 3: the drawer's branch surfaces are gone and the bar
+    // owns branch switching.
+    const modalsSource = readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8");
+    ok(!gitUiSource.includes("openBranchList"), "branch popover handlers removed from git_ui.js");
+    ok(!gitUiSource.includes("branchListFilter"), "branch filter handler removed from git_ui.js");
+    ok(!gitUiSource.includes("switchFromBranchList"), "branch switch handler removed from git_ui.js");
+    ok(!gitUiSource.includes("deleteFromBranchList"), "branch delete handler removed from git_ui.js");
+    ok(!gitUiSource.includes("openBranchModal"), "branch modal handler removed from git_ui.js");
+    ok(!gitUiSource.includes("gitBranchModalDefaultCwd"), "branch modal cwd default removed");
+    ok(!modalsSource.includes("gitUiBranchCwd"), "branch modal markup removed from modals.js");
+    ok(!gitBranchListSource.includes("openBranchList"), "branch chip removed from the drawer subtitle");
+    match(barSource, /onclick="HerdrLocationBar\.openBranchPopover\(event\)"/);
+    match(barSource, /JSON\.stringify\(\{ cwd, branch: localName \}\)/);
+    match(barSource, /JSON\.stringify\(\{ cwd, branch: name, create: true, base \}\)/);
+    match(barSource, /HerdrLocationBar\.deleteBranchFromPopover/);
+    match(barSource, /HerdrLocationBar\.branchPopoverFilter/);
+    match(barSource, /location-bar-branch-popover/);
     match(readFileSync(new URL("./desktop/git_ui/cleanup.js", import.meta.url), "utf8"), /id="gitUiCleanupRoot"[^`]*data-directory-picker-after-select="HerdrGitUi\.scanCleanup"/);
   });
 

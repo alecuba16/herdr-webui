@@ -275,3 +275,245 @@ describe("location bar module", () => {
     equal(flowCalls[0], "/other");
   });
 });
+
+describe("location bar branch popover", () => {
+  const LOCAL = [
+    { name: "main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" },
+    { name: "feature-x", author: "Bob", date: "2026-01-03T03:04:05Z", subject: "wip" },
+  ];
+  const REMOTE = [{ name: "origin/main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" }];
+
+  function loadPopover({ routes = {}, state, confirms = true } = {}) {
+    const bar = stubNode("locationBar");
+    const calls = [];
+    const document = {
+      getElementById: (id) => (id === "locationBar" ? bar : null),
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      createElement: () => ({ rel: "", href: "", set innerHTML(html) { this._html = html; }, get innerHTML() { return this._html || ""; }, firstElementChild: null, replaceWith() {}, querySelector: () => null }),
+      addEventListener: () => {},
+      head: { appendChild: () => {} },
+    };
+    const ctx = {
+      document,
+      state: state || {
+        ws: "ws1",
+        workspaces: [workspaceOf("/repo")],
+        worktrees: [{ path: "/repo", branch: "feature-x" }],
+      },
+      fetch: (url, init) => {
+        const path = String(url).split("?")[0];
+        calls.push({ path, init });
+        const route = routes[path] || (() => ({}));
+        const body = typeof route === "function" ? route() : route;
+        return Promise.resolve({
+          ok: true,
+          statusText: "OK",
+          json: () => Promise.resolve(body),
+        });
+      },
+      requestAnimationFrame: (fn) => fn(),
+      confirm: () => confirms,
+      alert: () => {},
+    };
+    ctx.globalThis = ctx;
+    ctx.window = ctx;
+    ctx.HerdrWorkspacePath = (workspace) => workspace.cwd;
+    ctx.HerdrOptions = { read: () => ({ gitUiRemoteBranchPreload: 10 }) };
+    const contextObject = vm.createContext(ctx);
+    vm.runInContext(SOURCE, contextObject);
+    return { ctx, bar, calls };
+  }
+
+  it("chip click opens the popover, fetches branches, and pins the current branch", async () => {
+    const { ctx, bar, calls } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    match(bar.innerHTML, /onclick="HerdrLocationBar\.openBranchPopover\(event\)"/);
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    equal(calls.filter((call) => call.path === "/api/git-ui/branches").length, 1);
+    const html = bar.innerHTML;
+    ok(html.includes("location-bar-branch-popover"), "popover renders inside the bar");
+    ok(html.includes("Local branches"));
+    ok(html.includes("Remote branches"));
+    ok(html.includes('title="Current branch">✓</b><span class="git-ui-branch-row-name-text">feature-x</span>'), "current branch carries the check");
+    const localSection = html.indexOf("Local branches");
+    const firstRow = html.slice(localSection, localSection + 400);
+    ok(firstRow.includes("feature-x"), "current branch pinned first");
+    ok(html.includes('git-ui-branch-row-meta">'), "rows carry the author meta line");
+    ok(html.includes('aria-label="Delete branch main"'), "trash wired on non-current rows");
+    ok(html.indexOf("git-ui-branch-list-scroll") < html.indexOf("git-ui-branch-list-filter"), "filter below the rows");
+    ok(html.includes("git-ui-branch-list-new"), "new-branch row renders");
+    ok(html.includes("New branch from feature-x"), "new-branch names the base");
+  });
+
+  it("re-opening the chip toggles the popover closed", async () => {
+    const { ctx, bar } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes("location-bar-branch-popover"));
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ok(!bar.innerHTML.includes("location-bar-branch-popover"), "second click closes");
+  });
+
+  it("switch posts /api/git-ui/switch with the bare local name and closes the popover", async () => {
+    const { ctx, bar, calls } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    const before = calls.length;
+    await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("main"), false);
+    const switchPosts = calls.slice(before).filter((call) => call.path === "/api/git-ui/switch");
+    equal(switchPosts.length, 1, "switch POST fired");
+    const body = JSON.parse(switchPosts[0].init.body);
+    equal(body.cwd, "/repo");
+    equal(body.branch, "main");
+    ok(!bar.innerHTML.includes("location-bar-branch-popover"), "popover closes after switch");
+  });
+
+  it("switch refuses the current branch and posts create for remote names", async () => {
+    const { ctx, calls } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    const before = calls.length;
+    await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("feature-x"), false);
+    equal(calls.slice(before).filter((call) => call.path === "/api/git-ui/switch").length, 0, "current branch never posts");
+  });
+
+  it("new branch posts create:true with the current branch as base", async () => {
+    const { ctx, bar, calls } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ctx.HerdrLocationBar.newBranchDraft("  fresh-lane ");
+    const before = calls.length;
+    await ctx.HerdrLocationBar.createBranchFromPopover();
+    const switchPosts = calls.slice(before).filter((call) => call.path === "/api/git-ui/switch");
+    equal(switchPosts.length, 1, "create POST fired");
+    const body = JSON.parse(switchPosts[0].init.body);
+    equal(body.cwd, "/repo");
+    equal(body.branch, "fresh-lane");
+    equal(body.create, true);
+    equal(body.base, "feature-x");
+    ok(!bar.innerHTML.includes("location-bar-branch-popover"), "popover closes after create");
+  });
+
+  it("create refuses empty names and shows the endpoint error inline", async () => {
+    const { ctx, bar, calls } = loadPopover({
+      routes: {
+        "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+        "/api/git-ui/switch": { error: "branch already exists" },
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    const before = calls.length;
+    await ctx.HerdrLocationBar.createBranchFromPopover();
+    equal(calls.slice(before).length, 0, "empty name never posts");
+    ctx.HerdrLocationBar.newBranchDraft("dupe");
+    await ctx.HerdrLocationBar.createBranchFromPopover();
+    ok(bar.innerHTML.includes("branch already exists"), "error renders in the popover");
+    ok(bar.innerHTML.includes("location-bar-branch-popover"), "popover stays open on error");
+  });
+
+  it("trash deletes a local branch, reloads the list, and refuses current and remote rows", async () => {
+    const branches = { local: [{ name: "main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" }, { name: "wip", author: "Bob", date: "2026-01-03T03:04:05Z", subject: "wip" }], remote: REMOTE.slice() };
+    const { ctx, bar, calls } = loadPopover({
+      routes: {
+        "/api/git-ui/branches": () => ({ local: branches.local, remote: branches.remote }),
+        "/api/git-ui/branch-delete": () => {
+          branches.local = branches.local.filter((branch) => branch.name !== "wip");
+          return { ok: true };
+        },
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes('aria-label="Delete branch wip"'));
+    const mainRow = (bar.innerHTML.match(/git-ui-branch-row current[\s\S]*?<\/div>/) || [""])[0];
+    ok(!mainRow.includes("branch-row-trash"), "current row has no trash");
+
+    const before = calls.length;
+    await ctx.HerdrLocationBar.deleteBranchFromPopover(encodeURIComponent("feature-x"), false);
+    await ctx.HerdrLocationBar.deleteBranchFromPopover(encodeURIComponent("origin/main"), true);
+    equal(calls.slice(before).filter((call) => call.path === "/api/git-ui/branch-delete").length, 0, "current and remote rows never post");
+
+    const deleteIndex = calls.length;
+    await ctx.HerdrLocationBar.deleteBranchFromPopover(encodeURIComponent("wip"), false);
+    const deletePosts = calls.slice(deleteIndex).filter((call) => call.path === "/api/git-ui/branch-delete");
+    equal(deletePosts.length, 1, "one delete POST");
+    const body = JSON.parse(deletePosts[0].init.body);
+    equal(body.branch, "wip");
+    equal(body.confirmed, true);
+    ok(!bar.innerHTML.includes('aria-label="Delete branch wip"'), "deleted branch gone after reload");
+  });
+
+  it("delete on a remote row explains it inline instead of posting", async () => {
+    const { ctx, bar, calls } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    await ctx.HerdrLocationBar.deleteBranchFromPopover(encodeURIComponent("origin/other"), true);
+    ok(bar.innerHTML.includes("Deleting remote branches is not supported here"), "inline refusal renders");
+    equal(calls.filter((call) => call.path === "/api/git-ui/branch-delete").length, 0, "no delete POST");
+  });
+
+  it("filter keeps matching rows and posts nothing", async () => {
+    const { ctx, bar, calls } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    const before = calls.length;
+    ctx.HerdrLocationBar.branchPopoverFilter("feature");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ok(bar.innerHTML.includes("feature-x"), "matching branch stays visible");
+    ok(!bar.innerHTML.includes('>main</span>'), "non-matching local branch hidden");
+    ok(!bar.innerHTML.includes("Load more branches"), "filtering shows the full remote list");
+    equal(calls.slice(before).length, 1, "filter fetches the full remote list once");
+    equal(calls.slice(before)[0].path, "/api/git-ui/branches");
+  });
+
+  it("load more reveals the full remote list", async () => {
+    const remote = [];
+    for (let index = 0; index < 14; index += 1) remote.push({ name: `origin/feature-${index}`, author: "Ada", date: "2026-01-02T03:04:05Z", subject: "x" });
+    const { ctx, bar } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes("Load more branches (4 more)"), "preload caps the remote rows");
+    ctx.HerdrLocationBar.loadMoreBranches();
+    ok(!bar.innerHTML.includes("Load more branches"), "all remote rows render after load more");
+    ok(bar.innerHTML.includes("origin/feature-13"));
+  });
+
+  it("closeBranchPopover clears the popover without touching the chips", async () => {
+    const { ctx, bar } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ctx.HerdrLocationBar.closeBranchPopover();
+    ok(!bar.innerHTML.includes("location-bar-branch-popover"));
+    ok(bar.innerHTML.includes("location-bar-path-chip"), "chips survive the close");
+  });
+
+  it("popover shows the error when the branches fetch fails", async () => {
+    const { ctx, bar } = loadPopover({
+      routes: { "/api/git-ui/branches": { error: "not a git repository" } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes("not a git repository"), "fetch failure renders the error state");
+    ok(bar.innerHTML.includes("git-ui-error"), "error block renders");
+  });
+});

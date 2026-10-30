@@ -245,11 +245,9 @@ The Git sidebar separates exclusive view selection from action commands. Changes
 Git cwd is independent from workspace selection only when the user explicitly picks a different Git directory. Each cached Git view stores both `workspaceCwd` and current `cwd`:
 
 - initial open sets both values from the selected workspace/worktree or the default-folder pseudo-workspace,
-- choosing a directory in the branch modal calls `applyBranchModalCwd`, updates `cwd`, clears stale file/diff/log selection state, and refreshes,
-- switching branches uses the current `cwd` and does not also mean selecting a different folder,
 - selecting a worktree row in the worktree selector moves `cwd` to that checkout without touching the active workspace.
 
-Folder switching itself moved to the location bar (plan phase 2b): the bar's path chip opens the shared directory picker and switches the workspace folder through `HerdrOpenFolder`, so the drawer keeps no path title, folder picker, or return action. This avoids two competing actions over one path field and keeps Git drawer state predictable when browsing repositories outside the currently selected workspace.
+Folder and branch switching both moved to the location bar: the bar's path chip switches the workspace folder through `HerdrOpenFolder` (plan phase 2b), and its branch chip opens a popover that switches, creates, and deletes branches against the workspace cwd (plan phase 3). The drawer keeps no path title, folder picker, return action, branch chip, or branch modal. Divergence remains possible only through the worktree selector until phase 4 moves that chip too. This avoids two competing actions over one path field and keeps Git drawer state predictable when browsing repositories outside the currently selected workspace.
 
 ## Editor
 

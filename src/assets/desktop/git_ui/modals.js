@@ -33,19 +33,6 @@
         return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Tag selected commit</strong></div><p class="git-ui-muted">Create a lightweight tag at <strong>${label}</strong>.</p><label>Tag name<input id="gitTagName" class="git-ui-input" value="${esc(modal.tag || "")}" placeholder="v1.2.3"${inputAttrs("done")}></label><div class="git-ui-modal-actions"><button class="git-ui-btn primary" onclick="HerdrGitUi.createSelectedTag()">Create tag</button><button class="git-ui-btn" onclick="HerdrGitUi.closeSelectedTagModal()">Cancel</button></div></div></div>`;
       }
 
-      function renderBranchModal() {
-        const modal = state.branchModal;
-        if (!modal) return "";
-        const cwd = esc(modal.cwd || "");
-        const body = modal.loading
-          ? `<div class="git-ui-loading"><span></span><strong>Loading branches</strong></div>`
-          : modal.error
-            ? `<div class="git-ui-error">${esc(modal.error)}</div>`
-            : `<label class="git-ui-branch-field"><span>Branch</span><select id="gitUiBranchSelect">${branchOptions("Local branches", modal.local || [])}${branchOptions("Remote branches", modal.remote || [])}</select></label>`;
-        const dir = `<label class="git-ui-branch-field"><span>Git directory</span><div class="git-ui-inline-field"><input id="gitUiBranchCwd" value="${cwd}" placeholder="/path/to/repo" data-directory-picker-after-select="HerdrGitUi.applyBranchModalCwd"${inputAttrs("done")}><button type="button" class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker.openInput('gitUiBranchCwd')">Browse</button></div></label>`;
-        return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>Switch branch</strong></div>${dir}${body}<div class="git-ui-muted">Choosing a folder moves the Git panel to that directory immediately. Use Switch branch only to checkout another branch in the current Git directory.</div><div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeBranchModal()">Cancel</button><button class="git-ui-btn primary" onclick="HerdrGitUi.switchBranchFromModal()" ${modal.loading || modal.error ? "disabled" : ""}>Switch branch</button></div></div></div>`;
-      }
-
       function cleanupConfirmBranchOption(items) {
         const worktreeBranches = items.filter((item) => item.type === "worktree" && item.branch).length;
         if (!worktreeBranches) return "";
@@ -112,16 +99,6 @@
         return `<div class="git-ui-modal-backdrop"><div class="git-ui-modal"><div class="git-ui-modal-head"><strong>${esc(title)}</strong></div>${body}<div class="git-ui-modal-actions"><button class="git-ui-btn" onclick="HerdrGitUi.closeGitOpModal()">Cancel</button><button class="git-ui-btn ${esc(actionClass)}" onclick="HerdrGitUi.${actionMethod}()">${esc(actionLabel)}</button></div></div></div>`;
       }
 
-      function branchOptions(label, branches) {
-        if (!branches.length) return "";
-        return `<optgroup label="${esc(label)}">${branches.map((branch) => {
-          const worktreePath = String(branch.worktree_path || "");
-          const worktreeAttrs = worktreePath ? ` data-worktree-path="${esc(worktreePath)}" title="Checked out at ${esc(worktreePath)}"` : "";
-          const worktreeLabel = worktreePath ? ` (worktree: ${esc(compactPath(worktreePath))})` : "";
-          return `<option value="${branch.remote ? "remote:" : "local:"}${esc(branch.name)}"${worktreeAttrs} ${branch.current ? "selected" : ""}>${esc(branch.name)}${branch.current ? " (current)" : ""}${worktreeLabel}</option>`;
-        }).join("")}</optgroup>`;
-      }
-
       function localNameForRemote(remote) {
         const parts = String(remote || "").split("/");
         return parts.length > 1 ? parts.slice(1).join("/") : remote;
@@ -132,13 +109,11 @@
       renderResetSelectedModal,
       renderCompareSelectedModal,
       renderTagSelectedModal,
-      renderBranchModal,
       renderCleanupConfirm,
       renderGitOpModal,
       renderGitOpBranchSelect,
       renderGitOpModeSelect,
       renderGitOpModalShell,
-      branchOptions,
       localNameForRemote,
     };
   }

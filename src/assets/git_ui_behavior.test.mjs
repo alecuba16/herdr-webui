@@ -885,7 +885,7 @@ test("header menu dropdown offers exactly the seven git-flow actions", async () 
   assert.ok(!menuHtml.includes("git-ui-header-menu"), "menu closes after action");
 });
 
-test("branch chip shows the branch and the status button shows sync arrows when diverged", async () => {
+test("status button shows sync arrows when diverged; the bar owns the branch chip", async () => {
   const booted = await bootGitUi({
     "/api/git-ui/status": { branch: "feature-x", ahead: 2, behind: 3, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/feature-x" },
     "/api/git-ui/diff": { files: [] },
@@ -896,51 +896,12 @@ test("branch chip shows the branch and the status button shows sync arrows when 
   const { ui } = booted;
   await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
 
-  let html = String(ctxHtml(booted));
-  assert.match(html, /git-ui-branch-chip/);
-  assert.match(html, /<span class="git-ui-branch-chip-name">feature-x<\/span>/);
+  const html = String(ctxHtml(booted));
+  // Phase 3: the branch chip lives in the location bar; the drawer keeps
+  // only the worktree chip.
+  assert.ok(!/<span class="git-ui-branch-chip-name">feature-x<\/span>/.test(html), "branch chip left the drawer with phase 3");
   // Incoming wins: Pull ↓3 on the status button (behind takes priority).
   assert.match(html, /data-method="pullUpdateFromUpstream"[^>]*>Pull ↓3</);
-
-  const chipEvent = { stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 };
-  await ui.openBranchList(chipEvent);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  html = String(ctxHtml(booted));
-  assert.match(html, /git-ui-branch-list"/);
-  assert.match(html, /Local branches/);
-  assert.match(html, /Remote branches/);
-  // Two-line rows: name line and author · relative time meta line; hover
-  // title carries the commit subject and details.
-  assert.match(html, /title="[^"]*Ada[^"]*"/);
-  assert.match(html, /git-ui-branch-row-meta">[^<]*Ada[^<]*<\/span>/);
-  // Current branch pinned first with a ✓ check; other rows show the branch icon.
-  assert.match(html, /✓<\/b><span class="git-ui-branch-row-name-text">feature-x<\/span>/, "current branch row carries the ✓ check");
-  const localSection = html.indexOf("Local branches");
-  const firstRowAfterSection = html.slice(localSection).indexOf("git-ui-branch-row");
-  const firstRow = html.slice(localSection + firstRowAfterSection, localSection + firstRowAfterSection + 400);
-  assert.ok(localSection === -1 || firstRow.includes("feature-x"), "current branch row is pinned at the top of the local section");
-  assert.match(html, /git-ui-branch-row-icon/);
-  // Trash icon is wired for non-current rows.
-  assert.match(html, /deleteFromBranchList/);
-  // Filter lives below the scrollable rows.
-  assert.ok(html.indexOf("git-ui-branch-list-scroll") < html.indexOf("git-ui-branch-list-filter"), "filter sits at the bottom");
-
-  // Filter narrows the visible rows: in the vm the DOM stub cannot swap
-  // nodes, so assert the renderer honors the filter by re-rendering.
-  ui.branchListFilter("main");
-  html = String(ctxHtml(booted));
-  assert.ok(html.includes("main"), "matching branch stays visible");
-  const renderedNames = (html.match(/git-ui-branch-row-name">.*?<\/span>/g) || []).join(" ");
-  assert.ok(!renderedNames.includes("feature-x"), "filtered rows hide non-matching branch");
-
-  // Switching to another local branch posts to /switch with the bare name.
-  const before = booted.calls.length;
-  await ui.switchFromBranchList(encodeURIComponent("main"), false);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  const switchPosts = booted.calls.slice(before).filter((call) => call.path === "/api/git-ui/switch");
-  assert.equal(switchPosts.length, 1, "switch POST fired");
-  assert.equal(JSON.parse(switchPosts[0].init.body).branch, "main");
-  assert.ok(!String(ctxHtml(booted)).includes("git-ui-branch-list"), "list closes after switch");
 });
 
 test("status button shows plain Fetch and the chip no check when in sync with upstream", async () => {
@@ -954,53 +915,6 @@ test("status button shows plain Fetch and the chip no check when in sync with up
   const html = String(ctxHtml(booted));
   assert.match(html, /git-ui-status-label" data-method="fetchOrigin"[^>]*title="git fetch origin"[^>]*>Fetch</);
   assert.ok(!/chip-count/.test(html), "sync badges moved off the chip");
-});
-
-test("branch list trash deletes a local branch and refreshes the list", async () => {
-  const branches = { local: [{ name: "main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" }, { name: "wip", author: "Bob", date: "2026-01-03T03:04:05Z", subject: "wip" }], remote: [] };
-  const booted = await bootGitUi({
-    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" },
-    "/api/git-ui/diff": { files: [] },
-    "/api/git-ui/compare": { files: [] },
-    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
-    "/api/git-ui/branches": () => ({ local: branches.local, remote: branches.remote }),
-    // Deleting really drops the branch, so the list reload loses the row.
-    "/api/git-ui/branch-delete": () => {
-      branches.local = branches.local.filter((branch) => branch.name !== "wip");
-      return { ok: true, message: "" };
-    },
-  });
-  const { ui, calls } = booted;
-  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
-
-  // Current branch rows show no trash icon.
-  await ui.openBranchList({ stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  let html = String(ctxHtml(booted));
-  assert.match(html, /aria-label="Delete branch wip"/);
-  const mainRow = (html.match(/git-ui-branch-row current[\s\S]*?<\/div>/) || [""])[0];
-  assert.ok(!mainRow.includes("branch-row-trash"), "current branch row has no trash icon");
-
-  // Deleting refuses the current branch and remote rows without posting.
-  const before = calls.length;
-  await ui.deleteFromBranchList(encodeURIComponent("main"), false);
-  await ui.deleteFromBranchList(encodeURIComponent("origin/main"), true);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(calls.slice(before).filter((call) => call.path === "/api/git-ui/branch-delete").length, 0, "no delete POST for current or remote branch");
-
-  // Deleting a local branch posts to the endpoint, then reloads the list.
-  const deleteIndex = calls.length;
-  await ui.deleteFromBranchList(encodeURIComponent("wip"), false);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  const deletePosts = calls.slice(deleteIndex).filter((call) => call.path === "/api/git-ui/branch-delete");
-  assert.equal(deletePosts.length, 1, "one branch-delete POST fired");
-  const body = JSON.parse(deletePosts[0].init.body);
-  assert.equal(body.branch, "wip");
-  assert.equal(body.confirmed, true);
-  // The handler reloads the branches endpoint; wip is gone from the list.
-  html = String(ctxHtml(booted));
-  assert.match(html, /git-ui-branch-list"/);
-  assert.ok(!/aria-label="Delete branch wip"/.test(html), "deleted branch is gone from the list");
 });
 
 test("stash renderer module is registered and wired before git_ui.js consumes it", async () => {
@@ -1313,14 +1227,16 @@ test("modals render commit and git-op flows from module state", async () => {
 });
 
 test("branch list module is registered and wired before git_ui.js consumes it", () => {
+  // Phase 3: the module keeps only the worktree surfaces; the branch
+  // popover moved to the location bar.
   const branchListSource = readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8");
   assert.match(branchListSource, /globalThis\.HerdrGitUiBranchListModule = \{ create: createGitUiBranchList \}/);
-  assert.match(branchListSource, /function branchListRow\(branch, currentBranch\)/);
-  assert.match(branchListSource, /Local branches/);
-  assert.match(branchListSource, /Load more branches/);
+  assert.match(branchListSource, /renderWorktreeList/);
+  assert.match(branchListSource, /renderHeaderMenu/);
+  assert.ok(!branchListSource.includes("renderBranchList"), "branch popover renderer moved out of the drawer module");
   const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
   assert.match(gitUiSource, /globalThis\.HerdrGitUiBranchListModule\.create\(\{/);
-  assert.match(gitUiSource, /const renderBranchList = branchList\.renderBranchList;/);
+  assert.match(gitUiSource, /const renderWorktreeList = branchList\.renderWorktreeList;/);
   const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
   const branchListIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/branch_list.js")');
   const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
@@ -2162,8 +2078,10 @@ test("Esc closes an open menu or modal before touching the navigation stack", as
     });
     shortcuts.handleKeydown({ key: "Escape", target: {}, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
   };
-  // With the branch list open mid-flow, Esc closes it and does NOT pop.
-  openWithState({ branchList: { open: true } });
+  // With the worktree list open mid-flow, Esc closes it and does NOT pop.
+  // (The branch popover moved to the location bar with phase 3 and owns its
+  // Esc handling there.)
+  openWithState({ worktreeList: { open: true } });
   assert.equal(lastAction, "", "Esc with a modal open never reaches the navigation stack");
   assert.equal(rendered, 1, "closing the modal re-renders");
   // Same for the log context menu and the branch popover states.
