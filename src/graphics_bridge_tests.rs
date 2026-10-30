@@ -246,3 +246,137 @@ fn terminal_graphics_text_messages_clamps_to_protocol_limits() {
     assert_eq!(surface_size.cols, 100);
     assert_eq!(surface_size.rows, 30);
 }
+
+#[test]
+fn terminal_text_messages_resize_clamps_and_defaults() {
+    let resize = terminal_text_messages(r#"{"type":"resize","cols":300,"rows":40}"#);
+    match &resize[0] {
+        ClientMessage::Resize {
+            cols,
+            rows,
+            cell_width_px,
+            cell_height_px,
+            pixel_mouse,
+        } => {
+            assert_eq!(cols, &300);
+            assert_eq!(rows, &40);
+            assert_eq!(cell_width_px, &0);
+            assert_eq!(cell_height_px, &0);
+            assert!(!pixel_mouse);
+        }
+        other => panic!("expected Resize, got {other:?}"),
+    }
+    // Oversized geometry caps at u16::MAX instead of truncating.
+    let capped = terminal_text_messages(r#"{"type":"resize","cols":99999,"rows":99999}"#);
+    match &capped[0] {
+        ClientMessage::Resize { cols, rows, .. } => {
+            assert_eq!(cols, &u16::MAX);
+            assert_eq!(rows, &u16::MAX);
+        }
+        other => panic!("expected Resize, got {other:?}"),
+    }
+    // Missing cols/rows fall back to the documented defaults.
+    let defaults = terminal_text_messages(r#"{"type":"resize"}"#);
+    match &defaults[0] {
+        ClientMessage::Resize { cols, rows, .. } => {
+            assert_eq!(cols, &100);
+            assert_eq!(rows, &30);
+        }
+        other => panic!("expected Resize, got {other:?}"),
+    }
+    // Zero geometry clamps up to 1 instead of collapsing the terminal.
+    let clamped = terminal_text_messages(r#"{"type":"resize","cols":0,"rows":0}"#);
+    match &clamped[0] {
+        ClientMessage::Resize { cols, rows, .. } => {
+            assert_eq!(cols, &1);
+            assert_eq!(rows, &1);
+        }
+        other => panic!("expected Resize, got {other:?}"),
+    }
+}
+
+#[test]
+fn terminal_text_messages_scroll_maps_direction_lines_and_position() {
+    let scroll = terminal_text_messages(
+        r#"{"type":"scroll","direction":"up","lines":5,"column":3,"row":9,"modifiers":2}"#,
+    );
+    match &scroll[0] {
+        ClientMessage::AttachScroll {
+            source,
+            direction,
+            lines,
+            column,
+            row,
+            modifiers,
+        } => {
+            assert!(matches!(source, AttachScrollSource::Wheel));
+            assert!(matches!(direction, AttachScrollDirection::Up));
+            assert_eq!(lines, &5);
+            assert_eq!(column, &Some(3));
+            assert_eq!(row, &Some(9));
+            assert_eq!(modifiers, &2);
+        }
+        other => panic!("expected AttachScroll, got {other:?}"),
+    }
+    // Unknown direction defaults to down; missing lines defaults to 3.
+    let down = terminal_text_messages(r#"{"type":"scroll","direction":"sideways"}"#);
+    match &down[0] {
+        ClientMessage::AttachScroll {
+            direction,
+            lines,
+            column,
+            row,
+            modifiers,
+            ..
+        } => {
+            assert!(matches!(direction, AttachScrollDirection::Down));
+            assert_eq!(lines, &3);
+            assert_eq!(column, &None);
+            assert_eq!(row, &None);
+            assert_eq!(modifiers, &0);
+        }
+        other => panic!("expected AttachScroll, got {other:?}"),
+    }
+}
+
+#[test]
+fn terminal_text_messages_enter_key_shift_variant_and_paste() {
+    let plain_enter = terminal_text_messages(r#"{"type":"key","code":"Enter"}"#);
+    match &plain_enter[0] {
+        ClientMessage::Input { data } => assert_eq!(data, b"\r"),
+        other => panic!("expected Input, got {other:?}"),
+    }
+    // Shift+Enter is delivered as the Kitty-style CSI-u sequence so the
+    // backend can distinguish it from a plain Enter.
+    let shift_enter = terminal_text_messages(r#"{"type":"key","code":"Enter","modifiers":1}"#);
+    match &shift_enter[0] {
+        ClientMessage::Input { data } => assert_eq!(data, b"\x1b[13;2u"),
+        other => panic!("expected Input, got {other:?}"),
+    }
+    // Other keys do not take the Enter shortcut: they fall through to the
+    // input-type branch (no "input" field here, so no messages at all).
+    let other_key = terminal_text_messages(r#"{"type":"key","code":"Tab"}"#);
+    assert!(other_key.is_empty());
+
+    let paste = terminal_text_messages(r#"{"type":"paste","text":"hi"}"#);
+    match &paste[0] {
+        ClientMessage::Input { data } => {
+            assert_eq!(data, b"\x1b[200~hi\x1b[201~");
+        }
+        other => panic!("expected Input, got {other:?}"),
+    }
+    // Paste without a text field produces nothing.
+    assert!(terminal_text_messages(r#"{"type":"paste"}"#).is_empty());
+}
+
+#[test]
+fn terminal_text_messages_input_type_and_unknown_types() {
+    let input = terminal_text_messages(r#"{"type":"input","input":"echo hi"}"#);
+    match &input[0] {
+        ClientMessage::Input { data } => assert_eq!(data, b"echo hi"),
+        other => panic!("expected Input, got {other:?}"),
+    }
+    // An unknown JSON type without an input field is dropped, not
+    // forwarded as raw JSON bytes.
+    assert!(terminal_text_messages(r#"{"type":"mystery"}"#).is_empty());
+}

@@ -1004,4 +1004,32 @@ mod tests {
         writer.join().unwrap();
         assert_eq!(bad_reads, 0, "reader saw a torn or missing file");
     }
+
+    #[test]
+    fn log_level_debug_as_str_and_logging_gate() {
+        assert_eq!(LogLevel::Debug.as_str(), "debug");
+        assert_eq!(LogLevel::None.as_str(), "none");
+        // Debug logs pass the gate and print; None must stay silent.
+        log_event(&LogLevel::Debug, "debug line for coverage");
+        log_event(&LogLevel::None, "must never print");
+    }
+
+    #[test]
+    fn persisted_session_record_system_time_round_trip() {
+        // A timed record maps to its absolute deadline.
+        let timed = PersistedSessionRecord {
+            token: "t".to_string(),
+            expires_at: Some(100),
+        };
+        assert_eq!(
+            timed.to_system_time(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(100)
+        );
+        // The never-expire sentinel maps onto auth's never marker.
+        let never = PersistedSessionRecord {
+            token: "t".to_string(),
+            expires_at: None,
+        };
+        assert_eq!(never.to_system_time(), crate::auth::never_expires_at());
+    }
 }

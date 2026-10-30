@@ -1383,6 +1383,91 @@ mod tests {
     }
 
     #[test]
+    fn find_server_binary_reports_direct_file() {
+        let (dir, _guard) = crate::tests::temp_guard("herdr-lsp-find-direct");
+        let binary = dir.join("server-bin");
+        std::fs::write(&binary, b"#!/bin/sh\nexit 0\n").unwrap();
+        set_executable(&binary);
+        let found = find_server_binary(&binary.to_string_lossy());
+        assert_eq!(found.as_deref(), Some(binary.as_path()));
+
+        // A directory is never a match even though is_file is false for dirs.
+        assert!(find_server_binary(&dir.to_string_lossy()).is_none());
+    }
+
+    #[test]
+    fn find_server_binary_searches_home_install_dirs() {
+        let (home, _guard) = crate::tests::temp_guard("herdr-lsp-find-home");
+        let bin_dir = home.join(".cargo/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let binary = bin_dir.join("rust-analyzer-fake");
+        std::fs::write(&binary, b"#!/bin/sh\nexit 0\n").unwrap();
+        set_executable(&binary);
+
+        let _env = crate::tests::lock_env();
+        let original_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+        let found = find_server_binary("rust-analyzer-fake");
+        match original_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+        assert_eq!(found.as_deref(), Some(binary.as_path()));
+    }
+
+    #[test]
+    fn resolve_command_accepts_absolute_executable_only() {
+        let (dir, _guard) = crate::tests::temp_guard("herdr-lsp-resolve-abs");
+        let binary = dir.join("server-bin");
+        std::fs::write(&binary, b"#!/bin/sh\nexit 0\n").unwrap();
+        set_executable(&binary);
+        assert_eq!(
+            resolve_command(&binary.to_string_lossy()).as_deref(),
+            Some(binary.as_path())
+        );
+
+        // Present but not executable: rejected, no PATH fallback for absolutes.
+        let plain = dir.join("plain-bin");
+        std::fs::write(&plain, b"x").unwrap();
+        assert!(resolve_command(&plain.to_string_lossy()).is_none());
+
+        // Whitespace is trimmed before the check.
+        let spaced = format!("  {}  ", binary.to_string_lossy());
+        assert_eq!(resolve_command(&spaced).as_deref(), Some(binary.as_path()));
+    }
+
+    #[test]
+    fn is_executable_requires_any_execute_bit() {
+        let (dir, _guard) = crate::tests::temp_guard("herdr-lsp-exec-bit");
+        let binary = dir.join("bits");
+        std::fs::write(&binary, b"x").unwrap();
+        assert!(!is_executable(&binary));
+        set_executable(&binary);
+        assert!(is_executable(&binary));
+        assert!(!is_executable(&dir));
+        assert!(!is_executable(&dir.join("missing")));
+    }
+
+    /// chmod +x on unix, no-op elsewhere (is_executable is file-exists there).
+    fn set_executable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::metadata(path).unwrap().permissions();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(perps_mode(perms)))
+                .unwrap();
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+    }
+
+    #[cfg(unix)]
+    fn perps_mode(perms: std::fs::Permissions) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        perms.mode() | 0o111
+    }
+
+    #[test]
     fn server_key_combines_language_and_root() {
         assert_eq!(
             server_key("json", "/tmp/project"),
