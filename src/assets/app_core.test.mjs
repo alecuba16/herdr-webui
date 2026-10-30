@@ -1766,6 +1766,60 @@ describe("desktop file browser editor integration", () => {
     assert.match(requests.at(-1), /path=/);
   });
 
+  it("up from the workspace root fetches nothing", async () => {
+    const document = createFakeDocument();
+    const requests = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+        rememberWorkspaceShellMode() {},
+        syncShellModeButtons() {},
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        requests.push(String(url));
+        return {
+          ok: true,
+          async json() {
+            const path = decodeURIComponent((String(url).match(/path=([^&]*)/) || [null, ""])[1]);
+            return { path, entries: [{ kind: "file", name: "demo.txt", path: path ? `${path}/demo.txt` : "demo.txt" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/app_js/open_folder_flow.js", import.meta.url), "utf8"), context);
+
+    await context.window.HerdrFileBrowser.openAt({ cwd: "/tmp/ws" }, "", { kind: "dir" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const html = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.doesNotMatch(html, /↑ Up/, "no Up row at the workspace root");
+    const fetches = requests.length;
+    await context.window.HerdrFileBrowser.up();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(requests.length, fetches, "up at the workspace root fetches nothing");
+  });
+
   it("executes file browser context menu actions from delegated button clicks", async () => {
     const document = createFakeDocument();
     const requests = [];
@@ -2743,4 +2797,3 @@ describe("desktop file browser editor integration", () => {
     assert.equal(demoCall.toggledFind, true);
   });
 });
-
