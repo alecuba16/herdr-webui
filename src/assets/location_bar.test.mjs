@@ -456,7 +456,7 @@ describe("location bar branch popover", () => {
     ok(!bar.innerHTML.includes("location-bar-branch-popover"), "popover closes after switch");
   });
 
-  it("switch refuses the current branch and posts create for remote names", async () => {
+  it("switch refuses the current branch", async () => {
     const { ctx, calls } = loadPopover({
       routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
     });
@@ -465,6 +465,21 @@ describe("location bar branch popover", () => {
     const before = calls.length;
     await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("feature-x"), false);
     equal(calls.slice(before).filter((call) => call.path === "/api/git-ui/switch").length, 0, "current branch never posts");
+  });
+
+  it("switch on a remote row posts the bare local name", async () => {
+    const { ctx, calls } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    const before = calls.length;
+    await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("origin/release-lane"), true);
+    const switchPosts = calls.slice(before).filter((call) => call.path === "/api/git-ui/switch");
+    equal(switchPosts.length, 1, "remote row posts a switch");
+    const body = JSON.parse(switchPosts[0].init.body);
+    equal(body.branch, "release-lane", "remote prefix stripped before the POST");
+    equal(body.cwd, "/repo");
   });
 
   it("new branch posts create:true with the current branch as base", async () => {
@@ -950,8 +965,14 @@ describe("location bar worktree popover", () => {
     keydown.listener({ key: "Escape", stopPropagation() {}, preventDefault() {} });
     ok(!bar.innerHTML.includes("location-bar-worktree-popover"), "Escape closed the worktree popover");
 
-    keydown.listener({ key: "a", stopPropagation() {}, preventDefault() {} });
-    ok(true, "other keys pass through the handler untouched");
+    // Other keys pass through untouched: the spy events record any
+    // consumption attempt, and the positive control above shows the spies
+    // do fire when the handler consumes (Escape set both flags there).
+    const spyKey = { key: "a", stopped: false, prevented: false, stopPropagation() { this.stopped = true; }, preventDefault() { this.prevented = true; } };
+    keydown.listener(spyKey);
+    equal(spyKey.stopped, false, "an unrelated key is not stopped");
+    equal(spyKey.prevented, false, "an unrelated key keeps its default");
+    ok(bar.innerHTML.includes("location-bar-path-chip"), "bar still renders, no side effects");
   });
 
   it("drawer yield and bar dismissal agree in real propagation order", async () => {
