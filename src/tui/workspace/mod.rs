@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-use super::{PromptInput, PromptKind, SidebarFocus, TuiApp, TuiMode};
+use super::{same_checkout_path, PromptInput, PromptKind, SidebarFocus, TuiApp, TuiMode};
 
 /// Result of a workspace action, reported through the status line or
 /// error slot by the caller.
@@ -321,11 +321,7 @@ impl TuiApp {
             .client
             .list_worktrees(Some(&cwd))
             .map_err(|err| err.to_string())?;
-        self.worktree_rows = result
-            .get("worktrees")
-            .and_then(Value::as_array)
-            .map(|items| items.iter().map(WorktreeRow::from_json).collect())
-            .unwrap_or_default();
+        self.worktree_rows = worktree_rows_from_response(&result);
         self.worktree_folder_rows = list_subdirectories(&expanded);
         self.worktree_selected = 0;
         self.worktree_filter.clear();
@@ -451,6 +447,12 @@ impl TuiApp {
             .open_worktree(&path, None, None)
             .map_err(|err| err.to_string())?;
         let _ = self.web_api.record_recent_workspace(&path, None, kind);
+        // Capture the workspace being left behind before the refresh
+        // replaces the selection (desktop `autoCloseLeftWorkspace`).
+        let previous_workspace_id = self
+            .selected_workspace()
+            .filter(|ws| ws.cwd != path)
+            .map(|ws| ws.id.clone());
         self.refresh().map_err(|err| err.to_string())?;
         // Focus the opened workspace like the webui post-open navigation;
         // the backend keys it by cwd, so resolve the id first.
@@ -463,11 +465,52 @@ impl TuiApp {
         {
             self.focus_workspace_by_id(&id);
         }
+        self.autoclose_left_workspace(previous_workspace_id.as_deref());
         // Opening a worktree is a context switch (the webui navigates to
         // the new workspace), so it also drops any overlay stack.
         self.overlay_stack.clear();
         self.mode = TuiMode::Navigate;
         Ok(format!("opened {title}"))
+    }
+
+    /// Close the workspace a folder switch just left behind when it
+    /// ended up empty (desktop `autoCloseLeftWorkspace`): a bar folder
+    /// change moves the user to another workspace, and the one left
+    /// behind should not linger with zero tabs. Guards: the target id
+    /// (just focused) is never closed, and a failed close is silent
+    /// because the next refresh re-syncs state anyway.
+    pub(crate) fn autoclose_left_workspace(&mut self, previous_workspace_id: Option<&str>) {
+        let Some(previous_id) = previous_workspace_id else {
+            return;
+        };
+        if previous_id.is_empty() {
+            return;
+        }
+        if self
+            .selected_workspace()
+            .is_some_and(|ws| ws.id == previous_id)
+        {
+            return;
+        }
+        let Some(workspace) = self
+            .snapshot
+            .workspaces
+            .iter()
+            .find(|ws| ws.id == previous_id)
+        else {
+            return;
+        };
+        if workspace.tab_count > 0 || workspace.pane_count > 0 {
+            return;
+        }
+        let _ = self.client.request(
+            "workspace.close",
+            serde_json::json!({ "workspace_id": previous_id }),
+        );
+        // The close above is best effort; reflect it locally so the
+        // sidebar does not show a ghost row until the next refresh.
+        self.snapshot.workspaces.retain(|ws| ws.id != previous_id);
+        self.clamp_selection();
     }
 
     /// Rows matching the typed filter (webui modal search over rows).
@@ -485,6 +528,226 @@ impl TuiApp {
             })
             .cloned()
             .collect()
+    }
+
+    /// Open the branch picker (desktop branch popover, prefix `v`) on
+    /// the selected workspace folder: load its local branches through
+    /// `git.branches`, pin the current branch first, reset the cursor
+    /// and filter, then open the overlay.
+    pub fn branch_picker_open(&mut self) -> WorkspaceResult {
+        let Some(cwd) = self
+            .selected_workspace()
+            .map(|ws| ws.cwd.clone())
+            .filter(|cwd| !cwd.is_empty())
+        else {
+            return Err("no workspace folder selected".to_string());
+        };
+        let response = self
+            .web_api
+            .git_branches(&cwd)
+            .map_err(|err| err.to_string())?;
+        let branches = response
+            .get("branches")
+            .or_else(|| response.get("local"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(crate::tui::panels::git::parse_branch_value)
+                    .filter(|entry| !entry.remote)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        // Desktop pins the current branch at the top of the local
+        // section so the picker always answers "where am I" first.
+        let mut ordered: Vec<_> = branches
+            .iter()
+            .filter(|entry| entry.current)
+            .cloned()
+            .collect();
+        ordered.extend(branches.into_iter().filter(|entry| !entry.current));
+        self.branch_picker_rows = ordered;
+        self.branch_picker_root = cwd.clone();
+        self.branch_picker_selected = 0;
+        self.branch_picker_filter.clear();
+        if self.mode != TuiMode::BranchPicker {
+            self.open_overlay(TuiMode::BranchPicker);
+        }
+        Ok(format!(
+            "branches in {cwd}: {}",
+            self.branch_picker_rows.len()
+        ))
+    }
+
+    /// Rows matching the typed filter (desktop popover filter box over
+    /// the branch names).
+    pub fn filtered_branch_picker_rows(&self) -> Vec<crate::tui::panels::git::GitBranchEntry> {
+        let query = self.branch_picker_filter.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            return self.branch_picker_rows.clone();
+        }
+        self.branch_picker_rows
+            .iter()
+            .filter(|entry| entry.name.to_ascii_lowercase().contains(&query))
+            .cloned()
+            .collect()
+    }
+
+    /// Enter in the branch picker. Reroute order mirrors the desktop
+    /// popover: a branch checked out in another worktree opens that
+    /// worktree (`worktree.open` focuses an already-open workspace on
+    /// it), any other branch switches through `git.switch`, and a query
+    /// naming no existing branch creates it (`create: true`, the
+    /// desktop "New branch" CTA). Switching to the current branch is
+    /// a no-op success.
+    pub fn branch_picker_commit(&mut self) -> WorkspaceResult {
+        let query = self.branch_picker_filter.trim().to_string();
+        let Some(row) = self
+            .filtered_branch_picker_rows()
+            .get(self.branch_picker_selected)
+            .cloned()
+        else {
+            if query.is_empty() {
+                return Err("no branch selected".to_string());
+            }
+            // Desktop create-CTA parity: a filter naming no branch is
+            // the new branch name.
+            return self.branch_picker_create(&query);
+        };
+        if row.current {
+            return Ok(format!("already on {}", row.name));
+        }
+        let cwd = self.branch_picker_root.clone();
+        // Reroute: git refuses a second checkout of a branch another
+        // worktree already holds, so hand the user to that worktree
+        // instead (desktop reroute rule).
+        if let Some(path) = row
+            .worktree_path
+            .as_deref()
+            .filter(|path| !path.is_empty() && !same_checkout_path(path, &cwd))
+        {
+            return self.branch_picker_reroute(&row.name, path);
+        }
+        self.web_api
+            .git_switch(&cwd, &row.name, false)
+            .map_err(|err| err.to_string())?;
+        // Best effort: the switch already happened, so a failed refresh
+        // (e.g. the snapshot socket hiccuping) must not fail the report.
+        let _ = self.refresh();
+        // Desktop closes the popover after the switch commits; the
+        // picker is done, so it unwinds to the caller context.
+        self.close_overlay();
+        Ok(format!("switched to {}", row.name))
+    }
+
+    /// Create the branch named by the filter and switch to it (desktop
+    /// "New branch" CTA: `git.switch` with create: true).
+    fn branch_picker_create(&mut self, name: &str) -> WorkspaceResult {
+        let cwd = self.branch_picker_root.clone();
+        self.web_api
+            .git_switch(&cwd, name, true)
+            .map_err(|err| err.to_string())?;
+        // Best effort: the create already happened, so a failed refresh
+        // must not fail the report.
+        let _ = self.refresh();
+        self.close_overlay();
+        Ok(format!("created and switched to {name}"))
+    }
+
+    /// Reroute the branch switch to the sibling worktree that already
+    /// holds the branch: open-or-focus it like a worktree browser row
+    /// (the backend keys workspaces by cwd).
+    fn branch_picker_reroute(&mut self, branch: &str, path: &str) -> WorkspaceResult {
+        self.client
+            .open_worktree(path, None, None)
+            .map_err(|err| err.to_string())?;
+        let _ = self
+            .web_api
+            .record_recent_workspace(path, None, Some("worktree"));
+        // Capture the workspace being left behind (same rule as the
+        // browser open flow).
+        let previous_workspace_id = self
+            .selected_workspace()
+            .filter(|ws| ws.cwd != path)
+            .map(|ws| ws.id.clone());
+        self.refresh().map_err(|err| err.to_string())?;
+        if let Some(id) = self
+            .snapshot
+            .workspaces
+            .iter()
+            .find(|ws| same_checkout_path(&ws.cwd, path))
+            .map(|ws| ws.id.clone())
+        {
+            self.focus_workspace_by_id(&id);
+        }
+        self.autoclose_left_workspace(previous_workspace_id.as_deref());
+        // The reroute is a context switch (the desktop navigates to the
+        // worktree's workspace), so it drops the overlay stack.
+        self.overlay_stack.clear();
+        self.mode = TuiMode::Navigate;
+        Ok(format!("switched to {branch} in {path}"))
+    }
+
+    /// Keys inside the branch picker overlay: same convention as the
+    /// worktree browser and help overlay. j/k move only when the filter
+    /// is empty (they are query letters otherwise), arrows always move,
+    /// Enter commits (switch, reroute, or create), Esc closes (clearing
+    /// the filter first).
+    pub(crate) fn handle_branch_picker_key(&mut self, key: KeyEvent) {
+        let filter_active = !self.branch_picker_filter.is_empty();
+        let len = self.filtered_branch_picker_rows().len();
+        match key.code {
+            KeyCode::Esc => {
+                if filter_active {
+                    self.branch_picker_filter.clear();
+                    self.branch_picker_selected = 0;
+                } else {
+                    self.close_overlay();
+                }
+            }
+            KeyCode::Enter => match self.branch_picker_commit() {
+                Ok(message) => self.status = message,
+                Err(err) => self.status = err,
+            },
+            KeyCode::Backspace if filter_active => {
+                self.branch_picker_filter.pop();
+                self.branch_picker_selected = 0;
+                self.clamp_branch_picker_cursor();
+            }
+            KeyCode::Down if len > 0 => {
+                self.branch_picker_selected = (self.branch_picker_selected + 1) % len;
+            }
+            KeyCode::Up if len > 0 => {
+                self.branch_picker_selected =
+                    (self.branch_picker_selected + len.saturating_sub(1)) % len;
+            }
+            KeyCode::Char('j') if !filter_active && len > 0 => {
+                self.branch_picker_selected = (self.branch_picker_selected + 1) % len;
+            }
+            KeyCode::Char('k') if !filter_active && len > 0 => {
+                self.branch_picker_selected =
+                    (self.branch_picker_selected + len.saturating_sub(1)) % len;
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.branch_picker_filter.clear();
+                self.branch_picker_selected = 0;
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                self.branch_picker_filter.push(c);
+                self.branch_picker_selected = 0;
+                self.clamp_branch_picker_cursor();
+            }
+            _ => {}
+        }
+    }
+
+    /// Keep the branch cursor inside the filtered list after the query
+    /// changes its length.
+    fn clamp_branch_picker_cursor(&mut self) {
+        let len = self.filtered_branch_picker_rows().len();
+        if self.branch_picker_selected >= len {
+            self.branch_picker_selected = len.saturating_sub(1);
+        }
     }
 
     /// Keys inside the WorktreeList overlay: j/k move over the filtered
@@ -528,6 +791,17 @@ impl TuiApp {
                     Ok(message) => self.status = message,
                     Err(err) => self.status = err,
                 }
+            }
+            // `c` opens the create-worktree prompt (desktop popover
+            // "Create worktree" CTA analog): branch first, then
+            // checkout path, scoped to the browse root. Not in pick
+            // mode: prefix `N` is about folders for a new workspace,
+            // and `c` is a query letter there only in theory (kept
+            // out entirely for one intent per overlay).
+            KeyCode::Char('c') if !filter_active && !self.worktree_pick_workspace => {
+                self.worktree_create_stage = None;
+                self.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBranch));
+                self.status = PromptKind::CreateWorktreeBranch.title().to_string();
             }
             // `h` goes to the parent folder (vim/left convention shared
             // with the Files screen). Backspace on an empty filter does
@@ -726,14 +1000,27 @@ pub struct WorktreeRow {
     pub is_linked: bool,
 }
 impl WorktreeRow {
-    /// Parse a `worktree.list` JSON row into the overlay shape.
-    pub(crate) fn from_json(value: &Value) -> Self {
+    /// Parse a `worktree.list` JSON row into the overlay shape. The
+    /// linked flag is only used when the reply carries no `source`
+    /// envelope naming the repository root (a bare external reply):
+    /// the builtin row flag is `true` for every checkout, main
+    /// included, because the porcelain parser cannot tell main from
+    /// lane.
+    pub(crate) fn from_json(value: &Value, repo_root: Option<&str>) -> Self {
+        let path = value
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         Self {
-            path: value
-                .get("path")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            is_linked: match repo_root {
+                Some(repo_root) => !same_checkout_path(&path, repo_root),
+                None => value
+                    .get("is_linked_worktree")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            },
+            path,
             branch: value
                 .get("branch")
                 .and_then(Value::as_str)
@@ -744,10 +1031,6 @@ impl WorktreeRow {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
-            is_linked: value
-                .get("is_linked_worktree")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
         }
     }
 
@@ -759,6 +1042,26 @@ impl WorktreeRow {
             format!("{} ({})", self.path, self.label)
         }
     }
+}
+
+/// Parse the rows of a `worktree.list` reply into overlay rows,
+/// deriving main-vs-linked per row from the repository root the
+/// reply's source reports (wrapper rule), with the raw row flag as
+/// fallback when the envelope is missing.
+pub(crate) fn worktree_rows_from_response(response: &Value) -> Vec<WorktreeRow> {
+    let repo_root = response
+        .pointer("/source/repo_root")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    response
+        .get("worktrees")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .map(|row| WorktreeRow::from_json(row, repo_root.as_deref()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// One row of the browser overlay: the browse root itself, a

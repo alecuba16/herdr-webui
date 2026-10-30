@@ -13,10 +13,44 @@ fn serve_fake_backend(path: &std::path::Path) -> mpsc::Sender<()> {
     serve_fake_backend_at(path, "/repo")
 }
 
+/// Fake backend whose `worktree.list` answers with the builtin envelope
+/// shape (source + rows), so PTY tests can pin the main-vs-linked badge
+/// derivation end to end.
+fn serve_fake_backend_with_worktrees(
+    path: &std::path::Path,
+    cwd: &str,
+    worktrees: serde_json::Value,
+) -> mpsc::Sender<()> {
+    serve_fake_backend_opts(path, cwd, None, Some(worktrees))
+}
+
+/// Fake backend with an explicit `source.repo_root`, for fixtures whose
+/// workspace cwd is a linked lane while the envelope still reports the
+/// main checkout as the repository root.
+fn serve_fake_backend_with_source(
+    path: &std::path::Path,
+    cwd: &str,
+    repo_root: &str,
+    worktrees: serde_json::Value,
+) -> mpsc::Sender<()> {
+    serve_fake_backend_opts(path, cwd, Some(repo_root), Some(worktrees))
+}
+
 /// Same fake backend with a configurable workspace cwd, so PTY tests
 /// can point the browser at real on-disk folders.
 fn serve_fake_backend_at(path: &std::path::Path, cwd: &str) -> mpsc::Sender<()> {
+    serve_fake_backend_opts(path, cwd, None, None)
+}
+
+fn serve_fake_backend_opts(
+    path: &std::path::Path,
+    cwd: &str,
+    repo_root: Option<&str>,
+    worktrees: Option<serde_json::Value>,
+) -> mpsc::Sender<()> {
     let cwd = cwd.to_string();
+    let repo_root = repo_root.unwrap_or(&cwd).to_string();
+    let worktrees = worktrees.unwrap_or(json!([]));
     let name = path.to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new()
         .name(name)
@@ -54,6 +88,74 @@ fn serve_fake_backend_at(path: &std::path::Path, cwd: &str) -> mpsc::Sender<()> 
             "tab.create" | "tab.close" => {
                 json!({"id": request["id"], "result": {"ok": true}})
             }
+            "worktree.list" => json!({
+                "id": request["id"],
+                "result": {
+                    "source": {
+                        "repo_root": repo_root,
+                        "repo_name": "repo",
+                        "repo_key": repo_root
+                    },
+                    "worktrees": worktrees
+                }
+            }),
+            // Branch picker rows: the main checkout holds `main`, the
+            // lane row holds `feature` (checked out elsewhere), and
+            // `topic` is a plain local branch.
+            "git.branches" => json!({
+                "id": request["id"],
+                "result": {
+                    "branches": [
+                        {"name": "main", "current": true, "remote": false, "pushed": true, "worktree_path": repo_root},
+                        {"name": "feature", "current": false, "remote": false, "pushed": false, "worktree_path": "/repo-lane"},
+                        {"name": "topic", "current": false, "remote": false, "pushed": false, "worktree_path": null}
+                    ]
+                }
+            }),
+            "git.switch" => json!({"id": request["id"], "result": {"ok": true}}),
+            _ => json!({"id": request["id"], "result": {}}),
+        };
+        let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
+        let _ = stream.write_all(b"\n");
+        let _ = stream.flush();
+    });
+    tx
+}
+
+/// Fake backend whose snapshot has zero workspaces, so the TUI boots
+/// into the empty tab bar and its open-workspace call to action.
+fn serve_fake_backend_with_empty_workspaces(path: &std::path::Path) -> mpsc::Sender<()> {
+    let name = path.to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let (tx, rx) = mpsc::channel::<()>();
+    std::thread::spawn(move || loop {
+        if rx.try_recv().is_ok() {
+            break;
+        }
+        let Ok(mut stream) = listener.accept() else {
+            break;
+        };
+        let mut line = String::new();
+        {
+            let mut reader = BufReader::new(&mut stream);
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                continue;
+            }
+        }
+        let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let response = match request["method"].as_str().unwrap_or("") {
+            "ping" => json!({"id": request["id"], "result": {"version": "pty", "protocol": 1}}),
+            "session.snapshot" => json!({"id": request["id"], "result": {"snapshot": {
+                "workspaces": [],
+                "panes": [],
+                "agents": []
+            }}}),
             _ => json!({"id": request["id"], "result": {}}),
         };
         let _ = stream.write_all(serde_json::to_string(&response).unwrap().as_bytes());
@@ -645,6 +747,353 @@ fn tui_binary_worktree_browser_and_picker_pty() {
     let _ = std::fs::remove_file(&path);
     let _ = stop.send(());
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn tui_binary_worktree_badge_derives_main_from_source_pty() {
+    // End-to-end badge parity pin: the builtin rows arrive with the
+    // linked flag true for every checkout (the porcelain parser cannot
+    // tell main from lane), and the overlay must still render the
+    // repository root row as [main] and the lane row as [linked],
+    // deriving the call from the source envelope instead of the raw
+    // row flag.
+    let path = herdr_webui::backend_client::unique_test_path("herdr-tui-pty-badges");
+    let _ = std::fs::remove_file(&path);
+    let worktrees = json!([
+        {"path": "/repo", "branch": "main", "label": "repo", "is_linked_worktree": true},
+        {"path": "/repo-lane", "branch": "feature", "label": "repo-lane", "is_linked_worktree": true}
+    ]);
+    let stop = serve_fake_backend_with_worktrees(&path, "/repo", worktrees);
+
+    let pty_system = NativePtySystem::default();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 30,
+            cols: 100,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr-webui-tui"));
+    cmd.args([
+        "--api-socket",
+        path.to_str().unwrap(),
+        "--terminal-socket",
+        path.to_str().unwrap(),
+        "--refresh-ms",
+        "50",
+    ]);
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+    let mut child_guard = ChildGuard {
+        killer: Some(child.clone_killer()),
+    };
+    let pty_out = pair.master.try_clone_reader().unwrap();
+    let log = pump(pty_out);
+
+    wait_for(&log, "Enter attach");
+
+    // Ctrl+B w opens the browser overlay over the fake workspace cwd.
+    let mut writer = pair.master.take_writer().unwrap();
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"w");
+    let _ = writer.flush();
+    wait_for(&log, "Open workspace or worktree");
+    wait_for(&log, "main [main]");
+    wait_for(&log, "feature [linked]");
+    assert!(
+        log.lock().unwrap().contains("/repo-lane"),
+        "lane row path must render"
+    );
+
+    // Quit cleanly.
+    let _ = writer.write_all(b"\x1b");
+    let _ = writer.flush();
+    std::thread::sleep(Duration::from_millis(200));
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"q");
+    let _ = writer.flush();
+    wait_for(&log, "Quit herdr-webui-tui?");
+    let _ = writer.write_all(b"y");
+    let _ = writer.flush();
+    drop(writer);
+
+    let (tx, rx) = mpsc::channel::<portable_pty::ExitStatus>();
+    let mut killer = child.clone_killer();
+    std::thread::spawn(move || {
+        if let Ok(status) = child.wait() {
+            let _ = tx.send(status);
+        }
+    });
+    let status = rx.recv_timeout(Duration::from_secs(120));
+    if status.is_err() {
+        let _ = killer.kill();
+    }
+    let status = status.expect("TUI did not exit after q + y confirm");
+    assert!(status.success());
+    child_guard.disarm();
+
+    let _ = std::fs::remove_file(&path);
+    let _ = stop.send(());
+}
+
+#[test]
+fn tui_binary_tab_bar_context_tokens_pty() {
+    // End-to-end T2 pin: the stamp fetch lands over the socket, the
+    // tab bar context strip must show the folder token, the
+    // [worktree] lane token, and the @ branch token, all derived from
+    // the worktree.list reply (cwd is a linked lane in this fixture).
+    let path = herdr_webui::backend_client::unique_test_path("herdr-tui-pty-tokens");
+    let _ = std::fs::remove_file(&path);
+    let worktrees = json!([
+        {"path": "/repo", "branch": "main", "label": "repo", "is_linked_worktree": true},
+        {"path": "/repo-lane", "branch": "feature", "label": "repo-lane", "is_linked_worktree": true}
+    ]);
+    let stop = serve_fake_backend_with_source(&path, "/repo-lane", "/repo", worktrees);
+
+    let pty_system = NativePtySystem::default();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 30,
+            cols: 100,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr-webui-tui"));
+    cmd.args([
+        "--api-socket",
+        path.to_str().unwrap(),
+        "--terminal-socket",
+        path.to_str().unwrap(),
+        "--refresh-ms",
+        "50",
+    ]);
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+    let mut child_guard = ChildGuard {
+        killer: Some(child.clone_killer()),
+    };
+    let pty_out = pair.master.try_clone_reader().unwrap();
+    let log = pump(pty_out);
+
+    // The stamp lands within a refresh cycle; wait for the branch
+    // token, the most downstream artifact of the whole chain.
+    wait_for(&log, "@ feature");
+    assert!(
+        log.lock().unwrap().contains("[worktree]"),
+        "the lane cwd must show the worktree token in the tab bar"
+    );
+    assert!(
+        log.lock().unwrap().contains("repo-lane"),
+        "the folder token must name the workspace cwd"
+    );
+
+    // Quit cleanly.
+    let mut writer = pair.master.take_writer().unwrap();
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"q");
+    let _ = writer.flush();
+    wait_for(&log, "Quit herdr-webui-tui?");
+    let _ = writer.write_all(b"y");
+    let _ = writer.flush();
+    drop(writer);
+
+    let (tx, rx) = mpsc::channel::<portable_pty::ExitStatus>();
+    let mut killer = child.clone_killer();
+    std::thread::spawn(move || {
+        if let Ok(status) = child.wait() {
+            let _ = tx.send(status);
+        }
+    });
+    let status = rx.recv_timeout(Duration::from_secs(120));
+    if status.is_err() {
+        let _ = killer.kill();
+    }
+    let status = status.expect("TUI did not exit after q + y confirm");
+    assert!(status.success());
+    child_guard.disarm();
+
+    let _ = std::fs::remove_file(&path);
+    let _ = stop.send(());
+}
+
+#[test]
+fn tui_binary_branch_picker_opens_switches_and_reroutes_pty() {
+    // End-to-end T3 pin: prefix `v` opens the workspace-scoped branch
+    // picker, the current branch leads with the pin marker, the
+    // sibling-worktree row carries the badge, Enter switches a plain
+    // branch through git.switch (status line reports it), and Enter on
+    // the checked-out-elsewhere row reroutes through worktree.open.
+    let path = herdr_webui::backend_client::unique_test_path("herdr-tui-pty-branchpicker");
+    let _ = std::fs::remove_file(&path);
+    let worktrees = json!([
+        {"path": "/repo", "branch": "main", "label": "repo", "is_linked_worktree": true},
+        {"path": "/repo-lane", "branch": "feature", "label": "repo-lane", "is_linked_worktree": true}
+    ]);
+    let stop = serve_fake_backend_with_source(&path, "/repo", "/repo", worktrees);
+
+    let pty_system = NativePtySystem::default();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 30,
+            cols: 100,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr-webui-tui"));
+    cmd.args([
+        "--api-socket",
+        path.to_str().unwrap(),
+        "--terminal-socket",
+        path.to_str().unwrap(),
+        "--refresh-ms",
+        "50",
+    ]);
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+    let mut child_guard = ChildGuard {
+        killer: Some(child.clone_killer()),
+    };
+    let pty_out = pair.master.try_clone_reader().unwrap();
+    let log = pump(pty_out);
+
+    wait_for(&log, "Enter attach");
+
+    // Ctrl+B v opens the picker.
+    let mut writer = pair.master.take_writer().unwrap();
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"v");
+    let _ = writer.flush();
+    wait_for(&log, "Switch branch");
+    assert!(
+        log.lock().unwrap().contains("in /repo"),
+        "the picker names the workspace repo"
+    );
+    assert!(
+        log.lock().unwrap().contains("topic"),
+        "plain local branch renders"
+    );
+    {
+        let log = log.lock().unwrap();
+        assert!(
+            log.contains("feature"),
+            "the sibling-worktree branch renders"
+        );
+    }
+
+    // j moves to `feature` (row 2); Enter reroutes to /repo-lane. The
+    // fake backend answers worktree.open with an empty result, so the
+    // reroute path itself runs end to end (the overlay closes either
+    // way after the commit).
+    let _ = writer.write_all(b"j");
+    let _ = writer.write_all(b"\r");
+    let _ = writer.flush();
+    wait_for(&log, "switched to feature");
+    {
+        let log = log.lock().unwrap();
+        assert!(
+            log.contains("switched to feature in /repo-lane"),
+            "the reroute names the sibling worktree it opened"
+        );
+    }
+
+    // Reopen and switch a plain branch (`topic`) through git.switch.
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"v");
+    let _ = writer.flush();
+    wait_for(&log, "Switch branch");
+    // jj lands on `topic` (main, feature, topic).
+    let _ = writer.write_all(b"jj");
+    let _ = writer.write_all(b"\r");
+    let _ = writer.flush();
+    wait_for(&log, "switched to topic");
+
+    // Quit cleanly.
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"q");
+    let _ = writer.flush();
+    wait_for(&log, "Quit herdr-webui-tui?");
+    let _ = writer.write_all(b"y");
+    let _ = writer.flush();
+    drop(writer);
+
+    let (tx, rx) = mpsc::channel::<portable_pty::ExitStatus>();
+    let mut killer = child.clone_killer();
+    std::thread::spawn(move || {
+        if let Ok(status) = child.wait() {
+            let _ = tx.send(status);
+        }
+    });
+    let status = rx.recv_timeout(Duration::from_secs(120));
+    if status.is_err() {
+        let _ = killer.kill();
+    }
+    let status = status.expect("TUI did not exit after q + y confirm");
+    assert!(status.success());
+    child_guard.disarm();
+
+    let _ = std::fs::remove_file(&path);
+    let _ = stop.send(());
+}
+
+#[test]
+fn tui_binary_empty_state_cta_pty() {
+    // End-to-end T6 pin: a backend with zero workspaces boots into the
+    // empty tab bar, which must name the Ctrl+B w binding instead of
+    // the bare "no workspaces" text.
+    let path = herdr_webui::backend_client::unique_test_path("herdr-tui-pty-empty-cta");
+    let _ = std::fs::remove_file(&path);
+    let stop = serve_fake_backend_with_empty_workspaces(&path);
+
+    let pty_system = NativePtySystem::default();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 30,
+            cols: 100,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr-webui-tui"));
+    cmd.args([
+        "--api-socket",
+        path.to_str().unwrap(),
+        "--terminal-socket",
+        path.to_str().unwrap(),
+        "--refresh-ms",
+        "50",
+    ]);
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+    let mut child_guard = ChildGuard {
+        killer: Some(child.clone_killer()),
+    };
+    let pty_out = pair.master.try_clone_reader().unwrap();
+    let log = pump(pty_out);
+
+    wait_for(&log, "Ctrl+B w open");
+
+    // Quit cleanly.
+    let mut writer = pair.master.take_writer().unwrap();
+    let _ = writer.write_all(&[0x02]); // Ctrl+B
+    let _ = writer.write_all(b"q");
+    let _ = writer.flush();
+    wait_for(&log, "Quit herdr-webui-tui?");
+    let _ = writer.write_all(b"y");
+    let _ = writer.flush();
+    drop(writer);
+
+    let (tx, rx) = mpsc::channel::<portable_pty::ExitStatus>();
+    let mut killer = child.clone_killer();
+    std::thread::spawn(move || {
+        if let Ok(status) = child.wait() {
+            let _ = tx.send(status);
+        }
+    });
+    let status = rx.recv_timeout(Duration::from_secs(120));
+    if status.is_err() {
+        let _ = killer.kill();
+    }
+    let status = status.expect("TUI did not exit after q + y confirm");
+    assert!(status.success());
+    child_guard.disarm();
+
+    let _ = std::fs::remove_file(&path);
+    let _ = stop.send(());
 }
 
 #[test]
