@@ -1661,10 +1661,10 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = sideFileCount\(view\)/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /disabledReason = "Open a Git repository to use this view"/);
-    // Cleanup-only (not a git repo) views keep the path title so the user can
-    // pick a different folder, but hide the diff layout toggle there.
+    // Cleanup-only (not a git repo) views hide the diff layout toggle and
+    // render an empty side bottom (folder switching lives in the bar).
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const sideBottom = renderDiffLayoutSideToggle\(view\);/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /if \(cleanupOnly\) return `<div class="git-ui-side-bottom">\$\{head\}<\/div>`;/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /if \(cleanupOnly\) return `<div class="git-ui-side-bottom"><\/div>`;/);
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
     const controlsCss = readFileSync(new URL("./desktop/app_css/controls.css", import.meta.url), "utf8");
     match(controlsCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
@@ -7379,76 +7379,45 @@ describe("app bundle load", () => {
     ok(source.includes("setTerminalLoading(false);"));
   });
 
-  it("uses one Git folder selection flow and offers return to workspace", () => {
+  it("keeps folder switching in the location bar and out of the drawer", () => {
     const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
-    const featuresDoc = readFileSync(new URL("../../docs/features.md", import.meta.url), "utf8");
-    const technicalDoc = readFileSync(new URL("../../docs/technical-details.md", import.meta.url), "utf8");
-    const releaseNotes = readFileSync(new URL("../../docs/release-notes.md", import.meta.url), "utf8");
+    const gitDiffViewSource = readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8");
+    const gitBranchListSource = readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8");
 
     match(directoryPickerSource, /function afterSelectCallback\(input\)/);
     match(directoryPickerSource, /input\.dataset\.directoryPickerAfterSelect/);
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /id="gitUiBranchCwd"[^`]*data-directory-picker-after-select="HerdrGitUi\.applyBranchModalCwd"/);
-    ok(!gitUiSource.includes("Load typed path"));
-    ok(!gitUiSource.includes(">Use directory</button>"));
-    ok(!gitUiSource.includes(">Switch to</button>"));
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Choosing a folder moves the Git panel to that directory immediately/);
+    // Plan phase 2b: every drawer folder surface is gone.
+    ok(!gitUiSource.includes("openCwdPicker"), "openCwdPicker removed from git_ui.js");
+    ok(!gitUiSource.includes("returnToWorkspaceCwd"), "returnToWorkspaceCwd removed from git_ui.js");
+    ok(!gitDiffViewSource.includes("git-ui-path-title"), "path title removed from the side bottom");
+    ok(!gitDiffViewSource.includes("git-ui-side-bottom-head"), "side-bottom head removed");
+    ok(!gitBranchListSource.includes("git-ui-folder-different"), "differs notice removed from the subtitle");
+    ok(!gitBranchListSource.includes("returnToWorkspaceCwd"), "return button removed from the subtitle");
+    ok(!gitLayoutCss.includes("git-ui-path-title"), "path title css removed");
+    ok(!gitLayoutCss.includes("git-ui-side-bottom-head"), "side-bottom head css removed");
+    ok(!gitLayoutCss.includes("git-ui-folder-different"), "differs notice css removed");
+    ok(!gitLayoutCss.includes("git-ui-return-cwd"), "return button css removed");
+    // The bar owns the flow now: its path chip opens the picker and routes
+    // the pick through HerdrOpenFolder.
+    const barSource = readFileSync(new URL("./desktop/app_js/location_bar.js", import.meta.url), "utf8");
+    match(barSource, /onclick="HerdrLocationBar\.openPathPicker\(\)"/);
+    match(barSource, /window\.HerdrOpenFolder\.openFolderAsWorkspace\(target\)/);
     match(gitUiSource, /workspaceCwd: nextWorkspaceCwd/);
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function gitCwdMatchesWorkspace\(view\)/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /HerdrGitUi\.returnToWorkspaceCwd\(\)/);
-    match(gitUiSource, /returnToWorkspaceCwd\(\) \{/);
-    // The side path title opens the folder picker and offers return to the workspace folder.
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /class="git-ui-path-title"[^`]*onclick="HerdrGitUi\.openCwdPicker\(\)"/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /Change Git folder/);
-    match(gitUiSource, /openCwdPicker\(\) \{/);
-    match(readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8"), /\.git-ui-side-bottom-head \{[\s\S]*?\.git-ui-side-bottom-head \.git-ui-return-cwd-icon span/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /git-ui-current-changes-icon/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /title="Return to current changes"/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /\$\{returnToCurrentChanges\}\$\{refreshButton\}/);
-    ok(!readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8").includes("${returnToCurrentChanges}${returnToWorkspace}"), "no second return button in the title actions");
+    match(gitDiffViewSource, /git-ui-current-changes-icon/);
+    match(gitDiffViewSource, /title="Return to current changes"/);
+    match(gitDiffViewSource, /\$\{returnToCurrentChanges\}\$\{refreshButton\}/);
+    ok(!gitDiffViewSource.includes("${returnToCurrentChanges}${returnToWorkspace}"), "no second return button in the title actions");
     ok(!gitUiSource.includes('${compareButton}<button'));
-    match(gitLayoutCss, /\.git-ui-return-cwd-icon span/);
-    match(gitLayoutCss, /folder-up\.svg/);
     match(gitLayoutCss, /\.git-ui-current-changes-icon span \{[\s\S]*?git\.svg/);
-    match(gitShortcutsSource, /Folder picker: selected folder becomes the Git panel directory immediately/);
-    match(gitShortcutsSource, /Load more changes fetches older commits/);
-    match(source, /Choosing a folder in the Git directory picker immediately moves the Git panel/);
-    match(source, /clicking the folder path title in the Git side panel opens the same picker/);
-    match(source, /the ↩ button next to the path title returns Git to the current workspace\/worktree folder/);
-    match(source, /WebUI no longer opens a workspace automatically on startup/);
-    match(source, /In Git UI, open Git directory\/branch dialog/);
-    match(featuresDoc, /The Git directory picker has a single meaning/);
-    match(featuresDoc, /The built-in backend starts with zero workspaces/);
-    match(technicalDoc, /Built-in sessions do not seed a default workspace/);
-    match(technicalDoc, /Git cwd is independent from workspace selection/);
-    match(releaseNotes, /0\.2\.50 Release Notes/);
-    match(readmeDoc, /herdr-webui-tui --api-socket \/path\/to\/herdr\.sock --terminal-socket \/path\/to\/herdr-client\.sock/);
-    match(readmeDoc, /The TUI is a client; it does not start the backend by itself/);
-    match(readmeDoc, /Prebuilt binaries ship on the \[releases page\]/);
-    match(readmeDoc, /releases\/latest\/download\/herdr-webui-/);
-    match(readmeDoc, /install-mac` or `install-linux/);
-    match(installationDoc, /This is the recommended quick-start path/);
-    match(installationDoc, /For an external Herdr-compatible backend, point TUI at the socket pair explicitly/);
-    match(installationDoc, /prints `failed to bind <scheme>:\/\/<address>: Address already in use` and retries every second/);
-    match(installationDoc, /While the server is retrying it ignores Ctrl\+C and `SIGTERM`/);
-    match(releaseNotes, /Updates the global `\?` Help & Shortcuts modal/);
-    match(releaseNotes, /`Worktree…` creates a linked worktree/);
-    match(releaseNotes, /table header, and filter row sticky/);
-    match(releaseNotes, /File browser `Show history` opens the Git log scoped to the file/);
-    match(releaseNotes, /Committed files` side preview/);
-    match(featuresDoc, /normal worktree creation modal prefilled/);
-    match(featuresDoc, /scope row, table header, and filter row are sticky/);
-    match(featuresDoc, /File browser `Show history` opens this log scoped to the selected file/);
-    match(featuresDoc, /Selecting one commit loads a `Committed files` side preview/);
-    match(technicalDoc, /renderLogContextMenu/);
-    match(technicalDoc, /row-level right-click context menu/);
-    match(technicalDoc, /optional `file` path/);
-    match(technicalDoc, /commit\^` versus `commit`/);
+    // Branch modal and cleanup scan keep their own picker entries (removed
+    // only when phases 3 and 5 retire the modal).
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /id="gitUiBranchCwd"[^`]*data-directory-picker-after-select="HerdrGitUi\.applyBranchModalCwd"/);
+    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker\.openInput\('gitUiBranchCwd'\)"/);
     match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
-    match(gitUiSource, /if \(path && path !== "\/"\) return path;/);
     match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
     match(readFileSync(new URL("./desktop/git_ui/cleanup.js", import.meta.url), "utf8"), /id="gitUiCleanupRoot"[^`]*data-directory-picker-after-select="HerdrGitUi\.scanCleanup"/);
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker\.openInput\('gitUiBranchCwd'\)"/);
   });
 
   it("renders Git log like a four-column graph table with ref chips", () => {

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Real-DOM acceptance run for the Git path-title folder picker.
+# Real-DOM acceptance run for the location bar path chip (workspace
+# folder switching).
 #
 # Boots an isolated herdr-webui (own XDG_CONFIG_HOME + --session, localhost
 # auth bypass) and a self-contained headless Chrome (Chrome for Testing) via
-# CDP, then drives the served app with real clicks: path title button ->
-# directory picker -> other repo -> return button. Never touches the user's
-# running instance or their browser profile.
+# CDP, then drives the served app with real clicks: bar path chip ->
+# directory picker -> other repo / plain folder -> workspace switch.
+# Never touches the user's running instance or their browser profile.
 #
 # Usage:
 #   scripts/e2e/run-cwd-picker-e2e.sh [--keep]     # --keep skips teardown

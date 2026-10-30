@@ -264,10 +264,10 @@ The todo tool holds the live plan. This list is the durable copy.
 - [ ] 2.6 Verify: `node --test src/assets/*.test.mjs`.
 
 ### Phase 2b: Remove the drawer's folder surfaces
-- [ ] 2b.1 Remove `git-ui-path-title` and `openCwdPicker()`; drop the side-bottom head if it empties.
-- [ ] 2b.2 Remove the subtitle path-notice and `returnToWorkspaceCwd()`.
-- [ ] 2b.3 Retarget `scripts/e2e/cwd-picker-acceptance.mjs` and the `app_load.test.mjs` pins (~7391-7415) to the bar.
-- [ ] 2b.4 Docs: `docs/technical-details.md` folder picker UX and Git UI structure.
+- [x] 2b.1 Remove `git-ui-path-title` and `openCwdPicker()`; drop the side-bottom head if it empties.
+- [x] 2b.2 Remove the subtitle path-notice and `returnToWorkspaceCwd()`.
+- [x] 2b.3 Retarget `scripts/e2e/cwd-picker-acceptance.mjs` and the `app_load.test.mjs` pins (~7391-7415) to the bar.
+- [x] 2b.4 Docs: `docs/technical-details.md` folder picker UX and Git UI structure.
 - [ ] 2b.5 Verify: full frontend suite plus manual smoke of the drawer (branch and worktree chips still work).
 
 ### Phase 3: Branch switching

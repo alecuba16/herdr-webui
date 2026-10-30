@@ -422,8 +422,6 @@
     renderWorktreeActions,
     renderGitLocationSelector,
     renderDirContextMenu,
-    gitCwdMatchesWorkspace,
-    compactPath,
     appRefreshIconButton,
   });
   const canMutateDiff = diffView.canMutateDiff;
@@ -1433,8 +1431,9 @@
         view = { loading: false, tab: "changes", mode: "changes", file: "", navigationStack: [], cwd, workspaceCwd: cwd };
         state.cache[key] = view;
       }
-      // Picker divergence (openCwdPicker, worktree pick) is deliberate
-      // user state: probes must never touch the view, only warm the rail.
+      // Deliberate divergence (worktree pick; the bar owns folder switching
+      // now) is user state: probes must never touch the view, only warm the
+      // rail.
       const diverged = !!(view.cwd && !samePath(view.cwd, cwd) && samePath(view.workspaceCwd || "", cwd));
       if (diverged && view.railStatus && !samePath(view.railStatus.cwd || "", cwd)) {
         view.railStatus = null;
@@ -2600,61 +2599,8 @@
       render();
       refresh();
     },
-    returnToWorkspaceCwd() {
-      const view = active();
-      if (!view || !view.workspaceCwd || gitCwdMatchesWorkspace(view)) return;
-      resetGitViewForCwd(view, view.workspaceCwd);
-      render();
-      refresh();
-    },
-    // Path title entry: opens the directory picker on the current Git folder.
-    // The picker writes into a hidden input node and applies the selected
-    // folder immediately, so no extra modal input has to live in the panel.
-    openCwdPicker() {
-      const view = active();
-      if (!view) return;
-      const picker = window.HerdrDirectoryPicker;
-      if (!picker || typeof picker.open !== "function") return;
-      const input = document.createElement("input");
-      input.type = "text";
-      input.style.display = "none";
-      input.value = String(view.cwd || "");
-      let closed = false;
-      const onChange = () => {
-        closed = true;
-        cleanup();
-        const cwd = normalizePathForCompare(input.value || "");
-        if (!cwd) return;
-        if (samePath(cwd, view.cwd)) return;
-        resetGitViewForCwd(view, cwd);
-        render();
-        refresh();
-      };
-      function cleanup() {
-        input.removeEventListener("change", onChange);
-        if (input.parentNode) input.parentNode.removeChild(input);
-      }
-      input.addEventListener("change", onChange);
-      document.body.appendChild(input);
-      picker.open(input);
-      // The picker close path (Close button) has no callback: poll for the
-      // modal disappearing. selectCurrent() dispatches change before close,
-      // so the change path wins; only a removal without change cleans up.
-      const poll = (attempt) => {
-        if (closed) return;
-        if (!document.getElementById("directoryPickerModal")) {
-          cleanup();
-          return;
-        }
-        if (attempt > 600) {
-          // Long picker session: keep the change listener armed so a late
-          // Select still applies, just stop polling.
-          return;
-        }
-        requestAnimationFrame(() => poll(attempt + 1));
-      };
-      poll(0);
-    },
+    // Folder switching lives in the location bar now (plan 2b); divergence
+    // still happens through selectWorktree until phase 4.
     switchBranchFromModal() {
       const view = active();
       const select = document.getElementById("gitUiBranchSelect");

@@ -22,40 +22,6 @@
 .git-ui-side-bottom .git-ui-btn {
   width: 100%;
 }
-.git-ui-path-title {
-  background: none;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  overflow: hidden;
-  padding: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.git-ui-path-title:hover { color: var(--accent); text-decoration: underline; }
-.git-ui-side-bottom-head {
-  align-items: center;
-  display: flex;
-  gap: 6px;
-  justify-content: flex-start;
-  margin: 0 0 6px;
-}
-.git-ui-side-bottom-head .git-ui-path-title {
-  flex: 0 1 auto;
-  min-width: 0;
-  text-align: left;
-}
-.git-ui-side-bottom-head .git-ui-return-cwd-icon {
-  flex: none;
-  height: 20px;
-  width: 20px;
-}
-.git-ui-side-bottom-head .git-ui-return-cwd-icon span {
-  height: 12px;
-  width: 12px;
-}
 .git-ui-toolbar-title {
   color: var(--muted);
   font-size: 11px;
@@ -114,9 +80,6 @@
 }
 .git-ui-refresh-icon.spinning span {
   animation: app-refresh-spin 2s linear;
-}
-.git-ui-return-cwd-icon span {
-  mask: url("/assets/icons/folder-up.svg") center / contain no-repeat;
 }
 .git-ui-current-changes-icon span {
   mask: url("/assets/icons/git.svg") center / contain no-repeat;
@@ -197,8 +160,6 @@
 .git-ui-worktree-option:hover, .git-ui-worktree-create:hover { background: var(--panel2); border-radius: 7px; }
 .git-ui-worktree-option small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-ui-worktree-create { border-top: 1px solid var(--border); color: var(--accent); margin-top: 6px; }
-.git-ui-folder-different { background: #d99a00; border-radius: 4px; color: #17120a; cursor: help; font-size: 11px; max-width: 180px; overflow: hidden; padding: 3px 6px; text-overflow: ellipsis; white-space: nowrap; }
-.git-ui-return-cwd { color: var(--accent); padding: 3px 7px; }
 .git-ui-commit-below-files { border-top: 1px solid var(--border); padding: 10px; }
 .git-ui-commit-below-files .git-ui-btn { width: 100%; }
 

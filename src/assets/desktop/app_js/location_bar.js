@@ -177,9 +177,9 @@
 
   // Path chip: opens the directory picker on the workspace folder. The
   // picker's selectCurrent dispatches change on the hidden input (the
-  // drawer's openCwdPicker uses the same contract), and the change handler
-  // runs the shared folder-change flow. A no-op pick (same path) keeps
-  // everything untouched.
+  // branch modal's cwd input uses the same contract), and the change
+  // handler runs the shared folder-change flow. A no-op pick (same path)
+  // keeps everything untouched.
   let pickerInput = null;
   function openPathPicker() {
     const workspace = selectedWorkspace();

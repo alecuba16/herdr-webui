@@ -41,9 +41,9 @@
         const branch = String(s.branch || "");
         const worktreeChip = `<button class="git-ui-branch-chip git-ui-worktree-chip" title="Choose worktree" onclick="HerdrGitUi.openWorktreeList(event)"><span class="git-ui-branch-chip-name">${esc(worktreeName)}</span><b class="git-ui-chip-caret">▾</b></button>`;
         const branchChip = branch ? `<button class="git-ui-branch-chip" title="${esc(titleWithGitShortcut("Switch branch", "branch"))}" onclick="HerdrGitUi.openBranchList(event)"><span class="git-ui-branch-chip-name">${esc(branch)}</span><b class="git-ui-chip-caret">▾</b></button>` : "";
-        const folderDiffers = ctx.workspaceCwd && !samePath(ctx.cwd, ctx.workspaceCwd);
-        const pathNotice = folderDiffers ? `<span class="git-ui-folder-different" title="Git is operating in a different folder than the current workspace: ${esc(ctx.cwd)}">${esc(compactPath(ctx.cwd))}</span><button class="git-ui-btn git-ui-return-cwd" title="Return Git to the current workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()">↩</button>` : "";
-        return `${worktreeChip}<span class="git-ui-selector-separator">/</span>${branchChip}${pathNotice}`;
+        // Folder switching lives in the location bar now (plan 2b); worktree
+        // rows still diverge the Git cwd until phase 4 moves the chip.
+        return `${worktreeChip}<span class="git-ui-selector-separator">/</span>${branchChip}`;
       }
 
       function renderWorktreeList() {

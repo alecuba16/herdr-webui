@@ -1818,18 +1818,19 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
     appRefreshIconButton: () => "",
   });
   const matched = toggleMod.renderDiffLayoutSideToggle({ cwd: "/repo/a", workspaceCwd: "/repo/a" });
-  assert.match(matched, /class="git-ui-path-title"[^>]*onclick="HerdrGitUi\.openCwdPicker\(\)"/);
-  assert.match(matched, /Change Git folder/);
+  // Folder switching moved to the location bar (plan phase 2b): the side
+  // bottom keeps only the diff layout toggle, no path title, no return.
+  assert.doesNotMatch(matched, /git-ui-path-title/);
+  assert.doesNotMatch(matched, /openCwdPicker/);
   assert.doesNotMatch(matched, /returnToWorkspaceCwd/);
+  assert.match(matched, /git-ui-diff-layout-toggle/);
+  assert.match(matched, /Show unified diff/);
   const diverged = toggleMod.renderDiffLayoutSideToggle({ cwd: "/repo/b", workspaceCwd: "/repo/a" });
-  assert.match(diverged, /returnToWorkspaceCwd/);
-  assert.match(diverged, /Return Git to workspace folder/);
-  // Cleanup-only (not a git repo) view keeps the clickable path title so the
-  // user can move to a real repository, but hides the diff layout toggle.
+  assert.doesNotMatch(diverged, /returnToWorkspaceCwd/, "diverged views render no return button either");
+  // Cleanup-only (not a git repo) view renders an empty side bottom.
   const noRepo = toggleMod.renderDiffLayoutSideToggle({ cwd: "/repo/b", workspaceCwd: "/repo/b", status: { not_git_repository: true } });
-  assert.match(noRepo, /openCwdPicker/);
+  assert.equal(noRepo, '<div class="git-ui-side-bottom"></div>');
   assert.doesNotMatch(noRepo, /git-ui-diff-layout-toggle/, "cleanup-only view hides the layout toggle");
-  assert.doesNotMatch(noRepo, /returnToWorkspaceCwd/, "no return button in a no-repo view");
 });
 
 test("log_render module is registered and wired before git_ui.js consumes it", () => {
@@ -2045,7 +2046,7 @@ test("openFileHistory reuses the existing Git view for the same cwd", async () =
   assert.match(ctxHtml(booted), /Loading history/, "history tab renders in the reused view");
 });
 
-test("path title picker moves the Git view and the return button restores the workspace folder", async () => {
+test("the drawer has no folder surfaces; the location bar owns folder switching", async () => {
   const booted = await bootGitUi({
     "/api/git-ui/status": emptyStatus(),
     "/api/git-ui/diff": { files: [] },
@@ -2054,61 +2055,23 @@ test("path title picker moves the Git view and the return button restores the wo
   });
   const { ui, ctx } = booted;
   await ui.open({ cwd: "/tmp/workspace-repo", title: "demo" }, { forceOpen: true });
-  let html = ctxHtml(booted);
-  // Side bottom: the cwd renders as a clickable path title that opens the
-  // folder picker, and no return button exists while cwd == workspaceCwd.
-  assert.match(html, /class="git-ui-path-title"[\s\S]*?onclick="HerdrGitUi\.openCwdPicker\(\)"/);
-  const bottomChunk = html.split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(!bottomChunk.includes("returnToWorkspaceCwd"), "no return button while the Git cwd matches the workspace");
-  // Stub picker: records the hidden input seed and simulates a select by
-  // setting its value and dispatching the change event git_ui listens for.
-  const inputs = [];
-  const makeInput = () => {
-    const listeners = {};
-    const node = {
-      type: "",
-      style: {},
-      value: "",
-      parentNode: { removeChild() {} },
-      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-      removeEventListener(type, fn) { if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn); },
-      dispatch(type) { (listeners[type] || []).slice().forEach((fn) => fn({ target: node })); },
-    };
-    return node;
-  };
-  const rawCreateElement = ctx.document.createElement;
-  ctx.document.createElement = (tag) => {
-    const node = tag === "input" ? makeInput() : rawCreateElement(tag);
-    if (node && node.type === "") node.__tag = tag;
-    if (tag === "input") inputs.push(node);
-    return node;
-  };
-  let pickerInput = null;
-  ctx.window.HerdrDirectoryPicker = {
-    open(input) { pickerInput = input; },
-  };
-  ctx.window.addEventListener = () => {};
-  ctx.window.removeEventListener = () => {};
-  ui.openCwdPicker();
-  assert.ok(pickerInput, "picker receives the hidden input");
-  assert.equal(pickerInput.value, "/tmp/workspace-repo", "picker input seeds the current Git cwd");
-  pickerInput.value = "/tmp/other-repo";
-  pickerInput.dispatch("change");
+  const html = ctxHtml(booted);
+  // Plan phase 2b: the path title, its picker entry, the side-bottom head,
+  // the differs notice, and the return button are all gone from the drawer.
+  assert.ok(!html.includes("git-ui-path-title"), "no path title");
+  assert.ok(!html.includes("openCwdPicker"), "no picker entry");
+  assert.ok(!html.includes("git-ui-side-bottom-head"), "no side-bottom head");
+  assert.ok(!html.includes("git-ui-folder-different"), "no differs notice");
+  assert.ok(!html.includes("returnToWorkspaceCwd"), "no return button");
+  assert.ok(!ctx.window.HerdrGitUi.openCwdPicker, "openCwdPicker is not part of the API");
+  assert.ok(!ctx.window.HerdrGitUi.returnToWorkspaceCwd, "returnToWorkspaceCwd is not part of the API");
+  // The worktree row select still moves the Git cwd (the remaining
+  // divergence entry until phase 4 moves the worktree chip to the bar).
+  ctx.window.confirm = () => true;
+  ui.selectWorktree(encodeURIComponent("/tmp/other-repo"));
   await new Promise((resolve) => setTimeout(resolve, 20));
-  // The selected folder becomes the Git cwd immediately: status reloads for it.
   const statusCall = booted.calls.filter((call) => call.path === "/api/git-ui/status").pop();
-  assert.equal(statusCall.params.get("cwd"), "/tmp/other-repo", "status refetches with the picked cwd");
-  html = ctxHtml(booted);
-  const diverged = html.split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(diverged.includes("returnToWorkspaceCwd"), "return button appears once the cwd left the workspace folder");
-  // Return restores the workspace folder and drops the button again.
-  ui.returnToWorkspaceCwd();
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const lastStatus = booted.calls.filter((call) => call.path === "/api/git-ui/status").pop();
-  assert.equal(lastStatus.params.get("cwd"), "/tmp/workspace-repo", "return restores the workspace cwd");
-  html = ctxHtml(booted);
-  const restored = html.split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(!restored.includes("returnToWorkspaceCwd"), "return button disappears after restoring");
+  assert.equal(statusCall.params.get("cwd"), "/tmp/other-repo", "status refetches with the selected worktree cwd");
 });
 
 test("Esc pops one navigation level and only hides at the changes root", async () => {
@@ -2511,7 +2474,7 @@ test("a plain reopen of a hidden drawer with a loaded view refetches the status"
     "the reopened drawer reads the out-of-band state");
 });
 
-test("picker divergence survives shell-render probes and keeps the rail on the workspace folder", async () => {
+test("worktree divergence survives shell-render probes and keeps the rail on the workspace folder", async () => {
   // The shell probe used to read a diverged cwd as a stale park, killing
   // the return button. Divergence is deliberate and must survive.
   const wsStatus = { state: "dirty", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["ws.txt"], untracked: [], conflicted: [] };
@@ -2530,38 +2493,17 @@ test("picker divergence survives shell-render probes and keeps the rail on the w
   const workspace = { cwd: "/tmp/ws-repo", title: "demo" };
   await ui.open(workspace, { forceOpen: true });
   await settle();
-  // Diverge through the picker event chain (hidden input change).
-  const makeInput = () => {
-    const listeners = {};
-    return {
-      type: "", style: {}, value: "/tmp/ws-repo",
-      parentNode: { removeChild() {} },
-      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-      removeEventListener(type, fn) { if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn); },
-      dispatch(type) { (listeners[type] || []).slice().forEach((fn) => fn({ target: this })); },
-    };
-  };
-  const rawCreate = ctx.document.createElement;
-  let pickerInput = null;
-  ctx.document.createElement = (tag) => {
-    const node = tag === "input" ? makeInput() : rawCreate(tag);
-    if (tag === "input") pickerInput = node;
-    return node;
-  };
-  ctx.window.HerdrDirectoryPicker = { open() {} };
-  ctx.window.addEventListener = () => {};
-  ctx.window.removeEventListener = () => {};
-  ui.openCwdPicker();
-  pickerInput.value = "/tmp/picked-repo";
-  pickerInput.dispatch("change");
+  // Diverge through the worktree row select (the picker entry is gone,
+  // plan phase 2b; selectWorktree is the remaining divergence path until
+  // phase 4 moves the worktree chip to the bar).
+  ctx.window.confirm = () => true;
+  ui.selectWorktree(encodeURIComponent("/tmp/picked-repo"));
   await settle();
   let html = ctxHtml(booted).split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(html.includes("returnToWorkspaceCwd"), "the return button appears once the picker diverged");
+  assert.ok(!html, "the side-bottom head is gone with the folder surfaces");
   // Shell renders re-fire the probe for the workspace folder.
   await ui.probeWorkspaceStatus(workspace);
   await settle();
-  html = ctxHtml(booted).split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(html.includes("returnToWorkspaceCwd"), "the divergence survives the probe");
   const railCalls = calls.filter((call) => call.path === "/api/git-ui/rail-status");
   assert.deepEqual(JSON.parse(railCalls[railCalls.length - 1].init.body).workspaces,
     [{ workspace_id: null, cwd: "/tmp/ws-repo" }],
@@ -2577,8 +2519,8 @@ test("picker divergence survives shell-render probes and keeps the rail on the w
 });
 
 test("divergence to a plain folder keeps the rail clickable after the drawer hides", async () => {
-  // Nogit lockout risk: after picking a plain folder and hiding the drawer,
-  // the rail must keep the workspace tint or it can never reopen.
+  // Nogit lockout risk: after diverging to a plain folder and hiding the
+  // drawer, the rail must keep the workspace tint or it can never reopen.
   const wsStatus = { state: "clean", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
   const plainStatus = { state: "cleanup only", repo_path: "/tmp/plain-dir", branch: "No Git repository", not_git_repository: true, ahead: 0, behind: 0, upstream: "", remote_url: null, staged: [], unstaged: [], untracked: [], conflicted: [], stashes: [] };
   const booted = await bootGitUi({
@@ -2591,30 +2533,10 @@ test("divergence to a plain folder keeps the rail clickable after the drawer hid
   const workspace = { cwd: "/tmp/ws-repo", title: "demo" };
   await ui.open(workspace, { forceOpen: true });
   await settle();
-  // Diverge to the plain folder through the picker event chain.
-  const makeInput = () => {
-    const listeners = {};
-    return {
-      type: "", style: {}, value: "/tmp/ws-repo",
-      parentNode: { removeChild() {} },
-      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-      removeEventListener(type, fn) { if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn); },
-      dispatch(type) { (listeners[type] || []).slice().forEach((fn) => fn({ target: this })); },
-    };
-  };
-  const rawCreate = ctx.document.createElement;
-  let pickerInput = null;
-  ctx.document.createElement = (tag) => {
-    const node = tag === "input" ? makeInput() : rawCreate(tag);
-    if (tag === "input") pickerInput = node;
-    return node;
-  };
-  ctx.window.HerdrDirectoryPicker = { open() {} };
-  ctx.window.addEventListener = () => {};
-  ctx.window.removeEventListener = () => {};
-  ui.openCwdPicker();
-  pickerInput.value = "/tmp/plain-dir";
-  pickerInput.dispatch("change");
+  // Diverge to the plain folder through the worktree row select (the
+  // picker entry is gone, plan phase 2b).
+  ctx.window.confirm = () => true;
+  ui.selectWorktree(encodeURIComponent("/tmp/plain-dir"));
   await settle();
   // The cleanup-only park landed for the picked folder.
   assert.ok(ctxHtml(booted).includes("cleanup"), "the plain folder renders its cleanup-only view");
@@ -2628,8 +2550,8 @@ test("divergence to a plain folder keeps the rail clickable after the drawer hid
     "a hidden drawer diverged to a plain folder tints the rail from the workspace folder");
 });
 
-test("return to the workspace folder drops the rail park and refetches the workspace status", async () => {
-  // After return restores the workspace cwd the rail park is stale by
+test("restoring the workspace folder drops the rail park and refetches the workspace status", async () => {
+  // After the cwd restores to the workspace folder the rail park is stale by
   // design: the view refetches, so the tint must follow the fresh load.
   let statusPayload = { state: "dirty", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["back.txt"], untracked: [], conflicted: [] };
   const pickedStatus = { state: "clean", branch: "picked", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
@@ -2643,43 +2565,25 @@ test("return to the workspace folder drops the rail park and refetches the works
   const workspace = { cwd: "/tmp/ws-repo", title: "demo" };
   await ui.open(workspace, { forceOpen: true });
   await settle();
-  const makeInput = () => {
-    const listeners = {};
-    return {
-      type: "", style: {}, value: "/tmp/ws-repo",
-      parentNode: { removeChild() {} },
-      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-      removeEventListener(type, fn) { if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn); },
-      dispatch(type) { (listeners[type] || []).slice().forEach((fn) => fn({ target: this })); },
-    };
-  };
-  const rawCreate = ctx.document.createElement;
-  let pickerInput = null;
-  ctx.document.createElement = (tag) => {
-    const node = tag === "input" ? makeInput() : rawCreate(tag);
-    if (tag === "input") pickerInput = node;
-    return node;
-  };
-  ctx.window.HerdrDirectoryPicker = { open() {} };
-  ctx.window.addEventListener = () => {};
-  ctx.window.removeEventListener = () => {};
-  ui.openCwdPicker();
-  pickerInput.value = "/tmp/picked-repo";
-  pickerInput.dispatch("change");
+  // Diverge through the worktree row select (plan phase 2b removed the
+  // picker entry).
+  ctx.window.confirm = () => true;
+  ui.selectWorktree(encodeURIComponent("/tmp/picked-repo"));
   await settle();
   // Park the rail status for the workspace folder.
   await ui.probeWorkspaceStatus(workspace);
   await settle();
   statusPayload = { state: "clean", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
-  // Return: the button restores the workspace folder and disappears.
-  ui.returnToWorkspaceCwd();
+  // Restore the workspace folder: the return button is gone (plan phase
+  // 2b), so the same select path switches the Git cwd back.
+  ui.selectWorktree(encodeURIComponent("/tmp/ws-repo"));
   await settle();
-  const head = ctxHtml(booted).split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(!head.includes("returnToWorkspaceCwd"), "the return button disappears after restoring");
+  const html = ctxHtml(booted);
+  assert.ok(!html.includes("git-ui-path-title"), "no path title anywhere in the panel");
   assert.equal(ui.workspaceStatus(null, workspace), "clean",
-    "the rail reads the refetched workspace status after the return");
+    "the rail reads the refetched workspace status after the restore");
   const lastCall = calls.filter((call) => call.path === "/api/git-ui/status").pop();
-  assert.equal(lastCall.params.get("cwd"), "/tmp/ws-repo", "the return refetched the workspace folder");
+  assert.equal(lastCall.params.get("cwd"), "/tmp/ws-repo", "the restore refetched the workspace folder");
 });
 
 // ---- cleanup delete flow (branch-too option, parallelism, rescan gate) --

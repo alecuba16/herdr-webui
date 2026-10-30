@@ -1,20 +1,22 @@
-// Real-DOM acceptance for the Git path-title folder picker and the
-// return-to-workspace button (git-ui side panel).
+// Real-DOM acceptance for the location bar path chip (workspace folder
+// switching) and the removed drawer folder surfaces.
 //
-// The behavioral suites drive openCwdPicker with a stubbed picker in a vm;
+// The behavioral suites drive openPathPicker with a stubbed picker in a vm;
 // this script runs the actual served bundle in headless Chrome and clicks the
-// real DOM: the path title button, the real directory picker tree, and the
-// return button. Server + Chrome are started by run-cwd-picker-e2e.sh.
+// real DOM: the bar's path chip, the real directory picker tree, and the
+// workspace switch it triggers. Server + Chrome are started by
+// run-cwd-picker-e2e.sh.
 //
 // Flow checked (all against the served app, real clicks, real backend):
-//  1. Workspace open on REPO_A -> Git drawer shows the path title as a
-//     button (git-ui-path-title) with no return button next to it.
-//  2. Clicking the title opens the real directory picker seeded with REPO_A.
-//  3. Navigating the picker to REPO_B and pressing "Select this folder"
-//     moves the Git panel to REPO_B: status refetches for the new cwd and the
-//     return button (git-ui-return-cwd-icon) appears next to the title.
-//  4. Clicking the return button restores REPO_A and the button disappears.
-//  5. The cleanup-only view (plain folder) keeps a clickable path title.
+//  1. Workspace open on REPO_A -> the location bar renders the path chip
+//     with REPO_A's basename and a branch chip for the repo.
+//  2. The Git drawer holds no path title, folder picker, or return button
+//     (plan phase 2b moved folder switching to the bar).
+//  3. Clicking the path chip opens the real directory picker seeded with
+//     REPO_A; navigating to REPO_B and pressing "Select this folder"
+//     switches the workspace to REPO_B (bar chip, state.ws, rail status).
+//  4. The same flow on a plain (non-repo) folder creates a workspace on
+//     it; the bar keeps the path chip and drops the branch chip.
 import { writeFileSync } from "node:fs";
 import { fetchJson, attach, sleep, makeRecorder, writeReport, writeCrashReport } from "./cdp-driver-helpers.mjs";
 
@@ -46,82 +48,105 @@ async function main() {
     return r.result.value;
   };
 
-  const reload = async () => {
-    await cdp.send("Page.navigate", { url: APP_URL });
-    await sleep(3000);
-  };
-
-  await reload();
-
   // Open the workspace on REPO_A through the real API, then navigate to it
-  // with the same go() helper the create modal uses (creating alone does not
-  // focus the workspace).
+  // with the same routed URL the app persists selection under.
   const made = await evalExpr(`fetch("/api/workspaces", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({cwd: ${JSON.stringify(REPO_A)}, label: "cwd-picker-e2e"})}).then((r) => r.json()).catch((e) => "err:" + e)`);
   if (!made || !made.result) record("workspace created", false, JSON.stringify(made).slice(0, 200));
   else record("workspace created on repo A", true, "");
   const wsId = made && made.result ? (made.result.workspace && made.result.workspace.workspace_id) : null;
   if (!wsId) throw new Error("no workspace_id in create response: " + JSON.stringify(made).slice(0, 300));
-  // The app persists selection under the URL route; reload straight onto
-  // the routed URL (navigating to "/" would boot clean with no workspace).
   await cdp.send("Page.navigate", { url: `${APP_URL}session/default/workspace/${wsId}` });
   await sleep(3000);
 
-  // Wait until the app has the workspace list loaded (the Git drawer keys
-  // off state.ws; opening before the list loads lands on the home default).
-  // The list endpoint answers {result: {workspaces: [...]}}; verify the
-  // app's own state, not just the endpoint, to avoid the fallback race.
+  // Wait until the app has the workspace list and a selected workspace; the
+  // bar keys off state.ws and hides without one.
   const loaded = await evalExpr(`new Promise((resolve) => {
     const started = Date.now();
     const check = () => {
-      if (state && state.workspaces && state.workspaces.length) { resolve("loaded"); return; }
+      const ws = state && state.workspaces && state.workspaces.length;
+      if (ws && state.ws) { resolve("loaded"); return; }
       if (Date.now() - started > 30000) resolve("timeout");
       else setTimeout(check, 400);
     };
     check();
   })`);
-  record("app loaded the workspace list", loaded === "loaded", `got ${loaded}`);
+  record("app loaded the workspace list and selection", loaded === "loaded", `got ${loaded}`);
 
-  // Open the Git drawer via the right rail.
-  const opened = await evalExpr(`new Promise((resolve) => {
+  // 1. Bar renders the workspace folder as a path chip plus a branch chip.
+  const bar = await evalExpr(`new Promise((resolve) => {
+    const started = Date.now();
+    const check = () => {
+      const bar = document.getElementById("locationBar");
+      const chip = bar && bar.querySelector(".location-bar-path-chip");
+      if (bar && !bar.hidden && chip) resolve("visible");
+      else if (Date.now() - started > 20000) resolve("timeout");
+      else setTimeout(check, 300);
+    };
+    check();
+  })`);
+  record("location bar visible with the path chip", bar === "visible", `got ${bar}`);
+
+  const step1 = await evalExpr(`(() => {
+    const bar = document.getElementById("locationBar");
+    const chip = bar.querySelector(".location-bar-path-chip");
+    const branch = bar.querySelector(".location-bar-branch-chip");
+    return {
+      pathText: chip ? chip.textContent : "",
+      pathIsButton: !!(chip && chip.tagName === "BUTTON"),
+      hasOnclick: !!(chip && chip.getAttribute("onclick")),
+      titleAttr: chip ? (chip.getAttribute("title") || "") : "",
+      branchChip: !!branch,
+      branchDisabled: !!(branch && branch.disabled),
+    };
+  })()`);
+  record("path chip renders the workspace folder basename", step1.pathText.includes(REPO_A.split("/").pop()), step1.pathText);
+  record("path chip is a button wired to the picker", step1.pathIsButton && step1.hasOnclick, JSON.stringify(step1));
+  record("path chip title documents the change-folder hint", (step1.titleAttr || "").includes("Change workspace folder"), step1.titleAttr);
+  const branchShown = await evalExpr(`new Promise((resolve) => {
+    const started = Date.now();
+    const check = () => {
+      const chip = document.querySelector("#locationBar .location-bar-branch-chip");
+      if (chip && !chip.disabled) resolve(chip.textContent);
+      else if (Date.now() - started > 15000) resolve("timeout:" + (chip ? chip.textContent : "no chip"));
+      else setTimeout(check, 300);
+    };
+    check();
+  })`);
+  record("branch chip fills from the rail status probe", String(branchShown).includes("main"), `got ${branchShown}`);
+
+  // 2. The Git drawer carries no folder surfaces (plan phase 2b).
+  const drawer = await evalExpr(`new Promise((resolve) => {
     const btn = document.getElementById("rightRailGit");
     if (!btn) { resolve("no toggle"); return; }
     btn.click();
     const started = Date.now();
     const check = () => {
       const panel = document.getElementById("gitUiPanel");
-      const title = panel && panel.querySelector(".git-ui-path-title");
-      // The title abbreviates deep paths (".../scratch/xyz/repo-a"), so
-      // compare the un-abbreviated title attribute, which carries the cwd.
-      const attr = title ? (title.getAttribute("title") || "") : "";
-      if (title && attr.includes(${JSON.stringify(REPO_A)})) resolve("opened");
-      else if (Date.now() - started > 20000) resolve("timeout:" + attr);
+      const ready = panel && panel.querySelector(".git-ui-branch-chip, .git-ui-btn");
+      if (ready) resolve("opened");
+      else if (Date.now() - started > 20000) resolve("timeout");
       else setTimeout(check, 300);
     };
     check();
   })`);
-  record("git drawer opened on the workspace repo", opened === "opened", `got ${opened}`);
-
-  // 1. Title is a real button; no return button while cwd == workspace.
-  const step1 = await evalExpr(`(() => {
+  record("git drawer opened on the workspace repo", drawer === "opened", `got ${drawer}`);
+  const step2 = await evalExpr(`(() => {
     const panel = document.getElementById("gitUiPanel");
-    const head = panel.querySelector(".git-ui-side-bottom-head");
-    const title = head && head.querySelector(".git-ui-path-title");
-    const ret = head && head.querySelector(".git-ui-return-cwd-icon");
     return {
-      titleIsButton: !!(title && title.tagName === "BUTTON"),
-      titleText: title ? title.textContent : "",
-      hasOnclick: !!(title && typeof title.onclick === "function") || !!(title && title.getAttribute("onclick")),
-      titleAttr: title ? (title.getAttribute("title") || "") : "",
-      returnPresent: !!ret,
+      pathTitle: !!panel.querySelector(".git-ui-path-title"),
+      returnButton: !!panel.querySelector(".git-ui-return-cwd-icon"),
+      sideHead: !!panel.querySelector(".git-ui-side-bottom-head"),
+      differsNotice: !!panel.querySelector(".git-ui-folder-different"),
+      worktreeChip: !!panel.querySelector(".git-ui-worktree-chip"),
     };
   })()`);
-  record("path title renders as a button with picker onclick", step1.titleIsButton && step1.hasOnclick, JSON.stringify(step1));
-  record("title attr documents the change-folder hint", (step1.titleAttr || "").includes("Change Git folder"), step1.titleAttr.split("\\n")[0]);
-  record("no return button while git cwd matches the workspace", !step1.returnPresent, "");
+  record("drawer has no path title or return button", !step2.pathTitle && !step2.returnButton && !step2.sideHead, JSON.stringify(step2));
+  record("drawer has no differs notice", !step2.differsNotice, "");
+  record("drawer keeps its worktree chip", step2.worktreeChip, "");
 
-  // 2. Click the title: the real directory picker opens, seeded with REPO_A.
-  await evalExpr(`document.querySelector("#gitUiPanel .git-ui-path-title").click()`);
-  const step2 = await evalExpr(`new Promise((resolve) => {
+  // 3. Click the path chip: the real directory picker opens, seeded with REPO_A.
+  await evalExpr(`document.querySelector("#locationBar .location-bar-path-chip").click()`);
+  const pickerOpen = await evalExpr(`new Promise((resolve) => {
     const started = Date.now();
     const check = () => {
       const modal = document.getElementById("directoryPickerModal");
@@ -131,13 +156,10 @@ async function main() {
     };
     check();
   })`);
-  record("clicking the title opens the real directory picker", step2.open === true, "");
-  record("picker is seeded at the git cwd", (step2.text || "").includes(REPO_A.split("/").pop()) || (step2.text || "").includes(REPO_A), (step2.text || "").slice(0, 120));
+  record("clicking the path chip opens the real directory picker", pickerOpen.open === true, "");
+  record("picker is seeded at the workspace folder", (pickerOpen.text || "").includes(REPO_A.split("/").pop()) || (pickerOpen.text || "").includes(REPO_A), (pickerOpen.text || "").slice(0, 120));
 
-  // 3. Navigate the picker to REPO_B and select it.
-  // The picker rows call HerdrDirectoryPicker.toggle(encodedPath) -> the
-  // private load(); drive the same public entry the rows use, then press
-  // the real Select button.
+  // Navigate the picker to REPO_B and select it: the workspace switches.
   const picked = await evalExpr(`(async () => {
     HerdrDirectoryPicker.toggle(${JSON.stringify(encodeURIComponent(REPO_B))});
     await new Promise((r) => setTimeout(r, 1500));
@@ -152,51 +174,28 @@ async function main() {
   const step3 = await evalExpr(`new Promise((resolve) => {
     const started = Date.now();
     const check = () => {
-      const panel = document.getElementById("gitUiPanel");
-      const head = panel && panel.querySelector(".git-ui-side-bottom-head");
-      const title = head && head.querySelector(".git-ui-path-title");
-      const ret = head && head.querySelector(".git-ui-return-cwd-icon");
-      const modal = document.getElementById("directoryPickerModal");
-      if (title && ret && !modal) resolve({ moved: true, titleText: title.textContent, returnPresent: true, retTitle: ret.getAttribute("title") || "" });
-      else if (Date.now() - started > 15000) resolve({ moved: false, titleText: title ? title.textContent : "", returnPresent: !!ret, modalGone: !modal });
+      const bar = document.getElementById("locationBar");
+      const chip = bar && bar.querySelector(".location-bar-path-chip");
+      const ws = state && state.workspaces ? (state.workspaces || []).find((w) => w.workspace_id === state.ws) : null;
+      const wsCwd = ws ? (window.HerdrWorkspacePath ? window.HerdrWorkspacePath(ws) : ws.cwd || ws.path) : "";
+      if (chip && (chip.textContent || "").includes(${JSON.stringify(REPO_B.split("/").pop())}) && wsCwd === ${JSON.stringify(REPO_B)}) resolve("switched");
+      else if (Date.now() - started > 15000) resolve("timeout:" + JSON.stringify({chip: chip && chip.textContent, wsCwd}));
       else setTimeout(check, 300);
     };
     check();
   })`);
-  record("git panel moved to repo B", step3.moved === true, JSON.stringify(step3));
-  record("return button appears next to the title", step3.returnPresent === true, step3.retTitle);
-  record("picker closed after selection", !("modalGone" in step3) || step3.modalGone !== false, "");
+  record("workspace switched to repo B (bar chip and state.ws)", step3 === "switched", `got ${step3}`);
 
-  // The status fetch for the new cwd went through the real backend: the
-  // API answers for repo B with its branch (the panel refetches status for
-  // the new cwd on apply).
+  // The real backend answers status for the new workspace folder (the rail
+  // probe refetches for it).
   const statusCheck = await evalExpr(`fetch(${JSON.stringify("/api/git-ui/status?cwd=" + encodeURIComponent(REPO_B))}).then((r) => r.json()).catch((e) => "err:" + e)`);
   const branchOk = !!statusCheck && !!statusCheck.branch && statusCheck.repo_path === REPO_B;
-  record("real backend status answers for repo B cwd", branchOk, JSON.stringify(statusCheck).slice(0, 160));
+  record("real backend status answers for repo B folder", branchOk, JSON.stringify(statusCheck).slice(0, 160));
 
-  // 4. Click the return button: back to REPO_A, button disappears.
-  const step4 = await evalExpr(`new Promise((resolve) => {
-    const ret = document.querySelector("#gitUiPanel .git-ui-side-bottom-head .git-ui-return-cwd-icon");
-    if (!ret) { resolve({ clicked: false }); return; }
-    ret.click();
-    const started = Date.now();
-    const check = () => {
-      const head = document.querySelector("#gitUiPanel .git-ui-side-bottom-head");
-      const title = head && head.querySelector(".git-ui-path-title");
-      const retAfter = head && head.querySelector(".git-ui-return-cwd-icon");
-      if (title && !retAfter) resolve({ clicked: true, titleText: title.textContent });
-      else if (Date.now() - started > 15000) resolve({ clicked: true, timeout: true, titleText: title ? title.textContent : "" });
-      else setTimeout(check, 300);
-    };
-    check();
-  })`);
-  record("return button restores the workspace folder and disappears", step4.clicked && !step4.timeout, JSON.stringify(step4));
-
-  // 5. Cleanup-only view (plain folder): keep the clickable title.
-  // Same real flow as step 3 (title click -> picker -> Select), then assert
-  // the no-repo view keeps the title and hides the diff layout toggle.
-  await evalExpr(`document.querySelector("#gitUiPanel .git-ui-path-title").click()`);
-  const modal5 = await evalExpr(`new Promise((resolve) => {
+  // 4. Plain folder: the same bar flow creates a workspace on it; the bar
+  // keeps the path chip and drops the branch chip (no repo).
+  await evalExpr(`document.querySelector("#locationBar .location-bar-path-chip").click()`);
+  const picker4 = await evalExpr(`new Promise((resolve) => {
     const started = Date.now();
     const check = () => {
       const modal = document.getElementById("directoryPickerModal");
@@ -206,40 +205,38 @@ async function main() {
     };
     check();
   })`);
-  const step5 = await evalExpr(`(async () => {
-    const modal = document.getElementById("directoryPickerModal");
-    if (!modal) return { reopened: false };
-    HerdrDirectoryPicker.toggle(${JSON.stringify(encodeURIComponent(PLAIN))});
-    await new Promise((r) => setTimeout(r, 1500));
-    const select = Array.from(modal.querySelectorAll("button")).find((b) => /Select this folder/.test(b.textContent || ""));
-    if (!select) return { reopened: true, selected: false };
-    select.click();
-    // The no-repo status fetch for the plain folder is async; poll for the
-    // cleanup-only view instead of trusting a fixed sleep (it lost the race
-    // once under a busy server and failed the suite spuriously).
-    const head = document.querySelector("#gitUiPanel .git-ui-side-bottom-head");
-    const title = head && head.querySelector(".git-ui-path-title");
-    const started = Date.now();
-    let cleanup = !!document.querySelector("#gitUiPanel .git-ui-status-cleanup-only");
-    while (!cleanup && Date.now() - started < 10000) {
-      await new Promise((r) => setTimeout(r, 300));
-      cleanup = !!document.querySelector("#gitUiPanel .git-ui-status-cleanup-only");
-    }
-    return {
-      reopened: true, selected: true,
-      titleIsButton: !!(title && title.tagName === "BUTTON"),
-      layoutToggleGone: !document.querySelector("#gitUiPanel .git-ui-diff-layout-toggle"),
-      noRepoBanner: cleanup,
-    };
-  })()`);
-  if (modal5 !== "open") {
-    // The title click must reopen the picker; fail loudly instead of running
-    // the cleanup-only assertions against whatever panel state remained.
-    record("step 5: title click reopens the picker", false, `got ${modal5}`);
+  if (picker4 !== "open") {
+    record("step 4: path chip reopens the picker", false, `got ${picker4}`);
   } else {
-    record("cleanup-only view keeps the clickable path title", step5.reopened && step5.selected && step5.titleIsButton, JSON.stringify(step5));
-    record("cleanup-only view hides the diff layout toggle", step5.layoutToggleGone === true, "");
-    record("cleanup-only view really entered the no-repo state", step5.noRepoBanner === true, JSON.stringify(step5.noRepoBanner));
+    const step4 = await evalExpr(`(async () => {
+      const modal = document.getElementById("directoryPickerModal");
+      HerdrDirectoryPicker.toggle(${JSON.stringify(encodeURIComponent(PLAIN))});
+      await new Promise((r) => setTimeout(r, 1500));
+      const select = Array.from(modal.querySelectorAll("button")).find((b) => /Select this folder/.test(b.textContent || ""));
+      if (!select) return { selected: false };
+      select.click();
+      // The workspace switch is async (create + navigate); poll the bar,
+      // then poll the nogit probe landing (it drops the branch chip).
+      const started = Date.now();
+      let chip = null;
+      while (Date.now() - started < 15000) {
+        chip = document.querySelector("#locationBar .location-bar-path-chip");
+        if (chip && (chip.textContent || "").includes(${JSON.stringify(PLAIN.split("/").pop())})) break;
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      let branchGone = !document.querySelector("#locationBar .location-bar-branch-chip");
+      while (!branchGone && Date.now() - started < 25000) {
+        await new Promise((r) => setTimeout(r, 300));
+        branchGone = !document.querySelector("#locationBar .location-bar-branch-chip");
+      }
+      return {
+        selected: true,
+        pathChip: !!(chip && (chip.textContent || "").includes(${JSON.stringify(PLAIN.split("/").pop())})),
+        branchChipGone: branchGone,
+      };
+    })()`);
+    record("workspace switched to the plain folder", step4.selected && step4.pathChip, JSON.stringify(step4));
+    record("bar drops the branch chip for a non-repo folder", step4.selected && step4.branchChipGone === true, "");
   }
 
   const screenshot = await cdp.send("Page.captureScreenshot", { format: "png" });
