@@ -8252,8 +8252,8 @@ describe("location bar integration", () => {
   // the git_ui probe parks feeding the bar's branch chip.
   it("ships the locationBar container above workspacePanes in app.html", () => {
     const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
-    const container = '<div class="location-bar" id="locationBar" hidden></div>';
-    ok(html.includes(container), "app.html has the hidden locationBar container");
+    const container = '<div class="location-bar" id="locationBar"></div>';
+    ok(html.includes(container), "app.html has the always-visible locationBar container");
     const barIdx = html.indexOf(container);
     const panesIdx = html.indexOf('id="workspacePanes"');
     ok(panesIdx !== -1, "workspacePanes exists");

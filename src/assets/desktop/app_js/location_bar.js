@@ -146,11 +146,18 @@
   }
 
   function chip(name, title, body, disabled) {
-    return `<button class="git-ui-branch-chip location-bar-${name}-chip" type="button"${disabled ? " disabled" : ""}${chipClick(name)} title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"><span class="git-ui-branch-chip-name">${body}</span></button>`;
+    return `<button class="git-ui-branch-chip location-bar-${name}-chip" type="button"${disabled ? " disabled" : ""}${chipClick(name)} title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"><i class="location-bar-chip-icon location-bar-chip-icon-${name}" aria-hidden="true"></i><span class="git-ui-branch-chip-name">${body}</span></button>`;
   }
 
   function separator() {
     return `<span class="git-ui-selector-separator" aria-hidden="true">/</span>`;
+  }
+
+  function emptyBar() {
+    // Boot shape: no workspace selected. The strip stays visible as a
+    // stable surface (it never appears or disappears while opening
+    // workspaces) with one hint of what will live there.
+    return `<span class="location-bar-empty">No workspace open</span>`;
   }
 
   function renderBar(workspace, cwd, facts) {
@@ -749,13 +756,14 @@
     if (bar.worktreeList && popoverContextStale(bar.worktreeList)) {
       bar.worktreeList = null;
     }
-    // Hidden without a selected workspace or an empty path; the bar is a
-    // workspace-scoped surface, not a global one.
+    // Always visible (a stable surface, never appearing mid-session); no
+    // workspace or no folder path renders the empty hint instead.
     if (!workspace || !cwd) {
-      if (!node.hidden) node.hidden = true;
-      if (node.innerHTML) node.innerHTML = "";
+      const html = emptyBar();
+      if (node.innerHTML !== html) node.innerHTML = html;
+      if (node.hidden) node.hidden = false;
       lastSignature = null;
-      lastHtml = "";
+      lastHtml = html;
       return;
     }
     ensureChipCss();

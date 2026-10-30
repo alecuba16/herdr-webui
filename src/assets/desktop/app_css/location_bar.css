@@ -25,6 +25,38 @@
   display: none;
 }
 
+/* Empty state (no workspace open): muted hint, same strip height. */
+.location-bar .location-bar-empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 2px;
+  white-space: nowrap;
+}
+
+/* Chip icons: one mask per chip kind (folder / link / git) so each chip
+   reads without its title. Mask color follows the chip text. */
+.location-bar .location-bar-chip-icon {
+  background: currentColor;
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 13px;
+  margin-right: 5px;
+  mask: var(--location-bar-icon-src) center / contain no-repeat;
+  width: 13px;
+}
+
+.location-bar .location-bar-chip-icon-path {
+  --location-bar-icon-src: url("/assets/icons/folder.svg");
+}
+
+.location-bar .location-bar-chip-icon-worktree {
+  --location-bar-icon-src: url("/assets/icons/link.svg");
+}
+
+.location-bar .location-bar-chip-icon-branch {
+  --location-bar-icon-src: url("/assets/icons/git.svg");
+}
+
 .location-bar .git-ui-branch-chip {
   flex: 0 0 auto;
 }

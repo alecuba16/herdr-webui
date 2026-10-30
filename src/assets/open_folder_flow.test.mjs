@@ -168,6 +168,72 @@ describe("open folder flow", () => {
     equal(last[0], "hide", "blocking overlay cleared in finally");
   });
 
+  it("closes the empty workspace left behind after a folder change", async () => {
+    const closed = [];
+    const { ctx, calls } = loadFlow({
+      state: {
+        ws: "old",
+        workspaces: [
+          { workspace_id: "old", cwd: "/old-folder" },
+          { workspace_id: "new", cwd: "/repo" },
+        ],
+        workspaceCounts: { old: { tabs: 0, panes: 0 } },
+      },
+      workspacePath: (w) => w.cwd,
+      go: () => { ctx.state.ws = "new"; },
+      extra: {
+        HerdrWorkspaces: {
+          closeWorkspaceById: async (id) => { closed.push(id); },
+        },
+      },
+    });
+    await ctx.HerdrOpenFolder.openFolderAsWorkspace("/repo");
+    equal(JSON.stringify(closed), JSON.stringify(["old"]), "the empty left-behind workspace closed");
+    equal(calls.api.length, 0, "focusing an open workspace needs no fetch");
+  });
+
+  it("keeps the left workspace open when it still holds tabs", async () => {
+    const closed = [];
+    const { ctx } = loadFlow({
+      state: {
+        ws: "old",
+        workspaces: [
+          { workspace_id: "old", cwd: "/old-folder" },
+          { workspace_id: "new", cwd: "/repo" },
+        ],
+        workspaceCounts: { old: { tabs: 2, panes: 2 } },
+      },
+      workspacePath: (w) => w.cwd,
+      go: () => { ctx.state.ws = "new"; },
+      extra: {
+        HerdrWorkspaces: {
+          closeWorkspaceById: async (id) => { closed.push(id); },
+        },
+      },
+    });
+    await ctx.HerdrOpenFolder.openFolderAsWorkspace("/repo");
+    equal(closed.length, 0, "a workspace with tabs stays open");
+  });
+
+  it("never closes the previous workspace on a same-folder pick", async () => {
+    const closed = [];
+    const { ctx } = loadFlow({
+      state: {
+        ws: "cur",
+        workspaces: [{ workspace_id: "cur", cwd: "/repo" }],
+        workspaceCounts: { cur: { tabs: 0, panes: 0 } },
+      },
+      workspacePath: (w) => w.cwd,
+      extra: {
+        HerdrWorkspaces: {
+          closeWorkspaceById: async (id) => { closed.push(id); },
+        },
+      },
+    });
+    await ctx.HerdrOpenFolder.openFolderAsWorkspace("/repo");
+    equal(closed.length, 0, "a no-op pick closes nothing");
+  });
+
   it("normalizes trailing slashes and backslashes when matching", async () => {
     const { ctx, calls } = loadFlow({
       state: { ws: "cur", workspaces: [{ workspace_id: "w2", cwd: "/repo/" }] },

@@ -74,11 +74,52 @@
     return typeof workspaceOpenTerminalFlag === "function" && workspaceOpenTerminalFlag();
   }
 
+  // A bar folder change moves the user to another workspace; the one left
+  // behind should not linger empty. After a successful navigation, close
+  // the previously selected workspace when it holds no tabs. Panel truth
+  // comes from the server counts (workspaceCounts), with the tab lists as
+  // the fallback for older servers. Failures leave the workspace open;
+  // the next shell refresh re-syncs state anyway.
+  // All desktop app files concatenate into one script, so the shell's
+  // closeWorkspaceById (worktrees.js) is visible here directly. Harnesses
+  // that load this module standalone expose it on window instead.
+  function closerFn() {
+    return typeof closeWorkspaceById === "function"
+      ? closeWorkspaceById
+      : window.HerdrWorkspaces && window.HerdrWorkspaces.closeWorkspaceById;
+  }
+
+  async function autoCloseLeftWorkspace(previousWorkspaceId) {
+    if (!previousWorkspaceId) return;
+    const closer = closerFn();
+    if (typeof closer !== "function") return;
+    if (previousWorkspaceId === state.ws) return;
+    const workspace = (state.workspaces || []).find(
+      (candidate) => candidate.workspace_id === previousWorkspaceId,
+    );
+    if (!workspace) return;
+    const serverCount = (state.workspaceCounts || {})[previousWorkspaceId] || {};
+    const hasPanels = Number.isFinite(serverCount.tabs)
+      ? serverCount.tabs > 0
+      : (state.allTabs || [])
+          .concat(state.tabs || [])
+          .some((tab) => tab.workspace_id === previousWorkspaceId);
+    if (hasPanels) return;
+    try {
+      await closer(previousWorkspaceId);
+    } catch (_) {}
+  }
+
   // Change the shell's workspace folder: open (or focus) the workspace at
   // dir. Returns true when navigation happened.
   async function openFolderAsWorkspace(dir) {
     const target = String(dir || "").replace(/\/+$/, "") || "/";
     const navigate = goFn();
+    const previousWorkspaceId = state.ws;
+    const sameFolder = !!(state.workspaces || []).find(
+      (w) => previousWorkspaceId && w.workspace_id === previousWorkspaceId &&
+        samePathValue(workspacePathOf(w), target),
+    );
     // Step 1: an open workspace already lives on this folder. Plain
     // folders have no worktree row, so the worktree.open fallback below
     // cannot focus them; go() does.
@@ -87,6 +128,7 @@
     );
     if (existing) {
       if (navigate && existing.workspace_id !== state.ws) navigate(existing.workspace_id, null, null);
+      if (!sameFolder) await autoCloseLeftWorkspace(previousWorkspaceId);
       return true;
     }
     if (typeof showBlocking === "function") showBlocking("Opening folder...");
@@ -107,6 +149,7 @@
           open_terminal: terminalFlag(),
         });
         navigateToOpenedWorkspace(response);
+        await autoCloseLeftWorkspace(previousWorkspaceId);
         return true;
       }
       // Step 3: plain folder, create a workspace on it.
@@ -122,11 +165,12 @@
         });
       } catch (_) {} // recents are a nice-to-have; the workspace is open
       navigateToOpenedWorkspace(created);
+      await autoCloseLeftWorkspace(previousWorkspaceId);
       return true;
     } finally {
       if (typeof hideBlocking === "function") hideBlocking();
     }
   }
 
-  window.HerdrOpenFolder = { openFolderAsWorkspace, navigateToOpenedWorkspace };
+  window.HerdrOpenFolder = { openFolderAsWorkspace, navigateToOpenedWorkspace, autoCloseLeftWorkspace };
 })();

@@ -64,26 +64,28 @@ function workspaceOf(path, extra = {}) {
 }
 
 describe("location bar module", () => {
-  it("exposes HerdrLocationBar.sync and hides the bar without a workspace", () => {
+  it("exposes HerdrLocationBar.sync and renders the empty bar without a workspace", () => {
     const { ctx, bar } = loadBar({ state: { ws: null, workspaces: [] } });
     equal(typeof ctx.HerdrLocationBar.sync, "function");
     ctx.HerdrLocationBar.sync();
-    equal(bar.hidden, true);
-    equal(bar.innerHTML, "");
+    equal(bar.hidden, false, "the strip never hides");
+    ok(bar.innerHTML.includes("location-bar-empty"), "empty state renders");
+    ok(!bar.innerHTML.includes("location-bar-path-chip"), "no chips without a workspace");
   });
 
-  it("hides the bar when the workspace has no folder path", () => {
+  it("renders the empty hint when the workspace has no folder path", () => {
     const state = { ws: "ws1", workspaces: [workspaceOf("")] };
     const first = loadBar({ state });
     first.ctx.HerdrLocationBar.sync();
-    equal(first.bar.hidden, true);
-    equal(first.bar.innerHTML, "");
+    equal(first.bar.hidden, false, "no hiding on a folderless workspace");
+    ok(first.bar.innerHTML.includes("location-bar-empty"), "empty hint renders");
 
     const stateWithCwd = { ws: "ws1", workspaces: [workspaceOf("/repo")] };
     const second = loadBar({ state: stateWithCwd });
     second.ctx.HerdrLocationBar.sync();
     equal(second.bar.hidden, false);
     ok(second.bar.innerHTML.includes('class="git-ui-branch-chip location-bar-path-chip"'));
+    ok(!second.bar.innerHTML.includes("location-bar-empty"), "chips replace the hint once a folder exists");
   });
 
   it("renders path + branch for a git checkout from the worktree row", () => {
@@ -97,7 +99,8 @@ describe("location bar module", () => {
     equal(bar.hidden, false);
     ok(bar.innerHTML.includes("main"));
     ok(bar.innerHTML.includes("location-bar-branch-chip"));
-    ok(bar.innerHTML.includes("location-bar-path-chip"));
+    ok(bar.innerHTML.includes('location-bar-chip-icon location-bar-chip-icon-path'), "path chip carries the folder icon");
+    ok(bar.innerHTML.includes('location-bar-chip-icon location-bar-chip-icon-branch'), "branch chip carries the git icon");
     ok(!bar.innerHTML.includes("location-bar-worktree-chip"));
   });
 
@@ -111,6 +114,7 @@ describe("location bar module", () => {
     ctx.HerdrLocationBar.sync();
     equal(bar.hidden, false);
     ok(bar.innerHTML.includes('location-bar-worktree-chip'));
+    ok(bar.innerHTML.includes('location-bar-chip-icon location-bar-chip-icon-worktree'), "worktree chip carries the link icon");
     ok(bar.innerHTML.includes('location-bar-branch-chip'));
     ok(bar.innerHTML.includes('location-bar-path-chip'));
   });
