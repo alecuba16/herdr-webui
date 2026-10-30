@@ -58,6 +58,7 @@ function render() {
   applySidebarCollapsed();
   syncGitWorkspaceToggle();
   syncFileWorkspaceToggle();
+  if (window.HerdrLocationBar) window.HerdrLocationBar.sync();
   // Both of these rebuild static icon markup on every render. Cache the last
   // written string and only touch the DOM when the theme/icon actually
   // changed; innerHTML writes here invalidate the head chrome on every poll.

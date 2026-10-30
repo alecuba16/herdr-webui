@@ -8156,6 +8156,7 @@ describe("workspace sidebar order", () => {
     "./desktop/app_js/workspace_shell.js",
     "./desktop/app_js/right_sidebar.js",
     "./desktop/app_js/workspace_panes.js",
+    "./desktop/app_js/location_bar.js",
     "./desktop/app_js/render.js",
     "./desktop/app_js/terminal.js",
     "./desktop/app_js/lens.js",
@@ -8252,6 +8253,50 @@ describe("workspace sidebar order", () => {
       ctx,
     );
     equal(updatedOrder, "ws_b|ws_c|ws_a");
+  });
+});
+
+describe("location bar integration", () => {
+  // Drift guards for the Phase 1 location-bar wiring: the html container,
+  // the bundle serving order in assets.rs, the render.js sync hook, and
+  // the git_ui probe parks feeding the bar's branch chip.
+  it("ships the locationBar container above workspacePanes in app.html", () => {
+    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+    const container = '<div class="location-bar" id="locationBar" hidden></div>';
+    ok(html.includes(container), "app.html has the hidden locationBar container");
+    const barIdx = html.indexOf(container);
+    const panesIdx = html.indexOf('id="workspacePanes"');
+    ok(panesIdx !== -1, "workspacePanes exists");
+    equal(barIdx < panesIdx, true, "the bar sits above the workspace panes");
+  });
+
+  it("serves location_bar.js between workspace_panes.js and pane_terminals.js", () => {
+    const assetsRs = readFileSync(new URL("../../src/assets.rs", import.meta.url), "utf8");
+    const concatStart = assetsRs.indexOf("const DESKTOP_JS: &str = concat!(");
+    ok(concatStart !== -1, "assets.rs still defines the DESKTOP_JS concat");
+    const concatBody = assetsRs.slice(concatStart, assetsRs.indexOf(");", concatStart));
+    const served = [...concatBody.matchAll(/include_str!\("([^"]+)"\)/g)].map((m) => m[1]);
+    const panes = served.indexOf("assets/desktop/app_js/workspace_panes.js");
+    const bar = served.indexOf("assets/desktop/app_js/location_bar.js");
+    const terminals = served.indexOf("assets/desktop/app_js/pane_terminals.js");
+    const render = served.indexOf("assets/desktop/app_js/render.js");
+    equal(bar, panes + 1, "location_bar.js loads right after workspace_panes.js");
+    equal(terminals, bar + 1, "pane_terminals.js follows location_bar.js");
+    equal(render, terminals + 1, "render.js still follows pane_terminals.js");
+    const cssStart = assetsRs.indexOf("const DESKTOP_CSS: &str = concat!(");
+    ok(cssStart !== -1, "assets.rs still defines the DESKTOP_CSS concat");
+    const cssBody = assetsRs.slice(cssStart, assetsRs.indexOf(");", cssStart));
+    const cssServed = [...cssBody.matchAll(/include_str!\("([^"]+)"\)/g)].map((m) => m[1]);
+    ok(cssServed.includes("assets/desktop/app_css/location_bar.css"), "DESKTOP_CSS serves location_bar.css");
+  });
+
+  it("syncs the location bar from render and parks branch in the rail probe", () => {
+    const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
+    match(renderSource, /syncFileWorkspaceToggle\(\);\n\s*if \(window\.HerdrLocationBar\) window\.HerdrLocationBar\.sync\(\);/);
+    const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+    match(gitUiSource, /view\.railStatus = \{ cwd, state: item\.state, not_git_repository: !!item\.not_git_repository, branch: item\.branch \|\| "" \};/);
+    match(gitUiSource, /__probedOnly: true,\n\s*state: item\.state,\n\s*not_git_repository: !!item\.not_git_repository,\n\s*branch: item\.branch \|\| "",/);
+    match(gitUiSource, /workspaceBranch\(workspace, cwd\) \{/);
   });
 });
 

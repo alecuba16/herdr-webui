@@ -1,0 +1,44 @@
+/* Location bar: the folder / worktree / branch strip above the workspace
+   panes. The chips reuse the git-ui chip classes (git-ui-branch-chip and
+   git-ui-selector-separator) so the chip look comes from the git-ui
+   stylesheet; this file only owns the thin container rule. The bar is a
+   shell surface: it renders on every selected workspace with a path and
+   must not grow when chips overflow. */
+
+.location-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2, var(--panel));
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+/* [hidden] must win over the flex display above (same trap as the pane
+   tab strip). */
+.location-bar[hidden] {
+  display: none;
+}
+
+.location-bar .git-ui-branch-chip {
+  flex: 0 0 auto;
+}
+
+.location-bar .location-bar-path-chip {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.location-bar .location-bar-branch-chip[disabled] {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--muted);
+  cursor: default;
+}

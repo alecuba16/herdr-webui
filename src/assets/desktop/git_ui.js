@@ -1388,6 +1388,35 @@
       delete state.cache[key];
     },
     refresh,
+    // Location-bar branch read: the branch from the parked probe state
+    // (railStatus park or the __probed status), matched to the workspace
+    // folder. Returns null when the parks do not answer this cwd (the
+    // caller falls back to its own sources); returns {branch, known} or
+    // {notGit} otherwise. Read-only: never triggers a fetch.
+    workspaceBranch(workspace, cwd) {
+      if (!workspace || !cwd) return null;
+      const view = state.cache[workspaceKey(workspace)];
+      if (!view) return null;
+      const railOwned = !gitCwdMatchesWorkspace(view) && !!view.railStatus;
+      if (railOwned) {
+        if (!samePath(view.railStatus.cwd || "", cwd)) return null;
+        if (view.railStatus.not_git_repository) return { notGit: true };
+        if (view.railStatus.branch)
+          return { branch: String(view.railStatus.branch), known: true };
+        return null;
+      }
+      const status = view.status || {};
+      if (!samePath(view.cwd || "", cwd)) return null;
+      if (status.not_git_repository) return { notGit: true };
+      const branch = String(status.branch || "");
+      // The drawer's real refresh loads the full status (branch at HEAD);
+      // a probe park answers it too since the rail-status endpoint
+      // carries the branch. "No Git repository" is markNoGitRepository's
+      // placeholder, not a branch name.
+      if (branch && branch !== "No Git repository")
+        return { branch, known: true };
+      return null;
+    },
     // Background prober for the rail tint: one /api/git-ui/rail-status
     // POST per cwd warms the rail without opening the drawer (render
     // stays untouched while hidden). The shell calls this per selected
@@ -1445,7 +1474,7 @@
       // the rail park is still wanted for this folder; otherwise drop it.
       if (!item) return;
       if (diverged && (!view.railStatus || !view.railStatus.cwd)) {
-        view.railStatus = { cwd, state: item.state, not_git_repository: !!item.not_git_repository };
+        view.railStatus = { cwd, state: item.state, not_git_repository: !!item.not_git_repository, branch: item.branch || "" };
         if (window.syncGitWorkspaceToggle) window.syncGitWorkspaceToggle();
         else if (state.visible) render();
         return;
@@ -1460,6 +1489,7 @@
           __probedOnly: true,
           state: item.state,
           not_git_repository: !!item.not_git_repository,
+          branch: item.branch || "",
         });
         // A probe that answers this cwd also clears any error parked
         // earlier (failed refresh): workspaceStatus reads view.error

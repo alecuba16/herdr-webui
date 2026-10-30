@@ -53,6 +53,7 @@ const DESKTOP_CSS: &str = concat!(
     include_str!("assets/desktop/app_css/chrome.css"),
     include_str!("assets/desktop/app_css/controls.css"),
     include_str!("assets/desktop/app_css/workspaces.css"),
+    include_str!("assets/desktop/app_css/location_bar.css"),
 );
 const DESKTOP_GIT_UI_CSS: &str = concat!(
     include_str!("assets/desktop/git_ui/shell.css"),
@@ -98,6 +99,7 @@ const DESKTOP_JS: &str = concat!(
     include_str!("assets/desktop/app_js/right_sidebar.js"),
     include_str!("assets/desktop/app_js/search_panel.js"),
     include_str!("assets/desktop/app_js/workspace_panes.js"),
+    include_str!("assets/desktop/app_js/location_bar.js"),
     include_str!("assets/desktop/app_js/pane_terminals.js"),
     include_str!("assets/desktop/app_js/render.js"),
     include_str!("assets/desktop/app_js/terminal.js"),
