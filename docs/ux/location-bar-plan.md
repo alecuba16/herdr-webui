@@ -247,21 +247,21 @@ location bar is designed against the mobile shell layout, not ported.
 The todo tool holds the live plan. This list is the durable copy.
 
 ### Phase 1: Bar skeleton and data wiring
-- [ ] 1.1 `app.html`: add `<div class="location-bar" id="locationBar" hidden>` inside `main`, above `#workspacePanes`.
-- [ ] 1.2 `app_js/location_bar.js`: module with `sync()`, signature skip, three chip shapes, hidden state.
-- [ ] 1.3 `render.js`: call `HerdrLocationBar.sync()` next to `syncFileWorkspaceToggle()`; `go()` in `core.js` repaints the bar on workspace switch.
-- [ ] 1.4 `assets.rs`: module into `DESKTOP_JS` after `workspace_panes.js`; `.location-bar` container CSS into `DESKTOP_CSS`; popover CSS load strategy for the drawer-closed case.
-- [ ] 1.5 Data: read rail-status cache; disabled branch chip when branch unknown; git_ui stays lazy.
-- [ ] 1.6 Tests: new `src/assets/location_bar.test.mjs` (signature skip, chip shapes, hidden state); `app_load.test.mjs` pins for the new concat and HTML.
-- [ ] 1.7 Verify: `node --test src/assets/location_bar.test.mjs src/assets/app_load.test.mjs`.
+- [x] 1.1 `app.html`: add `<div class="location-bar" id="locationBar" hidden>` inside `main`, above `#workspacePanes`.
+- [x] 1.2 `app_js/location_bar.js`: module with `sync()`, signature skip, three chip shapes, hidden state.
+- [x] 1.3 `render.js`: call `HerdrLocationBar.sync()` next to `syncFileWorkspaceToggle()`; `go()` in `core.js` repaints the bar on workspace switch.
+- [x] 1.4 `assets.rs`: module into `DESKTOP_JS` after `workspace_panes.js`; `.location-bar` container CSS into `DESKTOP_CSS`; popover CSS load strategy for the drawer-closed case.
+- [x] 1.5 Data: read rail-status cache; disabled branch chip when branch unknown; git_ui stays lazy.
+- [x] 1.6 Tests: new `src/assets/location_bar.test.mjs` (signature skip, chip shapes, hidden state); `app_load.test.mjs` pins for the new concat and HTML.
+- [x] 1.7 Verify: `node --test src/assets/location_bar.test.mjs src/assets/app_load.test.mjs`.
 
 ### Phase 2: Folder switching
-- [ ] 2.1 Extract `openWorkspaceHere` from `file_browser.js` to the shell-level folder-change helper (focus-or-create semantics preserved).
-- [ ] 2.2 Path chip opens `HerdrDirectoryPicker` with after-select into the helper.
-- [ ] 2.3 Explorer follow after folder navigation; branch-only changes do not reload.
-- [ ] 2.4 Verify picker git colors on git paths (run `directory_picker.test.mjs`).
-- [ ] 2.5 Tests: folder-change flow tests (mock go, worktrees, workspaces, recents); file browser pinned tests updated.
-- [ ] 2.6 Verify: `node --test src/assets/*.test.mjs`.
+- [x] 2.1 Extract `openWorkspaceHere` from `file_browser.js` to the shell-level folder-change helper (focus-or-create semantics preserved).
+- [x] 2.2 Path chip opens `HerdrDirectoryPicker` with after-select into the helper.
+- [x] 2.3 Explorer follow after folder navigation; branch-only changes do not reload.
+- [x] 2.4 Verify picker git colors on git paths (run `directory_picker.test.mjs`).
+- [x] 2.5 Tests: folder-change flow tests (mock go, worktrees, workspaces, recents); file browser pinned tests updated.
+- [x] 2.6 Verify: `node --test src/assets/*.test.mjs`.
 
 ### Phase 2b: Remove the drawer's folder surfaces
 - [x] 2b.1 Remove `git-ui-path-title` and `openCwdPicker()`; drop the side-bottom head if it empties.
