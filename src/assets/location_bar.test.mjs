@@ -69,7 +69,9 @@ describe("location bar module", () => {
     equal(typeof ctx.HerdrLocationBar.sync, "function");
     ctx.HerdrLocationBar.sync();
     equal(bar.hidden, false, "the strip never hides");
-    ok(bar.innerHTML.includes("location-bar-empty"), "empty state renders");
+    match(bar.innerHTML, /<button[^>]*class="location-bar-empty"[^>]*>/, "empty state renders the Open workspace button");
+    ok(bar.innerHTML.includes("onclick=\"runSearchAction('open-workspace')\""), "button opens the workspace picker");
+    ok(bar.innerHTML.includes('location-bar-chip-icon location-bar-chip-icon-path'), "button carries the folder icon");
     ok(!bar.innerHTML.includes("location-bar-path-chip"), "no chips without a workspace");
   });
 
@@ -78,14 +80,14 @@ describe("location bar module", () => {
     const first = loadBar({ state });
     first.ctx.HerdrLocationBar.sync();
     equal(first.bar.hidden, false, "no hiding on a folderless workspace");
-    ok(first.bar.innerHTML.includes("location-bar-empty"), "empty hint renders");
+    match(first.bar.innerHTML, /<button[^>]*class="location-bar-empty"[^>]*>/, "Open workspace button renders");
 
     const stateWithCwd = { ws: "ws1", workspaces: [workspaceOf("/repo")] };
     const second = loadBar({ state: stateWithCwd });
     second.ctx.HerdrLocationBar.sync();
     equal(second.bar.hidden, false);
     ok(second.bar.innerHTML.includes('class="git-ui-branch-chip location-bar-path-chip"'));
-    ok(!second.bar.innerHTML.includes("location-bar-empty"), "chips replace the hint once a folder exists");
+    ok(!second.bar.innerHTML.includes("location-bar-empty"), "chips replace the button once a folder exists");
   });
 
   it("renders path + branch for a git checkout from the worktree row", () => {

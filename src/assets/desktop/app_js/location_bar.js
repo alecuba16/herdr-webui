@@ -156,8 +156,10 @@
   function emptyBar() {
     // Boot shape: no workspace selected. The strip stays visible as a
     // stable surface (it never appears or disappears while opening
-    // workspaces) with one hint of what will live there.
-    return `<span class="location-bar-empty">No workspace open</span>`;
+    // workspaces) with the one action this state admits: opening the
+    // workspace picker, the same modal the palette's open-workspace
+    // action and the project dashboard button already open.
+    return `<button class="location-bar-empty" type="button" onclick="runSearchAction('open-workspace')" title="Open a workspace folder" aria-label="Open workspace"><i class="location-bar-chip-icon location-bar-chip-icon-path" aria-hidden="true"></i><span>Open workspace</span></button>`;
   }
 
   function renderBar(workspace, cwd, facts) {

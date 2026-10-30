@@ -25,12 +25,38 @@
   display: none;
 }
 
-/* Empty state (no workspace open): muted hint, same strip height. */
+/* Empty state (no workspace open): the Open workspace button keeps the
+   strip height and borrows the chip control language (border, hover
+   accent) so the empty bar reads as one of the bar's controls, not
+   a disabled placeholder. The icon mask rules below apply unchanged. */
 .location-bar .location-bar-empty {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
   font-size: 12px;
-  padding: 0 2px;
+  padding: 4px 8px;
   white-space: nowrap;
+}
+
+.location-bar .location-bar-empty:hover {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+.location-bar .location-bar-empty:active {
+  border-color: var(--accent);
+  transform: translateY(1px);
+}
+
+.location-bar .location-bar-empty:focus-visible {
+  box-shadow: var(--focus-ring, 0 0 0 2px rgba(56, 139, 253, 0.22));
+  outline: none;
 }
 
 /* Chip icons: one mask per chip kind (folder / link / git) so each chip
