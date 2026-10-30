@@ -666,6 +666,23 @@ describe("location bar branch popover", () => {
     ok(!bar.innerHTML.includes("location-bar-branch-popover"), "popover closed");
   });
 
+  it("keyboard entry falls back to the rendered branch chip for focus restore", async () => {
+    const focused = [];
+    const chipNode = { focus() { focused.push("chip"); }, disabled: false, getBoundingClientRect: () => ({ left: 40, bottom: 40, width: 100, height: 20 }) };
+    const { ctx, bar } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    // The drawer shortcut opens the popover with no event, so the bar
+    // resolves the chip from the DOM; the harness answers with this node.
+    ctx.document.querySelector = (selector) =>
+      (selector === ".location-bar-branch-chip:not([disabled])" ? chipNode : null);
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover(null);
+    ctx.HerdrLocationBar.closeBranchPopover();
+    equal(JSON.stringify(focused), JSON.stringify(["chip"]), "keyboard-open close refocused the rendered chip");
+    ok(!bar.innerHTML.includes("location-bar-branch-popover"), "popover closed");
+  });
+
   it("popover anchors never overflow the right viewport edge", async () => {
     const { ctx, bar } = loadPopover({
       routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
