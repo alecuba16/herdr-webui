@@ -3975,6 +3975,98 @@ describe("mobile bundle load", () => {
     equal(writes.length, 0, "no innerHTML write when sheet html is unchanged");
   });
 
+  it("silently closes the empty workspace left behind by a folder switch", async () => {
+    // Desktop parity for the folder switch: the abandoned checkout with
+    // no panels closes without a confirm question. Panel truth comes
+    // from the server counts and the workspaces list re-ask.
+    const confirmMessages = [];
+    const ctx = context("/session/default/workspace/w1", {
+      recentWorkspaceOpenResult: {
+        result: {
+          workspace: { workspace_id: "w9" },
+          tab: { tab_id: "w9:t1" },
+          root_pane: { pane_id: "w9:p1" },
+        },
+      },
+      workspaces: [
+        { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+      ],
+      workspaceCounts: { w1: { tabs: 0, panes: 0 }, w9: { tabs: 1, panes: 1 } },
+    });
+    vm.runInContext(source, ctx);
+    ctx.confirm = () => false;
+    const confirmSheet = ctx.document.getElementById("mobileConfirmSheet");
+    confirmSheet.querySelector = (selector) =>
+      selector === "#mobileConfirmMessage"
+        ? { set textContent(value) { confirmMessages.push(value); } }
+        : null;
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    await ctx.HerdrMobile.openFolderAsWorkspace("/tmp/alpha/mobile-worktree");
+    await ctx.settle();
+    await ctx.flushTimers();
+    await ctx.settle();
+    ok(
+      ctx.requests.some(
+        (request) => request.url === "/api/workspaces/w1/close" && request.opt.method === "POST",
+      ),
+      "the empty left-behind workspace closes after the switch",
+    );
+    ok(
+      !confirmMessages.some((message) => message.includes("last terminal panel")),
+      "the folder-switch close asks no confirm question",
+    );
+  });
+
+  it("keeps a workspace with panels after a folder switch", async () => {
+    const ctx = context("/session/default/workspace/w1", {
+      recentWorkspaceOpenResult: {
+        result: {
+          workspace: { workspace_id: "w9" },
+          tab: { tab_id: "w9:t1" },
+          root_pane: { pane_id: "w9:p1" },
+        },
+      },
+      workspaceCounts: { w1: { tabs: 2, panes: 2 }, w9: { tabs: 1, panes: 1 } },
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    await ctx.HerdrMobile.openFolderAsWorkspace("/tmp/alpha/mobile-worktree");
+    await ctx.settle();
+    await ctx.flushTimers();
+    await ctx.settle();
+    ok(
+      !ctx.requests.some(
+        (request) => request.url === "/api/workspaces/w1/close" && request.opt.method === "POST",
+      ),
+      "a workspace with panels survives the switch",
+    );
+  });
+
+  it("reopening the same folder never closes the workspace", async () => {
+    // Same path: the recent-open focuses the existing workspace, so the
+    // previous id equals the new one and no close may fire even when the
+    // workspace holds no panels (the counts here are empty on purpose).
+    const ctx = context("/session/default/workspace/w1", {
+      workspaceCounts: { w1: { tabs: 0, panes: 0 } },
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.openFolderAsWorkspace("/tmp/alpha");
+    await ctx.settle();
+    await ctx.flushTimers();
+    await ctx.settle();
+    ok(
+      !ctx.requests.slice(before).some(
+        (request) => request.url === "/api/workspaces/w1/close" && request.opt.method === "POST",
+      ),
+      "the same-path switch closes nothing",
+    );
+  });
+
   it("header title names the current panel when the workspace has several", async () => {
     // Multi-panel regression: with two tabs in the workspace the header
     // title used to stay the workspace name on every panel, so no header

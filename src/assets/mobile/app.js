@@ -1421,6 +1421,7 @@
     confirmFn: (...args) => mobileConfirm(...args),
     currentCwdFn: currentWorkspaceCwd,
     showScreenFn: (screen) => showScreen(screen),
+    autoCloseWorkspaceFn: (workspaceId, options) => mobileActions.maybeAutoCloseWorkspace(workspaceId, options),
   });
   mobileDirectoryPicker = globalThis.HerdrMobileDirectoryPickerModule.create({
     api,

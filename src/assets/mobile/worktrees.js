@@ -20,6 +20,9 @@
       currentCwdFn,
       // Routes the sheet's create button to the worktrees screen.
       showScreenFn,
+      // Silent autoclose for the workspace left behind by a folder
+      // switch (actions.js maybeAutoCloseWorkspace).
+      autoCloseWorkspaceFn,
     } = deps;
     const worktreeHelpers = globalThis.HerdrAppHelpers || {};
     const worktreeActivityLabel = worktreeHelpers.worktreeActivityLabel || (() => "Latest commit unknown");
@@ -500,6 +503,9 @@
     async function openFolderAsWorkspace(pathArg) {
       const path = String(pathArg || "").trim();
       if (!path) return;
+      // The workspace the user is leaving behind: after the switch lands,
+      // it gets the silent autoclose offer when it holds no panels.
+      const previousWorkspaceId = state.ws || null;
       state.worktreeError = "";
       setLoading(true, "Opening workspace...");
       try {
@@ -511,6 +517,12 @@
         recent = [];
         setLoading(false);
         navigateToResult(response);
+        if (
+          previousWorkspaceId &&
+          previousWorkspaceId !== state.ws &&
+          typeof autoCloseWorkspaceFn === "function"
+        )
+          autoCloseWorkspaceFn(previousWorkspaceId, { silent: true });
         loadRecent();
       } catch (error) {
         state.worktreeError = error.message || String(error);
