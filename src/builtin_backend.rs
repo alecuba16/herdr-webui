@@ -1979,14 +1979,27 @@ impl BuiltinState {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let repo_root = git_output(&cwd, &["rev-parse", "--show-toplevel"])
             .unwrap_or_else(|_| cwd.to_string_lossy().to_string());
+        let list = git_output(Path::new(&repo_root), &["worktree", "list", "--porcelain"])
+            .unwrap_or_default();
+        let mut worktrees = parse_git_worktrees(&list);
+        // `rev-parse --show-toplevel` reports the queried checkout's own
+        // toplevel, so inside a linked worktree it names the lane, not the
+        // repository. `worktree list --porcelain` always leads with the
+        // main checkout, so the first row is the true repository root and
+        // name; callers derive main-vs-linked from it (the row flag is
+        // unreliable: the parser marks every row linked). An empty list
+        // (plain folder, broken git) keeps the toplevel/cwd identity.
+        let repo_root = worktrees
+            .first()
+            .and_then(|row| row.get("path"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or(repo_root);
         let repo_name = Path::new(&repo_root)
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("repo")
             .to_string();
-        let list = git_output(Path::new(&repo_root), &["worktree", "list", "--porcelain"])
-            .unwrap_or_default();
-        let mut worktrees = parse_git_worktrees(&list);
         enrich_worktree_commit_dates(&mut worktrees);
         worktrees.sort_by_key(|row| std::cmp::Reverse(worktree_activity_key(row)));
         Ok(json!({
@@ -8928,6 +8941,71 @@ mod tests {
         assert!(!worktree.exists(), "worktree directory must be gone");
         let listing = git_output(&repo, &["worktree", "list", "--porcelain"]).unwrap();
         assert!(!listing.contains("feature-x"));
+        fs::remove_dir_all(&scratch).ok();
+    }
+
+    // `rev-parse --show-toplevel` inside a linked worktree names the lane
+    // itself, so deriving the source identity from it would report a lane
+    // as its own repository root and every consumer comparing checkout
+    // paths against the root (the WebUI workspace worktree stamp, the
+    // browser grouping) would misjudge main-vs-linked. The porcelain list
+    // always leads with the main checkout, so the identity comes from
+    // there even when the query ran inside the lane.
+    #[test]
+    fn builtin_worktree_list_reports_main_repo_root_from_a_lane() {
+        let scratch = std::env::temp_dir().join(format!(
+            "herdr-wt-list-root-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo = scratch.join("repo");
+        let lane = scratch.join("feature-y");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]).unwrap();
+        fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&repo, &["add", "."]).unwrap();
+        run_git(&repo, &["config", "user.email", "t@t"]).unwrap();
+        run_git(&repo, &["config", "user.name", "T"]).unwrap();
+        run_git(&repo, &["commit", "-q", "-m", "base"]).unwrap();
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature-y",
+                &lane.to_string_lossy(),
+            ],
+        )
+        .unwrap();
+
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let result = state
+            .handle_request_inner("worktree.list", json!({ "cwd": lane.to_string_lossy() }))
+            .unwrap();
+
+        let repo_str = repo.to_string_lossy().to_string();
+        let lane_str = lane.to_string_lossy().to_string();
+        assert_eq!(result["source"]["repo_root"], json!(repo_str));
+        assert_eq!(result["source"]["repo_key"], json!(repo_str));
+        assert_eq!(result["source"]["repo_name"], "repo");
+        assert_eq!(result["source"]["source_checkout_path"], json!(lane_str));
+        let paths: Vec<&str> = result["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["path"].as_str().unwrap())
+            .collect();
+        assert!(paths.contains(&repo_str.as_str()), "main row present");
+        assert!(paths.contains(&lane_str.as_str()), "lane row present");
         fs::remove_dir_all(&scratch).ok();
     }
 
