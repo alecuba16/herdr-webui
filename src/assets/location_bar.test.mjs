@@ -466,6 +466,30 @@ describe("location bar branch popover", () => {
     equal(calls.filter((call) => call.path === "/api/git-ui/branch-delete").length, 0, "no delete POST");
   });
 
+  it("row handlers keep an apostrophe branch name inert and deliver the exact ref", async () => {
+    const injected = "x'-alert(1)-'";
+    const name = "q'wip";
+    const { ctx, bar, calls } = loadPopover({
+      routes: {
+        "/api/git-ui/branches": {
+          local: [{ name, author: "Ada", date: "2026-01-02T03:04:05Z", subject: "wip" }],
+          remote: [],
+        },
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    const row = (bar.innerHTML.match(/<button class="git-ui-branch-row-main"[^>]*>/) || [""])[0];
+    ok(row.includes(encodeURIComponent(name).replace(/'/g, "%27")), "apostrophe arrives percent-encoded in the handler argument");
+    ok(!row.includes(injected), "no raw expression can ride the attribute");
+
+    const before = calls.length;
+    await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent(name), false);
+    const switchPosts = calls.slice(before).filter((call) => call.path === "/api/git-ui/switch");
+    equal(switchPosts.length, 1, "switch POST fired for the apostrophe name");
+    equal(JSON.parse(switchPosts[0].init.body).branch, name, "exact ref reaches the endpoint, not a decoded expression");
+  });
+
   it("filter keeps matching rows and posts nothing", async () => {
     const { ctx, bar, calls } = loadPopover({
       routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
@@ -585,6 +609,21 @@ describe("location bar worktree popover", () => {
     ok(bar.innerHTML.includes("repo-lane"), "row lists the other checkout");
     ok(bar.innerHTML.includes('class="git-ui-worktree-option current"'), "current checkout row carries the check");
     ok(bar.innerHTML.includes("Create worktree"), "create action renders");
+  });
+
+  it("worktree row handlers keep an apostrophe path inert and deliver the exact path", async () => {
+    const lane = "/repo/l'ane";
+    const { ctx, bar } = loadWorktreePopover({
+      routes: { "/api/worktrees": { result: { worktrees: [{ path: lane, label: "l'ane", branch: "main" }] } } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+    const row = (bar.innerHTML.match(/<button class="git-ui-worktree-option"[^>]*>/) || [""])[0];
+    ok(row.includes(encodeURIComponent(lane).replace(/'/g, "%27")), "apostrophe path arrives percent-encoded in the handler argument");
+    const opened = [];
+    ctx.HerdrOpenFolder.openFolderAsWorkspace = async (dir) => { opened.push(dir); };
+    await ctx.HerdrLocationBar.selectWorktreeFromPopover(encodeURIComponent(lane));
+    equal(JSON.stringify(opened), JSON.stringify([lane]), "exact path reaches the folder-change flow");
   });
 
   it("plain checkouts render no worktree chip", () => {

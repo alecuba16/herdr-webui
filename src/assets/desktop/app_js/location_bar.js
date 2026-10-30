@@ -40,7 +40,7 @@
   }
 
   function encodeArg(value) {
-    return encodeURIComponent(String(value == null ? "" : value));
+    return encodeURIComponent(String(value == null ? "" : value)).replace(/'/g, "%27");
   }
 
   function barNode() {
