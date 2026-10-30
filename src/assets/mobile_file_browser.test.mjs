@@ -124,10 +124,11 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
         return { ok: true };
       }
       if (String(url).startsWith("/api/file-browser/tree")) {
+        const echoPath = decodeURIComponent((String(url).match(/path=([^&]*)/) || [null, ""])[1]);
         return { path: "", entries: [
           { kind: "file", name: "demo.py", path: "src/demo.py", size: 12 },
           { kind: "dir", name: "docs", path: "src/docs" },
-        ], git_status: null, truncated: false };
+        ], git_status: null, truncated: false, ...(echoPath ? { path: echoPath } : {}) };
       }
       return {};
     }),
@@ -388,6 +389,27 @@ describe("mobile file browser edit mode", () => {
     const html = module.renderScreen();
     assert.match(html, /hash mismatch/);
     assert.match(html, /filesSaveFile/, "still editable after a failed save");
+  });
+});
+
+describe("mobile file browser Up button", () => {
+  it("up from the workspace root fetches nothing", async () => {
+    const { module, requests } = createModule();
+    await module.load("");
+    const treeCalls = requests.filter((r) => String(r.url).startsWith("/api/file-browser/tree"));
+    await module.up();
+    assert.equal(requests.filter((r) => String(r.url).startsWith("/api/file-browser/tree")).length, treeCalls.length,
+      "up at the workspace root is a no-op");
+  });
+
+  it("up inside the tree loads the parent path", async () => {
+    const { module, requests } = createModule();
+    await module.load("src/docs");
+    await module.up();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const last = requests.filter((r) => String(r.url).startsWith("/api/file-browser/tree")).pop();
+    const path = decodeURIComponent((String(last.url).match(/path=([^&]*)/) || [null, ""])[1]);
+    assert.equal(path, "src", "up from src/docs loads src");
   });
 });
 describe("mobile file browser action sheet", () => {
