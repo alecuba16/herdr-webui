@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
+// One compiled script per product file so coverage attributes each file's
+// lines to its real disk path; the script is built once and reused.
 const source = readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8");
+const workspaceSearchScript = new vm.Script(source, {
+  filename: fileURLToPath(new URL("./shared/workspace_search.js", import.meta.url)),
+});
 
 function loadWorkspaceSearch(options = {}) {
   const requests = [];
@@ -25,7 +31,7 @@ function loadWorkspaceSearch(options = {}) {
   };
   context.window = context;
   context.globalThis = context;
-  vm.runInNewContext(source, context);
+  workspaceSearchScript.runInNewContext(context);
   return { search: context.HerdrWorkspaceSearch, requests };
 }
 

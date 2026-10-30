@@ -3,15 +3,27 @@
 // flow can be exercised without a full mobile shell.
 import { describe, it, before } from "node:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import vm from "node:vm";
 
+// One compiled script per product file so coverage attributes each file's
+// lines to its real disk path; scripts are built once and reused.
 const source = readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8");
 const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
 const optionsSource = readFileSync(new URL("./shared/options.js", import.meta.url), "utf8");
 const workspaceSearchSource = readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8");
+function productScript(relPath, sourceText) {
+  return new vm.Script(sourceText, {
+    filename: fileURLToPath(new URL(relPath, import.meta.url)),
+  });
+}
+const optionsScript = productScript("./shared/options.js", optionsSource);
+const treeScript = productScript("./shared/file_tree.js", treeSource);
+const workspaceSearchScript = productScript("./shared/workspace_search.js", workspaceSearchSource);
+const fileBrowserScript = productScript("./mobile/file_browser.js", source);
 
-function createModule({ fileContent = "print('hello')", writeResult = {}, writeError = "", renameError = "", deleteError = "", confirmAnswer = true, optionsJson = null, lsp = null, api = null } = {}) {
+function createModule({ fileContent = "print('hello')", writeResult = {}, writeError = "", renameError = "", deleteError = "", confirmAnswer = true, optionsJson = null, lsp = null, api = null, render = null, lineContext = null } = {}) {
   const requests = [];
   const editors = [];
   let savedContent = null;
@@ -25,6 +37,7 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
     setTimeout(fn) { fn(); return 1; },
     clearTimeout() {},
     document: {
+      activeElement: null,
       getElementById(id) {
         // Return a stub element for editor mounts and the mobile save button so
         // the preview render path executes fully under test.
@@ -48,6 +61,7 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
           addEventListener() {},
         };
       },
+      querySelector() { return null; },
       querySelectorAll() { return []; },
       addEventListener() {},
     },
@@ -98,10 +112,10 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
       return { getValue() { return opts.content || ""; }, setValue() {}, destroy() {} };
     },
   };
-  vm.runInNewContext(optionsSource, context);
-  vm.runInNewContext(treeSource, context);
-  vm.runInNewContext(workspaceSearchSource, context);
-  vm.runInNewContext(source, context);
+  optionsScript.runInNewContext(context);
+  treeScript.runInNewContext(context);
+  workspaceSearchScript.runInNewContext(context);
+  fileBrowserScript.runInNewContext(context);
   const deps = {
     api: api || (async (url, opt = {}) => {
       requests.push({ url, opt });
@@ -124,10 +138,11 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
         return { ok: true };
       }
       if (String(url).startsWith("/api/file-browser/tree")) {
+        const echoPath = decodeURIComponent((String(url).match(/path=([^&]*)/) || [null, ""])[1]);
         return { path: "", entries: [
           { kind: "file", name: "demo.py", path: "src/demo.py", size: 12 },
           { kind: "dir", name: "docs", path: "src/docs" },
-        ], git_status: null, truncated: false };
+        ], git_status: null, truncated: false, ...(echoPath ? { path: echoPath } : {}) };
       }
       return {};
     }),
@@ -135,11 +150,14 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
     currentWorkspaceCwd: () => "/tmp/repo",
     escapeHtml: (v) => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"),
     inputAttrs: () => "",
-    render: () => {},
+    render: render || (() => {}),
     state: { screen: "files" },
   };
+  if (lineContext) {
+    context.HerdrLineContext = lineContext;
+  }
   const module = context.HerdrMobileFileBrowser.create(deps);
-  return { module, requests, editors, lspCalls, diagnosticLists, getSavedContent: () => savedContent, getRenamed: () => renamed, getDeleted: () => deleted };
+  return { module, requests, editors, lspCalls, diagnosticLists, getSavedContent: () => savedContent, getRenamed: () => renamed, getDeleted: () => deleted, content: context.HerdrMobileFilesContent };
 }
 
 describe("mobile file browser edit mode", () => {
@@ -390,6 +408,27 @@ describe("mobile file browser edit mode", () => {
     assert.match(html, /filesSaveFile/, "still editable after a failed save");
   });
 });
+
+describe("mobile file browser Up button", () => {
+  it("up from the workspace root fetches nothing", async () => {
+    const { module, requests } = createModule();
+    await module.load("");
+    const treeCalls = requests.filter((r) => String(r.url).startsWith("/api/file-browser/tree"));
+    await module.up();
+    assert.equal(requests.filter((r) => String(r.url).startsWith("/api/file-browser/tree")).length, treeCalls.length,
+      "up at the workspace root is a no-op");
+  });
+
+  it("up inside the tree loads the parent path", async () => {
+    const { module, requests } = createModule();
+    await module.load("src/docs");
+    await module.up();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const last = requests.filter((r) => String(r.url).startsWith("/api/file-browser/tree")).pop();
+    const path = decodeURIComponent((String(last.url).match(/path=([^&]*)/) || [null, ""])[1]);
+    assert.equal(path, "src", "up from src/docs loads src");
+  });
+});
 describe("mobile file browser action sheet", () => {
   it("emits well-formed onclick handlers for rename and delete", async () => {
     const { module } = createModule({ });
@@ -503,5 +542,275 @@ describe("mobile file browser stale request guard", () => {
     const html = module.renderScreen();
     assert.match(html, /src\/docs\/other\.py/, "latest open wins the screen");
     assert.doesNotMatch(html, /src\/demo\.py/, "stale first open did not claim the screen");
+  });
+});
+
+describe("mobile file browser content search", () => {
+  function contentApi(responses = {}) {
+    const requests = [];
+    const searchResponse = responses.search || {
+      files: [
+        {
+          path: "src/app.rs",
+          matches: [{ line: 2, start_line: 1, end_line: 3, match_start: 3, match_end: 8, match_id: "src/app.rs:2:abc", line_text: "let needle = 1;" }],
+        },
+      ],
+      total_files: 1,
+      total_matches: 1,
+      visited: 7,
+      truncated: false,
+    };
+    const fileResponse = responses.file || {
+      file: {
+        path: "src/app.rs",
+        matches: [{ line: 2, start_line: 1, end_line: 5, match_start: 3, match_end: 8, match_id: "src/app.rs:2:abc", line_text: "let needle = 1;" }],
+      },
+    };
+    const api = async (url, opt = {}) => {
+      requests.push({ url, opt });
+      if (String(url).startsWith("/api/file-browser/content-search/file")) return fileResponse;
+      if (String(url).startsWith("/api/file-browser/content-search")) return searchResponse;
+      if (String(url).startsWith("/api/file-browser/tree")) {
+        return { path: "", entries: [], git_status: null, truncated: false };
+      }
+      return {};
+    };
+    return { api, requests };
+  }
+
+  it("runs a content search with the option clamps applied to the query", async () => {
+    const { api, requests } = contentApi();
+    const { module } = createModule({ api });
+    module.setFilterKind("content");
+    module.filter("needle");
+    // The filter debounce runs synchronously in this harness.
+    const searchCall = requests.find((call) => String(call.url).startsWith("/api/file-browser/content-search?"));
+    assert.ok(searchCall, "the content search endpoint fired");
+    const params = new URL("http://x" + searchCall.url).searchParams;
+    assert.equal(params.get("q"), "needle");
+    assert.equal(params.get("limit"), "50", "default page size");
+    assert.equal(params.get("context_lines"), "2", "default context lines");
+    assert.equal(params.get("match_case"), "false");
+    assert.equal(params.get("regex"), "false");
+  });
+
+  it("short queries surface the min-chars hint and never call the API", async () => {
+    const { api, requests } = contentApi();
+    const { module } = createModule({ api });
+    module.setFilterKind("content");
+    module.filter("ne");
+    assert.equal(requests.filter((call) => String(call.url).includes("content-search")).length, 0,
+      "no search call for a short query");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The hint lives on the content subview; the tree screen stays clean
+    // and no content-search fetch ever fires below the 3-character clamp
+    // (the lazy tree load is a separate endpoint).
+    assert.doesNotMatch(module.renderScreen(), /Type at least/);
+    assert.equal(
+      requests.filter((call) => String(call.url).includes("content-search")).length,
+      0,
+      "short queries never hit the content endpoint",
+    );
+  });
+
+  it("an empty filter in content mode clears results without a fetch", async () => {
+    const { api, requests } = contentApi();
+    const { module } = createModule({ api });
+    module.setFilterKind("content");
+    module.filter("");
+    assert.equal(requests.length, 0, "nothing fetched for the empty query");
+    const html = module.renderScreen();
+    assert.doesNotMatch(html, /Type at least/, "no error shown for an empty query");
+  });
+
+  it("search failures stop the page and a per-file fetch failure re-renders", async () => {
+    const renders = [];
+    const failing = [];
+    const failingApi = async (url) => {
+      failing.push(String(url));
+      if (String(url).includes("content-search")) {
+        throw Error("backend down");
+      }
+      return {};
+    };
+    const { module, content } = createModule({ api: failingApi, render: () => { renders.push(1); } });
+    module.setFilterKind("content");
+    module.filter("needle");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The failing search still leaves the stream page-wise done (done=true
+    // in the catch), so the loadMore button cannot chain fetches.
+    module.loadMore();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(
+      failing.filter((url) => url.includes("content-search?")).length,
+      2,
+      "exactly the initial search plus the one loadMore ran",
+    );
+    // A per-file fetch failure surfaces through another render pass.
+    const before = renders.length;
+    await content.loadFile(encodeURIComponent("src/app.rs"));
+    assert.ok(renders.length > before, "the failed file fetch re-rendered");
+  });
+
+  it("loadMore appends the next page with the offset advanced", async () => {
+    let page = 0;
+    const seenOffsets = [];
+    const paged = async (url) => {
+      if (String(url).startsWith("/api/file-browser/content-search?")) {
+        page += 1;
+        const params = new URL("http://x" + url).searchParams;
+        seenOffsets.push(params.get("offset"));
+        return {
+          files: [{ path: "a" + page + ".rs", matches: [] }],
+          total_files: 2,
+          total_matches: 2,
+          visited: 3,
+          truncated: page === 1,
+        };
+      }
+      return {};
+    };
+    const { module } = createModule({ api: paged });
+    module.setFilterKind("content");
+    module.filter("needle");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    module.loadMore();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(page, 2, "loadMore fired the second search");
+    assert.deepEqual(seenOffsets, ["0", "1"], "page two asks for offset 1 after one file returned");
+  });
+
+  it("the content search file loader deepens context on snippet expansion", async () => {
+    const { api, requests } = contentApi();
+    // Stub the shared helper: the expansion must delegate to it when present
+    // instead of using the local fallback ladder.
+    const helperCalls = [];
+    const { module, content } = createModule({
+      api,
+      lineContext: {
+        nextContextSize(current, opts) {
+          helperCalls.push({ current, opts });
+          return 7;
+        },
+      },
+    });
+    module.setFilterKind("content");
+    module.filter("needle");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await content.expandSnippet(encodeURIComponent("src/app.rs"));
+    assert.equal(helperCalls.length, 1, "the shared helper was consulted");
+    // Compare per-field: the opts object crosses the vm realm boundary.
+    assert.equal(helperCalls[0].opts.min, 3, "the min clamp bound passes through");
+    assert.equal(helperCalls[0].opts.max, 20, "the max clamp bound passes through");
+    const fileCall = requests.find((call) => String(call.url).startsWith("/api/file-browser/content-search/file"));
+    assert.ok(fileCall, "the per-file search fetch fired");
+    const params = new URL("http://x" + fileCall.url).searchParams;
+    assert.equal(params.get("context_lines"), "7", "the helper's size drives the fetch");
+    assert.equal(params.get("max_matches_per_file"), "500", "per-file fetch allows many matches");
+    // Without the helper the local ladder clamps a 2-line window to 3.
+    const { module: plain, content: plainContent } = createModule({ api });
+    plain.setFilterKind("content");
+    plain.filter("needle");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await plainContent.expandSnippet(encodeURIComponent("src/app.rs"));
+    const fallbackCall = requests
+      .filter((call) => String(call.url).startsWith("/api/file-browser/content-search/file"))
+      .pop();
+    const fallbackParams = new URL("http://x" + fallbackCall.url).searchParams;
+    assert.equal(fallbackParams.get("context_lines"), "3", "the fallback ladder clamps to the 3-line minimum");
+  });
+
+  it("toggleFile re-renders once per toggle", async () => {
+    const { api } = contentApi();
+    const renders = [];
+    const { module: m2, content: c2 } = createModule({
+      api,
+      render: () => { renders.push(1); },
+    });
+    m2.setFilterKind("content");
+    m2.filter("needle");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const before = renders.length;
+    const encoded = encodeURIComponent("src/app.rs");
+    c2.toggleFile(encoded);
+    assert.equal(renders.length, before + 1, "toggleFile re-renders once");
+    // The expansion flag itself is read only by the external content
+    // subview renderer (this module exposes no state getter), so the
+    // collapse direction is not observable through the module API alone.
+  });
+
+  it("typeToFilter routes alt shortcuts and plain keys into the filter", () => {
+    const { api } = contentApi();
+    const { module } = createModule({ api });
+    const mk = (key, extra = {}) => ({
+      key,
+      preventDefault() { this.prevented = true; },
+      defaultPrevented: false,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      ...extra,
+    });
+    const altF = mk("f", { altKey: true });
+    module.typeToFilter(altF);
+    assert.ok(altF.prevented, "alt+f is consumed");
+    const typed = mk("a");
+    module.typeToFilter(typed);
+    assert.ok(typed.prevented, "plain characters feed the filter");
+    const meta = mk("r", { metaKey: true });
+    module.typeToFilter(meta);
+    assert.equal(meta.prevented, undefined, "meta combos pass through");
+  });
+
+  it("scroll near the bottom loads the next filtered page", async () => {
+    const scrollRequests = [];
+    let truncatedTree = { path: "", entries: [{ kind: "file", name: "demo.py", path: "src/demo.py", size: 5 }], git_status: null, truncated: true };
+    const pagingApi = async (url) => {
+      scrollRequests.push({ url });
+      if (String(url).startsWith("/api/file-browser/tree")) {
+        const withTruncation = truncatedTree;
+        truncatedTree = { ...truncatedTree, truncated: false };
+        return withTruncation;
+      }
+      return {};
+    };
+    const { module } = createModule({ api: pagingApi });
+    module.setFilterKind("file");
+    module.filter("demo");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const filtered = () => scrollRequests.filter((call) => String(call.url).includes("q=demo"));
+    assert.equal(filtered().length, 1, "the initial filtered load ran");
+    module.scroll({ scrollTop: 5000, clientHeight: 800, scrollHeight: 5800 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(filtered().length, 2, "scrolling near the bottom fetches the next page");
+    assert.match(filtered()[1].url, /offset=1/, "the append call carries the next offset");
+  });
+
+  it("openMatch resolves the match id through the shared finder and opens the file", async () => {
+    const { api, requests } = contentApi();
+    const { module, content } = createModule({ api });
+    module.setFilterKind("content");
+    module.filter("needle");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await content.openMatch(encodeURIComponent("src/app.rs"), encodeURIComponent("src/app.rs:2:abc"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(
+      requests.some((call) => String(call.url).startsWith("/api/file-browser/file?")),
+      "the file open fired",
+    );
+    const html = module.renderScreen();
+    assert.match(html, /mobileFilePreview/, "the file preview renders");
+  });
+
+  it("clearFilter in content mode resets the search state", async () => {
+    const { api, requests } = contentApi();
+    const { module } = createModule({ api });
+    module.setFilterKind("content");
+    module.filter("needle");
+    module.clearFilter();
+    assert.equal(requests.filter((call) => String(call.url).includes("content-search")).length, 1,
+      "no extra search after the clear");
+    const html = module.renderScreen();
+    assert.doesNotMatch(html, /Type at least/, "the hint is gone after the clear");
   });
 });

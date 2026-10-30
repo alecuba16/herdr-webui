@@ -813,4 +813,144 @@ mod tests {
         hub.detach(&(PathBuf::from("/nonexistent.sock"), "t1".to_string()));
         assert!(hub.attaches.lock().unwrap().is_empty());
     }
+
+    #[cfg(unix)]
+    fn attach_socket_path(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("hw-attach-{}-{name}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_terminal_attach_rejects_welcome_with_error() {
+        use std::io::{Read, Write};
+        let path = attach_socket_path("reject");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            // Drain the hello frame so the client's write never fails; the
+            // rejection comes from the reply, not a broken pipe.
+            let mut hello = [0u8; 512];
+            let _ = conn.read(&mut hello);
+            let rejected = ServerMessage::Welcome {
+                version: PROTOCOL_VERSION,
+                encoding: crate::protocol::RenderEncoding::TerminalAnsi,
+                error: Some("version mismatch".to_string()),
+            };
+            write_message(&mut conn, &rejected).unwrap();
+            let _ = conn.flush();
+        });
+        let result = connect_terminal_attach(&path, "t1", 80, 24);
+        server.join().unwrap();
+        match result {
+            Err(AttachError::Rejected(error)) => assert_eq!(error, "version mismatch"),
+            Err(other) => panic!(
+                "expected rejection, got kind {} (builtin hint: {})",
+                other.error_kind(),
+                other.suggests_builtin()
+            ),
+            Ok(_) => panic!("expected rejection, attach succeeded"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_terminal_attach_wrong_first_frame_is_handshake_error() {
+        use std::io::{Read, Write};
+        let path = attach_socket_path("wrong-frame");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut hello = [0u8; 512];
+            let _ = conn.read(&mut hello);
+            // A non-Welcome first frame fails the handshake even though the
+            // frame itself decodes fine.
+            let wrong = ServerMessage::Terminal(crate::protocol::TerminalFrame {
+                seq: 1,
+                width: 80,
+                height: 24,
+                full: false,
+                bytes: b"not a welcome".to_vec(),
+            });
+            write_message(&mut conn, &wrong).unwrap();
+            let _ = conn.flush();
+        });
+        let result = connect_terminal_attach(&path, "t1", 80, 24);
+        server.join().unwrap();
+        assert!(
+            matches!(result, Err(AttachError::ReadHandshake)),
+            "expected ReadHandshake, got {}",
+            result.err().map(|e| e.error_kind()).unwrap_or("ok")
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_terminal_attach_eof_before_reply_is_handshake_error() {
+        use std::io::Read;
+        let path = attach_socket_path("eof");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut hello = [0u8; 512];
+            let _ = conn.read(&mut hello);
+            // Drop the connection without ever replying.
+            drop(conn);
+        });
+        let result = connect_terminal_attach(&path, "t1", 80, 24);
+        server.join().unwrap();
+        assert!(
+            matches!(result, Err(AttachError::ReadHandshake)),
+            "expected ReadHandshake on EOF, got {}",
+            result.err().map(|e| e.error_kind()).unwrap_or("ok")
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_terminal_attach_accepts_welcome_and_sends_takeover_attach() {
+        use std::io::Write;
+        let path = attach_socket_path("happy");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            // Hello frame: read the full framed message.
+            let hello = read_message::<_, ClientMessage>(&mut conn, crate::MAX_GRAPHICS_FRAME_SIZE);
+            assert!(hello.is_ok(), "hello frame must decode: {hello:?}");
+            let welcome = ServerMessage::Welcome {
+                version: PROTOCOL_VERSION,
+                encoding: crate::protocol::RenderEncoding::TerminalAnsi,
+                error: None,
+            };
+            write_message(&mut conn, &welcome).unwrap();
+            let _ = conn.flush();
+            // Second frame: the takeover attach request for the terminal.
+            let attach =
+                read_message::<_, ClientMessage>(&mut conn, crate::MAX_GRAPHICS_FRAME_SIZE)
+                    .expect("attach frame");
+            match attach {
+                ClientMessage::AttachTerminal {
+                    terminal_id,
+                    takeover,
+                } => {
+                    assert_eq!(terminal_id, "t1");
+                    assert!(takeover, "hub attaches always take over");
+                }
+                other => panic!("expected AttachTerminal, got {other:?}"),
+            }
+        });
+        let stream = connect_terminal_attach(&path, "t1", 80, 24);
+        server.join().unwrap();
+        assert!(
+            stream.is_ok(),
+            "attach must succeed, got {}",
+            stream.err().map(|e| e.error_kind()).unwrap_or("ok")
+        );
+        let _ = std::fs::remove_file(&path);
+    }
 }

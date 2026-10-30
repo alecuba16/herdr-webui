@@ -7,7 +7,7 @@
     function createContentSearchState() {
       return { active: false, query: "", timer: null, files: [], expanded: {}, loading: false, error: "", offset: 0, done: true, totalFiles: 0, totalMatches: 0, visited: 0, truncated: false, contextLines: 2, maxMatchesPerFile: 5, autoCollapseFiles: 0, defaultExpanded: true };
     }
-    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterVisible: false, filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, cwdOverride: "", gitStatus: null, editing: false, draft: "", dirty: false, saving: false, saveError: "", actionSheet: null, rename: null, newFile: null, mutating: false, contentSearch: createContentSearchState() };
+    const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterVisible: false, filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, gitStatus: null, editing: false, draft: "", dirty: false, saving: false, saveError: "", actionSheet: null, rename: null, newFile: null, mutating: false, contentSearch: createContentSearchState() };
     let screenRequestSeq = 0;
 
     function claimScreenRequest() {
@@ -20,7 +20,7 @@
     }
 
     function cwd() {
-      return local.cwdOverride || deps.currentWorkspaceCwd() || "";
+      return deps.currentWorkspaceCwd() || "";
     }
 
     // Option readers and the depth clamp live in shared/workspace_search.js
@@ -38,9 +38,6 @@
     const editorOptions = searchHelpers.fileBrowserEditorOptions
       ? searchHelpers.fileBrowserEditorOptions
       : () => ({ editorEnabled: true, wordWrap: true, tabSize: 2, bracketMatching: true, folding: true, activeLine: true, whitespace: false });
-    const parentFoldersEnabled = searchHelpers.fileBrowserParentFoldersEnabled
-      ? searchHelpers.fileBrowserParentFoldersEnabled
-      : () => false;
     const fileBrowserDepthDefault = searchHelpers.fileBrowserDepth
       ? searchHelpers.fileBrowserDepth
       : () => 3;
@@ -724,7 +721,7 @@
     }
 
     function currentDirectoryRoot() {
-      return local.cwdOverride || deps.currentWorkspaceCwd() || "";
+      return deps.currentWorkspaceCwd() || "";
     }
 
     function currentDirectoryPath() {
@@ -744,7 +741,7 @@
 
     function canGoUp() {
       const root = currentDirectoryRoot();
-      return !!(local.path || (parentFoldersEnabled() && root && Tree.parentDirectory(root) !== root));
+      return !!local.path;
     }
 
     function fileBrowserDepth() {
@@ -799,7 +796,6 @@
         local.filter = "";
         local.filterVisible = false;
         local.filterKind = "file";
-        local.cwdOverride = "";
         local.editing = false;
         local.draft = "";
         local.dirty = false;
@@ -830,17 +826,7 @@
       toggleFilterKind() { this.setFilterKind(nextSearchScope(local.filterKind)); },
       up() {
         if (local.path) { load(Tree.parentPath(local.path)); return; }
-        const wsCwd = deps.currentWorkspaceCwd() || "";
-        const currentRoot = local.cwdOverride || wsCwd;
-        if (!parentFoldersEnabled()) return;
-        if (!currentRoot) return;
-        const parent = Tree.parentDirectory(currentRoot);
-        if (!parent || parent === currentRoot) return;
-        local.cwdOverride = parent;
-        local.path = "";
-        local.entries = [];
-        local.selected = "";
-        load("");
+        // UP stays inside the tree: the workspace cwd is the ceiling.
       },
       refresh() { load(local.path); },
         filter(value) {

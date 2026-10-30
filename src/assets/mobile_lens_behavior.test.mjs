@@ -15,9 +15,15 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const LENS_SOURCE = readFileSync(new URL("./mobile/lens.js", import.meta.url), "utf8");
+// Compiled once so coverage attributes mobile/lens.js lines to the real file.
+const MOBILE_LENS_PATH = fileURLToPath(new URL("./mobile/lens.js", import.meta.url));
+const mobileLensScript = new vm.Script(readFileSync(MOBILE_LENS_PATH, "utf8"), {
+  filename: MOBILE_LENS_PATH,
+});
 
 // A minimal HTML tokenizer: builds stub children with correct nesting
 // via a tag stack. Only the lens's own markup shapes need to work.
@@ -430,7 +436,7 @@ function makeHarness(overrides = {}) {
   ctx.globalThis = ctx;
   ctx.window = ctx;
   const vmCtx = vm.createContext(ctx);
-  vm.runInContext(LENS_SOURCE, vmCtx);
+  mobileLensScript.runInContext(vmCtx);
   // The mobile lens factory takes injected deps; the harness el() is the
   // app's getElementById shape.
   const sendPaste =

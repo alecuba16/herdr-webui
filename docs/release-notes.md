@@ -50,6 +50,30 @@
   restoring the drawer, typing reaching the PTY with the drawer open,
   and the center git tab keeping its prefix chords alive behind the
   collapse.
+- Folder and branch switching move to the desktop location bar. The new bar
+  above the workspace panes shows the workspace folder as a path chip
+  (plus worktree and branch chips for git checkouts); clicking the path
+  chip opens the directory picker and switches the workspace to the
+  chosen folder, opening it as a workspace when it is not one yet. The
+  branch chip opens a branch popover: local branches with the current
+  one pinned at the top, remote branches capped by the preload setting
+  until filtered or expanded, a filter input, row trash icons that
+  delete non-current local branches, and a new-branch row that creates
+  and switches in one step (remote names strip the origin/ prefix, same
+  as the old popover). The worktree chip (linked worktrees only) opens
+  a popover that lists every checkout of the repository and switches
+  the whole workspace through the same folder-change flow, with a
+  create shortcut that prefills the current branch. The Git drawer drops
+  its own folder, worktree, and branch surfaces with that move: the
+  side path title, its folder picker entry, the differs notice, the
+  return-to-workspace button, the worktree chip, the subtitle, the
+  branch chip, and the branch modal are gone. The Help & Shortcuts
+  modal, the Git shortcut popup, and the feature docs describe the new
+  semantics.
+  The `File browser parent folders` setting leaves with it: folder
+  navigation is workspace-scoped, so the Files Up button moves within
+  the tree only and never above the workspace cwd, on desktop and
+  mobile alike.
 - The parallel bin-suite flake is fixed at the source. The PTY tests
   (client socket attach/re-attach, flood, fanout, events) spawned the
   user's login shell, whose rc-file init can stall past every 20s

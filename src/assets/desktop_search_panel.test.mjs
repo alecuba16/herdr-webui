@@ -10,7 +10,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// Compiled once per product file so coverage attributes to the real paths.
+const SEARCH_PANEL_PATH = fileURLToPath(new URL("./desktop/app_js/search_panel.js", import.meta.url));
+const searchPanelScript = new vm.Script(readFileSync(SEARCH_PANEL_PATH, "utf8"), {
+  filename: SEARCH_PANEL_PATH,
+});
+const WORKSPACE_SHELL_PATH = fileURLToPath(new URL("./desktop/app_js/workspace_shell.js", import.meta.url));
+const workspaceShellScript = new vm.Script(readFileSync(WORKSPACE_SHELL_PATH, "utf8"), {
+  filename: WORKSPACE_SHELL_PATH,
+});
 
 function makeNode(id, className) {
   const node = {
@@ -194,8 +205,7 @@ function loadPanel(document, ctxOverrides = {}) {
   ctx.globalThis = ctx;
   // search_panel.js references shared-core helpers and palette renderers;
   // the overrides above stub them, so only the panel module is needed.
-  const source = readFileSync(new URL("./desktop/app_js/search_panel.js", import.meta.url), "utf8");
-  vm.runInContext(source, vm.createContext(ctx));
+  searchPanelScript.runInContext(vm.createContext(ctx));
   return ctx;
 }
 
@@ -256,8 +266,7 @@ test("resolveHostedShellMode: current hosted mode wins, path memory next, files 
   };
   ctx.window = ctx;
   ctx.globalThis = ctx;
-  const source = readFileSync(new URL("./desktop/app_js/workspace_shell.js", import.meta.url), "utf8");
-  vm.runInContext(source, vm.createContext(ctx));
+  workspaceShellScript.runInContext(vm.createContext(ctx));
 
   // Floor: terminal mode with no memory resolves files.
   assert.equal(ctx.resolveHostedShellMode("ws-1"), "files", "terminal with no memory falls back to files");

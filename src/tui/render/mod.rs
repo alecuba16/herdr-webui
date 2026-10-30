@@ -12,7 +12,7 @@ use crate::tui::search;
 use crate::tui::terminal::styled_terminal_line;
 use crate::tui::theme::Palette;
 use crate::tui::workspace::{BrowserRow, WorkspaceCreateStage};
-use crate::tui::{lens, SidebarFocus, TuiApp, TuiMode, TuiScreen};
+use crate::tui::{lens, SidebarFocus, TuiApp, TuiMode, TuiScreen, TuiWorkspace};
 
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const MAX_DIFF_LINES: usize = 400;
@@ -49,6 +49,7 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
         || app.mode == TuiMode::ConfirmQuit
         || app.mode == TuiMode::Settings
         || app.mode == TuiMode::WorktreeList
+        || app.mode == TuiMode::BranchPicker
         || app.mode == TuiMode::SearchPalette
         || (app.lens.active && app.screen == TuiScreen::Terminal)
         || app.commit_input.is_some()
@@ -70,6 +71,9 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     }
     if app.mode == TuiMode::WorktreeList {
         render_worktree_list(frame, area, app, p);
+    }
+    if app.mode == TuiMode::BranchPicker {
+        render_branch_picker(frame, area, app, p);
     }
     if app.mode == TuiMode::SearchPalette {
         render_search_palette(frame, area, app, p);
@@ -224,6 +228,46 @@ pub fn pane_viewport_size(width: u16, height: u16, sidebar_collapsed: bool) -> (
     (cols, rows)
 }
 
+/// Folder token for the tab-bar context strip: the workspace cwd
+/// basename, mirroring the desktop path chip. `None` when the cwd is
+/// unknown (empty), matching the desktop's absent-chip rule for
+/// folders it cannot name.
+fn workspace_path_token(workspace: &TuiWorkspace) -> Option<String> {
+    if workspace.cwd.is_empty() {
+        return None;
+    }
+    std::path::Path::new(&workspace.cwd)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+}
+
+/// Worktree token for the context strip: `[worktree]` when the stamp
+/// says the workspace is a linked lane (desktop shows the link chip
+/// only when `is_linked_worktree` is true; plain folders and the main
+/// checkout show nothing).
+fn workspace_worktree_token(workspace: &TuiWorkspace) -> Option<String> {
+    workspace
+        .worktree
+        .as_ref()
+        .filter(|stamp| stamp.is_linked)
+        .map(|_| "[worktree]".to_string())
+}
+
+/// Branch token for the context strip: `@ branch` from the stamp.
+/// `None` when the branch is unknown (no stamp yet, or detached
+/// HEAD), mirroring the desktop's disabled branch chip: the desktop
+/// renders a disabled ` branch…` placeholder, the TUI drops the token
+/// instead (a muted placeholder buys no information in text form).
+fn workspace_branch_token(workspace: &TuiWorkspace) -> Option<String> {
+    workspace.worktree.as_ref().and_then(|stamp| {
+        if stamp.branch.is_empty() {
+            None
+        } else {
+            Some(format!("@ {}", stamp.branch))
+        }
+    })
+}
+
 fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
     let line = if let Some(workspace) = app.selected_workspace() {
         let tabs = app.snapshot.workspace_tabs(&workspace.id);
@@ -234,17 +278,16 @@ fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
         // left the user without any cue of which panel they were
         // looking at after Ctrl+B ] / [ (ux fix).
         let selected_tab_id = app.selected_pane().map(|pane| pane.tab_id.clone());
-        if tabs.is_empty() {
-            Line::from(vec![Span::styled(
+        let mut spans = if tabs.is_empty() {
+            vec![Span::styled(
                 format!(" {} ", workspace.label),
                 Style::default()
                     .fg(p.accent)
                     .bg(p.panel_alt)
                     .add_modifier(Modifier::BOLD),
-            )])
+            )]
         } else {
-            let spans = tabs
-                .iter()
+            tabs.iter()
                 .flat_map(|tab| {
                     let backend_active =
                         workspace.active_tab_id.as_deref() == Some(tab.id.as_str()) || tab.focused;
@@ -267,12 +310,45 @@ fn render_tab_bar(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) 
                         Span::raw(" "),
                     ]
                 })
-                .collect::<Vec<_>>();
-            Line::from(spans)
+                .collect::<Vec<_>>()
+        };
+        // Location-bar parity tokens after the tab labels: the
+        // workspace folder, its worktree lane when linked, and the
+        // checked-out branch (desktop chips folded into text
+        // tokens; the stamp is absent for plain folders, so the
+        // tokens degrade to just the folder name). Ratatui clips the
+        // line at the terminal width, which implements the drop
+        // order for free: the branch token (rightmost) disappears
+        // first on narrow terminals, then worktree, and the folder
+        // name rides the longest.
+        if let Some(path_token) = workspace_path_token(workspace) {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                path_token,
+                Style::default().fg(p.muted).bg(p.bg),
+            ));
+            if let Some(worktree_token) = workspace_worktree_token(workspace) {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    worktree_token,
+                    Style::default().fg(p.muted).bg(p.bg),
+                ));
+            }
+            if let Some(branch_token) = workspace_branch_token(workspace) {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(
+                    branch_token,
+                    Style::default().fg(p.accent).bg(p.bg),
+                ));
+            }
         }
+        Line::from(spans)
     } else {
         Line::from(Span::styled(
-            " no workspaces ",
+            // Desktop empty bar is a button; the TUI analog is the hint
+            // naming the binding (the browser overlay doubles as the
+            // folder picker, browse root falls back to home).
+            " no workspaces · Ctrl+B w open ",
             Style::default().fg(p.muted),
         ))
     };
@@ -1831,6 +1907,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         TuiMode::ConfirmQuit => "QUIT?",
         TuiMode::Settings => "SET",
         TuiMode::WorktreeList => "WORKTREES",
+        TuiMode::BranchPicker => "BRANCHES",
         TuiMode::SearchPalette => "SEARCH",
     };
     let prefix = if app.prefix.is_armed() {
@@ -2180,8 +2257,21 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
                 } else {
                     " [main]"
                 };
+                // Desktop `worktreePopoverRow` marks the checkout the
+                // workspace already sits on (check current).
+                let workspace_cwd = app
+                    .selected_workspace()
+                    .map(|ws| ws.cwd.as_str())
+                    .unwrap_or("");
+                let current = !workspace_cwd.is_empty()
+                    && crate::tui::same_checkout_path(&worktree.path, workspace_cwd);
+                let title = if current {
+                    format!("✓ {}", worktree.title())
+                } else {
+                    worktree.title()
+                };
                 (
-                    worktree.title(),
+                    title,
                     if worktree.branch.is_empty() {
                         linked.to_string()
                     } else {
@@ -2214,9 +2304,96 @@ fn render_worktree_list(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pal
     let title = if app.worktree_pick_workspace {
         " New workspace · o stages the folder · Enter descends folders · h parent · type to filter · Esc cancels "
     } else if app.worktree_filter.is_empty() {
-        " Worktrees · Enter opens/enters · o opens · h parent · type to filter · Esc closes "
+        " Worktrees · Enter opens/enters · o opens · c create worktree · h parent · type to filter · Esc closes "
     } else {
         " Worktrees · Esc clears the filter "
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(overlay_panel(title, p))
+            .style(Style::default().fg(p.text).bg(p.panel_bg))
+            .scroll((scroll as u16, 0)),
+        rect,
+    );
+}
+
+/// Branch picker overlay (desktop location-bar branch popover, prefix
+/// `v`): local branches of the selected workspace repo with the current
+/// branch pinned first (✓ marker), type-to-filter, j/k cursor. Rows
+/// checked out in a sibling worktree carry a [worktree] badge and
+/// reroute on Enter; the filter naming no branch becomes the create
+/// CTA (new branch + switch).
+fn render_branch_picker(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    use crate::tui::panels::git::GitBranchEntry;
+
+    let rows: Vec<GitBranchEntry> = app.filtered_branch_picker_rows();
+    let filter_height = if app.branch_picker_filter.is_empty() {
+        0
+    } else {
+        1
+    };
+    let height = ((rows.len() as u16 + 5 + filter_height).min(24)).max(7 + filter_height);
+    let rect = overlay_rect(area, area.width.min(72), height);
+    render_shadow(frame, rect, p);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            " Switch branch ",
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("in {} ", app.branch_picker_root),
+            Style::default().fg(p.muted),
+        ),
+    ])];
+    if let Some(line) = filter_query_line(
+        p,
+        &app.branch_picker_filter,
+        rows.len(),
+        app.branch_picker_rows.len(),
+    ) {
+        lines.push(line);
+    }
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " No branches match · Enter creates this branch ",
+            Style::default().fg(p.muted),
+        )));
+    }
+    let cwd = app.branch_picker_root.as_str();
+    for (index, row) in rows.iter().enumerate() {
+        let selected = index == app.branch_picker_selected;
+        let cursor = if selected { "▸ " } else { "  " };
+        let title_style = if selected {
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.text)
+        };
+        let marker = if row.current { "✓ " } else { "" };
+        let badge = match row
+            .worktree_path
+            .as_deref()
+            .filter(|path| !path.is_empty() && !crate::tui::same_checkout_path(path, cwd))
+        {
+            Some(_) => " [worktree]".to_string(),
+            None => String::new(),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(cursor, Style::default().fg(p.accent)),
+            Span::styled(format!("{marker}{}", row.name), title_style),
+            Span::styled(badge, Style::default().fg(p.muted)),
+        ]));
+    }
+    // Keep the cursor inside the window when the list outgrows the
+    // overlay.
+    let header_lines = 2 + filter_height; // border + title (+ filter line)
+    let visible_rows = height.saturating_sub(header_lines + 1).max(1) as usize;
+    let scroll = app
+        .branch_picker_selected
+        .saturating_sub(visible_rows.saturating_sub(1));
+    let title = if app.branch_picker_filter.is_empty() {
+        " Branches · Enter switch/worktree · j/k moves · type filters · Esc closes "
+    } else {
+        " Branches · Enter switches or creates · Esc clears the filter "
     };
     frame.render_widget(
         Paragraph::new(lines)

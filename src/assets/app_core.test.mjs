@@ -2,7 +2,22 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// One compiled script per product file so coverage attributes each file's
+// lines to its real disk path; scripts are built once and memoized.
+function productScript(relPath) {
+  productScript.cache = productScript.cache || new Map();
+  if (!productScript.cache.has(relPath)) {
+    const realPath = fileURLToPath(new URL(relPath, import.meta.url));
+    productScript.cache.set(
+      relPath,
+      new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath }),
+    );
+  }
+  return productScript.cache.get(relPath);
+}
 
 const require = createRequire(import.meta.url);
 const {
@@ -81,10 +96,7 @@ describe("session storage helpers (shared core)", () => {
     };
     sandbox.globalThis = sandbox;
     const context = vm.createContext(sandbox);
-    vm.runInContext(
-      readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"),
-      context,
-    );
+    productScript("./shared/core.js").runInContext(context);
     return {
       helpers: vm.runInContext("HerdrAppHelpers", context),
       store,
@@ -165,10 +177,7 @@ describe("session storage helpers (shared core)", () => {
     };
     sandbox.globalThis = sandbox;
     const context = vm.createContext(sandbox);
-    vm.runInContext(
-      readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"),
-      context,
-    );
+    productScript("./shared/core.js").runInContext(context);
     const helpers = vm.runInContext("HerdrAppHelpers", context);
     assert.equal(helpers.readSessionBackend("x"), "builtin");
     assert.equal(helpers.readSessionSelection("x", "builtin"), null);
@@ -320,7 +329,7 @@ describe("Git log rendering", () => {
     context.window.window = context.window;
     // log.js renders filter inputs with inputAttrs(...) from the shared helpers.
     vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
+    productScript("./desktop/git_ui/log.js").runInNewContext(context);
 
     const hash = "0123456789abcdef0123456789abcdef01234567";
     const longLabel = "origin/feature/very-long-branch-name-that-should-not-be-ellipsis-in-hover-card";
@@ -346,7 +355,7 @@ describe("Git log rendering", () => {
     };
     context.window.window = context.window;
     vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
+    productScript("./desktop/git_ui/log.js").runInNewContext(context);
 
     const hash = "1234567890abcdef1234567890abcdef12345678";
     const html = context.window.HerdrGitLog.render({
@@ -385,7 +394,7 @@ describe("Git log rendering", () => {
     };
     context.window.window = context.window;
     vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
+    productScript("./desktop/git_ui/log.js").runInNewContext(context);
 
     const html = context.window.HerdrGitLog.render({
       esc(value) { return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;"); },
@@ -409,7 +418,7 @@ describe("Git log rendering", () => {
     };
     context.window.window = context.window;
     vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
+    productScript("./desktop/git_ui/log.js").runInNewContext(context);
 
     // Git refnames allow ' and "; commit authors are free text. Both land
     // in onclick JS strings and title attributes, so the rendered markup
@@ -448,7 +457,7 @@ describe("Git log rendering", () => {
     context.window.window = context.window;
     // log.js renders filter inputs with inputAttrs(...) from the shared helpers.
     vm.runInNewContext("if (typeof inputAttrs !== 'function') inputAttrs = (hint) => ` autocomplete=\"off\" autocorrect=\"off\" autocapitalize=\"none\" spellcheck=\"false\" writingsuggestions=\"false\" translate=\"no\" enterkeyhint=\"${hint}\"`", context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/git_ui/log.js", import.meta.url), "utf8"), context);
+    productScript("./desktop/git_ui/log.js").runInNewContext(context);
     const laneColor = context.window.HerdrGitLog.laneColor;
 
     const render = (lane) => context.window.HerdrGitLog.render({
@@ -718,10 +727,8 @@ describe("buildWorktreeCreateBody", () => {
 describe("HerdrFileTree search helpers", () => {
   function loadTree() {
     const context = { window: {} };
-    const iconSource = readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8");
-    const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
-    vm.runInNewContext(iconSource, context);
-    vm.runInNewContext(treeSource, context);
+    productScript("./shared/file_icons.js").runInNewContext(context);
+    productScript("./shared/file_tree.js").runInNewContext(context);
     return context.window.HerdrFileTree;
   }
 
@@ -844,8 +851,7 @@ describe("HerdrEditor line number helpers", () => {
   async function createFallbackEditor(options) {
     const parent = { innerHTML: "", querySelector() { return null; } };
     const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise };
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
-    vm.runInNewContext(source, context);
+    productScript("./shared/editor.js").runInNewContext(context);
     context.window.HerdrEditor.create(Object.assign({ parent, path: "demo.txt", content: "a\nb", readonly: true }, options || {}));
     await new Promise((resolve) => setTimeout(resolve, 0));
     return parent.innerHTML;
@@ -866,11 +872,10 @@ describe("HerdrEditor line number helpers", () => {
   });
 
   it("prefers backend-prebuilt numbered preview HTML and gates client-built previews at 256 KB (C5)", async () => {
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
     const boot = () => {
       const parent = { innerHTML: "", querySelector() { return null; } };
       const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise };
-      vm.runInNewContext(source, context);
+      productScript("./shared/editor.js").runInNewContext(context);
       return { parent, create: (opts) => context.window.HerdrEditor.create(Object.assign({ parent, path: "big.log", content: "a\nb", readonly: true }, opts)) };
     };
 
@@ -917,8 +922,7 @@ describe("HerdrEditor line number helpers", () => {
       },
     };
     const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise, localStorage: { getItem() { return null; }, setItem() {} } };
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
-    vm.runInNewContext(source, context);
+    productScript("./shared/editor.js").runInNewContext(context);
 
     const editor = context.window.HerdrEditor.create({ parent, path: "demo.txt", content: "a\nb", readonly: true });
     assert.equal(parent._herdrEditorApi, editor);
@@ -974,8 +978,7 @@ describe("HerdrEditor line number helpers", () => {
       },
       Promise,
     };
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
-    vm.runInNewContext(source, context);
+    productScript("./shared/editor.js").runInNewContext(context);
 
     const api = context.window.HerdrEditor.create({
       parent,
@@ -1026,8 +1029,7 @@ describe("HerdrEditor line number helpers", () => {
       },
       Promise,
     };
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
-    vm.runInNewContext(source, context);
+    productScript("./shared/editor.js").runInNewContext(context);
 
     const api = context.window.HerdrEditor.create({
       parent,
@@ -1061,11 +1063,10 @@ describe("HerdrEditor line number helpers", () => {
   });
 
   it("renders a floating find toggle on headerless mounts (A1)", async () => {
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
     const boot = () => {
       const parent = { innerHTML: "", querySelector() { return null; } };
       const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } }, Promise, localStorage: { getItem() { return null; }, setItem() {} } };
-      vm.runInNewContext(source, context);
+      productScript("./shared/editor.js").runInNewContext(context);
       return { parent, create: (opts) => context.window.HerdrEditor.create(Object.assign({ parent, path: "demo.txt", content: "a\nb", readonly: true }, opts)) };
     };
 
@@ -1106,7 +1107,6 @@ describe("HerdrEditor line number helpers", () => {
   });
 
   it("memoizes find scans and invalidates on text or query change (D3)", () => {
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
     let text = "needle one needle two needle three";
     const toolbarParts = {};
     function makePart() {
@@ -1140,7 +1140,7 @@ describe("HerdrEditor line number helpers", () => {
       document: { createElement() { return {}; }, body: { appendChild(script) { script.onerror(); } } },
       Promise, localStorage: { getItem() { return null; }, setItem() {} },
     };
-    vm.runInNewContext(source, context);
+    productScript("./shared/editor.js").runInNewContext(context);
     const api = context.window.HerdrEditor.create({ parent, path: "demo.txt", content: text, readonly: true });
     assert.equal(typeof api.getValue, "function");
     const setText = (value) => { textareaNode.value = value; };
@@ -1185,8 +1185,7 @@ describe("HerdrEditor line number helpers", () => {
 
   it("supports match-case and regex range detection", () => {
     const context = { window: {}, document: { createElement() { return {}; }, body: { appendChild() {} } }, Promise };
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
-    vm.runInNewContext(source, context);
+    productScript("./shared/editor.js").runInNewContext(context);
 
     const helper = context.window.HerdrEditor;
     assert.equal(helper.findRanges("Alpha alpha alpha-42", "alpha", { matchCase: false, regex: false }).ranges.length, 3);
@@ -1249,8 +1248,7 @@ describe("HerdrEditor line number helpers", () => {
       document: { createElement() { return {}; }, body: { appendChild() {} } },
       Promise,
     };
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
-    vm.runInNewContext(source, context);
+    productScript("./shared/editor.js").runInNewContext(context);
 
     const editor = context.window.HerdrEditor.create({ parent, path: "demo.js", content: "abc", readonly: true });
     let prevented = false;
@@ -1296,8 +1294,7 @@ describe("HerdrEditor line number helpers", () => {
       Promise,
       setTimeout(fn) { fn(); },
     };
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
-    vm.runInNewContext(source, context);
+    productScript("./shared/editor.js").runInNewContext(context);
     const query = {
       focused: false,
       selected: false,
@@ -1350,8 +1347,7 @@ describe("HerdrEditor line number helpers", () => {
       },
       Promise,
     };
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
-    vm.runInNewContext(source, context);
+    productScript("./shared/editor.js").runInNewContext(context);
 
     context.window.HerdrEditor.create({ parent, path: "demo.js", content: "const x = 1;", readonly: true, hideHeader: true, lineNumbers: true });
     assert.match(parent.innerHTML, /herdr-editor cm/);
@@ -1399,8 +1395,7 @@ describe("HerdrEditor line number helpers", () => {
       },
       Promise,
     };
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
-    vm.runInNewContext(source, context);
+    productScript("./shared/editor.js").runInNewContext(context);
 
     context.window.HerdrEditor.create({ parent, path: "demo.js", content: "let x = 1;", readonly: false, hideHeader: true, lineNumbers: true });
     assert.match(parent.innerHTML, /herdr-editor cm/);
@@ -1441,8 +1436,7 @@ describe("HerdrEditor line number helpers", () => {
       document: { createElement() { return {}; }, body: { appendChild() { throw new Error("should not load CodeMirror dynamically"); } } },
       Promise,
     };
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
-    vm.runInNewContext(source, context);
+    productScript("./shared/editor.js").runInNewContext(context);
 
     context.window.HerdrEditor.create({ parent, path: "demo.py", content: "print('x')", readonly: true, hideHeader: true, lineNumbers: true });
 
@@ -1491,8 +1485,7 @@ describe("HerdrEditor goto-line and position readout (A5)", () => {
       localStorage: { getItem: () => null, setItem: () => {} },
       Promise,
     };
-    const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
-    vm.runInNewContext(source, context);
+    productScript("./shared/editor.js").runInNewContext(context);
     return { context, readout, calls };
   }
 
@@ -1720,7 +1713,7 @@ describe("desktop file browser editor integration", () => {
         syncShellModeButtons() {},
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { writeText: async () => {} } },
       fetch: async (url) => {
         requests.push(String(url));
@@ -1747,8 +1740,9 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    productScript("./shared/file_tree.js").runInNewContext(context);
+    productScript("./desktop/file_browser.js").runInNewContext(context);
+    productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
     assert.equal(context.window.HerdrFileTree.parentDirectory("~"), "~");
     assert.equal(context.window.HerdrFileTree.parentDirectory("~/code"), "~");
@@ -1765,6 +1759,61 @@ describe("desktop file browser editor integration", () => {
     assert.match(requests.at(-1), /path=/);
   });
 
+  it("up from the workspace root fetches nothing", async () => {
+    const document = createFakeDocument();
+    const requests = [];
+    const context = {
+      window: {
+        addEventListener() {},
+        HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
+        HerdrGitUi: { hide() {} },
+        HerdrWorkspacePath(workspace) { return workspace.cwd; },
+        rememberWorkspaceShellMode() {},
+        syncShellModeButtons() {},
+      },
+      document,
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
+      navigator: { clipboard: { writeText: async () => {} } },
+      fetch: async (url) => {
+        requests.push(String(url));
+        return {
+          ok: true,
+          async json() {
+            const path = decodeURIComponent((String(url).match(/path=([^&]*)/) || [null, ""])[1]);
+            return { path, entries: [{ kind: "file", name: "demo.txt", path: path ? `${path}/demo.txt` : "demo.txt" }], git_status: null };
+          },
+        };
+      },
+      confirm: () => true,
+      HerdrAppHelpers: require("./shared/core.js"),
+      appRefreshIconButton: () => "<button>Refresh</button>",
+      encodeURIComponent,
+      decodeURIComponent,
+      Error,
+      JSON,
+      Math,
+      String,
+      setTimeout(fn) { fn(); return 1; },
+      clearTimeout() {},
+      getComputedStyle: () => ({ getPropertyValue() { return "14"; } }),
+    };
+    context.window.window = context.window;
+    context.window.document = document;
+    productScript("./shared/file_tree.js").runInNewContext(context);
+    productScript("./desktop/file_browser.js").runInNewContext(context);
+    productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
+
+    await context.window.HerdrFileBrowser.openAt({ cwd: "/tmp/ws" }, "", { kind: "dir" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const html = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(html, /herdr-file-tree-current/, "the current folder row renders at the workspace root");
+    assert.doesNotMatch(html, /↑ Up/, "no Up row at the workspace root");
+    const fetches = requests.length;
+    await context.window.HerdrFileBrowser.up();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(requests.length, fetches, "up at the workspace root fetches nothing");
+  });
+
   it("executes file browser context menu actions from delegated button clicks", async () => {
     const document = createFakeDocument();
     const requests = [];
@@ -1779,7 +1828,7 @@ describe("desktop file browser editor integration", () => {
         syncShellModeButtons() {},
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { async writeText(value) { clipboardWrites.push(value); } } },
       fetch: async (url, options = {}) => {
         const text = String(url);
@@ -1808,8 +1857,9 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    productScript("./shared/file_tree.js").runInNewContext(context);
+    productScript("./desktop/file_browser.js").runInNewContext(context);
+    productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
     await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
     context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("demo.txt"), "file");
@@ -1845,6 +1895,9 @@ describe("desktop file browser editor integration", () => {
     const bodies = [];
     const navigations = [];
     const context = {
+      // Bundle scope for the shared folder flow (open_folder_flow.js reads
+      // bare state like the desktop bundle provides).
+      state: { ws: null, workspaces: [] },
       window: {
         addEventListener() {},
         HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
@@ -1857,7 +1910,7 @@ describe("desktop file browser editor integration", () => {
         go(ws, tab, pane) { navigations.push([ws, tab, pane]); },
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { writeText: async () => {} } },
       fetch: async (url, options = {}) => {
         const text = String(url);
@@ -1905,8 +1958,9 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    productScript("./shared/file_tree.js").runInNewContext(context);
+    productScript("./desktop/file_browser.js").runInNewContext(context);
+    productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
     await context.window.HerdrFileBrowser.open({ cwd: "/home" });
     context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("repo"), "dir");
@@ -1939,6 +1993,7 @@ describe("desktop file browser editor integration", () => {
     const bodies = [];
     const navigations = [];
     const context = {
+      state: { ws: null, workspaces: [] },
       window: {
         addEventListener() {},
         HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
@@ -1951,7 +2006,7 @@ describe("desktop file browser editor integration", () => {
         go(ws, tab, pane) { navigations.push([ws, tab, pane]); },
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { writeText: async () => {} } },
       fetch: async (url, options = {}) => {
         const text = String(url);
@@ -1991,8 +2046,9 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    productScript("./shared/file_tree.js").runInNewContext(context);
+    productScript("./desktop/file_browser.js").runInNewContext(context);
+    productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
     await context.window.HerdrFileBrowser.open({ cwd: "/home" });
     context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("plain"), "dir");
@@ -2022,6 +2078,7 @@ describe("desktop file browser editor integration", () => {
     const bodies = [];
     const navigations = [];
     const context = {
+      state: { ws: null, workspaces: [] },
       window: {
         addEventListener() {},
         HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
@@ -2031,7 +2088,7 @@ describe("desktop file browser editor integration", () => {
         syncShellModeButtons() {},
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { writeText: async () => {} } },
       fetch: async (url, options = {}) => {
         const text = String(url);
@@ -2083,8 +2140,9 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    productScript("./shared/file_tree.js").runInNewContext(context);
+    productScript("./desktop/file_browser.js").runInNewContext(context);
+    productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
     // repo/docs is inside the repo but is not a checkout row.
     await context.window.HerdrFileBrowser.open({ cwd: "/home" });
@@ -2119,7 +2177,7 @@ describe("desktop file browser editor integration", () => {
         syncShellModeButtons() {},
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { writeText: async () => {} } },
       fetch: async (url, options = {}) => {
         const text = String(url);
@@ -2145,8 +2203,9 @@ describe("desktop file browser editor integration", () => {
     };
     context.window.window = context.window;
     context.window.document = document;
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    productScript("./shared/file_tree.js").runInNewContext(context);
+    productScript("./desktop/file_browser.js").runInNewContext(context);
+    productScript("./desktop/app_js/open_folder_flow.js").runInNewContext(context);
 
     await context.window.HerdrFileBrowser.open({ cwd: "/home" });
     context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("demo.txt"), "file");
@@ -2312,9 +2371,9 @@ describe("desktop file browser editor integration", () => {
     terminalShell.id = "terminalShell";
     workspacePanes.appendChild(terminalShell);
 
-    vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), vm.createContext(context.window));
-    vm.runInNewContext(readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8"), vm.createContext(context.window));
-    vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), vm.createContext(context.window));
+    productScript("./shared/file_tree.js").runInNewContext(vm.createContext(context.window));
+    productScript("./desktop/app_js/workspace_panes.js").runInNewContext(vm.createContext(context.window));
+    productScript("./desktop/file_browser.js").runInNewContext(vm.createContext(context.window));
     harness.context = context;
     harness.FB = context.window.HerdrFileBrowser;
     harness.Panes = context.window.HerdrWorkspacePanes;
@@ -2732,4 +2791,3 @@ describe("desktop file browser editor integration", () => {
     assert.equal(demoCall.toggledFind, true);
   });
 });
-

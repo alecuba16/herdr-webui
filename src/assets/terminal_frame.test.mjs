@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const require = createRequire(import.meta.url);
@@ -193,7 +194,13 @@ describe("desktop terminal visible height fitting", () => {
 
 describe("desktop terminal paste streaming", () => {
   function loadDesktopTerminalContext() {
-    const source = readFileSync(new URL("./desktop/app_js/terminal.js", import.meta.url), "utf8");
+    // Compiled once so coverage attributes terminal.js lines to the real file.
+    if (!loadDesktopTerminalContext.script) {
+      const terminalPath = fileURLToPath(new URL("./desktop/app_js/terminal.js", import.meta.url));
+      loadDesktopTerminalContext.script = new vm.Script(readFileSync(terminalPath, "utf8"), {
+        filename: terminalPath,
+      });
+    }
     const ctx = {
       console,
       TextEncoder,
@@ -207,7 +214,7 @@ describe("desktop terminal paste streaming", () => {
       terminal: null,
     };
     vm.createContext(ctx);
-    vm.runInContext(source, ctx);
+    loadDesktopTerminalContext.script.runInContext(ctx);
     return ctx;
   }
 

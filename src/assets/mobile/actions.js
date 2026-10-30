@@ -161,7 +161,11 @@
     // keeps the empty workspace open. refresh() reselects a surviving
     // workspace through its normal fallback.
     const autoCloseInFlight = new Set();
-    async function maybeAutoCloseWorkspace(workspaceId) {
+    // options.silent skips the confirm: folder switches (the worktree
+    // sheet and the branch sheet reroute) close the left-behind workspace
+    // without a question, matching the desktop bar flow. Panel closes keep
+    // the default confirm.
+    async function maybeAutoCloseWorkspace(workspaceId, options = {}) {
       if (!workspaceId) return;
       // Read the flag through the worktrees module; fall back to the shared
       // options blob.
@@ -225,10 +229,12 @@
         const name = typeof workspaceTitle === "function"
           ? workspaceTitle(workspace)
           : workspace.label || workspaceId;
-        const proceed = await confirmFn(
-          `Close ${kind} "${name}"? Its last terminal panel just closed.`,
-        );
-        if (!proceed) return;
+        if (!options.silent) {
+          const proceed = await confirmFn(
+            `Close ${kind} "${name}"? Its last terminal panel just closed.`,
+          );
+          if (!proceed) return;
+        }
         await api(`/api/workspaces/${encodeURIComponent(workspaceId)}/close`, {
           method: "POST",
         });

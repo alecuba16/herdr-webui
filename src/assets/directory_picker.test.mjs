@@ -2,11 +2,20 @@
 // search paging (infinite scroll) and the Default dir action.
 import test from "node:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { equal, match, ok } from "node:assert/strict";
 
 const pickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
 const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
+
+// Compiled once per product file so coverage attributes to the real paths.
+// The picker script is built from the debug-hook-patched source, matching
+// what the vm used to run, but named after the real disk file.
+const TREE_PATH = fileURLToPath(new URL("./shared/file_tree.js", import.meta.url));
+const treeScript = new vm.Script(readFileSync(TREE_PATH, "utf8"), { filename: TREE_PATH });
+const PICKER_PATH = fileURLToPath(new URL("./desktop/directory_picker.js", import.meta.url));
+let pickerScript = null;
 
 // The real inputAttrs guard helper from shared/core.js (module.exports).
 // The picker renders inputs with inputAttrs(...), so the vm sandbox needs it.
@@ -88,6 +97,13 @@ const debugPickerSource = pickerSource.replace(
   "window.HerdrDirectoryPicker = {",
   "window.__pickerDebug = { state, render };\n  window.HerdrDirectoryPicker = {",
 );
+// Build the attributed script once; reuse the patched source unchanged.
+function pickerScriptForRun() {
+  if (!pickerScript) {
+    pickerScript = new vm.Script(debugPickerSource, { filename: PICKER_PATH });
+  }
+  return pickerScript;
+}
 
 function loadPicker({ fetchImpl, defaultFolder, explorationDefault } = {}) {
   const harness = context({ fetchImpl });
@@ -100,8 +116,8 @@ function loadPicker({ fetchImpl, defaultFolder, explorationDefault } = {}) {
       },
     };
   }
-  vm.runInContext(treeSource, ctx);
-  vm.runInContext(debugPickerSource, ctx);
+  treeScript.runInContext(ctx);
+  pickerScriptForRun().runInContext(ctx);
   return harness;
 }
 

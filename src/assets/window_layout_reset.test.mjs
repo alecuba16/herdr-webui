@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 // Integration test for the window layout reset: window.resetWindowLayout
@@ -189,11 +190,66 @@ function loadSource() {
     .join("\n");
 }
 
+// One compiled script per product file, same list and order as loadSource(),
+// so coverage attributes each file's lines to its real disk path.
+// The concatenated blob hoisted function declarations across every file;
+// separate scripts only hoist per file, so core.js's load-time
+// window.syncGitWorkspaceToggle assignment needs the name pre-declared, and
+// the window copy re-wired to the real function once render.js has loaded.
+const LAYOUT_FILES = [
+  "./shared/core.js",
+  "./shared/actions.js",
+  "./shared/terminal_fit.js",
+  "./desktop/search.js",
+  "./desktop/app_js/core.js",
+  "./desktop/app_js/settings_sections.js",
+  "./desktop/app_js/workspace_shell.js",
+  "./desktop/app_js/right_sidebar.js",
+  "./desktop/app_js/search_panel.js",
+  "./desktop/app_js/workspace_panes.js",
+  "./desktop/app_js/render.js",
+  "./desktop/app_js/terminal.js",
+  "./desktop/app_js/lens.js",
+  "./desktop/app_js/prompt_cards.js",
+  "./desktop/app_js/composer.js",
+  "./desktop/app_js/worktrees.js",
+  "./desktop/app_js/shortcuts.js",
+  "./desktop/app_js/workspace_create.js",
+  "./desktop/lsp_settings.js",
+  "./desktop/layout_settings.js",
+  "./desktop/window_layout_settings.js",
+  "./desktop/app_js/bindings.js",
+];
+let layoutScripts = null;
+function getLayoutScripts() {
+  if (!layoutScripts) {
+    layoutScripts = LAYOUT_FILES.map((path) => {
+      const realPath = fileURLToPath(new URL(path, import.meta.url));
+      return new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath });
+    });
+  }
+  return layoutScripts;
+}
+const HOIST_PRELOAD = new vm.Script(
+  "var syncGitWorkspaceToggle;\n" +
+    "window.syncGitWorkspaceToggle = syncGitWorkspaceToggle;",
+  { filename: "hoist-preload.js" },
+);
+const HOIST_REWIRE = new vm.Script(
+  "window.syncGitWorkspaceToggle = syncGitWorkspaceToggle;",
+  { filename: "hoist-rewire.js" },
+);
+function runLayoutScripts(ctx) {
+  HOIST_PRELOAD.runInContext(ctx);
+  for (const script of getLayoutScripts()) script.runInContext(ctx);
+  HOIST_REWIRE.runInContext(ctx);
+}
+
 describe("window layout reset integration", () => {
   it("defines resetWindowLayout and exposes it on window", async () => {
     const ctx = context();
     try {
-      vm.runInContext(loadSource(), ctx);
+      runLayoutScripts(ctx);
     } catch (e) {}
     assert.equal(typeof ctx.resetWindowLayout, "function");
     assert.equal(typeof ctx.window.resetWindowLayout, "function");
@@ -202,7 +258,7 @@ describe("window layout reset integration", () => {
   it("clears persisted layout state and rebuilds a single pane after confirm", async () => {
     const ctx = context();
     try {
-      vm.runInContext(loadSource(), ctx);
+      runLayoutScripts(ctx);
     } catch (e) {}
 
     vm.runInContext(`
@@ -307,7 +363,7 @@ describe("window layout reset integration", () => {
   it("returns false and clears nothing when the confirm is dismissed", async () => {
     const ctx = context();
     try {
-      vm.runInContext(loadSource(), ctx);
+      runLayoutScripts(ctx);
     } catch (e) {}
     vm.runInContext(`
       state.ws = "ws-a";
@@ -343,7 +399,7 @@ describe("window layout reset integration", () => {
   it("skips the confirm and still resets when skipConfirm is true", async () => {
     const ctx = context();
     try {
-      vm.runInContext(loadSource(), ctx);
+      runLayoutScripts(ctx);
     } catch (e) {}
     vm.runInContext(`
       state.ws = "ws-a";
@@ -407,7 +463,7 @@ describe("window layout reset integration", () => {
     // dashboard shows; drawers never claim the pane slot.
     const ctx = context();
     try {
-      vm.runInContext(loadSource(), ctx);
+      runLayoutScripts(ctx);
     } catch (e) {}
     await vm.runInContext(`
       state.workspaces = [];

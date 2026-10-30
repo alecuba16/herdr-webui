@@ -371,6 +371,7 @@ fn snapshot_summary_reports_counts() {
             pane_count: 1,
             tab_count: 1,
             active_tab_id: Some("tab".to_string()),
+            worktree: None,
         }],
         tabs: vec![],
         panes: vec![],
@@ -589,12 +590,14 @@ fn git_branches_delete_blocked_for_current_branch_and_confirmed_for_others() {
             current: true,
             remote: false,
             pushed: true,
+            worktree_path: None,
         },
         GitBranchEntry {
             name: "feature".to_string(),
             current: false,
             remote: false,
             pushed: false,
+            worktree_path: None,
         },
     ];
     app.git_panel.branch_selected = 0;
@@ -1112,12 +1115,14 @@ fn renders_all_git_views_with_populated_state() {
             current: true,
             remote: false,
             pushed: true,
+            worktree_path: None,
         },
         GitBranchEntry {
             name: "feature".to_string(),
             current: false,
             remote: false,
             pushed: false,
+            worktree_path: None,
         },
     ];
     app.git_panel.stashes = vec![GitStashEntry {
@@ -1516,6 +1521,7 @@ fn prompt_key_flow_types_confirms_and_cancels() {
         current: false,
         remote: false,
         pushed: false,
+        worktree_path: None,
     }];
     app.git_panel.branch_selected = 0;
     app.prompt_input = Some(PromptInput {
@@ -1805,12 +1811,22 @@ fn shortcut_dispatch_covers_every_arm() {
     app.handle_key(KeyEvent::from(KeyCode::Char('m')));
     assert!(app.error.is_some(), "blame without a file errors");
 
-    // Switch branch dispatches; a selected current branch is skipped
-    // locally before any API call. open_git_screen may refresh from a
-    // live backend, so only assert the arm runs without panic.
+    // Switch branch now opens the workspace-scoped branch picker (the
+    // dead HTTP endpoint surfaces the error, but the overlay intent is
+    // still visible before the request fails). The old git-screen
+    // Branches view stays reachable through prefix `b`.
+    app.error = None;
     app.handle_key(ctrl_b);
     app.handle_key(KeyEvent::from(KeyCode::Char('v')));
-    assert!(app.git_panel.view == GitView::Branches);
+    assert!(
+        app.mode == TuiMode::BranchPicker || app.error.is_some(),
+        "prefix v either opens the picker or reports the load failure"
+    );
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    app.handle_key(ctrl_b);
+    app.handle_key(KeyEvent::from(KeyCode::Char('b')));
+    assert_eq!(app.screen, TuiScreen::Git);
+    assert_eq!(app.git_panel.view, GitView::Branches);
 
     // All git action arms run against the dead API: they must set an
     // error (or status) and never panic. Stage all is a plain
@@ -1878,6 +1894,7 @@ fn git_in_panel_keys_cover_stage_fetch_pull_push_and_enter() {
         current: true,
         remote: false,
         pushed: true,
+        worktree_path: None,
     }];
     app.git_panel.stashes = vec![GitStashEntry {
         name: "stash@{0}".to_string(),
@@ -2244,6 +2261,7 @@ fn git_panel_switch_and_delete_and_stash_hit_api() {
         current: false,
         remote: false,
         pushed: false,
+        worktree_path: None,
     }];
     panel.branch_selected = 0;
     assert!(panel.switch_branch(&api, "feature").is_err());
@@ -2837,12 +2855,14 @@ fn prefix_e_and_discard_guards_against_dead_web_api() {
             current: true,
             remote: false,
             pushed: true,
+            worktree_path: None,
         },
         GitBranchEntry {
             name: "dev".to_string(),
             current: false,
             remote: false,
             pushed: false,
+            worktree_path: None,
         },
     ];
     app.git_panel.branch_selected = 1;
@@ -3064,18 +3084,21 @@ fn renders_git_and_file_view_variants() {
             current: true,
             remote: false,
             pushed: true,
+            worktree_path: None,
         },
         GitBranchEntry {
             name: "origin/dev".to_string(),
             current: false,
             remote: true,
             pushed: false,
+            worktree_path: None,
         },
         GitBranchEntry {
             name: "local".to_string(),
             current: false,
             remote: false,
             pushed: false,
+            worktree_path: None,
         },
     ];
     app.git_panel.stashes = vec![GitStashEntry {
@@ -5786,6 +5809,7 @@ fn round3_specific_tui_edges_and_shortcuts() {
         current: false,
         remote: false,
         pushed: false,
+        worktree_path: None,
     }];
     app.handle_key(KeyEvent::from(KeyCode::Enter));
     assert!(app.status.contains("switched") || app.error.is_some());
@@ -6919,6 +6943,7 @@ fn search_palette_multi_workspace_selection_and_arrow_paging() {
             pane_count: 0,
             tab_count: 0,
             active_tab_id: None,
+            worktree: None,
         });
     point_web_api_at_dead_port(&mut app);
 
@@ -7015,6 +7040,7 @@ fn search_palette_scoring_orders_exact_prefix_substring() {
             pane_count: 0,
             tab_count: 0,
             active_tab_id: None,
+            worktree: None,
         });
     app.snapshot
         .workspaces
@@ -7027,6 +7053,7 @@ fn search_palette_scoring_orders_exact_prefix_substring() {
             pane_count: 0,
             tab_count: 0,
             active_tab_id: None,
+            worktree: None,
         });
     app.handle_key(ctrl('b'));
     app.handle_key(KeyEvent::from(KeyCode::Char('/')));
@@ -8287,6 +8314,97 @@ fn tab_bar_marks_the_viewing_panel_and_pane_title_names_it() {
 }
 
 #[test]
+fn tab_bar_renders_context_tokens_from_the_stamp() {
+    // Location-bar parity: after the tab labels the bar carries the
+    // workspace folder, the worktree lane marker when linked, and the
+    // checked-out branch, all from the T1 stamp.
+    let mut app = app_with_snapshot();
+    app.snapshot.workspaces[0].worktree = Some(crate::tui::TuiWorktreeStamp {
+        repo_root: "/repo".to_string(),
+        repo_name: "repo".to_string(),
+        branch: "feature/x".to_string(),
+        is_linked: true,
+    });
+    app.snapshot.workspaces[0].cwd = "/Users/dev/src/repo-lane".to_string();
+    let rendered = draw(&app, 120, 30);
+    assert!(
+        rendered.contains("repo-lane"),
+        "folder token renders from the cwd basename"
+    );
+    assert!(
+        !rendered.contains("/Users/dev/src"),
+        "the folder token is the basename, not the full path"
+    );
+    assert!(
+        rendered.contains("[worktree]"),
+        "linked stamp renders the worktree token"
+    );
+    assert!(
+        rendered.contains("@ feature/x"),
+        "branch token renders from the stamp branch"
+    );
+}
+
+#[test]
+fn tab_bar_context_tokens_stay_absent_without_a_stamp() {
+    // No stamp (plain folder, or the fetch has not landed yet): only
+    // the folder token shows. No [worktree], no @ branch, and no
+    // placeholder text pretending to know them.
+    let app = app_with_snapshot();
+    let rendered = draw(&app, 120, 30);
+    assert!(
+        rendered.contains("repo"),
+        "folder token renders even without a stamp"
+    );
+    assert!(
+        !rendered.contains("[worktree]"),
+        "no stamp means no worktree token"
+    );
+    assert!(!rendered.contains("@ "), "no stamp means no branch token");
+}
+
+#[test]
+fn tab_bar_drops_branch_token_for_detached_head() {
+    // A stamp can land with an empty branch (detached HEAD, or a
+    // checkout the porcelain could not name): the branch token stays
+    // absent rather than printing a bare "@ " placeholder.
+    let mut app = app_with_snapshot();
+    app.snapshot.workspaces[0].worktree = Some(crate::tui::TuiWorktreeStamp {
+        repo_root: "/repo".to_string(),
+        repo_name: "repo".to_string(),
+        branch: String::new(),
+        is_linked: false,
+    });
+    let rendered = draw(&app, 120, 30);
+    assert!(
+        !rendered.contains("@ "),
+        "an unnamed branch must not print an empty token"
+    );
+}
+
+#[test]
+fn tab_bar_context_tokens_distinguish_main_checkout() {
+    // The main checkout shows the branch but not the worktree token;
+    // only lanes carry [worktree] (desktop link-chip rule).
+    let mut app = app_with_snapshot();
+    app.snapshot.workspaces[0].worktree = Some(crate::tui::TuiWorktreeStamp {
+        repo_root: "/repo".to_string(),
+        repo_name: "repo".to_string(),
+        branch: "main".to_string(),
+        is_linked: false,
+    });
+    let rendered = draw(&app, 120, 30);
+    assert!(
+        rendered.contains("@ main"),
+        "main checkout still shows its branch"
+    );
+    assert!(
+        !rendered.contains("[worktree]"),
+        "the main checkout is not a lane"
+    );
+}
+
+#[test]
 fn tail_refreshes_between_snapshot_ticks_while_not_attached() {
     // Live preview (ux fix): the tail must poll at the fast cadence
     // even when the snapshot interval has NOT elapsed yet. The event
@@ -8578,5 +8696,737 @@ fn poll_refresh_arms_waiting_and_survives_a_silent_worker_drop() {
     assert!(
         !rendered.contains("Receiver"),
         "channel internals stay hidden"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T1: worktree identity stamp (sidebar badge parity with the webui).
+// ---------------------------------------------------------------------------
+
+/// Fake backend answering `worktree.list` with the builtin envelope
+/// shape (source + rows). Hermetic like `fake_backend_socket`, but
+/// the rows are pinned per test instead of shared fixture data.
+fn stamp_fake_socket(worktrees: Value) -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use interprocess::TryClone as _;
+    use std::io::{BufRead, BufReader, Write};
+
+    let path = crate::backend_client::unique_test_path("herdr-tui-stamp-fake");
+    let _ = std::fs::remove_file(&path);
+    let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let handle = std::thread::spawn(move || loop {
+        if rx.try_recv().is_ok() {
+            break;
+        }
+        let Ok(mut stream) = listener.accept() else {
+            break;
+        };
+        let mut line = String::new();
+        {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                continue;
+            }
+        }
+        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let response = match request["method"].as_str().unwrap_or("") {
+            "ping" => json!({"id": request["id"], "result": {"version": "test", "protocol": 1}}),
+            "session.snapshot" => json!({
+                "id": request["id"],
+                "result": fixture_snapshot_value()
+            }),
+            "worktree.list" => json!({
+                "id": request["id"],
+                "result": {
+                    "source": {
+                        "repo_root": "/repo",
+                        "repo_name": "repo",
+                        "repo_key": "/repo"
+                    },
+                    "worktrees": worktrees
+                }
+            }),
+            method => json!({"id": request["id"], "error": format!("unexpected method {method}")}),
+        };
+        stream
+            .write_all(serde_json::to_string(&response).unwrap().as_bytes())
+            .unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+    });
+    std::mem::forget(handle);
+    (path, tx)
+}
+
+#[test]
+fn stamp_parser_marks_main_and_linked_from_source_repo_root() {
+    // The builtin row flag says linked for every row, main included;
+    // the parser must derive the flag from the row path vs the
+    // source repo_root instead.
+    let response = json!({
+        "source": {"repo_root": "/repo", "repo_name": "repo"},
+        "worktrees": [
+            {"path": "/repo", "branch": "main", "is_linked_worktree": true},
+            {"path": "/repo-wt", "branch": "feature", "is_linked_worktree": true}
+        ]
+    });
+
+    let main = crate::tui::parse_worktree_list_response(&response, "/repo")
+        .expect("main checkout row found");
+    assert!(!main.is_linked, "row at repo_root is the main checkout");
+    assert_eq!(main.branch, "main");
+    assert_eq!(main.repo_root, "/repo");
+    assert_eq!(main.repo_name, "repo");
+
+    let lane =
+        crate::tui::parse_worktree_list_response(&response, "/repo-wt").expect("lane row found");
+    assert!(lane.is_linked, "row away from repo_root is linked");
+    assert_eq!(lane.branch, "feature");
+}
+
+#[test]
+fn stamp_parser_skips_unrelated_folders_and_missing_shapes() {
+    // A folder the rows do not name (plain directory, subfolder) has
+    // no identity to stamp.
+    let response = json!({
+        "source": {"repo_root": "/repo", "repo_name": "repo"},
+        "worktrees": [
+            {"path": "/repo", "branch": "main"},
+            {"path": "/repo-wt", "branch": "feature"}
+        ]
+    });
+    assert!(
+        crate::tui::parse_worktree_list_response(&response, "/unrelated").is_none(),
+        "folder absent from rows is unstamped"
+    );
+
+    // No rows at all: broken git or plain folder, nothing to stamp.
+    assert!(crate::tui::parse_worktree_list_response(&response_no_rows(), "/repo").is_none());
+
+    // Rows without a source envelope: the repo root falls back to the
+    // row checkout path, so the main-vs-linked call lands on main
+    // (the audit's settled behavior for source-less replies). The
+    // overlay derivation keeps trusting the raw row flag.
+    let bare =
+        json!({"worktrees": [{"path": "/repo", "branch": "main", "is_linked_worktree": true}]});
+    let stamp = crate::tui::parse_worktree_list_response(&bare, "/repo")
+        .expect("row still stamps without an envelope");
+    assert!(!stamp.is_linked, "source-less reply lands on main");
+    let rows = crate::tui::workspace::worktree_rows_from_response(&bare);
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].is_linked, "fallback trusts the row flag");
+}
+
+fn response_no_rows() -> serde_json::Value {
+    json!({"worktrees": []})
+}
+
+/// Pump refresh ticks until the workspace stamp lands. A fresh app
+/// has no armed worker, so unlike `drain_refresh` this starts the
+/// round-trip itself and keeps ticking until the stamp commits.
+fn pump_until_stamped(app: &mut TuiApp) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        app.refresh_if_due();
+        if app
+            .snapshot
+            .workspaces
+            .first()
+            .is_some_and(|ws| ws.worktree.is_some())
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("stamp never landed within 5s");
+}
+
+/// Pump refresh ticks until the snapshot refresh and the stamp fetch
+/// both settle (worker armed, landed, nothing left in flight). Used
+/// when no stamp is expected: the reply must still land (into the
+/// cache) without wedging the loop.
+fn pump_until_quiet(app: &mut TuiApp) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        app.refresh_if_due();
+        if app.last_refresh.is_some()
+            && app.refresh_inflight.is_none()
+            && app.stamp_inflight.is_empty()
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("refresh never settled within 5s");
+}
+
+#[test]
+fn stamp_fetch_marks_sidebar_rows_through_refresh_cycle() {
+    // The snapshot refresh must stamp the workspace rows with their
+    // worktree identity: the fetch arms on the first refresh after
+    // the snapshot lands, the reply drains into the cache, and the
+    // next refresh replays the cache onto fresh (unstamped) rows.
+    let (path, _stop) = stamp_fake_socket(json!([
+        {"path": "/repo", "branch": "main", "is_linked_worktree": true}
+    ]));
+    let client = BackendClient::new(path.clone(), path);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = fixture_snapshot();
+    assert!(
+        app.snapshot.workspaces[0].worktree.is_none(),
+        "fixture rows start unstamped"
+    );
+
+    // First refresh lands the snapshot; the stamp fetch arms and the
+    // reply commits within the pump.
+    pump_until_stamped(&mut app);
+    assert!(
+        app.snapshot.workspaces[0]
+            .worktree
+            .as_ref()
+            .is_some_and(|stamp| !stamp.is_linked),
+        "main checkout stamps not-linked even though the row flag says linked"
+    );
+
+    // Cache: a second refresh replaces the rows (fresh from_backend)
+    // and replays the cached stamp without a new fetch. The refresh
+    // cadence is 1s, so force the refresh due.
+    let cached = app.stamp_cache.get("/repo").expect("reply cached");
+    let fetched_at = cached.fetched_at;
+    app.snapshot = fixture_snapshot();
+    app.last_refresh = None;
+    app.refresh_inflight = None;
+    pump_until_stamped(&mut app);
+    assert!(
+        app.snapshot.workspaces[0]
+            .worktree
+            .as_ref()
+            .is_some_and(|stamp| !stamp.is_linked),
+        "cache replays the stamp onto fresh rows"
+    );
+    assert_eq!(
+        app.stamp_cache.get("/repo").map(|e| e.fetched_at),
+        Some(fetched_at),
+        "fresh cache entry means no re-fetch"
+    );
+}
+
+#[test]
+fn stamp_fetch_serves_ttl_expiration_with_refetch() {
+    // After the TTL the cache entry goes stale: the next refresh must
+    // arm a fresh fetch instead of replaying the stale reply.
+    let (path, _stop) = stamp_fake_socket(json!([
+        {"path": "/repo", "branch": "main", "is_linked_worktree": true}
+    ]));
+    let client = BackendClient::new(path.clone(), path);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = fixture_snapshot();
+    pump_until_stamped(&mut app);
+    let stamped = app.snapshot.workspaces[0]
+        .worktree
+        .as_ref()
+        .expect("stamp landed");
+    assert!(!stamped.is_linked);
+
+    // Force the cache entry stale, replace the rows, and force the
+    // refresh due: the next refresh must arm a fresh fetch instead of
+    // replaying the stale reply.
+    app.stamp_cache.get_mut("/repo").unwrap().fetched_at -=
+        STAMP_CACHE_TTL + Duration::from_millis(1);
+    app.snapshot = fixture_snapshot();
+    app.last_refresh = None;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        app.refresh_if_due();
+        if app.stamp_inflight.iter().any(|w| w.cwd == "/repo") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        app.stamp_inflight.iter().any(|w| w.cwd == "/repo"),
+        "stale cache arms a fresh fetch"
+    );
+}
+
+#[test]
+fn stamp_fetch_skips_when_no_row_matches_and_stays_quiet() {
+    // A reply whose rows do not name the workspace folder (plain
+    // directory) stamps nothing, surfaces no error, and stops fetching
+    // until the TTL lets it retry.
+    let (path, _stop) = stamp_fake_socket(json!([{"path": "/unrelated"}]));
+    let client = BackendClient::new(path.clone(), path);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = fixture_snapshot();
+    pump_until_quiet(&mut app);
+    assert!(
+        app.snapshot.workspaces[0].worktree.is_none(),
+        "no stamp without a matching row"
+    );
+    assert!(
+        app.error.is_none(),
+        "stamp problems stay out of the error slot"
+    );
+
+    // The cached reply is fresh, so a follow-up refresh arms no new
+    // fetch for the still-unstamped cwd.
+    app.snapshot = fixture_snapshot();
+    app.last_refresh = None;
+    drain_refresh(&mut app);
+    assert!(
+        !app.stamp_inflight.iter().any(|w| w.cwd == "/repo"),
+        "fresh cache suppresses the fetch even without a stamp"
+    );
+}
+
+#[test]
+fn stamp_worker_death_is_silent() {
+    // A worker that dies without a reply (dropped sender) must drain
+    // silently: no error, no wedge, the next refresh re-arms.
+    let (tx, rx) = std::sync::mpsc::channel::<Result<Value, BackendClientError>>();
+    let client = BackendClient::builtin_session(None);
+    let mut app = TuiApp::new(client, Duration::from_secs(1));
+    app.snapshot = fixture_snapshot();
+    app.stamp_inflight.push(crate::tui::StampInflight {
+        cwd: "/repo".to_string(),
+        receiver: rx,
+    });
+    drop(tx);
+    app.poll_refresh();
+    assert!(app.stamp_inflight.is_empty(), "dead worker is discarded");
+    assert!(app.error.is_none(), "worker death is not an error");
+}
+
+#[test]
+fn stamp_parser_survives_detached_and_missing_branch() {
+    let response = json!({
+        "source": {"repo_root": "/repo", "repo_name": "repo"},
+        "worktrees": [
+            {"path": "/repo", "branch": null, "is_detached": true}
+        ]
+    });
+    let stamp =
+        crate::tui::parse_worktree_list_response(&response, "/repo").expect("detached row stamps");
+    assert_eq!(stamp.branch, "", "detached HEAD keeps an empty branch");
+    assert!(!stamp.is_linked);
+}
+
+// ---------------------------------------------------------------------------
+// Branch picker overlay (desktop branch popover parity, prefix `v`).
+// ---------------------------------------------------------------------------
+
+/// Fake HTTP server speaking the git-ui endpoints the branch picker
+/// needs: `git.branches` (with worktree_path stamps) and `git.switch`.
+fn fake_git_api_server(branches: serde_json::Value) -> (u16, std::sync::mpsc::Sender<()>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            if rx.try_recv().is_ok() {
+                break;
+            }
+            let Ok(mut stream) = stream else { break };
+            // Same single-line read convention as `fake_web_api_server`:
+            // the request line carries the target, and the client never
+            // re-reads the connection after the response arrives.
+            let mut line = String::new();
+            {
+                let mut reader = BufReader::new(&mut stream);
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+            }
+            let target = line.split(' ').nth(1).unwrap_or_default().to_string();
+            let response = if target.starts_with("/api/git-ui/branches") {
+                branches.clone()
+            } else if target.starts_with("/api/git-ui/switch") {
+                json!({"ok": true})
+            } else {
+                json!({"error": "unexpected endpoint"})
+            };
+            let payload = serde_json::to_string(&response).unwrap();
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    (port, tx)
+}
+
+#[test]
+fn branch_picker_opens_with_current_branch_pinned_first() {
+    // Desktop popover parity: the current branch leads the list so the
+    // picker answers "where am I" before anything else.
+    let (port, _stop) = fake_git_api_server(json!({
+        "branches": [
+            {"name": "feature", "current": false, "remote": false, "worktree_path": null},
+            {"name": "main", "current": true, "remote": false, "worktree_path": "/repo"},
+            {"name": "origin/main", "current": false, "remote": true, "worktree_path": null}
+        ]
+    }));
+    let mut app = app_with_snapshot();
+    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+    let result = app.branch_picker_open();
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(app.mode, TuiMode::BranchPicker);
+    let names: Vec<&str> = app
+        .branch_picker_rows
+        .iter()
+        .map(|row| row.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["main", "feature"]);
+    assert!(
+        app.branch_picker_rows.iter().all(|row| !row.remote),
+        "remote branches are informational, the picker keeps local rows only"
+    );
+    assert!(app.branch_picker_rows[0].current);
+}
+
+#[test]
+fn branch_picker_no_workspace_folder_fails_cleanly() {
+    let mut app = app_with_snapshot();
+    app.snapshot.workspaces.clear();
+    let result = app.branch_picker_open();
+    assert_eq!(result.unwrap_err(), "no workspace folder selected");
+    assert_ne!(app.mode, TuiMode::BranchPicker);
+}
+
+#[test]
+fn branch_picker_enter_switches_through_git_switch() {
+    // Plain branch (no worktree holds it): Enter goes through
+    // git.switch and the status line reports the switch.
+    let (port, _stop) = fake_git_api_server(json!({
+        "branches": [
+            {"name": "main", "current": true, "remote": false, "worktree_path": "/repo"},
+            {"name": "feature", "current": false, "remote": false, "worktree_path": null}
+        ]
+    }));
+    let mut app = app_with_snapshot();
+    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+    app.branch_picker_open().unwrap();
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    let result = app.branch_picker_commit();
+    assert_eq!(result.unwrap(), "switched to feature");
+    // A successful switch closes the overlay back to where it opened.
+    assert_ne!(app.mode, TuiMode::BranchPicker);
+}
+
+#[test]
+fn branch_picker_enter_reroutes_when_a_worktree_holds_the_branch() {
+    // The reroute rule: a branch checked out in a sibling worktree
+    // opens that worktree instead of git.switch, because git refuses a
+    // second checkout.
+    let (port, _stop) = fake_git_api_server(json!({
+        "branches": [
+            {"name": "main", "current": true, "remote": false, "worktree_path": "/repo"},
+            {"name": "feature", "current": false, "remote": false, "worktree_path": "/repo-wt"}
+        ]
+    }));
+    let mut app = app_with_snapshot();
+    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+    app.branch_picker_open().unwrap();
+    // The backend socket is dead in this fixture, so worktree.open
+    // fails: the failure IS the reroute proof (a plain switch would
+    // have gone through the HTTP fake and succeeded).
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    let result = app.branch_picker_commit();
+    let err = result.expect_err("reroute must attempt worktree.open");
+    assert!(
+        err.contains("repo-wt") || !err.is_empty(),
+        "the error names the reroute target"
+    );
+}
+
+#[test]
+fn branch_picker_create_fallback_from_filter_query() {
+    // Desktop create-CTA parity: Enter with a filter naming no branch
+    // creates that branch and switches to it.
+    let (port, _stop) = fake_git_api_server(json!({
+        "branches": [
+            {"name": "main", "current": true, "remote": false, "worktree_path": "/repo"}
+        ]
+    }));
+    let mut app = app_with_snapshot();
+    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+    app.branch_picker_open().unwrap();
+    for ch in "brand-new".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    let result = app.branch_picker_commit();
+    assert_eq!(result.unwrap(), "created and switched to brand-new");
+}
+
+#[test]
+fn branch_picker_current_branch_enter_is_a_noop() {
+    let (port, _stop) = fake_git_api_server(json!({
+        "branches": [
+            {"name": "main", "current": true, "remote": false, "worktree_path": "/repo"}
+        ]
+    }));
+    let mut app = app_with_snapshot();
+    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+    app.branch_picker_open().unwrap();
+    let result = app.branch_picker_commit();
+    assert_eq!(result.unwrap(), "already on main");
+}
+
+#[test]
+fn branch_picker_render_pins_current_marker_and_worktree_badge() {
+    let mut app = app_with_snapshot();
+    app.branch_picker_root = "/repo".to_string();
+    app.branch_picker_rows = vec![
+        GitBranchEntry {
+            name: "main".to_string(),
+            current: true,
+            remote: false,
+            pushed: false,
+            worktree_path: Some("/repo".to_string()),
+        },
+        GitBranchEntry {
+            name: "feature".to_string(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: Some("/repo-wt".to_string()),
+        },
+        GitBranchEntry {
+            name: "plain".to_string(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        },
+    ];
+    app.mode = TuiMode::BranchPicker;
+    let rendered = draw(&app, 100, 30);
+    assert!(rendered.contains("Switch branch"), "title renders");
+    assert!(rendered.contains("main"), "current branch renders");
+    assert!(rendered.contains("feature"), "sibling row renders");
+    // The sibling worktree row carries the badge, the local one does not.
+    assert!(
+        rendered.contains("[worktree]"),
+        "checked-out-elsewhere row carries the worktree badge"
+    );
+}
+
+#[test]
+fn branch_picker_esc_clears_filter_then_closes() {
+    let mut app = app_with_snapshot();
+    app.branch_picker_rows = vec![GitBranchEntry {
+        name: "main".to_string(),
+        current: true,
+        remote: false,
+        pushed: false,
+        worktree_path: None,
+    }];
+    app.branch_picker_root = "/repo".to_string();
+    app.open_overlay(TuiMode::BranchPicker);
+    app.handle_key(KeyEvent::from(KeyCode::Char('f')));
+    assert_eq!(app.branch_picker_filter, "f");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.branch_picker_filter, "", "first Esc clears the filter");
+    assert_eq!(app.mode, TuiMode::BranchPicker, "still open");
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_ne!(app.mode, TuiMode::BranchPicker, "second Esc closes");
+}
+
+#[test]
+fn branch_picker_filter_narrows_rows() {
+    let mut app = app_with_snapshot();
+    app.branch_picker_root = "/repo".to_string();
+    app.branch_picker_rows = vec![
+        GitBranchEntry {
+            name: "main".to_string(),
+            current: true,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        },
+        GitBranchEntry {
+            name: "feature/one".to_string(),
+            current: false,
+            remote: false,
+            pushed: false,
+            worktree_path: None,
+        },
+    ];
+    app.branch_picker_filter = "feature".to_string();
+    let rows = app.filtered_branch_picker_rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "feature/one");
+}
+
+#[test]
+fn prefix_v_opens_the_branch_picker() {
+    let (port, _stop) = fake_git_api_server(json!({
+        "branches": [
+            {"name": "main", "current": true, "remote": false, "worktree_path": "/repo"}
+        ]
+    }));
+    let mut app = app_with_snapshot();
+    app.web_api = crate::tui::web_api::WebApiClient::new("127.0.0.1", port);
+    app.run_shortcut(Shortcut::GitSwitchBranch);
+    assert_eq!(
+        app.mode,
+        TuiMode::BranchPicker,
+        "prefix v opens the workspace-scoped picker"
+    );
+    assert!(!app.branch_picker_rows.is_empty());
+}
+
+#[test]
+fn worktree_browser_marks_the_current_checkout_row() {
+    // Desktop `worktreePopoverRow` marks the checkout the workspace
+    // sits on; the TUI browser mirrors it with a leading check so the
+    // user knows which row is "here".
+    let mut app = app_with_snapshot();
+    app.worktree_rows = vec![crate::tui::workspace::WorktreeRow {
+        path: "/repo".to_string(),
+        branch: "main".to_string(),
+        label: "repo".to_string(),
+        is_linked: false,
+    }];
+    app.worktree_folder_rows = Vec::new();
+    app.worktree_root = "/repo".to_string();
+    app.mode = TuiMode::WorktreeList;
+    let rendered = draw(&app, 100, 30);
+    assert!(
+        rendered.contains("✓ /repo"),
+        "the row matching the workspace cwd carries the current marker"
+    );
+    // A cwd that matches nothing leaves the rows unmarked.
+    app.snapshot.workspaces[0].cwd = "/somewhere-else".to_string();
+    let rendered = draw(&app, 100, 30);
+    assert!(
+        !rendered.contains("✓ /repo"),
+        "a non-matching cwd marks nothing"
+    );
+}
+
+#[test]
+fn worktree_browser_c_opens_the_create_worktree_prompt() {
+    // Desktop popover "Create worktree" CTA analog: `c` inside the
+    // browser chains into the two-step create prompt.
+    let mut app = app_with_snapshot();
+    app.worktree_rows = Vec::new();
+    app.worktree_folder_rows = Vec::new();
+    app.worktree_root = "/repo".to_string();
+    app.open_overlay(TuiMode::WorktreeList);
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert!(
+        matches!(
+            app.prompt_input.as_ref().map(|prompt| prompt.kind),
+            Some(PromptKind::CreateWorktreeBranch)
+        ),
+        "`c` opens the branch step of the create-worktree prompt"
+    );
+    // In pick mode (prefix `N`) `c` stays a no-op: that overlay's
+    // intent is folders for a new workspace.
+    app.prompt_input = None;
+    app.worktree_pick_workspace = true;
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert!(
+        app.prompt_input.is_none(),
+        "pick mode does not open the create prompt"
+    );
+}
+
+#[test]
+fn autoclose_closes_the_empty_workspace_left_behind() {
+    // Desktop `autoCloseLeftWorkspace`: after a folder switch the
+    // workspace left behind with zero tabs and panes is closed through
+    // workspace.close and dropped from the sidebar.
+    let mut app = app_with_snapshot();
+    // Two workspaces: ws_1 selected and empty (0 tabs), ws_2 focused as
+    // the switch target.
+    app.snapshot.workspaces[0].tab_count = 0;
+    app.snapshot.workspaces[0].pane_count = 0;
+    app.snapshot.workspaces.push(TuiWorkspace {
+        id: "ws_2".to_string(),
+        label: "Lane".to_string(),
+        cwd: "/repo-lane".to_string(),
+        focused: true,
+        agent_status: "idle".to_string(),
+        pane_count: 1,
+        tab_count: 1,
+        active_tab_id: None,
+        worktree: None,
+    });
+    app.selected_workspace = 1;
+    // The previous workspace is still in the snapshot (as it would be
+    // right after a refresh that re-listed it).
+    app.autoclose_left_workspace(Some("ws_1"));
+    assert!(
+        app.snapshot.workspaces.iter().all(|ws| ws.id != "ws_1"),
+        "the empty left-behind workspace disappears from the sidebar"
+    );
+}
+
+#[test]
+fn autoclose_keeps_workspaces_with_tabs_and_the_target() {
+    // Guards: a workspace with tabs or panes stays open, and the
+    // just-focused target is never closed even when empty.
+    let mut app = app_with_snapshot();
+    // Target selected: same id passed in must be a no-op.
+    app.selected_workspace = 0;
+    app.autoclose_left_workspace(Some("ws_1"));
+    assert_eq!(
+        app.snapshot.workspaces.len(),
+        1,
+        "the target is never closed"
+    );
+    // A workspace holding a tab stays open.
+    app.snapshot.workspaces.push(TuiWorkspace {
+        id: "ws_2".to_string(),
+        label: "Busy".to_string(),
+        cwd: "/busy".to_string(),
+        focused: false,
+        agent_status: "idle".to_string(),
+        pane_count: 2,
+        tab_count: 1,
+        active_tab_id: None,
+        worktree: None,
+    });
+    app.selected_workspace = 0;
+    app.autoclose_left_workspace(Some("ws_2"));
+    assert_eq!(
+        app.snapshot.workspaces.len(),
+        2,
+        "a workspace with tabs survives the switch"
+    );
+    // Panes without a tab also count as content (older servers report
+    // pane counts only).
+    app.snapshot.workspaces[1].tab_count = 0;
+    app.autoclose_left_workspace(Some("ws_2"));
+    assert_eq!(
+        app.snapshot.workspaces.len(),
+        2,
+        "a workspace with panes but no tabs still survives"
+    );
+}
+
+#[test]
+fn empty_tab_bar_names_the_open_workspaces_binding() {
+    // Desktop empty bar is a button; the TUI analog is the hint naming
+    // the binding that opens the browser overlay (the folder picker).
+    let mut app = app_with_snapshot();
+    app.snapshot.workspaces.clear();
+    let rendered = draw(&app, 100, 30);
+    assert!(
+        rendered.contains("no workspaces · Ctrl+B w open"),
+        "the empty tab bar carries the Ctrl+B w call to action"
     );
 }

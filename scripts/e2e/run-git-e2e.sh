@@ -92,6 +92,12 @@ git -C "$REPO" checkout -q main
 # over conflicting local edits, so switching needs a clean worktree).
 CLEAN="$WORK/git-clean-repo"
 git clone -q "$ORIGIN" "$CLEAN"
+# A linked worktree on its own branch so the location bar's worktree
+# popover has a real second checkout to list and open, while feature-lane
+# stays free for the branch-switch checks below.
+LANE="$WORK/git-clean-lane"
+git -C "$CLEAN" fetch -q origin feature-lane
+git -C "$CLEAN" worktree add -q -b lane-checkout "$LANE" origin/feature-lane
 # Dirty state: staged edit, unstaged edit, untracked dir.
 # NOTE: the branch-list switch runs while the tree is still clean (before
 # this block), because git refuses checkout with conflicting local edits.
@@ -122,7 +128,7 @@ wait_for() {
 wait_for "server" "https://127.0.0.1:$PORT/" || exit 1
 
 echo "==> running git-ui acceptance checks"
-E2E_ORIGIN="https://127.0.0.1:$PORT" E2E_REPO="$REPO" E2E_CLEAN_REPO="$CLEAN" node "$ROOT/scripts/e2e/git-acceptance.mjs"
+E2E_ORIGIN="https://127.0.0.1:$PORT" E2E_REPO="$REPO" E2E_CLEAN_REPO="$CLEAN" E2E_LANE_REPO="$LANE" node "$ROOT/scripts/e2e/git-acceptance.mjs"
 status=$?
 
 if [[ $status -eq 0 ]]; then

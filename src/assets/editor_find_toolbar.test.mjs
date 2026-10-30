@@ -1,9 +1,13 @@
 import { describe, it } from "node:test";
 import { equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("./shared/editor.js", import.meta.url), "utf8");
+// Compiled once so coverage attributes editor.js lines to the real file.
+const EDITOR_PATH = fileURLToPath(new URL("./shared/editor.js", import.meta.url));
+const editorScript = new vm.Script(readFileSync(EDITOR_PATH, "utf8"), { filename: EDITOR_PATH });
 
 // The find toolbar owns the keyboard while it is open: every keystroke in
 // the query repaints the selection, and selectRange must not move focus
@@ -127,7 +131,7 @@ function loadEditor(overrides = {}) {
   ctx.globalThis = ctx;
   vm.createContext(ctx);
   Object.assign(ctx, overrides);
-  vm.runInContext(source, ctx);
+  editorScript.runInContext(ctx);
   return { ctx, HerdrEditor: ctx.window.HerdrEditor, document };
 }
 

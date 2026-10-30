@@ -1661,6 +1661,145 @@ fn auto_no_sleep_turns_off_after_idle_cooldown() {
 }
 
 #[test]
+fn apply_no_sleep_mode_off_and_auto_return_inactive() {
+    let mut state = NoSleepState::default();
+    let (active, gen_off) = apply_no_sleep_mode(&mut state, "off".to_string(), None);
+    assert!(!active);
+    assert_eq!(gen_off, 1);
+    assert_eq!(state.mode, "off");
+    assert_eq!(state.until_ms, None);
+
+    let (active, gen_auto) = apply_no_sleep_mode(&mut state, "auto".to_string(), None);
+    assert!(!active);
+    assert_eq!(gen_auto, 2);
+    assert_eq!(state.mode, "auto");
+    // A later mode change invalidates the auto generation counter.
+    let (_, gen_next) = apply_no_sleep_mode(&mut state, "off".to_string(), None);
+    assert_eq!(gen_next, 3);
+    assert_eq!(state.auto_generation, 3);
+}
+
+#[test]
+fn apply_no_sleep_mode_timed_starts_guard_and_sets_until() {
+    // On a supported platform the guard spawns the real inhibitor process
+    // (caffeinate / systemd-inhibit); dropping the state kills it.
+    let mut state = NoSleepState::default();
+    let until = unix_ms_now() + 3_600_000;
+    let (active, _) = apply_no_sleep_mode(&mut state, "1h".to_string(), Some(until));
+    if cfg!(any(target_os = "macos", target_os = "linux")) {
+        // The inhibitor may legitimately fail to spawn on a stripped CI
+        // image; only pin the success shape when the guard exists.
+        if state.guard.is_some() {
+            assert!(active);
+            assert_eq!(state.mode, "1h");
+            assert_eq!(state.until_ms, Some(until));
+            assert_eq!(state.error, None);
+        } else {
+            assert!(!active);
+            assert!(state.error.is_some());
+        }
+    }
+}
+
+#[test]
+fn sync_auto_no_sleep_starts_and_keeps_guard_for_working_agents() {
+    let mut state = NoSleepState {
+        mode: "auto".to_string(),
+        ..NoSleepState::default()
+    };
+    sync_auto_no_sleep(&mut state, true, 60);
+    if state.guard.is_some() {
+        // First working observation starts the guard and clears any error.
+        assert_eq!(state.auto_idle_since_ms, None);
+        assert_eq!(state.error, None);
+        // A second working observation keeps the guard and resets nothing.
+        sync_auto_no_sleep(&mut state, true, 60);
+        assert_eq!(state.auto_idle_since_ms, None);
+        // Idle below the cooldown keeps auto mode and records the idle mark.
+        sync_auto_no_sleep(&mut state, false, 60);
+        assert_eq!(state.mode, "auto");
+        assert!(state.auto_idle_since_ms.is_some());
+    }
+}
+
+#[test]
+fn sync_auto_no_sleep_ignores_non_auto_modes() {
+    let mut state = NoSleepState {
+        mode: "1h".to_string(),
+        ..NoSleepState::default()
+    };
+    sync_auto_no_sleep(&mut state, true, 0);
+    assert_eq!(state.mode, "1h");
+    assert!(state.guard.is_none());
+}
+
+#[tokio::test]
+async fn no_sleep_update_round_trips_modes_through_api() {
+    let app = test_app();
+    let post = |mode: &str| {
+        let app = app.clone();
+        let mode = mode.to_string();
+        async move {
+            app.clone()
+                .oneshot(
+                    authed_request(Method::POST, "/api/no-sleep")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(json!({ "mode": mode }).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+    };
+
+    // off is idempotent and reports inactive.
+    let response = post("off").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["mode"], "off");
+    assert_eq!(body["active"], false);
+
+    // auto activates the polling loop; the response reports the mode even
+    // though no backend is reachable (agent list probe fails silently).
+    let response = post("auto").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["mode"], "auto");
+    assert_eq!(body["until_ms"], Value::Null);
+
+    // A timed mode reports the mode; until_ms is set when the guard
+    // actually started, and a second off clears it again.
+    let response = post("1h").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["mode"], "1h");
+    let until_after_1h = body["until_ms"].as_u64();
+    if body["active"] == true {
+        assert!(until_after_1h.is_some());
+    }
+
+    let response = post("off").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["mode"], "off");
+    assert_eq!(body["until_ms"], Value::Null);
+
+    // GET reports the settled state.
+    let response = app
+        .clone()
+        .oneshot(
+            authed_request(Method::GET, "/api/no-sleep")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["mode"], "off");
+}
+
+#[test]
 fn classifies_backend_compatibility() {
     // herdr 0.9.0 requires an exact protocol match: every supported
     // release maps 1:1 to its own protocol version.
@@ -6794,6 +6933,190 @@ async fn session_snapshot_includes_order_and_worktree_results() {
     let _ = fs::remove_file(socket);
 }
 
+// The snapshot stamps `worktree` metadata onto workspace rows from the same
+// worktree.list results it ships as worktree_results. The builtin backend
+// never sends the stamp (external herdr does), so without this the location
+// bar worktree chip, sidebar repo grouping, and agent repo attribution stay
+// blind on builtin sessions. The main-vs-linked call comes from the row
+// path vs the source repo root because the builtin marks every row linked.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_stamps_workspace_worktree_metadata() {
+    let (socket, handle, _rx) = fake_api_socket_multi_recording(vec![
+        json!({
+            "result": {
+                "snapshot": {
+                    "workspaces": [
+                        { "workspace_id": "ws_main", "label": "main", "cwd": "/tmp/stamp-repo" },
+                        { "workspace_id": "ws_lane", "label": "lane", "cwd": "/tmp/stamp-repo-lane" },
+                        { "workspace_id": "ws_plain", "label": "plain", "cwd": "/tmp/stamp-plain" }
+                    ],
+                    "tabs": [],
+                    "panes": []
+                },
+                "type": "session_snapshot"
+            }
+        }),
+        json!({ "match_cwd": "/tmp/stamp-repo", "result": {
+            "worktrees": [
+                { "path": "/tmp/stamp-repo", "branch": "main", "is_linked_worktree": true },
+                { "path": "/tmp/stamp-repo-lane", "branch": "lane", "is_linked_worktree": true }
+            ],
+            "source": { "repo_key": "/tmp/stamp-repo", "repo_root": "/tmp/stamp-repo", "repo_name": "stamp-repo" }
+        } }),
+        json!({ "match_cwd": "/tmp/stamp-repo-lane", "result": {
+            "worktrees": [
+                { "path": "/tmp/stamp-repo", "branch": "main", "is_linked_worktree": true },
+                { "path": "/tmp/stamp-repo-lane", "branch": "lane", "is_linked_worktree": true }
+            ],
+            "source": { "repo_key": "/tmp/stamp-repo", "repo_root": "/tmp/stamp-repo", "repo_name": "stamp-repo" }
+        } }),
+        json!({ "match_cwd": "/tmp/stamp-plain", "result": {
+            "worktrees": [],
+            "source": { "repo_key": "/tmp/stamp-plain", "repo_root": "/tmp/stamp-plain", "repo_name": "stamp-plain" }
+        } }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let workspaces = body["result"]["snapshot"]["workspaces"].as_array().unwrap();
+    let by_id = |id: &str| {
+        workspaces
+            .iter()
+            .find(|w| w["workspace_id"] == id)
+            .unwrap_or_else(|| panic!("workspace {id} missing"))
+    };
+    // Main checkout: row path equals the repo root, so the builtin's
+    // all-rows-linked flag must not leak through.
+    let main = by_id("ws_main")["worktree"].clone();
+    assert_eq!(
+        main["is_linked_worktree"], false,
+        "main checkout is not linked"
+    );
+    assert_eq!(main["repo_root"], "/tmp/stamp-repo");
+    assert_eq!(main["repo_key"], "/tmp/stamp-repo");
+    assert_eq!(main["repo_name"], "stamp-repo");
+    assert_eq!(main["checkout_path"], "/tmp/stamp-repo");
+    assert_eq!(main["branch"], "main");
+    // Linked worktree: same repo identity, checkout away from the root.
+    let lane = by_id("ws_lane")["worktree"].clone();
+    assert_eq!(lane["is_linked_worktree"], true, "lane checkout is linked");
+    assert_eq!(lane["repo_root"], "/tmp/stamp-repo");
+    assert_eq!(lane["checkout_path"], "/tmp/stamp-repo-lane");
+    assert_eq!(lane["branch"], "lane");
+    // A workspace whose worktree.list returns no matching row (plain
+    // folder, failed probe) keeps no stamp, matching the pre-stamp shape
+    // every frontend consumer already tolerates.
+    assert!(
+        by_id("ws_plain").get("worktree").is_none(),
+        "plain folder stays unstamped"
+    );
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+// A backend stamp (external herdr ships its own `worktree` object) must
+// survive the wrapper's stamping pass verbatim: only rows missing the
+// key are stamped.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_keeps_backend_provided_worktree_stamp() {
+    let (socket, handle, _rx) = fake_api_socket_multi_recording(vec![
+        json!({
+            "result": {
+                "snapshot": {
+                    "workspaces": [
+                        { "workspace_id": "ws_ext", "label": "ext", "cwd": "/tmp/ext-repo",
+                          "worktree": { "repo_key": "ext-key", "repo_root": "ext-root", "repo_name": "ext",
+                                        "checkout_path": "ext-checkout", "is_linked_worktree": true, "branch": "ext-branch" } }
+                    ],
+                    "tabs": [],
+                    "panes": []
+                },
+                "type": "session_snapshot"
+            }
+        }),
+        json!({ "match_cwd": "/tmp/ext-repo", "result": {
+            "worktrees": [ { "path": "/tmp/ext-repo", "branch": "wrapper-branch" } ],
+            "source": { "repo_key": "/tmp/ext-repo", "repo_root": "/tmp/ext-repo", "repo_name": "ext-repo" }
+        } }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let stamp = &body["result"]["snapshot"]["workspaces"][0]["worktree"];
+    assert_eq!(
+        stamp["repo_key"], "ext-key",
+        "backend stamp is not clobbered"
+    );
+    assert_eq!(stamp["branch"], "ext-branch");
+    assert_eq!(stamp["checkout_path"], "ext-checkout");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+// /api/workspaces (the legacy refresh path when the snapshot bootstrap
+// failed once) stamps the same worktree metadata, so the location bar
+// and sidebar do not depend on which refresh path ran.
+#[cfg(unix)]
+#[tokio::test]
+async fn workspaces_handler_stamps_worktree_metadata() {
+    let (socket, handle) = fake_api_socket_multi(vec![
+        json!({ "result": { "workspaces": [
+            { "workspace_id": "ws_lane", "label": "lane", "cwd": "/tmp/legacy-repo-lane" }
+        ] } }),
+        json!({ "result": { "panes": [] } }),
+        json!({ "result": {
+            "worktrees": [ { "path": "/tmp/legacy-repo-lane", "branch": "lane", "is_linked_worktree": true } ],
+            "source": { "repo_key": "/tmp/legacy-repo", "repo_root": "/tmp/legacy-repo", "repo_name": "legacy-repo" }
+        } }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/workspaces")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let stamp = &body["result"]["workspaces"][0]["worktree"];
+    assert_eq!(stamp["is_linked_worktree"], true);
+    assert_eq!(stamp["repo_root"], "/tmp/legacy-repo");
+    assert_eq!(stamp["repo_name"], "legacy-repo");
+    assert_eq!(stamp["checkout_path"], "/tmp/legacy-repo-lane");
+    assert_eq!(stamp["branch"], "lane");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
 // A worktree.list failure (backend error response) must not break the rest of
 // the snapshot: the entry becomes null, the same tolerance the frontend's
 // legacy per-workspace catch() had, and the other workspace keeps its rows.
@@ -8536,6 +8859,177 @@ async fn update_server_settings_rejects_invalid_bind_address() {
         .is_some_and(|e| e.contains("invalid bind")));
 }
 
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn update_server_settings_rejects_public_bind_without_credentials() {
+    let _env = lock_env();
+    let (config_home, _config_guard) = temp_guard("settings-public-bind");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let app = test_app();
+
+    // A non-loopback bind with no username/password is rejected by
+    // validation before anything is saved.
+    let response = app
+        .oneshot(
+            authed_request(Method::POST, "/api/server-settings")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "bind": "0.0.0.0:8787", "localhost_no_auth": true }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert!(body["error"]
+        .as_str()
+        .is_some_and(|e| e.contains("username and password are required")));
+}
+
+// ── snapshot enrichment helpers ──
+
+#[test]
+fn enrich_workspace_cwds_fills_only_missing_fields_from_panes() {
+    let mut workspaces = json!({
+        "result": {
+            "workspaces": [
+                { "workspace_id": "ws-a", "name": "alpha" },
+                { "workspace_id": "ws-b", "cwd": "/kept" },
+                { "workspace_id": "ws-c" }
+            ]
+        }
+    });
+    let panes = json!({
+        "result": {
+            "panes": [
+                { "workspace_id": "ws-a", "cwd": "/alpha/cwd", "foreground_cwd": "/alpha/fg" },
+                { "workspace_id": "ws-a", "cwd": "/duplicate/ignored", "foreground_cwd": "/dupe/fg" },
+                { "workspace_id": "ws-b", "cwd": "/ignored-builtin-wins", "foreground_cwd": "/b/fg" },
+                { "workspace_id": "", "cwd": "/no-id" },
+                { "cwd": "/missing-id-field" }
+            ]
+        }
+    });
+    enrich_workspace_cwds(&mut workspaces, &panes);
+
+    let rows = workspaces
+        .pointer("/result/workspaces")
+        .and_then(serde_json::Value::as_array)
+        .unwrap();
+    // First pane wins for duplicate workspace entries.
+    assert_eq!(rows[0]["cwd"].as_str(), Some("/alpha/cwd"));
+    assert_eq!(rows[0]["foreground_cwd"].as_str(), Some("/alpha/fg"));
+    // An existing cwd is kept; only the missing foreground_cwd is filled.
+    assert_eq!(rows[1]["cwd"].as_str(), Some("/kept"));
+    assert_eq!(rows[1]["foreground_cwd"].as_str(), Some("/b/fg"));
+    // No pane data means no fields are added.
+    assert!(rows[2].get("cwd").is_none());
+    assert!(rows[2].get("foreground_cwd").is_none());
+}
+
+#[test]
+fn enrich_workspace_cwds_without_pane_array_is_noop() {
+    let mut workspaces = json!({
+        "result": {
+            "workspaces": [ { "workspace_id": "ws-a" } ]
+        }
+    });
+    let panes = json!({ "result": {} });
+    enrich_workspace_cwds(&mut workspaces, &panes);
+    assert!(workspaces
+        .pointer("/result/workspaces/0")
+        .is_some_and(|w| w.get("cwd").is_none()));
+}
+
+#[test]
+fn snapshot_counts_by_workspace_tallies_and_skips_non_strings() {
+    let rows = json!([
+        { "workspace_id": "ws-a" },
+        { "workspace_id": "ws-a" },
+        { "workspace_id": "ws-b" },
+        { "workspace_id": 42 },
+        { "name": "no id" }
+    ]);
+    let counts = snapshot_counts_by_workspace(Some(&rows));
+    assert_eq!(
+        counts.get("ws-a").and_then(serde_json::Value::as_i64),
+        Some(2)
+    );
+    assert_eq!(
+        counts.get("ws-b").and_then(serde_json::Value::as_i64),
+        Some(1)
+    );
+    assert!(counts.get("42").is_none());
+    assert_eq!(counts.len(), 2);
+}
+
+#[test]
+fn snapshot_counts_by_workspace_without_rows_returns_empty_map() {
+    let counts = snapshot_counts_by_workspace(None);
+    assert!(counts.is_empty());
+    let non_array = json!({ "result": {} });
+    let counts = snapshot_counts_by_workspace(Some(&non_array));
+    assert!(counts.is_empty());
+}
+
+#[test]
+fn filter_snapshot_rows_by_workspace_keeps_only_matching_rows() {
+    let mut value = json!({
+        "result": {
+            "tabs": [
+                { "workspace_id": "ws-a", "title": "keep" },
+                { "workspace_id": "ws-b", "title": "drop" }
+            ],
+            "panes": [
+                { "workspace_id": "ws-a", "pane": 1 },
+                { "workspace_id": "ws-b", "pane": 2 }
+            ],
+            "workspaces": [ { "workspace_id": "ws-b" } ]
+    }
+    });
+    filter_snapshot_rows_by_workspace(&mut value, "/result/tabs", "ws-a");
+    filter_snapshot_rows_by_workspace(&mut value, "/result/panes", "ws-a");
+    assert_eq!(
+        value
+            .pointer("/result/tabs")
+            .and_then(serde_json::Value::as_array)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        value
+            .pointer("/result/tabs/0/title")
+            .and_then(serde_json::Value::as_str),
+        Some("keep")
+    );
+    assert_eq!(
+        value
+            .pointer("/result/panes")
+            .and_then(serde_json::Value::as_array)
+            .unwrap()
+            .len(),
+        1
+    );
+    // Untouched pointers keep their rows.
+    assert_eq!(
+        value
+            .pointer("/result/workspaces")
+            .and_then(serde_json::Value::as_array)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn filter_snapshot_rows_by_workspace_missing_pointer_is_noop() {
+    let mut value = json!({ "result": {} });
+    filter_snapshot_rows_by_workspace(&mut value, "/result/missing", "ws-a");
+    assert_eq!(value.pointer("/result"), Some(&json!({})));
+}
+
 // ── remove_worktree_path with real git repo ──
 
 #[tokio::test]
@@ -9074,6 +9568,97 @@ async fn update_server_settings_policy_flip_never_to_timed_anchors_deadline() {
 }
 
 // ── proxy_server_stop with actual server.stop response (success) ──
+
+/// A credential change resets every session and mints one fresh cookie
+/// for the caller on the same response, so the save itself must not 401
+/// the browser that made it while every other token dies.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn update_server_settings_identity_change_rotates_sessions_and_cookie() {
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-identity-change-test");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let state = test_state();
+    let auth = Arc::clone(&state.auth);
+    // A second browser session that must die with the credential change.
+    {
+        let mut auth = auth.lock().unwrap();
+        auth.sessions.push(crate::auth::SessionRecord {
+            token: "token-other-browser".to_string(),
+            expires_at: crate::auth::never_expires_at(),
+        });
+    }
+    let app = test_app_with_state(state);
+
+    // Same user, new password: identity change.
+    let response = app
+        .oneshot(
+            authed_request(Method::POST, "/api/server-settings")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "bind": DEFAULT_BIND,
+                        "username": "user",
+                        "password": "new-pass",
+                        "localhost_no_auth": false,
+                        "session_expiration_minutes": DEFAULT_SESSION_EXPIRATION_MINUTES,
+                        "backend_mode": "builtin",
+                        "builtin_backend_enabled": true,
+                        "external_herdr_backend_enabled": true,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let set_cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    assert!(
+        set_cookie
+            .as_ref()
+            .is_some_and(|c| c.contains("herdr_web_session=")),
+        "the save response must carry the fresh cookie for the caller"
+    );
+    let new_token = set_cookie.as_ref().map(|c| {
+        c.split("herdr_web_session=")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .unwrap_or_default()
+            .to_string()
+    });
+
+    {
+        let auth = auth.lock().unwrap();
+        assert_eq!(
+            auth.password.as_deref(),
+            Some("new-pass"),
+            "the new credentials must be live"
+        );
+        assert_eq!(
+            auth.sessions.len(),
+            1,
+            "every old session must be reset, only the caller's fresh one remains"
+        );
+        assert!(
+            !auth.sessions.iter().any(|s| s.token == "token-123"),
+            "the old caller token must be dead"
+        );
+        assert_eq!(
+            new_token.as_deref(),
+            Some(auth.sessions[0].token.as_str()),
+            "the Set-Cookie token must match the one stored session"
+        );
+    }
+
+    let _ = fs::remove_dir_all(config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
 
 #[cfg(unix)]
 #[tokio::test]
@@ -10905,6 +11490,777 @@ async fn lsp_apis_require_auth() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{}", uri.0);
     }
+}
+
+/// Absolute path to the node binary, or None when node is absent (the
+/// full-flow LSP API tests skip, matching the lsp module's own e2e test).
+fn node_binary_path() -> Option<String> {
+    std::process::Command::new("which")
+        .arg("node")
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn lsp_api_full_flow_start_request_notify_stop() {
+    let Some(node) = node_binary_path() else {
+        eprintln!("skipping: node not found");
+        return;
+    };
+    let _env = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-lsp-api-flow");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let (script_dir, _script_guard) = temp_guard("herdr-lsp-api-script");
+    let workspace = script_dir.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let script_path = script_dir.join("fake-server.js");
+    std::fs::write(
+        &script_path,
+        r#"
+function send(msg) {
+  const s = JSON.stringify(msg);
+  process.stdout.write('Content-Length: ' + Buffer.byteLength(s) + '\r\n\r\n' + s);
+}
+let buf = '';
+process.stdin.on('data', (d) => {
+  buf += d.toString();
+  let idx;
+  while ((idx = buf.indexOf('\r\n\r\n')) >= 0) {
+    const m = buf.slice(0, idx).match(/Content-Length: (\d+)/);
+    if (!m) { buf = ''; return; }
+    const len = parseInt(m[1], 10);
+    if (buf.length < idx + 4 + len) return;
+    const body = buf.slice(idx + 4, idx + 4 + len);
+    buf = buf.slice(idx + 4 + len);
+    const msg = JSON.parse(body);
+    if (msg.method === 'initialize') {
+      send({ jsonrpc: '2.0', id: msg.id, result: { capabilities: { hoverProvider: true } } });
+    } else if (msg.method === 'textDocument/hover') {
+      send({ jsonrpc: '2.0', id: msg.id, result: { contents: 'api flow hover' } });
+    } else if (msg.method === 'shutdown') {
+      send({ jsonrpc: '2.0', id: msg.id, result: null });
+    } else if (msg.method === 'exit') {
+      process.exit(0);
+    }
+  }
+});
+"#,
+    )
+    .unwrap();
+    let script_abs = script_path
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let workspace_abs = workspace
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    let mut state = test_state();
+    state.lsp = Arc::new(lsp::LspRegistry::new(lsp::LspSettings {
+        enabled: true,
+        servers: [(
+            "json".to_string(),
+            lsp::LanguageServerConfig {
+                enabled: true,
+                command: Some(node.clone()),
+                args: vec![script_abs],
+            },
+        )]
+        .into(),
+    }));
+    let app = test_app_with_state(state);
+
+    // start
+    let (status, started) = lsp_post(
+        &app,
+        "/api/lsp/start",
+        json!({ "language": "json", "cwd": workspace_abs }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "start: {started}");
+    assert_eq!(started["ok"], true);
+    assert_eq!(started["already_running"], false);
+    assert!(started["key"].as_str().is_some());
+
+    // start again: same key reports already_running
+    let (status, again) = lsp_post(
+        &app,
+        "/api/lsp/start",
+        json!({ "language": "json", "cwd": workspace_abs }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again["already_running"], true);
+    assert_eq!(again["key"], started["key"]);
+
+    // request: initialize then hover
+    let (status, init) = lsp_post(
+        &app,
+        "/api/lsp/request",
+        json!({
+            "language": "json",
+            "cwd": workspace_abs,
+            "method": "initialize",
+            "params": { "processId": null, "rootUri": null, "capabilities": {} }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "initialize: {init}");
+    assert_eq!(init["ok"], true);
+    assert!(init["result"]["capabilities"]["hoverProvider"]
+        .as_bool()
+        .unwrap_or(false));
+
+    let (status, hover) = lsp_post(
+        &app,
+        "/api/lsp/request",
+        json!({
+            "language": "json",
+            "cwd": workspace_abs,
+            "method": "textDocument/hover",
+            "params": { "textDocument": { "uri": "file:///x.json" }, "position": { "line": 0, "character": 0 } }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "hover: {hover}");
+    assert_eq!(hover["result"]["contents"], "api flow hover");
+
+    // notify: initialized marks the server running
+    let (status, notified) = lsp_post(
+        &app,
+        "/api/lsp/notify",
+        json!({ "language": "json", "cwd": workspace_abs, "method": "initialized", "params": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "notify: {notified}");
+    assert_eq!(notified["ok"], true);
+
+    // status: the json server is listed with state ready
+    let response = app
+        .clone()
+        .oneshot(
+            authed_request(Method::GET, "/api/lsp/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let status_body = response_json(response).await;
+    let servers = status_body["servers"].as_array().expect("servers array");
+    assert!(servers
+        .iter()
+        .any(|s| s["language"] == "json" && s["state"] == "running"));
+
+    // notifications: shape only, content depends on server output
+    let response = app
+        .clone()
+        .oneshot(
+            authed_request(Method::GET, "/api/lsp/notifications")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let notes_body = response_json(response).await;
+    assert!(notes_body["notifications"].as_array().is_some());
+    assert!(notes_body["servers"].as_array().is_some());
+
+    // stop: one server stopped
+    let (status, stopped) = lsp_post(
+        &app,
+        "/api/lsp/stop",
+        json!({ "language": "json", "cwd": workspace_abs }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "stop: {stopped}");
+    assert_eq!(stopped["stopped"], 1);
+
+    // stop everything: registry already empty
+    let (status, stopped_all) = lsp_post(&app, "/api/lsp/stop", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stopped_all["stopped"], 0);
+}
+
+/// A server that pushes diagnostics, progress, and showMessage
+/// notifications alongside its initialize response must land them in the
+/// poll queue (and the events hub) instead of being mistaken for replies.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn lsp_api_server_notifications_are_queued_and_status_reports_stderr() {
+    let Some(node) = node_binary_path() else {
+        eprintln!("skipping: node not found");
+        return;
+    };
+    let _env = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-lsp-api-notes");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let (script_dir, _script_guard) = temp_guard("herdr-lsp-api-notes-script");
+    let workspace = script_dir.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let script_path = script_dir.join("notes-server.js");
+    std::fs::write(
+        &script_path,
+        r#"
+function send(msg) {
+  const s = JSON.stringify(msg);
+  process.stdout.write('Content-Length: ' + Buffer.byteLength(s) + '\r\n\r\n' + s);
+}
+let buf = '';
+process.stdin.on('data', (d) => {
+  buf += d.toString();
+  let idx;
+  while ((idx = buf.indexOf('\r\n\r\n')) >= 0) {
+    const m = buf.slice(0, idx).match(/Content-Length: (\d+)/);
+    if (!m) { buf = ''; return; }
+    const len = parseInt(m[1], 10);
+    if (buf.length < idx + 4 + len) return;
+    const body = buf.slice(idx + 4, idx + 4 + len);
+    buf = buf.slice(idx + 4 + len);
+    const msg = JSON.parse(body);
+    if (msg.method === 'initialize') {
+      process.stderr.write('fake server starting up\n');
+      send({ jsonrpc: '2.0', method: 'textDocument/publishDiagnostics', params: { uri: 'file:///a.json', diagnostics: [{ message: 'diag from fake' }] } });
+      send({ jsonrpc: '2.0', method: '$/progress', params: { token: 'tok', value: { kind: 'begin', title: 'indexing' } } });
+      send({ jsonrpc: '2.0', method: 'window/showMessage', params: { type: 3, message: 'hello from fake' } });
+      send({ jsonrpc: '2.0', id: msg.id, result: { capabilities: { hoverProvider: true } } });
+    } else if (msg.method === 'shutdown') {
+      send({ jsonrpc: '2.0', id: msg.id, result: null });
+    } else if (msg.method === 'exit') {
+      process.exit(0);
+    }
+  }
+});
+"#,
+    )
+    .unwrap();
+    let script_abs = script_path
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let workspace_abs = workspace
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    let mut state = test_state();
+    state.lsp = Arc::new(lsp::LspRegistry::new(lsp::LspSettings {
+        enabled: true,
+        servers: [(
+            "json".to_string(),
+            lsp::LanguageServerConfig {
+                enabled: true,
+                command: Some(node.clone()),
+                args: vec![script_abs],
+            },
+        )]
+        .into(),
+    }));
+    let app = test_app_with_state(state);
+
+    let (status, started) = lsp_post(
+        &app,
+        "/api/lsp/start",
+        json!({ "language": "json", "cwd": workspace_abs }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "start: {started}");
+
+    let (status, init) = lsp_post(
+        &app,
+        "/api/lsp/request",
+        json!({ "language": "json", "cwd": workspace_abs, "method": "initialize" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "initialize: {init}");
+
+    // The three notifications emitted before the initialize reply must be
+    // sitting in the poll queue under this server's key.
+    let response = app
+        .clone()
+        .oneshot(
+            authed_request(Method::GET, "/api/lsp/notifications")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let notes = response_json(response).await;
+    let servers = notes["servers"].as_array().cloned().unwrap_or_default();
+    assert!(
+        servers.iter().any(|s| s["language"] == "json"),
+        "server must be listed in notifications: {servers:?}"
+    );
+    let notifications = notes["notifications"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let methods: Vec<&str> = notifications
+        .iter()
+        .filter_map(|n| n["method"].as_str())
+        .collect();
+    assert!(
+        methods.contains(&"textDocument/publishDiagnostics"),
+        "diagnostics must be queued: {methods:?}"
+    );
+    assert!(
+        methods.contains(&"$/progress"),
+        "progress must be queued: {methods:?}"
+    );
+    assert!(
+        methods.contains(&"window/showMessage"),
+        "showMessage must be queued: {methods:?}"
+    );
+
+    // The stderr latch must surface the startup line in status.
+    let mut found_stderr = false;
+    for _ in 0..50 {
+        let response = app
+            .clone()
+            .oneshot(
+                authed_request(Method::GET, "/api/lsp/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        if body["servers"]
+            .as_array()
+            .and_then(|s| s.first())
+            .and_then(|s| s["last_error"].as_str())
+            .is_some_and(|e| e.contains("stderr: fake server starting up"))
+        {
+            found_stderr = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(found_stderr, "stderr line must be latched into last_error");
+
+    let (status, stopped) = lsp_post(
+        &app,
+        "/api/lsp/stop",
+        json!({ "language": "json", "cwd": workspace_abs }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stopped["stopped"], 1);
+}
+
+/// An oversized Content-Length must kill the server and prune it from the
+/// registry: the reader refuses to buffer an unbounded body.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn lsp_api_server_oversized_frame_kills_and_prunes_server() {
+    let Some(node) = node_binary_path() else {
+        eprintln!("skipping: node not found");
+        return;
+    };
+    let _env = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-lsp-api-oversize");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let (script_dir, _script_guard) = temp_guard("herdr-lsp-api-oversize-script");
+    let workspace = script_dir.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let script_path = script_dir.join("oversize-server.js");
+    std::fs::write(
+        &script_path,
+        r#"
+process.stdout.write('Content-Length: 999999999\r\n\r\n');
+setTimeout(() => process.exit(0), 10000);
+"#,
+    )
+    .unwrap();
+    let script_abs = script_path
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let workspace_abs = workspace
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    let mut state = test_state();
+    state.lsp = Arc::new(lsp::LspRegistry::new(lsp::LspSettings {
+        enabled: true,
+        servers: [(
+            "json".to_string(),
+            lsp::LanguageServerConfig {
+                enabled: true,
+                command: Some(node.clone()),
+                args: vec![script_abs],
+            },
+        )]
+        .into(),
+    }));
+    let app = test_app_with_state(state);
+
+    let (status, started) = lsp_post(
+        &app,
+        "/api/lsp/start",
+        json!({ "language": "json", "cwd": workspace_abs }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "start: {started}");
+
+    // The oversized frame kills the server and removes it from the
+    // registry, so the next request reports it as not running.
+    let mut pruned = false;
+    for _ in 0..50 {
+        let (status, body) = lsp_post(
+            &app,
+            "/api/lsp/request",
+            json!({ "language": "json", "cwd": workspace_abs, "method": "initialize" }),
+        )
+        .await;
+        if status == StatusCode::NOT_FOUND {
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("not running")),
+                "pruned server must report not-running: {body}"
+            );
+            pruned = true;
+            break;
+        }
+        // 502 (send fails on the killed child) and 410 (entry still in
+        // the registry, process dead) are valid intermediate states while
+        // the cleanup finishes.
+        assert!(
+            status == StatusCode::OK
+                || status == StatusCode::GONE
+                || status == StatusCode::BAD_GATEWAY,
+            "unexpected status {status}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(pruned, "oversized frame must kill and prune the server");
+}
+
+/// A garbage JSON body must be skipped (server stays usable) and a
+/// truncated frame followed by process exit must clean up the registry.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn lsp_api_server_survives_garbage_frame_and_prunes_after_truncated_exit() {
+    let Some(node) = node_binary_path() else {
+        eprintln!("skipping: node not found");
+        return;
+    };
+    let _env = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-lsp-api-garbage");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let (script_dir, _script_guard) = temp_guard("herdr-lsp-api-garbage-script");
+    let workspace = script_dir.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let script_path = script_dir.join("garbage-server.js");
+    std::fs::write(
+        &script_path,
+        r#"
+function send(msg) {
+  const s = JSON.stringify(msg);
+  process.stdout.write('Content-Length: ' + Buffer.byteLength(s) + '\r\n\r\n' + s);
+}
+let exited = false;
+let buf = '';
+process.stdin.on('data', (d) => {
+  buf += d.toString();
+  let idx;
+  while ((idx = buf.indexOf('\r\n\r\n')) >= 0) {
+    const m = buf.slice(0, idx).match(/Content-Length: (\d+)/);
+    if (!m) { buf = ''; return; }
+    const len = parseInt(m[1], 10);
+    if (buf.length < idx + 4 + len) return;
+    const body = buf.slice(idx + 4, idx + 4 + len);
+    buf = buf.slice(idx + 4 + len);
+    const msg = JSON.parse(body);
+    if (msg.method === 'initialize' && !exited) {
+      // First initialize: garbage JSON body with a valid header, then a
+      // real reply. The reader must skip the garbage and still deliver.
+      const junk = 'this is not json at all';
+      process.stdout.write('Content-Length: ' + Buffer.byteLength(junk) + '\r\n\r\n' + junk);
+      send({ jsonrpc: '2.0', id: msg.id, result: { capabilities: { hoverProvider: true } } });
+    } else if (msg.method === 'initialize' && exited) {
+      // Second initialize: announce 100 bytes but send only a few, then
+      // exit: truncated frame + EOF cleanup.
+      process.stdout.write('Content-Length: 100\r\n\r\nshort');
+      process.exit(0);
+    } else if (msg.method === 'shutdown') {
+      send({ jsonrpc: '2.0', id: msg.id, result: null });
+    } else if (msg.method === 'exit') {
+      process.exit(0);
+    }
+  }
+});
+"#,
+    )
+    .unwrap();
+    let script_abs = script_path
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let workspace_abs = workspace
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    let mut state = test_state();
+    state.lsp = Arc::new(lsp::LspRegistry::new(lsp::LspSettings {
+        enabled: true,
+        servers: [(
+            "json".to_string(),
+            lsp::LanguageServerConfig {
+                enabled: true,
+                command: Some(node.clone()),
+                args: vec![script_abs],
+            },
+        )]
+        .into(),
+    }));
+    let app = test_app_with_state(state);
+
+    let (status, started) = lsp_post(
+        &app,
+        "/api/lsp/start",
+        json!({ "language": "json", "cwd": workspace_abs }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "start: {started}");
+
+    // First round: the garbage frame is skipped and the real reply lands.
+    let (status, init) = lsp_post(
+        &app,
+        "/api/lsp/request",
+        json!({ "language": "json", "cwd": workspace_abs, "method": "initialize" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "initialize after garbage: {init}");
+
+    // Second round: stop the (still-running) server so the next start
+    // spawns a fresh one wired to the truncated-exit script path.
+    let (status, stopped) = lsp_post(
+        &app,
+        "/api/lsp/stop",
+        json!({ "language": "json", "cwd": workspace_abs }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "stop: {stopped}");
+
+    let (status, started_again) = lsp_post(
+        &app,
+        "/api/lsp/start",
+        json!({ "language": "json", "cwd": workspace_abs }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "restart: {started_again}");
+
+    // The truncated frame + exit must prune the registry entry.
+    let mut pruned = false;
+    for _ in 0..50 {
+        let (status, body) = lsp_post(
+            &app,
+            "/api/lsp/request",
+            json!({ "language": "json", "cwd": workspace_abs, "method": "initialize" }),
+        )
+        .await;
+        if status == StatusCode::NOT_FOUND {
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("not running")),
+                "pruned server must report not-running: {body}"
+            );
+            pruned = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(pruned, "truncated frame + exit must prune the server");
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn lsp_start_error_branches() {
+    let _env = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-lsp-api-errors");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    let mut state = test_state();
+    state.lsp = Arc::new(lsp::LspRegistry::new(lsp::LspSettings {
+        enabled: true,
+        servers: [
+            (
+                "json".to_string(),
+                lsp::LanguageServerConfig {
+                    enabled: false,
+                    command: Some("definitely-missing-server".to_string()),
+                    args: vec![],
+                },
+            ),
+            (
+                "yaml".to_string(),
+                lsp::LanguageServerConfig {
+                    enabled: true,
+                    command: None,
+                    args: vec![],
+                },
+            ),
+            (
+                "rust".to_string(),
+                lsp::LanguageServerConfig {
+                    enabled: true,
+                    command: Some("definitely-missing-server".to_string()),
+                    args: vec![],
+                },
+            ),
+        ]
+        .into(),
+    }));
+    let app = test_app_with_state(state);
+
+    // Unknown language: NOT_FOUND.
+    let (status, body) = lsp_post(
+        &app,
+        "/api/lsp/start",
+        json!({ "language": "cobol", "cwd": "/tmp" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body["error"].as_str().unwrap().contains("cobol"));
+
+    // Configured but disabled: FORBIDDEN.
+    let (status, body) = lsp_post(
+        &app,
+        "/api/lsp/start",
+        json!({ "language": "json", "cwd": "/tmp" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body["error"].as_str().unwrap().contains("disabled"));
+
+    // Enabled but no command: BAD_REQUEST.
+    let (status, body) = lsp_post(
+        &app,
+        "/api/lsp/start",
+        json!({ "language": "yaml", "cwd": "/tmp" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("no command"));
+
+    // Missing workspace on a fully configured language: BAD_REQUEST.
+    let (status, body) = lsp_post(
+        &app,
+        "/api/lsp/start",
+        json!({ "language": "rust", "cwd": "/definitely/not/here" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("workspace"));
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn lsp_request_notify_require_running_server() {
+    let _env = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-lsp-api-require");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    // Enabled with a configured command, but no server ever started: the
+    // running-handle lookup is what must fail.
+    let mut state = test_state();
+    state.lsp = Arc::new(lsp::LspRegistry::new(lsp::LspSettings {
+        enabled: true,
+        servers: [(
+            "json".to_string(),
+            lsp::LanguageServerConfig {
+                enabled: true,
+                command: Some("definitely-missing-server".to_string()),
+                args: vec![],
+            },
+        )]
+        .into(),
+    }));
+    let app = test_app_with_state(state);
+    // No server started yet: request and notify both 404.
+    let (status, body) = lsp_post(
+        &app,
+        "/api/lsp/request",
+        json!({ "language": "json", "cwd": "/tmp", "method": "initialize", "params": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body["error"].as_str().unwrap().contains("not running"));
+
+    let (status, _) = lsp_post(
+        &app,
+        "/api/lsp/notify",
+        json!({ "language": "json", "cwd": "/tmp", "method": "initialized", "params": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Bad workspace root on an allowed method: BAD_REQUEST.
+    let (status, _) = lsp_post(
+        &app,
+        "/api/lsp/request",
+        json!({ "language": "json", "cwd": "/definitely/not/here", "method": "initialize" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, _) = lsp_post(
+        &app,
+        "/api/lsp/notify",
+        json!({ "language": "json", "cwd": "/definitely/not/here", "method": "initialized" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Disallowed notify method: FORBIDDEN.
+    let (status, _) = lsp_post(
+        &app,
+        "/api/lsp/notify",
+        json!({ "language": "json", "cwd": "/tmp", "method": "workspace/didChangeConfiguration" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn lsp_request_notify_reject_when_disabled() {
+    let state = test_state();
+    let app = test_app_with_state(state);
+    // Default settings have lsp disabled: request and notify 403.
+    let (status, body) = lsp_post(
+        &app,
+        "/api/lsp/request",
+        json!({ "language": "json", "cwd": "/tmp", "method": "initialize" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "language servers are disabled");
+
+    let (status, _) = lsp_post(
+        &app,
+        "/api/lsp/notify",
+        json!({ "language": "json", "cwd": "/tmp", "method": "initialized" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 // ── create_worktree spawn_blocking JoinError path ──
@@ -12846,4 +14202,381 @@ async fn conversation_route_backend_transport_failure_is_bad_gateway() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+}
+
+#[test]
+fn parses_tls_mode_aliases_and_rejects_unknown() {
+    assert_eq!(parse_tls_mode("off").unwrap(), TlsMode::Off);
+    assert_eq!(parse_tls_mode("auto").unwrap(), TlsMode::Auto);
+    assert_eq!(parse_tls_mode("self-signed").unwrap(), TlsMode::SelfSigned);
+    assert_eq!(parse_tls_mode("selfsigned").unwrap(), TlsMode::SelfSigned);
+    assert_eq!(parse_tls_mode("self").unwrap(), TlsMode::SelfSigned);
+    assert_eq!(parse_tls_mode("files").unwrap(), TlsMode::Files);
+    assert_eq!(parse_tls_mode("cert").unwrap(), TlsMode::Files);
+    assert_eq!(parse_tls_mode("both").unwrap(), TlsMode::Both);
+    assert_eq!(parse_tls_mode("http-https").unwrap(), TlsMode::Both);
+    assert_eq!(parse_tls_mode("http+https").unwrap(), TlsMode::Both);
+    assert!(parse_tls_mode("maybe")
+        .unwrap_err()
+        .to_string()
+        .contains("invalid --https mode"));
+    assert!(parse_tls_mode("").is_err());
+}
+
+#[test]
+fn tls_mode_accessors_pin_scheme_bind_and_cookie_rules() {
+    // Canonical text for every mode.
+    assert_eq!(TlsMode::Off.as_str(), "off");
+    assert_eq!(TlsMode::Auto.as_str(), "auto");
+    assert_eq!(TlsMode::SelfSigned.as_str(), "self-signed");
+    assert_eq!(TlsMode::Files.as_str(), "files");
+    assert_eq!(TlsMode::Both.as_str(), "both");
+
+    // Primary scheme: `both` serves HTTP on the configured port.
+    assert_eq!(TlsMode::Off.scheme(), "http");
+    assert_eq!(TlsMode::Both.scheme(), "http");
+    assert_eq!(TlsMode::Auto.scheme(), "https");
+    assert_eq!(TlsMode::SelfSigned.scheme(), "https");
+    assert_eq!(TlsMode::Files.scheme(), "https");
+
+    let bind: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    let next: SocketAddr = "127.0.0.1:8081".parse().unwrap();
+    assert_eq!(TlsMode::Both.https_bind(bind), Some(next));
+    assert_eq!(TlsMode::Off.https_bind(bind), None);
+    assert_eq!(TlsMode::Auto.https_bind(bind), None);
+
+    // uses_tls: every mode except Off carries TLS somewhere (Both carries
+    // it on the side port).
+    assert!(!TlsMode::Off.uses_tls());
+    assert!(TlsMode::Auto.uses_tls());
+    assert!(TlsMode::SelfSigned.uses_tls());
+    assert!(TlsMode::Files.uses_tls());
+    assert!(TlsMode::Both.uses_tls());
+
+    // cookie_secure: only HTTPS-only modes may set the Secure flag, because
+    // `both` also serves the same host over plain HTTP.
+    assert!(TlsMode::Auto.cookie_secure());
+    assert!(TlsMode::SelfSigned.cookie_secure());
+    assert!(TlsMode::Files.cookie_secure());
+    assert!(!TlsMode::Off.cookie_secure());
+    assert!(!TlsMode::Both.cookie_secure());
+}
+
+#[test]
+fn arg_helpers_report_missing_values_and_remove_flags() {
+    let args = vec!["--bind".to_string(), "127.0.0.1:9000".to_string()];
+    assert_eq!(required_arg(&args, 0, "--bind").unwrap(), "127.0.0.1:9000");
+    let err = required_arg(&args, 1, "--bind").unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(err.to_string().contains("missing value for --bind"));
+
+    let mut flags = vec![
+        "--verbose".to_string(),
+        "a".to_string(),
+        "--verbose".to_string(),
+        "b".to_string(),
+    ];
+    assert!(take_flag(&mut flags, "--verbose"));
+    // Only the first occurrence is removed.
+    assert_eq!(flags, vec!["a", "--verbose", "b"]);
+    assert!(take_flag(&mut flags, "--verbose"));
+    assert_eq!(flags, vec!["a", "b"]);
+    assert!(!take_flag(&mut flags, "--verbose"));
+    assert_eq!(flags, vec!["a", "b"]);
+    assert!(!take_flag(&mut flags, "--quiet"));
+}
+
+#[test]
+fn parses_timestamps_with_offsets_and_fractional_seconds() {
+    // UTC Z suffix.
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02T03:04:05Z"),
+        Some(1_767_323_045)
+    );
+    // Positive offset subtracts: 03:04:05+02:00 is 01:04:05 UTC.
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02T03:04:05+02:00"),
+        Some(1_767_323_045 - 2 * 3_600)
+    );
+    // Negative offset adds.
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02T03:04:05-01:30"),
+        Some(1_767_323_045 + 3_600 + 1_800)
+    );
+    // Fractional seconds are skipped up to the next non-digit.
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02 03:04:05.123456Z"),
+        Some(1_767_323_045)
+    );
+    // Leap second clamps to 59: 03:04:60 is 03:04:59 + 1s over the pin.
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02T03:04:60Z"),
+        Some(1_767_323_045 + 54)
+    );
+    // Missing offset reads as UTC.
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02T03:04:05"),
+        Some(1_767_323_045)
+    );
+    // Whitespace trims.
+    assert_eq!(
+        parse_worktree_activity_timestamp(" 2026-01-02T03:04:05Z "),
+        Some(1_767_323_045)
+    );
+}
+
+#[test]
+fn rejects_malformed_timestamps() {
+    assert_eq!(parse_worktree_activity_timestamp(""), None);
+    assert_eq!(parse_worktree_activity_timestamp("2026-01-02"), None);
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-1-2T03:04:05Z"),
+        None
+    );
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-13-02T03:04:05Z"),
+        None
+    );
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-02-30T03:04:05Z"),
+        None
+    );
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-02-29T03:04:05Z"),
+        None
+    );
+    assert!(
+        parse_worktree_activity_timestamp("2024-02-29T03:04:05Z").is_some(),
+        "2024 is a leap year"
+    );
+    assert_eq!(
+        parse_worktree_activity_timestamp("2000-02-29T03:04:05Z"),
+        Some(951_793_445)
+    );
+    assert_eq!(
+        parse_worktree_activity_timestamp("1900-02-29T00:00:00Z"),
+        None
+    );
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02T24:00:00Z"),
+        None
+    );
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02T23:60:00Z"),
+        None
+    );
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02T23:59:61Z"),
+        None
+    );
+    // Offset out of range.
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02T03:04:05+24:00"),
+        None
+    );
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02T03:04:05+02:60"),
+        None
+    );
+    // Incomplete offset: needs exactly hh:mm.
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02T03:04:05+0200"),
+        None
+    );
+    // Garbage after fractional seconds never finds a terminator.
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026-01-02T03:04:05.123456"),
+        None
+    );
+    // Slash separators do not parse.
+    assert_eq!(
+        parse_worktree_activity_timestamp("2026/01/02 03:04:05"),
+        None
+    );
+}
+
+#[test]
+fn days_from_civil_pins_known_epoch_values() {
+    // Unix epoch: 1970-01-01.
+    assert_eq!(days_from_civil(1970, 1, 1), Some(0));
+    assert_eq!(days_from_civil(1970, 1, 2), Some(1));
+    assert_eq!(days_from_civil(1969, 12, 31), Some(-1));
+    assert_eq!(days_from_civil(2000, 3, 1), Some(11_017));
+    assert_eq!(days_from_civil(2026, 1, 2), Some(20_455));
+    // Month day limits.
+    assert_eq!(days_from_civil(2026, 4, 31), None);
+    assert_eq!(days_from_civil(2026, 2, 29), None);
+    assert_eq!(days_from_civil(2028, 2, 29), Some(21_243));
+    assert_eq!(days_from_civil(2026, 0, 1), None);
+    assert_eq!(days_from_civil(2026, 1, 0), None);
+    // 1900 is not a leap year (divisible by 100, not by 400).
+    assert!(!is_leap_year(1900));
+    assert!(!is_leap_year(2026));
+    assert!(is_leap_year(2024));
+    assert!(is_leap_year(2000));
+}
+
+#[test]
+fn worktree_activity_display_formats_iso_and_space_forms() {
+    // ISO T form becomes a space in the 16-char prefix.
+    assert_eq!(
+        worktree_activity_display("2026-01-02T03:04:05Z"),
+        Some("2026-01-02 03:04".to_string())
+    );
+    // Space form is kept as the prefix.
+    assert_eq!(
+        worktree_activity_display("2026-01-02 03:04:05"),
+        Some("2026-01-02 03:04".to_string())
+    );
+    // Surrounding whitespace is trimmed first.
+    assert_eq!(
+        worktree_activity_display("  2026-01-02T03:04:05Z  "),
+        Some("2026-01-02 03:04".to_string())
+    );
+    // Too short for a 16-char prefix: no display. Only the byte at
+    // position 10 decides, so a slash date with a T still displays.
+    assert_eq!(worktree_activity_display("2026-01-02"), None);
+    assert_eq!(worktree_activity_display(""), None);
+    assert_eq!(
+        worktree_activity_display("2026/01/02T03:04"),
+        Some("2026/01/02 03:04".to_string())
+    );
+    assert_eq!(worktree_activity_display("2026-01-02x03:04"), None);
+}
+
+#[test]
+fn enrich_worktree_activity_fills_commit_data_from_git() {
+    let (repo, _guard) = temp_guard("worktree-activity-git");
+    assert!(Command::new("git")
+        .arg("init")
+        .arg(&repo)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    fs::write(repo.join("file.txt"), "hello").unwrap();
+    assert!(Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["add", "."])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args([
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-m",
+            "init",
+        ])
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    // A row without activity fields gets them from the repo HEAD.
+    let mut row = json!({ "path": repo.to_string_lossy() });
+    enrich_worktree_activity(&mut row);
+    assert!(row["last_commit_at"].as_str().is_some());
+    assert!(row["last_commit_hash"].as_str().is_some());
+    assert!(row["last_commit_display"].as_str().is_some());
+
+    // An empty path cannot be probed.
+    let mut row = json!({ "path": "  " });
+    enrich_worktree_activity(&mut row);
+    assert!(row.get("last_commit_at").is_none());
+
+    // A path that is not a git repo gets nothing.
+    let (plain, _guard2) = temp_guard("worktree-activity-plain");
+    let mut row = json!({ "path": plain.to_string_lossy() });
+    enrich_worktree_activity(&mut row);
+    assert!(row.get("last_commit_at").is_none());
+
+    // A preexisting activity date is kept and only the display is added.
+    let mut row = json!({
+        "path": repo.to_string_lossy(),
+        "last_commit_at": "2026-01-02T03:04:05Z",
+    });
+    enrich_worktree_activity(&mut row);
+    assert_eq!(row["last_commit_at"], "2026-01-02T03:04:05Z");
+    assert_eq!(row["last_commit_display"], "2026-01-02 03:04");
+}
+
+#[test]
+fn worktree_activity_sort_key_orders_by_date_and_falls_back() {
+    // String date parses into a numeric key bucket.
+    let with_date = json!({ "last_commit_at": "2026-01-02T03:04:05Z" });
+    let key = worktree_activity_sort_key(&with_date);
+    assert!(key.starts_with("2:"));
+    assert!(key.len() > 2);
+
+    // Unparseable string date keeps the raw string in bucket 2.
+    let raw = json!({ "mtime": "not-a-date" });
+    assert_eq!(worktree_activity_sort_key(&raw), "2:not-a-date");
+
+    // Numeric timestamp fields land in bucket 1.
+    let numeric = json!({ "last_commit_timestamp": 1_700_000_000 });
+    assert!(worktree_activity_sort_key(&numeric).starts_with("1:"));
+
+    // Nothing at all lands in bucket 0.
+    assert_eq!(worktree_activity_sort_key(&json!({})), "0:");
+}
+
+#[test]
+fn path_basename_handles_trailing_slashes_and_empty_paths() {
+    assert_eq!(path_basename("/a/b/c.txt"), "c.txt");
+    assert_eq!(path_basename("c.txt"), "c.txt");
+    assert_eq!(path_basename("/a/b/"), "b");
+    assert_eq!(path_basename("//"), "");
+    assert_eq!(path_basename(""), "");
+    assert_eq!(path_basename("/"), "");
+}
+
+#[test]
+fn same_checkout_path_resolves_real_paths() {
+    let (dir, _guard) = temp_guard("same-checkout");
+    let file = dir.join("probe.txt");
+    fs::write(&file, b"x").unwrap();
+    let direct = file.to_string_lossy().to_string();
+    // On macOS /tmp is a symlink to /private/tmp, so a canonicalized form
+    // differs from the written string while still naming the same file.
+    let canonical = fs::canonicalize(&file)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert!(same_checkout_path(&direct, &canonical));
+    assert!(same_checkout_path(&direct, &direct));
+    assert!(!same_checkout_path(&direct, &format!("{direct}-nope")));
+}
+
+#[test]
+fn expand_path_prefix_resolves_home_relative_and_absolute_paths() {
+    let _guard = lock_env();
+    let original_home = std::env::var_os("HOME");
+    let (home, _guard2) = temp_guard("expand-home");
+    std::env::set_var("HOME", home.to_string_lossy().to_string());
+
+    assert_eq!(expand_path_prefix("~"), home);
+    assert_eq!(expand_path_prefix("~/src"), home.join("src"));
+    assert_eq!(expand_path_prefix("/abs/path"), PathBuf::from("/abs/path"));
+    assert_eq!(expand_path_prefix("rel/path"), home.join("rel/path"));
+    assert_eq!(
+        expand_user_path_string("~/x"),
+        home.join("x").to_string_lossy().to_string()
+    );
+
+    std::env::remove_var("HOME");
+    // Without HOME the prefix survives unchanged instead of panicking.
+    assert_eq!(expand_path_prefix("~/x"), PathBuf::from("~/x"));
+    assert_eq!(expand_path_prefix("x"), PathBuf::from("x"));
+    match original_home {
+        Some(home) => std::env::set_var("HOME", home),
+        None => std::env::remove_var("HOME"),
+    }
 }

@@ -1,9 +1,17 @@
 import { describe, it } from "node:test";
 import { equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
+// Compiled once per product file so coverage attributes lines to the real
+// disk path instead of the test file.
+const OPTIONS_PATH = fileURLToPath(new URL("./shared/options.js", import.meta.url));
 const source = readFileSync(new URL("./shared/options.js", import.meta.url), "utf8");
+const optionsScript = new vm.Script(readFileSync(OPTIONS_PATH, "utf8"), { filename: OPTIONS_PATH });
+function runScripts(ctx) {
+  optionsScript.runInContext(ctx);
+}
 
 function boot(initial, withStorageEvent = true) {
   const store = new Map(initial ? [["herdr-web-options", initial]] : []);
@@ -25,7 +33,7 @@ function boot(initial, withStorageEvent = true) {
   ctx.window = ctx;
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  vm.runInContext(source, ctx);
+  runScripts(ctx);
   return { mod: ctx.window.HerdrOptions, store, storageListeners, ctx };
 }
 
@@ -54,7 +62,7 @@ describe("HerdrOptions", () => {
     ctx.window = ctx;
     ctx.globalThis = ctx;
     vm.createContext(ctx);
-    vm.runInContext(source, ctx);
+    runScripts(ctx);
     const patched = ctx.window.HerdrOptions;
 
     equal(patched.read().a, 1);
@@ -132,7 +140,7 @@ describe("HerdrOptions", () => {
     ctx.window = ctx;
     ctx.globalThis = ctx;
     vm.createContext(ctx);
-    vm.runInContext(source, ctx);
+    runScripts(ctx);
     const mod = ctx.window.HerdrOptions;
     equal(Object.keys(mod.read()).length, 0);
     mod.write({ a: 1 }); // no throw, no-op

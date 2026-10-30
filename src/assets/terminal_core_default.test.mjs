@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const require = createRequire(import.meta.url);
@@ -50,7 +51,7 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
   });
 
   it("desktop bundle migrates a legacy wterm blob on boot and honors explicit re-choice", () => {
-    const desktopAppSource = [
+    const desktopAppFiles = [
       "./desktop/app_js/core.js",
       "./desktop/app_js/settings_sections.js",
       "./desktop/app_js/workspace_shell.js",
@@ -61,16 +62,48 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
       "./desktop/app_js/shortcuts.js",
       "./desktop/app_js/workspace_create.js",
       "./desktop/app_js/bindings.js",
-    ]
-      .map((p) => readFileSync(new URL(p, import.meta.url), "utf8"))
-      .join("\n");
-    const bundle =
-      readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") + "\n" +
-      readFileSync(new URL("./shared/core.js", import.meta.url), "utf8") + "\n" +
-      readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8") + "\n" +
-      readFileSync(new URL("./shared/terminal_fit.js", import.meta.url), "utf8") + "\n" +
-      readFileSync(new URL("./desktop/search.js", import.meta.url), "utf8") + "\n" +
-      desktopAppSource;
+    ];
+    // One compiled script per product file, same list and order as the bundle,
+    // so coverage attributes each file's lines to its real disk path.
+    const bundleFiles = [
+      "./shared/options.js",
+      "./shared/core.js",
+      "./shared/actions.js",
+      "./shared/terminal_fit.js",
+      "./desktop/search.js",
+      ...desktopAppFiles,
+    ];
+    let bundleScripts = null;
+    const getBundleScripts = () => {
+      if (!bundleScripts) {
+        bundleScripts = bundleFiles.map((p) => {
+          const realPath = fileURLToPath(new URL(p, import.meta.url));
+          return new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath });
+        });
+      }
+      return bundleScripts;
+    };
+    // The concatenated blob hoisted function declarations across every
+    // file; separate scripts only hoist per file, so core.js's load-time
+    // window.syncGitWorkspaceToggle assignment and the help-section render
+    // need names from later files (render.js, terminal.js, shortcuts.js)
+    // pre-declared, and the window copy re-wired once render.js has loaded.
+    const hoistPreload = new vm.Script(
+      "var syncGitWorkspaceToggle = function() {};\n" +
+        "var escapeHtml = function(v) { return String(v == null ? \"\" : v); };\n" +
+        "var globalShortcutPrefixLabel = function() { return \"Ctrl\"; };\n" +
+        "window.syncGitWorkspaceToggle = syncGitWorkspaceToggle;",
+      { filename: "hoist-preload.js" },
+    );
+    const hoistRewire = new vm.Script(
+      "window.syncGitWorkspaceToggle = syncGitWorkspaceToggle;",
+      { filename: "hoist-rewire.js" },
+    );
+    const runBundle = (ctx) => {
+      hoistPreload.runInContext(ctx);
+      for (const script of getBundleScripts()) script.runInContext(ctx);
+      hoistRewire.runInContext(ctx);
+    };
 
     function element(id = "") {
       return {
@@ -162,7 +195,7 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
       ctx.window = ctx;
       ctx.globalThis = ctx;
       vm.createContext(ctx);
-      vm.runInContext(bundle, ctx);
+      runBundle(ctx);
       return ctx;
     }
 
@@ -196,6 +229,20 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
   });
 
   it("mobile settings and terminal read the migrated value", () => {
+    // One compiled script per product file so coverage attributes each
+    // file's lines to its real disk path.
+    const settingsScript = new vm.Script(
+      readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8"),
+      { filename: fileURLToPath(new URL("./mobile/settings.js", import.meta.url)) },
+    );
+    const coreScript = new vm.Script(
+      readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"),
+      { filename: fileURLToPath(new URL("./shared/core.js", import.meta.url)) },
+    );
+    const optionsScript = new vm.Script(
+      readFileSync(new URL("./shared/options.js", import.meta.url), "utf8"),
+      { filename: fileURLToPath(new URL("./shared/options.js", import.meta.url)) },
+    );
     const settingsSource = readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8");
     assert.match(settingsSource, /resolveTerminalCoreChoice\(/);
     assert.match(settingsSource, /parsed\.terminalCoreGhosttyMigrated = true/);
@@ -226,9 +273,9 @@ describe("terminal core default (issue: inline images placeholder on wterm)", ()
     ctx.window = ctx;
     ctx.globalThis = ctx;
     vm.createContext(ctx);
-    vm.runInContext(readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"), ctx);
-    vm.runInContext(readFileSync(new URL("./shared/options.js", import.meta.url), "utf8"), ctx);
-    vm.runInContext(readFileSync(new URL("./mobile/settings.js", import.meta.url), "utf8"), ctx);
+    coreScript.runInContext(ctx);
+    optionsScript.runInContext(ctx);
+    settingsScript.runInContext(ctx);
 
     const mobileSettings = vm.runInContext(
       "HerdrMobileSettings.create({ api: () => Promise.resolve({}), applyTheme: () => {}, escapeHtml: (v) => String(v), inputAttrs: () => \"\", localStorage: { getItem: () => null, setItem: () => {} }, state: {} })",

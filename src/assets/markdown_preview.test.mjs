@@ -1,9 +1,16 @@
 import { describe, it } from "node:test";
 import { equal, ok, match } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("./shared/markdown_preview.js", import.meta.url), "utf8");
+// One compiled script per product file keeps node coverage attributed to
+// the real disk path instead of pooling inside this test file.
+const MARKDOWN_PREVIEW_PATH = fileURLToPath(new URL("./shared/markdown_preview.js", import.meta.url));
+const markdownPreviewScript = new vm.Script(readFileSync(MARKDOWN_PREVIEW_PATH, "utf8"), {
+  filename: MARKDOWN_PREVIEW_PATH,
+});
 
 function loadModule() {
   const window = {};
@@ -17,7 +24,7 @@ function loadModule() {
   const ctx = { window, document, localStorage, matchMedia: undefined, console };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(source, ctx);
+  markdownPreviewScript.runInContext(ctx);
   return ctx.window.HerdrMarkdownPreview;
 }
 
@@ -48,7 +55,7 @@ function loadRenderModule(parseImpl) {
   ctx = { window: null, document, localStorage: { getItem() { return null; } }, console };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(source, ctx);
+  markdownPreviewScript.runInContext(ctx);
   return { mod: ctx.window.HerdrMarkdownPreview, scripts, links };
 }
 

@@ -19,7 +19,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// Compiled once so coverage attributes desktop/notes.js lines to the real file.
+const DESKTOP_NOTES_PATH = fileURLToPath(new URL("./desktop/notes.js", import.meta.url));
+const desktopNotesScript = new vm.Script(readFileSync(DESKTOP_NOTES_PATH, "utf8"), {
+  filename: DESKTOP_NOTES_PATH,
+});
 
 // Mirror of the server's language table (src/notes.rs NOTE_LANGUAGES):
 // value, label, editor extension. Tests exercise the client against the
@@ -278,8 +285,7 @@ function loadPanel(document, ctxOverrides = {}) {
   ctx.__calls = calls;
   ctx.window = ctx;
   ctx.globalThis = ctx;
-  const source = readFileSync(new URL("./desktop/notes.js", import.meta.url), "utf8");
-  vm.runInContext(source, vm.createContext(ctx));
+  desktopNotesScript.runInContext(vm.createContext(ctx));
   return ctx;
 }
 

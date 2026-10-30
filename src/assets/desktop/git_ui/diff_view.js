@@ -1,5 +1,5 @@
 (function () {
-  function createGitUiDiffView({state, active, currentMode, activeToggleKind, compareRefLabel, isNoGitRepositoryView, diffFile, diffFileKey, diffFileLineCount, diffLineCount, largeDiffLineLimit, loadedLargeDiffPreviewLimit, previewDiffFile, diffLayoutMode, hashText, esc, arg, canSearchDiff, diffSearchMatchCount, LARGE_FILE_DIFF_LINE_LIMIT, titleWithGitShortcut, renderDiffConflictResolutionButtons, renderSideEditor, ensureBlame, renderChunk, stashCount, canOpenStashView, section, commitPreviewSection, stashListHtml, stashFileSection, renderGitViewTabs, hasStagedChanges, filterFiles, sideFileCount, renderWorktreeActions, renderGitLocationSelector, renderDirContextMenu, gitCwdMatchesWorkspace, compactPath, appRefreshIconButton}) {
+  function createGitUiDiffView({state, active, currentMode, activeToggleKind, compareRefLabel, isNoGitRepositoryView, diffFile, diffFileKey, diffFileLineCount, diffLineCount, largeDiffLineLimit, loadedLargeDiffPreviewLimit, previewDiffFile, diffLayoutMode, hashText, esc, arg, canSearchDiff, diffSearchMatchCount, LARGE_FILE_DIFF_LINE_LIMIT, titleWithGitShortcut, renderDiffConflictResolutionButtons, renderSideEditor, ensureBlame, renderChunk, stashCount, canOpenStashView, section, commitPreviewSection, stashListHtml, stashFileSection, renderGitViewTabs, hasStagedChanges, filterFiles, sideFileCount, renderWorktreeActions, renderDirContextMenu, appRefreshIconButton}) {
     function canMutateDiff() {
       const view = active() || {};
       if (view.tab === "stash") return false;
@@ -109,23 +109,16 @@
       const refreshButton = appRefreshIconButton({ className: "git-ui-refresh-icon", title: titleWithGitShortcut("Refresh", "refresh"), label: titleWithGitShortcut("Refresh Git state", "refresh"), spinning: !!view.refreshAnimating, onclick: "HerdrGitUi.refreshWithSpin()" });
       const busy = view.mutating ? `<span class="git-ui-busy"><span class="git-ui-busy-spinner"></span>${esc(view.mutatingLabel || "Working...")}</span>` : "";
       const statusIcon = `<span class="git-ui-status-icon git-ui-status-${esc(String(s.state || "closed").replace(/[^a-z0-9_-]/gi, "-"))}" title="${esc(s.state || "closed")}" aria-label="${esc(s.state || "closed")}"></span>`;
-      const location = cleanupOnly ? "" : renderGitLocationSelector({ s, esc, cwd: view.cwd, workspaceCwd: view.workspaceCwd, worktreeName: view.title });
-      return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git ${statusIcon}</div><div class="git-ui-title-actions">${busy}${backButton}${returnToCurrentChanges}${refreshButton}</div></div><div class="git-ui-subtitle">${location}</div></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, typeof activeToggleKind === "function" ? activeToggleKind() : view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
+      return `<aside class="git-ui-side" onscroll="HerdrGitUi.sideScroll(this)"><div class="git-ui-head"><div class="git-ui-head-main"><div class="git-ui-title-row"><div class="git-ui-title">Git ${statusIcon}</div><div class="git-ui-title-actions">${busy}${backButton}${returnToCurrentChanges}${refreshButton}</div></div></div></div>${error}<div class="git-ui-toolbar git-ui-view-toolbar">${renderGitViewTabs(tabs, typeof activeToggleKind === "function" ? activeToggleKind() : view.tab)}</div>${actions}${fileList}${sideBottom}</aside>`;
     }
 
     function renderDiffLayoutSideToggle(view) {
       const layout = diffLayoutMode();
       const cleanupOnly = isNoGitRepositoryView(view);
       const label = view && view.file ? "File view" : "Diff view";
-      const cwd = String((view && view.cwd) || "");
-      const titleHint = "Change Git folder";
-      const pathTitle = `<button class="git-ui-path-title" type="button" title="${esc(titleHint)}\n${esc(cwd)}" aria-label="${esc(titleHint)}" onclick="HerdrGitUi.openCwdPicker()">${esc(compactPath(cwd))}</button>`;
-      const returnToWorkspace = !gitCwdMatchesWorkspace(view)
-        ? `<button class="git-ui-refresh-icon git-ui-return-cwd-icon" type="button" title="Return Git to workspace folder" aria-label="Return Git to workspace folder" onclick="HerdrGitUi.returnToWorkspaceCwd()"><span></span></button>`
-        : "";
-      const head = `<div class="git-ui-side-bottom-head">${pathTitle}${returnToWorkspace}</div>`;
-      if (cleanupOnly) return `<div class="git-ui-side-bottom">${head}</div>`;
-      return `<div class="git-ui-side-bottom">${head}<div class="git-ui-toolbar-title">${esc(label)}</div><div class="git-ui-view-toggle-group git-ui-diff-layout-toggle" role="group" aria-label="Diff layout"><button class="git-ui-view-toggle ${layout === "side-by-side" ? "active" : ""}" title="Show side-by-side diff" onclick="HerdrGitUi.setDiffLayout('side-by-side')">Side</button><button class="git-ui-view-toggle ${layout === "unified" ? "active" : ""}" title="Show unified diff" onclick="HerdrGitUi.setDiffLayout('unified')">Unified</button></div></div>`;
+      // Folder switching lives in the location bar now (plan 2b).
+      if (cleanupOnly) return `<div class="git-ui-side-bottom"></div>`;
+      return `<div class="git-ui-side-bottom"><div class="git-ui-toolbar-title">${esc(label)}</div><div class="git-ui-view-toggle-group git-ui-diff-layout-toggle" role="group" aria-label="Diff layout"><button class="git-ui-view-toggle ${layout === "side-by-side" ? "active" : ""}" title="Show side-by-side diff" onclick="HerdrGitUi.setDiffLayout('side-by-side')">Side</button><button class="git-ui-view-toggle ${layout === "unified" ? "active" : ""}" title="Show unified diff" onclick="HerdrGitUi.setDiffLayout('unified')">Unified</button></div></div>`;
     }
 
     function renderFileToolbar(activeTab) {

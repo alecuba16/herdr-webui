@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import { equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { TextDecoder, TextEncoder } from "node:util";
 
@@ -56,7 +57,11 @@ function wheelEvent(deltaY, extra = {}) {
 }
 
 async function createAdapter({ normalBuffer = true, wheelReports = false, rows = 24, cols = 80, core, inputGate = null } = {}) {
-  const source = readFileSync(new URL("./shared/terminal_adapter.js", import.meta.url), "utf8");
+  // Compiled once per product file so coverage attributes to the real path.
+  if (!createAdapter.script) {
+    const adapterPath = fileURLToPath(new URL("./shared/terminal_adapter.js", import.meta.url));
+    createAdapter.script = new vm.Script(readFileSync(adapterPath, "utf8"), { filename: adapterPath });
+  }
   const textarea = inputGate
     ? {
         readOnly: false,
@@ -105,7 +110,7 @@ async function createAdapter({ normalBuffer = true, wheelReports = false, rows =
   };
   ctx.window = ctx;
   vm.createContext(ctx);
-  vm.runInContext(source, ctx);
+  createAdapter.script.runInContext(ctx);
   const adapter = await ctx.HerdrTerminalRenderer.create(container, {
     rows,
     cols,

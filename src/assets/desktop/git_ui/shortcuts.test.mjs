@@ -1,7 +1,14 @@
 import { describe, it } from "node:test";
 import { deepEqual, equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// Compiled once so coverage attributes shortcuts.js lines to the real file.
+const SHORTCUTS_PATH = fileURLToPath(new URL("./shortcuts.js", import.meta.url));
+const shortcutsScript = new vm.Script(readFileSync(SHORTCUTS_PATH, "utf8"), {
+  filename: SHORTCUTS_PATH,
+});
 
 // Focused harness for the git_ui shortcuts Esc contract. The window-capture
 // handler arbitrates Escape itself: modal states close first, the navigation
@@ -40,8 +47,7 @@ function makeContext() {
 }
 
 function loadShortcuts(ctx) {
-  const source = readFileSync(new URL("./shortcuts.js", import.meta.url), "utf8");
-  vm.runInContext(source, ctx);
+  shortcutsScript.runInContext(ctx);
 }
 
 function keyEvent(overrides = {}) {
@@ -290,5 +296,57 @@ describe("git_ui shortcuts: Escape contract", () => {
     const after = keyEvent({ key: "Enter", code: "Enter", target: { closest: () => null } });
     shortcuts.handleKeydown(after);
     equal(after._stopped, undefined, "released once the active tab is the terminal");
+  });
+
+  it("yields the keyboard to an open location-bar popover", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const { shortcuts, calls } = makeShortcuts(ctx);
+    // The bar's popovers render inside the header, outside the git roots.
+    // While one is up the drawer must not consume Escape (which would
+    // navigate or hide the drawer instead of closing the popover) nor
+    // Enter (which drives the new-branch field).
+    let popover = null;
+    ctx.document.querySelector = (selector) => (
+      selector === ".location-bar-branch-popover" || selector === ".location-bar-worktree-popover"
+        ? popover
+        : null
+    );
+
+    popover = {};
+    const escWhileOpen = keyEvent();
+    shortcuts.handleKeydown(escWhileOpen);
+    equal(escWhileOpen._stopped, undefined, "Escape reaches the bar's document-capture handler");
+    equal(calls.hides, 0, "drawer keeps its state while the popover owns the keyboard");
+
+    popover = null;
+    const escAfterClose = keyEvent();
+    shortcuts.handleKeydown(escAfterClose);
+    ok(escAfterClose._stopped, "drawer owns Escape again once the popover is gone");
+  });
+
+  it("the prefix-armed V key opens the bar branch popover with no event", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const { shortcuts, state } = makeShortcuts(ctx);
+    // The action forwards no event so the bar falls back to its rendered
+    // chip; this stub records the call shape the bar receives.
+    const calls = [];
+    ctx.window.HerdrLocationBar = {
+      openBranchPopover(arg) { calls.push(arg); },
+    };
+
+    // Arm the shortcut prefix the way a real Ctrl+B press does.
+    shortcuts.handleKeydown(keyEvent({
+      key: "b",
+      code: "KeyB",
+      ctrlKey: true,
+      target: { closest: () => null },
+    }));
+    equal(calls.length, 0, "the prefix press itself opens nothing");
+
+    shortcuts.handleKeydown(keyEvent({ key: "v", code: "KeyV", target: { closest: () => null } }));
+    equal(calls.length, 1, "prefix-armed V dispatched to the branch action");
+    equal(calls[0], null, "the bar receives no event and must use its chip fallback");
   });
 });

@@ -1,0 +1,176 @@
+/* Location bar: the folder / worktree / branch strip above the workspace
+   panes. The chips reuse the git-ui chip classes (git-ui-branch-chip and
+   git-ui-selector-separator) so the chip look comes from the git-ui
+   stylesheet; this file only owns the thin container rule and the bar
+   popover anchoring. The bar is a shell surface: it renders on every
+   selected workspace with a path and must not grow when chips overflow. */
+
+.location-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2, var(--panel));
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+/* [hidden] must win over the flex display above (same trap as the pane
+   tab strip). */
+.location-bar[hidden] {
+  display: none;
+}
+
+/* Empty state (no workspace open): the Open workspace button keeps the
+   strip height and borrows the chip control language (border, hover
+   accent) so the empty bar reads as one of the bar's controls, not
+   a disabled placeholder. The icon mask rules below apply unchanged. */
+.location-bar .location-bar-empty {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.location-bar .location-bar-empty:hover {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+.location-bar .location-bar-empty:active {
+  border-color: var(--accent);
+  transform: translateY(1px);
+}
+
+.location-bar .location-bar-empty:focus-visible {
+  box-shadow: var(--focus-ring, 0 0 0 2px rgba(56, 139, 253, 0.22));
+  outline: none;
+}
+
+/* Chip icons: one mask per chip kind (folder / link / git) so each chip
+   reads without its title. Mask color follows the chip text. */
+.location-bar .location-bar-chip-icon {
+  background: currentColor;
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 13px;
+  margin-right: 5px;
+  mask: var(--location-bar-icon-src) center / contain no-repeat;
+  width: 13px;
+}
+
+.location-bar .location-bar-chip-icon-path {
+  --location-bar-icon-src: url("/assets/icons/folder.svg");
+}
+
+.location-bar .location-bar-chip-icon-worktree {
+  --location-bar-icon-src: url("/assets/icons/link.svg");
+}
+
+.location-bar .location-bar-chip-icon-branch {
+  --location-bar-icon-src: url("/assets/icons/git.svg");
+}
+
+.location-bar .git-ui-branch-chip {
+  flex: 0 0 auto;
+}
+
+.location-bar .location-bar-path-chip {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* Enabled chips answer hover and press; the drawer's chip class ships
+   none, and the bar must not inherit a flat control. */
+.location-bar .git-ui-branch-chip:not([disabled]):hover {
+  border-color: var(--accent);
+  filter: brightness(1.15);
+}
+
+.location-bar .git-ui-branch-chip:not([disabled]):active {
+  filter: brightness(0.9);
+}
+
+.location-bar .location-bar-branch-chip[disabled] {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+/* Branch popover: rows and filter reuse the drawer's git-ui rules; only
+   the anchoring is bar-owned. Fixed instead of the drawer's absolute
+   because the bar scrolls horizontally and would clip an absolute child.
+   Both selectors carry two classes so this beats the lazy-loaded
+   .git-ui-branch-list rule no matter which stylesheet lands last. */
+.location-bar .location-bar-branch-popover {
+  bottom: auto;
+  max-height: 60vh;
+  position: fixed;
+  right: auto;
+}
+
+/* Worktree popover: same anchoring contract as the branch popover. */
+.location-bar .location-bar-worktree-popover {
+  bottom: auto;
+  max-height: 60vh;
+  position: fixed;
+  right: auto;
+}
+
+.location-bar-branch-popover .git-ui-branch-list-scroll {
+  min-height: 96px;
+}
+
+/* New-branch row above the filter: the same inline-field pattern the
+   Git drawer uses for its scan and cwd inputs. */
+.location-bar-branch-popover .git-ui-branch-list-new {
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 0;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.location-bar-branch-popover .git-ui-branch-list-new span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.location-bar-branch-popover .git-ui-branch-list-new .git-ui-inline-field {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.location-bar-branch-popover .git-ui-branch-list-new input {
+  background: var(--panel2);
+  border: 1px solid var(--border2);
+  border-radius: 7px;
+  color: var(--fg);
+  flex: 1 1 auto;
+  font: 12px var(--font);
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.location-bar-branch-popover .git-ui-branch-list-new .git-ui-btn {
+  flex: 0 0 auto;
+  width: auto;
+}

@@ -1452,4 +1452,228 @@ mod tests {
         }
         let _ = fs::remove_dir_all(&home);
     }
+
+    #[test]
+    fn mac_sign_identity_env_override_wins_over_keychain() {
+        let _guard = env_lock();
+        let original = std::env::var_os("HERDR_WEB_CODESIGN_IDENTITY");
+        // A non-empty override is returned verbatim without touching the
+        // keychain.
+        std::env::set_var("HERDR_WEB_CODESIGN_IDENTITY", "env-identity");
+        assert_eq!(mac_sign_identity().as_deref(), Some("env-identity"));
+        // An empty override falls through to the keychain query path.
+        std::env::set_var("HERDR_WEB_CODESIGN_IDENTITY", "");
+        let _ = mac_sign_identity();
+        match original {
+            Some(value) => std::env::set_var("HERDR_WEB_CODESIGN_IDENTITY", value),
+            None => std::env::remove_var("HERDR_WEB_CODESIGN_IDENTITY"),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sign_installed_mac_binary_fails_cleanly_on_missing_file() {
+        let _guard = env_lock();
+        let original = std::env::var_os("HERDR_WEB_CODESIGN_IDENTITY");
+        std::env::set_var("HERDR_WEB_CODESIGN_IDENTITY", "env-identity");
+        let missing = std::env::temp_dir().join("herdr-webui-codesign-missing-does-not-exist");
+        assert!(!missing.exists());
+        // codesign on a nonexistent path fails; the re-sign is best-effort
+        // so the outcome is a skip, not a panic or an error.
+        assert!(!sign_installed_mac_binary(&missing));
+        match original {
+            Some(value) => std::env::set_var("HERDR_WEB_CODESIGN_IDENTITY", value),
+            None => std::env::remove_var("HERDR_WEB_CODESIGN_IDENTITY"),
+        }
+    }
+
+    #[test]
+    fn service_verbose_reads_env_flag_forms() {
+        let _guard = env_lock();
+        let original = std::env::var_os("HERDR_WEB_VERBOSE");
+        std::env::remove_var("HERDR_WEB_VERBOSE");
+        assert!(!service_verbose());
+        for value in ["1", "true", "yes", "on"] {
+            std::env::set_var("HERDR_WEB_VERBOSE", value);
+            assert!(service_verbose(), "{value} must count as verbose");
+        }
+        std::env::set_var("HERDR_WEB_VERBOSE", "off");
+        assert!(!service_verbose(), "unlisted values are not verbose");
+        match original {
+            Some(value) => std::env::set_var("HERDR_WEB_VERBOSE", value),
+            None => std::env::remove_var("HERDR_WEB_VERBOSE"),
+        }
+    }
+
+    #[test]
+    fn mac_domain_and_service_target_use_uid() {
+        let domain = mac_domain();
+        assert!(domain.starts_with("gui/"), "domain is gui/<uid>: {domain}");
+        assert!(
+            domain[4..].chars().all(|c| c.is_ascii_digit()),
+            "uid is numeric: {domain}"
+        );
+        assert_eq!(mac_service_target(), format!("{}/{INSTALL_LABEL}", domain));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_macos_user_context_passes_without_sudo() {
+        // The test binary never runs as root, so the guard must pass.
+        assert!(unsafe { libc_geteuid() } != 0, "tests must not run as root");
+        ensure_macos_user_context().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_path_follows_symlink_chain_and_bounds_loops() {
+        let base = std::env::temp_dir().join(format!(
+            "herdr-webui-resolve-path-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        // Plain path: unchanged (parent canonicalized, name kept). The
+        // parent's canonical form differs from the literal temp path on
+        // macOS runners (/var/folders -> /private/var/folders), so pin
+        // against the canonicalized parent joined with the name.
+        let plain = base.join("plain");
+        let plain_expected = fs::canonicalize(&base).unwrap().join("plain");
+        assert_eq!(resolve_path(&plain), plain_expected);
+
+        // Absolute symlink: resolved to its target. The link stores the
+        // raw spelling, so the walk lands on it verbatim (on CI runners
+        // /var/folders vs /private/var/folders differs, and that exact
+        // spelling is what the function must return).
+        let target = base.join("target");
+        fs::write(&target, "x").unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(resolve_path(&link), target);
+
+        // Relative symlink: resolved against the link's canonicalized
+        // parent, so the landed spelling carries the canonical prefix.
+        let rel = base.join("rel");
+        std::os::unix::fs::symlink("target", &rel).unwrap();
+        assert_eq!(
+            resolve_path(&rel),
+            fs::canonicalize(&base).unwrap().join("target")
+        );
+
+        // A dangling link keeps pointing at the (missing) target so the
+        // copy recreates the destination instead of clobbering the link.
+        // The stored absolute target echoes back verbatim, raw spelling.
+        let dangling = base.join("dangling");
+        let missing_target = base.join("missing");
+        std::os::unix::fs::symlink(&missing_target, &dangling).unwrap();
+        assert_eq!(resolve_path(&dangling), missing_target);
+
+        // A link loop must not spin: the bound stops the walk. The
+        // stored targets are absolute raw spellings, so the landing
+        // point is one of the raw spellings.
+        let loop_a = base.join("loop-a");
+        let loop_b = base.join("loop-b");
+        std::os::unix::fs::symlink(&loop_b, &loop_a).unwrap();
+        std::os::unix::fs::symlink(&loop_a, &loop_b).unwrap();
+        // Either link is a valid stopping point; the call must terminate.
+        let resolved = resolve_path(&loop_a);
+        assert!(resolved == loop_a || resolved == loop_b);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_file_compares_inode_and_rejects_different_files() {
+        let base =
+            std::env::temp_dir().join(format!("herdr-webui-same-file-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let a = base.join("a");
+        let b = base.join("b");
+        fs::write(&a, "same").unwrap();
+        fs::write(&b, "same").unwrap();
+
+        // A hard link shares the inode: same file.
+        let link = base.join("link");
+        fs::hard_link(&a, &link).unwrap();
+        assert!(same_file(&a, &link));
+        // Distinct files with identical bytes are NOT the same file.
+        assert!(!same_file(&a, &b));
+        // A missing target is never the same file.
+        assert!(!same_file(&a, &base.join("missing")));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn mac_plist_tls_variants_pin_https_mode_and_files() {
+        let _guard = env_lock();
+        let original_home = std::env::var_os("HOME");
+        let home =
+            std::env::temp_dir().join(format!("herdr-webui-plist-tls-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        std::env::set_var("HOME", &home);
+
+        let mk_config = |mode: TlsMode, cert: Option<PathBuf>, key: Option<PathBuf>| WebConfig {
+            bind: "127.0.0.1:8787".parse().unwrap(),
+            bind_explicit: false,
+            session: None,
+            api_socket: None,
+            client_socket: None,
+            backend_mode: None,
+            tls: crate::TlsConfig {
+                mode,
+                cert_path: cert,
+                key_path: key,
+            },
+            tls_mode_explicit: true,
+        };
+
+        // Off: no --https flag at all.
+        let off = mk_config(TlsMode::Off, None, None);
+        let plist = mac_plist_xml(&off, Path::new("/tmp/herdr-webui")).unwrap();
+        assert!(!plist.contains("--https"), "off must not pass --https");
+
+        // Auto with no files: --https auto only.
+        let auto = mk_config(TlsMode::Auto, None, None);
+        let plist = mac_plist_xml(&auto, Path::new("/tmp/herdr-webui")).unwrap();
+        assert!(plist.contains("--https"));
+        assert!(plist.contains("<string>auto</string>"));
+
+        // SelfSigned: --https self-signed only.
+        let self_signed = mk_config(TlsMode::SelfSigned, None, None);
+        let plist = mac_plist_xml(&self_signed, Path::new("/tmp/herdr-webui")).unwrap();
+        assert!(plist.contains("<string>self-signed</string>"));
+
+        // Files: cert and key paths are escaped into the args.
+        let files = mk_config(
+            TlsMode::Files,
+            Some(PathBuf::from("/tmp/a&b.pem")),
+            Some(PathBuf::from("/tmp/k<b.pem")),
+        );
+        let plist = mac_plist_xml(&files, Path::new("/tmp/herdr-webui")).unwrap();
+        assert!(plist.contains("--tls-cert"));
+        assert!(plist.contains("/tmp/a&amp;b.pem"));
+        assert!(plist.contains("--tls-key"));
+        assert!(plist.contains("/tmp/k&lt;b.pem"));
+
+        // Both: --https both plus the file args.
+        let both = mk_config(
+            TlsMode::Both,
+            Some(PathBuf::from("/tmp/c.pem")),
+            Some(PathBuf::from("/tmp/k2.pem")),
+        );
+        let plist = mac_plist_xml(&both, Path::new("/tmp/herdr-webui")).unwrap();
+        assert!(plist.contains("<string>both</string>"));
+        assert!(plist.contains("--tls-cert"));
+
+        match original_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = fs::remove_dir_all(&home);
+    }
 }

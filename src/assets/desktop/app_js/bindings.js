@@ -737,11 +737,6 @@ function commitTreeIndentPx() {
   render();
 }
 registerSettingsCommit("optTreeIndentPx", commitTreeIndentPx, () => options.treeIndentPx);
-el("optFileBrowserAllowParent").onchange = () => {
-  options.fileBrowserAllowParent = el("optFileBrowserAllowParent").checked;
-  saveOptions();
-  applyOptions();
-};
 el("optFileBrowserGitStatus").onchange = () => {
   options.fileBrowserGitStatus = el("optFileBrowserGitStatus").checked;
   saveOptions();

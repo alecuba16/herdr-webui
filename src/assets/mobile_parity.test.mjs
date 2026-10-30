@@ -3,10 +3,20 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const attentionSource = readFileSync(new URL("./shared/attention.js", import.meta.url), "utf8");
 const optionsSource = readFileSync(new URL("./shared/options.js", import.meta.url), "utf8");
+
+// Compiled once per product file so coverage attributes to the real paths.
+const readScript = (path) => {
+  const realPath = fileURLToPath(new URL(path, import.meta.url));
+  return new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath });
+};
+const attentionScript = readScript("./shared/attention.js");
+const optionsScript = readScript("./shared/options.js");
+let eventsScript = null;
 
 function context({ options = {}, storage = new Map() } = {}) {
   const sandbox = {
@@ -34,8 +44,8 @@ function context({ options = {}, storage = new Map() } = {}) {
   if (Object.keys(options).length) {
     sandbox.localStorage.setItem("herdr-web-options", JSON.stringify(options));
   }
-  vm.runInContext(optionsSource, ctx);
-  vm.runInContext(attentionSource, ctx);
+  optionsScript.runInContext(ctx);
+  attentionScript.runInContext(ctx);
   return ctx;
 }
 
@@ -459,6 +469,10 @@ describe("mobile parity feature guards", () => {
 
 describe("mobile events module", () => {
   const eventsSource = readFileSync(new URL("./mobile/events.js", import.meta.url), "utf8");
+  // Compiled once so coverage attributes events.js lines to the real file.
+  if (!eventsScript) {
+    eventsScript = readScript("./mobile/events.js");
+  }
 
   function loadEventsModule({ onRefreshDelays = [] } = {}) {
     const pendingTimers = [];
@@ -481,7 +495,7 @@ describe("mobile events module", () => {
       close() { if (this.onclose) this.onclose(); }
       send() {}
     }
-    vm.runInContext(eventsSource, vm.createContext(sandbox), { filename: "events.js" });
+    eventsScript.runInContext(vm.createContext(sandbox));
     const refreshCalls = [];
     const events = sandbox.HerdrMobileEventsModule.create({
       document: sandbox.document,
@@ -542,7 +556,7 @@ describe("mobile events module", () => {
       close() {}
       send() {}
     }
-    vm.runInContext(eventsSource, vm.createContext(sandbox), { filename: "events.js" });
+    eventsScript.runInContext(vm.createContext(sandbox));
     const events = sandbox.HerdrMobileEventsModule.create({
       document: sandbox.document,
       globalThisWebSocket: FakeWebSocket,

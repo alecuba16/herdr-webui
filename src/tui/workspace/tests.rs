@@ -886,3 +886,31 @@ fn focus_workspace_by_id_ignores_empty_ids() {
     app.focus_workspace_by_id("");
     assert_eq!(app.selected_workspace, before);
 }
+
+#[test]
+fn worktree_rows_derive_linked_from_source_repo_root() {
+    // The builtin row flag is true for every checkout; the overlay
+    // must derive main-vs-linked from the row path vs the source
+    // repo_root the reply reports.
+    let response = json!({
+        "source": {"repo_root": "/repo", "repo_name": "repo"},
+        "worktrees": [
+            {"path": "/repo", "branch": "main", "is_linked_worktree": true},
+            {"path": "/repo-lane", "branch": "feature", "is_linked_worktree": true}
+        ]
+    });
+    let rows = worktree_rows_from_response(&response);
+    assert_eq!(rows.len(), 2);
+    assert!(!rows[0].is_linked, "row at repo_root renders main");
+    assert!(rows[1].is_linked, "row away from repo_root renders linked");
+
+    // Without a source envelope the raw row flag is the only signal.
+    let bare = json!({
+        "worktrees": [
+            {"path": "/repo", "branch": "main", "is_linked_worktree": true}
+        ]
+    });
+    let rows = worktree_rows_from_response(&bare);
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].is_linked, "no envelope trusts the row flag");
+}

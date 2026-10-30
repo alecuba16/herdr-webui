@@ -23,10 +23,11 @@ use crate::terminal_text::{self, StripCarriageReturn};
 use crate::tui::web_api::{default_web_api_port, WebApiClient};
 pub use keys::{PrefixState, Shortcut};
 use lens::{refusal_reason_copy, LensGate, LensState};
+use model::{parse_worktree_list_response, same_checkout_path, value_str, value_u64};
 pub use model::{
     snapshot_summary, SidebarFocus, TuiAgent, TuiMode, TuiPane, TuiSnapshot, TuiTab, TuiWorkspace,
+    TuiWorktreeStamp,
 };
-use model::{value_str, value_u64};
 use panels::files::{content_rows, content_search, run_content_search, ContentRow, SearchKind};
 use panels::git::{ConflictAction, ConflictResolveMode};
 use panels::{FileExplorer, GitPanel, GitView};
@@ -67,6 +68,13 @@ const PANE_HISTORY_MAX_LINES: usize = 40_000;
 /// loop tick (the event loop polls keys every 50ms).
 pub(crate) const TAIL_REFRESH_INTERVAL: Duration = Duration::from_millis(200);
 
+/// How long a cached `worktree.list` reply stays fresh. Same value as
+/// the webui wrapper's worktree cache: long enough that the default
+/// 1s snapshot refresh hits the cache between user actions, short
+/// enough that a checkout created elsewhere appears without a manual
+/// refresh.
+const STAMP_CACHE_TTL: Duration = Duration::from_secs(2);
+
 /// Max lines the Help overlay can scroll down: total rows minus whatever
 /// fits in the 50-line centered box (title + border included).
 fn help_max_scroll() -> usize {
@@ -105,6 +113,9 @@ pub(crate) enum FooterContext {
     SettingsOverlay,
     /// Worktree browser overlay: j/k or arrows move, Enter opens, Esc closes.
     WorktreeList,
+    /// Branch picker overlay (prefix `v`): type to filter, Enter
+    /// switches/reroutes/creates, Esc closes.
+    BranchPicker,
     /// Search palette overlay (prefix `/`): type to filter, Enter
     /// commits/navigates, Esc closes.
     SearchPalette,
@@ -146,7 +157,10 @@ impl FooterContext {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
             Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
             Self::SettingsOverlay => " t theme · Esc closes ",
-            Self::WorktreeList => " Enter opens/enters · o opens folder · h parent · j/k moves · type filters · Esc closes ",
+            Self::WorktreeList => " Enter opens/enters · o opens folder · c create worktree · h parent · j/k moves · type filters · Esc closes ",
+            Self::BranchPicker => {
+                " Enter switch/worktree · j/k moves · type filters or creates · Esc closes "
+            }
             Self::SearchPalette => {
                 " Enter commits/navigates · j/k moves · Esc closes · Ctrl+B ? help "
             }
@@ -219,7 +233,8 @@ impl FooterContext {
             Self::ConfirmQuit => " y quit · n/Esc cancel ",
             Self::HelpOverlay => " ? closes help · type filters · j/k scrolls ",
             Self::SettingsOverlay => " t theme · Esc closes ",
-            Self::WorktreeList => " Enter opens/enters · o opens folder · h parent · j/k moves · type filters · Esc closes ",
+            Self::WorktreeList => " Enter opens/enters · o opens folder · c create worktree · h parent · j/k moves · type filters · Esc closes ",
+            Self::BranchPicker => " Enter switch/worktree · j/k moves · type filters or creates · Esc closes ",
             Self::SearchPalette => " Enter commits/navigates · j/k moves · Esc closes · Ctrl+B ? help ",
             Self::CommitInput => " Enter commit · Esc cancel · Ctrl+B ? help ",
             Self::PromptInput(PromptKind::ReplaceInFile) => {
@@ -325,6 +340,15 @@ pub struct TuiApp {
     /// round-trip left, so the footer can animate a spinner once the wait
     /// outgrows a normal sub-500ms reply. Consumed by `poll_refresh`.
     pub(crate) refresh_inflight: Option<RefreshInflight>,
+    /// In-flight `worktree.list` fetches, at most one per workspace
+    /// cwd. Drained by `poll_refresh` together with the snapshot
+    /// worker so a dead backend cannot pile up stamp workers.
+    pub(crate) stamp_inflight: Vec<StampInflight>,
+    /// Fresh `worktree.list` replies per cwd, served for
+    /// `STAMP_CACHE_TTL` so the default 1s refresh cadence does not
+    /// re-run git on every tick (the same trade the webui wrapper
+    /// made with its worktree cache).
+    pub(crate) stamp_cache: std::collections::HashMap<String, StampCacheEntry>,
     pub last_refresh: Option<Instant>,
     /// When the pane tail was last polled outside the snapshot refresh
     /// (live preview loop, `TAIL_REFRESH_INTERVAL` cadence).
@@ -355,6 +379,16 @@ pub struct TuiApp {
     /// it. The webui has one "New workspace" modal with a directory
     /// picker; the TUI reuses the browser rows as that picker.
     pub worktree_pick_workspace: bool,
+    /// Branch picker overlay state (desktop branch popover, prefix
+    /// `v`): local branches of the selected workspace repo, cursor,
+    /// and type-to-filter query.
+    pub branch_picker_rows: Vec<crate::tui::panels::git::GitBranchEntry>,
+    pub branch_picker_selected: usize,
+    pub branch_picker_filter: String,
+    /// Repo the branch picker last loaded: kept separate from the
+    /// workspace cwd so the overlay can spot a stale list after the
+    /// selection moves (and show a folder that no longer matches).
+    pub branch_picker_root: String,
     /// Rebase upstream typed into the RebaseUpstream prompt; consumed by
     /// the follow-up typed confirm (webui rebase modal two-step).
     pub rebase_pending_upstream: Option<String>,
@@ -546,6 +580,33 @@ pub(crate) struct RefreshInflight {
     pub(crate) receiver: std::sync::mpsc::Receiver<Result<(Value, Value), BackendClientError>>,
 }
 
+/// One in-flight `worktree.list` fetch for a workspace cwd: the cwd
+/// the reply stamps and the channel end the reply lands on. One
+/// worker per cwd, never per tick. Manual Debug mirrors the snapshot
+/// worker: the channel end is opaque and must not leak internals.
+pub(crate) struct StampInflight {
+    cwd: String,
+    receiver: std::sync::mpsc::Receiver<Result<Value, BackendClientError>>,
+}
+
+impl std::fmt::Debug for StampInflight {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StampInflight")
+            .field("cwd", &self.cwd)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Cached `worktree.list` reply for one cwd. The 2s TTL mirrors the
+/// webui wrapper's worktree cache: consecutive refreshes hit the
+/// cache while a user stares at the list, but a fresh checkout made
+/// elsewhere shows up within a couple of seconds.
+#[derive(Clone, Debug)]
+pub(crate) struct StampCacheEntry {
+    fetched_at: Instant,
+    response: Value,
+}
+
 impl std::fmt::Debug for RefreshInflight {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // TuiApp derives Debug; the channel end is opaque, the started
@@ -609,6 +670,8 @@ impl TuiApp {
             status: "connecting".to_string(),
             error: None,
             refresh_inflight: None,
+            stamp_inflight: Vec::new(),
+            stamp_cache: std::collections::HashMap::new(),
             last_refresh: None,
             last_tail_refresh: None,
             refresh_interval,
@@ -623,6 +686,10 @@ impl TuiApp {
             worktree_root: String::new(),
             worktree_folder_rows: Vec::new(),
             worktree_pick_workspace: false,
+            branch_picker_rows: Vec::new(),
+            branch_picker_selected: 0,
+            branch_picker_filter: String::new(),
+            branch_picker_root: String::new(),
             rebase_pending_upstream: None,
             help_scroll: 0,
             help_filter: String::new(),
@@ -714,6 +781,7 @@ impl TuiApp {
     /// (or error) lands, so a dead backend costs one worker per refresh
     /// interval, not per tick.
     fn poll_refresh(&mut self) {
+        self.poll_stamp_fetches();
         let Some(inflight) = self.refresh_inflight.take() else {
             return;
         };
@@ -759,7 +827,125 @@ impl TuiApp {
         );
         self.error = None;
         self.last_refresh = Some(Instant::now());
+        // Worktree identity for the new rows: serve fresh cached
+        // replies first (no round trip), then arm a fetch per cwd the
+        // cache cannot answer. Backend-stamped rows (external session)
+        // are left verbatim.
+        self.apply_cached_stamps();
+        self.spawn_stamp_fetches();
         self.mark_dirty();
+    }
+
+    /// Non-blocking drain of every armed `worktree.list` worker. A
+    /// reply (or worker death) is committed the moment it lands, so
+    /// stamps update mid-interval instead of waiting for the next
+    /// snapshot refresh to find the reply.
+    fn poll_stamp_fetches(&mut self) {
+        if self.stamp_inflight.is_empty() {
+            return;
+        }
+        let workers = std::mem::take(&mut self.stamp_inflight);
+        let mut armed: Vec<StampInflight> = Vec::with_capacity(workers.len());
+        for worker in workers {
+            match worker.receiver.try_recv() {
+                Ok(Ok(response)) => {
+                    self.commit_stamp(&worker.cwd, response);
+                }
+                Ok(Err(_)) => {
+                    // A failed fetch keeps the previous stamp and stays
+                    // quiet: worktree identity is secondary data, it
+                    // self-heals on the next refresh, and a recurring
+                    // failure must not overwrite primary status text.
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => armed.push(worker),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Worker died without a reply. Drop it silently, the
+                    // same policy as a dead snapshot worker: not an
+                    // error the user can act on.
+                }
+            }
+            self.mark_dirty();
+        }
+        self.stamp_inflight = armed;
+    }
+
+    /// Serve the freshest cached `worktree.list` reply for each
+    /// unstamped workspace. Rows that arrive already stamped by the
+    /// backend (external client sessions) keep their stamp: the
+    /// backend knows better than a cache snapshot.
+    fn apply_cached_stamps(&mut self) {
+        if self.stamp_cache.is_empty() {
+            return;
+        }
+        for workspace in &mut self.snapshot.workspaces {
+            if workspace.worktree.is_some() {
+                continue;
+            }
+            let Some(entry) = self.stamp_cache.get(&workspace.cwd) else {
+                continue;
+            };
+            if entry.fetched_at.elapsed() > STAMP_CACHE_TTL {
+                continue;
+            }
+            let Some(stamp) = parse_worktree_list_response(&entry.response, &workspace.cwd) else {
+                continue;
+            };
+            workspace.worktree = Some(stamp);
+        }
+    }
+
+    /// Arm one `worktree.list` fetch per workspace cwd that has no
+    /// fresh cache entry. One worker per cwd per refresh round; the
+    /// next round re-arms only after this one lands.
+    fn spawn_stamp_fetches(&mut self) {
+        for workspace in &self.snapshot.workspaces {
+            let cwd = workspace.cwd.clone();
+            if cwd.is_empty() {
+                continue;
+            }
+            if workspace.worktree.is_some() {
+                continue;
+            }
+            if let Some(entry) = self.stamp_cache.get(&cwd) {
+                if entry.fetched_at.elapsed() <= STAMP_CACHE_TTL {
+                    continue;
+                }
+            }
+            if self.stamp_inflight.iter().any(|w| w.cwd == cwd) {
+                continue;
+            }
+            let (tx, rx) = std::sync::mpsc::channel::<Result<Value, BackendClientError>>();
+            let client = self.client.clone();
+            let fetch_cwd = cwd.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(client.list_worktrees(Some(&fetch_cwd)));
+            });
+            self.stamp_inflight
+                .push(StampInflight { cwd, receiver: rx });
+        }
+    }
+
+    /// Land a `worktree.list` reply: cache it for the TTL, then stamp
+    /// every workspace at the asking cwd right away so the badge
+    /// renders this frame instead of waiting for the next snapshot
+    /// refresh to replay the cache.
+    fn commit_stamp(&mut self, cwd: &str, response: Value) {
+        let stamp = parse_worktree_list_response(&response, cwd);
+        self.stamp_cache.insert(
+            cwd.to_string(),
+            StampCacheEntry {
+                fetched_at: Instant::now(),
+                response,
+            },
+        );
+        let Some(stamp) = stamp else {
+            return;
+        };
+        for workspace in &mut self.snapshot.workspaces {
+            if workspace.cwd == cwd && workspace.worktree.is_none() {
+                workspace.worktree = Some(stamp.clone());
+            }
+        }
     }
 
     /// Focused UI context for the statusbar hint (lazygit-style context
@@ -799,6 +985,7 @@ impl TuiApp {
             TuiMode::Help => return FooterContext::HelpOverlay,
             TuiMode::Settings => return FooterContext::SettingsOverlay,
             TuiMode::WorktreeList => return FooterContext::WorktreeList,
+            TuiMode::BranchPicker => return FooterContext::BranchPicker,
             TuiMode::SearchPalette => return FooterContext::SearchPalette,
             _ => {}
         }
@@ -948,6 +1135,7 @@ impl TuiApp {
                 _ => {}
             },
             TuiMode::WorktreeList => self.handle_worktree_list_key(key),
+            TuiMode::BranchPicker => self.handle_branch_picker_key(key),
             TuiMode::SearchPalette => self.handle_search_palette_key(key),
             TuiMode::Navigate => self.handle_navigation_key(key),
             TuiMode::Attach => {
@@ -2088,23 +2276,14 @@ impl TuiApp {
                 self.refresh_active_screen();
             }
             Shortcut::GitSwitchBranch => {
-                self.open_git_screen();
-                self.git_panel.view = GitView::Branches;
-                self.refresh_active_screen();
-                let selected = self.git_panel.branch_selected;
-                let Some(branch) = self
-                    .git_panel
-                    .branches
-                    .get(selected)
-                    .filter(|entry| !entry.current)
-                    .map(|entry| entry.name.clone())
-                else {
-                    return;
-                };
-                match self.git_panel.switch_branch(&self.web_api, &branch) {
-                    Ok(()) => self.status = format!("switched to {branch}"),
-                    Err(err) => self.error = Some(err.to_string()),
-                }
+                // Repointed to the workspace-scoped branch picker
+                // (desktop location-bar branch popover): the old
+                // git-screen Branches view stays reachable through
+                // prefix `b`, and plain `v` now answers "which branch
+                // is this workspace on" for the selected workspace
+                // instead of the git panel cwd.
+                let result = self.branch_picker_open();
+                self.workspace_status(result);
             }
             Shortcut::GitStageFile => self.run_git_action(|panel, api| panel.stage_selected(api)),
             Shortcut::GitUnstageFile => {

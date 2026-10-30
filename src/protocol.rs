@@ -950,6 +950,969 @@ pub(crate) enum ServerMessage {
 }
 
 #[cfg(test)]
+mod wire_roundtrip_tests {
+    //! Wire-format pins for the protocol types. Every test encodes through
+    //! the same bincode::config::standard() the transport uses, so a variant
+    //! reordering, a field rename, or a serde attribute regression breaks
+    //! the pinned bytes before it can reach a live session. Tests that pin
+    //! JSON use serde_json, the only other format these types see (the
+    //! EndpointControl payloads and snapshot codecs).
+
+    use super::*;
+
+    const MAX_FRAME: usize = 32 * 1024 * 1024;
+
+    fn roundtrip_bincode<M>(msg: &M) -> M
+    where
+        M: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+    {
+        let bytes = bincode::serde::encode_to_vec(msg, bincode::config::standard()).unwrap();
+        let (decoded, consumed): (M, usize) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(&decoded, msg);
+        decoded
+    }
+
+    fn roundtrip_frame<M>(msg: &M) -> M
+    where
+        M: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+    {
+        let mut buf = Vec::new();
+        write_message(&mut buf, msg).unwrap();
+        read_message::<&[u8], M>(&mut buf.as_slice(), MAX_FRAME).unwrap()
+    }
+
+    #[test]
+    fn frame_writer_prefixes_payload_with_le_length() {
+        let msg = ClientMessage::Detach;
+        let mut buf = Vec::new();
+        write_message(&mut buf, &msg).unwrap();
+        let expected = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        assert_eq!(buf.len(), 4 + expected.len());
+        assert_eq!(&buf[..4], &(expected.len() as u32).to_le_bytes());
+        assert_eq!(&buf[4..], &expected);
+    }
+
+    #[test]
+    fn frame_reader_rejects_oversized_and_truncated_frames() {
+        let msg = ServerMessage::Terminal(TerminalFrame {
+            seq: 7,
+            width: 4,
+            height: 2,
+            full: true,
+            bytes: vec![0x1b; 16],
+        });
+        let mut buf = Vec::new();
+        write_message(&mut buf, &msg).unwrap();
+
+        let err = read_message::<_, ServerMessage>(&mut buf.as_slice(), 3).unwrap_err();
+        assert!(err.contains("frame size"), "{err}");
+
+        // Truncated length header: zero of four bytes.
+        let err = read_message::<_, ServerMessage>(&mut &buf[..2], MAX_FRAME).unwrap_err();
+        assert!(err.contains("read frame length"), "{err}");
+
+        // Length header present but body cut short.
+        let err = read_message::<_, ServerMessage>(&mut &buf[..8], MAX_FRAME).unwrap_err();
+        assert!(err.contains("frame body"), "{err}");
+
+        // Empty stream reads as a length error too (EOF at stage one).
+        let err = read_message::<_, ServerMessage>(&mut &[][..], MAX_FRAME).unwrap_err();
+        assert!(err.contains("read frame length"), "{err}");
+    }
+
+    #[test]
+    fn frame_reader_rejects_trailing_bytes() {
+        // Encoding an enum appends a trailing 0x00 byte; appending the whole
+        // payload again leaves more than that, so the reader must flag it.
+        let payload =
+            bincode::serde::encode_to_vec(&ClientMessage::Detach, bincode::config::standard())
+                .unwrap();
+        let len = u32::try_from(payload.len() * 2).unwrap();
+        let mut buf = len.to_le_bytes().to_vec();
+        buf.extend_from_slice(&payload);
+        buf.extend_from_slice(&payload);
+        let err = read_message::<_, ClientMessage>(&mut buf.as_slice(), MAX_FRAME).unwrap_err();
+        assert!(err.contains("trailing bytes in frame"), "{err}");
+    }
+
+    #[test]
+    fn frame_reader_rejects_undecodable_payload() {
+        // A two-byte payload can never decode: even the unit-like variants
+        // need a variant index plus the config fixup bincode emits.
+        let len = 2u32.to_le_bytes();
+        let mut buf = len.to_vec();
+        buf.extend_from_slice(&[0xee, 0xff]);
+        let err = read_message::<_, ClientMessage>(&mut buf.as_slice(), MAX_FRAME).unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn client_message_variants_roundtrip_through_bincode() {
+        let hello = ClientMessage::TerminalHello {
+            version: PROTOCOL_VERSION,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 9,
+            cell_height_px: 18,
+            pixel_mouse: true,
+        };
+        assert_eq!(roundtrip_bincode(&hello), hello);
+        assert_eq!(roundtrip_frame(&hello), hello);
+
+        let shell_hello = ClientMessage::ClientShellHello {
+            version: PROTOCOL_VERSION,
+            cell_width_px: 9,
+            cell_height_px: 18,
+            surface_size: ClientSurfaceSize { cols: 80, rows: 24 },
+            pixel_mouse: true,
+            direct_graphics: true,
+            endpoint_keybindings: false,
+            mouse_capture: false,
+        };
+        assert_eq!(roundtrip_bincode(&shell_hello), shell_hello);
+
+        let key_event = ClientInputEvent::Key {
+            code: ClientKeyCode::Char('x'),
+            modifiers: 2,
+            kind: ClientKeyKind::Press,
+            repeat_count: 1,
+            generated_text: Some("x".to_string()),
+            source: ClientKeySource::WindowsConsole {
+                record: WindowsKeyRecord {
+                    key_down: true,
+                    repeat_count: 1,
+                    virtual_key_code: 88,
+                    virtual_scan_code: 45,
+                    unicode: 120,
+                    control_key_state: 8,
+                },
+            },
+        };
+        assert_eq!(roundtrip_bincode(&key_event), key_event);
+
+        let vt_key = ClientInputEvent::Key {
+            code: ClientKeyCode::F(5),
+            modifiers: 0,
+            kind: ClientKeyKind::Release,
+            repeat_count: 0,
+            generated_text: None,
+            source: ClientKeySource::Vt {
+                bytes: vec![27, 79],
+            },
+        };
+        assert_eq!(roundtrip_bincode(&vt_key), vt_key);
+        assert_eq!(
+            roundtrip_bincode(&ClientInputEvent::FocusGained),
+            ClientInputEvent::FocusGained
+        );
+        assert_eq!(
+            roundtrip_bincode(&ClientInputEvent::FocusLost),
+            ClientInputEvent::FocusLost
+        );
+        assert_eq!(
+            roundtrip_bincode(&ClientInputEvent::TextCommit("hi".to_string())),
+            ClientInputEvent::TextCommit("hi".to_string())
+        );
+        assert_eq!(
+            roundtrip_bincode(&ClientInputEvent::Paste {
+                text: "p".to_string()
+            }),
+            ClientInputEvent::Paste {
+                text: "p".to_string()
+            }
+        );
+
+        let input = ClientMessage::Input {
+            data: vec![1, 2, 3],
+        };
+        assert_eq!(roundtrip_bincode(&input), input);
+
+        let clipboard = ClientMessage::ClipboardImage {
+            target: ClientClipboardImageTarget::Pane("p1".to_string()),
+            extension: "png".to_string(),
+            data: vec![137, 80, 78, 71],
+        };
+        assert_eq!(roundtrip_bincode(&clipboard), clipboard);
+        let popup_clipboard = ClientMessage::ClipboardImage {
+            target: ClientClipboardImageTarget::Popup("term1".to_string()),
+            extension: "png".to_string(),
+            data: Vec::new(),
+        };
+        assert_eq!(roundtrip_bincode(&popup_clipboard), popup_clipboard);
+        let direct_clipboard = ClientMessage::ClipboardImage {
+            target: ClientClipboardImageTarget::DirectTerminal,
+            extension: "bin".to_string(),
+            data: vec![255],
+        };
+        assert_eq!(roundtrip_bincode(&direct_clipboard), direct_clipboard);
+
+        let resize = ClientMessage::Resize {
+            cols: 120,
+            rows: 40,
+            cell_width_px: 8,
+            cell_height_px: 16,
+            pixel_mouse: false,
+        };
+        assert_eq!(roundtrip_bincode(&resize), resize);
+
+        assert_eq!(
+            roundtrip_bincode(&ClientMessage::Detach),
+            ClientMessage::Detach
+        );
+
+        let attach = ClientMessage::AttachTerminal {
+            terminal_id: "t1".to_string(),
+            takeover: true,
+        };
+        assert_eq!(roundtrip_bincode(&attach), attach);
+
+        let scroll = ClientMessage::AttachScroll {
+            source: AttachScrollSource::PageKey { input: vec![6] },
+            direction: AttachScrollDirection::Up,
+            lines: 5,
+            column: Some(2),
+            row: None,
+            modifiers: 1,
+        };
+        assert_eq!(roundtrip_bincode(&scroll), scroll);
+        let wheel_scroll = ClientMessage::AttachScroll {
+            source: AttachScrollSource::Wheel,
+            direction: AttachScrollDirection::Down,
+            lines: 3,
+            column: None,
+            row: Some(9),
+            modifiers: 0,
+        };
+        assert_eq!(roundtrip_bincode(&wheel_scroll), wheel_scroll);
+
+        let observe = ClientMessage::ObserveTerminal {
+            target: "t2".to_string(),
+        };
+        assert_eq!(roundtrip_bincode(&observe), observe);
+        let control = ClientMessage::ControlTerminal {
+            target: "t3".to_string(),
+            takeover: false,
+        };
+        assert_eq!(roundtrip_bincode(&control), control);
+
+        let graphics_result = ClientMessage::GraphicsTransmissionResult {
+            transfer_id: 42,
+            image_id: 7,
+            success: true,
+        };
+        assert_eq!(roundtrip_bincode(&graphics_result), graphics_result);
+        let graphics_started = ClientMessage::GraphicsTransmissionStarted {
+            transfer_id: 42,
+            image_id: 7,
+        };
+        assert_eq!(roundtrip_bincode(&graphics_started), graphics_started);
+
+        let shell_resize = ClientMessage::ClientShellResize {
+            cell_width_px: 10,
+            cell_height_px: 20,
+            surface_size: ClientSurfaceSize {
+                cols: 100,
+                rows: 30,
+            },
+            pixel_mouse: false,
+        };
+        assert_eq!(roundtrip_bincode(&shell_resize), shell_resize);
+
+        let pane_input = ClientMessage::ClientShellPaneInput {
+            pane_id: "p2".to_string(),
+            events: vec![
+                ClientPaneInputEvent::Key {
+                    code: ClientKeyCode::Enter,
+                    modifiers: 0,
+                    kind: ClientKeyKind::Press,
+                    repeat_count: 1,
+                    shifted_codepoint: None,
+                    generated_text: Some("\r".to_string()),
+                    tracks_release: false,
+                    physical_key_id: None,
+                    windows_record: None,
+                },
+                ClientPaneInputEvent::TextCommit("hello".to_string()),
+                ClientPaneInputEvent::Paste("pasted".to_string()),
+                ClientPaneInputEvent::Mouse {
+                    kind: ClientMouseKind::Down(ClientMouseButton::Left),
+                    position: ClientMousePosition::Cell { column: 3, row: 4 },
+                    geometry: Some(ClientMouseGeometry {
+                        cols: 80,
+                        rows: 24,
+                        width_px: 720,
+                        height_px: 432,
+                    }),
+                    modifiers: 0,
+                    lines: 0,
+                },
+            ],
+        };
+        assert_eq!(roundtrip_bincode(&pane_input), pane_input);
+
+        let popup_input = ClientMessage::ClientShellPopupInput {
+            terminal_id: "term9".to_string(),
+            events: vec![ClientPaneInputEvent::Mouse {
+                kind: ClientMouseKind::Moved,
+                position: ClientMousePosition::Pixels {
+                    x: 15,
+                    y: 25,
+                    column: 1,
+                    row: 2,
+                },
+                geometry: None,
+                modifiers: 4,
+                lines: 0,
+            }],
+        };
+        assert_eq!(roundtrip_bincode(&popup_input), popup_input);
+
+        let endpoint_request = ClientMessage::ClientShellEndpointRequest {
+            boot_id: "boot1".to_string(),
+            request: "endpoint.request.v1".to_string(),
+        };
+        assert_eq!(roundtrip_bincode(&endpoint_request), endpoint_request);
+
+        let attach_mouse = ClientMessage::AttachMouse {
+            kind: ClientMouseKind::Drag(ClientMouseButton::Middle),
+            position: ClientMousePosition::Cell { column: 0, row: 0 },
+            geometry: None,
+            modifiers: 0,
+            lines: 0,
+        };
+        assert_eq!(roundtrip_bincode(&attach_mouse), attach_mouse);
+        let scroll_mouse = ClientMessage::AttachMouse {
+            kind: ClientMouseKind::ScrollLeft,
+            position: ClientMousePosition::Cell { column: 5, row: 5 },
+            geometry: None,
+            modifiers: 0,
+            lines: 2,
+        };
+        assert_eq!(roundtrip_bincode(&scroll_mouse), scroll_mouse);
+        let scroll_right = ClientMessage::AttachMouse {
+            kind: ClientMouseKind::ScrollRight,
+            position: ClientMousePosition::Cell { column: 6, row: 6 },
+            geometry: None,
+            modifiers: 0,
+            lines: 2,
+        };
+        assert_eq!(roundtrip_bincode(&scroll_right), scroll_right);
+        let release_mouse = ClientMessage::AttachMouse {
+            kind: ClientMouseKind::Up(ClientMouseButton::Right),
+            position: ClientMousePosition::Cell { column: 7, row: 7 },
+            geometry: None,
+            modifiers: 0,
+            lines: 0,
+        };
+        assert_eq!(roundtrip_bincode(&release_mouse), release_mouse);
+
+        let theme = ClientMessage::ClientShellHostTheme {
+            update: ClientHostThemeUpdate::DefaultColor {
+                kind: ClientHostDefaultColorKind::Background,
+                color: ClientHostColor {
+                    r: 10,
+                    g: 20,
+                    b: 30,
+                },
+            },
+        };
+        assert_eq!(roundtrip_bincode(&theme), theme);
+        let palette = ClientMessage::ClientShellHostTheme {
+            update: ClientHostThemeUpdate::PaletteColors(vec![(
+                1,
+                ClientHostColor { r: 1, g: 2, b: 3 },
+            )]),
+        };
+        assert_eq!(roundtrip_bincode(&palette), palette);
+        let appearance = ClientMessage::ClientShellHostTheme {
+            update: ClientHostThemeUpdate::Appearance(ClientHostAppearance::Light),
+        };
+        assert_eq!(roundtrip_bincode(&appearance), appearance);
+
+        let focus = ClientMessage::ClientShellFocus { focused: false };
+        assert_eq!(roundtrip_bincode(&focus), focus);
+        let capture = ClientMessage::ClientShellMouseCapture { enabled: true };
+        assert_eq!(roundtrip_bincode(&capture), capture);
+
+        let control_msg = ClientMessage::EndpointControl {
+            kind: "endpoint.hello.v1".to_string(),
+            data: "{}".to_string(),
+        };
+        assert_eq!(roundtrip_bincode(&control_msg), control_msg);
+    }
+
+    #[test]
+    fn client_key_code_variants_roundtrip() {
+        let codes = [
+            ClientKeyCode::Backspace,
+            ClientKeyCode::Enter,
+            ClientKeyCode::Left,
+            ClientKeyCode::Right,
+            ClientKeyCode::Up,
+            ClientKeyCode::Down,
+            ClientKeyCode::Home,
+            ClientKeyCode::End,
+            ClientKeyCode::PageUp,
+            ClientKeyCode::PageDown,
+            ClientKeyCode::Tab,
+            ClientKeyCode::BackTab,
+            ClientKeyCode::Delete,
+            ClientKeyCode::Insert,
+            ClientKeyCode::Esc,
+            ClientKeyCode::Char('A'),
+            ClientKeyCode::Char('\u{2603}'),
+            ClientKeyCode::F(1),
+            ClientKeyCode::F(12),
+            ClientKeyCode::Null,
+        ];
+        for code in codes {
+            assert_eq!(roundtrip_bincode(&code), code);
+        }
+        // Distinct variants must not collide on the wire.
+        let enter =
+            bincode::serde::encode_to_vec(&ClientKeyCode::Enter, bincode::config::standard())
+                .unwrap();
+        let backspace =
+            bincode::serde::encode_to_vec(&ClientKeyCode::Backspace, bincode::config::standard())
+                .unwrap();
+        assert_ne!(enter, backspace);
+    }
+
+    #[test]
+    fn server_message_variants_roundtrip_through_bincode() {
+        let welcome = ServerMessage::Welcome {
+            version: PROTOCOL_VERSION,
+            encoding: RenderEncoding::TerminalAnsi,
+            error: None,
+        };
+        assert_eq!(roundtrip_bincode(&welcome), welcome);
+        let rejected = ServerMessage::Welcome {
+            version: 0,
+            encoding: RenderEncoding::SemanticFrame,
+            error: Some("version mismatch".to_string()),
+        };
+        assert_eq!(roundtrip_bincode(&rejected), rejected);
+
+        let terminal = ServerMessage::Terminal(TerminalFrame {
+            seq: 100,
+            width: 80,
+            height: 24,
+            full: false,
+            bytes: vec![0x1b, b'[', b'2', b'J'],
+        });
+        assert_eq!(roundtrip_bincode(&terminal), terminal);
+        assert_eq!(roundtrip_frame(&terminal), terminal);
+
+        let graphics = ServerMessage::Graphics {
+            bytes: vec![27, 95],
+        };
+        assert_eq!(roundtrip_bincode(&graphics), graphics);
+
+        let shutdown_some = ServerMessage::ServerShutdown {
+            reason: Some("stopping".to_string()),
+        };
+        assert_eq!(roundtrip_bincode(&shutdown_some), shutdown_some);
+        let shutdown_none = ServerMessage::ServerShutdown { reason: None };
+        assert_eq!(roundtrip_bincode(&shutdown_none), shutdown_none);
+
+        let notify = ServerMessage::Notify {
+            kind: NotifyKind::Toast,
+            message: "m".to_string(),
+            body: Some("b".to_string()),
+        };
+        assert_eq!(roundtrip_bincode(&notify), notify);
+        let sound = ServerMessage::Notify {
+            kind: NotifyKind::Sound,
+            message: "m".to_string(),
+            body: None,
+        };
+        assert_eq!(roundtrip_bincode(&sound), sound);
+        let system_toast = ServerMessage::Notify {
+            kind: NotifyKind::SystemToast,
+            message: "m".to_string(),
+            body: None,
+        };
+        assert_eq!(roundtrip_bincode(&system_toast), system_toast);
+
+        let clipboard = ServerMessage::Clipboard {
+            data: "x".to_string(),
+        };
+        assert_eq!(roundtrip_bincode(&clipboard), clipboard);
+        let title_some = ServerMessage::WindowTitle {
+            title: Some("t".to_string()),
+        };
+        assert_eq!(roundtrip_bincode(&title_some), title_some);
+        let title_none = ServerMessage::WindowTitle { title: None };
+        assert_eq!(roundtrip_bincode(&title_none), title_none);
+
+        assert_eq!(
+            roundtrip_bincode(&ServerMessage::ReloadSoundConfig),
+            ServerMessage::ReloadSoundConfig
+        );
+
+        let capture = ServerMessage::MouseCapture {
+            enabled: true,
+            sgr_pixels: false,
+        };
+        assert_eq!(roundtrip_bincode(&capture), capture);
+
+        let bell = ServerMessage::TerminalBell { count: 3 };
+        assert_eq!(roundtrip_bincode(&bell), bell);
+
+        let graphics_file = ServerMessage::GraphicsFile {
+            path: "/tmp/img".to_string(),
+            expected_len: 4,
+            image_id: 9,
+            transfer_id: 44,
+            leading: vec![1, 2],
+            control: "a=p".to_string(),
+            surface_asset: None,
+        };
+        assert_eq!(roundtrip_bincode(&graphics_file), graphics_file);
+
+        let retired = ServerMessage::GraphicsTransmissionRetired {
+            transfer_id: 44,
+            image_id: 9,
+        };
+        assert_eq!(roundtrip_bincode(&retired), retired);
+
+        let snapshot = ServerMessage::ClientShellSnapshot(Box::new(shell_snapshot()));
+        assert_eq!(roundtrip_bincode(&snapshot), snapshot);
+
+        let surface = ServerMessage::PaneSurface(surface_frame());
+        assert_eq!(roundtrip_bincode(&surface), surface);
+
+        let semantic = ServerMessage::SemanticNotification(SemanticNotification {
+            kind: SemanticNotificationKind::NeedsAttention,
+            title: "t".to_string(),
+            body: None,
+            sound: Some(SemanticNotificationSound::Request),
+            agent: Some("jcode".to_string()),
+            workspace_id: None,
+            tab_id: None,
+            pane_id: Some("p".to_string()),
+            position: Some(ToastHerdrPosition::BottomRight),
+        });
+        assert_eq!(roundtrip_bincode(&semantic), semantic);
+
+        let shell_error = ServerMessage::ClientShellError {
+            message: "boom".to_string(),
+        };
+        assert_eq!(roundtrip_bincode(&shell_error), shell_error);
+
+        let keyboard = ServerMessage::DirectTerminalKeyboardProtocol {
+            flags: 15,
+            modify_other_keys_level: 2,
+        };
+        assert_eq!(roundtrip_bincode(&keyboard), keyboard);
+
+        let report_all = ServerMessage::ClientShellKeyboardReportAll { enabled: true };
+        assert_eq!(roundtrip_bincode(&report_all), report_all);
+
+        let chunk = ServerMessage::ClientShellEndpointResponseChunk {
+            boot_id: "b".to_string(),
+            request_id: "r".to_string(),
+            final_chunk: false,
+            data: vec![9, 8],
+        };
+        assert_eq!(roundtrip_bincode(&chunk), chunk);
+
+        let patch = ServerMessage::PaneSurfacePatch(PaneSurfacePatch {
+            boot_id: "boot".to_string(),
+            projection_revision: 1,
+            base_surface_revision: 2,
+            surface_revision: 3,
+            rows: vec![PaneSurfacePatchRow {
+                x: 0,
+                y: 1,
+                cells: vec![CellData {
+                    symbol: "x".to_string(),
+                    fg: 1,
+                    bg: 2,
+                    modifier: 0,
+                    skip: false,
+                    hyperlink: Some(1),
+                }],
+            }],
+            panes: surface_frame().panes,
+            cursor: Some(CursorState {
+                x: 4,
+                y: 5,
+                visible: true,
+                shape: 2,
+            }),
+        });
+        assert_eq!(roundtrip_bincode(&patch), patch);
+
+        let control_msg = ServerMessage::EndpointControl {
+            kind: "endpoint.welcome.v1".to_string(),
+            data: "{}".to_string(),
+        };
+        assert_eq!(roundtrip_bincode(&control_msg), control_msg);
+    }
+
+    fn empty_frame() -> FrameData {
+        FrameData {
+            cells: Vec::new(),
+            width: 0,
+            height: 0,
+            cursor: None,
+            hyperlinks: Vec::new(),
+            graphics: Vec::new(),
+        }
+    }
+
+    fn surface_frame() -> PaneSurfaceFrame {
+        let rect = SurfaceRect {
+            x: 1,
+            y: 2,
+            width: 10,
+            height: 5,
+        };
+        let pane = PaneSurfacePane {
+            pane_id: "p1".to_string(),
+            content_revision: 7,
+            rect,
+            inner_rect: rect,
+            scrollbar_rect: Some(rect),
+            scroll: Some(PaneSurfaceScrollMetrics {
+                offset_from_bottom: 0,
+                max_offset_from_bottom: 12,
+                viewport_rows: 24,
+            }),
+            focused: true,
+            mouse_reporting: false,
+            sgr_pixel_mouse: true,
+            alternate_screen_active: false,
+            pixel_width: 720,
+            pixel_height: 432,
+        };
+        let split = PaneSurfaceSplit {
+            direction: PaneSurfaceSplitDirection::Horizontal,
+            pos: 12,
+            area: rect,
+            hit_rect: rect,
+            path: vec![true, false],
+        };
+        let popup = ClientShellPopupSurface {
+            terminal_id: "term1".to_string(),
+            title: "Title".to_string(),
+            width: Some(ClientShellPopupSize::Cells(60)),
+            height: Some(ClientShellPopupSize::Percent(50)),
+            frame: empty_frame(),
+            mouse_reporting: false,
+            sgr_pixel_mouse: false,
+            pixel_width: 100,
+            pixel_height: 50,
+        };
+        PaneSurfaceFrame {
+            boot_id: "boot".to_string(),
+            projection_revision: 4,
+            surface_revision: 5,
+            frame: empty_frame(),
+            panes: vec![pane],
+            splits: vec![split],
+            popup: Some(Box::new(popup)),
+            graphics: SurfaceGraphicsScene {
+                assets: Vec::new(),
+                placements: Vec::new(),
+                retained_assets: Vec::new(),
+            },
+        }
+    }
+
+    fn shell_snapshot() -> ClientShellSnapshot {
+        let status_segment = ClientShellTabStatusSegment {
+            text: "seg".to_string(),
+            accent: true,
+        };
+        let workspace = ClientShellWorkspace {
+            workspace_id: "ws1".to_string(),
+            active_tab_id: "tab1".to_string(),
+            new_workspace_cwd: "/tmp".to_string(),
+            number: 1,
+            label: "W".to_string(),
+            custom_label: true,
+            branch: Some("main".to_string()),
+            git_ahead_behind: Some((2, 3)),
+            tokens: vec![("k".to_string(), "v".to_string())],
+            worktree: Some(ClientShellWorktree {
+                key: "k".to_string(),
+                label: "w".to_string(),
+                is_linked_worktree: false,
+            }),
+            focused: true,
+            agent_status: AgentStatus::Working,
+        };
+        let tab = ClientShellTab {
+            tab_id: "tab1".to_string(),
+            workspace_id: "ws1".to_string(),
+            number: 1,
+            label: "T".to_string(),
+            custom_label: false,
+            zoomed: true,
+            focused: false,
+            agent_status: AgentStatus::Idle,
+        };
+        let pane = ClientShellPane {
+            pane_id: "p1".to_string(),
+            workspace_id: "ws1".to_string(),
+            tab_id: "tab1".to_string(),
+            label: Some("pane".to_string()),
+            cwd: Some("/tmp".to_string()),
+            foreground_cwd: Some("/tmp".to_string()),
+            focused: true,
+            right_click_passthrough: false,
+        };
+        let agent = ClientShellAgent {
+            pane_id: "p1".to_string(),
+            workspace_id: "ws1".to_string(),
+            tab_id: "tab1".to_string(),
+            name: Some("jcode".to_string()),
+            display_agent: Some("jcode".to_string()),
+            agent: Some("jcode".to_string()),
+            title: Some("title".to_string()),
+            terminal_title: Some("tt".to_string()),
+            terminal_title_stripped: Some("t".to_string()),
+            agent_status: AgentStatus::Blocked,
+            state_change_seq: 9,
+            state_labels: vec![("a".to_string(), "b".to_string())],
+            tokens: vec![("x".to_string(), "y".to_string())],
+            focused: true,
+        };
+        let command = ClientShellCommand {
+            command_id: "c1".to_string(),
+            binding_label: "^X".to_string(),
+            binding_labels: vec!["^X".to_string(), "^Y".to_string()],
+            action: ClientShellCommandAction::Pane,
+            description: Some("d".to_string()),
+        };
+        ClientShellSnapshot {
+            boot_id: "boot".to_string(),
+            revision: 3,
+            config_diagnostic: Some("diag".to_string()),
+            product_announcement: Some(ClientShellProductAnnouncement {
+                version: "0.9.0".to_string(),
+                id: "a1".to_string(),
+                title: "T".to_string(),
+                body: "B".to_string(),
+                preview: true,
+            }),
+            update_available: Some("0.9.1".to_string()),
+            update_install_command: "install".to_string(),
+            server_keybindings_toml: Some("[k]".to_string()),
+            latest_release_notes_available: true,
+            integration_updates_available: false,
+            worktree_directory: "/wt".to_string(),
+            release_notes: Some(ClientShellReleaseNotes {
+                version: "0.9.0".to_string(),
+                body: "notes".to_string(),
+                preview: false,
+            }),
+            focused_workspace_id: Some("ws1".to_string()),
+            focused_tab_id: Some("tab1".to_string()),
+            focused_pane_id: Some("p1".to_string()),
+            tab_bar_right: vec![status_segment],
+            tab_bar_right_separator: "|".to_string(),
+            agent_view_label: Some("agents".to_string()),
+            agent_order: vec!["jcode".to_string()],
+            workspaces: vec![workspace],
+            tabs: vec![tab],
+            panes: vec![pane],
+            agents: vec![agent],
+            commands: vec![command],
+        }
+    }
+
+    #[test]
+    fn agent_status_from_str_maps_every_label() {
+        assert_eq!(AgentStatus::from_str("idle"), AgentStatus::Idle);
+        assert_eq!(AgentStatus::from_str("working"), AgentStatus::Working);
+        assert_eq!(AgentStatus::from_str("blocked"), AgentStatus::Blocked);
+        assert_eq!(AgentStatus::from_str("done"), AgentStatus::Done);
+        assert_eq!(AgentStatus::from_str("anything-else"), AgentStatus::Unknown);
+        assert_eq!(AgentStatus::from_str(""), AgentStatus::Unknown);
+        assert_eq!(roundtrip_bincode(&AgentStatus::Done), AgentStatus::Done);
+    }
+
+    #[test]
+    fn agent_status_serializes_snake_case_in_json() {
+        assert_eq!(
+            serde_json::to_string(&AgentStatus::Idle).unwrap(),
+            "\"idle\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentStatus::Working).unwrap(),
+            "\"working\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentStatus::Blocked).unwrap(),
+            "\"blocked\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AgentStatus::Unknown).unwrap(),
+            "\"unknown\""
+        );
+        assert_eq!(
+            serde_json::from_str::<AgentStatus>("\"blocked\"").unwrap(),
+            AgentStatus::Blocked
+        );
+    }
+
+    #[test]
+    fn toast_position_serializes_kebab_case_in_json() {
+        assert_eq!(
+            serde_json::to_string(&ToastHerdrPosition::TopLeft).unwrap(),
+            "\"top-left\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ToastHerdrPosition::TopRight).unwrap(),
+            "\"top-right\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ToastHerdrPosition::BottomLeft).unwrap(),
+            "\"bottom-left\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ToastHerdrPosition::BottomRight).unwrap(),
+            "\"bottom-right\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ToastHerdrPosition>("\"top-right\"").unwrap(),
+            ToastHerdrPosition::TopRight
+        );
+    }
+
+    #[test]
+    fn cursor_state_json_defaults_missing_shape() {
+        // herdr 0.9.0 added `shape`; older payloads omit it. serde(default)
+        // must decode them instead of failing the whole frame.
+        let value: CursorState =
+            serde_json::from_str("{\"x\":1,\"y\":2,\"visible\":true}").unwrap();
+        assert_eq!(value.shape, 0);
+        let full: CursorState =
+            serde_json::from_str("{\"x\":1,\"y\":2,\"visible\":true,\"shape\":3}").unwrap();
+        assert_eq!(full.shape, 3);
+        assert_eq!(
+            serde_json::to_string(&full).unwrap(),
+            "{\"x\":1,\"y\":2,\"visible\":true,\"shape\":3}"
+        );
+    }
+
+    #[test]
+    fn unknown_command_action_deserializes_via_serde_other() {
+        // Future endpoint action kinds must decode, not drop the frame.
+        let known: ClientShellCommandAction = serde_json::from_str("\"Pane\"").unwrap();
+        assert_eq!(known, ClientShellCommandAction::Pane);
+        let unknown: ClientShellCommandAction = serde_json::from_str("\"SomethingNew\"").unwrap();
+        assert_eq!(unknown, ClientShellCommandAction::Unknown);
+        assert_eq!(
+            serde_json::to_string(&ClientShellCommandAction::Shell).unwrap(),
+            "\"Shell\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ClientShellCommandAction::Popup).unwrap(),
+            "\"Popup\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ClientShellCommandAction::PluginAction).unwrap(),
+            "\"PluginAction\""
+        );
+        // The catch-all must not serialize back as a bogus known action.
+        let text = serde_json::to_string(&ClientShellCommandAction::Unknown).unwrap();
+        assert_eq!(text, "\"Unknown\"");
+    }
+
+    #[test]
+    fn semantic_notification_all_kinds_roundtrip_in_json() {
+        for kind in [
+            SemanticNotificationKind::NeedsAttention,
+            SemanticNotificationKind::Finished,
+            SemanticNotificationKind::UpdateInstalled,
+            SemanticNotificationKind::Custom,
+        ] {
+            let note = SemanticNotification {
+                kind,
+                title: "t".to_string(),
+                body: Some("b".to_string()),
+                sound: Some(SemanticNotificationSound::Done),
+                agent: None,
+                workspace_id: None,
+                tab_id: None,
+                pane_id: None,
+                position: None,
+            };
+            let text = serde_json::to_string(&note).unwrap();
+            let back: SemanticNotification = serde_json::from_str(&text).unwrap();
+            assert_eq!(back, note);
+        }
+        let minimal: SemanticNotification =
+            serde_json::from_str("{\"kind\":\"NeedsAttention\",\"title\":\"t\"}").unwrap();
+        assert_eq!(minimal.kind, SemanticNotificationKind::NeedsAttention);
+        assert!(minimal.body.is_none());
+        assert!(minimal.sound.is_none());
+        assert!(minimal.agent.is_none());
+        assert!(minimal.position.is_none());
+    }
+
+    #[test]
+    fn surface_graphics_keys_are_hash_stable_across_roundtrip() {
+        let key = SurfaceGraphicsAssetKey {
+            source: SurfaceGraphicsSource::PaneLayer {
+                pane_id: "p9".to_string(),
+                layer_id: "L1".to_string(),
+            },
+            image_width: 640,
+            image_height: 480,
+            format: SurfaceGraphicsFormat::Png,
+            data_len: 12,
+            data_fingerprint: 99,
+        };
+        let decoded = roundtrip_bincode(&key);
+        assert_eq!(decoded, key);
+        // The retained-asset dedup relies on Hash staying wire-stable.
+        let mut set = std::collections::HashSet::new();
+        set.insert(decoded);
+        assert!(set.contains(&key));
+        let rgba_key = SurfaceGraphicsAssetKey {
+            format: SurfaceGraphicsFormat::Rgba,
+            ..key
+        };
+        assert!(!set.contains(&rgba_key));
+        let terminal_key = SurfaceGraphicsAssetKey {
+            source: SurfaceGraphicsSource::Terminal {
+                target: SurfaceGraphicsTarget::Popup {
+                    terminal_id: "t".to_string(),
+                },
+                image_id: 3,
+            },
+            ..key
+        };
+        assert_eq!(roundtrip_bincode(&terminal_key), terminal_key);
+    }
+
+    #[test]
+    fn client_surface_size_and_theme_types_roundtrip_json() {
+        let size: ClientSurfaceSize = serde_json::from_str("{\"cols\":80,\"rows\":24}").unwrap();
+        assert_eq!(size, ClientSurfaceSize { cols: 80, rows: 24 });
+        assert_eq!(
+            serde_json::to_string(&size).unwrap(),
+            "{\"cols\":80,\"rows\":24}"
+        );
+
+        let theme = ClientHostThemeUpdate::DefaultColor {
+            kind: ClientHostDefaultColorKind::Foreground,
+            color: ClientHostColor { r: 1, g: 2, b: 3 },
+        };
+        let text = serde_json::to_string(&theme).unwrap();
+        let back: ClientHostThemeUpdate = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, theme);
+    }
+}
+
+#[cfg(test)]
 mod external_probe_tests {
     //! Live probe against a real, isolated herdr 0.9.0 daemon, proving the
     //! WebUI's `ClientMessage`/`ServerMessage` types can speak the external

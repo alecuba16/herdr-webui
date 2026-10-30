@@ -2,7 +2,72 @@ import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import { deepEqual, doesNotMatch, doesNotThrow, equal, match, notEqual, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// One compiled script per product file, same list and order as the `source`
+// blob, so coverage attributes each file's lines to its real disk path.
+// The concatenated blob hoisted function declarations across every file;
+// separate scripts only hoist per file, so core.js's load-time
+// window.syncGitWorkspaceToggle assignment and the help-section render need
+// names from later files (render.js, terminal.js, shortcuts.js) pre-declared,
+// and the window copy re-wired once render.js has loaded.
+const APP_BUNDLE_FILES = [
+  "./shared/options.js",
+  "./shared/core.js",
+  "./shared/actions.js",
+  "./shared/terminal_fit.js",
+  "./desktop/search.js",
+  "./desktop/app_js/core.js",
+  "./desktop/app_js/settings_sections.js",
+  "./desktop/app_js/workspace_shell.js",
+  "./desktop/app_js/right_sidebar.js",
+  "./desktop/app_js/search_panel.js",
+  "./desktop/app_js/workspace_panes.js",
+  "./desktop/app_js/render.js",
+  "./desktop/app_js/terminal.js",
+  "./desktop/app_js/worktrees.js",
+  "./desktop/app_js/shortcuts.js",
+  "./desktop/app_js/workspace_create.js",
+  "./desktop/app_js/bindings.js",
+];
+let appBundleScripts = null;
+function getAppBundleScripts() {
+  if (!appBundleScripts) {
+    appBundleScripts = APP_BUNDLE_FILES.map((path) => {
+      const realPath = fileURLToPath(new URL(path, import.meta.url));
+      return new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath });
+    });
+  }
+  return appBundleScripts;
+}
+const HOIST_PRELOAD = new vm.Script(
+  "var syncGitWorkspaceToggle = function() {};\n" +
+    "var escapeHtml = function(v) { return String(v == null ? \"\" : v); };\n" +
+    "var globalShortcutPrefixLabel = function() { return \"Ctrl\"; };\n" +
+    "window.syncGitWorkspaceToggle = syncGitWorkspaceToggle;",
+  { filename: "hoist-preload.js" },
+);
+const HOIST_REWIRE = new vm.Script(
+  "window.syncGitWorkspaceToggle = syncGitWorkspaceToggle;",
+  { filename: "hoist-rewire.js" },
+);
+function runSource(ctx) {
+  HOIST_PRELOAD.runInContext(ctx);
+  for (const script of getAppBundleScripts()) script.runInContext(ctx);
+  HOIST_REWIRE.runInContext(ctx);
+}
+function productScript(relPath) {
+  productScript.cache = productScript.cache || new Map();
+  if (!productScript.cache.has(relPath)) {
+    const realPath = fileURLToPath(new URL(relPath, import.meta.url));
+    productScript.cache.set(
+      relPath,
+      new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath }),
+    );
+  }
+  return productScript.cache.get(relPath);
+}
 
 function element(id = "") {
   const classes = new Set();
@@ -151,20 +216,14 @@ function context() {
   const contextObject = vm.createContext(ctx);
   // Mirror production boot order: the shared HTTP client loads before any
   // bundle module so api()/apiOptions() delegate to HerdrHttp.
-  vm.runInContext(
-    readFileSync(new URL("./shared/http.js", import.meta.url), "utf8"),
-    contextObject,
-  );
+  productScript("./shared/http.js").runInContext(contextObject);
   return contextObject;
 }
 
 function loadWorkspaceSearch(ctx) {
-  vm.runInContext(readFileSync(new URL("./shared/options.js", import.meta.url), "utf8"), ctx);
-  vm.runInContext(readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"), ctx);
-  vm.runInContext(
-    readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8"),
-    ctx,
-  );
+  productScript("./shared/options.js").runInContext(ctx);
+  productScript("./shared/core.js").runInContext(ctx);
+  productScript("./shared/workspace_search.js").runInContext(ctx);
 }
 
 describe("app bundle load", () => {
@@ -226,7 +285,7 @@ describe("app bundle load", () => {
   });
 
   it("loads without initialization-order ReferenceError", () => {
-    doesNotThrow(() => vm.runInContext(source, context()));
+    doesNotThrow(() => runSource(context()));
   });
 
   it("defines project-first dashboard and command-palette actions", () => {
@@ -256,7 +315,7 @@ describe("app bundle load", () => {
       }
       return { status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const registry = ctx.window.HerdrActionRegistry;
     ok(registry && typeof registry.loadRecent === "function", "registry must expose loadRecent");
@@ -517,7 +576,7 @@ describe("app bundle load", () => {
       }
       return { status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // Two recents render after the action rows; the keyboard selection sits
     // on the first recent while the user clicks the second one.
@@ -587,7 +646,7 @@ describe("app bundle load", () => {
       }
       return { status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     vm.runInContext(`
       state.workspaces = [{ workspace_id: "ws-open", cwd: "/repo/beta" }];
@@ -644,7 +703,7 @@ describe("app bundle load", () => {
 
   it("keys recent rows by type and path so actions and recents never collide", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const key = (row) => vm.runInContext(`searchResultKey(${JSON.stringify(row)})`, ctx);
     equal(key({ type: "recent", path: "/repo/beta" }), "recent:/repo/beta");
     equal(key({ type: "recent", path: "/repo/alpha" }), "recent:/repo/alpha");
@@ -656,7 +715,7 @@ describe("app bundle load", () => {
 
   it("returns desktop UX actions from a single command-palette candidate path", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const actionNames = (query) => Array.from(ctx.searchActionCandidates(query), (action) => action.action);
     deepEqual(
@@ -722,7 +781,7 @@ describe("app bundle load", () => {
 
   it("wires desktop project dashboard and command actions to expected launchers", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const dashboard = ctx.renderProjectDashboard();
 
     match(dashboard, /runSearchAction\('open-workspace'\)/);
@@ -739,7 +798,7 @@ describe("app bundle load", () => {
   it("uses one unified header Actions launcher instead of separate plus and temporary terminal buttons", () => {
     const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ok(html.includes('id="headerActionsButton"'));
     ok(html.includes(">Actions<"));
@@ -763,7 +822,7 @@ describe("app bundle load", () => {
       globalShortcutPrefix: "Ctrl+Q",
       webuiShortcuts: { help: "Shift+Slash", settings: "KeyS", newWorkspace: "KeyN", sidebar: "KeyB", newPanel: "KeyP", closePanel: "KeyX", closeWorkspace: "Shift+KeyX", removeWorktree: "Delete" }
     }));
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.applyOptions();
 
     equal(ctx.document.getElementById("shortcutsToggle").title, "Help & Shortcuts (Ctrl+Q then Shift+/)");
@@ -809,7 +868,7 @@ describe("app bundle load", () => {
 
   it("wires the question dialog and span-button keyboard paths", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // Question dialog: dialog semantics, Escape cancel, Enter confirm,
     // and modalOpen() counts it so global shortcuts pause while it is up.
@@ -830,7 +889,7 @@ describe("app bundle load", () => {
 
   it("help modal documents the keyboard-operable surfaces", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     // The shortcuts reference renders into the merged Settings modal's
     // Help & Shortcuts section now, not its own modal.
     const html = ctx.helpAndShortcutsBodyHtml();
@@ -852,14 +911,16 @@ describe("app bundle load", () => {
   it("adds configured shortcut labels to Git tooltips", () => {
     match(gitShortcutsSource, /function titleWithGitShortcut\(title, action\)/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /titleWithGitShortcut\("Refresh", "refresh"\)/);
-    match(readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8"), /titleWithGitShortcut\("Switch branch", "branch"\)/);
+    // Phase 3: the branch chip moved to the location bar, which renders a
+    // plain Switch branch title (the b shortcut help lives in the popover).
+    match(readFileSync(new URL("./desktop/app_js/location_bar.js", import.meta.url), "utf8"), /chip\("branch", "Switch branch"/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /titleWithGitShortcut\("File history", "history"\)/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /titleWithGitShortcut\("Blame", "blame"\)/);
   });
 
   it("shows project dashboard and hides terminal shell when no workspace exists", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const dashboard = ctx.document.getElementById("projectDashboard");
     const shell = ctx.document.getElementById("terminalShell");
 
@@ -877,7 +938,7 @@ describe("app bundle load", () => {
     // Zero open workspaces is the only show condition: drawers never
     // claim the pane slot, so they must not hide the dashboard.
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const dashboard = ctx.document.getElementById("projectDashboard");
     const shell = ctx.document.getElementById("terminalShell");
 
@@ -914,7 +975,7 @@ describe("app bundle load", () => {
     // a zero-tab workspace hid the card and stranded a dead Connecting
     // shell in the pane slot, and closing the drawer never healed it.
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
     const shell = ctx.document.getElementById("terminalShell");
     vm.runInContext(
@@ -953,7 +1014,7 @@ describe("app bundle load", () => {
 
   it("focuses the empty-leaf card once per show, not under modals or user focus", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
     vm.runInContext(
       `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
@@ -1021,7 +1082,7 @@ describe("app bundle load", () => {
     ctx.document.addEventListener = (type, fn) => {
       if (type === "keydown") keydowns.push(fn);
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     vm.runInContext(
       `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
       ctx,
@@ -1255,7 +1316,7 @@ describe("app bundle load", () => {
 
   it("renders shortcut editor with collision detection", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const html = ctx.helpAndShortcutsBodyHtml();
 
@@ -1313,7 +1374,7 @@ describe("app bundle load", () => {
 
   it("opens the right rail search panel with Cmd/Ctrl+F without stealing editor or terminal Ctrl+F", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     vm.runInContext('state.defaultFolder = "/repo";', ctx);
 
     const key = (extra = {}) => ({
@@ -1382,7 +1443,7 @@ describe("app bundle load", () => {
 
   it("routes Cmd/Ctrl+F to focused file browser editor search before app search", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     let focusedFindTarget = null;
     const fileTarget = { closest: () => null };
     ctx.HerdrFileBrowser = {
@@ -1424,7 +1485,7 @@ describe("app bundle load", () => {
     const bootCollapsed = (stored) => {
       const ctx = context();
       if (stored !== undefined) ctx.localStorage.setItem("herdr-web-right-sidebar-collapsed", stored);
-      vm.runInContext(source, ctx);
+      runSource(ctx);
       return {
         collapsed: ctx.window.__herdrRightSidebarCollapsed,
         collapsedClass: ctx.document.getElementById("app").classList.contains("right-sidebar-collapsed"),
@@ -1507,7 +1568,7 @@ describe("app bundle load", () => {
       return Promise.resolve(vm.runInContext(code, ctx));
     };
     ctx.window.HerdrLoadCss = () => {};
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ok(!ctx.window.HerdrGitUi, "the lazy module must not exist before the first switch");
     vm.runInContext(`
       state.workspaces = [
@@ -1565,7 +1626,7 @@ describe("app bundle load", () => {
 
   it("toggles the right sidebar column with the webui prefix shortcut", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const prefixEvent = () => ({
       code: "KeyB",
       key: "b",
@@ -1607,7 +1668,7 @@ describe("app bundle load", () => {
 
   it("defines Git cleanup tab and maintenance endpoints", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ok(!gitUiSource.includes("git-ui-cleanup-tab-icon"));
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /renderGitViewTabs/);
@@ -1661,10 +1722,10 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = sideFileCount\(view\)/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /disabledReason = "Open a Git repository to use this view"/);
-    // Cleanup-only (not a git repo) views keep the path title so the user can
-    // pick a different folder, but hide the diff layout toggle there.
+    // Cleanup-only (not a git repo) views hide the diff layout toggle and
+    // render an empty side bottom (folder switching lives in the bar).
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const sideBottom = renderDiffLayoutSideToggle\(view\);/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /if \(cleanupOnly\) return `<div class="git-ui-side-bottom">\$\{head\}<\/div>`;/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /if \(cleanupOnly\) return `<div class="git-ui-side-bottom"><\/div>`;/);
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
     const controlsCss = readFileSync(new URL("./desktop/app_css/controls.css", import.meta.url), "utf8");
     match(controlsCss, /\.git-ui-btn:disabled \{[\s\S]*?background: var\(--panel2\);[\s\S]*?color: var\(--muted\);/);
@@ -2060,7 +2121,7 @@ describe("app bundle load", () => {
 
   it("keeps shell mode only for open workspaces during the page session", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const storageKey = "herdr-web-workspace-shell";
 
     // A mode change writes the shell state while the workspace is open.
@@ -2080,7 +2141,7 @@ describe("app bundle load", () => {
     // A fresh load clears any temporary store and starts in terminal mode.
     const fresh = context();
     fresh.localStorage.setItem(storageKey, JSON.stringify({ "ws-reload": { mode: "files" } }));
-    vm.runInContext(source, fresh);
+    runSource(fresh);
     equal(
       vm.runInContext('currentWorkspaceShellMode("ws-reload");', fresh),
       "terminal",
@@ -2091,7 +2152,7 @@ describe("app bundle load", () => {
     // Corrupted storage is ignored without throwing.
     const broken = context();
     broken.localStorage.setItem(storageKey, "{not json");
-    doesNotThrow(() => vm.runInContext(source, broken));
+    doesNotThrow(() => runSource(broken));
     equal(
       vm.runInContext('currentWorkspaceShellMode("ws-any");', broken),
       "terminal",
@@ -2588,7 +2649,7 @@ describe("app bundle load", () => {
     const ctx = context();
     ctx.searched = [];
     ctx.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false }) });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     // Boot-clean desktop: no workspaces at all, but the exploration default
     // folder exists. The palette is reachable here (header button, search
     // shortcut), so its search root must match the panel's fallback.
@@ -2616,7 +2677,7 @@ describe("app bundle load", () => {
     const ctx = context();
     ctx.searched = [];
     ctx.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false, visited: 0 }) });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     vm.runInContext("state.workspaces = []; state.ws = null; state.defaultFolder = '/Users/alejandro.blanco';", ctx);
     vm.runInContext('searchPaletteState.query = "needle";', ctx);
     vm.runInContext(
@@ -2649,7 +2710,7 @@ describe("app bundle load", () => {
 
   it("palette syncSearchModeToggles mirrors state into the head buttons", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     vm.runInContext("searchPaletteState.matchCase = true; searchPaletteState.regex = false;", ctx);
     vm.runInContext("syncSearchModeToggles()", ctx);
@@ -2669,7 +2730,7 @@ describe("app bundle load", () => {
   it("palette Alt+C and Alt+R flip the search modes from the keyboard", async () => {
     const ctx = context();
     ctx.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false }) });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     vm.runInContext("state.workspaces = []; state.ws = null; state.defaultFolder = '/Users/alejandro.blanco';", ctx);
     vm.runInContext(
       "window.HerdrWorkspaceSearch = {" +
@@ -2708,7 +2769,7 @@ describe("app bundle load", () => {
     const requests = [];
     ctx.requests = requests;
     ctx.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false }) });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     vm.runInContext("state.workspaces = []; state.ws = null; state.defaultFolder = '/Users/alejandro.blanco';", ctx);
     vm.runInContext('searchPaletteState.query = "needle";', ctx);
     vm.runInContext(
@@ -2751,7 +2812,7 @@ describe("app bundle load", () => {
     const fileRequests = [];
     ctx.fileRequests = fileRequests;
     ctx.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ entries: [], files: [], truncated: false }) });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     vm.runInContext("state.workspaces = [{ workspace_id: 'ws-1', cwd: '/repo' }]; state.ws = 'ws-1';", ctx);
     vm.runInContext('searchPaletteState.query = "needle";', ctx);
     vm.runInContext(
@@ -2804,7 +2865,7 @@ describe("app bundle load", () => {
       requests.push(String(url));
       return { status: 200, json: async () => ({ result: { worktrees: [], source: {} } }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     // The strip + and prefix-P share one contract: with a workspace the
     // press creates a panel, without one it routes to the open flow
     // seeded with the current folder. selectedWorkspaceRepoPath() is
@@ -2888,7 +2949,7 @@ describe("app bundle load", () => {
 
   it("renders new workspace modal with manual folder field", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const html = ctx.workspaceCreateModalHtml();
 
@@ -2900,7 +2961,7 @@ describe("app bundle load", () => {
 
   it("renders unified workspace and worktree opener", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const html = ctx.worktreeOpenModalHtml();
 
@@ -2922,17 +2983,24 @@ describe("app bundle load", () => {
     ok(!source.includes('id = "openWorktrees"'));
   });
 
-  it("wires Git branch options checked out in worktrees to switch Git directory", () => {
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /data-worktree-path=/);
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Checked out at/);
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /worktree: \$\{esc\(compactPath\(worktreePath\)\)\}/);
-    match(gitUiSource, /resetGitViewForCwd\(view, worktreePath\)/);
-    match(gitUiSource, /if \(worktreePath && !samePath\(worktreePath, modalCwd\)\)/);
+  it("moves worktree selection wholly into the location bar", () => {
+    // Phase 4: the bar owns worktree switching through the shared
+    // folder-change flow; the drawer keeps no selector surface.
+    const modalsSource = readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8");
+    ok(!modalsSource.includes("data-worktree-path="), "branch modal worktree options removed");
+    const branchListSource = readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8");
+    ok(!branchListSource.includes("selectWorktree"), "worktree select handler removed from the drawer");
+    ok(!branchListSource.includes("git-ui-worktree-chip"), "drawer worktree chip removed");
+    ok(!gitUiSource.includes("openWorktreeList"), "worktree popover handler removed from git_ui.js");
+    ok(!gitUiSource.includes("resetGitViewForCwd"), "cwd divergence reset removed from git_ui.js");
+    const barSource = readFileSync(new URL("./desktop/app_js/location_bar.js", import.meta.url), "utf8");
+    match(barSource, /HerdrLocationBar\.selectWorktreeFromPopover/);
+    match(barSource, /openFolderAsWorkspace/);
   });
 
   it("detects diverging fast-forward pull failures", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ok(ctx.pullFastForwardFailed("fatal: Not possible to fast-forward, aborting."));
     ok(ctx.pullFastForwardFailed("hint: Diverging branches can't be fast-forwarded"));
@@ -2941,7 +3009,7 @@ describe("app bundle load", () => {
 
   it("resolves workspace path from pane cwd when workspace metadata is missing", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     vm.runInContext(`state.panes = [
       {
         workspace_id: "ws1",
@@ -2959,7 +3027,7 @@ describe("app bundle load", () => {
 
   it("groups linked worktrees by absolute repo path, never by bare folder name", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // Two different projects whose repo folders share a name. The linked
     // worktree of the first repo must group under the first repo only,
@@ -3036,7 +3104,7 @@ describe("app bundle load", () => {
 
   it("never adopts a same-named folder from another project as worktree parent", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // A linked worktree whose repo main checkout is NOT open, plus an
     // unrelated plain-folder workspace that happens to carry the same
@@ -3087,7 +3155,7 @@ describe("app bundle load", () => {
 
   it("keeps workspaces without repo paths as separate groups", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // Backends that only send the repo folder name (no repo_key/repo_root)
     // must not merge two same-named repos into one sidebar group.
@@ -3136,7 +3204,7 @@ describe("app bundle load", () => {
 
   it("renders server access settings fields", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const html = ctx.serverSettingsHtml();
 
@@ -3191,7 +3259,7 @@ describe("app bundle load", () => {
         }),
       };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     await ctx.loadVersions();
 
@@ -3244,7 +3312,7 @@ describe("app bundle load", () => {
         }),
       };
     };
-    vm.runInContext(source, freshCtx);
+    runSource(freshCtx);
 
     await freshCtx.loadVersions();
 
@@ -3280,7 +3348,7 @@ describe("app bundle load", () => {
         }),
       };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     await ctx.loadVersions();
 
@@ -3300,7 +3368,7 @@ describe("app bundle load", () => {
 
   it("filters OSC color query replies before terminal input reaches the backend", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const strip = ctx.HerdrAppHelpers.stripTerminalQueryReplies;
 
     equal(
@@ -3318,7 +3386,7 @@ describe("app bundle load", () => {
 
   it("renders default shell panels as numeric panel labels", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     vm.runInContext(`
       state.ws = "ws1";
       state.tab = "tab2";
@@ -3404,7 +3472,7 @@ describe("app bundle load", () => {
       }
       return { ok: true, status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     await ctx.showSessionManager();
 
@@ -3475,7 +3543,7 @@ describe("app bundle load", () => {
         json: async () => ({ result: { workspaces: [] } }),
       };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     await ctx.closeCurrentSession();
     // closeCurrentSession fires showSessionManager without awaiting it;
@@ -3525,7 +3593,7 @@ describe("app bundle load", () => {
       "herdr-session-state:builtin:work",
       JSON.stringify({ ws: "w1", tab: null, pane: null }),
     );
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     // Land on the work session like the boot tail would after parseRoute.
     vm.runInContext("state.sessionBackend = readSessionBackend(state.session || 'default')", ctx);
 
@@ -3585,7 +3653,7 @@ describe("app bundle load", () => {
         "herdr-session-state:builtin:work",
         JSON.stringify({ ws: "w1", tab: null, pane: null }),
       );
-      vm.runInContext(source, ctx);
+      runSource(ctx);
       vm.runInContext("state.sessionBackend = readSessionBackend(state.session || 'default')", ctx);
 
       await ctx.closeCurrentSession();
@@ -3659,7 +3727,7 @@ describe("app bundle load", () => {
         },
         location: ctx.location,
       };
-      vm.runInContext(source, ctx);
+      runSource(ctx);
       vm.runInContext("state.sessionBackend = readSessionBackend(state.session || 'default')", ctx);
 
       await ctx.closeCurrentSession();
@@ -3707,7 +3775,7 @@ describe("app bundle load", () => {
       }
       return { ok: true, status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     await ctx.showSessionManager();
 
@@ -3742,7 +3810,7 @@ describe("app bundle load", () => {
       }
       return { ok: true, status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     await ctx.showSessionManager();
 
@@ -3775,7 +3843,7 @@ describe("app bundle load", () => {
       }
       return { ok: true, status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.setupSessionChrome();
 
     ctx.updateFooterSessionButton();
@@ -3793,7 +3861,7 @@ describe("app bundle load", () => {
 
   it("gives the session manager a close button and backdrop-click close", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.setupSessionChrome();
 
     match(source, /id="sessionManagerClose"/);
@@ -3805,7 +3873,7 @@ describe("app bundle load", () => {
   it("does not clobber the footer session label on background refresh", async () => {
     const ctx = context();
     ctx.fetch = async () => ({ ok: true, status: 200, json: async () => ({ result: { workspaces: [] } }) });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.setupSessionChrome();
 
     vm.runInContext(`
@@ -3829,7 +3897,7 @@ describe("app bundle load", () => {
       if (fail) throw Error("offline");
       return { ok: true, status: 200, json: async () => ({ result: { workspaces: [] } }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.setupSessionChrome();
     const manager = ctx.document.getElementById("sessionManager");
 
@@ -3881,7 +3949,7 @@ describe("app bundle load", () => {
         return { ok: true, status: 200, json: async () => ({ ok: true, pid: 4242 }) };
       return { ok: true, status: 200, json: async () => ({ result: { workspaces: [] } }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.setupSessionChrome();
     const manager = ctx.document.getElementById("sessionManager");
 
@@ -3902,7 +3970,7 @@ describe("app bundle load", () => {
 
   it("closes the session manager when switching targets via a session row", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.setupSessionChrome();
     const manager = ctx.document.getElementById("sessionManager");
 
@@ -3935,7 +4003,7 @@ describe("app bundle load", () => {
         return { ok: true, status: 200, json: async () => ({ ok: true }) };
       return { ok: true, status: 200, json: async () => ({ result: { workspaces: [] } }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.setupSessionChrome();
     const manager = ctx.document.getElementById("sessionManager");
 
@@ -4001,7 +4069,7 @@ describe("app bundle load", () => {
       }
       return { ok: true, status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     await ctx.showSessionManager();
     const html = ctx.document.getElementById("sessionList").innerHTML;
@@ -4014,7 +4082,7 @@ describe("app bundle load", () => {
 
   it("defines grouped settings sections", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     match(source, /id=\"settingsSearch\"/);
     match(source, /function setupSettingsSearch\(\)/);
@@ -4034,7 +4102,7 @@ describe("app bundle load", () => {
 
   it("applies the density setting to the document root and settings select", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // Stored option bootstraps the attribute; unknown values normalize
     // to default.
@@ -4061,7 +4129,7 @@ describe("app bundle load", () => {
 
   it("defines keyboard shortcuts and terminal font settings", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     match(source, /id="optGlobalShortcutsEnabled"/);
     match(source, /id="optGlobalShortcutPrefix"/);
@@ -4098,7 +4166,7 @@ describe("app bundle load", () => {
 
   it("migrates the old desktop monospace terminal default to the bundled Nerd Font", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const normalized = vm.runInContext(
       `normalizeOptions({ terminalFontFamily: "ui-monospace,SFMono-Regular,Menlo,monospace" }).terminalFontFamily`,
@@ -4111,7 +4179,7 @@ describe("app bundle load", () => {
 
   it("normalizes configurable shortcut prefixes", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     equal(ctx.normalizeShortcutPrefix("control+b"), "Ctrl+B");
     equal(ctx.normalizeShortcutPrefix("Option+Shift+x"), "Alt+Shift+X");
@@ -4121,7 +4189,7 @@ describe("app bundle load", () => {
 
   it("cycles agents by blocked done idle working priority", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const order = vm.runInContext(
       `state.agents = [
@@ -4139,7 +4207,7 @@ describe("app bundle load", () => {
 
   it("shows linked worktree branch as title and custom label as label chip", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const result = vm.runInContext(
       `const workspace = {
@@ -4170,7 +4238,7 @@ describe("app bundle load", () => {
 
   it("shows linked worktree custom label in agent list", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const html = vm.runInContext(
       `const workspace = {
@@ -4204,7 +4272,7 @@ describe("app bundle load", () => {
 
   it("agent row panel token hides with one panel, shows name or number with several", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const cases = vm.runInContext(
       `const workspace = {
@@ -4235,7 +4303,7 @@ describe("app bundle load", () => {
 
   it("keeps the agent row panel name when the filtered snapshot dropped its tab row", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // Server-filtered snapshot: selected workspace ws1, so tabById holds no
     // row for ws2's tab. Only the server's tab_labels_by_id map knows the
@@ -4266,7 +4334,7 @@ describe("app bundle load", () => {
 
   it("skips the label-map fallback for default panel titles", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // The map carries no tab number, so a synthetic row for a default label
     // would render every foreign default panel as #1. The fallback must
@@ -4303,7 +4371,7 @@ describe("app bundle load", () => {
 
   it("drops the closed panel name from the label map", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // tab.closed arrives between snapshots: the local removal must also drop
     // the tab's label entry, or the stale name outlives the panel.
@@ -4334,7 +4402,7 @@ describe("app bundle load", () => {
 
   it("sweeps a closed workspace's labels from the map", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // The workspace's own tabs went through removeClosedTabFromState first;
     // entries of other workspaces' tabs are plain label strings with no
@@ -4365,7 +4433,7 @@ describe("app bundle load", () => {
 
   it("memoizes unchanged workspace sidebar render work", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const result = vm.runInContext(
       `state.ws = "ws1";
@@ -4405,7 +4473,7 @@ describe("app bundle load", () => {
 
   it("searches workspaces only after a query using repo tags branches and panel names", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const results = vm.runInContext(
       `state.workspaceBranches = { ws1: "fallback/branch" };
@@ -4451,7 +4519,7 @@ describe("app bundle load", () => {
 
   it("hides repo header actions when parent workspace card exists", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const html = vm.runInContext(
       `state.worktrees = [{ is_linked_worktree: true, source_repo_key: "repo", open_workspace_id: null }];
@@ -4465,7 +4533,7 @@ describe("app bundle load", () => {
 
   it("does not render repo header when parent workspace card exists", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const html = vm.runInContext(
       `state.workspaces = [
@@ -4510,7 +4578,7 @@ describe("app bundle load", () => {
 
   it("closing the last panel keeps the workspace open", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     vm.runInContext(
       `const calls = [];
@@ -4547,7 +4615,7 @@ describe("app bundle load", () => {
 
   it("closing a panel that vanished server-side still finishes the close flow", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     vm.runInContext(
       `const calls = [];
@@ -4588,7 +4656,7 @@ describe("app bundle load", () => {
 
   it("canceling the terminal close question keeps the panel open", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     vm.runInContext(
       `const calls = [];
@@ -4620,7 +4688,7 @@ describe("app bundle load", () => {
 
   it("closing a panel surfaces real server errors", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     vm.runInContext(
       `const calls = [];
@@ -4658,7 +4726,7 @@ describe("app bundle load", () => {
     // "[object Object]", breaking every caller matching on message text
     // like the not-found close tolerance.
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const outcome = await vm.runInContext(
       `(() => {
         delete globalThis.HerdrHttp;
@@ -4683,7 +4751,7 @@ describe("app bundle load", () => {
 
   it("closes workspace panels through workspace.close", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const calls = await vm.runInContext(
       `const calls = [];
@@ -4700,7 +4768,7 @@ describe("app bundle load", () => {
 
   it("defines stuck-working dismissal controls", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     match(source, /id="optWorkingDismissMinutes"/);
     match(source, /id="optStuckWorkingEnabled"/);
@@ -4713,7 +4781,7 @@ describe("app bundle load", () => {
 
   it("defines the open-terminal-with-workspace option", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // Settings row, default off, normalize keeps booleans.
     match(source, /id="optWorkspaceOpenTerminal"/);
@@ -4725,7 +4793,7 @@ describe("app bundle load", () => {
 
   it("sends open_terminal from workspace create with the option on", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const bodies = await vm.runInContext(
       `const bodies = [];
@@ -4774,7 +4842,7 @@ describe("app bundle load", () => {
       node.releasePointerCapture = () => {};
       node.setPointerCapture = () => {};
     }
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const cssVars = () => {
       const app = ctx.document.getElementById("app");
@@ -4897,7 +4965,7 @@ describe("app bundle load", () => {
       node.releasePointerCapture = () => {};
       node.setPointerCapture = () => {};
     }
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // Capture failures must not kill the drag: make the strip throw on
     // capture and release once each and prove the width still commits.
@@ -5066,7 +5134,7 @@ describe("app bundle load", () => {
         node.releasePointerCapture = () => {};
         node.setPointerCapture = () => {};
       }
-      vm.runInContext(source, ctx);
+      runSource(ctx);
       const strip = ctx.document.getElementById(scenario.id);
       const handler = listeners[scenario.id];
       const app = ctx.document.getElementById("app");
@@ -5217,7 +5285,7 @@ describe("app bundle load", () => {
 
   it("keeps chord tooltips on sidebar toggles across render() polls", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // Boot ran: options initialized, resolver registered, bindings ran
     // applyOptions() -> syncShortcutTooltips(). The toggle title must carry
@@ -5240,7 +5308,7 @@ describe("app bundle load", () => {
 
   it("rebound chords follow into palette hints and toggle tooltips", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // User rebinds the sidebar chord to KeyJ and the prefix to Ctrl+X
     // through the real settings save path (recordShortcut's body: mutate
@@ -5270,7 +5338,7 @@ describe("app bundle load", () => {
 
   it("hint toast echoes the rebound chord after the settings save path", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // Rebind prefix and sidebar key through the same save path a settings
     // change takes, then trigger the learn-by-use toast exactly like the
@@ -5321,7 +5389,7 @@ describe("app bundle load", () => {
         webuiShortcuts: { sidebar: "KeyJ", settings: "KeyK" },
       }),
     );
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const button = ctx.document.getElementById("sidebarToggle");
     match(button.title, /Hide sidebar \(Ctrl\+X then J\)/);
@@ -5340,7 +5408,7 @@ describe("app bundle load", () => {
   it("renders collapsed sidebar agent counters", () => {
     const ctx = context();
     ctx.localStorage.setItem("herdr-web-sidebar-collapsed", "1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const html = vm.runInContext(
       `state.agents = [
@@ -5362,7 +5430,7 @@ describe("app bundle load", () => {
 
   it("fast-refreshes pane, tab, and worktree lifecycle events", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     equal(ctx.eventNeedsFastRefresh("pane.closed"), true);
     equal(ctx.eventNeedsFastRefresh("pane.exited"), true);
@@ -5375,7 +5443,7 @@ describe("app bundle load", () => {
 
   it("switches selected pane when Herdr reports current pane exited", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const result = vm.runInContext(
       `state.pane = "pane_1";
@@ -5426,7 +5494,7 @@ describe("app bundle load", () => {
                   : { agents: [] };
       return { ok: true, status: 200, json: async () => ({ result }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const result = await vm.runInContext(
       "refreshSeq = 1; refreshOnline(1).then(() => ({ tab: state.tab, pane: state.pane }))",
@@ -5473,7 +5541,7 @@ describe("app bundle load", () => {
                   : { agents: [] };
       return { ok: true, status: 200, json: async () => ({ result }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const result = await vm.runInContext(
       "refreshSeq = 1; refreshOnline(1).then(() => ({ tab: state.tab, pane: state.pane, terminalId: state.terminalId }))",
@@ -5596,7 +5664,7 @@ describe("app bundle load", () => {
                     : { agents: [] };
       return { ok: true, status: 200, json: async () => ({ result }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     // Boot's async calls are still in flight; let them land so the delta
     // below only counts the explicit refresh.
     let stable = 0;
@@ -5684,7 +5752,7 @@ describe("app bundle load", () => {
                   : { agents: [] };
       return { ok: true, status: 200, json: async () => ({ result }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const result = await vm.runInContext(
       "refreshSeq = 1; refreshOnline(1).then(() => ({ tab: state.tab, pane: state.pane }))",
@@ -5723,7 +5791,7 @@ describe("app bundle load", () => {
                   : { agents: [] };
       return { ok: true, status: 200, json: async () => ({ result }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     await vm.runInContext(
       `state.tabLabelsById = { "t9": "stale" };
@@ -5781,7 +5849,7 @@ describe("app bundle load", () => {
                   : { agents: [] };
       return { ok: true, status: 200, json: async () => ({ result }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const before = calls.length;
 
     const result = await vm.runInContext(
@@ -5859,7 +5927,7 @@ describe("app bundle load", () => {
               : { agents: [] };
       return { ok: true, status: 200, json: async () => ({ result }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     let stable = 0;
     let seen = -1;
     while (stable < 3) {
@@ -5925,7 +5993,7 @@ describe("app bundle load", () => {
             : { agents: [] };
       return { ok: true, status: 200, json: async () => ({ result }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     let stable = 0;
     let seen = -1;
     while (stable < 3) {
@@ -6046,7 +6114,7 @@ describe("app bundle load", () => {
               : { agents: [] };
       return { ok: true, status: 200, json: async () => ({ result }) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     let stable = 0;
     let seen = -1;
     while (stable < 3) {
@@ -6074,7 +6142,7 @@ describe("app bundle load", () => {
     const ctx = context();
     const replaced = [];
     ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const result = vm.runInContext(
       `state.pane = "pane_1";
@@ -6094,7 +6162,7 @@ describe("app bundle load", () => {
 
   it("clears stale terminal DOM when selected pane exits even without renderer object", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const terminal = ctx.document.getElementById("terminal");
     terminal.innerHTML = "stale terminal";
 
@@ -6116,7 +6184,7 @@ describe("app bundle load", () => {
     const ctx = context();
     const replaced = [];
     ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const result = vm.runInContext(
       `state.ws = "ws1";
@@ -6148,7 +6216,7 @@ describe("app bundle load", () => {
     const ctx = context();
     const replaced = [];
     ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const result = vm.runInContext(
       `state.ws = "ws1";
@@ -6184,7 +6252,7 @@ describe("app bundle load", () => {
       requests.push({ url, method: (opt && opt.method) || "GET" });
       return { ok: true, status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     vm.runInContext(
       `forgetClosedSelection("pane.exited", { pane_id: "pane_1" });`,
@@ -6213,7 +6281,7 @@ describe("app bundle load", () => {
 
   it("normalizes closeWorkspaceOnLastTerminal with a default-on flag", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // Default-on: absent stored value and explicit false both normalize.
     equal(vm.runInContext("normalizeOptions({}).closeWorkspaceOnLastTerminal", ctx), true);
@@ -6242,7 +6310,7 @@ describe("app bundle load", () => {
       return { ok: true, status: 200, json: async () => ({}) };
     };
     ctx.history.replaceState = () => {};
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     return { ctx, requests };
   }
 
@@ -6531,7 +6599,7 @@ describe("app bundle load", () => {
     const ctx = context();
     const replaced = [];
     ctx.history.replaceState = (_state, _title, url) => replaced.push(url);
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const result = vm.runInContext(
       `state.ws = "ws1";
@@ -6565,7 +6633,7 @@ describe("app bundle load", () => {
 
   it("clears workspace client state when worktree.removed identifies the checkout path", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const result = vm.runInContext(
       `state.workspaces = [
@@ -6603,7 +6671,7 @@ describe("app bundle load", () => {
 
   it("drops workspaces by workspace_ids when worktree.removed carries ids, even when the path matches nothing", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // ids beat path matching: a stale or mismatched path must not stop
     // the ids from tearing down their workspaces.
@@ -6643,7 +6711,7 @@ describe("app bundle load", () => {
 
   it("fast-refreshes workspace.closed events", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     equal(ctx.eventNeedsFastRefresh("workspace.closed"), true);
   });
 
@@ -6653,7 +6721,7 @@ describe("app bundle load", () => {
       "herdr-web-options",
       JSON.stringify({ agentSortMode: "attention_inverted" }),
     );
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     equal(
       Math.sign(
@@ -6699,7 +6767,7 @@ describe("app bundle load", () => {
       "herdr-web-options",
       JSON.stringify({ agentSortMode: "attention" }),
     );
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     equal(
       Math.sign(
@@ -6748,7 +6816,7 @@ describe("app bundle load", () => {
         agentStatusOrder: ["working", "blocked", "idle", "done", "other"],
       }),
     );
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     equal(
       Math.sign(
@@ -6772,7 +6840,7 @@ describe("app bundle load", () => {
 
   it("normalizes sidebar split percent to whole bounded values", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     equal(ctx.normalizeSidebarWorkspacePercent(33.6), 34);
     equal(ctx.normalizeSidebarWorkspacePercent(10), 20);
@@ -6781,7 +6849,7 @@ describe("app bundle load", () => {
 
   it("normalizes sidebar widths to the stock bounds", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     equal(ctx.normalizeSidebarWidth(200, 330), 330, "left floor at stock 330");
     equal(ctx.normalizeSidebarWidth(2000, 320), 2000, "no ceiling: huge widths pass through");
@@ -6820,7 +6888,7 @@ describe("app bundle load", () => {
 
   it("drops the orphaned tab activity feature", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ok(!source.includes("optShowTabActivity"));
     ok(!source.includes("tabActivity"));
@@ -6832,7 +6900,7 @@ describe("app bundle load", () => {
 
   it("workspace row keeps the panel switcher out of the row (Phase 5)", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     vm.runInContext(
       `state.ws = "ws1";
        state.tab = "tab1";
@@ -6896,7 +6964,7 @@ describe("app bundle load", () => {
 
   it("renders no-sleep control options", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const html = ctx.noSleepControlHtml("noSleepTest");
 
@@ -6919,7 +6987,7 @@ describe("app bundle load", () => {
         return Promise.reject(new Error("blocked"));
       }
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     doesNotThrow(() => ctx.unlockAudio());
   });
@@ -6935,7 +7003,7 @@ describe("app bundle load", () => {
         return "granted";
       },
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     await ctx.setBrowserNotifications(true);
 
@@ -6953,7 +7021,7 @@ describe("app bundle load", () => {
 
   it("stores desktop notification volume from Settings", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.document.getElementById("optNotificationVolume").value = "65";
     ctx.document.getElementById("optNotificationVolume").oninput();
@@ -6967,7 +7035,7 @@ describe("app bundle load", () => {
 
   it("requires credentials for non-local server bind", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     equal(
       ctx.serverSettingsValidationError("0.0.0.0:8787", "", "", false),
@@ -6980,7 +7048,7 @@ describe("app bundle load", () => {
 
   it("rejects invalid session expiration before posting server settings", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.document.getElementById("optServerBind").value = "127.0.0.1:8787";
     ctx.document.getElementById("optServerSessionExpiration").value = "-1";
     let posted = false;
@@ -7000,7 +7068,7 @@ describe("app bundle load", () => {
 
   it("accepts 0 session expiration as never expire and posts it", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.document.getElementById("optServerBind").value = "127.0.0.1:8787";
     ctx.document.getElementById("optServerSessionExpiration").value = "0";
     let postedBody = null;
@@ -7023,7 +7091,7 @@ describe("app bundle load", () => {
       readFileSync(new URL("./shared/settings_feedback.js", import.meta.url), "utf8"),
       ctx,
     );
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const control = ctx.document.getElementById("optFit");
     control.classList = {
@@ -7081,7 +7149,7 @@ describe("app bundle load", () => {
 
   it("marks server settings saved state green on success and red on failure", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const err = ctx.document.getElementById("serverSettingsError");
     const errClasses = new Set();
@@ -7120,7 +7188,7 @@ describe("app bundle load", () => {
 
   it("reloads to the returned scheme when the protocol changes", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // Current page is http; the server reply reports https.
     ctx.location = {
@@ -7174,7 +7242,7 @@ describe("app bundle load", () => {
 
   it("keeps server settings validation errors red without saved state", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const err = ctx.document.getElementById("serverSettingsError");
     const errClasses = new Set();
@@ -7208,7 +7276,7 @@ describe("app bundle load", () => {
 
   it("renders extracted worktree and shortcut modals", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     match(ctx.worktreeCreateModalHtml(), /id="worktreeCreateForm"/);
     match(ctx.worktreeCreateModalHtml(), /id="worktreeCreateSubmit"/);
@@ -7227,7 +7295,7 @@ describe("app bundle load", () => {
 
   it("prefills workspace label from final folder segment", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.document.getElementById("workspaceCreatePath").value =
       "/Users/me/projects/herdr-webui/";
 
@@ -7238,7 +7306,7 @@ describe("app bundle load", () => {
 
   it("keeps manually edited workspace label while folder changes", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.document.getElementById("workspaceCreatePath").value = "/tmp/first";
     ctx.syncWorkspaceCreateLabel();
     ctx.document.getElementById("workspaceCreateLabel").value = "custom";
@@ -7251,7 +7319,7 @@ describe("app bundle load", () => {
 
   it("focuses and selects suggested workspace label", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.document.getElementById("workspaceCreatePath").value = "/tmp/project";
 
     ctx.focusWorkspaceCreateLabel();
@@ -7264,14 +7332,14 @@ describe("app bundle load", () => {
 
   it("uses workspace fallback label for empty folder", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     equal(ctx.suggestedWorkspaceLabel(""), "workspace");
   });
 
   it("does not expose old path suggestion helper", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     equal(ctx.loadDirectoryPathSuggestions, undefined);
     equal(ctx.schedulePathSuggestions, undefined);
@@ -7279,7 +7347,7 @@ describe("app bundle load", () => {
 
   it("workspace path changes only update generated label", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.document.getElementById("workspaceCreatePath").value = "/tmp/project";
 
     ctx.workspaceCreatePathChanged();
@@ -7289,7 +7357,7 @@ describe("app bundle load", () => {
 
   it("prefers exploration default directory over server default folder for workspace and worktree open defaults", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     vm.runInContext('state.defaultFolder = "/tmp/default"', ctx);
 
     ctx.openWorkspaceCreateModal();
@@ -7321,7 +7389,7 @@ describe("app bundle load", () => {
 
   it("does not use legacy root as worktree discover default", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     vm.runInContext('state.defaultFolder = ""; options.explorationDefaultDirectory = "/";', ctx);
 
     ctx.openWorktreeOpenModal("/");
@@ -7379,76 +7447,56 @@ describe("app bundle load", () => {
     ok(source.includes("setTerminalLoading(false);"));
   });
 
-  it("uses one Git folder selection flow and offers return to workspace", () => {
+  it("keeps folder switching in the location bar and out of the drawer", () => {
     const directoryPickerSource = readFileSync(new URL("./desktop/directory_picker.js", import.meta.url), "utf8");
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
-    const featuresDoc = readFileSync(new URL("../../docs/features.md", import.meta.url), "utf8");
-    const technicalDoc = readFileSync(new URL("../../docs/technical-details.md", import.meta.url), "utf8");
-    const releaseNotes = readFileSync(new URL("../../docs/release-notes.md", import.meta.url), "utf8");
+    const gitDiffViewSource = readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8");
+    const gitBranchListSource = readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8");
 
     match(directoryPickerSource, /function afterSelectCallback\(input\)/);
     match(directoryPickerSource, /input\.dataset\.directoryPickerAfterSelect/);
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /id="gitUiBranchCwd"[^`]*data-directory-picker-after-select="HerdrGitUi\.applyBranchModalCwd"/);
-    ok(!gitUiSource.includes("Load typed path"));
-    ok(!gitUiSource.includes(">Use directory</button>"));
-    ok(!gitUiSource.includes(">Switch to</button>"));
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Choosing a folder moves the Git panel to that directory immediately/);
+    // Plan phase 2b: every drawer folder surface is gone.
+    ok(!gitUiSource.includes("openCwdPicker"), "openCwdPicker removed from git_ui.js");
+    ok(!gitUiSource.includes("returnToWorkspaceCwd"), "returnToWorkspaceCwd removed from git_ui.js");
+    ok(!gitDiffViewSource.includes("git-ui-path-title"), "path title removed from the side bottom");
+    ok(!gitDiffViewSource.includes("git-ui-side-bottom-head"), "side-bottom head removed");
+    ok(!gitBranchListSource.includes("git-ui-folder-different"), "differs notice removed from the subtitle");
+    ok(!gitBranchListSource.includes("returnToWorkspaceCwd"), "return button removed from the subtitle");
+    ok(!gitLayoutCss.includes("git-ui-path-title"), "path title css removed");
+    ok(!gitLayoutCss.includes("git-ui-side-bottom-head"), "side-bottom head css removed");
+    ok(!gitLayoutCss.includes("git-ui-folder-different"), "differs notice css removed");
+    ok(!gitLayoutCss.includes("git-ui-return-cwd"), "return button css removed");
+    // The bar owns the flow now: its path chip opens the picker and routes
+    // the pick through HerdrOpenFolder.
+    const barSource = readFileSync(new URL("./desktop/app_js/location_bar.js", import.meta.url), "utf8");
+    match(barSource, /onclick="HerdrLocationBar\.openPathPicker\(\)"/);
+    match(barSource, /window\.HerdrOpenFolder\.openFolderAsWorkspace\(target\)/);
     match(gitUiSource, /workspaceCwd: nextWorkspaceCwd/);
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function gitCwdMatchesWorkspace\(view\)/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /HerdrGitUi\.returnToWorkspaceCwd\(\)/);
-    match(gitUiSource, /returnToWorkspaceCwd\(\) \{/);
-    // The side path title opens the folder picker and offers return to the workspace folder.
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /class="git-ui-path-title"[^`]*onclick="HerdrGitUi\.openCwdPicker\(\)"/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /Change Git folder/);
-    match(gitUiSource, /openCwdPicker\(\) \{/);
-    match(readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8"), /\.git-ui-side-bottom-head \{[\s\S]*?\.git-ui-side-bottom-head \.git-ui-return-cwd-icon span/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /git-ui-current-changes-icon/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /title="Return to current changes"/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /\$\{returnToCurrentChanges\}\$\{refreshButton\}/);
-    ok(!readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8").includes("${returnToCurrentChanges}${returnToWorkspace}"), "no second return button in the title actions");
+    match(gitDiffViewSource, /git-ui-current-changes-icon/);
+    match(gitDiffViewSource, /title="Return to current changes"/);
+    match(gitDiffViewSource, /\$\{returnToCurrentChanges\}\$\{refreshButton\}/);
+    ok(!gitDiffViewSource.includes("${returnToCurrentChanges}${returnToWorkspace}"), "no second return button in the title actions");
     ok(!gitUiSource.includes('${compareButton}<button'));
-    match(gitLayoutCss, /\.git-ui-return-cwd-icon span/);
-    match(gitLayoutCss, /folder-up\.svg/);
     match(gitLayoutCss, /\.git-ui-current-changes-icon span \{[\s\S]*?git\.svg/);
-    match(gitShortcutsSource, /Folder picker: selected folder becomes the Git panel directory immediately/);
-    match(gitShortcutsSource, /Load more changes fetches older commits/);
-    match(source, /Choosing a folder in the Git directory picker immediately moves the Git panel/);
-    match(source, /clicking the folder path title in the Git side panel opens the same picker/);
-    match(source, /the ↩ button next to the path title returns Git to the current workspace\/worktree folder/);
-    match(source, /WebUI no longer opens a workspace automatically on startup/);
-    match(source, /In Git UI, open Git directory\/branch dialog/);
-    match(featuresDoc, /The Git directory picker has a single meaning/);
-    match(featuresDoc, /The built-in backend starts with zero workspaces/);
-    match(technicalDoc, /Built-in sessions do not seed a default workspace/);
-    match(technicalDoc, /Git cwd is independent from workspace selection/);
-    match(releaseNotes, /0\.2\.50 Release Notes/);
-    match(readmeDoc, /herdr-webui-tui --api-socket \/path\/to\/herdr\.sock --terminal-socket \/path\/to\/herdr-client\.sock/);
-    match(readmeDoc, /The TUI is a client; it does not start the backend by itself/);
-    match(readmeDoc, /Prebuilt binaries ship on the \[releases page\]/);
-    match(readmeDoc, /releases\/latest\/download\/herdr-webui-/);
-    match(readmeDoc, /install-mac` or `install-linux/);
-    match(installationDoc, /This is the recommended quick-start path/);
-    match(installationDoc, /For an external Herdr-compatible backend, point TUI at the socket pair explicitly/);
-    match(installationDoc, /prints `failed to bind <scheme>:\/\/<address>: Address already in use` and retries every second/);
-    match(installationDoc, /While the server is retrying it ignores Ctrl\+C and `SIGTERM`/);
-    match(releaseNotes, /Updates the global `\?` Help & Shortcuts modal/);
-    match(releaseNotes, /`Worktree…` creates a linked worktree/);
-    match(releaseNotes, /table header, and filter row sticky/);
-    match(releaseNotes, /File browser `Show history` opens the Git log scoped to the file/);
-    match(releaseNotes, /Committed files` side preview/);
-    match(featuresDoc, /normal worktree creation modal prefilled/);
-    match(featuresDoc, /scope row, table header, and filter row are sticky/);
-    match(featuresDoc, /File browser `Show history` opens this log scoped to the selected file/);
-    match(featuresDoc, /Selecting one commit loads a `Committed files` side preview/);
-    match(technicalDoc, /renderLogContextMenu/);
-    match(technicalDoc, /row-level right-click context menu/);
-    match(technicalDoc, /optional `file` path/);
-    match(technicalDoc, /commit\^` versus `commit`/);
-    match(gitUiSource, /function gitBranchModalDefaultCwd\(cwd\)/);
-    match(gitUiSource, /if \(path && path !== "\/"\) return path;/);
-    match(gitUiSource, /typeof window\.defaultFolderPath === "function"/);
+    // Plan phase 3: the drawer's branch surfaces are gone and the bar
+    // owns branch switching.
+    const modalsSource = readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8");
+    ok(!gitUiSource.includes("openBranchList"), "branch popover handlers removed from git_ui.js");
+    ok(!gitUiSource.includes("branchListFilter"), "branch filter handler removed from git_ui.js");
+    ok(!gitUiSource.includes("switchFromBranchList"), "branch switch handler removed from git_ui.js");
+    ok(!gitUiSource.includes("deleteFromBranchList"), "branch delete handler removed from git_ui.js");
+    ok(!gitUiSource.includes("openBranchModal"), "branch modal handler removed from git_ui.js");
+    ok(!gitUiSource.includes("gitBranchModalDefaultCwd"), "branch modal cwd default removed");
+    ok(!modalsSource.includes("gitUiBranchCwd"), "branch modal markup removed from modals.js");
+    ok(!gitBranchListSource.includes("openBranchList"), "branch chip removed from the drawer subtitle");
+    match(barSource, /onclick="HerdrLocationBar\.openBranchPopover\(event\)"/);
+    match(barSource, /JSON\.stringify\(\{ cwd, branch: localName \}\)/);
+    match(barSource, /JSON\.stringify\(\{ cwd, branch: name, create: true, base \}\)/);
+    match(barSource, /HerdrLocationBar\.deleteBranchFromPopover/);
+    match(barSource, /HerdrLocationBar\.branchPopoverFilter/);
+    match(barSource, /location-bar-branch-popover/);
     match(readFileSync(new URL("./desktop/git_ui/cleanup.js", import.meta.url), "utf8"), /id="gitUiCleanupRoot"[^`]*data-directory-picker-after-select="HerdrGitUi\.scanCleanup"/);
-    match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /class="mini directory-picker-trigger" onclick="HerdrDirectoryPicker\.openInput\('gitUiBranchCwd'\)"/);
   });
 
   it("renders Git log like a four-column graph table with ref chips", () => {
@@ -7575,7 +7623,7 @@ describe("app bundle load", () => {
 
   it("derives the selected Git log branch for worktree creation", () => {
     const ctx = context();
-    vm.runInContext(gitLogSource, ctx);
+    productScript("./desktop/git_ui/log.js").runInContext(ctx);
 
     const branch = ctx.HerdrGitLog.selectedBranchForHash(
       {
@@ -7638,7 +7686,7 @@ describe("app bundle load", () => {
         json: async () => ({ branches: ["main", "feature/local", "origin/feature/remote"] }),
       };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     match(source, /id="worktreeNewTitle">Create worktree/);
     match(source, /Review branch name, base branch, and checkout path, then create and open/);
@@ -7676,7 +7724,7 @@ describe("app bundle load", () => {
         }),
       };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.openWorktreeOpenModal("/Users/alejandro.blanco", false);
     await ctx.discoverWorktrees();
@@ -7788,7 +7836,7 @@ describe("app bundle load", () => {
       }
       return { ok: true, status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     equal(await ctx.handleHerdrErrorFrame("not json"), false);
     equal(await ctx.handleHerdrErrorFrame(JSON.stringify({ type: "other" })), false);
@@ -7858,7 +7906,7 @@ describe("app bundle load", () => {
         }),
       };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     await ctx.loadVersions();
 
@@ -7869,7 +7917,7 @@ describe("app bundle load", () => {
 
   it("saves the selection on explicit navigation so reopen can restore it", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.setupSessionChrome();
 
     ctx.location.pathname = "/session/default/workspace/main-ws/tab/tab-1/pane/pane-2";
@@ -7898,7 +7946,7 @@ describe("app bundle load", () => {
   it("restores the saved workspace selection when goSession reopens a session", async () => {
     const ctx = context();
     const historyCalls = [];
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.setupSessionChrome();
     // Keep the base harness behavior (location mirrors pushState) but also
     // record the calls so the pushed paths can be asserted.
@@ -7979,7 +8027,7 @@ describe("app bundle load", () => {
       }
       return { ok: true, status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.setupSessionChrome();
     // The external backend is only selectable for a compatible install:
     // loadSessions adopts herdr_compatible from the /api/sessions reply.
@@ -8014,7 +8062,7 @@ describe("app bundle load", () => {
       }
       return { ok: true, status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.setupSessionChrome();
 
     await ctx.showSessionManager();
@@ -8048,7 +8096,7 @@ describe("app bundle load", () => {
         }
         return { ok: true, status: 200, json: async () => ({}) };
       };
-      vm.runInContext(source, ctx);
+      runSource(ctx);
       ctx.setupSessionChrome();
 
       // The stale row must carry a stored backend pin and a saved selection
@@ -8103,7 +8151,7 @@ describe("app bundle load", () => {
       }
       return { ok: true, status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.setupSessionChrome();
     // The external backend is only selectable for a compatible install.
     await ctx.loadSessions();
@@ -8135,7 +8183,7 @@ describe("app bundle load", () => {
     // run. A deep-URL boot on work must not inherit default's pin.
     ctx.localStorage.setItem("herdr-session-backend:work", "builtin");
     ctx.localStorage.setItem("herdr-session-backend:default", "external-herdr");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     equal(vm.runInContext("state.session", ctx), "work");
@@ -8153,9 +8201,11 @@ describe("workspace sidebar order", () => {
   // core first, then desktop modules with worktrees.js before shortcuts.js.
   const desktopModules = [
     "./desktop/app_js/core.js",
+    "./desktop/app_js/open_folder_flow.js",
     "./desktop/app_js/workspace_shell.js",
     "./desktop/app_js/right_sidebar.js",
     "./desktop/app_js/workspace_panes.js",
+    "./desktop/app_js/location_bar.js",
     "./desktop/app_js/render.js",
     "./desktop/app_js/terminal.js",
     "./desktop/app_js/lens.js",
@@ -8255,13 +8305,74 @@ describe("workspace sidebar order", () => {
   });
 });
 
+describe("location bar integration", () => {
+  // Drift guards for the Phase 1 location-bar wiring: the html container,
+  // the bundle serving order in assets.rs, the render.js sync hook, and
+  // the git_ui probe parks feeding the bar's branch chip.
+  it("ships the locationBar container above workspacePanes in app.html", () => {
+    const html = readFileSync(new URL("./app.html", import.meta.url), "utf8");
+    const container = '<div class="location-bar" id="locationBar"></div>';
+    ok(html.includes(container), "app.html has the always-visible locationBar container");
+    const barIdx = html.indexOf(container);
+    const panesIdx = html.indexOf('id="workspacePanes"');
+    ok(panesIdx !== -1, "workspacePanes exists");
+    equal(barIdx < panesIdx, true, "the bar sits above the workspace panes");
+  });
+
+  it("serves location_bar.js between workspace_panes.js and pane_terminals.js", () => {
+    const assetsRs = readFileSync(new URL("../../src/assets.rs", import.meta.url), "utf8");
+    const concatStart = assetsRs.indexOf("const DESKTOP_JS: &str = concat!(");
+    ok(concatStart !== -1, "assets.rs still defines the DESKTOP_JS concat");
+    const concatBody = assetsRs.slice(concatStart, assetsRs.indexOf(");", concatStart));
+    const served = [...concatBody.matchAll(/include_str!\("([^"]+)"\)/g)].map((m) => m[1]);
+    const core = served.indexOf("assets/desktop/app_js/core.js");
+    const folderFlow = served.indexOf("assets/desktop/app_js/open_folder_flow.js");
+    equal(folderFlow, core + 1, "open_folder_flow.js loads right after core.js");
+    const panes = served.indexOf("assets/desktop/app_js/workspace_panes.js");
+    const bar = served.indexOf("assets/desktop/app_js/location_bar.js");
+    const terminals = served.indexOf("assets/desktop/app_js/pane_terminals.js");
+    const render = served.indexOf("assets/desktop/app_js/render.js");
+    equal(bar, panes + 1, "location_bar.js loads right after workspace_panes.js");
+    equal(terminals, bar + 1, "pane_terminals.js follows location_bar.js");
+    equal(render, terminals + 1, "render.js still follows pane_terminals.js");
+    const cssStart = assetsRs.indexOf("const DESKTOP_CSS: &str = concat!(");
+    ok(cssStart !== -1, "assets.rs still defines the DESKTOP_CSS concat");
+    const cssBody = assetsRs.slice(cssStart, assetsRs.indexOf(");", cssStart));
+    const cssServed = [...cssBody.matchAll(/include_str!\("([^"]+)"\)/g)].map((m) => m[1]);
+    ok(cssServed.includes("assets/desktop/app_css/location_bar.css"), "DESKTOP_CSS serves location_bar.css");
+  });
+
+  it("syncs the location bar from render and parks branch in the rail probe", () => {
+    const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
+    match(renderSource, /syncFileWorkspaceToggle\(\);\n\s*if \(window\.HerdrLocationBar\) window\.HerdrLocationBar\.sync\(\);/);
+    const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+    match(gitUiSource, /view\.railStatus = \{ cwd, state: item\.state, not_git_repository: !!item\.not_git_repository, branch: item\.branch \|\| "" \};/);
+    match(gitUiSource, /__probedOnly: true,\n\s*state: item\.state,\n\s*not_git_repository: !!item\.not_git_repository,\n\s*branch: item\.branch \|\| "",/);
+    match(gitUiSource, /workspaceBranch\(workspace, cwd\) \{/);
+  });
+
+  it("routes the file browser openWorkspaceHere and the bar path chip through the shared folder flow", () => {
+    const fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
+    match(fileBrowserSource, /async function openWorkspaceHere\(path\) \{\n\s*if \(!window\.HerdrOpenFolder\) return;\n\s*await window\.HerdrOpenFolder\.openFolderAsWorkspace\(absoluteFilePath\(path\)\);\n\s*\}/);
+    ok(!fileBrowserSource.includes('await api("/api/worktrees/open"'), "the file browser no longer holds its own checkout flow");
+    const barSource = readFileSync(new URL("./desktop/app_js/location_bar.js", import.meta.url), "utf8");
+    match(barSource, /onclick="HerdrLocationBar\.openPathPicker\(\)"/);
+    match(barSource, /window\.HerdrOpenFolder\.openFolderAsWorkspace\(target\)/);
+  });
+});
+
 describe("alert card module", () => {
   const alertCardSource = () =>
     readFileSync(new URL("./shared/alert_card.js", import.meta.url), "utf8");
+  // One compiled script for the module so coverage attributes its lines
+  // to the real disk path.
+  const alertCardScript = new vm.Script(alertCardSource(), {
+    filename: fileURLToPath(new URL("./shared/alert_card.js", import.meta.url)),
+  });
 
   it("exposes a global HerdrAlertCard with show and hide", () => {
     const ctx = context();
-    vm.runInContext(alertCardSource(), ctx);
+    alertCardScript.runInContext(ctx);
     ok(ctx.HerdrAlertCard, "HerdrAlertCard global exists");
     equal(typeof ctx.HerdrAlertCard.show, "function");
     equal(typeof ctx.HerdrAlertCard.hide, "function");
@@ -8269,7 +8380,7 @@ describe("alert card module", () => {
 
   it("renders one card with status, role, and auto-dismiss timer", () => {
     const ctx = context();
-    vm.runInContext(alertCardSource(), ctx);
+    alertCardScript.runInContext(ctx);
     let timeoutFn = null;
     ctx.setTimeout = (fn) => {
       timeoutFn = fn;
@@ -8299,7 +8410,7 @@ describe("alert card module", () => {
 
   it("updates the live card in place when the same pane alerts again", () => {
     const ctx = context();
-    vm.runInContext(alertCardSource(), ctx);
+    alertCardScript.runInContext(ctx);
     vm.runInContext(
       `HerdrAlertCard.show({ key: "t1", status: "done", title: "Agent done", subtitle: "s" })`,
       ctx,
@@ -8315,7 +8426,7 @@ describe("alert card module", () => {
 
   it("queues a different-pane alert behind the live card", () => {
     const ctx = context();
-    vm.runInContext(alertCardSource(), ctx);
+    alertCardScript.runInContext(ctx);
     vm.runInContext(
       `HerdrAlertCard.show({ key: "t1", status: "blocked", title: "Agent blocked", subtitle: "s" })`,
       ctx,
@@ -8360,8 +8471,8 @@ describe("terminal loading and failed states", () => {
 
   it("renders a skeleton while connecting and a reconnect card on failure", () => {
     const ctx = context();
-    vm.runInContext(readFileSync(new URL("./shared/skeleton.js", import.meta.url), "utf8"), ctx);
-    vm.runInContext(source, ctx);
+    productScript("./shared/skeleton.js").runInContext(ctx);
+    runSource(ctx);
     vm.runInContext("setTerminalLoading(true)", ctx);
     const loading = ctx.document.getElementById("terminalLoading");
     ok(loading.classList.contains("show"), "loading overlay shown");
@@ -8385,7 +8496,7 @@ describe("terminal loading and failed states", () => {
 
   it("sources the ANSI palette from --term-* tokens with JS fallback", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     // No getComputedStyle in the test context: falls back to the JS table.
     // Without matchMedia the effective theme resolves to light.
     const theme = vm.runInContext("terminalTheme()", ctx);

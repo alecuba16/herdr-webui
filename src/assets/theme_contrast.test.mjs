@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const {
@@ -148,6 +149,7 @@ function loadProfiles() {
       snippet +
       "; this.__profiles = themeColorProfiles;",
     ctx,
+    { filename: fileURLToPath(new URL("./desktop/app_js/core.js", import.meta.url)) },
   );
   return ctx.__profiles;
 }

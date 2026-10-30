@@ -1979,14 +1979,27 @@ impl BuiltinState {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let repo_root = git_output(&cwd, &["rev-parse", "--show-toplevel"])
             .unwrap_or_else(|_| cwd.to_string_lossy().to_string());
+        let list = git_output(Path::new(&repo_root), &["worktree", "list", "--porcelain"])
+            .unwrap_or_default();
+        let mut worktrees = parse_git_worktrees(&list);
+        // `rev-parse --show-toplevel` reports the queried checkout's own
+        // toplevel, so inside a linked worktree it names the lane, not the
+        // repository. `worktree list --porcelain` always leads with the
+        // main checkout, so the first row is the true repository root and
+        // name; callers derive main-vs-linked from it (the row flag is
+        // unreliable: the parser marks every row linked). An empty list
+        // (plain folder, broken git) keeps the toplevel/cwd identity.
+        let repo_root = worktrees
+            .first()
+            .and_then(|row| row.get("path"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or(repo_root);
         let repo_name = Path::new(&repo_root)
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("repo")
             .to_string();
-        let list = git_output(Path::new(&repo_root), &["worktree", "list", "--porcelain"])
-            .unwrap_or_default();
-        let mut worktrees = parse_git_worktrees(&list);
         enrich_worktree_commit_dates(&mut worktrees);
         worktrees.sort_by_key(|row| std::cmp::Reverse(worktree_activity_key(row)));
         Ok(json!({
@@ -7434,6 +7447,47 @@ mod tests {
     }
 
     #[test]
+    fn osc9_tracker_accepts_st_terminator_and_esc_bytes_in_body() {
+        let mut tracker = Osc9Tracker::default();
+        // ESC \ terminates the sequence the same as BEL.
+        tracker.observe(b"\x1b]9;jcode:working\x1b\\");
+        assert_eq!(tracker.latest_progress(), "jcode:working");
+
+        // A lone ESC inside the body followed by a normal byte keeps both
+        // bytes in the buffer, but finalize strips control bytes from the
+        // stored payload, so the ESC disappears and the text survives.
+        tracker.observe(b"\x1b]9;jcode:be\x1bgin\x07");
+        assert_eq!(tracker.latest_progress(), "jcode:begin");
+        // The captured payload keeps the raw ESC, but label extraction only
+        // looks at the prefix before the colon.
+        assert_eq!(tracker.latest_agent_label(), Some("jcode"));
+
+        // Back-to-back ESC bytes stay in the Escape state until a byte
+        // decides the sequence.
+        tracker.reset();
+        tracker.observe(b"\x1b\x1b]9;jcode:idle\x07");
+        assert_eq!(tracker.latest_progress(), "jcode:idle");
+    }
+
+    #[test]
+    fn osc9_tracker_ignores_payloads_that_sanitize_to_empty() {
+        let mut tracker = Osc9Tracker::default();
+        // OSC 9 body of only control bytes: no progress update.
+        tracker.observe(b"\x1b]9;\x01\x02\x07");
+        assert_eq!(tracker.latest_progress(), "");
+        // OSC 0 title of only control bytes: no title update, and a prior
+        // title survives.
+        tracker.observe(b"\x1b]0;real title\x07");
+        assert_eq!(tracker.latest_title(), "real title");
+        tracker.observe(b"\x1b]0;\x01\x02\x07");
+        assert_eq!(tracker.latest_title(), "real title");
+        // A payload without a semicolon cannot be parsed at all.
+        tracker.observe(b"\x1b]noseparator\x07");
+        assert_eq!(tracker.latest_progress(), "");
+        assert_eq!(tracker.latest_title(), "real title");
+    }
+
+    #[test]
     fn detect_agent_status_with_osc_prefers_osc_over_screen_scrape() {
         // OSC says "idle" but screen shows working spinner
         assert_eq!(
@@ -8436,6 +8490,930 @@ mod tests {
     }
 
     #[test]
+    fn detects_qwen_status_from_manifest_patterns() {
+        // Blocked: tool confirmation dialog.
+        assert_eq!(
+            detect_agent_status(
+                Some("qwen"),
+                "Do you want to proceed?\nyes, allow once\n",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: localized confirmation spinner lines.
+        assert_eq!(
+            detect_agent_status(
+                Some("qwen"),
+                "⠏ Waiting for user confirmation...\n",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("qwen"),
+                "⠏ 等待用户确认...",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Spinner without the trailing dots must not match.
+        assert_eq!(
+            detect_agent_status(
+                Some("qwen"),
+                "⠏ Waiting for user confirmation",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "unknown"
+        );
+        // Blocked: numbered question dialog and arrow navigation.
+        assert_eq!(
+            detect_agent_status(
+                Some("qwen"),
+                "❯ [✓] 1. First option\n",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("qwen"),
+                "› 2. Pick one\n↑/↓ : Enter to confirm",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: folder trust dialog.
+        assert_eq!(
+            detect_agent_status(
+                Some("qwen"),
+                "Do you trust this folder?\nTrust folder (1)\nDon't trust (esc)",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Working: cancel hint with elapsed time and braille spinner.
+        assert_eq!(
+            detect_agent_status(
+                Some("qwen"),
+                "⠙ Generating response (1m 12s · esc to cancel)",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("qwen"),
+                ".. Compiling (45s · esc to cancel)",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Working: narrow terminal cancel hint without spinner.
+        assert_eq!(
+            detect_agent_status(
+                Some("qwen"),
+                "(3m 12s · esc to cancel)",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Idle: composer prompt box.
+        assert_eq!(
+            detect_agent_status(
+                Some("qwen"),
+                "> type your message or @path/to/file",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        // Idle: fragmented localized composer.
+        assert_eq!(
+            detect_agent_status(
+                Some("qwen"),
+                "> type mes sage @pat h/to /fil",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("qwen"), "nothing", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_kimi_status_from_manifest_patterns() {
+        // Blocked: current approval panel.
+        assert_eq!(
+            detect_agent_status(
+                Some("kimi"),
+                "Run this command?\n↵ confirm\n Choose: approve / reject / revise",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: ▶ approve alias form (no space after the marker).
+        assert_eq!(
+            detect_agent_status(
+                Some("kimi"),
+                "▶approve everything?\n↵ confirm\n choose",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: question panel.
+        assert_eq!(
+            detect_agent_status(
+                Some("kimi"),
+                "question\n↑↓ select\nesc cancel\n↵ choose",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: legacy approval panel.
+        assert_eq!(
+            detect_agent_status(
+                Some("kimi"),
+                "Requesting approval\nreject\napprove once\n1/2/3/4 choose",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Working: moon spinner.
+        assert_eq!(
+            detect_agent_status(Some("kimi"), "🌕", JcodeDetectionVariant::Vanilla),
+            "working"
+        );
+        // Working: braille spinner with thinking.
+        assert_eq!(
+            detect_agent_status(
+                Some("kimi"),
+                "⠋ thinking...",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Working: background agents line in bottom 3.
+        assert_eq!(
+            detect_agent_status(
+                Some("kimi"),
+                "line\nKimi thinking about it [2 agents running]\nline",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Zero agents must not count as working.
+        assert_eq!(
+            detect_agent_status(
+                Some("kimi"),
+                "Kimi thinking [0 agents running]",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "unknown"
+        );
+        assert_eq!(
+            detect_agent_status(Some("kimi"), "nothing", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_kiro_status_from_manifest_patterns() {
+        // Blocked: approval panel.
+        assert_eq!(
+            detect_agent_status(
+                Some("kiro"),
+                "Requires approval\nyes, single permission\nesc to close",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: pending subagent approvals.
+        assert_eq!(
+            detect_agent_status(
+                Some("kiro"),
+                "Pending from subagents\ntool approvals\nApprove all pending",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Working: explicit text.
+        assert_eq!(
+            detect_agent_status(
+                Some("kiro"),
+                "Kiro is working on it",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Working: half-circle spinner with esc to cancel.
+        assert_eq!(
+            detect_agent_status(
+                Some("kiro"),
+                "◔ running tools\nesc to cancel",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Idle: composer prompt.
+        assert_eq!(
+            detect_agent_status(
+                Some("kiro"),
+                "ask a question or describe a task\n/copy to clipboard",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("kiro"), "nothing", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_gemini_status_from_manifest_patterns() {
+        assert_eq!(
+            detect_agent_status(
+                Some("gemini"),
+                "│ apply this change?",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("gemini"),
+                "waiting for user confirmation\nyes",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // ❯ line with yes or allow.
+        assert_eq!(
+            detect_agent_status(
+                Some("gemini"),
+                "❯ allow this command",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("gemini"),
+                "esc to cancel",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("gemini"), "nothing", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_cursor_status_from_manifest_patterns() {
+        // Blocked: write permission dialog in bottom 8.
+        assert_eq!(
+            detect_agent_status(
+                Some("cursor"),
+                "Write to this file?\nProceed (y)\nReject & propose changes",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: waiting for approval with run hints.
+        assert_eq!(
+            detect_agent_status(
+                Some("cursor"),
+                "Waiting for approval\nRun this command?\nrun (once) (y)",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: → allow line with (y).
+        assert_eq!(
+            detect_agent_status(
+                Some("cursor"),
+                "→ allow this (y)",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Working: ctrl+c hint.
+        assert_eq!(
+            detect_agent_status(
+                Some("cursor"),
+                "ctrl+c to stop",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Working: background task count line in bottom 5.
+        assert_eq!(
+            detect_agent_status(
+                Some("cursor"),
+                "2 background tasks running",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Working: ⬡ spinner with an -ing word.
+        assert_eq!(
+            detect_agent_status(Some("cursor"), "⬡ indexing", JcodeDetectionVariant::Vanilla),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("cursor"), "nothing", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_devin_status_from_manifest_patterns() {
+        // Blocked: workspace trust prompt.
+        assert_eq!(
+            detect_agent_status(
+                Some("devin"),
+                "Do you trust the authors of this directory?\nwith untrusted content.\nyes, trust it",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: permission prompt.
+        assert_eq!(
+            detect_agent_status(
+                Some("devin"),
+                "approve once\nselect\nconfirm\nesc cancel",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Working: guide line or running tools.
+        assert_eq!(
+            detect_agent_status(
+                Some("devin"),
+                "guide devin while it works",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("devin"),
+                "running tools\nesc to interrupt",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Idle: welcome composer.
+        assert_eq!(
+            detect_agent_status(
+                Some("devin"),
+                "Ask Devin to build\nfeatures, fix bugs\nyour code",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        // Idle: context line with ❭.
+        assert_eq!(
+            detect_agent_status(
+                Some("devin"),
+                "context:\n❭ prompt",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("devin"), "nothing", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_droid_status_from_manifest_patterns() {
+        assert_eq!(
+            detect_agent_status(
+                Some("droid"),
+                "enter to select\nesc to cancel\n↑↓ to navigate\n> yes, allow",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("droid"),
+                "enter select\nesc cancel\n↑/↓ navigate",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(Some("droid"), "esc to stop", JcodeDetectionVariant::Vanilla),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("droid"), "nothing", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_copilot_status_from_manifest_patterns() {
+        assert_eq!(
+            detect_agent_status(
+                Some("copilot"),
+                "esc to cancel\nenter to select",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("copilot"),
+                "esc again to cancel",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("copilot"),
+                "esc interrupt",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("copilot"), "nothing", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_amp_status_from_manifest_patterns() {
+        assert_eq!(
+            detect_agent_status(
+                Some("amp"),
+                "plugin confirmation needed",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("amp"),
+                "run this command?",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // approve plus a session-scope allow option.
+        assert_eq!(
+            detect_agent_status(
+                Some("amp"),
+                "approve\nallow all for this session",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Working: braille spinner line.
+        assert_eq!(
+            detect_agent_status(Some("amp"), "⠋ working", JcodeDetectionVariant::Vanilla),
+            "working"
+        );
+        // Working: ╰ box line with a verb and ─ rule.
+        assert_eq!(
+            detect_agent_status(
+                Some("amp"),
+                "╰ thinking ──────",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("amp"), "esc to cancel", JcodeDetectionVariant::Vanilla),
+            "working"
+        );
+        // Idle: title bar with " - amp - ".
+        assert_eq!(
+            detect_agent_status(
+                Some("amp"),
+                "project - amp - main",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("amp"), "nothing", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_grok_status_from_manifest_patterns() {
+        // Blocked: option dialog line ┃ label (●).
+        assert_eq!(
+            detect_agent_status(
+                Some("grok"),
+                "┃ yes (●) proceed",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: shortcut bar with :select (one bottom line).
+        assert_eq!(
+            detect_agent_status(
+                Some("grok"),
+                ":select ctrl+o:yolo ctrl+c:cancel",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: scrollback bar with dismiss hint.
+        assert_eq!(
+            detect_agent_status(
+                Some("grok"),
+                "tab:scrollback shift+x:dismiss",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: scope picker.
+        assert_eq!(
+            detect_agent_status(
+                Some("grok"),
+                "yes, proceed\nno, reject\n←/→:scope",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Working: spinner stop line.
+        assert_eq!(
+            detect_agent_status(
+                Some("grok"),
+                "⠙ running[stop]",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Working: tool line.
+        assert_eq!(
+            detect_agent_status(
+                Some("grok"),
+                "⠙ Run tests now",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Working: background chip pinned top line.
+        assert_eq!(
+            detect_agent_status(
+                Some("grok"),
+                "⁙ 3 │ tasks running\nline",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Idle: shortcuts bar without cancel hints.
+        assert_eq!(
+            detect_agent_status(
+                Some("grok"),
+                "ctrl+.:shortcuts",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("grok"), "nothing", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_codex_status_from_manifest_patterns() {
+        // Blocked: trust prompt in top 20.
+        assert_eq!(
+            detect_agent_status(
+                Some("codex"),
+                "> You are in a repo.\nDo you trust the contents of this directory?",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("codex"),
+                "action required",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("codex"),
+                "allow command?\n[y/n]",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Working: braille spinner anywhere.
+        assert_eq!(
+            detect_agent_status(
+                Some("codex"),
+                "⠸ working on it",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Working: bullet status line.
+        assert_eq!(
+            detect_agent_status(
+                Some("codex"),
+                "• Working (esc to interrupt)",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Interrupted conversation must not read as working.
+        assert_eq!(
+            detect_agent_status(
+                Some("codex"),
+                "• Working (esc to interrupt)\n■ Conversation interrupted",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        // Non-empty unknown text is idle.
+        assert_eq!(
+            detect_agent_status(Some("codex"), "plain text", JcodeDetectionVariant::Vanilla),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("codex"), "", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_maki_status_from_manifest_patterns() {
+        // Blocked: permission panel.
+        assert_eq!(
+            detect_agent_status(
+                Some("maki"),
+                "permission required\ny allow\nn deny",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: plan complete confirm.
+        assert_eq!(
+            detect_agent_status(
+                Some("maki"),
+                "plan complete\nenter confirm\nspace toggle parallel",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Working: spinner status line at the bottom.
+        assert_eq!(
+            detect_agent_status(
+                Some("maki"),
+                "⠋ [build] compiling",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Idle: non-spinner status line at the bottom.
+        assert_eq!(
+            detect_agent_status(Some("maki"), "[bash] done", JcodeDetectionVariant::Vanilla),
+            "idle"
+        );
+        // Idle: ❯ prompt without a queued followup.
+        assert_eq!(
+            detect_agent_status(
+                Some("maki"),
+                "❯ ask something",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+        assert_eq!(
+            detect_agent_status(Some("maki"), "nothing", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_kilo_pi_qodercli_and_cline_status_patterns() {
+        // Kilo shares the opencode manifest plus its own esc interrupt rule.
+        assert_eq!(
+            detect_agent_status(
+                Some("kilo"),
+                "△ Permission required",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("kilo"),
+                "esc interrupt",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Pi: only the literal spinner text counts.
+        assert_eq!(
+            detect_agent_status(Some("pi"), "working...", JcodeDetectionVariant::Vanilla),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("pi"), "working", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+        // Qoder CLI: confirmation and approval panels.
+        assert_eq!(
+            detect_agent_status(
+                Some("qodercli"),
+                "permission required",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("qodercli"),
+                "awaiting approval\nallow",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("qodercli"),
+                "(esc to cancel, running)",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Cline: tool permission prompts block, other output works.
+        assert_eq!(
+            detect_agent_status(
+                Some("cline"),
+                "Let Cline use this tool?",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("cline"),
+                "[act mode]\nExecute command?\nyes",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("cline"),
+                "[plan mode]\nUse this tool?\nyes",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("cline"),
+                "any other output",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(Some("cline"), "", JcodeDetectionVariant::Vanilla),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn detects_antigravity_and_hermes_status_patterns() {
+        // Antigravity: permission request blocks.
+        assert_eq!(
+            detect_agent_status(
+                Some("agy"),
+                "Requesting permission for:\nDo you want to proceed?",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Antigravity: braille -ing line works.
+        assert_eq!(
+            detect_agent_status(Some("agy"), "⠙ thinking", JcodeDetectionVariant::Vanilla),
+            "working"
+        );
+        // Antigravity: · N task line works (N >= 1, no leading zero).
+        assert_eq!(
+            detect_agent_status(
+                Some("agy"),
+                "· 3 tasks running",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Hermes: dangerous command approval.
+        assert_eq!(
+            detect_agent_status(
+                Some("hermes"),
+                "dangerous\nenter confirm",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Hermes: sudo password prompt.
+        assert_eq!(
+            detect_agent_status(
+                Some("hermes"),
+                "sudo password",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Hermes: interrupt status.
+        assert_eq!(
+            detect_agent_status(
+                Some("hermes"),
+                "msg=interrupt",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        assert_eq!(
+            detect_agent_status(
+                Some("hermes"),
+                "ctrl+c cancel",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+    }
+
+    #[test]
+    fn detects_claude_status_from_manifest_patterns() {
+        // Blocked: enter to select dialogs.
+        assert_eq!(
+            detect_agent_status(
+                Some("claude"),
+                "enter to select\nesc to cancel\n↑/↓ to navigate",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: bash command confirmation.
+        assert_eq!(
+            detect_agent_status(
+                Some("claude"),
+                "Do you want to proceed?\nbash command",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Blocked: waiting for permission.
+        assert_eq!(
+            detect_agent_status(
+                Some("claude"),
+                "waiting for permission",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "blocked"
+        );
+        // Working: half-circle spinner.
+        assert_eq!(
+            detect_agent_status(
+                Some("claude"),
+                "◐ Thinking about the problem",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "working"
+        );
+        // Working: /btw line.
+        assert_eq!(
+            detect_agent_status(Some("claude"), "/btw note", JcodeDetectionVariant::Vanilla),
+            "working"
+        );
+        // Idle: ❯ prompt without dialog markers.
+        assert_eq!(
+            detect_agent_status(
+                Some("claude"),
+                "❯ ask something",
+                JcodeDetectionVariant::Vanilla
+            ),
+            "idle"
+        );
+    }
+
+    #[test]
     fn builtin_read_pane_strips_image_payloads_and_keeps_single_newlines() {
         let state = BuiltinState::new(
             std::env::temp_dir(),
@@ -8928,6 +9906,92 @@ mod tests {
         assert!(!worktree.exists(), "worktree directory must be gone");
         let listing = git_output(&repo, &["worktree", "list", "--porcelain"]).unwrap();
         assert!(!listing.contains("feature-x"));
+        fs::remove_dir_all(&scratch).ok();
+    }
+
+    // `rev-parse --show-toplevel` inside a linked worktree names the lane
+    // itself, so deriving the source identity from it would report a lane
+    // as its own repository root and every consumer comparing checkout
+    // paths against the root (the WebUI workspace worktree stamp, the
+    // browser grouping) would misjudge main-vs-linked. The porcelain list
+    // always leads with the main checkout, so the identity comes from
+    // there even when the query ran inside the lane.
+    #[test]
+    fn builtin_worktree_list_reports_main_repo_root_from_a_lane() {
+        let scratch = std::env::temp_dir().join(format!(
+            "herdr-wt-list-root-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo = scratch.join("repo");
+        let lane = scratch.join("feature-y");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]).unwrap();
+        fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&repo, &["add", "."]).unwrap();
+        run_git(&repo, &["config", "user.email", "t@t"]).unwrap();
+        run_git(&repo, &["config", "user.name", "T"]).unwrap();
+        run_git(&repo, &["commit", "-q", "-m", "base"]).unwrap();
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature-y",
+                &lane.to_string_lossy(),
+            ],
+        )
+        .unwrap();
+
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let result = state
+            .handle_request_inner("worktree.list", json!({ "cwd": lane.to_string_lossy() }))
+            .unwrap();
+
+        // git canonicalizes the temp path on macOS (/var/folders is a
+        // symlink to /private/var/folders), so the porcelain rows and the
+        // derived repo identity carry the canonical spelling while the
+        // raw creation path carries the /var spelling. The identity rule
+        // under test: run from inside the lane, repo root must be the
+        // main repo (porcelain first row), not the lane itself.
+        let lane_canonical = lane.canonicalize().unwrap();
+        let repo_canonical = repo.canonicalize().unwrap();
+        assert_eq!(
+            result["source"]["repo_root"],
+            json!(repo_canonical.to_string_lossy().to_string())
+        );
+        assert_eq!(
+            result["source"]["repo_key"],
+            json!(repo_canonical.to_string_lossy().to_string())
+        );
+        assert_eq!(result["source"]["repo_name"], "repo");
+        assert_eq!(
+            result["source"]["source_checkout_path"],
+            json!(lane.to_string_lossy().to_string())
+        );
+        let paths: Vec<&str> = result["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["path"].as_str().unwrap())
+            .collect();
+        assert!(
+            paths.contains(&repo_canonical.to_string_lossy().to_string().as_str()),
+            "main row present"
+        );
+        assert!(
+            paths.contains(&lane_canonical.to_string_lossy().to_string().as_str()),
+            "lane row present"
+        );
         fs::remove_dir_all(&scratch).ok();
     }
 

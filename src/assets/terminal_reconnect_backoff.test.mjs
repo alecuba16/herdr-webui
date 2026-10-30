@@ -1,7 +1,18 @@
 import { describe, it } from "node:test";
 import { equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// Compiled once so coverage attributes terminal.js lines to the real file.
+let terminalScript = null;
+function getTerminalScript() {
+  if (!terminalScript) {
+    const terminalPath = fileURLToPath(new URL("./desktop/app_js/terminal.js", import.meta.url));
+    terminalScript = new vm.Script(readFileSync(terminalPath, "utf8"), { filename: terminalPath });
+  }
+  return terminalScript;
+}
 
 // Behavioral test for the terminal reconnect backoff (resize-storm fix).
 // Loads desktop/app_js/terminal.js in a sandbox with stubbed DOM/WS/state
@@ -9,10 +20,7 @@ import vm from "node:vm";
 // frame-cadence reconnect attempts must be suppressed by the backoff.
 
 function loadTerminalModule() {
-  const source = readFileSync(
-    new URL("./desktop/app_js/terminal.js", import.meta.url),
-    "utf8",
-  );
+  const terminalScript = getTerminalScript();
   const __stubEl = () => ({
     addEventListener: () => {},
     removeEventListener: () => {},
@@ -212,7 +220,7 @@ function loadTerminalModule() {
     sandbox,
     { filename: "core-fragment.js" },
   );
-  vm.runInContext(source, sandbox, { filename: "terminal.js" });
+  terminalScript.runInContext(sandbox);
   const run = (expr) => vm.runInContext(expr, sandbox);
   // Run the oldest pending timer and advance the fake clock past its ms.
   const flushTimer = () => {

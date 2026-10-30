@@ -257,9 +257,6 @@
   const editorOptions = searchHelpers.fileBrowserEditorOptions
     ? searchHelpers.fileBrowserEditorOptions
     : () => ({ editorEnabled: true, wordWrap: true, tabSize: 2, bracketMatching: true, folding: true, activeLine: true, whitespace: false });
-  const parentFoldersEnabled = searchHelpers.fileBrowserParentFoldersEnabled
-    ? searchHelpers.fileBrowserParentFoldersEnabled
-    : () => false;
 
   function cacheTreeRoots(target, data) {
     if (!target || !data) return;
@@ -1324,66 +1321,15 @@
     await navigator.clipboard.writeText(url);
   }
 
-  // Right-click "Open workspace here": resolve the folder, then ask the
-  // backend whether it is a git checkout. /api/worktrees?cwd=<dir> returns
-  // the worktree rows of the REPO that contains the dir (empty for plain
-  // folders), so the dir itself is a checkout only when one row's path
-  // matches it. Checkouts open through worktree.open, which focuses an
-  // already-open workspace instead of duplicating it; plain folders fall
-  // back to workspace create + recents record, like the open modal.
+  // Right-click "Open workspace here": the shared shell-level folder flow
+  // (HerdrOpenFolder, app_js/open_folder_flow.js) resolves the folder to
+  // an open workspace, a git checkout (/api/worktrees/open, which focuses
+  // an already-open workspace instead of duplicating it), or a plain
+  // folder (workspace create + recents record). The bar's path chip and
+  // worktree rows use the same helper.
   async function openWorkspaceHere(path) {
-    const dir = absoluteFilePath(path);
-    if (!dir) return;
-    if (typeof showBlocking === "function") showBlocking("Opening folder...");
-    let row = null;
-    try {
-      const data = await api(`/api/worktrees?cwd=${encodeURIComponent(dir)}`);
-      const rows = ((data && data.result) || {}).worktrees || [];
-      row = rows.find((candidate) => sameMenuPath(candidate.path, dir)) || null;
-      if (row) {
-        const response = await api("/api/worktrees/open", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ workspace_id: null, cwd: null, path: row.path, label: null, branch: null, open_terminal: typeof workspaceOpenTerminalFlag === "function" && workspaceOpenTerminalFlag() }),
-        });
-        navigateToOpenedWorkspace(response);
-        return;
-      }
-      const created = await api("/api/workspaces", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ label: Tree.basename(dir) || dir, cwd: dir, open_terminal: typeof workspaceOpenTerminalFlag === "function" && workspaceOpenTerminalFlag() }),
-      });
-      try {
-        await api("/api/recent-workspaces/record", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ path: dir, label: Tree.basename(dir) || dir }),
-        });
-      } catch (_) {} // recents are a nice-to-have; the workspace is open
-      navigateToOpenedWorkspace(created);
-    } finally {
-      if (typeof hideBlocking === "function") hideBlocking();
-    }
-  }
-
-  // worktree.open and workspace.create both answer with the workspace plus
-  // its focused tab and root pane; navigating with all three lands directly
-  // on a live terminal panel instead of waiting for the next refresh.
-  function navigateToOpenedWorkspace(response) {
-    const navigate = typeof go === "function" ? go : null;
-    if (!navigate) return;
-    const result = (response && response.result) || {};
-    hide();
-    navigate(
-      result.workspace && result.workspace.workspace_id,
-      result.tab && result.tab.tab_id,
-      result.root_pane && result.root_pane.pane_id,
-    );
-  }
-
-  function sameMenuPath(a, b) {
-    return String(a || "").replace(/\\/g, "/").replace(/\/+$/, "") === String(b || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!window.HerdrOpenFolder) return;
+    await window.HerdrOpenFolder.openFolderAsWorkspace(absoluteFilePath(path));
   }
 
   async function showHistoryPath(path) {
@@ -1530,7 +1476,7 @@
   }
 
   function canGoUp() {
-    return !!(state.path || (parentFoldersEnabled() && state.cwd && Tree.parentDirectory(state.cwd) !== state.cwd));
+    return !!state.path;
   }
 
   async function goUp() {
@@ -1538,11 +1484,7 @@
       await loadTree(Tree.parentPath(state.path));
       return;
     }
-    if (!parentFoldersEnabled()) return;
-    const parent = Tree.parentDirectory(state.cwd);
-    if (!parent || parent === state.cwd) return;
-    state.cwd = parent;
-    await loadTree("");
+    // UP stays inside the tree: the workspace cwd is the ceiling.
   }
 
   function flattenEntries(entries, level) {

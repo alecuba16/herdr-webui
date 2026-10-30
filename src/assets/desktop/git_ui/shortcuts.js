@@ -65,8 +65,26 @@
         (m) => m.style.display && m.style.display !== "none",
       );
     }
+    function locationBarPopoverOpen() {
+      // The location bar renders its branch/worktree popovers inside the
+      // header bar, outside the git UI roots. While one is up, its own
+      // document-capture handler owns the keyboard (Escape closes the
+      // popover, Enter drives the new-branch field). This listener runs on
+      // window capture, ahead of that handler no matter registration
+      // order, so it must yield instead of consuming keys aimed at the
+      // popover.
+      if (typeof document.querySelector !== "function") return false;
+      return !!(
+        document.querySelector(".location-bar-branch-popover")
+        || document.querySelector(".location-bar-worktree-popover")
+      );
+    }
     function handleKeydown(event) {
       if (!visible() || !event) return;
+      // a location-bar popover owns the keyboard while it is open; keys
+      // must reach its handlers so Escape can close it and Enter can
+      // submit the new-branch field.
+      if (locationBarPopoverOpen()) return;
       // a global app overlay (confirm dialogs, settings, palette) owns the
       // keyboard while it is up; muting keys here would strand Escape and
       // lock the user inside the overlay.
@@ -123,21 +141,6 @@
         state.contextMenu = null;
         state.logContextMenu = null;
         state.headerMenu = null;
-        render();
-        return;
-      }
-      if (state.branchList) {
-        state.branchList = null;
-        render();
-        return;
-      }
-      if (state.worktreeList) {
-        state.worktreeList = null;
-        render();
-        return;
-      }
-      if (state.branchModal) {
-        state.branchModal = null;
         render();
         return;
       }
@@ -225,7 +228,10 @@
         discardFile: () => { const path = shortcutFilePath(event, view); if (path) getGitUi().discardFile(encodeURIComponent(path)); },
         stashFile: () => { const path = shortcutFilePath(event, view); if (path) getGitUi().stashFile(encodeURIComponent(path)); },
         compare: () => getGitUi().compareCurrent(),
-        branch: () => getGitUi().openBranchModal(),
+        branch: () => {
+          // Branch switching lives in the location bar (plan phase 3).
+          if (window.HerdrLocationBar) window.HerdrLocationBar.openBranchPopover(null);
+        },
         focusFile: () => focusFirstGitFile(),
         help: () => showGitKeyboardHelp(),
       };
@@ -300,7 +306,7 @@
 
     function showGitKeyboardHelp() {
       const map = gitShortcutMap();
-      alertFn(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit modal\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Return to current changes\n${shortcutDisplay(map.branch)} Git directory / branch dialog\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.help)} Git shortcut help\n\nFolder picker: selected folder becomes the Git panel directory immediately.\n↩ beside Refresh: return Git to the current workspace/worktree folder.\nLog view: graph, description, date, and author columns; hover a commit for exact date/details; filter description/date/author; Load more changes fetches older commits.\nEsc Back / hide`);
+      alertFn(`${gitShortcutPrefixLabel()} then:\n${shortcutDisplay(map.changes)} Changes list\n${shortcutDisplay(map.commit)} Commit modal\n${shortcutDisplay(map.log)} Log\n${shortcutDisplay(map.stash)} Stash\n${shortcutDisplay(map.refresh)} Refresh\n${shortcutDisplay(map.stageAll)} Stage/unstage all\n${shortcutDisplay(map.stageFile)} Stage file\n${shortcutDisplay(map.unstageFile)} Unstage file\n${shortcutDisplay(map.discardFile)} Discard file\n${shortcutDisplay(map.stashFile)} Stash file\n${shortcutDisplay(map.history)} File history\n${shortcutDisplay(map.blame)} Toggle blame\n${shortcutDisplay(map.edit)} Edit file\n${shortcutDisplay(map.compare)} Return to current changes\n${shortcutDisplay(map.branch)} Branch popover in the location bar\n${shortcutDisplay(map.focusFile)} Focus file list\n${shortcutDisplay(map.help)} Git shortcut help\n\nLog view: graph, description, date, and author columns; hover a commit for exact date/details; filter description/date/author; Load more changes fetches older commits.\nEsc Back / hide`);
     }
 
     function shortcutDisplay(value) {

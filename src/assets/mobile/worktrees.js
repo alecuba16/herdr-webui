@@ -13,6 +13,16 @@
       selectionPath,
       state,
       defaultFolderFn,
+      // Confirm sheet for the worktree sheet's open action.
+      confirmFn,
+      // Selected workspace checkout path; pins the worktree sheet to
+      // the repo it was opened for.
+      currentCwdFn,
+      // Routes the sheet's create button to the worktrees screen.
+      showScreenFn,
+      // Silent autoclose for the workspace left behind by a folder
+      // switch (actions.js maybeAutoCloseWorkspace).
+      autoCloseWorkspaceFn,
     } = deps;
     const worktreeHelpers = globalThis.HerdrAppHelpers || {};
     const worktreeActivityLabel = worktreeHelpers.worktreeActivityLabel || (() => "Latest commit unknown");
@@ -354,9 +364,148 @@
       }
     }
 
+    // ---- Worktree sheet (location strip parity surface) ----
+    // The strip's worktree pill opens this sheet: sibling checkouts of
+    // the current repo, fetched on open with the pinned cwd, one tap to
+    // reroute. Module-local state, same isolation rule as the branch
+    // sheet: rows and actions always describe the checkout the sheet
+    // was opened for.
+    const worktreeSheet = {
+      open: false,
+      cwd: "",
+      loading: false,
+      rows: [],
+      error: "",
+    };
+
+    function worktreeSheetStale() {
+      return !worktreeSheet.open || worktreeSheet.cwd !== currentCwdFn();
+    }
+
+    async function openWorktreeSheet() {
+      const cwd = currentCwdFn();
+      if (!cwd) return;
+      worktreeSheet.open = true;
+      worktreeSheet.cwd = cwd;
+      worktreeSheet.loading = true;
+      worktreeSheet.rows = [];
+      worktreeSheet.error = "";
+      render();
+      try {
+        const data = await api(
+          "/api/worktrees?cwd=" + encodeURIComponent(cwd),
+        );
+        // The endpoint returns the bare {source, worktrees} envelope;
+        // the app-wide fallback path wraps it in {result} the same way
+        // applyResult accepts both.
+        const envelope = data && data.result ? data.result : data;
+        worktreeSheet.rows = (envelope && envelope.worktrees) || [];
+        worktreeSheet.loading = false;
+      } catch (error) {
+        worktreeSheet.error = (error && error.message) || String(error);
+        worktreeSheet.loading = false;
+      }
+      // A workspace switch mid-flight dismisses the sheet on the next
+      // render (pinned-cwd check below); landing rows for the old
+      // checkout then re-render into a closed sheet, a no-op.
+      render();
+    }
+
+    function closeWorktreeSheet() {
+      worktreeSheet.open = false;
+      worktreeSheet.rows = [];
+      worktreeSheet.error = "";
+      const container = document.getElementById("mobileWorktreeSheet");
+      const backdrop = document.getElementById("mobileWorktreeSheetBackdrop");
+      if (container) container.hidden = true;
+      if (backdrop) backdrop.hidden = true;
+      render();
+    }
+
+    async function openWorktreeFromSheet(index) {
+      if (worktreeSheetStale()) return;
+      const row = worktreeSheet.rows[index];
+      const path = row && String(row.path || "");
+      if (!path) return;
+      if (samePath(path, worktreeSheet.cwd)) {
+        closeWorktreeSheet();
+        return;
+      }
+      if (!(await confirmFn(`Open ${pathBasename(path)}?`))) return;
+      closeWorktreeSheet();
+      try {
+        await openFolderAsWorkspace(path);
+      } catch (_) {
+        // openFolderAsWorkspace already surfaced its error on the
+        // worktrees screen state; the sheet stays closed.
+      }
+    }
+
+    function routeToCreateFromSheet() {
+      // Creating a worktree needs the full form (branch, base, label,
+      // checkout path): route to the worktrees screen with the create
+      // disclosure open instead of duplicating the form in the sheet.
+      const discoverSeed = worktreeSheet.cwd;
+      closeWorktreeSheet();
+      if (discoverSeed && state.worktreeDiscoverPath !== undefined)
+        state.worktreeDiscoverPath = discoverSeed;
+      state.worktreeCreateExpanded = true;
+      if (typeof showScreenFn === "function") showScreenFn("worktrees");
+      render();
+    }
+
+    function isWorktreeSheetOpen() {
+      return worktreeSheet.open && worktreeSheet.cwd === currentCwdFn();
+    }
+
+    function renderWorktreeSheet() {
+      if (!worktreeSheet.open) return;
+      const container = document.getElementById("mobileWorktreeSheet");
+      const backdrop = document.getElementById("mobileWorktreeSheetBackdrop");
+      if (!container || !backdrop) return;
+      // A workspace switch while the sheet is open dismisses it: the
+      // rows describe the abandoned checkout.
+      if (worktreeSheet.cwd !== currentCwdFn()) {
+        closeWorktreeSheet();
+        return;
+      }
+      container.hidden = false;
+      backdrop.hidden = false;
+      const html = worktreeSheetHtml();
+      if (container.__lastWorktreeSheetHtml !== html) {
+        container.innerHTML = html;
+        container.__lastWorktreeSheetHtml = html;
+      }
+    }
+
+    function worktreeSheetHtml() {
+      const loading = worktreeSheet.loading
+        ? '<div class="mobile-loading">Loading worktrees</div>'
+        : "";
+      const error = worktreeSheet.error
+        ? `<div class="mobile-error">${escapeHtml(worktreeSheet.error)}</div>`
+        : "";
+      const rows = worktreeSheet.rows.length
+        ? worktreeSheet.rows
+            .map((row, index) => {
+              const path = String(row.path || "");
+              const current = samePath(path, worktreeSheet.cwd);
+              const title =
+                pathBasename(path) || row.label || row.branch || "worktree";
+              const meta = [row.branch, path].filter(Boolean).join(" · ");
+              return `<button class="mobile-row mobile-git-branch${current ? " active" : ""}" ${current ? "disabled" : `onclick="HerdrMobile.openWorktreeFromSheet(${index})"`}><strong>${escapeHtml(title)}${current ? " (current)" : ""}</strong><span>${escapeHtml(meta)}</span></button>`;
+            })
+            .join("")
+        : '<div class="mobile-loading">No linked worktrees found in this folder</div>';
+      return `<div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Worktrees</div>${loading}${error}<div class="mobile-tabs-sheet-list">${rows}</div><button class="mobile-btn primary mobile-wide" type="button" onclick="HerdrMobile.routeToCreateFromSheet()">Create worktree</button>`;
+    }
+
     async function openFolderAsWorkspace(pathArg) {
       const path = String(pathArg || "").trim();
       if (!path) return;
+      // The workspace the user is leaving behind: after the switch lands,
+      // it gets the silent autoclose offer when it holds no panels.
+      const previousWorkspaceId = state.ws || null;
       state.worktreeError = "";
       setLoading(true, "Opening workspace...");
       try {
@@ -368,6 +517,12 @@
         recent = [];
         setLoading(false);
         navigateToResult(response);
+        if (
+          previousWorkspaceId &&
+          previousWorkspaceId !== state.ws &&
+          typeof autoCloseWorkspaceFn === "function"
+        )
+          autoCloseWorkspaceFn(previousWorkspaceId, { silent: true });
         loadRecent();
       } catch (error) {
         state.worktreeError = error.message || String(error);
@@ -402,7 +557,7 @@
       refresh();
     }
 
-    return { applyResult, clearRecent, closeWorkspaceOnLastTerminalFlag, create, load, loadRecent, open, openFolderAsWorkspace, openRecent, removeRecent, renderScreen, setCreateExpanded, updateField };
+    return { applyResult, clearRecent, closeWorkspaceOnLastTerminalFlag, closeWorktreeSheet, create, isWorktreeSheetOpen, load, loadRecent, open, openFolderAsWorkspace, openRecent, openWorktreeSheet, openWorktreeFromSheet, removeRecent, renderScreen, renderWorktreeSheet, routeToCreateFromSheet, setCreateExpanded, updateField };
   }
 
   globalThis.HerdrMobileWorktrees = { create: createMobileWorktrees };

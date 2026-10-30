@@ -1,7 +1,18 @@
 import { describe, it } from "node:test";
 import { equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// Compiled once so coverage attributes terminal.js lines to the real file.
+let terminalScript = null;
+function getTerminalScript() {
+  if (!terminalScript) {
+    const terminalPath = fileURLToPath(new URL("./desktop/app_js/terminal.js", import.meta.url));
+    terminalScript = new vm.Script(readFileSync(terminalPath, "utf8"), { filename: terminalPath });
+  }
+  return terminalScript;
+}
 
 // Behavioral tests for the chat/terminal focus + paste routing fix.
 // Loads desktop/app_js/terminal.js in the same sandbox style as
@@ -21,10 +32,7 @@ import vm from "node:vm";
 //    the shell.
 
 async function loadTerminalModule() {
-  const source = readFileSync(
-    new URL("./desktop/app_js/terminal.js", import.meta.url),
-    "utf8",
-  );
+  const terminalScript = getTerminalScript();
   const listenersByNode = new Map();
   const makeNode = (id) => {
     const node = {
@@ -293,7 +301,7 @@ async function loadTerminalModule() {
   // module-scoped bindings; assign the stub through the sandbox so
   // terminal.js's `term` variable picks it up.
   vm.runInContext(`term = __termStub;`, sandbox);
-  vm.runInContext(source, sandbox, { filename: "terminal.js" });
+  terminalScript.runInContext(sandbox);
   // One connect pass registers the shell listeners (paste/keydown live
   // inside connectTerminal's !termScrollBound block) and opens the stub
   // socket without needing the renderer.

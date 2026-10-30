@@ -14,9 +14,16 @@
 //     collapse + visible children, and always keeps the terminal visible
 //     (the m1/m2 contract; the old drawer swap hid it).
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
+
+// Compiled once so coverage attributes right_sidebar.js lines to the real file.
+const RIGHT_SIDEBAR_PATH = fileURLToPath(new URL("./desktop/app_js/right_sidebar.js", import.meta.url));
+const rightSidebarScript = new vm.Script(readFileSync(RIGHT_SIDEBAR_PATH, "utf8"), {
+  filename: RIGHT_SIDEBAR_PATH,
+});
 
 function makeNode(id, className) {
   const node = {
@@ -135,8 +142,7 @@ function loadHost(document, ctxOverrides = {}) {
   };
   ctx.window = ctx;
   ctx.globalThis = ctx;
-  const source = readFileSync(new URL("./desktop/app_js/right_sidebar.js", import.meta.url), "utf8");
-  vm.runInContext(source, vm.createContext(ctx));
+  rightSidebarScript.runInContext(vm.createContext(ctx));
   return ctx;
 }
 

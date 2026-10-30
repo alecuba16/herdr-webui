@@ -83,6 +83,11 @@
     toolbarOpen: readToolbarPreference(),
     // Terminal tabs dropdown state (opened from the header tabs button).
     tabsSheetOpen: false,
+    // Location strip sheets (branch pill / worktree pill).
+    branchSheetOpen: false,
+    worktreeSheetOpen: false,
+    // Draft for the branch sheet's create row.
+    gitBranchCreateName: "",
     terminalConnecting: false,
     error: "",
     worktreeError: "",
@@ -354,6 +359,61 @@
     chip.setAttribute("aria-label", chip.title);
   }
 
+  // Location strip under the header: the mobile twin of the desktop
+  // location bar. Pills for path, worktree, and branch; every pill is a
+  // 44px-min button. Labels reuse the workspace-title rules, and branch
+  // facts come from the cwd-scoped git status first, workspace stamp
+  // second, so a stale stamp never wins over a fresh status payload.
+  function renderLocationStrip(workspace) {
+    const strip = el("mobileLocationStrip");
+    if (!strip) return;
+    const pills = [];
+    if (!workspace) {
+      pills.push(
+        `<button type="button" class="mobile-location-pill" onclick="HerdrMobile.openWorkspacesSheet()"><span class="mobile-location-pill-icon folder" aria-hidden="true"></span><span class="mobile-location-pill-label">Open workspace</span></button>`,
+      );
+    } else {
+      const cwd = currentWorkspaceCwd();
+      if (cwd) {
+        pills.push(
+          `<button type="button" class="mobile-location-pill" title="${escapeHtml(cwd)}" aria-label="Open folder picker" onclick="HerdrMobile.openFolderAsWorkspace()"><span class="mobile-location-pill-icon folder" aria-hidden="true"></span><span class="mobile-location-pill-label">${escapeHtml(pathBasename(cwd) || cwd)}</span></button>`,
+        );
+      }
+      const stamp = workspace.worktree;
+      if (stamp && stamp.is_linked_worktree === true) {
+        pills.push(
+          `<button type="button" class="mobile-location-pill" aria-label="Open worktree sheet" onclick="HerdrMobile.openWorktreeSheet()"><span class="mobile-location-pill-icon worktree" aria-hidden="true"></span><span class="mobile-location-pill-label">${escapeHtml(worktreeDisplayName(workspace))}</span></button>`,
+        );
+      }
+      // not_git_repository is a definitive answer for this cwd, so the
+      // branch pill disappears entirely; every other unknown (status not
+      // fetched yet, detached) keeps a disabled placeholder so the strip
+      // height stays stable while the status loads.
+      const status = gitStatusForCwd(cwd);
+      const nonGit = status ? Boolean(status.not_git_repository) : false;
+      if (!nonGit) {
+        const branch = (status && status.branch) || (stamp && stamp.branch) || "";
+        const known = Boolean(branch);
+        pills.push(
+          `<button type="button" class="mobile-location-pill"${known ? ` aria-label="Open branch sheet" onclick="HerdrMobile.openBranchSheet()"` : " disabled"}><span class="mobile-location-pill-icon branch" aria-hidden="true"></span><span class="mobile-location-pill-label">${escapeHtml(known ? branch : "branch")}</span></button>`,
+        );
+      }
+    }
+    const html = pills.join("");
+    if (strip.__lastStripHtml !== html) {
+      strip.__lastStripHtml = html;
+      strip.innerHTML = html;
+    }
+  }
+
+  // Git status payload for the location strip: only counts when it was
+  // fetched for this exact cwd, so a workspace switch never shows the
+  // previous checkout's branch.
+  function gitStatusForCwd(cwd) {
+    if (!state.gitStatus || state.gitCwd !== cwd) return null;
+    return state.gitStatus;
+  }
+
   function syncBackendBadge() {
     const badge = el("mobileBackendBadge");
     if (!badge) return;
@@ -428,6 +488,7 @@
           <div class="mobile-context"><span class="mobile-connection-dot" id="mobileConnectionDot" data-state="connecting" title="Connecting: events stream retrying" aria-hidden="true"></span><button type="button" id="mobileBackendBadge" class="mobile-backend-badge backend-builtin" title="Sessions" aria-label="Sessions">built-in</button><button type="button" id="mobileTitle" class="mobile-title-btn" aria-haspopup="dialog" title="Switch workspace">Herdr</button><button type="button" id="mobilePanelsChip" class="mobile-panels-chip" aria-haspopup="dialog" title="Panels" hidden onclick="HerdrMobile.openTabsSheet()">0 panes</button><span id="mobileMeta" class="mobile-meta-text" role="status" aria-live="polite">Loading</span></div>
         </header>
         <div id="mobileOfflineBanner" class="mobile-offline-banner" hidden role="status" aria-live="polite">Connection lost · retrying…</div>
+        <div class="mobile-location-strip" id="mobileLocationStrip" role="toolbar" aria-label="Workspace context"></div>
         <main class="mobile-screen" id="mobileScreen"></main>
         <div class="mobile-search-sheet" id="mobileSearchSheet" hidden>
           <div class="mobile-search-card">
@@ -450,6 +511,10 @@
         <div class="mobile-sheet" id="mobileTabsSheet" hidden role="dialog" aria-modal="true" aria-label="Panels"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Panels</div><div class="mobile-tabs-sheet-list" id="mobileTabsSheetList"></div></div>
         <div class="mobile-sheet-backdrop" id="mobileWorkspacesBackdrop" hidden onclick="HerdrMobile.closeWorkspacesSheet()"></div>
         <div class="mobile-sheet" id="mobileWorkspacesSheet" hidden role="dialog" aria-modal="true" aria-label="Workspaces"><div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Workspaces</div><div class="mobile-tabs-sheet-list" id="mobileWorkspacesSheetList"></div></div>
+        <div class="mobile-sheet-backdrop" id="mobileBranchBackdrop" hidden onclick="HerdrMobile.closeBranchSheet()"></div>
+        <div class="mobile-sheet" id="mobileBranchSheet" hidden role="dialog" aria-modal="true" aria-label="Branches"></div>
+        <div class="mobile-sheet-backdrop" id="mobileWorktreeSheetBackdrop" hidden onclick="HerdrMobile.closeWorktreeSheet()"></div>
+        <div class="mobile-sheet" id="mobileWorktreeSheet" hidden role="dialog" aria-modal="true" aria-label="Worktrees"></div>
         <div class="mobile-drawer-backdrop" id="mobileDrawerBackdrop" hidden onclick="HerdrMobile.closeDrawer()"></div>
         <aside class="mobile-drawer" id="mobileDrawer" hidden role="dialog" aria-modal="true" aria-label="Tools menu"><div class="mobile-drawer-items" id="mobileDrawerItems"></div></aside>
         <div class="mobile-sheet-backdrop" id="mobileConfirmBackdrop" hidden onclick="HerdrMobile.resolveConfirm(false)"></div>
@@ -801,6 +866,7 @@
         ? mobileWorkmeta.workspaceContextTitle(workspace)
         : workspaceTitle(workspace);
     renderContextMeta(workspace);
+    renderLocationStrip(workspace);
     syncBackendBadge();
     // Toolbar above the nav: content depends on screen and terminal, and
     // refreshes every render (WS refresh included) via syncToolbar.
@@ -809,6 +875,11 @@
     renderTabsSheet();
     // Workspace switcher follows live workspace data while open.
     renderWorkspacesSheet();
+    // Branch sheet follows live data while open and self-dismisses when
+    // the selected workspace moved away from its pinned checkout.
+    if (mobileGit) mobileGit.renderBranchSheet();
+    // Worktree sheet rides the same pinned-cwd rule as the branch sheet.
+    if (mobileWorktrees) mobileWorktrees.renderWorktreeSheet();
     // Cache the nav button list once: querySelectorAll ran on every render,
     // and each render is triggered by every events-WS refresh.
     if (!navButtons) {
@@ -1347,6 +1418,10 @@
     saveSessionSelection,
     selectionPath,
     state,
+    confirmFn: (...args) => mobileConfirm(...args),
+    currentCwdFn: currentWorkspaceCwd,
+    showScreenFn: (screen) => showScreen(screen),
+    autoCloseWorkspaceFn: (workspaceId, options) => mobileActions.maybeAutoCloseWorkspace(workspaceId, options),
   });
   mobileDirectoryPicker = globalThis.HerdrMobileDirectoryPickerModule.create({
     api,
@@ -1405,12 +1480,16 @@
     state,
     api,
     render,
+    el,
     escapeHtml,
     inputAttrs,
     jsArg,
     pathBasename,
     currentWorkspaceCwd,
     confirmFn: (...args) => mobileConfirm(...args),
+    // Branch rows checked out in a sibling worktree reroute through the
+    // folder-open flow instead of a doomed switch POST.
+    rerouteToWorktreeFn: (path) => mobileWorktrees.openFolderAsWorkspace(path),
   });
 
   mobileComposer = globalThis.HerdrMobileComposerModule.create({
@@ -1622,6 +1701,15 @@
     promptDismiss: (...args) => mobileComposer.promptDismiss(...args),
     toggleGitBranches: (...args) => mobileGit.toggleGitBranches(...args),
     gitSwitchBranch: (...args) => mobileGit.gitSwitchBranch(...args),
+    openBranchSheet: (...args) => mobileGit.openBranchSheet(...args),
+    closeBranchSheet: (...args) => mobileGit.closeBranchSheet(...args),
+    switchBranchFromSheet: (...args) => mobileGit.switchBranchFromSheet(...args),
+    setBranchCreateName: (...args) => mobileGit.setBranchCreateName(...args),
+    createBranchFromSheet: (...args) => mobileGit.createBranchFromSheet(...args),
+    openWorktreeSheet: (...args) => mobileWorktrees.openWorktreeSheet(...args),
+    closeWorktreeSheet: (...args) => mobileWorktrees.closeWorktreeSheet(...args),
+    openWorktreeFromSheet: (...args) => mobileWorktrees.openWorktreeFromSheet(...args),
+    routeToCreateFromSheet: (...args) => mobileWorktrees.routeToCreateFromSheet(...args),
     filesToggle: mobileFileBrowser.toggle,
     filesSelect: mobileFileBrowser.select,
     filesOpenAt: mobileFileBrowser.openAt,
@@ -1963,7 +2051,8 @@
       return;
     }
     const promptCard = el("mobilePromptCard");
-    if (promptCard) {
+    // A detached card (mid-render swap) must not swallow Escape.
+    if (promptCard && promptCard.parentNode) {
       event.preventDefault();
       promptCard.querySelector(".mobile-prompt-head button")?.click();
       return;
@@ -1976,6 +2065,16 @@
     if (state.workspacesSheetOpen) {
       event.preventDefault();
       closeWorkspacesSheet();
+      return;
+    }
+    if (mobileGit && mobileGit.isBranchSheetOpen()) {
+      event.preventDefault();
+      mobileGit.closeBranchSheet();
+      return;
+    }
+    if (mobileWorktrees && mobileWorktrees.isWorktreeSheetOpen()) {
+      event.preventDefault();
+      mobileWorktrees.closeWorktreeSheet();
       return;
     }
     const drawer = el("mobileDrawer");

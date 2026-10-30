@@ -1,7 +1,18 @@
 import { describe, it } from "node:test";
 import { equal } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// Compiled once so coverage attributes bindings.js lines to the real file.
+let bindingsScript = null;
+function getBindingsScript() {
+  if (!bindingsScript) {
+    const bindingsPath = fileURLToPath(new URL("./desktop/app_js/bindings.js", import.meta.url));
+    bindingsScript = new vm.Script(readFileSync(bindingsPath, "utf8"), { filename: bindingsPath });
+  }
+  return bindingsScript;
+}
 
 // Behavioral test for the document-level paste shortcut in bindings.js.
 // The Cmd/Ctrl+V handler used to call pasteClipboard() even while the
@@ -15,10 +26,7 @@ import vm from "node:vm";
 // references, in the same style as terminal_focus_paste.test.mjs.
 
 async function loadBindingsModule() {
-  const source = readFileSync(
-    new URL("./desktop/app_js/bindings.js", import.meta.url),
-    "utf8",
-  );
+  const bindingsScript = getBindingsScript();
   const makeNode = (id) => {
     const node = {
       id,
@@ -230,7 +238,7 @@ async function loadBindingsModule() {
     autoStub,
     { filename: "core-fragment.js" },
   );
-  vm.runInContext(source, autoStub, { filename: "bindings.js" });
+  bindingsScript.runInContext(autoStub);
   const firePasteShortcut = ({ lensActive, editableTarget, hasSelection = false }) => {
     sandbox.HerdrLens = lensActive ? { isActive: () => true } : null;
     sandbox.__pasteCalls = 0;

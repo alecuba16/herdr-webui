@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const LENS_SOURCE = readFileSync(
@@ -23,6 +24,13 @@ const SHARED_CORE_SOURCE = readFileSync(
   new URL("./shared/core.js", import.meta.url),
   "utf8",
 );
+// Compiled once per product file so coverage attributes to the real paths.
+const LENS_PATH = fileURLToPath(new URL("./desktop/app_js/lens.js", import.meta.url));
+const lensScript = new vm.Script(readFileSync(LENS_PATH, "utf8"), { filename: LENS_PATH });
+const SHARED_CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+const sharedCoreScript = new vm.Script(readFileSync(SHARED_CORE_PATH, "utf8"), {
+  filename: SHARED_CORE_PATH,
+});
 
 // A minimal HTML tokenizer: builds stub children with correct nesting
 // via a tag stack (a lazy regex cannot pair nested same-tag markup).
@@ -427,9 +435,9 @@ function makeContext(overrides = {}) {
   ctx.globalThis = ctx;
   ctx.window = ctx;
   const contextObject = vm.createContext(ctx);
-  vm.runInContext(SHARED_CORE_SOURCE, contextObject);
+  sharedCoreScript.runInContext(contextObject);
   vm.runInContext("var term = globalThis.__term;", contextObject);
-  vm.runInContext(LENS_SOURCE, contextObject);
+  lensScript.runInContext(contextObject);
   return { ctx, registry, shell, vmCtx: contextObject, docListeners };
 }
 

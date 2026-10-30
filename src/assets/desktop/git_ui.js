@@ -7,8 +7,6 @@
     renderVersion: 0,
     contextMenu: null,
     logContextMenu: null,
-    branchModal: null,
-    worktreeList: null,
     gitOpModal: null,
     commitModal: null,
     compareSelectedModal: null,
@@ -34,7 +32,6 @@
   const fileListMode = primitives.fileListMode;
   const diffLayoutMode = primitives.diffLayoutMode;
   const gitLogDefaultBranch = primitives.gitLogDefaultBranch;
-  const gitRemoteBranchPreload = primitives.gitRemoteBranchPreload;
   const normalizeLogScope = primitives.normalizeLogScope;
   const setGitUiOption = primitives.setGitUiOption;
   const diffLineCount = primitives.diffLineCount;
@@ -79,7 +76,6 @@
   const normalizePathForCompare = workspaceNav.normalizePathForCompare;
   const samePath = workspaceNav.samePath;
   const gitCwdMatchesWorkspace = workspaceNav.gitCwdMatchesWorkspace;
-  const resetGitViewForCwd = workspaceNav.resetGitViewForCwd;
   const clonePlain = workspaceNav.clonePlain;
   const viewCrumbs = workspaceNav.viewCrumbs;
   const captureNavigationSnapshot = workspaceNav.captureNavigationSnapshot;
@@ -89,25 +85,12 @@
   const compactPath = workspaceNav.compactPath;
 
   document.addEventListener("click", (event) => {
-    let hadMenu = !!(state.contextMenu || state.logContextMenu || state.headerMenu || state.branchList || state.worktreeList);
+    let hadMenu = !!(state.contextMenu || state.logContextMenu || state.headerMenu);
     state.contextMenu = null;
     state.logContextMenu = null;
     state.headerMenu = null;
-    if ((state.branchList || state.worktreeList) && !eventInsideBranchList(event)) {
-      state.branchList = null;
-      state.worktreeList = null;
-      hadMenu = true;
-    }
     if (hadMenu && state.visible) render();
   });
-  function eventInsideBranchList(event) {
-    let target = event && event.target;
-    while (target && target.classList) {
-      if (target.classList.contains("git-ui-branch-list") || target.classList.contains("git-ui-branch-chip")) return true;
-      target = target.parentNode;
-    }
-    return false;
-  }
 
   function active() {
     return state.cache[state.activeKey] || null;
@@ -235,18 +218,6 @@
     return String(message || "").toLowerCase().includes("not a git repository");
   }
 
-  function gitBranchModalDefaultCwd(cwd) {
-    const path = String(cwd || "").trim();
-    if (path && path !== "/") return path;
-    if (typeof window.defaultFolderPath === "function") {
-      const fallback = String(window.defaultFolderPath() || "").trim();
-      if (fallback && fallback !== "/") return fallback;
-    }
-    const exploration = explorationDefaultDirectory();
-    if (exploration && exploration !== "/") return exploration;
-    return "~";
-  }
-
   function isNoGitRepositoryView(view) {
     return !!(((view && view.status) || {}).not_git_repository);
   }
@@ -333,33 +304,19 @@
   const renderResetSelectedModal = modals.renderResetSelectedModal;
   const renderCompareSelectedModal = modals.renderCompareSelectedModal;
   const renderTagSelectedModal = modals.renderTagSelectedModal;
-  const renderBranchModal = modals.renderBranchModal;
   const renderCleanupConfirm = modals.renderCleanupConfirm;
   const renderGitOpModal = modals.renderGitOpModal;
   const renderGitOpBranchSelect = modals.renderGitOpBranchSelect;
   const renderGitOpModeSelect = modals.renderGitOpModeSelect;
   const renderGitOpModalShell = modals.renderGitOpModalShell;
-  const branchOptions = modals.branchOptions;
   const localNameForRemote = modals.localNameForRemote;
 
   const branchList = globalThis.HerdrGitUiBranchListModule.create({
     state,
     esc,
-    arg,
-    titleWithGitShortcut,
-    samePath,
-    compactPath,
-    pathBasename,
-    gitRemoteBranchPreload,
   });
   const renderWorktreeActions = branchList.renderWorktreeActions;
-  const renderGitLocationSelector = branchList.renderGitLocationSelector;
-  const renderWorktreeList = branchList.renderWorktreeList;
   const renderHeaderMenu = branchList.renderHeaderMenu;
-  const branchRelativeTime = branchList.branchRelativeTime;
-  const branchListRow = branchList.branchListRow;
-  const renderBranchList = branchList.renderBranchList;
-  const refocusBranchFilter = branchList.refocusBranchFilter;
 
   const toasts = globalThis.HerdrGitUiToastsModule.create({
     state,
@@ -420,10 +377,7 @@
     filterFiles,
     sideFileCount,
     renderWorktreeActions,
-    renderGitLocationSelector,
     renderDirContextMenu,
-    gitCwdMatchesWorkspace,
-    compactPath,
     appRefreshIconButton,
   });
   const canMutateDiff = diffView.canMutateDiff;
@@ -1095,7 +1049,7 @@
     // toasts) are position: fixed, so they render from the panel host.
     const container = gitMainContainer();
     if (container) {
-      panel.innerHTML = renderSide() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
+      panel.innerHTML = renderSide() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
       const side = panel.querySelector(".git-ui-side");
       if (side) side.scrollTop = state.sideScrollTop || 0;
       if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
@@ -1108,7 +1062,7 @@
     // break in the narrow column; a view toggle or status row opens the
     // center tab on demand. Overlays still render from the panel host.
     if (panelIsHosted()) {
-      panel.innerHTML = renderSide() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
+      panel.innerHTML = renderSide() + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
       const side = panel.querySelector(".git-ui-side");
       if (side) side.scrollTop = state.sideScrollTop || 0;
       if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
@@ -1117,7 +1071,7 @@
     }
     // Standalone harness fallback: one panel holds side + main + overlays,
     // the Phase 2 single-surface contract behavioral tests assert on.
-    panel.innerHTML = renderSide() + `<div class="git-ui-panel-main">${renderMain()}</div>` + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderBranchList() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderBranchModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
+    panel.innerHTML = renderSide() + `<div class="git-ui-panel-main">${renderMain()}</div>` + renderContextMenu() + renderLogContextMenu() + renderHeaderMenu() + renderCommitModal() + renderCompareSelectedModal() + renderResetSelectedModal() + renderTagSelectedModal() + renderGitOpModal() + renderCleanupConfirm() + renderGitToast() + renderScopeCopyToast();
     const side = panel.querySelector(".git-ui-side");
     if (side) side.scrollTop = state.sideScrollTop || 0;
     const nextContent = panel.querySelector(".git-ui-content");
@@ -1388,6 +1342,35 @@
       delete state.cache[key];
     },
     refresh,
+    // Location-bar branch read: the branch from the parked probe state
+    // (railStatus park or the __probed status), matched to the workspace
+    // folder. Returns null when the parks do not answer this cwd (the
+    // caller falls back to its own sources); returns {branch, known} or
+    // {notGit} otherwise. Read-only: never triggers a fetch.
+    workspaceBranch(workspace, cwd) {
+      if (!workspace || !cwd) return null;
+      const view = state.cache[workspaceKey(workspace)];
+      if (!view) return null;
+      const railOwned = !gitCwdMatchesWorkspace(view) && !!view.railStatus;
+      if (railOwned) {
+        if (!samePath(view.railStatus.cwd || "", cwd)) return null;
+        if (view.railStatus.not_git_repository) return { notGit: true };
+        if (view.railStatus.branch)
+          return { branch: String(view.railStatus.branch), known: true };
+        return null;
+      }
+      const status = view.status || {};
+      if (!samePath(view.cwd || "", cwd)) return null;
+      if (status.not_git_repository) return { notGit: true };
+      const branch = String(status.branch || "");
+      // The drawer's real refresh loads the full status (branch at HEAD);
+      // a probe park answers it too since the rail-status endpoint
+      // carries the branch. "No Git repository" is markNoGitRepository's
+      // placeholder, not a branch name.
+      if (branch && branch !== "No Git repository")
+        return { branch, known: true };
+      return null;
+    },
     // Background prober for the rail tint: one /api/git-ui/rail-status
     // POST per cwd warms the rail without opening the drawer (render
     // stays untouched while hidden). The shell calls this per selected
@@ -1404,8 +1387,9 @@
         view = { loading: false, tab: "changes", mode: "changes", file: "", navigationStack: [], cwd, workspaceCwd: cwd };
         state.cache[key] = view;
       }
-      // Picker divergence (openCwdPicker, worktree pick) is deliberate
-      // user state: probes must never touch the view, only warm the rail.
+      // Deliberate divergence (worktree pick; the bar owns folder switching
+      // now) is user state: probes must never touch the view, only warm the
+      // rail.
       const diverged = !!(view.cwd && !samePath(view.cwd, cwd) && samePath(view.workspaceCwd || "", cwd));
       if (diverged && view.railStatus && !samePath(view.railStatus.cwd || "", cwd)) {
         view.railStatus = null;
@@ -1445,7 +1429,7 @@
       // the rail park is still wanted for this folder; otherwise drop it.
       if (!item) return;
       if (diverged && (!view.railStatus || !view.railStatus.cwd)) {
-        view.railStatus = { cwd, state: item.state, not_git_repository: !!item.not_git_repository };
+        view.railStatus = { cwd, state: item.state, not_git_repository: !!item.not_git_repository, branch: item.branch || "" };
         if (window.syncGitWorkspaceToggle) window.syncGitWorkspaceToggle();
         else if (state.visible) render();
         return;
@@ -1460,6 +1444,7 @@
           __probedOnly: true,
           state: item.state,
           not_git_repository: !!item.not_git_repository,
+          branch: item.branch || "",
         });
         // A probe that answers this cwd also clears any error parked
         // earlier (failed refresh): workspaceStatus reads view.error
@@ -1483,6 +1468,27 @@
       refresh();
     },
     refreshVisible() { if (state.visible) render(); },
+    // Branch switch/create made from outside the drawer (location bar).
+    // The drawer never made the request, so its cached views still hold
+    // the pre-mutation HEAD: status, diffs, focused-diff parks. Invalidate
+    // every view keyed to this folder and reload the visible one; views
+    // for other folders stay untouched. The shell render that follows the
+    // bar action picks up the fresh state on the next open.
+    notifyBranchChanged(cwd) {
+      const folder = String(cwd || "");
+      if (!folder) return;
+      Object.keys(state.cache || {}).forEach((key) => {
+        const view = state.cache[key];
+        if (!view || !samePath(view.cwd || "", folder)) return;
+        view.focusedDiffCache = {};
+        if (view.status && !view.status.__probedOnly) view.status = null;
+        view.diff = null;
+      });
+      if (state.visible) {
+        const view = active();
+        if (view && samePath(view.cwd || "", folder)) refresh();
+      }
+    },
     isVisible() { return state.visible; },
     isWorkspaceVisible(key) { return state.visible && state.activeKey === key; },
     workspaceStatus,
@@ -2356,155 +2362,6 @@
     },
     resolve(path, mode) { post("/api/git-ui/conflict-resolve", { cwd: active().cwd, path: decodeURIComponent(path), mode }, "Resolving conflict"); },
     conflictAction(action) { post("/api/git-ui/conflict-action", { cwd: active().cwd, action }, "Continuing operation"); },
-    async openBranchList(event) {
-      const view = active();
-      if (!view) return;
-      if (event && event.stopPropagation) event.stopPropagation();
-      // Re-open toggle: clicking the chip again closes the list.
-      if (state.branchList && !state.branchList.loading) {
-        state.branchList = null;
-        render();
-        return;
-      }
-      const currentBranch = ((view.status || {}).branch) || "";
-      state.branchList = { loading: true, error: "", local: [], remote: [], filter: "", currentBranch, remoteLoaded: false };
-      render();
-      try {
-        const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(view.cwd)}`);
-        if (!state.branchList) return; // closed while loading
-        state.branchList = { loading: false, error: "", local: data.local || [], remote: data.remote || [], filter: state.branchList.filter || "", currentBranch, remoteLoaded: false };
-      } catch (err) {
-        if (!state.branchList) return;
-        state.branchList = { loading: false, error: err.message || String(err), local: [], remote: [], filter: state.branchList.filter || "", currentBranch, remoteLoaded: false };
-      }
-      render();
-    },
-    async openWorktreeList(event) {
-      const view = active();
-      if (!view) return;
-      if (event && event.stopPropagation) event.stopPropagation();
-      if (state.worktreeList) { state.worktreeList = null; render(); return; }
-      state.worktreeList = { loading: true, error: "", worktrees: [], currentPath: view.cwd };
-      render();
-      try {
-        const data = await api(`/api/worktrees?cwd=${encodeURIComponent(view.workspaceCwd || view.cwd)}`);
-        const result = data.result || data;
-        state.worktreeList = { loading: false, error: "", worktrees: result.worktrees || [], currentPath: view.cwd };
-      } catch (err) {
-        state.worktreeList = { loading: false, error: err.message || String(err), worktrees: [] };
-      }
-      render();
-    },
-    selectWorktree(encodedPath) {
-      const view = active();
-      const path = decodeURIComponent(encodedPath || "");
-      if (!view || !path || samePath(path, view.cwd)) return;
-      if (!window.confirm(`Switch Git to worktree folder "${path}"?`)) return;
-      state.worktreeList = null;
-      resetGitViewForCwd(view, path);
-      render();
-      refresh();
-    },
-    createWorktreeFromSelector() {
-      const view = active();
-      state.worktreeList = null;
-      render();
-      if (view && typeof openWorktreeCreateFromGitBranch === "function") openWorktreeCreateFromGitBranch(view.cwd, ((view.status || {}).branch || ""));
-      else if (typeof openWorktreeOpenModal === "function") openWorktreeOpenModal(view && view.cwd, true);
-    },
-    branchListFilter(value) {
-      if (!state.branchList) return;
-      state.branchList.filter = String(value || "");
-      if (state.branchList.filter.trim()) {
-        state.branchList.remoteLoaded = true;
-        state.branchList.remoteLoading = true;
-        const requestId = Date.now();
-        state.branchList.remoteRequestId = requestId;
-        render();
-        refocusBranchFilter(state.branchList.filter);
-        api(`/api/git-ui/branches?cwd=${encodeURIComponent((active() || {}).cwd || "")}`).then((data) => {
-          if (!state.branchList || state.branchList.remoteRequestId !== requestId) return;
-          const existing = new Map((state.branchList.remote || []).map((branch) => [branch.name, branch]));
-          (data.remote || []).forEach((branch) => existing.set(branch.name, branch));
-          state.branchList.remote = [...existing.values()];
-        }).catch(() => {}).finally(() => {
-          if (state.branchList && state.branchList.remoteRequestId === requestId) {
-            state.branchList.remoteLoading = false;
-            render();
-            refocusBranchFilter(state.branchList.filter);
-          }
-        });
-        return;
-      }
-      state.branchList.remoteLoading = false;
-      // Re-render only the list, not the whole panel: the filter input
-      // would lose focus otherwise.
-      const panel = document.getElementById("gitUiPanel");
-      const existing = panel && panel.querySelector(".git-ui-branch-list");
-      if (!existing) { render(); return; }
-      const template = document.createElement("div");
-      template.innerHTML = renderBranchList();
-      const next = template.firstElementChild;
-      if (!next) { render(); return; } // DOM without real parsing (tests): full re-render
-      existing.replaceWith(next);
-      const input = next.querySelector("input");
-      if (input && typeof input.focus === "function") {
-        input.focus();
-        try { input.setSelectionRange(String(value || "").length, String(value || "").length); } catch (_) {}
-      }
-    },
-    loadMoreBranches() {
-      if (!state.branchList) return;
-      state.branchList.remoteLoaded = true;
-      render();
-    },
-    async switchFromBranchList(encodedName, isRemote) {
-      const name = decodeURIComponent(String(encodedName || ""));
-      const view = active();
-      if (!view || !name) return;
-      state.branchList = null;
-      render();
-      const localName = isRemote ? name.split("/").slice(1).join("/") : name;
-      if (!localName) return;
-      const currentBranch = ((view.status || {}).branch) || "";
-      if (localName === currentBranch) return;
-      if (!window.confirm(`Switch Git to branch "${name}"?`)) return;
-      await postJson("/api/git-ui/switch", { cwd: view.cwd, branch: localName }, `Switching to ${name}`);
-    },
-    // Trash icon in a branch-list row: deletes the branch through the same
-    // endpoint the cleanup view uses. Remote rows and the current branch
-    // are refused (the backend also refuses the checked-out branch).
-    async deleteFromBranchList(encodedName, isRemote) {
-      const name = decodeURIComponent(String(encodedName || ""));
-      const view = active();
-      if (!view || !name) return;
-      if (isRemote) {
-        if (state.branchList) {
-          state.branchList.error = "Deleting remote branches is not supported here";
-          render();
-        }
-        return;
-      }
-      const currentBranch = String(((view.status || {}).branch) || "");
-      if (name === currentBranch) return;
-      if (!window.confirm(`Delete branch "${name}"?`)) return;
-      const filter = String((state.branchList && state.branchList.filter) || "");
-      state.branchList = { loading: true, error: "", local: [], remote: [], filter, currentBranch };
-      render();
-      try {
-        await api("/api/git-ui/branch-delete", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ cwd: view.cwd, branch: name, force: false, confirmed: true }),
-        });
-        const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(view.cwd)}`);
-        state.branchList = { loading: false, error: "", local: data.local || [], remote: data.remote || [], filter, currentBranch };
-      } catch (err) {
-        state.branchList = { loading: false, error: err.message || String(err), local: [], remote: [], filter, currentBranch };
-      }
-      render();
-      await refresh();
-    },
     toggleHeaderMenu(event) {
       if (event && event.stopPropagation) event.stopPropagation();
       if (state.headerMenu) { state.headerMenu = null; render(); return; }
@@ -2527,125 +2384,6 @@
     },
     openPushToModal() { state.headerMenu = null; this.openGitOpModal("push-to"); },
     openForcePushModal() { state.headerMenu = null; state.gitOpModal = { type: "force-push", error: "", branches: [], loading: false }; render(); },
-    async openBranchModal() {
-      const view = active();
-      if (!view) return;
-      const cwd = gitBranchModalDefaultCwd(view.cwd);
-      state.branchModal = { loading: true, error: "", local: [], remote: [], cwd };
-      render();
-      try {
-        const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(cwd)}`);
-        state.branchModal = { loading: false, error: "", local: data.local || [], remote: data.remote || [], cwd };
-      } catch (err) {
-        state.branchModal = { loading: false, error: err.message || String(err), local: [], remote: [], cwd };
-      }
-      render();
-    },
-    async loadBranchModalCwd() {
-      const modal = state.branchModal;
-      const input = document.getElementById("gitUiBranchCwd");
-      const cwd = input ? input.value.trim() : "";
-      if (!modal || !cwd) return;
-      state.branchModal = Object.assign({}, modal, { loading: true, error: "", cwd });
-      render();
-      try {
-        const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(cwd)}`);
-        state.branchModal = { loading: false, error: "", local: data.local || [], remote: data.remote || [], cwd };
-      } catch (err) {
-        state.branchModal = { loading: false, error: err.message || String(err), local: [], remote: [], cwd };
-      }
-      render();
-    },
-    closeBranchModal() {
-      state.branchModal = null;
-      render();
-    },
-    applyBranchModalCwd() {
-      const view = active();
-      const input = document.getElementById("gitUiBranchCwd");
-      const cwd = (input && input.value.trim()) || (state.branchModal && state.branchModal.cwd) || "";
-      if (!view || !cwd) return;
-      state.branchModal = null;
-      resetGitViewForCwd(view, cwd);
-      render();
-      refresh();
-    },
-    returnToWorkspaceCwd() {
-      const view = active();
-      if (!view || !view.workspaceCwd || gitCwdMatchesWorkspace(view)) return;
-      resetGitViewForCwd(view, view.workspaceCwd);
-      render();
-      refresh();
-    },
-    // Path title entry: opens the directory picker on the current Git folder.
-    // The picker writes into a hidden input node and applies the selected
-    // folder immediately, so no extra modal input has to live in the panel.
-    openCwdPicker() {
-      const view = active();
-      if (!view) return;
-      const picker = window.HerdrDirectoryPicker;
-      if (!picker || typeof picker.open !== "function") return;
-      const input = document.createElement("input");
-      input.type = "text";
-      input.style.display = "none";
-      input.value = String(view.cwd || "");
-      let closed = false;
-      const onChange = () => {
-        closed = true;
-        cleanup();
-        const cwd = normalizePathForCompare(input.value || "");
-        if (!cwd) return;
-        if (samePath(cwd, view.cwd)) return;
-        resetGitViewForCwd(view, cwd);
-        render();
-        refresh();
-      };
-      function cleanup() {
-        input.removeEventListener("change", onChange);
-        if (input.parentNode) input.parentNode.removeChild(input);
-      }
-      input.addEventListener("change", onChange);
-      document.body.appendChild(input);
-      picker.open(input);
-      // The picker close path (Close button) has no callback: poll for the
-      // modal disappearing. selectCurrent() dispatches change before close,
-      // so the change path wins; only a removal without change cleans up.
-      const poll = (attempt) => {
-        if (closed) return;
-        if (!document.getElementById("directoryPickerModal")) {
-          cleanup();
-          return;
-        }
-        if (attempt > 600) {
-          // Long picker session: keep the change listener armed so a late
-          // Select still applies, just stop polling.
-          return;
-        }
-        requestAnimationFrame(() => poll(attempt + 1));
-      };
-      poll(0);
-    },
-    switchBranchFromModal() {
-      const view = active();
-      const select = document.getElementById("gitUiBranchSelect");
-      if (!view || !select || !select.value) return;
-      const [kind, ...rest] = select.value.split(":");
-      const branch = rest.join(":");
-      const selectedOption = select.options && select.options[select.selectedIndex];
-      const worktreePath = selectedOption && selectedOption.dataset ? selectedOption.dataset.worktreePath : "";
-      const input = document.getElementById("gitUiBranchCwd");
-      const modalCwd = (input && input.value.trim()) || (state.branchModal && state.branchModal.cwd) || view.cwd;
-      state.branchModal = null;
-      if (worktreePath && !samePath(worktreePath, modalCwd)) {
-        resetGitViewForCwd(view, worktreePath);
-        render();
-        refresh();
-        return;
-      }
-      view.cwd = modalCwd;
-      if (kind === "remote") post("/api/git-ui/switch", { cwd: view.cwd, branch: localNameForRemote(branch), create: true, base: branch }, "Switching branch");
-      else post("/api/git-ui/switch", { cwd: view.cwd, branch }, "Switching branch");
-    },
     async compareCurrent() {
       if (currentMode() !== "changes") this.latestChanges();
     },

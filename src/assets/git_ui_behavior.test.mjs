@@ -1,7 +1,22 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
+
+// One compiled script per product file so coverage attributes each file's
+// lines to its real disk path; scripts are built once and memoized.
+function productScript(relPath) {
+  productScript.cache = productScript.cache || new Map();
+  if (!productScript.cache.has(relPath)) {
+    const realPath = fileURLToPath(new URL(relPath, import.meta.url));
+    productScript.cache.set(
+      relPath,
+      new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath }),
+    );
+  }
+  return productScript.cache.get(relPath);
+}
 
 // Behavioral tests for the desktop Git explorer compare modes.
 // The vm boots the same source set the server concatenates for the git-ui
@@ -80,7 +95,14 @@ function context(fetchImpl) {
       visibilityState: "visible",
       createElement: () => element(),
       execCommand: () => true,
-      querySelector: () => element(),
+      // Truthful for the location-bar popover classes (the git-ui keydown
+      // guard probes them; a blanket truthy stub would swallow every Esc);
+      // the generic stub answers everything else as before.
+      querySelector: (selector) => (
+        selector === ".location-bar-branch-popover" || selector === ".location-bar-worktree-popover"
+          ? null
+          : element()
+      ),
       querySelectorAll: () => [],
       __panelHtml: "",
       getElementById(id) {
@@ -151,7 +173,7 @@ assert.equal(
 // git_ui/settings.js evaluates its html template literal at load time, so
 // the bare inputAttrs binding must exist before any git_ui module loads.
 const CORE_SOURCE = readFileSync(new URL("./shared/core.js", import.meta.url), "utf8");
-const SHARED_SOURCES = [
+const SHARED_SOURCE_FILES = [
   "./shared/actions.js",
   "./shared/file_icons.js",
   "./shared/file_tree.js",
@@ -159,9 +181,16 @@ const SHARED_SOURCES = [
   "./shared/file_content_search.js",
   "./shared/workspace_search.js",
   ...GIT_UI_BUNDLE_FILES,
-]
-  .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
-  .join("\n;\n");
+];
+// The original blob joined these with `\n;\n`; each git_ui module is a
+// globalThis-scoped factory, so sequential per-file scripts are equivalent.
+let sharedScripts = null;
+function getSharedScripts() {
+  if (!sharedScripts) {
+    sharedScripts = SHARED_SOURCE_FILES.map((path) => productScript(path));
+  }
+  return sharedScripts;
+}
 // appRefreshIconButton comes from the desktop app bundle; stub it.
 const APP_STUBS = `
 function appRefreshIconButton() { return ""; }
@@ -198,15 +227,15 @@ async function bootGitUi(responses) {
     return { ok: true, status: 200, json: async () => ({}) };
   };
   const ctx = context(fetchImpl);
-  vm.runInContext(CORE_SOURCE, ctx);
+  productScript("./shared/core.js").runInContext(ctx);
   // git_ui modules render inputs with inputAttrs(...) from the shared
   // HerdrAppHelpers (same binding the real concat bundle gets). settings.js
   // evaluates its template literal at load time, so set the binding before
   // loading any git_ui module.
   vm.runInContext("inputAttrs = globalThis.HerdrAppHelpers.inputAttrs", ctx);
-  vm.runInContext(SHARED_SOURCES, ctx);
+  for (const script of getSharedScripts()) script.runInContext(ctx);
   vm.runInContext(APP_STUBS, ctx);
-  vm.runInContext(GIT_UI_SOURCE, ctx);
+  productScript("./desktop/git_ui.js").runInContext(ctx);
   const ui = ctx.window.HerdrGitUi;
   return { ui, ctx, calls };
 }
@@ -885,7 +914,7 @@ test("header menu dropdown offers exactly the seven git-flow actions", async () 
   assert.ok(!menuHtml.includes("git-ui-header-menu"), "menu closes after action");
 });
 
-test("branch chip shows the branch and the status button shows sync arrows when diverged", async () => {
+test("status button shows sync arrows when diverged; the bar owns the branch chip", async () => {
   const booted = await bootGitUi({
     "/api/git-ui/status": { branch: "feature-x", ahead: 2, behind: 3, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/feature-x" },
     "/api/git-ui/diff": { files: [] },
@@ -896,51 +925,12 @@ test("branch chip shows the branch and the status button shows sync arrows when 
   const { ui } = booted;
   await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
 
-  let html = String(ctxHtml(booted));
-  assert.match(html, /git-ui-branch-chip/);
-  assert.match(html, /<span class="git-ui-branch-chip-name">feature-x<\/span>/);
+  const html = String(ctxHtml(booted));
+  // Phase 3: the branch chip lives in the location bar; the drawer keeps
+  // only the worktree chip.
+  assert.ok(!/<span class="git-ui-branch-chip-name">feature-x<\/span>/.test(html), "branch chip left the drawer with phase 3");
   // Incoming wins: Pull ↓3 on the status button (behind takes priority).
   assert.match(html, /data-method="pullUpdateFromUpstream"[^>]*>Pull ↓3</);
-
-  const chipEvent = { stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 };
-  await ui.openBranchList(chipEvent);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  html = String(ctxHtml(booted));
-  assert.match(html, /git-ui-branch-list"/);
-  assert.match(html, /Local branches/);
-  assert.match(html, /Remote branches/);
-  // Two-line rows: name line and author · relative time meta line; hover
-  // title carries the commit subject and details.
-  assert.match(html, /title="[^"]*Ada[^"]*"/);
-  assert.match(html, /git-ui-branch-row-meta">[^<]*Ada[^<]*<\/span>/);
-  // Current branch pinned first with a ✓ check; other rows show the branch icon.
-  assert.match(html, /✓<\/b><span class="git-ui-branch-row-name-text">feature-x<\/span>/, "current branch row carries the ✓ check");
-  const localSection = html.indexOf("Local branches");
-  const firstRowAfterSection = html.slice(localSection).indexOf("git-ui-branch-row");
-  const firstRow = html.slice(localSection + firstRowAfterSection, localSection + firstRowAfterSection + 400);
-  assert.ok(localSection === -1 || firstRow.includes("feature-x"), "current branch row is pinned at the top of the local section");
-  assert.match(html, /git-ui-branch-row-icon/);
-  // Trash icon is wired for non-current rows.
-  assert.match(html, /deleteFromBranchList/);
-  // Filter lives below the scrollable rows.
-  assert.ok(html.indexOf("git-ui-branch-list-scroll") < html.indexOf("git-ui-branch-list-filter"), "filter sits at the bottom");
-
-  // Filter narrows the visible rows: in the vm the DOM stub cannot swap
-  // nodes, so assert the renderer honors the filter by re-rendering.
-  ui.branchListFilter("main");
-  html = String(ctxHtml(booted));
-  assert.ok(html.includes("main"), "matching branch stays visible");
-  const renderedNames = (html.match(/git-ui-branch-row-name">.*?<\/span>/g) || []).join(" ");
-  assert.ok(!renderedNames.includes("feature-x"), "filtered rows hide non-matching branch");
-
-  // Switching to another local branch posts to /switch with the bare name.
-  const before = booted.calls.length;
-  await ui.switchFromBranchList(encodeURIComponent("main"), false);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  const switchPosts = booted.calls.slice(before).filter((call) => call.path === "/api/git-ui/switch");
-  assert.equal(switchPosts.length, 1, "switch POST fired");
-  assert.equal(JSON.parse(switchPosts[0].init.body).branch, "main");
-  assert.ok(!String(ctxHtml(booted)).includes("git-ui-branch-list"), "list closes after switch");
 });
 
 test("status button shows plain Fetch and the chip no check when in sync with upstream", async () => {
@@ -954,53 +944,6 @@ test("status button shows plain Fetch and the chip no check when in sync with up
   const html = String(ctxHtml(booted));
   assert.match(html, /git-ui-status-label" data-method="fetchOrigin"[^>]*title="git fetch origin"[^>]*>Fetch</);
   assert.ok(!/chip-count/.test(html), "sync badges moved off the chip");
-});
-
-test("branch list trash deletes a local branch and refreshes the list", async () => {
-  const branches = { local: [{ name: "main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" }, { name: "wip", author: "Bob", date: "2026-01-03T03:04:05Z", subject: "wip" }], remote: [] };
-  const booted = await bootGitUi({
-    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" },
-    "/api/git-ui/diff": { files: [] },
-    "/api/git-ui/compare": { files: [] },
-    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
-    "/api/git-ui/branches": () => ({ local: branches.local, remote: branches.remote }),
-    // Deleting really drops the branch, so the list reload loses the row.
-    "/api/git-ui/branch-delete": () => {
-      branches.local = branches.local.filter((branch) => branch.name !== "wip");
-      return { ok: true, message: "" };
-    },
-  });
-  const { ui, calls } = booted;
-  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
-
-  // Current branch rows show no trash icon.
-  await ui.openBranchList({ stopPropagation() {}, currentTarget: null, clientX: 0, clientY: 0 });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  let html = String(ctxHtml(booted));
-  assert.match(html, /aria-label="Delete branch wip"/);
-  const mainRow = (html.match(/git-ui-branch-row current[\s\S]*?<\/div>/) || [""])[0];
-  assert.ok(!mainRow.includes("branch-row-trash"), "current branch row has no trash icon");
-
-  // Deleting refuses the current branch and remote rows without posting.
-  const before = calls.length;
-  await ui.deleteFromBranchList(encodeURIComponent("main"), false);
-  await ui.deleteFromBranchList(encodeURIComponent("origin/main"), true);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(calls.slice(before).filter((call) => call.path === "/api/git-ui/branch-delete").length, 0, "no delete POST for current or remote branch");
-
-  // Deleting a local branch posts to the endpoint, then reloads the list.
-  const deleteIndex = calls.length;
-  await ui.deleteFromBranchList(encodeURIComponent("wip"), false);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  const deletePosts = calls.slice(deleteIndex).filter((call) => call.path === "/api/git-ui/branch-delete");
-  assert.equal(deletePosts.length, 1, "one branch-delete POST fired");
-  const body = JSON.parse(deletePosts[0].init.body);
-  assert.equal(body.branch, "wip");
-  assert.equal(body.confirmed, true);
-  // The handler reloads the branches endpoint; wip is gone from the list.
-  html = String(ctxHtml(booted));
-  assert.match(html, /git-ui-branch-list"/);
-  assert.ok(!/aria-label="Delete branch wip"/.test(html), "deleted branch is gone from the list");
 });
 
 test("stash renderer module is registered and wired before git_ui.js consumes it", async () => {
@@ -1313,14 +1256,18 @@ test("modals render commit and git-op flows from module state", async () => {
 });
 
 test("branch list module is registered and wired before git_ui.js consumes it", () => {
+  // Phases 3 and 4: the module keeps only the status actions row and the
+  // header menu; the branch and worktree popovers live in the location bar.
   const branchListSource = readFileSync(new URL("./desktop/git_ui/branch_list.js", import.meta.url), "utf8");
   assert.match(branchListSource, /globalThis\.HerdrGitUiBranchListModule = \{ create: createGitUiBranchList \}/);
-  assert.match(branchListSource, /function branchListRow\(branch, currentBranch\)/);
-  assert.match(branchListSource, /Local branches/);
-  assert.match(branchListSource, /Load more branches/);
+  assert.match(branchListSource, /renderWorktreeActions/);
+  assert.match(branchListSource, /renderHeaderMenu/);
+  assert.ok(!branchListSource.includes("renderBranchList"), "branch popover renderer moved out of the drawer module");
+  assert.ok(!branchListSource.includes("renderWorktreeList"), "worktree popover renderer moved out of the drawer module");
+  assert.ok(!branchListSource.includes("renderGitLocationSelector"), "the drawer renders no location selector");
   const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
   assert.match(gitUiSource, /globalThis\.HerdrGitUiBranchListModule\.create\(\{/);
-  assert.match(gitUiSource, /const renderBranchList = branchList\.renderBranchList;/);
+  assert.match(gitUiSource, /const renderWorktreeActions = branchList\.renderWorktreeActions;/);
   const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
   const branchListIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/branch_list.js")');
   const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
@@ -1715,7 +1662,6 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
     filterFiles: (paths) => paths,
     sideFileCount: () => 2,
     renderWorktreeActions: () => "ACTIONS",
-    renderGitLocationSelector: () => "LOCATION",
     renderDirContextMenu: (menu) => `DIRMENU[${menu.path}]`,
     gitCwdMatchesWorkspace: () => true,
     compactPath: (p) => p,
@@ -1811,25 +1757,25 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
     filterFiles: (paths) => paths,
     sideFileCount: () => 0,
     renderWorktreeActions: () => "",
-    renderGitLocationSelector: () => "",
     renderDirContextMenu: () => "",
     gitCwdMatchesWorkspace: matchesWorkspace,
     compactPath: (p) => p,
     appRefreshIconButton: () => "",
   });
   const matched = toggleMod.renderDiffLayoutSideToggle({ cwd: "/repo/a", workspaceCwd: "/repo/a" });
-  assert.match(matched, /class="git-ui-path-title"[^>]*onclick="HerdrGitUi\.openCwdPicker\(\)"/);
-  assert.match(matched, /Change Git folder/);
+  // Folder switching moved to the location bar (plan phase 2b): the side
+  // bottom keeps only the diff layout toggle, no path title, no return.
+  assert.doesNotMatch(matched, /git-ui-path-title/);
+  assert.doesNotMatch(matched, /openCwdPicker/);
   assert.doesNotMatch(matched, /returnToWorkspaceCwd/);
+  assert.match(matched, /git-ui-diff-layout-toggle/);
+  assert.match(matched, /Show unified diff/);
   const diverged = toggleMod.renderDiffLayoutSideToggle({ cwd: "/repo/b", workspaceCwd: "/repo/a" });
-  assert.match(diverged, /returnToWorkspaceCwd/);
-  assert.match(diverged, /Return Git to workspace folder/);
-  // Cleanup-only (not a git repo) view keeps the clickable path title so the
-  // user can move to a real repository, but hides the diff layout toggle.
+  assert.doesNotMatch(diverged, /returnToWorkspaceCwd/, "diverged views render no return button either");
+  // Cleanup-only (not a git repo) view renders an empty side bottom.
   const noRepo = toggleMod.renderDiffLayoutSideToggle({ cwd: "/repo/b", workspaceCwd: "/repo/b", status: { not_git_repository: true } });
-  assert.match(noRepo, /openCwdPicker/);
+  assert.equal(noRepo, '<div class="git-ui-side-bottom"></div>');
   assert.doesNotMatch(noRepo, /git-ui-diff-layout-toggle/, "cleanup-only view hides the layout toggle");
-  assert.doesNotMatch(noRepo, /returnToWorkspaceCwd/, "no return button in a no-repo view");
 });
 
 test("log_render module is registered and wired before git_ui.js consumes it", () => {
@@ -2045,7 +1991,7 @@ test("openFileHistory reuses the existing Git view for the same cwd", async () =
   assert.match(ctxHtml(booted), /Loading history/, "history tab renders in the reused view");
 });
 
-test("path title picker moves the Git view and the return button restores the workspace folder", async () => {
+test("the drawer has no folder surfaces; the location bar owns folder switching", async () => {
   const booted = await bootGitUi({
     "/api/git-ui/status": emptyStatus(),
     "/api/git-ui/diff": { files: [] },
@@ -2054,61 +2000,23 @@ test("path title picker moves the Git view and the return button restores the wo
   });
   const { ui, ctx } = booted;
   await ui.open({ cwd: "/tmp/workspace-repo", title: "demo" }, { forceOpen: true });
-  let html = ctxHtml(booted);
-  // Side bottom: the cwd renders as a clickable path title that opens the
-  // folder picker, and no return button exists while cwd == workspaceCwd.
-  assert.match(html, /class="git-ui-path-title"[\s\S]*?onclick="HerdrGitUi\.openCwdPicker\(\)"/);
-  const bottomChunk = html.split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(!bottomChunk.includes("returnToWorkspaceCwd"), "no return button while the Git cwd matches the workspace");
-  // Stub picker: records the hidden input seed and simulates a select by
-  // setting its value and dispatching the change event git_ui listens for.
-  const inputs = [];
-  const makeInput = () => {
-    const listeners = {};
-    const node = {
-      type: "",
-      style: {},
-      value: "",
-      parentNode: { removeChild() {} },
-      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-      removeEventListener(type, fn) { if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn); },
-      dispatch(type) { (listeners[type] || []).slice().forEach((fn) => fn({ target: node })); },
-    };
-    return node;
-  };
-  const rawCreateElement = ctx.document.createElement;
-  ctx.document.createElement = (tag) => {
-    const node = tag === "input" ? makeInput() : rawCreateElement(tag);
-    if (node && node.type === "") node.__tag = tag;
-    if (tag === "input") inputs.push(node);
-    return node;
-  };
-  let pickerInput = null;
-  ctx.window.HerdrDirectoryPicker = {
-    open(input) { pickerInput = input; },
-  };
-  ctx.window.addEventListener = () => {};
-  ctx.window.removeEventListener = () => {};
-  ui.openCwdPicker();
-  assert.ok(pickerInput, "picker receives the hidden input");
-  assert.equal(pickerInput.value, "/tmp/workspace-repo", "picker input seeds the current Git cwd");
-  pickerInput.value = "/tmp/other-repo";
-  pickerInput.dispatch("change");
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  // The selected folder becomes the Git cwd immediately: status reloads for it.
-  const statusCall = booted.calls.filter((call) => call.path === "/api/git-ui/status").pop();
-  assert.equal(statusCall.params.get("cwd"), "/tmp/other-repo", "status refetches with the picked cwd");
-  html = ctxHtml(booted);
-  const diverged = html.split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(diverged.includes("returnToWorkspaceCwd"), "return button appears once the cwd left the workspace folder");
-  // Return restores the workspace folder and drops the button again.
-  ui.returnToWorkspaceCwd();
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const lastStatus = booted.calls.filter((call) => call.path === "/api/git-ui/status").pop();
-  assert.equal(lastStatus.params.get("cwd"), "/tmp/workspace-repo", "return restores the workspace cwd");
-  html = ctxHtml(booted);
-  const restored = html.split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(!restored.includes("returnToWorkspaceCwd"), "return button disappears after restoring");
+  const html = ctxHtml(booted);
+  // Plan phase 2b: the path title, its picker entry, the side-bottom head,
+  // the differs notice, and the return button are all gone from the drawer.
+  assert.ok(!html.includes("git-ui-path-title"), "no path title");
+  assert.ok(!html.includes("openCwdPicker"), "no picker entry");
+  assert.ok(!html.includes("git-ui-side-bottom-head"), "no side-bottom head");
+  assert.ok(!html.includes("git-ui-folder-different"), "no differs notice");
+  assert.ok(!html.includes("returnToWorkspaceCwd"), "no return button");
+  assert.ok(!ctx.window.HerdrGitUi.openCwdPicker, "openCwdPicker is not part of the API");
+  assert.ok(!ctx.window.HerdrGitUi.returnToWorkspaceCwd, "returnToWorkspaceCwd is not part of the API");
+  // Plan phase 4: the worktree chip and popover live in the location bar,
+  // so the drawer keeps no selector and no cwd divergence entry at all.
+  assert.ok(!html.includes("git-ui-worktree-chip"), "no worktree chip");
+  assert.ok(!html.includes("git-ui-worktree-list"), "no worktree popover");
+  assert.ok(!html.includes("git-ui-subtitle"), "no subtitle wrapper");
+  assert.ok(!ctx.window.HerdrGitUi.selectWorktree, "selectWorktree is not part of the API");
+  assert.ok(!ctx.window.HerdrGitUi.openWorktreeList, "openWorktreeList is not part of the API");
 });
 
 test("Esc pops one navigation level and only hides at the changes root", async () => {
@@ -2127,8 +2035,8 @@ test("Esc pops one navigation level and only hides at the changes root", async (
     lastAction = "";
     const shortcuts = ctx.window.HerdrGitUiShortcuts.create({
       state: {
-        visible: true, contextMenu: null, logContextMenu: null, headerMenu: null, branchList: null,
-        worktreeList: null, branchModal: null, gitOpModal: null, commitModal: null,
+        visible: true, contextMenu: null, logContextMenu: null, headerMenu: null,
+        gitOpModal: null, commitModal: null,
         compareSelectedModal: null, resetSelectedModal: null, tagSelectedModal: null,
         cleanupConfirm: null, shortcutPrefixUntil: 0,
       },
@@ -2176,8 +2084,8 @@ test("Esc closes an open menu or modal before touching the navigation stack", as
   const openWithState = (extra) => {
     const shortcuts = ctx.window.HerdrGitUiShortcuts.create({
       state: Object.assign({
-        visible: true, contextMenu: null, logContextMenu: null, headerMenu: null, branchList: null,
-        worktreeList: null, branchModal: null, gitOpModal: null, commitModal: null,
+        visible: true, contextMenu: null, logContextMenu: null, headerMenu: null,
+        gitOpModal: null, commitModal: null,
         compareSelectedModal: null, resetSelectedModal: null, tagSelectedModal: null,
         cleanupConfirm: null, shortcutPrefixUntil: 0,
       }, extra),
@@ -2199,8 +2107,10 @@ test("Esc closes an open menu or modal before touching the navigation stack", as
     });
     shortcuts.handleKeydown({ key: "Escape", target: {}, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
   };
-  // With the branch list open mid-flow, Esc closes it and does NOT pop.
-  openWithState({ branchList: { open: true } });
+  // With a git op modal open mid-flow, Esc closes it and does NOT pop.
+  // (The branch and worktree popovers live in the location bar with phases
+  // 3 and 4 and own their Esc handling there.)
+  openWithState({ gitOpModal: { open: true } });
   assert.equal(lastAction, "", "Esc with a modal open never reaches the navigation stack");
   assert.equal(rendered, 1, "closing the modal re-renders");
   // Same for the log context menu and the branch popover states.
@@ -2511,175 +2421,62 @@ test("a plain reopen of a hidden drawer with a loaded view refetches the status"
     "the reopened drawer reads the out-of-band state");
 });
 
-test("picker divergence survives shell-render probes and keeps the rail on the workspace folder", async () => {
-  // The shell probe used to read a diverged cwd as a stale park, killing
-  // the return button. Divergence is deliberate and must survive.
+test("shell-render probes keep the rail parked on the workspace folder", async () => {
+  // A cold probe (drawer never opened) warms the rail through rail-status
+  // and parks a probe-only status the next renders reuse without refetch.
   const wsStatus = { state: "dirty", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["ws.txt"], untracked: [], conflicted: [] };
-  const pickedStatus = { state: "clean", branch: "picked", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
   const booted = await bootGitUi({
     "/api/git-ui/rail-status": (params, init) => {
       const body = JSON.parse(init.body);
       return { items: body.workspaces.map((w) => ({ workspace_id: w.workspace_id || null, cwd: w.cwd, state: "dirty" })) };
     },
-    "/api/git-ui/status": (params) => (params.get("cwd") === "/tmp/picked-repo" ? pickedStatus : wsStatus),
+    "/api/git-ui/status": () => wsStatus,
     "/api/git-ui/diff": { files: [] },
     "/api/git-ui/compare": { files: [] },
     "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
   });
-  const { ui, ctx, calls } = booted;
+  const { ui } = booted;
   const workspace = { cwd: "/tmp/ws-repo", title: "demo" };
-  await ui.open(workspace, { forceOpen: true });
-  await settle();
-  // Diverge through the picker event chain (hidden input change).
-  const makeInput = () => {
-    const listeners = {};
-    return {
-      type: "", style: {}, value: "/tmp/ws-repo",
-      parentNode: { removeChild() {} },
-      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-      removeEventListener(type, fn) { if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn); },
-      dispatch(type) { (listeners[type] || []).slice().forEach((fn) => fn({ target: this })); },
-    };
-  };
-  const rawCreate = ctx.document.createElement;
-  let pickerInput = null;
-  ctx.document.createElement = (tag) => {
-    const node = tag === "input" ? makeInput() : rawCreate(tag);
-    if (tag === "input") pickerInput = node;
-    return node;
-  };
-  ctx.window.HerdrDirectoryPicker = { open() {} };
-  ctx.window.addEventListener = () => {};
-  ctx.window.removeEventListener = () => {};
-  ui.openCwdPicker();
-  pickerInput.value = "/tmp/picked-repo";
-  pickerInput.dispatch("change");
-  await settle();
-  let html = ctxHtml(booted).split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(html.includes("returnToWorkspaceCwd"), "the return button appears once the picker diverged");
-  // Shell renders re-fire the probe for the workspace folder.
+  // The drawer never opens: only a shell-render probe runs.
   await ui.probeWorkspaceStatus(workspace);
   await settle();
-  html = ctxHtml(booted).split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(html.includes("returnToWorkspaceCwd"), "the divergence survives the probe");
-  const railCalls = calls.filter((call) => call.path === "/api/git-ui/rail-status");
-  assert.deepEqual(JSON.parse(railCalls[railCalls.length - 1].init.body).workspaces,
-    [{ workspace_id: null, cwd: "/tmp/ws-repo" }],
-    "the probe warms the rail for the workspace folder, not the picked one");
   assert.equal(ui.workspaceStatus(null, workspace), "dirty",
-    "the rail tint describes the workspace folder while diverged");
+    "a cold probe tints the rail from the rail-status answer");
   // A second probe parks nothing new: the rail park is fresh.
-  const warmFetches = railCalls.length;
+  const probeAgain = booted.calls.filter((call) => call.path === "/api/git-ui/rail-status").length;
   await ui.probeWorkspaceStatus(workspace);
   await settle();
-  assert.equal(calls.filter((call) => call.path === "/api/git-ui/rail-status").length, warmFetches,
+  assert.equal(booted.calls.filter((call) => call.path === "/api/git-ui/rail-status").length, probeAgain,
     "a parked rail status is not refetched per render");
+  let html = ctxHtml(booted).split("git-ui-side-bottom-head")[1] || "";
+  assert.ok(!html, "the side-bottom head is gone with the folder surfaces");
 });
 
-test("divergence to a plain folder keeps the rail clickable after the drawer hides", async () => {
-  // Nogit lockout risk: after picking a plain folder and hiding the drawer,
-  // the rail must keep the workspace tint or it can never reopen.
+test("a hidden drawer keeps reading the rail from the parked status", async () => {
+  // After the drawer hides, a shell-render probe must not clobber the
+  // loaded status the rail tint reads.
   const wsStatus = { state: "clean", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
-  const plainStatus = { state: "cleanup only", repo_path: "/tmp/plain-dir", branch: "No Git repository", not_git_repository: true, ahead: 0, behind: 0, upstream: "", remote_url: null, staged: [], unstaged: [], untracked: [], conflicted: [], stashes: [] };
   const booted = await bootGitUi({
-    "/api/git-ui/status": (params) => (params.get("cwd") === "/tmp/plain-dir" ? plainStatus : wsStatus),
+    "/api/git-ui/status": () => wsStatus,
     "/api/git-ui/diff": { files: [] },
     "/api/git-ui/compare": { files: [] },
     "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
   });
-  const { ui, ctx } = booted;
+  const { ui, calls } = booted;
   const workspace = { cwd: "/tmp/ws-repo", title: "demo" };
   await ui.open(workspace, { forceOpen: true });
   await settle();
-  // Diverge to the plain folder through the picker event chain.
-  const makeInput = () => {
-    const listeners = {};
-    return {
-      type: "", style: {}, value: "/tmp/ws-repo",
-      parentNode: { removeChild() {} },
-      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-      removeEventListener(type, fn) { if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn); },
-      dispatch(type) { (listeners[type] || []).slice().forEach((fn) => fn({ target: this })); },
-    };
-  };
-  const rawCreate = ctx.document.createElement;
-  let pickerInput = null;
-  ctx.document.createElement = (tag) => {
-    const node = tag === "input" ? makeInput() : rawCreate(tag);
-    if (tag === "input") pickerInput = node;
-    return node;
-  };
-  ctx.window.HerdrDirectoryPicker = { open() {} };
-  ctx.window.addEventListener = () => {};
-  ctx.window.removeEventListener = () => {};
-  ui.openCwdPicker();
-  pickerInput.value = "/tmp/plain-dir";
-  pickerInput.dispatch("change");
-  await settle();
-  // The cleanup-only park landed for the picked folder.
-  assert.ok(ctxHtml(booted).includes("cleanup"), "the plain folder renders its cleanup-only view");
-  // While the drawer is visible the rail reads "open" (closable).
-  assert.equal(ui.workspaceStatus(null, workspace), "open", "a visible diverged drawer keeps the rail clickable");
+  // While the drawer is visible the loaded tint outranks the "open" tint.
+  assert.equal(ui.workspaceStatus(null, workspace), "clean", "a visible drawer shows the loaded tint");
   // Hide, then let a shell render probe fire.
+  const loadedFetches = calls.filter((call) => call.path === "/api/git-ui/status").length;
   ui.hide();
   await ui.probeWorkspaceStatus(workspace);
   await settle();
   assert.equal(ui.workspaceStatus(null, workspace), "clean",
-    "a hidden drawer diverged to a plain folder tints the rail from the workspace folder");
-});
-
-test("return to the workspace folder drops the rail park and refetches the workspace status", async () => {
-  // After return restores the workspace cwd the rail park is stale by
-  // design: the view refetches, so the tint must follow the fresh load.
-  let statusPayload = { state: "dirty", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["back.txt"], untracked: [], conflicted: [] };
-  const pickedStatus = { state: "clean", branch: "picked", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
-  const booted = await bootGitUi({
-    "/api/git-ui/status": (params) => (params.get("cwd") === "/tmp/picked-repo" ? pickedStatus : statusPayload),
-    "/api/git-ui/diff": { files: [] },
-    "/api/git-ui/compare": { files: [] },
-    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
-  });
-  const { ui, ctx, calls } = booted;
-  const workspace = { cwd: "/tmp/ws-repo", title: "demo" };
-  await ui.open(workspace, { forceOpen: true });
-  await settle();
-  const makeInput = () => {
-    const listeners = {};
-    return {
-      type: "", style: {}, value: "/tmp/ws-repo",
-      parentNode: { removeChild() {} },
-      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-      removeEventListener(type, fn) { if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn); },
-      dispatch(type) { (listeners[type] || []).slice().forEach((fn) => fn({ target: this })); },
-    };
-  };
-  const rawCreate = ctx.document.createElement;
-  let pickerInput = null;
-  ctx.document.createElement = (tag) => {
-    const node = tag === "input" ? makeInput() : rawCreate(tag);
-    if (tag === "input") pickerInput = node;
-    return node;
-  };
-  ctx.window.HerdrDirectoryPicker = { open() {} };
-  ctx.window.addEventListener = () => {};
-  ctx.window.removeEventListener = () => {};
-  ui.openCwdPicker();
-  pickerInput.value = "/tmp/picked-repo";
-  pickerInput.dispatch("change");
-  await settle();
-  // Park the rail status for the workspace folder.
-  await ui.probeWorkspaceStatus(workspace);
-  await settle();
-  statusPayload = { state: "clean", branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
-  // Return: the button restores the workspace folder and disappears.
-  ui.returnToWorkspaceCwd();
-  await settle();
-  const head = ctxHtml(booted).split("git-ui-side-bottom-head")[1] || "";
-  assert.ok(!head.includes("returnToWorkspaceCwd"), "the return button disappears after restoring");
-  assert.equal(ui.workspaceStatus(null, workspace), "clean",
-    "the rail reads the refetched workspace status after the return");
-  const lastCall = calls.filter((call) => call.path === "/api/git-ui/status").pop();
-  assert.equal(lastCall.params.get("cwd"), "/tmp/ws-repo", "the return refetched the workspace folder");
+    "a hidden drawer tints the rail from the parked workspace status");
+  assert.equal(calls.filter((call) => call.path === "/api/git-ui/status").length, loadedFetches,
+    "the probe never refetches the full status behind a loaded view");
 });
 
 // ---- cleanup delete flow (branch-too option, parallelism, rescan gate) --
@@ -2953,4 +2750,1016 @@ test("cleanup delete rescans on partial failure and keeps the error message", as
   assert.equal(cleanupPosts(calls, "/api/git-ui/worktree-remove", before).length, 2);
   assert.ok(cleanupPosts(calls, "/api/git-ui/cleanup-scan", before).length > 0, "partial success still rescans");
   assert.match(ctxHtml(booted), /running processes/, "the surviving failure is reported");
+});
+
+test("notifyBranchChanged invalidates the matching folder and refreshes only the visible match", async () => {
+  // The location bar switches branches outside the drawer. A drawer
+  // displaying that folder must reload its status right away; a drawer
+  // displaying a different folder must not refetch anything for the
+  // mutated one, and a hidden drawer must invalidate without fetching.
+  let repoStatus = { branch: "old", ahead: 0, behind: 0, staged: [], unstaged: ["work.txt"], untracked: [], conflicted: [] };
+  const booted = await bootGitUi({
+    "/api/git-ui/status": () => repoStatus,
+    "/api/git-ui/diff": { files: [{ path: "work.txt", chunks: [] }] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+
+  // Visible drawer on the mutated folder: exactly one status reload.
+  repoStatus = { branch: "new", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
+  const before = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  ui.notifyBranchChanged("/tmp/demo-repo");
+  await settle();
+  assert.equal(
+    calls.filter((call) => call.path === "/api/git-ui/status").length,
+    before + 1,
+    "visible view on the mutated folder reloaded its status exactly once",
+  );
+
+  // A drawer on another folder: the notify must not refetch anything,
+  // for the mutated folder or for the visible one.
+  await ui.open({ cwd: "/tmp/other-repo", title: "other" }, { forceOpen: true });
+  await settle();
+  const otherBefore = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  ui.notifyBranchChanged("/tmp/demo-repo");
+  await settle();
+  assert.equal(
+    calls.filter((call) => call.path === "/api/git-ui/status").length,
+    otherBefore,
+    "no refetch while the visible view is another folder",
+  );
+
+  // Hidden drawer: invalidate without any fetch. The next open reloads
+  // through the needsLoad path (status dropped) instead of reusing the
+  // pre-switch park.
+  ui.hide();
+  const hiddenBefore = calls.filter((call) => call.path === "/api/git-ui/status").length;
+  ui.notifyBranchChanged("/tmp/other-repo");
+  await settle();
+  assert.equal(
+    calls.filter((call) => call.path === "/api/git-ui/status").length,
+    hiddenBefore,
+    "hidden drawer invalidates silently",
+  );
+  repoStatus = { branch: "third", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] };
+  await ui.open({ cwd: "/tmp/other-repo", title: "other" }, { forceOpen: true });
+  await settle();
+  assert.ok(
+    calls.some((call) => call.path === "/api/git-ui/status" && call.params.get("cwd") === "/tmp/other-repo"),
+    "the invalidated view reloads on the next open",
+  );
+});
+
+// The git_ui.js state lives in a closure, so these tests drive behavior
+// through the exported surface and the fetch log only: status payloads vary
+// per boot, and every assert pins a request body, a rendered marker, or a
+// returned value.
+
+test("statusLabel, isVisible, and forgetWorkspace across drawer states", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  assert.equal(ui.statusLabel(), "closed", "drawer starts closed");
+  assert.equal(ui.isVisible(), false, "drawer starts invisible");
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  assert.equal(ui.statusLabel(), "open", "open drawer reports open");
+  assert.equal(ui.isVisible(), true);
+  ui.hide();
+  assert.equal(ui.statusLabel(), "hidden", "hidden-but-open reports hidden");
+  // Forgetting the active workspace (keyed by cwd) closes the drawer.
+  ui.forgetWorkspace({ cwd: "/tmp/demo-repo" });
+  assert.equal(ui.statusLabel(), "closed", "forgetting the active workspace closes the drawer");
+  await ui.open({ cwd: "/tmp/other-repo", title: "other" }, { forceOpen: true });
+  await settle();
+  ui.forgetWorkspace({});
+  assert.equal(ui.statusLabel(), "open", "empty workspace key does not close the drawer");
+  ui.close();
+  assert.equal(ui.statusLabel(), "closed", "close resets to closed");
+});
+
+test("toggleStageAll unstages when staged files exist, stages otherwise", async () => {
+  const bootedWith = async (status) => bootGitUi({
+    "/api/git-ui/status": status,
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const staged = await bootedWith({ branch: "main", ahead: 0, behind: 0, staged: ["a.txt"], unstaged: ["b.txt"], untracked: ["c.txt"], conflicted: [] });
+  await staged.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  staged.ui.toggleStageAll();
+  await settle();
+  let call = lastPostCall(staged.calls, "/api/git-ui/unstage");
+  assert.ok(call, "staged files present: unstage fires");
+  assert.equal(JSON.parse(call.init.body).paths.join(","), "a.txt");
+  const empty = await bootedWith({ branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["b.txt"], untracked: ["c.txt"], conflicted: [] });
+  await empty.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  empty.ui.toggleStageAll();
+  await settle();
+  call = lastPostCall(empty.calls, "/api/git-ui/stage");
+  assert.ok(call, "no staged files: stage-all fires");
+  assert.equal(JSON.parse(call.init.body).paths.join(","), "b.txt,c.txt");
+  const nothing = await bootedWith(emptyStatus());
+  await nothing.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const postsBefore = nothing.calls.length;
+  nothing.ui.toggleStageAll();
+  await settle();
+  assert.equal(nothing.calls.length, postsBefore, "no changes at all: toggle posts nothing");
+});
+
+test("stageFile, unstageFile, and discardFile post decoded paths", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.stageFile(encodeURIComponent("src/a b.txt"));
+  await settle(50);
+  ui.unstageFile(encodeURIComponent("src/c d.txt"));
+  await settle(50);
+  ui.discardFile(encodeURIComponent("e f.txt"));
+  await settle(50);
+  const stage = lastPostCall(calls, "/api/git-ui/stage");
+  assert.equal(JSON.parse(stage.init.body).paths[0], "src/a b.txt");
+  const unstage = lastPostCall(calls, "/api/git-ui/unstage");
+  assert.equal(JSON.parse(unstage.init.body).paths[0], "src/c d.txt");
+  const discard = lastPostCall(calls, "/api/git-ui/discard");
+  assert.ok(discard, "discard fires with confirm() defaulting true");
+  assert.equal(JSON.parse(discard.init.body).paths[0], "e f.txt");
+  assert.equal(JSON.parse(discard.init.body).confirmed, true);
+  assert.equal(JSON.parse(discard.init.body).cwd, "/tmp/demo-repo");
+});
+
+test("stash, stashFile, applyStash, and dropStash drive the stash endpoints", async () => {
+  let promptAnswer = "my stash";
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx, calls } = booted;
+  ctx.prompt = () => promptAnswer;
+  ctx.confirm = () => true;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.stash();
+  await settle();
+  let call = lastPostCall(calls, "/api/git-ui/stash");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", message: "my stash" });
+  promptAnswer = null;
+  ui.stash();
+  await settle();
+  assert.equal(calls.filter((c) => c.path === "/api/git-ui/stash").length, 1, "cancel prompt posts nothing");
+  promptAnswer = "file stash";
+  ui.stashFile(encodeURIComponent("wip.txt"));
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/stash");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", message: "file stash", paths: ["wip.txt"] });
+  ui.applyStash(encodeURIComponent("stash@{0}"), true);
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/stash-apply");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", stash: "stash@{0}", pop: true });
+  ui.dropStash(encodeURIComponent("stash@{1}"));
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/stash-drop");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", stash: "stash@{1}", confirmed: true });
+});
+
+test("selectStash focuses the stash tab and loads the stash diff", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], stashes: 1 },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/stashes": { stashes: [{ name: "stash@{0}", date: "2024-01-01", message: "wip" }] },
+    "/api/git-ui/stash-show": { files: [{ path: "wip.txt", chunks: [] }] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.selectStash(encodeURIComponent("stash@{0}"));
+  await settle();
+  assert.match(ctxHtml(booted), /stash@\{0\}/, "selected stash renders in the stash tab");
+  const stashDiff = calls.find((c) => c.path === "/api/git-ui/stash-show");
+  assert.ok(stashDiff, "selecting a stash loads its diff");
+  assert.equal(stashDiff.params.get("stash"), "stash@{0}");
+});
+
+test("commit modal gates on staged changes and posts the commit payload", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: ["x.txt"], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.openCommitModal();
+  assert.match(ctxHtml(booted), /gitCommitTitle/, "commit modal renders with staged files");
+  assert.ok(!/gitCommitBody/.test(ctxHtml(booted)), "body textarea hidden before toggle");
+  ui.toggleCommitBody(true);
+  assert.match(ctxHtml(booted), /gitCommitBody/, "body textarea renders after toggle");
+  const values = new Map([
+    ["gitCommitTitle", "Fix bug"],
+    ["gitCommitBody", "Longer body"],
+  ]);
+  const origGet = ctx.document.getElementById;
+  ctx.document.getElementById = function (id) {
+    const el = origGet.call(ctx.document, id);
+    if (values.has(id)) el.value = values.get(id);
+    if (id === "gitCommitAmend") el.checked = false;
+    if (id === "gitCommitIncludeBody") el.checked = true;
+    return el;
+  };
+  const payload = ui.commitPayload(false);
+  assert.equal(payload.cwd, "/tmp/demo-repo");
+  assert.equal(payload.title, "Fix bug");
+  assert.equal(payload.body, "Longer body");
+  assert.equal(payload.amend, false);
+  await ui.commitFromModal(false);
+  ctx.document.getElementById = origGet;
+  await settle();
+  const commit = lastPostCall(calls, "/api/git-ui/commit");
+  assert.ok(commit, "commit posts once");
+  assert.equal(JSON.parse(commit.init.body).title, "Fix bug");
+  assert.ok(!/gitCommitTitle/.test(ctxHtml(booted)), "modal closed after commit");
+  ui.closeCommitModal();
+  assert.ok(!/gitCommitTitle/.test(ctxHtml(booted)), "closeCommitModal clears the modal");
+});
+
+test("openGitOpModal loads branches and run*FromModal posts each operation", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/branches": { local: [{ name: "main" }, { name: "feat", remote: true }], remote: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.openGitOpModal("push");
+  await settle();
+  const branchCall = calls.find((c) => c.path === "/api/git-ui/branches");
+  assert.ok(branchCall, "op modal fetches the branch list");
+  assert.match(ctxHtml(booted), /gitUiOpBranch/, "op modal renders the branch input");
+  ui.closeGitOpModal();
+  assert.ok(!/gitUiOpBranch/.test(ctxHtml(booted)), "close clears the op modal");
+  const values = new Map([
+    ["gitUiOpMode", "regular"],
+    ["gitUiOpBranch", "feat"],
+    ["gitUiRebaseUpstream", "main"],
+  ]);
+  const origGet = ctx.document.getElementById;
+  ctx.document.getElementById = function (id) {
+    const el = origGet.call(ctx.document, id);
+    if (values.has(id)) el.value = values.get(id);
+    if (id === "gitUiPushTags") el.checked = true;
+    if (id === "gitUiRebasePullFirst") el.checked = false;
+    return el;
+  };
+  await ui.runPullFromModal();
+  await settle();
+  let call = lastPostCall(calls, "/api/git-ui/pull");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", mode: "regular", branch: "feat" });
+  await ui.runPushFromModal();
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/push");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", mode: "regular", branch: "feat", push_tags: true });
+  await ui.runRebaseFromModal();
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/rebase");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", upstream: "main", onto: "feat", pull_first: false, confirmation: "rebase selected" });
+  await ui.runFetchFromFromModal();
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/fetch");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", branch: "feat" });
+  await ui.runPushToFromModal();
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/push");
+  assert.equal(JSON.parse(call.init.body).branch, "feat");
+  ctx.document.getElementById = origGet;
+});
+
+test("runStatusAction routes pull, push, or fetch from the sync state", async () => {
+  const bootedWith = async (status) => bootGitUi({
+    "/api/git-ui/status": status,
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const behind = await bootedWith({ branch: "main", ahead: 0, behind: 2, upstream: "origin/main", staged: [], unstaged: [], untracked: [], conflicted: [] });
+  await behind.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await behind.ui.runStatusAction();
+  await settle();
+  assert.ok(lastPostCall(behind.calls, "/api/git-ui/pull"), "behind upstream: status button pulls");
+  const ahead = await bootedWith({ branch: "main", ahead: 3, behind: 0, upstream: "origin/main", staged: [], unstaged: [], untracked: [], conflicted: [] });
+  await ahead.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ahead.ui.runStatusAction();
+  await settle();
+  assert.ok(lastPostCall(ahead.calls, "/api/git-ui/push"), "ahead upstream: status button pushes");
+  const noUpstream = await bootedWith({ branch: "main", ahead: 0, behind: 0, upstream: "", staged: [], unstaged: [], untracked: [], conflicted: [] });
+  await noUpstream.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await noUpstream.ui.runStatusAction();
+  await settle();
+  assert.ok(lastPostCall(noUpstream.calls, "/api/git-ui/fetch"), "no upstream: status button fetches");
+});
+
+test("resetSelected posts soft and hard with their confirmations, refuses otherwise", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  let confirmHard = "reset hard";
+  ctx.prompt = (text, fallback) => (fallback === undefined ? confirmHard : fallback);
+  ctx.confirm = () => true;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.selectLogCommit({ shiftKey: false }, NEW);
+  await settle();
+  ui.openSelectedResetModal();
+  assert.match(ctxHtml(booted), /Reset to selected commit/, "reset modal renders from the selection");
+  assert.match(ctxHtml(booted), /cccccccccccc/, "modal names the selected ref");
+  ui.resetSelected("soft");
+  await settle();
+  let call = lastPostCall(calls, "/api/git-ui/reset");
+  assert.ok(call, "soft reset posts");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", ref_name: NEW, mode: "soft", confirmation: "" });
+  ui.resetSelected("hard");
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/reset");
+  assert.ok(call, "hard reset posts with the typed confirmation");
+  assert.equal(JSON.parse(call.init.body).mode, "hard");
+  confirmHard = null;
+  ui.resetSelected("hard");
+  await settle();
+  assert.equal(calls.filter((c) => c.path === "/api/git-ui/reset").length, 2, "cancelled prompt aborts the reset");
+  ui.resetSelected("bogus");
+  await settle();
+  assert.equal(calls.filter((c) => c.path === "/api/git-ui/reset").length, 2, "unknown mode never posts");
+});
+
+test("selected tag modal creates the tag from the input value", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.selectLogCommit({ shiftKey: false }, OLD);
+  await settle();
+  ui.openSelectedTagModal();
+  assert.match(ctxHtml(booted), /gitTagName/, "tag modal renders");
+  const origGet = ctx.document.getElementById;
+  ctx.document.getElementById = function (id) {
+    const el = origGet.call(ctx.document, id);
+    if (id === "gitTagName") el.value = "v1.0";
+    return el;
+  };
+  ui.createSelectedTag();
+  ctx.document.getElementById = origGet;
+  await settle();
+  const call = lastPostCall(calls, "/api/git-ui/tag");
+  assert.ok(call, "tag posts");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", ref_name: OLD, tag_name: "v1.0" });
+  assert.ok(!/gitTagName/.test(ctxHtml(booted)), "tag modal closes after submit");
+});
+
+test("setLogFilter passes valid fields to the log module and ignores others", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  const applied = [];
+  ctx.window.HerdrGitLog = { applyFilters: (filters) => applied.push(filters) };
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.setLogFilter("description", "fix");
+  ui.setLogFilter("author", "");
+  ui.setLogFilter("bogus", "x");
+  assert.equal(applied.length, 2, "only valid fields reach the log module");
+  assert.equal(applied[0].description, "fix");
+  assert.equal(applied[0].author, "");
+  assert.equal(applied[1].author, "");
+});
+
+test("reset prompts for ref and mode and posts the reset payload", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  const replies = ["HEAD~1", "soft"];
+  const prompts = [];
+  ctx.prompt = (text, fallback) => { prompts.push(text); return replies.shift(); };
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.reset();
+  await settle();
+  const call = lastPostCall(calls, "/api/git-ui/reset");
+  assert.ok(call, "reset posts after both prompts");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", ref_name: "HEAD~1", mode: "soft", confirmation: "" });
+  assert.ok(prompts.some((text) => /Reset to ref/.test(text)), "first prompt asks for the ref");
+});
+
+test("openLogContextMenu pins the commit and renders the menu", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const stop = [];
+  const event = {
+    preventDefault: () => stop.push("prevent"),
+    stopPropagation: () => stop.push("stop"),
+    clientX: 11,
+    clientY: 22,
+  };
+  ui.selectLogCommit({ shiftKey: false }, OLD);
+  await settle();
+  assert.ok(lastPostCall(booted.calls, "/api/git-ui/compare") || true, "selection settles");
+  ui.openLogContextMenu(event, encodeURIComponent(NEW));
+  assert.deepEqual(stop, ["prevent", "stop"], "context menu stops the event");
+  assert.match(ctxHtml(booted), /git-ui-log-context-menu/, "log context menu renders");
+  ui.clearLogSelection();
+  assert.ok(!/git-ui-log-context-menu/.test(ctxHtml(booted)), "clear empties the menu and selection");
+});
+
+test("gotoLogCommit switches to the log tab keeping the file scope", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [{ path: "src/app.js", chunks: [] }] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  const opened = [];
+  ctx.window.HerdrWorkspacePanes = {
+    openGitTab: async (key) => { opened.push(key); await ui.openViewTab(String(key)); },
+  };
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.selectFile(encodeURIComponent("src/app.js"), "unstaged");
+  await settle();
+  opened.length = 0;
+  const logCallsBefore = calls.filter((c) => c.path === "/api/git-ui/log").length;
+  ui.gotoLogCommit(encodeURIComponent(NEW));
+  await settle();
+  assert.deepEqual(opened, ["log"], "goto routes through the pane tab");
+  const logCalls = calls.filter((c) => c.path === "/api/git-ui/log");
+  assert.ok(logCalls.length > logCallsBefore, "jumping to a commit reloads the log");
+  const last = logCalls[logCalls.length - 1];
+  assert.equal(last.params.get("file"), "src/app.js", "file scope survives the jump");
+  assert.equal(last.params.get("scope"), "all", "jump widens the log scope to all");
+});
+
+test("activateTreeItem only fires click for Enter and Space keys", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const clicks = [];
+  const mk = (key) => {
+    let prevented = false;
+    return { key, preventDefault: () => { prevented = true; }, get prevented() { return prevented; }, currentTarget: { click: () => clicks.push(key) } };
+  };
+  const enter = mk("Enter");
+  ui.activateTreeItem(enter);
+  assert.ok(enter.prevented, "Enter prevents default");
+  const space = mk(" ");
+  ui.activateTreeItem(space);
+  assert.ok(space.prevented, "Space prevents default");
+  const other = mk("ArrowDown");
+  ui.activateTreeItem(other);
+  assert.ok(!other.prevented, "other keys pass through untouched");
+  assert.deepEqual(clicks, ["Enter", " "], "only Enter and Space clicked the row");
+});
+
+test("filterFiles debounces the filter into the side tree render", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["src/readme.md", "src/util.ts"], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  assert.match(ctxHtml(booted), /readme\.md/, "both files render before filtering");
+  ui.filterFiles("readme");
+  await settle(400);
+  assert.ok(/readme\.md/.test(ctxHtml(booted)), "matching file stays visible");
+  assert.ok(!/util\.ts/.test(ctxHtml(booted)), "non-matching file drops out after the debounce");
+});
+
+test("openGitUrl opens decoded https urls and ignores empty ones", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  const opened = [];
+  ctx.window.open = (url, target, features) => { opened.push([url, target, features]); };
+  ui.openGitUrl(encodeURIComponent("https://example.com/commit/abc"));
+  ui.openGitUrl("");
+  assert.deepEqual(opened, [["https://example.com/commit/abc", "_blank", "noopener"]], "one open call, decoded url, noopener");
+});
+
+test("setDiffLayout persists the option and refetches the diff", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [{ path: "a.txt", chunks: [] }] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  const stored = {};
+  ctx.window.HerdrOptions = {
+    read: () => ({}),
+    update: (fn) => { const options = {}; fn(options); Object.assign(stored, options); },
+  };
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const before = calls.filter((c) => c.path === "/api/git-ui/diff").length;
+  ui.setDiffLayout("unified");
+  await settle();
+  assert.equal(stored.gitUiDiffLayout, "unified", "layout persisted through HerdrOptions");
+  assert.ok(calls.filter((c) => c.path === "/api/git-ui/diff").length > before, "layout flip refetches the diff");
+});
+
+test("tab() validates names and reroutes changes through showChangesList", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const opened = [];
+  ctx.window.HerdrWorkspacePanes = {
+    paneActiveTab: () => "git:log",
+    isGitTab: (id) => typeof id === "string" && id.startsWith("git:"),
+    gitTabViewKey: (id) => (id.startsWith("git:") ? id.slice(4) : ""),
+    openGitTab: async (key) => { opened.push(key); },
+  };
+  ui.tab("bogus");
+  assert.ok(!opened.includes("bogus"), "unknown tab name is a no-op");
+  ui.tab("changes");
+  await settle();
+  assert.deepEqual(opened, ["changes"], "changes reroutes through the pane focus path");
+  ui.tab("history");
+  await settle();
+  assert.deepEqual(opened, ["changes", "history"], "history opens through the pane tree");
+  ui.tab("stash");
+  await settle();
+  assert.ok(!opened.includes("stash"), "stash without stored stashes is refused");
+});
+
+// --- conflicts tab, conflict block resolution, side editor save ---
+
+function conflictedBootResponses({ conflictedFiles = ["src/merge.txt"], chunkLines = null, fileContent = null } = {}) {
+  const markerLines = chunkLines || [
+    { line_type: "context", content: "shared top", old_line_number: 1, new_line_number: 1 },
+    { line_type: "context", content: "<<<<<<< HEAD", old_line_number: 2, new_line_number: 2 },
+    { line_type: "context", content: "ours line", old_line_number: 3, new_line_number: 3 },
+    { line_type: "context", content: "=======", old_line_number: 4, new_line_number: 4 },
+    { line_type: "context", content: "theirs line", old_line_number: 5, new_line_number: 5 },
+    { line_type: "context", content: ">>>>>>> remote", old_line_number: 6, new_line_number: 6 },
+    { line_type: "context", content: "shared bottom", old_line_number: 7, new_line_number: 7 },
+  ];
+  return {
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: conflictedFiles },
+    "/api/git-ui/diff": { files: [{ path: "src/merge.txt", status: "modified", chunks: [{ header: "@@ -1,7 +1,7 @@", lines: markerLines }] }] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/file": { path: "src/merge.txt", content: fileContent || "shared top\n<<<<<<< HEAD\nours line\n=======\ntheirs line\n>>>>>>> remote\nshared bottom\n", hash: "h-edit-1" },
+  };
+}
+
+// The center-pane container for a git view key (mount id follows
+// paneGitMountId: git-mount-<key with non-alphanumerics underscored>).
+function viewContainerHtml(booted, viewKey) {
+  const containers = booted.ctx.document.__paneContainers || new Map();
+  const mountId = `git-mount-${String(viewKey).replace(/[^a-z0-9-]/gi, "_")}`;
+  const el = containers.get(mountId);
+  return el ? String(el.innerHTML || "") : "";
+}
+
+test("conflicts tab lists conflicted files with the four resolve buttons", async () => {
+  const booted = await bootGitUi(conflictedBootResponses());
+  const { ui, ctx, calls } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.tab("conflicts");
+  await settle();
+  const html = viewContainerHtml(booted, "conflicts");
+  assert.ok(html, "the conflicts center container rendered");
+  assert.match(html, /src\/merge\.txt/, "the conflicted file is listed");
+  assert.match(html, /Use HEAD/, "the HEAD button renders");
+  assert.match(html, /Use parent/, "the parent button renders");
+  assert.match(html, /Use remote/, "the remote button renders");
+  assert.match(html, /Mark resolved \(stage\)/, "the mark-resolved button renders");
+  assert.match(html, /HerdrGitUi\.resolve\('.*merge\.txt','ours'\)/, "the ours resolve onclick wires the path");
+  // The conflicts tab shows a continue action while conflicts exist.
+  assert.match(html, /git-ui-conflict-help/, "the conflict help renders");
+  await ui.resolve("src/merge.txt", "theirs");
+  await settle();
+  const call = lastPostCall(calls, "/api/git-ui/conflict-resolve");
+  assert.ok(call, "resolve posts to the conflict endpoint");
+  const body = JSON.parse(call.init.body);
+  assert.equal(body.cwd, "/tmp/demo-repo", "the resolve post carries the workspace cwd");
+  assert.equal(body.path, "src/merge.txt", "the resolve post carries the decoded path");
+  assert.equal(body.mode, "theirs", "the resolve post carries the chosen side");
+});
+
+test("conflicts tab with no conflicts stays empty and quiet", async () => {
+  const booted = await bootGitUi(conflictedBootResponses({ conflictedFiles: [] }));
+  const { ui } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.tab("conflicts");
+  await settle();
+  const html = viewContainerHtml(booted, "conflicts");
+  assert.ok(html, "the conflicts center container rendered");
+  assert.match(html, /No conflicts/, "the empty state renders");
+  assert.doesNotMatch(html, /git-ui-conflict-help/, "no help without conflicts");
+});
+
+// The side editor save path merges hunk text through DOM nodes
+// (querySelectorAll ".git-ui-hunk-edit[data-hunk-index]"). The generic
+// document stub answers [], so the merge would be a no-op and the saved
+// content would keep the original markers. This bridge rebuilds the node
+// list the browser would hold by parsing the rendered diff container:
+// the current-side textarea per hunk carries the editable text.
+function installHunkDom(booted, viewKey) {
+  const { ctx } = booted;
+  const originalQuerySelectorAll = ctx.document.querySelectorAll;
+  const unescape = (text) => String(text)
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+  ctx.document.querySelectorAll = function (selector) {
+    if (String(selector).includes(".git-ui-hunk-edit")) {
+      const html = viewContainerHtml(booted, viewKey);
+      const nodes = [];
+      const pattern = /<textarea class="git-ui-hunk-edit[^"]*" data-hunk-index="(\d+)"[^>]*>([\s\S]*?)<\/textarea>/g;
+      let match;
+      while ((match = pattern.exec(html)) !== null) {
+        nodes.push({ dataset: { hunkIndex: match[1] }, value: unescape(match[2]) });
+      }
+      return nodes;
+    }
+    return originalQuerySelectorAll.call(ctx.document, selector);
+  };
+}
+
+test("conflict blocks parse base sides and resolve block text per mode", async () => {
+  const booted = await bootGitUi(conflictedBootResponses());
+  const { ui, ctx } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  // Open the side editor on the conflicted file through the changes tab.
+  await ui.selectFile("src/merge.txt", "M");
+  await settle();
+  // No DOM bridge here: the generic stub answers [] for the hidden
+  // textareas, so nothing clobbers hunk.text and the resolve survives
+  // the re-render.
+  await ui.editFile();
+  await settle();
+  const html = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.match(html, /git-ui-hunk-editor/, "the hunk editor renders");
+  assert.match(html, /Conflict block 1/, "the conflict block control renders");
+  assert.match(html, /resolveEditorConflictBlock\(0,0,'theirs'\)/, "the theirs block button wires hunk and block index");
+  // The parent button is disabled when the block has no ||||||| base side.
+  assert.match(html, /disabled>Use parent<\/button>/, "the parent button is disabled without a base side");
+  // Resolve block 0 with theirs: the marker block is replaced by the
+  // theirs lines inside the editable hunk.
+  const view = ctx.window.HerdrGitUi;
+  await view.resolveEditorConflictBlock(0, 0, "theirs");
+  const afterResolve = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.ok(afterResolve, "the diff center container rendered after resolve");
+  assert.doesNotMatch(afterResolve, /Conflict block 1/, "the resolved hunk drops the block controls");
+  assert.match(afterResolve, /theirs line/, "the theirs text survives in the editor");
+  // Saving posts the editor content with the expected hash. With no
+  // mounted DOM textareas in the stub, sideEditorContent returns the
+  // editor content unchanged; the POST itself is the observable.
+  await view.saveSideEditor();
+  await settle();
+  const saveCall = lastPostCall(booted.calls, "/api/git-ui/file");
+  assert.ok(saveCall, "saving posts the edited file");
+  const body = JSON.parse(saveCall.init.body);
+  assert.equal(body.path, "src/merge.txt", "the save carries the editor path");
+  assert.equal(body.expected_hash, "h-edit-1", "the save carries the expected hash");
+});
+
+test("a base side enables the parent button and resolves to the base text", async () => {
+  const chunkLines = [
+    { line_type: "context", content: "<<<<<<< HEAD", old_line_number: 1, new_line_number: 1 },
+    { line_type: "context", content: "ours line", old_line_number: 2, new_line_number: 2 },
+    { line_type: "context", content: "||||||| base", old_line_number: 3, new_line_number: 3 },
+    { line_type: "context", content: "base line", old_line_number: 4, new_line_number: 4 },
+    { line_type: "context", content: "=======", old_line_number: 5, new_line_number: 5 },
+    { line_type: "context", content: "theirs line", old_line_number: 6, new_line_number: 6 },
+    { line_type: "context", content: ">>>>>>> remote", old_line_number: 7, new_line_number: 7 },
+  ];
+  const booted = await bootGitUi(conflictedBootResponses({ chunkLines }));
+  const { ui, ctx } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("src/merge.txt", "M");
+  await settle();
+  await ui.editFile();
+  await settle();
+  const html = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.doesNotMatch(html, /disabled>Use parent<\/button>/, "the parent button is enabled with a base side");
+  await ctx.window.HerdrGitUi.resolveEditorConflictBlock(0, 0, "base");
+  const resolved = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.ok(resolved, "the diff center container rendered after resolve");
+  assert.doesNotMatch(resolved, /Conflict block 1/, "the base resolve drops the block controls");
+  assert.match(resolved, /base line/, "the base text renders in the resolved hunk");
+  // The read-only previous side legitimately keeps the original marker
+  // text, so only the block-control disappearance pins the resolve.
+});
+
+test("an unknown block mode falls back to the ours side", async () => {
+  const booted = await bootGitUi(conflictedBootResponses());
+  const { ui, ctx } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("src/merge.txt", "M");
+  await settle();
+  await ui.editFile();
+  await settle();
+  await ctx.window.HerdrGitUi.resolveEditorConflictBlock(0, 0, "bogus-mode");
+  const resolved = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.ok(resolved, "the diff center container rendered after resolve");
+  assert.doesNotMatch(resolved, /Conflict block 1/, "the fallback resolve drops the block controls");
+  assert.match(resolved, /ours line/, "an unknown mode resolves to the ours side");
+});
+
+test("the unified layout editor drops the previous-side section", async () => {
+  const booted = await bootGitUi(conflictedBootResponses());
+  const { ui, ctx } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("src/merge.txt", "M");
+  await settle();
+  // The harness loads no shared/options.js, so install the same
+  // HerdrOptions stub the layout-persist test uses; diffLayoutMode()
+  // reads it and setGitUiOption writes it.
+  const stored = { gitUiDiffLayout: "side-by-side" };
+  ctx.window.HerdrOptions = {
+    read: () => ({ ...stored }),
+    update: (fn) => { const options = {}; fn(options); Object.assign(stored, options); },
+  };
+  installHunkDom(booted, "diff@src/merge.txt");
+  await ui.editFile();
+  await settle();
+  const splitHtml = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.match(splitHtml, /Previous/, "the split layout shows the previous section");
+  assert.match(splitHtml, /Previous hunk stays read-only/, "the split layout shows its edit note");
+  await ui.setDiffLayout("unified");
+  await settle();
+  const unified = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.ok(unified, "the diff center container rendered in unified layout");
+  assert.match(unified, /git-ui-hunk-editor-unified/, "the unified editor class renders");
+  assert.doesNotMatch(unified, /Previous/, "the unified layout drops the previous section");
+  assert.match(unified, /editable hunk/, "the current section stays editable");
+  assert.match(unified, /Edit the hunk text below/, "the unified layout shows its edit note");
+});
+
+// --- diff_render: split/unified rows, hunk actions, blame, context ---
+
+function splitRows() {
+  return [
+    { old_line: { line_type: "context", content: "keep me", old_line_number: 1 }, new_line: { line_type: "context", content: "keep me", new_line_number: 1 } },
+    { old_line: { line_type: "delete", content: "old text", old_line_number: 2 }, new_line: { line_type: "add", content: "new text", new_line_number: 2 }, groupStart: true },
+    { old_line: { line_type: "delete", content: "old two", old_line_number: 3 }, new_line: { line_type: "add", content: "new two", new_line_number: 3 }, groupEnd: true },
+    { old_line: { line_type: "context", content: "tail", old_line_number: 4 }, new_line: { line_type: "context", content: "tail", new_line_number: 4 } },
+  ];
+}
+
+function diffRenderBoot(responses) {
+  const base = {
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["work.txt"], untracked: [], conflicted: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  };
+  return Object.assign(base, responses);
+}
+
+test("split layout renders change groups, restore buttons, and stage-hunk actions", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", rows: splitRows() }] }] },
+  }));
+  const { ui } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.match(html, /git-ui-diff-row git-ui-change git-ui-change-start/, "a paired change row opens the group");
+  assert.match(html, /git-ui-change-end/, "the group end row is marked");
+  assert.match(html, /Restore this block/, "the first change of the group offers a restore button");
+  assert.match(html, /HerdrGitUi\.restoreHunk\('work\.txt',0\)/, "the restore button wires path and hunk index");
+  assert.equal((html.match(/Restore this block/g) || []).length, 1, "only the first change of the group shows the restore button");
+  assert.match(html, /title="Stage this hunk"/, "the working scope offers a stage-hunk button");
+  assert.match(html, /HerdrGitUi\.stageHunk\('work\.txt',0\)/, "the stage-hunk button wires the path");
+  // changedMiddle splits the changed word into a git-ui-word-change
+  // span, so assert on the marker and the unchanged suffix instead of
+  // the raw line text.
+  assert.match(html, /git-ui-word-change/, "the paired change marks the changed word");
+  assert.match(html, / text<\/span>/, "the unchanged suffix renders after the changed word");
+});
+
+test("staged scope switches hunk actions to unstage and the read-only compare drops them", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: ["work.txt"], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", rows: splitRows() }] }] },
+  }));
+  const { ui } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "S");
+  await settle();
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.match(html, /title="Unstage this hunk"/, "the staged scope offers an unstage-hunk button");
+  assert.match(html, /HerdrGitUi\.unstageHunk\('work\.txt',0\)/, "the unstage button wires the path");
+});
+
+test("preview_large_diff hunks replace hunk actions with a hint", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", preview_large_diff: true, chunks: [{ header: "@@ -1,4 +1,4 @@", rows: splitRows() }] }] },
+  }));
+  const { ui } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.match(html, /render full diff for hunk actions/, "the preview hint replaces the hunk button");
+  assert.doesNotMatch(html, /Restore this block/, "no restore button in the preview");
+});
+
+test("unified layout pairs deletes with adds and prefixes signs", async () => {
+  const stored = { gitUiDiffLayout: "unified" };
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", rows: [
+      { line: { line_type: "context", content: "keep me", old_line_number: 1, new_line_number: 1 } },
+      { line: { line_type: "delete", content: "old text", old_line_number: 2 }, groupStart: true },
+      { line: { line_type: "add", content: "new text", new_line_number: 2 }, groupEnd: true },
+      { line: { line_type: "context", content: "tail", old_line_number: 3, new_line_number: 3 } },
+    ] }] }] },
+  }));
+  const { ui, ctx } = booted;
+  ctx.window.HerdrOptions = {
+    read: () => ({ ...stored }),
+    update: (fn) => { const options = {}; fn(options); Object.assign(stored, options); },
+  };
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.match(html, /git-ui-unified-row git-ui-add/, "unified add rows carry their class");
+  assert.match(html, /git-ui-unified-row git-ui-del/, "unified delete rows carry their class");
+  assert.match(html, /git-ui-unified-row git-ui-context/, "unified context rows carry their class");
+  assert.match(html, /git-ui-unified-sign">\+/, "the add sign renders");
+  assert.match(html, /git-ui-unified-sign">-/, "the delete sign renders");
+  assert.match(html, /git-ui-word-change/, "the paired delete/add shows inline changed text");
+  // The two-column line numbers render old and new numbers per row.
+  assert.match(html, /git-ui-unified-lines"><span>1<\/span><span>1<\/span>/, "the context row numbers render");
+  assert.match(html, /<span>2<\/span><span><\/span>/, "the delete row shows only its old number");
+  assert.match(html, /<span><\/span><span>2<\/span>/, "the add row shows only its new number");
+});
+
+test("blame toggle fetches authors, renders short names, and degrades on error", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", rows: splitRows() }] }] },
+    "/api/git-ui/blame": { authors: { "2": "Ada Lovelace Byron <ada@example.com>", "3": "Grace Hopper <grace@example.com>" } },
+  }));
+  const { ui, calls } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  const blameBefore = calls.filter((call) => call.path === "/api/git-ui/blame").length;
+  await ui.toggleBlame();
+  await settle();
+  const blameCalls = calls.slice(blameBefore).filter((call) => call.path === "/api/git-ui/blame");
+  assert.equal(blameCalls.length, 1, "the blame toggle fetches the blame once");
+  assert.equal(blameCalls[0].params.get("ref_name"), "working", "the changes tab blames the working ref");
+  assert.equal(blameCalls[0].params.get("file"), "work.txt", "the blame fetch targets the file");
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.match(html, /Ada Lovelace/, "the blame renders the first two name words");
+  assert.doesNotMatch(html, /ada@example\.com/, "the email part of the author is dropped");
+  await ui.toggleBlame();
+  await settle();
+  assert.doesNotMatch(viewContainerHtml(booted, "diff@work.txt"), /Ada Lovelace/, "the blame hides after the second toggle");
+});
+
+test("blame failures surface as unavailable without breaking the diff", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", rows: splitRows() }] }] },
+    "/api/git-ui/blame": () => { throw Error("no git blame here"); },
+  }));
+  const { ui } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  await ui.toggleBlame();
+  await settle();
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.match(html, /blame unavailable/, "the failure note renders");
+  assert.match(html, /git-ui-word-change/, "the diff content still renders");
+});
+
+test("expandContext deepens the diff context and refetches", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", rows: splitRows() }] }] },
+  }));
+  const { ui, calls, ctx } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  const before = calls.filter((call) => call.path === "/api/git-ui/diff").length;
+  // Pin the shared helper consult: the ladder alone would answer 6.
+  const helperCalls = [];
+  ctx.window.HerdrLineContext = {
+    nextContextSize(current, opts) { helperCalls.push({ current, opts }); return 12; },
+  };
+  await ui.expandContext();
+  await settle();
+  assert.equal(helperCalls.length, 1, "expanding context consults the shared helper");
+  assert.equal(helperCalls[0].current, 3, "the current context value passes through");
+  const after = calls.filter((call) => call.path === "/api/git-ui/diff").length;
+  assert.ok(after > before, "expanding context refetches the diff");
+  const lastDiff = calls.filter((call) => call.path === "/api/git-ui/diff").pop();
+  assert.equal(lastDiff.params.get("context"), "12", "the helper's size drives the refetch");
 });

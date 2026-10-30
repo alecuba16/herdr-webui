@@ -20,7 +20,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// Compiled once so coverage attributes mobile/notes.js lines to the real file.
+const MOBILE_NOTES_PATH = fileURLToPath(new URL("./mobile/notes.js", import.meta.url));
+const mobileNotesScript = new vm.Script(readFileSync(MOBILE_NOTES_PATH, "utf8"), {
+  filename: MOBILE_NOTES_PATH,
+});
 
 const SERVER_LANGUAGES = [
   { value: "txt", label: "Text", ext: "txt" },
@@ -111,8 +118,7 @@ function loadModule(overrides = {}) {
   ctx.__nodes = nodes;
   ctx.window = ctx;
   ctx.globalThis = ctx;
-  const source = readFileSync(new URL("./mobile/notes.js", import.meta.url), "utf8");
-  vm.runInContext(source, vm.createContext(ctx));
+  mobileNotesScript.runInContext(vm.createContext(ctx));
   ctx.__module = ctx.HerdrMobileNotesModule;
   return ctx;
 }

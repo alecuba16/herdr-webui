@@ -1,19 +1,25 @@
 import { describe, it } from "node:test";
 import { equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const source = readFileSync(
   new URL("./shared/settings_feedback.js", import.meta.url),
   "utf8",
 );
+// Compiled once so coverage attributes settings_feedback.js lines to the real file.
+const SETTINGS_FEEDBACK_PATH = fileURLToPath(new URL("./shared/settings_feedback.js", import.meta.url));
+const settingsFeedbackScript = new vm.Script(readFileSync(SETTINGS_FEEDBACK_PATH, "utf8"), {
+  filename: SETTINGS_FEEDBACK_PATH,
+});
 
 function loadFeedback() {
   const ctx = { console, Map, Object, String, setTimeout, clearTimeout };
   ctx.window = ctx;
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  vm.runInContext(source, ctx);
+  settingsFeedbackScript.runInContext(ctx);
   return ctx.window.HerdrSettingsFeedback;
 }
 

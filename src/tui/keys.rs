@@ -148,7 +148,7 @@ impl Shortcut {
             Self::GitDiscardFile => "discard file",
             Self::GitStashFile => "stash file",
             Self::GitPush => "push",
-            Self::GitSwitchBranch => "switch branch",
+            Self::GitSwitchBranch => "branch picker",
             Self::EditFile => "edit file",
             Self::GitFileHistory => "file history",
             Self::GitChangesBack => "back to changes",
