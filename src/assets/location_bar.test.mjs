@@ -283,7 +283,7 @@ describe("location bar branch popover", () => {
   ];
   const REMOTE = [{ name: "origin/main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" }];
 
-  function loadPopover({ routes = {}, state, confirms = true } = {}) {
+  function loadPopover({ routes = {}, state, confirms = true, deferFetch } = {}) {
     const bar = stubNode("locationBar");
     const calls = [];
     const document = {
@@ -304,6 +304,16 @@ describe("location bar branch popover", () => {
       fetch: (url, init) => {
         const path = String(url).split("?")[0];
         calls.push({ path, init });
+        if (deferFetch) {
+          // Deferred completion: the caller decides when the response lands
+          // and what it carries, so close/reopen and reorder races can run.
+          const gate = deferFetch(url);
+          return {
+            json: () => gate.then((route) => (typeof route === "function" ? route() : route)),
+            ok: true,
+            statusText: "OK",
+          };
+        }
         const route = routes[path] || (() => ({}));
         const body = typeof route === "function" ? route() : route;
         return Promise.resolve({
@@ -357,6 +367,77 @@ describe("location bar branch popover", () => {
     ok(bar.innerHTML.includes("location-bar-branch-popover"));
     await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
     ok(!bar.innerHTML.includes("location-bar-branch-popover"), "second click closes");
+  });
+
+  it("a stale close-then-reopen response never mutates the fresh popover", async () => {
+    // Open A, close it, reopen as B while A's fetch is still in flight. A's
+    // late response must not leak into B: equal row counts would mask the
+    // swap if the guard only checked popover existence.
+    const gates = [];
+    const { ctx, bar } = loadPopover({
+      deferFetch: () => new Promise((resolve) => gates.push(resolve)),
+    });
+    ctx.HerdrLocationBar.sync();
+    const first = ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ctx.HerdrLocationBar.closeBranchPopover();
+    const second = ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    // B's response lands first, A's stale response lands after it.
+    gates[1]({ local: [{ name: "fresh-b", current: true }], remote: [] });
+    gates[0]({ local: [{ name: "stale-a", current: true }], remote: [] });
+    await first;
+    await second;
+    ok(bar.innerHTML.includes("fresh-b"), "fresh opening kept its own response");
+    ok(!bar.innerHTML.includes("stale-a"), "stale response discarded, not merged");
+  });
+
+  it("an out-of-order completion keeps the last opening's list", async () => {
+    // Two fetches in flight for two openings; the older one resolves last.
+    // The guard must reject the older completion even though a popover
+    // exists and row counts would match.
+    const gates = [];
+    const { ctx, bar } = loadPopover({
+      deferFetch: () => new Promise((resolve) => gates.push(resolve)),
+    });
+    ctx.HerdrLocationBar.sync();
+    const first = ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ctx.HerdrLocationBar.closeBranchPopover();
+    const second = ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    gates[1]({ local: [{ name: "second", current: true }], remote: [] });
+    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+    gates[0]({ local: [{ name: "first-stale" }], remote: [] });
+    await first;
+    await second;
+    ok(bar.innerHTML.includes("second"), "latest opening's rows render");
+    ok(!bar.innerHTML.includes("first-stale"), "older opening's body rejected");
+  });
+
+  it("a workspace switch closes the popover and stale rows never act", async () => {
+    const { ctx, bar, calls } = loadPopover({
+      routes: {
+        "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+        "/api/git-ui/switch": { ok: true },
+      },
+      state: {
+        ws: "ws1",
+        workspaces: [workspaceOf("/repo"), workspaceOf("/other-repo", { workspace_id: "ws2" })],
+        worktrees: [{ path: "/repo", branch: "feature-x" }],
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes("location-bar-branch-popover"), "popover open on the first repo");
+
+    // Switch the selected workspace; sync must clear the stale popover.
+    ctx.state.ws = "ws2";
+    ctx.HerdrLocationBar.sync();
+    ok(!bar.innerHTML.includes("location-bar-branch-popover"), "popover cleared on workspace switch");
+
+    // Even if a stale row handler fires, it must not post against the new
+    // selection.
+    const before = calls.length;
+    await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("main"), false);
+    equal(calls.slice(before).length, 0, "stale row action never posts");
   });
 
   it("switch posts /api/git-ui/switch with the bare local name and closes the popover", async () => {

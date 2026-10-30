@@ -316,6 +316,23 @@
     return workspaceCwd(selectedWorkspace());
   }
 
+  // A row action may run long after its popover opened (the user can
+  // switch workspaces or folders while it stays open). The action must
+  // still target the context it was opened for, not whatever is selected
+  // now.
+  function popoverContextStale(list) {
+    if (!list) return true;
+    if (String(list.wsId || "") !== String(state.ws || "")) return true;
+    if (list.cwd && !samePath(list.cwd, currentCwd())) return true;
+    return false;
+  }
+
+  let popoverRequests = 0;
+  function nextPopoverRequestId() {
+    popoverRequests += 1;
+    return popoverRequests;
+  }
+
   function closeBranchPopover() {
     if (!bar.branchList) return;
     bar.branchList = null;
@@ -348,11 +365,19 @@
       newBranch: "",
       creating: false,
       anchor: anchorFromEvent(event),
+      // Identity of this opening: fetch completions and row actions must
+      // belong to the same opening, workspace, and folder. A stale
+      // response (closed, reopened, or a workspace switch meanwhile) can
+      // otherwise mutate the fresh popover or act on the wrong repo.
+      requestId: nextPopoverRequestId(),
+      wsId: String(state.ws || ""),
+      cwd,
     };
+    const request = bar.branchList.requestId;
     sync();
     try {
       const data = await api(`/api/git-ui/branches?cwd=${encodeURIComponent(cwd)}`);
-      if (!bar.branchList) return; // closed while loading
+      if (!bar.branchList || bar.branchList.requestId !== request) return; // superseded while loading
       // The payload's current marker is authoritative while the popover is
       // open: cached facts can lag a switch made elsewhere.
       const currentRow = (data.local || []).find((b) => b && b.current);
@@ -368,7 +393,7 @@
         remoteLoaded: false,
       };
     } catch (err) {
-      if (!bar.branchList) return;
+      if (!bar.branchList || bar.branchList.requestId !== request) return;
       bar.branchList = {
         ...bar.branchList,
         loading: false,
@@ -449,6 +474,7 @@
     const cwd = currentCwd();
     const list = bar.branchList;
     if (!cwd || !name || !list) return;
+    if (popoverContextStale(list)) return; // opening outlived its workspace or folder
     closeBranchPopover();
     const localName = isRemote ? name.split("/").slice(1).join("/") : name;
     if (!localName) return;
@@ -477,6 +503,7 @@
     const cwd = currentCwd();
     const list = bar.branchList;
     if (!cwd || !name || !list) return;
+    if (popoverContextStale(list)) return; // opening outlived its workspace or folder
     if (isRemote) {
       bar.branchList.error = "Deleting remote branches is not supported here";
       sync();
@@ -541,6 +568,7 @@
     const cwd = currentCwd();
     const name = String((list && list.newBranch) || "").trim();
     if (!list || !cwd || !name || list.creating) return;
+    if (popoverContextStale(list)) return; // opening outlived its workspace or folder
     const base = String(list.currentBranch || "HEAD") || "HEAD";
     if (!window.confirm(`Create and switch to branch "${name}" from "${base}"?`)) return;
     list.creating = true;
@@ -626,6 +654,16 @@
     if (!node) return;
     const workspace = selectedWorkspace();
     const cwd = workspaceCwd(workspace);
+    // A popover belongs to the workspace and folder it was opened for.
+    // A selection change (workspace switch, folder switch) invalidates
+    // its rows: they describe another repo, and acting on them would
+    // target the wrong checkout.
+    if (bar.branchList && popoverContextStale(bar.branchList)) {
+      bar.branchList = null;
+    }
+    if (bar.worktreeList && popoverContextStale(bar.worktreeList)) {
+      bar.worktreeList = null;
+    }
     // Hidden without a selected workspace or an empty path; the bar is a
     // workspace-scoped surface, not a global one.
     if (!workspace || !cwd) {
@@ -698,12 +736,18 @@
       worktrees: [],
       currentPath: cwd,
       anchor: anchorFromEvent(event, ".location-bar-worktree-chip:not([disabled])"),
+      // Same identity contract as the branch popover: completions and
+      // row actions belong to this opening only.
+      requestId: nextPopoverRequestId(),
+      wsId: String(state.ws || ""),
+      cwd,
     };
+    const request = bar.worktreeList.requestId;
     sync();
     try {
       const data = await api(`/api/worktrees?cwd=${encodeURIComponent(cwd)}`);
       const result = data.result || data;
-      if (!bar.worktreeList) return; // closed while loading
+      if (!bar.worktreeList || bar.worktreeList.requestId !== request) return; // superseded while loading
       bar.worktreeList = {
         ...bar.worktreeList,
         loading: false,
@@ -711,7 +755,7 @@
         worktrees: result.worktrees || [],
       };
     } catch (err) {
-      if (!bar.worktreeList) return;
+      if (!bar.worktreeList || bar.worktreeList.requestId !== request) return;
       bar.worktreeList = {
         ...bar.worktreeList,
         loading: false,
@@ -725,7 +769,9 @@
   async function selectWorktreeFromPopover(encodedPath) {
     const path = decodeURIComponent(String(encodedPath || ""));
     const cwd = currentCwd();
+    const list = bar.worktreeList;
     if (!path || !cwd || samePath(path, cwd)) return;
+    if (popoverContextStale(list)) return; // opening outlived its workspace or folder
     closeWorktreePopover();
     if (!window.confirm(`Switch workspace to worktree folder "${path}"?`)) return;
     if (!window.HerdrOpenFolder || !window.HerdrOpenFolder.openFolderAsWorkspace) {
@@ -742,6 +788,8 @@
   function createWorktreeFromPopover() {
     const cwd = currentCwd();
     const workspace = selectedWorkspace();
+    const list = bar.worktreeList;
+    if (popoverContextStale(list)) return; // opening outlived its workspace or folder
     const facts = workspace ? gitFacts(workspace, cwd) : { branch: "" };
     closeWorktreePopover();
     if (typeof openWorktreeCreateFromGitBranch === "function") {
