@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 // Test the blocking overlay depth-counting logic from core.js.
@@ -98,12 +99,13 @@ function context() {
 }
 
 function loadCore(ctx) {
-  const source = readFileSync(
-    new URL("./desktop/app_js/core.js", import.meta.url),
-    "utf8",
-  );
+  // Compiled once so coverage attributes core.js lines to the real file.
+  if (!loadCore.script) {
+    const corePath = fileURLToPath(new URL("./desktop/app_js/core.js", import.meta.url));
+    loadCore.script = new vm.Script(readFileSync(corePath, "utf8"), { filename: corePath });
+  }
   try {
-    vm.runInContext(source, ctx);
+    loadCore.script.runInContext(ctx);
   } catch (e) {
     // Some init code may fail without full DOM; the functions we test
     // are declared at top level and should be available.

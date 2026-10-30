@@ -4,10 +4,18 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const pickerSource = read("./mobile/directory_picker.js");
+
+// Compiled once so coverage attributes mobile/directory_picker.js lines to
+// the real disk path.
+const MOBILE_PICKER_PATH = fileURLToPath(new URL("./mobile/directory_picker.js", import.meta.url));
+const mobilePickerScript = new vm.Script(readFileSync(MOBILE_PICKER_PATH, "utf8"), {
+  filename: MOBILE_PICKER_PATH,
+});
 
 // Minimal DOM: enough nodes for the picker to create/look up its backdrop,
 // sheet, and rows, and for tests to read the rendered innerHTML. Focus
@@ -125,7 +133,7 @@ function pickerContext({
   };
   sandbox.globalThis = sandbox;
   const ctx = vm.createContext(sandbox);
-  vm.runInContext(pickerSource, ctx);
+  mobilePickerScript.runInContext(ctx);
 
   const state = {
     worktreeDiscoverPath: fieldPath,

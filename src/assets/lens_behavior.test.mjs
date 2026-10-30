@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import { deepEqual, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const LENS_SOURCE = readFileSync(
@@ -15,6 +16,13 @@ const SHARED_CORE_SOURCE = readFileSync(
   new URL("./shared/core.js", import.meta.url),
   "utf8",
 );
+// Compiled once per product file so coverage attributes to the real paths.
+const LENS_PATH = fileURLToPath(new URL("./desktop/app_js/lens.js", import.meta.url));
+const lensScript = new vm.Script(readFileSync(LENS_PATH, "utf8"), { filename: LENS_PATH });
+const SHARED_CORE_PATH = fileURLToPath(new URL("./shared/core.js", import.meta.url));
+const sharedCoreScript = new vm.Script(readFileSync(SHARED_CORE_PATH, "utf8"), {
+  filename: SHARED_CORE_PATH,
+});
 
 function element(id, registry) {
   const node = {
@@ -147,7 +155,7 @@ function context(overrides = {}) {
   ctx.globalThis = ctx;
   ctx.window = ctx;
   const contextObject = vm.createContext(ctx);
-  vm.runInContext(SHARED_CORE_SOURCE, contextObject);
+  sharedCoreScript.runInContext(contextObject);
   // Redefine term/escapeHtml for the module's closure lookups after core.js
   // ran (core.js declares its own term).
   vm.runInContext("var term = globalThis.__term;", contextObject);
@@ -158,7 +166,7 @@ function context(overrides = {}) {
 function loadLens(ctx, bridge) {
   ctx.__term = bridge ? { wterm: { bridge } } : null;
   vm.runInContext("term = globalThis.__term;", ctx);
-  vm.runInContext(LENS_SOURCE, ctx);
+  lensScript.runInContext(ctx);
 }
 
 describe("chat lens module", () => {
@@ -467,7 +475,7 @@ describe("chat lens module", () => {
     const { ctx, contextObject } = context();
     ctx.__term = { wterm: renderer };
     vm.runInContext("var term = globalThis.__term;", contextObject);
-    vm.runInContext(LENS_SOURCE, contextObject);
+    lensScript.runInContext(contextObject);
     ctx.HerdrLens.setLens(true);
     equal(paused[paused.length - 1], true, "lens open pauses the covered renderer");
     ctx.HerdrLens.setLens(false);

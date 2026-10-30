@@ -1,11 +1,19 @@
 import { deepEqual, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import vm from "node:vm";
 
+// One compiled script per product file so coverage attributes each file's
+// lines to its real disk path.
+function productScript(relPath) {
+  const realPath = fileURLToPath(new URL(relPath, import.meta.url));
+  return new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath });
+}
+
 const context = vm.createContext({ window: {}, console, setTimeout, clearTimeout });
-vm.runInContext(readFileSync(new URL("./vendor/codemirror.bundle.js", import.meta.url), "utf8"), context);
-vm.runInContext(readFileSync(new URL("./desktop/git_ui/syntax.js", import.meta.url), "utf8"), context);
+productScript("./vendor/codemirror.bundle.js").runInContext(context);
+productScript("./desktop/git_ui/syntax.js").runInContext(context);
 const editor = context.HerdrCodeMirror;
 const preview = context.window.HerdrGitSyntax;
 

@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import { match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const LSP_SOURCE = readFileSync(new URL("./shared/lsp.js", import.meta.url), "utf8");
+// Compiled once so coverage attributes lsp.js lines to the real file.
+const LSP_PATH = fileURLToPath(new URL("./shared/lsp.js", import.meta.url));
+const lspScript = new vm.Script(readFileSync(LSP_PATH, "utf8"), { filename: LSP_PATH });
 const FILE_BROWSER_SOURCE = readFileSync(
   new URL("./desktop/file_browser.js", import.meta.url),
   "utf8",
@@ -96,7 +100,7 @@ function loadLsp(overrides = {}) {
   const sandbox = createSandbox();
   Object.assign(sandbox, overrides);
   vm.createContext(sandbox);
-  vm.runInContext(LSP_SOURCE, sandbox, { filename: "lsp.js" });
+  lspScript.runInContext(sandbox);
   return sandbox;
 }
 

@@ -5,13 +5,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("./shared/actions.js", import.meta.url), "utf8");
+// Compiled once so coverage attributes actions.js lines to the real file.
+const ACTIONS_PATH = fileURLToPath(new URL("./shared/actions.js", import.meta.url));
+const actionsScript = new vm.Script(readFileSync(ACTIONS_PATH, "utf8"), { filename: ACTIONS_PATH });
 
 function loadRegistry() {
   const ctx = vm.createContext({});
-  vm.runInContext(source, ctx);
+  actionsScript.runInContext(ctx);
   return ctx.HerdrActionRegistry;
 }
 

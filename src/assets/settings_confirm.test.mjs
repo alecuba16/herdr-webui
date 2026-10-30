@@ -1,19 +1,25 @@
 import { describe, it } from "node:test";
 import { equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const source = readFileSync(
   new URL("./shared/settings_confirm.js", import.meta.url),
   "utf8",
 );
+// Compiled once so coverage attributes settings_confirm.js lines to the real file.
+const SETTINGS_CONFIRM_PATH = fileURLToPath(new URL("./shared/settings_confirm.js", import.meta.url));
+const settingsConfirmScript = new vm.Script(readFileSync(SETTINGS_CONFIRM_PATH, "utf8"), {
+  filename: SETTINGS_CONFIRM_PATH,
+});
 
 function loadConfirm() {
   const ctx = { console, Map, Object, String, Promise, Event: FakeEvent };
   ctx.window = ctx;
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  vm.runInContext(source, ctx);
+  settingsConfirmScript.runInContext(ctx);
   return ctx.window.HerdrSettingsConfirm;
 }
 

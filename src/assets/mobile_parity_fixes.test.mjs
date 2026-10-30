@@ -4,6 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
@@ -15,6 +16,14 @@ const settingsSource = read("./mobile/settings.js");
 const backendSource = read("./mobile/backend.js");
 const layoutSettingsSource = read("./desktop/layout_settings.js");
 const assetsRsSource = read("../assets.rs");
+
+// Compiled once per product file so coverage attributes to the real paths.
+const readScript = (path) => {
+  const realPath = fileURLToPath(new URL(path, import.meta.url));
+  return new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath });
+};
+const composerScript = readScript("./mobile/composer.js");
+const layoutSettingsScript = readScript("./desktop/layout_settings.js");
 
 function mobileComposerDom() {
   const inputListeners = {};
@@ -95,7 +104,7 @@ function composerContext({ status = "blocked", term = null, options = null, apiR
   if (extraGlobal) Object.assign(sandbox, extraGlobal);
   sandbox.globalThis = sandbox;
   const ctx = vm.createContext(sandbox);
-  vm.runInContext(composerSource, ctx);
+  composerScript.runInContext(ctx);
   const state = {
     screen: "terminal",
     pane: "pane-1",
@@ -941,7 +950,7 @@ describe("desktop layout settings module", () => {
     sandbox.globalThis = sandbox;
     sandbox.window = sandbox;
     const ctx = vm.createContext(sandbox);
-    vm.runInContext(layoutSettingsSource, ctx);
+    layoutSettingsScript.runInContext(ctx);
     const modules = ctx.window.HerdrSettingsModules;
     assert.ok(Array.isArray(modules) && modules.length === 1);
     const module = modules[0];

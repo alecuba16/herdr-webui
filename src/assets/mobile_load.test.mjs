@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import { doesNotThrow, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { TextEncoder } from "node:util";
 import vm from "node:vm";
 
@@ -623,6 +624,59 @@ function context(pathname = "/", options = {}) {
   return vm.createContext(ctx);
 }
 
+// One compiled script per product file, same list and order as the `source`
+// blob, so coverage attributes each file's lines to its real disk path.
+// The mobile bundle is IIFE-scoped and shares state through window objects,
+// so per-file scripts need no hoist shim.
+const MOBILE_BUNDLE_FILES = [
+  "./shared/options.js",
+  "./shared/core.js",
+  "./shared/http.js",
+  "./shared/attention.js",
+  "./shared/actions.js",
+  "./shared/file_icons.js",
+  "./shared/file_tree.js",
+  "./shared/line_context.js",
+  "./shared/file_content_search.js",
+  "./shared/workspace_search.js",
+  "./shared/editor.js",
+  "./shared/terminal_fit.js",
+  "./mobile/core.js",
+  "./mobile/attention.js",
+  "./mobile/terminal.js",
+  "./mobile/worktrees.js",
+  "./mobile/directory_picker.js",
+  "./mobile/file_browser.js",
+  "./mobile/notes.js",
+  "./mobile/settings.js",
+  "./mobile/search.js",
+  "./mobile/git.js",
+  "./mobile/composer.js",
+  "./mobile/lens.js",
+  "./mobile/sessions.js",
+  "./mobile/events.js",
+  "./mobile/screens.js",
+  "./mobile/panels.js",
+  "./mobile/workmeta.js",
+  "./mobile/theme.js",
+  "./mobile/actions.js",
+  "./mobile/backend.js",
+  "./mobile/app.js",
+];
+let mobileBundleScripts = null;
+function getMobileBundleScripts() {
+  if (!mobileBundleScripts) {
+    mobileBundleScripts = MOBILE_BUNDLE_FILES.map((path) => {
+      const realPath = fileURLToPath(new URL(path, import.meta.url));
+      return new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath });
+    });
+  }
+  return mobileBundleScripts;
+}
+function runSource(ctx) {
+  for (const script of getMobileBundleScripts()) script.runInContext(ctx);
+}
+
 describe("mobile bundle load", () => {
   const source =
     readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") +
@@ -772,13 +826,13 @@ describe("mobile bundle load", () => {
 
   it("loads mobile shell without browser automation", () => {
     const ctx = context();
-    doesNotThrow(() => vm.runInContext(source, ctx));
+    doesNotThrow(() => runSource(ctx));
     ok(ctx.HerdrMobile);
   });
 
   it("keeps mobile terminal input gated until the terminal is tapped", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const gate = ctx.HerdrMobileCore.createTerminalInputGate();
     equal(gate(), true);
     gate.enable();
@@ -794,14 +848,14 @@ describe("mobile bundle load", () => {
     match(terminalSource, /pendingTerminalResize/);
 
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     equal(ctx.lastRendererOptions.fontSize, 12);
 
     const stored = context("/session/default/workspace/w1/tab/t1/pane/p1");
     stored.localStorage.setItem("herdr-web-options", JSON.stringify({ terminalFontSize: 16 }));
-    vm.runInContext(source, stored);
+    runSource(stored);
     await stored.HerdrMobile.refresh();
     await stored.settle();
     equal(stored.lastRendererOptions.fontSize, 16);
@@ -809,7 +863,7 @@ describe("mobile bundle load", () => {
 
   it("emits the full keyboard guard set from the real inputAttrs helper", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const attrs = ctx.HerdrMobileCore.inputAttrs();
     // Full guard set: Android autocorrect/grammar must never engage on any
     // mobile text input. If someone trims a guard from mobile core.js this
@@ -832,7 +886,7 @@ describe("mobile bundle load", () => {
 
   it("renders mobile task hub and action search", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(html.includes("mobile-task-hub"));
     ok(html.includes("Open workspace or worktree"));
@@ -848,7 +902,7 @@ describe("mobile bundle load", () => {
 
   it("filters mobile action search results at runtime", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.HerdrMobile.showScreen("search");
     let html = ctx.document.getElementById("mobileSearchResults").innerHTML;
@@ -865,7 +919,7 @@ describe("mobile bundle load", () => {
 
   it("lists every mobile action exactly once in the search sheet", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.HerdrMobile.showScreen("search");
     const html = ctx.document.getElementById("mobileSearchResults").innerHTML;
@@ -879,7 +933,7 @@ describe("mobile bundle load", () => {
 
   it("restores all agents after rendering Home attention-only agents", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     ctx.HerdrMobile.showScreen("home");
@@ -911,7 +965,7 @@ describe("mobile bundle load", () => {
         { workspace_id: "w2", tab_id: "w2:t1", pane_id: "w2:p1", terminal_id: "term4", agent_status: "idle", name: "a3" },
       ],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     ctx.HerdrMobile.showScreen("agents");
@@ -943,7 +997,7 @@ describe("mobile bundle load", () => {
       workspaceCounts: { w1: { tabs: 2, panes: 2 }, w2: { tabs: 2, panes: 2 } },
       tabLabelsById: { "w1:t1": "Shell", "w1:t2": "Shell", "w2:t2": "deploy" },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     ctx.HerdrMobile.showScreen("agents");
@@ -970,7 +1024,7 @@ describe("mobile bundle load", () => {
       workspaceCounts: { w1: { tabs: 1, panes: 1 }, w2: { tabs: 2, panes: 2 } },
       tabLabelsById: { "w1:t1": "Shell", "w2:t1": "Shell" },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     ctx.HerdrMobile.showScreen("agents");
@@ -982,7 +1036,7 @@ describe("mobile bundle load", () => {
     for (const [storedBackend, expected] of [["external", "external-herdr"], ["external-herdr", "external-herdr"], ["builtin", "builtin"]]) {
       const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
       ctx.localStorage.setItem("herdr-session-backend:default", storedBackend);
-      vm.runInContext(source, ctx);
+      runSource(ctx);
       await ctx.HerdrMobile.refresh();
       // The snapshot bootstrap carries the backend header for the whole
       // refresh; the legacy per-endpoint calls are the fallback path.
@@ -1020,7 +1074,7 @@ describe("mobile bundle load", () => {
     for (const [storedBackend, label, cls] of [["builtin", "built-in", "backend-builtin"], ["external-herdr", "Herdr", "backend-herdr"]]) {
       const ctx = context("/session/default/workspace/w1");
       ctx.localStorage.setItem("herdr-session-backend:default", storedBackend);
-      vm.runInContext(source, ctx);
+      runSource(ctx);
       ctx.HerdrMobile.showScreen("home");
       const badge = ctx.document.getElementById("mobileBackendBadge");
       equal(badge.textContent, `${label} · default`);
@@ -1031,7 +1085,7 @@ describe("mobile bundle load", () => {
 
   it("renders a sessions screen listing known sessions and the active target", async () => {
     const ctx = context("/session/default");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.showScreen("sessions");
     await ctx.settle();
     await ctx.flushTimers();
@@ -1046,7 +1100,7 @@ describe("mobile bundle load", () => {
 
   it("creates a new built-in session from the sessions screen and switches to it", async () => {
     const ctx = context("/session/default");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.updateSessionField("sessionNameInput", "revolut");
     await ctx.HerdrMobile.newSession("builtin");
     const launch = ctx.requests.find((r) => r.url === "/api/session/launch");
@@ -1063,7 +1117,7 @@ describe("mobile bundle load", () => {
 
   it("switches the browser target when tapping another session row", async () => {
     const ctx = context("/session/default");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.selectSession("revolut", "builtin");
     ok(ctx.history.calls.some((c) => c.path === "/session/revolut"));
     // The per-session pin follows the switched-to session (revolut), not the
@@ -1073,7 +1127,7 @@ describe("mobile bundle load", () => {
 
   it("closes the current session from the sessions screen and retargets the default", async () => {
     const ctx = context("/session/revolut");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.closeSession();
     const close = ctx.requests.find((r) => r.url === "/api/session/close");
     ok(close, "session close request missing");
@@ -1088,7 +1142,7 @@ describe("mobile bundle load", () => {
 
   it("rejects a new session without a name and surfaces the error inline", async () => {
     const ctx = context("/session/default");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.showScreen("sessions");
     await ctx.settle();
     await ctx.flushTimers();
@@ -1101,7 +1155,7 @@ describe("mobile bundle load", () => {
 
   it("cleans up stale closed sessions from the sessions screen", async () => {
     const ctx = context("/session/default");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.showScreen("sessions");
     await ctx.settle();
     await ctx.flushTimers();
@@ -1140,7 +1194,7 @@ describe("mobile bundle load", () => {
       }),
       sessionCleanup: { ok: true, removed: [], removed_count: 0, kept_running_count: 0 },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.showScreen("sessions");
     await ctx.settle();
     await ctx.flushTimers();
@@ -1158,7 +1212,7 @@ describe("mobile bundle load", () => {
 
   it("skips the cleanup request when the user cancels the confirm", async () => {
     const ctx = context("/session/default");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.confirm = () => false;
     await ctx.HerdrMobile.cleanupSessions();
     ok(!ctx.requests.some((r) => r.url === "/api/session/cleanup"));
@@ -1168,7 +1222,7 @@ describe("mobile bundle load", () => {
 
   it("coalesces mobile event socket refreshes and pauses reconnect while hidden", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     const before = ctx.requests.length;
 
@@ -1200,7 +1254,7 @@ describe("mobile bundle load", () => {
     // the real initial state so assertions read app behavior, not the
     // stub default.
     ctx.document.getElementById("mobileOfflineBanner").hidden = true;
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     const banner = () => ctx.document.getElementById("mobileOfflineBanner");
@@ -1279,7 +1333,7 @@ describe("mobile bundle load", () => {
         return { ok: false, status: 500, json: async () => ({ error: "down" }) };
       return originalFetch(url, opt);
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     // The failed request disabled the bootstrap; the refresh still landed
@@ -1308,7 +1362,7 @@ describe("mobile bundle load", () => {
         return { ok: false, status: 500, json: async () => ({ error: "down" }) };
       return originalFetch(url, opt);
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await vm.runInContext(
       `HerdrMobileAppDeps.state.tabLabelsById = { "w9:t9": "stale" };
        HerdrMobileAppDeps.state.workspacesById = { w1: { workspace_id: "w1" } };`,
@@ -1374,7 +1428,7 @@ describe("mobile bundle load", () => {
         };
       return originalFetch(url, opt);
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     // Flat envelope applied: selection restored, and neither the boot nor
@@ -1400,7 +1454,7 @@ describe("mobile bundle load", () => {
 
   it("renders simplified mobile nav with drawer menu", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     match(source, /<button data-screen="home">Home<\/button>/);
     match(source, /<button data-screen="search">Search<\/button>/);
     match(source, /<button data-screen="terminal">Terminal<\/button>/);
@@ -1437,7 +1491,7 @@ describe("mobile bundle load", () => {
     const ctx = context();
     ctx.localStorage.setItem("herdr-web-options", JSON.stringify({ headerSearchEnabled: false }));
 
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     const searchButton = ctx.navButtons.find((button) => button.dataset.screen === "search");
     equal(searchButton.hidden, true);
@@ -1449,7 +1503,7 @@ describe("mobile bundle load", () => {
 
   it("routes mobile task actions to worktree, create, search, and terminal flows", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     ctx.HerdrMobile.runAction("discover-worktrees");
@@ -1479,7 +1533,7 @@ describe("mobile bundle load", () => {
 
   it("renders all secondary tools in the drawer while keeping direct routes available", () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // More is a drawer, not a screen: opening it lists every secondary
     // tool and each item routes through openDrawerTarget (showScreen
@@ -1500,7 +1554,7 @@ describe("mobile bundle load", () => {
 
   it("filters mobile settings live without rerendering or losing focus", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.showScreen("settings");
 
     const groups = [
@@ -1552,7 +1606,7 @@ describe("mobile bundle load", () => {
 
   it("settings rows expose the close-workspace checkbox and default it on", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.showScreen("settings");
     const settingsHtml = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(settingsHtml.includes("Close workspace with last terminal"));
@@ -1566,7 +1620,7 @@ describe("mobile bundle load", () => {
 
   it("text-like settings save through the debounced input path", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.setSettingDebounced("worktreeDefaultDirectory", "../wt-deb");
     // Nothing saved before the debounce fires.
     equal(JSON.parse(ctx.localStorage.getItem("herdr-web-options") || "{}").worktreeDefaultDirectory, undefined);
@@ -1581,7 +1635,7 @@ describe("mobile bundle load", () => {
     // updates. Observable in the harness: refresh() issues the session
     // snapshot request; a suppressed commit does not.
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.showScreen("settings");
     const snapshotBefore = ctx.requests.filter(
       (request) => request.url.startsWith("/api/session-snapshot"),
@@ -1610,7 +1664,7 @@ describe("mobile bundle load", () => {
 
   it("retyping resets the debounce and change commits flush it early", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.setSettingDebounced("explorationDefaultDirectory", "~/first");
     ctx.HerdrMobile.setSettingDebounced("explorationDefaultDirectory", "~/second");
     await ctx.flushTimers();
@@ -1627,7 +1681,7 @@ describe("mobile bundle load", () => {
 
   it("renders settings and worktrees screens without browser automation", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     doesNotThrow(() => ctx.HerdrMobile.showScreen("settings"));
     const settingsHtml = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(settingsHtml.includes("mobile-settings-group"));
@@ -1668,7 +1722,7 @@ describe("mobile bundle load", () => {
 
   it("shows an applied badge that survives the settings re-render and later clears", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.HerdrMobile.showScreen("settings");
     let html = ctx.document.getElementById("mobileScreen").innerHTML;
@@ -1707,7 +1761,7 @@ describe("mobile bundle load", () => {
 
   it("flashes the moved search order row instead of every row", async () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.HerdrMobile.showScreen("settings");
     ctx.HerdrMobile.moveSearchSection("content", -1);
@@ -1741,7 +1795,7 @@ describe("mobile bundle load", () => {
       searchFoldersEnabled: false,
       searchWorkspacesEnabled: false,
     }));
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // The mobile screen must go through the shared HerdrWorkspaceSearch.settings()
     // helper, not a private copy of the option parsing.
@@ -1797,7 +1851,7 @@ describe("mobile bundle load", () => {
         return { ok: true, status: 200, json: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }) };
       return { ok: true, status: 200, json: async () => ({}) };
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.HerdrMobile.showScreen("search");
     const input = ctx.document.getElementById("mobileSearchInput");
@@ -1857,7 +1911,7 @@ describe("mobile bundle load", () => {
       }
       return originalFetch(url, opt);
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.HerdrMobile.showScreen("search");
     const input = ctx.document.getElementById("mobileSearchInput");
@@ -1907,7 +1961,7 @@ describe("mobile bundle load", () => {
       }
       return originalFetch(url, opt);
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.HerdrMobile.showScreen("search");
     const input = ctx.document.getElementById("mobileSearchInput");
@@ -1985,7 +2039,7 @@ describe("mobile bundle load", () => {
 
   it("shows Editor settings group with desktop parity options (B4)", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.showScreen("settings");
     const settingsHtml = ctx.document.getElementById("mobileScreen").innerHTML;
     ok(settingsHtml.includes("Editor"));
@@ -2020,7 +2074,7 @@ describe("mobile bundle load", () => {
         return "granted";
       },
     };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     await ctx.HerdrMobile.setBrowserNotifications(true);
 
@@ -2038,7 +2092,7 @@ describe("mobile bundle load", () => {
 
   it("stores mobile notification volume from Settings", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.HerdrMobile.setNotificationVolume("70");
 
@@ -2050,7 +2104,7 @@ describe("mobile bundle load", () => {
 
   it("does not force terminal screen after user selects another mobile tab", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     equal(ctx.HerdrMobile.currentScreen(), "terminal");
     ctx.HerdrMobile.showScreen("agents");
     await ctx.HerdrMobile.refresh();
@@ -2059,7 +2113,7 @@ describe("mobile bundle load", () => {
 
   it("escapes inline handler args for scoped ids", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("panels");
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
@@ -2068,7 +2122,7 @@ describe("mobile bundle load", () => {
 
   it("expands short route ids and writes short ids when switching tabs", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     equal(ctx.HerdrMobile.currentSelection().tab, "w1:t1");
     equal(ctx.HerdrMobile.currentSelection().pane, "w1:p1");
@@ -2089,7 +2143,7 @@ describe("mobile bundle load", () => {
         { tab_id: "w1:t2", pane_id: "w1:p2", terminal_id: "term2" },
       ],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     ctx.HerdrMobile.selectTab("t2");
@@ -2104,7 +2158,7 @@ describe("mobile bundle load", () => {
           ? [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }]
           : [],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     ctx.HerdrMobile.selectTab("w1:t2");
@@ -2114,7 +2168,7 @@ describe("mobile bundle load", () => {
 
   it("recreates terminal after leaving and returning to terminal screen", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     await Promise.resolve();
@@ -2130,7 +2184,7 @@ describe("mobile bundle load", () => {
 
   it("shows mobile terminal tail button and preserves scrollback on output", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     await Promise.resolve();
@@ -2170,7 +2224,7 @@ describe("mobile bundle load", () => {
     // lens covers the shell, even when the caret sits on the covered wterm
     // textarea (hardware keyboard case).
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     await Promise.resolve();
@@ -2196,7 +2250,7 @@ describe("mobile bundle load", () => {
     // sub-row pixel deltas accumulate across events like the desktop
     // accumulator so trackpads never stall a row short per event.
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     await Promise.resolve();
@@ -2229,7 +2283,7 @@ describe("mobile bundle load", () => {
 
   it("opens mobile Git file diff with scrollable hunk markup", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("git");
     await ctx.HerdrMobile.loadGitStatus();
@@ -2267,7 +2321,7 @@ describe("mobile bundle load", () => {
 
   it("mobile git screen stages, unstages, discards, and switches branches (B3)", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("git");
     await ctx.HerdrMobile.loadGitStatus();
@@ -2322,7 +2376,7 @@ describe("mobile bundle load", () => {
 
   it("renders mobile worktree path input and discovers by cwd", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.HerdrMobile.showScreen("worktrees");
     ctx.HerdrMobile.updateWorktreeField("worktreeDiscoverPath", "~/code/repo");
     await ctx.HerdrMobile.loadWorktrees();
@@ -2337,7 +2391,7 @@ describe("mobile bundle load", () => {
 
   it("stores mobile exploration default directory and prefills worktree discovery path", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.HerdrMobile.setWorktreeDefaultDirectory("/tmp/worktrees");
     ctx.HerdrMobile.setExplorationDefaultDirectory("/tmp/code");
@@ -2358,7 +2412,7 @@ describe("mobile bundle load", () => {
 
   it("shows a rollback chip when a mobile setting drifted from its baseline", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.HerdrMobile.showScreen("settings");
     let html = ctx.document.getElementById("mobileScreen").innerHTML;
@@ -2407,7 +2461,7 @@ describe("mobile bundle load", () => {
 
   it("shows highest-priority agent status in More tab label", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     const moreButton = ctx.navButtons.find(
       (button) => button.dataset.screen === "more",
@@ -2417,7 +2471,7 @@ describe("mobile bundle load", () => {
 
   it("sorts mobile agents by attention priority", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("agents");
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
@@ -2426,7 +2480,7 @@ describe("mobile bundle load", () => {
 
   it("shows worktree name, repo name, and latest commit date as meta", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.loadWorktrees();
     ctx.HerdrMobile.showScreen("worktrees");
     const html = ctx.document.getElementById("mobileScreen").innerHTML;
@@ -2445,7 +2499,7 @@ describe("mobile bundle load", () => {
         ],
       },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.HerdrMobile.loadRecentWorkspaces();
     ctx.HerdrMobile.showScreen("worktrees");
@@ -2473,7 +2527,7 @@ describe("mobile bundle load", () => {
 
   it("creates new panel in selected workspace", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.HerdrMobile.createPanel();
     ok(
@@ -2490,7 +2544,7 @@ describe("mobile bundle load", () => {
     // Boot-clean phone: the snapshot reports zero workspaces, the same
     // state a fresh server session starts in.
     const ctx = context("/", { workspaces: [] });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     const state = () => ctx.HerdrMobileAppDeps.state;
     ok(!state().ws, "the route carries no workspace");
@@ -2519,7 +2573,7 @@ describe("mobile bundle load", () => {
 
   it("renders mobile close current panel controls", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("panels");
     let html = ctx.document.getElementById("mobileScreen").innerHTML;
@@ -2554,7 +2608,7 @@ describe("mobile bundle load", () => {
               ...remainingPanes,
             ],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     await ctx.HerdrMobile.closeCurrentPanel();
@@ -2587,7 +2641,7 @@ describe("mobile bundle load", () => {
           ? []
           : [{ workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" }],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     await ctx.HerdrMobile.closeCurrentPanel();
@@ -2618,7 +2672,7 @@ describe("mobile bundle load", () => {
           ? []
           : [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.localStorage.setItem(
       "herdr-web-options",
       JSON.stringify({ closeWorkspaceOnLastTerminal: false }),
@@ -2660,7 +2714,7 @@ describe("mobile bundle load", () => {
               { workspace_id: "w9", label: "beta", pane_count: 1, cwd: "/tmp/beta" },
             ],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     await ctx.HerdrMobile.closeCurrentPanel();
@@ -2682,7 +2736,7 @@ describe("mobile bundle load", () => {
       tabs: [{ workspace_id: "w1", tab_id: "t1", number: 1, label: "Shell" }],
       panes: [{ workspace_id: "w1", tab_id: "t1", pane_id: "p1", terminal_id: "term1" }],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     equal(ctx.HerdrMobile.currentSelection().tab, "t1");
 
@@ -2726,7 +2780,7 @@ describe("mobile bundle load", () => {
           : [{ tab_id: "w1:t1", pane_id: "w1:p1", terminal_id: "term1" }],
       closeError: "tab w1:t1 not found",
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     await ctx.HerdrMobile.closeCurrentPanel();
@@ -2748,7 +2802,7 @@ describe("mobile bundle load", () => {
     const ctx = context("/session/default/workspace/w1/tab/w1:t1/pane/w1:p1", {
       closeError: "state unavailable",
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     await ctx.HerdrMobile.closeCurrentPanel();
@@ -2776,7 +2830,7 @@ describe("mobile bundle load", () => {
           ? []
           : [{ workspace_id: "w1", label: "alpha", pane_count: 2, cwd: "/tmp/alpha" }],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     // Harness auto-resolves the confirm sheet with the ctx.confirm answer.
@@ -2811,7 +2865,7 @@ describe("mobile bundle load", () => {
           ? []
           : [{ workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" }],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.confirm = () => confirmCalls++ === 0;
     await ctx.HerdrMobile.refresh();
 
@@ -2852,7 +2906,7 @@ describe("mobile bundle load", () => {
               worktree: { is_linked_worktree: true, checkout_path: "/repo/wt/feat-x", branch: "feat-x" },
             }],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.confirm = () => true;
     const confirmSheet = ctx.document.getElementById("mobileConfirmSheet");
     confirmSheet.querySelector = (selector) =>
@@ -2902,7 +2956,7 @@ describe("mobile bundle load", () => {
       // behind in state.workspaceCounts.
       workspaceCounts: { w1: { tabs: 1, panes: 1 } },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.confirm = () => true;
     await ctx.HerdrMobile.refresh();
 
@@ -2933,7 +2987,7 @@ describe("mobile bundle load", () => {
       ],
       closeError: { code: "builtin_error", message: "tab w1:t2 not found" },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     const errorBanner = () => ctx.document.getElementById("mobileScreen").innerHTML;
 
@@ -2948,7 +3002,7 @@ describe("mobile bundle load", () => {
 
   it("restores the saved selection when switching back to a session", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     // An explicit navigation inside the default session saves the selection.
@@ -2971,7 +3025,7 @@ describe("mobile bundle load", () => {
 
   it("keeps per-session backend pins isolated on mobile", async () => {
     const ctx = context("/session/default");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     ctx.HerdrMobile.selectSession("work", "builtin");
     equal(ctx.localStorage.getItem("herdr-session-backend:work"), "builtin");
@@ -2987,7 +3041,7 @@ describe("mobile bundle load", () => {
 
   it("closes an inactive session row and forgets its stored state", async () => {
     const ctx = context("/session/default");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     // Seed stored state for the row's session, as a previous visit would.
@@ -3018,7 +3072,7 @@ describe("mobile bundle load", () => {
     // its socket file) both mean the session is already down.
     for (const error of ["already_stopped", "Connection refused (os error 61)"]) {
       const ctx = context("/session/default");
-      vm.runInContext(source, ctx);
+      runSource(ctx);
       await ctx.HerdrMobile.refresh();
 
       const originalFetch = ctx.fetch;
@@ -3048,7 +3102,7 @@ describe("mobile bundle load", () => {
     // retarget to the default session, and show no error.
     for (const error of ["already_stopped", "Connection refused (os error 61)"]) {
       const ctx = context("/session/revolut");
-      vm.runInContext(source, ctx);
+      runSource(ctx);
 
       const originalFetch = ctx.fetch;
       ctx.fetch = async (url, opt = {}) => {
@@ -3079,7 +3133,7 @@ describe("mobile bundle load", () => {
 
   it("renders terminal key bar with control keys", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     // The screen render memo keeps the first terminal HTML in place, so
@@ -3105,7 +3159,7 @@ describe("mobile bundle load", () => {
 
   it("renders the key toolbar above the nav bar with the floating Keys fab", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     await ctx.settle();
@@ -3194,7 +3248,7 @@ describe("mobile bundle load", () => {
 
   it("drags the Keys fab to move it and taps it to toggle the toolbar", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     await ctx.settle();
@@ -3226,7 +3280,7 @@ describe("mobile bundle load", () => {
 
   it("opens the panels dialog from the header meta chip and the workspace switcher from the title", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     // The panels trigger moved off the nav bar into the header meta line:
@@ -3267,7 +3321,7 @@ describe("mobile bundle load", () => {
     // workspace when one exists, so an empty list is the only way state.ws
     // stays null after a refresh).
     const ctx2 = context("/session/default", { workspaces: [] });
-    vm.runInContext(source, ctx2);
+    runSource(ctx2);
     await ctx2.HerdrMobile.refresh();
     await ctx2.settle();
     equal(ctx2.document.getElementById("mobilePanelsChip").hidden, true, "panels chip hidden without workspace");
@@ -3279,7 +3333,7 @@ describe("mobile bundle load", () => {
     // opened or the stamp carries a branch, so the strip's branch pill
     // starts disabled (unknown, not non-git).
     const ctx = context("/session/default/workspace/w1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     const strip = () => ctx.document.getElementById("mobileLocationStrip");
@@ -3325,7 +3379,7 @@ describe("mobile bundle load", () => {
       ],
       gitStatus: { branch: "fresh-status-branch" },
     });
-    vm.runInContext(source, ctx3);
+    runSource(ctx3);
     await ctx3.HerdrMobile.refresh();
     await ctx3.settle();
     await ctx3.HerdrMobile.loadGitStatus();
@@ -3338,7 +3392,7 @@ describe("mobile bundle load", () => {
     const ctx2 = context("/session/default/workspace/w1", {
       gitStatus: { not_git_repository: true },
     });
-    vm.runInContext(source, ctx2);
+    runSource(ctx2);
     await ctx2.HerdrMobile.refresh();
     await ctx2.settle();
     await ctx2.HerdrMobile.loadGitStatus();
@@ -3375,7 +3429,7 @@ describe("mobile bundle load", () => {
         },
       ],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     const strip = () => ctx.document.getElementById("mobileLocationStrip");
@@ -3409,7 +3463,7 @@ describe("mobile bundle load", () => {
 
   it("renders the open-workspace pill when no workspace is selected", async () => {
     const ctx = context("/session/default", { workspaces: [] });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     const html = ctx.document.getElementById("mobileLocationStrip").innerHTML;
@@ -3423,7 +3477,7 @@ describe("mobile bundle load", () => {
     // The diff guard: strip.innerHTML is assigned once per distinct HTML;
     // renders with unchanged pills must not rewrite the strip DOM.
     const ctx = context("/session/default/workspace/w1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     const strip = ctx.document.getElementById("mobileLocationStrip");
@@ -3482,7 +3536,7 @@ describe("mobile bundle load", () => {
         remote: [{ name: "origin/main", current: false, remote: true }],
       },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openBranchSheet();
@@ -3509,7 +3563,7 @@ describe("mobile bundle load", () => {
 
   it("switches branch from the sheet, posts the switch, and closes", async () => {
     const ctx = context("/session/default/workspace/w1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openBranchSheet();
@@ -3537,7 +3591,7 @@ describe("mobile bundle load", () => {
 
   it("creates a branch from the sheet with create:true and the current base", async () => {
     const ctx = context("/session/default/workspace/w1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     // Empty name: inline error, no POST.
@@ -3585,7 +3639,7 @@ describe("mobile bundle load", () => {
         remote: [],
       },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openBranchSheet();
@@ -3622,7 +3676,7 @@ describe("mobile bundle load", () => {
         { workspace_id: "w2", label: "beta", pane_count: 1, cwd: "/tmp/beta" },
       ],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openBranchSheet();
@@ -3646,7 +3700,7 @@ describe("mobile bundle load", () => {
         { workspace_id: "w2", label: "beta", pane_count: 1, cwd: "/tmp/beta" },
       ],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     const sheet = ctx.document.getElementById("mobileBranchSheet");
@@ -3674,7 +3728,7 @@ describe("mobile bundle load", () => {
     // Diff guard: innerHTML is assigned once per distinct sheet HTML;
     // renders that change nothing must not rewrite the sheet node.
     const ctx = context("/session/default/workspace/w1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openBranchSheet();
@@ -3709,7 +3763,7 @@ describe("mobile bundle load", () => {
     // listener is driven directly because the harness dispatcher hands
     // listeners no event object.
     const ctx = context("/session/default/workspace/w1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openBranchSheet();
@@ -3744,7 +3798,7 @@ describe("mobile bundle load", () => {
     // The sheet pins the cwd it was opened for; rows come from
     // /api/worktrees?cwd= and the current checkout row is disabled.
     const ctx = context("/session/default/workspace/w1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openWorktreeSheet();
@@ -3768,7 +3822,7 @@ describe("mobile bundle load", () => {
 
   it("opens a sibling checkout from the worktree sheet through the folder flow", async () => {
     const ctx = context("/session/default/workspace/w1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openWorktreeSheet();
@@ -3799,7 +3853,7 @@ describe("mobile bundle load", () => {
         ],
       },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openWorktreeSheet();
@@ -3818,7 +3872,7 @@ describe("mobile bundle load", () => {
 
   it("routes the worktree sheet create button to the worktrees screen disclosure", async () => {
     const ctx = context("/session/default/workspace/w1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openWorktreeSheet();
@@ -3840,7 +3894,7 @@ describe("mobile bundle load", () => {
         { workspace_id: "w2", label: "beta", pane_count: 1, cwd: "/tmp/beta" },
       ],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openWorktreeSheet();
@@ -3863,7 +3917,7 @@ describe("mobile bundle load", () => {
 
   it("closes the worktree sheet through the Escape cascade", async () => {
     const ctx = context("/session/default/workspace/w1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openWorktreeSheet();
@@ -3893,7 +3947,7 @@ describe("mobile bundle load", () => {
         { workspace_id: "w2", label: "beta", pane_count: 1, cwd: "/tmp/beta" },
       ],
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     // Hold the worktree fetch in flight until the switch lands: this is
@@ -3933,7 +3987,7 @@ describe("mobile bundle load", () => {
   it("declining the confirm cancels the worktree sheet open", async () => {
     const ctx = context("/session/default/workspace/w1");
     ctx.confirm = () => false;
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openWorktreeSheet();
@@ -3952,7 +4006,7 @@ describe("mobile bundle load", () => {
 
   it("re-renders the worktree sheet only when its html changes", async () => {
     const ctx = context("/session/default/workspace/w1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     ctx.HerdrMobile.openWorktreeSheet();
@@ -3993,7 +4047,7 @@ describe("mobile bundle load", () => {
       ],
       workspaceCounts: { w1: { tabs: 0, panes: 0 }, w9: { tabs: 1, panes: 1 } },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     ctx.confirm = () => false;
     const confirmSheet = ctx.document.getElementById("mobileConfirmSheet");
     confirmSheet.querySelector = (selector) =>
@@ -4029,7 +4083,7 @@ describe("mobile bundle load", () => {
       },
       workspaceCounts: { w1: { tabs: 2, panes: 2 }, w9: { tabs: 1, panes: 1 } },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     await ctx.HerdrMobile.openFolderAsWorkspace("/tmp/alpha/mobile-worktree");
@@ -4051,7 +4105,7 @@ describe("mobile bundle load", () => {
     const ctx = context("/session/default/workspace/w1", {
       workspaceCounts: { w1: { tabs: 0, panes: 0 } },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     await ctx.settle();
     const before = ctx.requests.length;
@@ -4076,7 +4130,7 @@ describe("mobile bundle load", () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
       workspaceCounts: { w1: { tabs: 2, panes: 2 } },
     });
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     await ctx.settle();
@@ -4102,7 +4156,7 @@ describe("mobile bundle load", () => {
         { workspace_id: "w1", tab_id: "w1:t2", number: 2, label: "repro job" },
       ],
     });
-    vm.runInContext(source, ctx2);
+    runSource(ctx2);
     await ctx2.HerdrMobile.refresh();
     ctx2.HerdrMobile.showScreen("terminal");
     await ctx2.settle();
@@ -4115,7 +4169,7 @@ describe("mobile bundle load", () => {
     const ctx3 = context("/session/default/workspace/w1/tab/t1/pane/p1", {
       workspaceCounts: { w1: { tabs: 1, panes: 1 } },
     });
-    vm.runInContext(source, ctx3);
+    runSource(ctx3);
     await ctx3.HerdrMobile.refresh();
     ctx3.HerdrMobile.showScreen("terminal");
     await ctx3.settle();
@@ -4128,7 +4182,7 @@ describe("mobile bundle load", () => {
 
   it("sends key bar control bytes through the terminal input path", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     await ctx.settle();
@@ -4177,7 +4231,7 @@ describe("mobile bundle load", () => {
 
   it("applies one-shot Ctrl to the next arrow key", async () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     await ctx.settle();
@@ -4208,7 +4262,7 @@ describe("mobile bundle load", () => {
     const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
     const alertCalls = [];
     ctx.HerdrAlertCard = { show: (opts) => alertCalls.push(opts) };
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
     ctx.HerdrMobile.showScreen("terminal");
     await ctx.settle();
@@ -4227,7 +4281,7 @@ describe("mobile bundle load", () => {
     const ctx = context("/session/work");
     ctx.localStorage.setItem("herdr-session-backend:work", "external-herdr");
     ctx.localStorage.setItem("herdr-session-backend:default", "builtin");
-    vm.runInContext(source, ctx);
+    runSource(ctx);
     await ctx.HerdrMobile.refresh();
 
     equal(ctx.HerdrMobile.currentSessionBackend(), "external-herdr");
@@ -4242,7 +4296,7 @@ describe("mobile bundle load", () => {
 
   it("never adopts a same-named folder from another project as mobile worktree parent", () => {
     const ctx = context();
-    vm.runInContext(source, ctx);
+    runSource(ctx);
 
     // The mobile workmeta module is a factory over state; drive it directly
     // with the same fixture shape as the desktop regression test in

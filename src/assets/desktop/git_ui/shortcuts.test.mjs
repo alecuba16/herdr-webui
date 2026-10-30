@@ -1,7 +1,14 @@
 import { describe, it } from "node:test";
 import { deepEqual, equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// Compiled once so coverage attributes shortcuts.js lines to the real file.
+const SHORTCUTS_PATH = fileURLToPath(new URL("./shortcuts.js", import.meta.url));
+const shortcutsScript = new vm.Script(readFileSync(SHORTCUTS_PATH, "utf8"), {
+  filename: SHORTCUTS_PATH,
+});
 
 // Focused harness for the git_ui shortcuts Esc contract. The window-capture
 // handler arbitrates Escape itself: modal states close first, the navigation
@@ -40,8 +47,7 @@ function makeContext() {
 }
 
 function loadShortcuts(ctx) {
-  const source = readFileSync(new URL("./shortcuts.js", import.meta.url), "utf8");
-  vm.runInContext(source, ctx);
+  shortcutsScript.runInContext(ctx);
 }
 
 function keyEvent(overrides = {}) {

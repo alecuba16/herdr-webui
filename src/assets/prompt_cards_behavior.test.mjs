@@ -6,12 +6,18 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const SOURCE = readFileSync(
   new URL("./desktop/app_js/prompt_cards.js", import.meta.url),
   "utf8",
 );
+// Compiled once so coverage attributes prompt_cards.js lines to the real file.
+const PROMPT_CARDS_PATH = fileURLToPath(new URL("./desktop/app_js/prompt_cards.js", import.meta.url));
+const promptCardsScript = new vm.Script(readFileSync(PROMPT_CARDS_PATH, "utf8"), {
+  filename: PROMPT_CARDS_PATH,
+});
 
 // The real inputAttrs guard helper from shared/core.js (module.exports),
 // injected into the vm sandbox exactly like DESKTOP_JS scope provides it.
@@ -176,7 +182,7 @@ function loadModule(overrides = {}) {
   ctx.globalThis = ctx;
   ctx.window = ctx;
   const contextObject = vm.createContext(ctx);
-  vm.runInContext(SOURCE, contextObject);
+  promptCardsScript.runInContext(contextObject);
   return { ctx, card, shell, sent };
 }
 

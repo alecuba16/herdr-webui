@@ -1,18 +1,28 @@
 import { describe, it } from "node:test";
 import { equal, ok, match } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("./shared/file_content_search.js", import.meta.url), "utf8");
 const lineContextSource = readFileSync(new URL("./shared/line_context.js", import.meta.url), "utf8");
+// Compiled once per product file so coverage attributes to the real paths.
+const LINE_CONTEXT_PATH = fileURLToPath(new URL("./shared/line_context.js", import.meta.url));
+const lineContextScript = new vm.Script(readFileSync(LINE_CONTEXT_PATH, "utf8"), {
+  filename: LINE_CONTEXT_PATH,
+});
+const CONTENT_SEARCH_PATH = fileURLToPath(new URL("./shared/file_content_search.js", import.meta.url));
+const contentSearchScript = new vm.Script(readFileSync(CONTENT_SEARCH_PATH, "utf8"), {
+  filename: CONTENT_SEARCH_PATH,
+});
 
 function loadRenderer(withLineContext = true) {
   const ctx = { window: null, globalThis: null, console, Map, Set, Promise, Object, Array, String, Number, JSON, Math, RegExp, encodeURIComponent, decodeURIComponent };
   ctx.window = ctx;
   ctx.globalThis = ctx;
   vm.createContext(ctx);
-  if (withLineContext) vm.runInContext(lineContextSource, ctx);
-  vm.runInContext(source, ctx);
+  if (withLineContext) lineContextScript.runInContext(ctx);
+  contentSearchScript.runInContext(ctx);
   return ctx.window.HerdrContentSearch;
 }
 

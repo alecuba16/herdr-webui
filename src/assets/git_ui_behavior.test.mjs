@@ -1,7 +1,22 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
+
+// One compiled script per product file so coverage attributes each file's
+// lines to its real disk path; scripts are built once and memoized.
+function productScript(relPath) {
+  productScript.cache = productScript.cache || new Map();
+  if (!productScript.cache.has(relPath)) {
+    const realPath = fileURLToPath(new URL(relPath, import.meta.url));
+    productScript.cache.set(
+      relPath,
+      new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath }),
+    );
+  }
+  return productScript.cache.get(relPath);
+}
 
 // Behavioral tests for the desktop Git explorer compare modes.
 // The vm boots the same source set the server concatenates for the git-ui
@@ -158,7 +173,7 @@ assert.equal(
 // git_ui/settings.js evaluates its html template literal at load time, so
 // the bare inputAttrs binding must exist before any git_ui module loads.
 const CORE_SOURCE = readFileSync(new URL("./shared/core.js", import.meta.url), "utf8");
-const SHARED_SOURCES = [
+const SHARED_SOURCE_FILES = [
   "./shared/actions.js",
   "./shared/file_icons.js",
   "./shared/file_tree.js",
@@ -166,9 +181,16 @@ const SHARED_SOURCES = [
   "./shared/file_content_search.js",
   "./shared/workspace_search.js",
   ...GIT_UI_BUNDLE_FILES,
-]
-  .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
-  .join("\n;\n");
+];
+// The original blob joined these with `\n;\n`; each git_ui module is a
+// globalThis-scoped factory, so sequential per-file scripts are equivalent.
+let sharedScripts = null;
+function getSharedScripts() {
+  if (!sharedScripts) {
+    sharedScripts = SHARED_SOURCE_FILES.map((path) => productScript(path));
+  }
+  return sharedScripts;
+}
 // appRefreshIconButton comes from the desktop app bundle; stub it.
 const APP_STUBS = `
 function appRefreshIconButton() { return ""; }
@@ -205,15 +227,15 @@ async function bootGitUi(responses) {
     return { ok: true, status: 200, json: async () => ({}) };
   };
   const ctx = context(fetchImpl);
-  vm.runInContext(CORE_SOURCE, ctx);
+  productScript("./shared/core.js").runInContext(ctx);
   // git_ui modules render inputs with inputAttrs(...) from the shared
   // HerdrAppHelpers (same binding the real concat bundle gets). settings.js
   // evaluates its template literal at load time, so set the binding before
   // loading any git_ui module.
   vm.runInContext("inputAttrs = globalThis.HerdrAppHelpers.inputAttrs", ctx);
-  vm.runInContext(SHARED_SOURCES, ctx);
+  for (const script of getSharedScripts()) script.runInContext(ctx);
   vm.runInContext(APP_STUBS, ctx);
-  vm.runInContext(GIT_UI_SOURCE, ctx);
+  productScript("./desktop/git_ui.js").runInContext(ctx);
   const ui = ctx.window.HerdrGitUi;
   return { ui, ctx, calls };
 }

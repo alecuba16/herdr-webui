@@ -15,12 +15,19 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { deepEqual, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const SOURCE = readFileSync(
   new URL("./desktop/app_js/location_bar.js", import.meta.url),
   "utf8",
 );
+// Compiled once so coverage attributes location_bar.js lines to the real file.
+const LOCATION_BAR_PATH = fileURLToPath(new URL("./desktop/app_js/location_bar.js", import.meta.url));
+const locationBarScript = new vm.Script(readFileSync(LOCATION_BAR_PATH, "utf8"), {
+  filename: LOCATION_BAR_PATH,
+});
+let drawerShortcutsScript = null;
 
 function stubNode(id) {
   return {
@@ -51,7 +58,7 @@ function loadBar(overrides = {}) {
   if (overrides.gitUi) ctx.HerdrGitUi = overrides.gitUi;
   if (overrides.loadCss) ctx.HerdrLoadCss = overrides.loadCss;
   const contextObject = vm.createContext(ctx);
-  vm.runInContext(SOURCE, contextObject);
+  locationBarScript.runInContext(contextObject);
   return { ctx, bar };
 }
 
@@ -337,7 +344,7 @@ describe("location bar branch popover", () => {
     ctx.HerdrWorkspacePath = (workspace) => workspace.cwd;
     ctx.HerdrOptions = { read: () => ({ gitUiRemoteBranchPreload: 10 }) };
     const contextObject = vm.createContext(ctx);
-    vm.runInContext(SOURCE, contextObject);
+    locationBarScript.runInContext(contextObject);
     return { ctx, bar, calls };
   }
 
@@ -884,7 +891,7 @@ describe("location bar worktree popover", () => {
       openFolderAsWorkspace: openFolder || (async () => {}),
     };
     const contextObject = vm.createContext(ctx);
-    vm.runInContext(SOURCE, contextObject);
+    locationBarScript.runInContext(contextObject);
     return { ctx, bar, calls };
   }
 
@@ -1110,7 +1117,12 @@ describe("location bar worktree popover", () => {
     });
     drawer.globalThis = drawer;
     drawer.window = drawer;
-    vm.runInContext(drawerSource, drawer);
+    // Compiled once per product file so coverage attributes to the real path.
+    if (!drawerShortcutsScript) {
+      const shortcutsPath = fileURLToPath(new URL("./desktop/git_ui/shortcuts.js", import.meta.url));
+      drawerShortcutsScript = new vm.Script(readFileSync(shortcutsPath, "utf8"), { filename: shortcutsPath });
+    }
+    drawerShortcutsScript.runInContext(drawer);
     let drawerHides = 0;
     const drawerCalls = [];
     const shortcuts = drawer.HerdrGitUiShortcuts.create({

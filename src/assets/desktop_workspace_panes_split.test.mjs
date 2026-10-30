@@ -6,9 +6,16 @@
 // lifecycle heals, strip control gating, divider resize, and the mount
 // ownership invariants (container claim, rescue, parked-hidden).
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
+
+// Compiled once so coverage attributes workspace_panes.js lines to the real file.
+const WORKSPACE_PANES_PATH = fileURLToPath(new URL("./desktop/app_js/workspace_panes.js", import.meta.url));
+const workspacePanesScript = new vm.Script(readFileSync(WORKSPACE_PANES_PATH, "utf8"), {
+  filename: WORKSPACE_PANES_PATH,
+});
 
 function makeNode(id, className) {
   const node = {
@@ -206,8 +213,7 @@ function loadPanesModuleWithStorage(document, stateWs, stored, saved) {
   };
   ctx.window = ctx;
   ctx.globalThis = ctx;
-  const source = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
-  vm.runInContext(source, vm.createContext(ctx));
+  workspacePanesScript.runInContext(vm.createContext(ctx));
   ctx.__storage = storage;
   return ctx;
 }

@@ -1,16 +1,18 @@
 import { describe, it } from "node:test";
 import { equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 // Loads graphics_bridge.js into a sandbox and returns the shared API plus
 // the sandbox context. The bridge is an IIFE that publishes
 // `HerdrGraphicsBridge` on the global object.
 function loadBridge() {
-  const source = readFileSync(
-    new URL("./shared/graphics_bridge.js", import.meta.url),
-    "utf8",
-  );
+  // Compiled once so coverage attributes graphics_bridge.js lines to the real file.
+  if (!loadBridge.script) {
+    const bridgePath = fileURLToPath(new URL("./shared/graphics_bridge.js", import.meta.url));
+    loadBridge.script = new vm.Script(readFileSync(bridgePath, "utf8"), { filename: bridgePath });
+  }
   const sandbox = {
     console,
     // Controllable timers: scheduled callbacks are captured so tests can
@@ -65,7 +67,7 @@ function loadBridge() {
   sandbox.globalThis = sandbox;
   sandbox.window = sandbox;
   vm.createContext(sandbox);
-  vm.runInContext(source, sandbox, { filename: "graphics_bridge.js" });
+  loadBridge.script.runInContext(sandbox);
   return { bridge: sandbox.HerdrGraphicsBridge, sandbox };
 }
 

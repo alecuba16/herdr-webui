@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 // Integration test: verify shell mode restoration when switching workspaces.
@@ -168,6 +169,56 @@ function loadSource() {
     .join("\n");
 }
 
+// One compiled script per product file, same list and order as loadSource(),
+// so coverage attributes each file's lines to its real disk path.
+// The concatenated blob hoisted function declarations across every file;
+// separate scripts only hoist per file, so core.js's load-time
+// window.syncGitWorkspaceToggle assignment needs the name pre-declared, and
+// the window copy re-wired to the real function once render.js has loaded.
+const HOIST_PRELOAD = new vm.Script(
+  "var syncGitWorkspaceToggle;\n" +
+    "window.syncGitWorkspaceToggle = syncGitWorkspaceToggle;",
+  { filename: "hoist-preload.js" },
+);
+const HOIST_REWIRE = new vm.Script(
+  "window.syncGitWorkspaceToggle = syncGitWorkspaceToggle;",
+  { filename: "hoist-rewire.js" },
+);
+const RESTORE_FILES = [
+  "./shared/core.js",
+  "./shared/actions.js",
+  "./shared/terminal_fit.js",
+  "./desktop/search.js",
+  "./desktop/app_js/core.js",
+  "./desktop/app_js/settings_sections.js",
+  "./desktop/app_js/workspace_shell.js",
+  "./desktop/app_js/right_sidebar.js",
+  "./desktop/app_js/search_panel.js",
+  "./desktop/app_js/workspace_panes.js",
+  "./desktop/app_js/render.js",
+  "./desktop/app_js/terminal.js",
+  "./desktop/app_js/worktrees.js",
+  "./desktop/app_js/shortcuts.js",
+  "./desktop/app_js/workspace_create.js",
+  "./desktop/app_js/bindings.js",
+];
+let restoreScripts = null;
+function getRestoreScripts() {
+  if (!restoreScripts) {
+    restoreScripts = RESTORE_FILES.map((path) => {
+      const realPath = fileURLToPath(new URL(path, import.meta.url));
+      return new vm.Script(readFileSync(realPath, "utf8"), { filename: realPath });
+    });
+  }
+  return restoreScripts;
+}
+
+function runRestoreScripts(ctx) {
+  HOIST_PRELOAD.runInContext(ctx);
+  for (const script of getRestoreScripts()) script.runInContext(ctx);
+  HOIST_REWIRE.runInContext(ctx);
+}
+
 describe("workspace shell restoration integration", () => {
   it("restores the correct shell mode when switching workspaces after async refresh", async () => {
     const ctx = context();
@@ -175,7 +226,7 @@ describe("workspace shell restoration integration", () => {
     // Load source - some functions may fail during init due to missing DOM,
     // but function declarations are hoisted and will be available for testing.
     try {
-      vm.runInContext(loadSource(), ctx);
+      runRestoreScripts(ctx);
     } catch (e) {
       // Expected: some init code may fail without full DOM. The functions
       // we need to test (refreshOnline, goSession, applyWorkspaceShellForSelection)
@@ -301,7 +352,7 @@ describe("workspace shell restoration integration", () => {
     const ctx = context();
 
     try {
-      vm.runInContext(loadSource(), ctx);
+      runRestoreScripts(ctx);
     } catch (e) {
       // Expected: some init code may fail without full DOM
     }
@@ -334,7 +385,7 @@ describe("workspace shell restoration integration", () => {
   it("does not call applyWorkspaceShellForSelection when state.ws is null", async () => {
     const ctx = context();
     try {
-      vm.runInContext(loadSource(), ctx);
+      runRestoreScripts(ctx);
     } catch (e) {}
 
     vm.runInContext(`
@@ -412,7 +463,7 @@ describe("workspace shell restoration integration", () => {
   it("clears shell mode and pane tabs when a workspace closes", () => {
     const ctx = context();
     try {
-      vm.runInContext(loadSource(), ctx);
+      runRestoreScripts(ctx);
     } catch (e) {}
 
     vm.runInContext(`
@@ -450,7 +501,7 @@ describe("git rail status sync", () => {
       return { status: 200, ok: true, json: async () => ({ state: "dirty", branch: "main" }) };
     };
     try {
-      vm.runInContext(loadSource(), ctx);
+      runRestoreScripts(ctx);
     } catch (e) {}
     vm.runInContext(`
       options.gitUiEnabled = true;
@@ -476,7 +527,7 @@ describe("git rail status sync", () => {
     const ctx = context();
     ctx.fetch = async () => ({ status: 200, ok: true, json: async () => ({}) });
     try {
-      vm.runInContext(loadSource(), ctx);
+      runRestoreScripts(ctx);
     } catch (e) {}
     vm.runInContext(`
       options.gitUiEnabled = true;
@@ -510,7 +561,7 @@ describe("git rail status sync", () => {
       }),
     });
     try {
-      vm.runInContext(loadSource(), ctx);
+      runRestoreScripts(ctx);
     } catch (e) {}
     vm.runInContext(`
       options.gitUiEnabled = true;
@@ -533,7 +584,7 @@ describe("right sidebar rail active state", () => {
   it("keeps the rail neutral at boot when no panel is hosted despite a remembered files mode", async () => {
     const ctx = context();
     try {
-      vm.runInContext(loadSource(), ctx);
+      runRestoreScripts(ctx);
     } catch (e) {}
     // Boot-clean shape: no workspace selected, empty workspace list, and
     // a persisted files mode from a previous visit. The column holds no
@@ -555,7 +606,7 @@ describe("right sidebar rail active state", () => {
   it("lights the rail once a drawer hosts its panel in the column", async () => {
     const ctx = context();
     try {
-      vm.runInContext(loadSource(), ctx);
+      runRestoreScripts(ctx);
     } catch (e) {}
     vm.runInContext(`
       state.ws = "ws-1";
@@ -586,7 +637,7 @@ describe("right sidebar rail active state", () => {
   it("search result opens fall back to the default folder when no workspace is selected", async () => {
     const ctx = context();
     try {
-      vm.runInContext(loadSource(), ctx);
+      runRestoreScripts(ctx);
     } catch (e) {}
     vm.runInContext(`
       state.ws = null;

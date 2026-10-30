@@ -1,7 +1,11 @@
 import { describe, it } from "node:test";
 import { deepEqual, equal } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// Compiled once so coverage attributes app_boot.js lines to the real file.
+let appBootScript = null;
 
 const SHARED_STYLES = [
   "/assets/shared/colors.css",
@@ -151,10 +155,15 @@ describe("app boot", () => {
     new URL("./app_boot.js", import.meta.url),
     "utf8",
   );
+  // Compiled once so coverage attributes app_boot.js lines to the real file.
+  if (!appBootScript) {
+    const bootPath = fileURLToPath(new URL("./app_boot.js", import.meta.url));
+    appBootScript = new vm.Script(readFileSync(bootPath, "utf8"), { filename: bootPath });
+  }
 
   it("loads desktop bundle by default on wide screens", async () => {
     const { ctx, links, scripts, flushScripts } = context();
-    vm.runInContext(source, ctx);
+    appBootScript.runInContext(ctx);
     await flushScripts();
     equal(ctx.document.documentElement.dataset.herdrLayout, "desktop");
     deepEqual(linkHrefs(links), DESKTOP_STYLES);
@@ -163,7 +172,7 @@ describe("app boot", () => {
 
   it("loads mobile bundle for narrow screens", async () => {
     const { ctx, links, scripts, flushScripts } = context({ mobile: true });
-    vm.runInContext(source, ctx);
+    appBootScript.runInContext(ctx);
     await flushScripts();
     equal(ctx.document.documentElement.dataset.herdrLayout, "mobile");
     deepEqual(linkHrefs(links), MOBILE_STYLES);
@@ -175,7 +184,7 @@ describe("app boot", () => {
       mobile: true,
       preference: "desktop",
     });
-    vm.runInContext(source, ctx);
+    appBootScript.runInContext(ctx);
     await flushScripts();
     equal(ctx.document.documentElement.dataset.herdrLayout, "desktop");
     equal(links[0].href, "/assets/desktop/app.css");
@@ -184,7 +193,7 @@ describe("app boot", () => {
 
   it("reloads to switch layout when auto viewport crosses breakpoint", async () => {
     const env = context({ mobile: false });
-    vm.runInContext(source, env.ctx);
+    appBootScript.runInContext(env.ctx);
     await env.flushScripts();
     equal(env.ctx.document.documentElement.dataset.herdrLayout, "desktop");
     env.setMobile(true);
@@ -194,7 +203,7 @@ describe("app boot", () => {
 
   it("does not reload on viewport change with explicit override", async () => {
     const env = context({ mobile: false, preference: "desktop" });
-    vm.runInContext(source, env.ctx);
+    appBootScript.runInContext(env.ctx);
     await env.flushScripts();
     env.setMobile(true);
     env.triggerMediaChange();
@@ -206,7 +215,7 @@ describe("app boot", () => {
       mobile: true,
       storageThrows: true,
     });
-    vm.runInContext(source, ctx);
+    appBootScript.runInContext(ctx);
     await flushScripts();
 
     equal(ctx.document.documentElement.dataset.herdrLayout, "mobile");

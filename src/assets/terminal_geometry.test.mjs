@@ -1,7 +1,18 @@
 import { describe, it } from "node:test";
 import { equal, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// Compiled once so coverage attributes terminal.js lines to the real file.
+let terminalScript = null;
+function getTerminalScript() {
+  if (!terminalScript) {
+    const terminalPath = fileURLToPath(new URL("./desktop/app_js/terminal.js", import.meta.url));
+    terminalScript = new vm.Script(readFileSync(terminalPath, "utf8"), { filename: terminalPath });
+  }
+  return terminalScript;
+}
 
 // Regression test for the cross-display terminal geometry bug: moving a
 // browser window with an active terminal between monitors (UWQHD@1x ->
@@ -88,10 +99,7 @@ function makeMockTerm(sandbox) {
 }
 
 function loadTerminalModule() {
-  const source = readFileSync(
-    new URL("./desktop/app_js/terminal.js", import.meta.url),
-    "utf8",
-  );
+  const terminalScript = getTerminalScript();
   const sandbox = {
     console,
     setTimeout: (fn, ms) => {
@@ -273,7 +281,7 @@ function loadTerminalModule() {
     sandbox,
     { filename: "core-fragment.js" },
   );
-  vm.runInContext(source, sandbox, { filename: "terminal.js" });
+  terminalScript.runInContext(sandbox);
   const run = (expr) => vm.runInContext(expr, sandbox);
   return {
     sandbox,

@@ -3,13 +3,25 @@
 // flow can be exercised without a full mobile shell.
 import { describe, it, before } from "node:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import vm from "node:vm";
 
+// One compiled script per product file so coverage attributes each file's
+// lines to its real disk path; scripts are built once and reused.
 const source = readFileSync(new URL("./mobile/file_browser.js", import.meta.url), "utf8");
 const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
 const optionsSource = readFileSync(new URL("./shared/options.js", import.meta.url), "utf8");
 const workspaceSearchSource = readFileSync(new URL("./shared/workspace_search.js", import.meta.url), "utf8");
+function productScript(relPath, sourceText) {
+  return new vm.Script(sourceText, {
+    filename: fileURLToPath(new URL(relPath, import.meta.url)),
+  });
+}
+const optionsScript = productScript("./shared/options.js", optionsSource);
+const treeScript = productScript("./shared/file_tree.js", treeSource);
+const workspaceSearchScript = productScript("./shared/workspace_search.js", workspaceSearchSource);
+const fileBrowserScript = productScript("./mobile/file_browser.js", source);
 
 function createModule({ fileContent = "print('hello')", writeResult = {}, writeError = "", renameError = "", deleteError = "", confirmAnswer = true, optionsJson = null, lsp = null, api = null } = {}) {
   const requests = [];
@@ -98,10 +110,10 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
       return { getValue() { return opts.content || ""; }, setValue() {}, destroy() {} };
     },
   };
-  vm.runInNewContext(optionsSource, context);
-  vm.runInNewContext(treeSource, context);
-  vm.runInNewContext(workspaceSearchSource, context);
-  vm.runInNewContext(source, context);
+  optionsScript.runInNewContext(context);
+  treeScript.runInNewContext(context);
+  workspaceSearchScript.runInNewContext(context);
+  fileBrowserScript.runInNewContext(context);
   const deps = {
     api: api || (async (url, opt = {}) => {
       requests.push({ url, opt });

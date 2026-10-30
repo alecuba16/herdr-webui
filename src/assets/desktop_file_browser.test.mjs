@@ -1,9 +1,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
+// One compiled script per product file so coverage attributes each file's
+// lines to its real disk path; scripts are built once and reused.
 const source = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
+const fileBrowserScript = new vm.Script(source, {
+  filename: fileURLToPath(new URL("./desktop/file_browser.js", import.meta.url)),
+});
+const iconScript = new vm.Script(
+  readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8"),
+  { filename: fileURLToPath(new URL("./shared/file_icons.js", import.meta.url)) },
+);
+const treeScript = new vm.Script(
+  readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"),
+  { filename: fileURLToPath(new URL("./shared/file_tree.js", import.meta.url)) },
+);
 
 function makeNode(id = "") {
   const node = {
@@ -105,7 +119,7 @@ function loadFileBrowser() {
   };
   context.window = context;
   context.globalThis = context;
-  vm.runInNewContext(source, context);
+  fileBrowserScript.runInNewContext(context);
   return { context, nodes, remembered, getSearchClosed: () => searchClosed };
 }
 
@@ -350,11 +364,9 @@ function makeFilterDomContext() {
   // The module binds Tree at load time, so the real shared renderer has
   // to be in the context before the module source runs. Reload the
   // module with the real tree in place, keeping the same harness nodes.
-  const iconSource = readFileSync(new URL("./shared/file_icons.js", import.meta.url), "utf8");
-  const treeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
-  vm.runInNewContext(iconSource, context);
-  vm.runInNewContext(treeSource, context);
-  vm.runInNewContext(source, context);
+  iconScript.runInNewContext(context);
+  treeScript.runInNewContext(context);
+  fileBrowserScript.runInNewContext(context);
   // Rows are markup strings in this harness, so row-class assertions run
   // against the panel HTML; the DOM helpers (querySelector) stay stubbed.
   return { context, nodes };

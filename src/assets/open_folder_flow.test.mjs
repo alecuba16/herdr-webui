@@ -8,12 +8,18 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const SOURCE = readFileSync(
   new URL("./desktop/app_js/open_folder_flow.js", import.meta.url),
   "utf8",
 );
+// Compiled once so coverage attributes open_folder_flow.js lines to the real file.
+const OPEN_FOLDER_FLOW_PATH = fileURLToPath(new URL("./desktop/app_js/open_folder_flow.js", import.meta.url));
+const openFolderFlowScript = new vm.Script(readFileSync(OPEN_FOLDER_FLOW_PATH, "utf8"), {
+  filename: OPEN_FOLDER_FLOW_PATH,
+});
 
 function loadFlow(overrides = {}) {
   const calls = { api: [], go: [], blocking: [] };
@@ -52,7 +58,7 @@ function loadFlow(overrides = {}) {
   ctx.window = ctx;
   if (overrides.workspacePath) ctx.HerdrWorkspacePath = overrides.workspacePath;
   const contextObject = vm.createContext(ctx);
-  vm.runInContext(SOURCE, contextObject);
+  openFolderFlowScript.runInContext(contextObject);
   return { ctx, calls };
 }
 

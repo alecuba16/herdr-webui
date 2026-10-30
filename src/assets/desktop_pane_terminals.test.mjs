@@ -6,9 +6,20 @@
 // project dashboard fills the pane slot when no workspace is open
 // (mountDashboardInPane from syncProjectDashboard).
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import vm from "node:vm";
+
+// Compiled once per product file so coverage attributes to the real paths.
+const WORKSPACE_PANES_PATH = fileURLToPath(new URL("./desktop/app_js/workspace_panes.js", import.meta.url));
+const workspacePanesScript = new vm.Script(readFileSync(WORKSPACE_PANES_PATH, "utf8"), {
+  filename: WORKSPACE_PANES_PATH,
+});
+const PANE_TERMINALS_PATH = fileURLToPath(new URL("./desktop/app_js/pane_terminals.js", import.meta.url));
+const paneTerminalsScript = new vm.Script(readFileSync(PANE_TERMINALS_PATH, "utf8"), {
+  filename: PANE_TERMINALS_PATH,
+});
 
 function makeNode(id, className) {
   const node = {
@@ -328,9 +339,9 @@ function loadPanes(document, stateWs) {
   ctx.window = ctx;
   ctx.globalThis = ctx;
   const panesSource = readFileSync(new URL("./desktop/app_js/workspace_panes.js", import.meta.url), "utf8");
-  vm.runInContext(panesSource, vm.createContext(ctx));
+  workspacePanesScript.runInContext(vm.createContext(ctx));
   const auxSource = readFileSync(new URL("./desktop/app_js/pane_terminals.js", import.meta.url), "utf8");
-  vm.runInContext(auxSource, vm.createContext(ctx));
+  paneTerminalsScript.runInContext(vm.createContext(ctx));
   return ctx;
 }
 

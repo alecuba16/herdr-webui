@@ -2,7 +2,17 @@ import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import { doesNotThrow, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+
+// One compiled script per product file so coverage attributes each file's
+// lines to its real disk path.
+const HTTP_SCRIPT = new vm.Script(
+  readFileSync(fileURLToPath(new URL("./shared/http.js", import.meta.url)), "utf8"),
+  {
+    filename: fileURLToPath(new URL("./shared/http.js", import.meta.url)),
+  },
+);
 
 // HerdrHttp is the single shared browser HTTP client. It exists so every
 // surface (desktop core, desktop lazy Git/Files/picker/LSP modules, mobile)
@@ -24,10 +34,7 @@ function createContext({ fetchImpl } = {}) {
 }
 
 function loadHttp(context) {
-  vm.runInContext(
-    readFileSync(new URL("./shared/http.js", import.meta.url), "utf8"),
-    context,
-  );
+  HTTP_SCRIPT.runInContext(context);
   return context.HerdrHttp;
 }
 
