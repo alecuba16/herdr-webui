@@ -6794,6 +6794,190 @@ async fn session_snapshot_includes_order_and_worktree_results() {
     let _ = fs::remove_file(socket);
 }
 
+// The snapshot stamps `worktree` metadata onto workspace rows from the same
+// worktree.list results it ships as worktree_results. The builtin backend
+// never sends the stamp (external herdr does), so without this the location
+// bar worktree chip, sidebar repo grouping, and agent repo attribution stay
+// blind on builtin sessions. The main-vs-linked call comes from the row
+// path vs the source repo root because the builtin marks every row linked.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_stamps_workspace_worktree_metadata() {
+    let (socket, handle, _rx) = fake_api_socket_multi_recording(vec![
+        json!({
+            "result": {
+                "snapshot": {
+                    "workspaces": [
+                        { "workspace_id": "ws_main", "label": "main", "cwd": "/tmp/stamp-repo" },
+                        { "workspace_id": "ws_lane", "label": "lane", "cwd": "/tmp/stamp-repo-lane" },
+                        { "workspace_id": "ws_plain", "label": "plain", "cwd": "/tmp/stamp-plain" }
+                    ],
+                    "tabs": [],
+                    "panes": []
+                },
+                "type": "session_snapshot"
+            }
+        }),
+        json!({ "match_cwd": "/tmp/stamp-repo", "result": {
+            "worktrees": [
+                { "path": "/tmp/stamp-repo", "branch": "main", "is_linked_worktree": true },
+                { "path": "/tmp/stamp-repo-lane", "branch": "lane", "is_linked_worktree": true }
+            ],
+            "source": { "repo_key": "/tmp/stamp-repo", "repo_root": "/tmp/stamp-repo", "repo_name": "stamp-repo" }
+        } }),
+        json!({ "match_cwd": "/tmp/stamp-repo-lane", "result": {
+            "worktrees": [
+                { "path": "/tmp/stamp-repo", "branch": "main", "is_linked_worktree": true },
+                { "path": "/tmp/stamp-repo-lane", "branch": "lane", "is_linked_worktree": true }
+            ],
+            "source": { "repo_key": "/tmp/stamp-repo", "repo_root": "/tmp/stamp-repo", "repo_name": "stamp-repo" }
+        } }),
+        json!({ "match_cwd": "/tmp/stamp-plain", "result": {
+            "worktrees": [],
+            "source": { "repo_key": "/tmp/stamp-plain", "repo_root": "/tmp/stamp-plain", "repo_name": "stamp-plain" }
+        } }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let workspaces = body["result"]["snapshot"]["workspaces"].as_array().unwrap();
+    let by_id = |id: &str| {
+        workspaces
+            .iter()
+            .find(|w| w["workspace_id"] == id)
+            .unwrap_or_else(|| panic!("workspace {id} missing"))
+    };
+    // Main checkout: row path equals the repo root, so the builtin's
+    // all-rows-linked flag must not leak through.
+    let main = by_id("ws_main")["worktree"].clone();
+    assert_eq!(
+        main["is_linked_worktree"], false,
+        "main checkout is not linked"
+    );
+    assert_eq!(main["repo_root"], "/tmp/stamp-repo");
+    assert_eq!(main["repo_key"], "/tmp/stamp-repo");
+    assert_eq!(main["repo_name"], "stamp-repo");
+    assert_eq!(main["checkout_path"], "/tmp/stamp-repo");
+    assert_eq!(main["branch"], "main");
+    // Linked worktree: same repo identity, checkout away from the root.
+    let lane = by_id("ws_lane")["worktree"].clone();
+    assert_eq!(lane["is_linked_worktree"], true, "lane checkout is linked");
+    assert_eq!(lane["repo_root"], "/tmp/stamp-repo");
+    assert_eq!(lane["checkout_path"], "/tmp/stamp-repo-lane");
+    assert_eq!(lane["branch"], "lane");
+    // A workspace whose worktree.list returns no matching row (plain
+    // folder, failed probe) keeps no stamp, matching the pre-stamp shape
+    // every frontend consumer already tolerates.
+    assert!(
+        by_id("ws_plain").get("worktree").is_none(),
+        "plain folder stays unstamped"
+    );
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+// A backend stamp (external herdr ships its own `worktree` object) must
+// survive the wrapper's stamping pass verbatim: only rows missing the
+// key are stamped.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_snapshot_keeps_backend_provided_worktree_stamp() {
+    let (socket, handle, _rx) = fake_api_socket_multi_recording(vec![
+        json!({
+            "result": {
+                "snapshot": {
+                    "workspaces": [
+                        { "workspace_id": "ws_ext", "label": "ext", "cwd": "/tmp/ext-repo",
+                          "worktree": { "repo_key": "ext-key", "repo_root": "ext-root", "repo_name": "ext",
+                                        "checkout_path": "ext-checkout", "is_linked_worktree": true, "branch": "ext-branch" } }
+                    ],
+                    "tabs": [],
+                    "panes": []
+                },
+                "type": "session_snapshot"
+            }
+        }),
+        json!({ "match_cwd": "/tmp/ext-repo", "result": {
+            "worktrees": [ { "path": "/tmp/ext-repo", "branch": "wrapper-branch" } ],
+            "source": { "repo_key": "/tmp/ext-repo", "repo_root": "/tmp/ext-repo", "repo_name": "ext-repo" }
+        } }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/session-snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let stamp = &body["result"]["snapshot"]["workspaces"][0]["worktree"];
+    assert_eq!(
+        stamp["repo_key"], "ext-key",
+        "backend stamp is not clobbered"
+    );
+    assert_eq!(stamp["branch"], "ext-branch");
+    assert_eq!(stamp["checkout_path"], "ext-checkout");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
+// /api/workspaces (the legacy refresh path when the snapshot bootstrap
+// failed once) stamps the same worktree metadata, so the location bar
+// and sidebar do not depend on which refresh path ran.
+#[cfg(unix)]
+#[tokio::test]
+async fn workspaces_handler_stamps_worktree_metadata() {
+    let (socket, handle) = fake_api_socket_multi(vec![
+        json!({ "result": { "workspaces": [
+            { "workspace_id": "ws_lane", "label": "lane", "cwd": "/tmp/legacy-repo-lane" }
+        ] } }),
+        json!({ "result": { "panes": [] } }),
+        json!({ "result": {
+            "worktrees": [ { "path": "/tmp/legacy-repo-lane", "branch": "lane", "is_linked_worktree": true } ],
+            "source": { "repo_key": "/tmp/legacy-repo", "repo_root": "/tmp/legacy-repo", "repo_name": "legacy-repo" }
+        } }),
+    ]);
+    let mut state = test_state();
+    state.api_socket = Some(socket.clone());
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            authed_request(Method::GET, "/api/workspaces")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let stamp = &body["result"]["workspaces"][0]["worktree"];
+    assert_eq!(stamp["is_linked_worktree"], true);
+    assert_eq!(stamp["repo_root"], "/tmp/legacy-repo");
+    assert_eq!(stamp["repo_name"], "legacy-repo");
+    assert_eq!(stamp["checkout_path"], "/tmp/legacy-repo-lane");
+    assert_eq!(stamp["branch"], "lane");
+    handle.join().unwrap();
+    let _ = fs::remove_file(socket);
+}
+
 // A worktree.list failure (backend error response) must not break the rest of
 // the snapshot: the entry becomes null, the same tolerance the frontend's
 // legacy per-workspace catch() had, and the other workspace keeps its rows.

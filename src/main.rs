@@ -3371,6 +3371,7 @@ async fn workspaces(
         return response;
     }
     let api = api_for_headers_ensured(&state, &headers).await;
+    let worktree_cache = state.worktree_list_cache.clone();
     // request_value() does blocking socket I/O; offload to a blocking thread
     // so it does not stall the async runtime (and active WebSocket loops).
     match tokio::task::spawn_blocking(move || {
@@ -3380,6 +3381,39 @@ async fn workspaces(
             Ok(mut value) => {
                 if let Ok(panes) = api.request_value(json!({ "id": "web:pane:list:workspace-cwds", "method": "pane.list", "params": { "workspace_id": null } })) {
                     enrich_workspace_cwds(&mut value, &panes);
+                }
+                // Same worktree stamp the snapshot path puts on workspace
+                // rows, so the legacy refresh path (snapshot bootstrap
+                // failed once) renders the same location bar and sidebar
+                // grouping instead of a bar missing its worktree chip.
+                // Shares the snapshot's cache, so a snapshot that just ran
+                // serves these from it without new git round trips.
+                if let Some(workspaces_value) = value.pointer_mut("/result/workspaces") {
+                    let unique_cwds: Vec<(String, Option<String>)> = {
+                        let mut seen = HashSet::new();
+                        workspaces_value
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|workspace| {
+                                (
+                                    workspace
+                                        .get("workspace_id")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    workspace
+                                        .get("cwd")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(expand_user_path_string),
+                                )
+                            })
+                            .filter(|(_, cwd)| seen.insert(cwd.clone()))
+                            .collect()
+                    };
+                    let cwd_results =
+                        fetch_worktree_results_by_cwd(&api, &worktree_cache, &unique_cwds);
+                    stamp_workspace_worktrees(workspaces_value, &cwd_results);
                 }
                 Ok(value)
             }
@@ -3570,6 +3604,179 @@ impl WorktreeListCache {
     }
 }
 
+/// One `worktree.list` per unique cwd, fetched in parallel through the
+/// shared short-TTL cache: before this helper existed, N workspaces paid
+/// N sequential git round trips (~0.5s at 12) per snapshot. Parallel on
+/// purpose: each fetch opens its own backend socket, so spawned threads
+/// never share framing state. Returns the response per cwd (None when
+/// the backend errored); callers decide how misses degrade.
+fn fetch_worktree_results_by_cwd(
+    api: &ApiClient,
+    worktree_cache: &WorktreeListCache,
+    unique_cwds: &[(String, Option<String>)],
+) -> HashMap<Option<String>, Option<serde_json::Value>> {
+    let (tx, rx) = mpsc::channel::<(Option<String>, Option<serde_json::Value>)>();
+    let missing: Vec<(String, Option<String>)> = unique_cwds
+        .iter()
+        .filter(|(_, cwd)| {
+            if let Some(hit) = worktree_cache.get(cwd) {
+                tx.send((cwd.clone(), Some(hit.value.clone())))
+                    .expect("worktree cache receiver alive");
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        std::thread::scope(|scope| {
+            for (workspace_id, cwd) in &missing {
+                let tx = tx.clone();
+                let cwd = cwd.clone();
+                let workspace_id = workspace_id.clone();
+                scope.spawn(move || {
+                    // One id per unique cwd: backends keying sessions by
+                    // workspace still see a real id.
+                    let request = json!({
+                        "id": "web:worktree:list:snapshot",
+                        "method": "worktree.list",
+                        "params": { "workspace_id": workspace_id, "cwd": cwd },
+                    });
+                    let response = match api.request_value(request) {
+                        Ok(response) if response.get("error").is_none() => {
+                            // Only real paths are cache keys; a null
+                            // cwd resolves against the unstable process cwd.
+                            if let Some(cwd_key) = &cwd {
+                                worktree_cache.put(cwd_key, response.clone());
+                            }
+                            Some(response)
+                        }
+                        _ => None,
+                    };
+                    tx.send((cwd, response))
+                        .expect("worktree fetch receiver alive");
+                });
+            }
+        });
+    }
+    drop(tx);
+    rx.into_iter().collect()
+}
+
+/// Stamp `worktree` metadata onto workspace rows from per-cwd
+/// `worktree.list` responses (the same envelope the wrapper ships as
+/// `worktree_results`: `{result: {worktrees, source}}`). Mirrors the
+/// stamp the external herdr backend puts on its workspace rows, so
+/// builtin sessions get the identical shape:
+/// `{repo_key, repo_root, repo_name, checkout_path, is_linked_worktree,
+/// branch}`. Only rows missing the key are stamped (external rows keep
+/// their backend-provided stamp verbatim).
+///
+/// Linked-vs-main cannot come from the row flag: the builtin backend
+/// marks every `worktree list` row `is_linked_worktree: true`, main
+/// checkout included, so the check is `row path != source repo_root`
+/// (the repo root the same response reports). A workspace whose cwd
+/// matches no row (failed fetch, plain folder, mid-creation checkout)
+/// keeps no stamp, which is exactly the pre-stamp behavior the frontend
+/// already handles.
+fn stamp_workspace_worktrees(
+    workspaces: &mut serde_json::Value,
+    cwd_results: &HashMap<Option<String>, Option<serde_json::Value>>,
+) {
+    let Some(rows) = workspaces.as_array_mut() else {
+        return;
+    };
+    for workspace in rows.iter_mut() {
+        if workspace.get("worktree").is_some() {
+            continue;
+        }
+        let Some(cwd) = workspace
+            .get("cwd")
+            .and_then(serde_json::Value::as_str)
+            .map(expand_user_path_string)
+        else {
+            continue;
+        };
+        let Some(response) = cwd_results.get(&Some(cwd.clone())).cloned().flatten() else {
+            continue;
+        };
+        let source = response.pointer("/result/source");
+        let repo_root = source
+            .and_then(|source| source.get("repo_root"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let Some(row) = response
+            .pointer("/result/worktrees")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|worktrees| {
+                worktrees.iter().find(|row| {
+                    row.get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|path| same_checkout_path(path, &cwd))
+                })
+            })
+            .cloned()
+        else {
+            continue;
+        };
+        let checkout_path = row
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&cwd)
+            .to_string();
+        let is_linked_worktree = match &repo_root {
+            Some(repo_root) => !same_checkout_path(&checkout_path, repo_root),
+            // Without a repo root the main-vs-linked call is unknowable;
+            // the builtin always sends one, so this only guards a
+            // malformed response, and claiming linked is the safer
+            // wrong answer (a plain workspace just renders as before).
+            None => true,
+        };
+        let branch = row
+            .get("branch")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        if let Some(object) = workspace.as_object_mut() {
+            object.insert(
+                "worktree".to_string(),
+                json!({
+                    "repo_key": source
+                        .and_then(|source| source.get("repo_key"))
+                        .and_then(serde_json::Value::as_str)
+                        .or(repo_root.as_deref())
+                        .unwrap_or(&checkout_path),
+                    "repo_root": repo_root.clone().unwrap_or_else(|| checkout_path.clone()),
+                    "repo_name": source
+                        .and_then(|source| source.get("repo_name"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_default(),
+                    "checkout_path": checkout_path,
+                    "is_linked_worktree": is_linked_worktree,
+                    "branch": branch,
+                }),
+            );
+        }
+    }
+}
+
+/// Path equality for git checkouts: exact first, then canonicalized on
+/// both sides so a workspace opened through one spelling of a symlinked
+/// prefix (/tmp vs /private/tmp on macOS) still matches the row git
+/// reports under the other spelling. Canonicalize failures fall back to
+/// the exact comparison result.
+fn same_checkout_path(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    let canonical = |path: &str| std::fs::canonicalize(path).ok();
+    match (canonical(left), canonical(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn enrich_session_snapshot(
     value: &mut serde_json::Value,
     workspace_order: &[String],
@@ -3663,56 +3870,8 @@ fn enrich_session_snapshot(
             .cloned()
             .collect()
     };
-    let cwd_results: HashMap<Option<String>, Option<serde_json::Value>> = {
-        let cache = worktree_cache;
-        let (tx, rx) = mpsc::channel::<(Option<String>, Option<serde_json::Value>)>();
-        let missing: Vec<(String, Option<String>)> = unique_cwds
-            .iter()
-            .filter(|(_, cwd)| {
-                if let Some(hit) = cache.get(cwd) {
-                    tx.send((cwd.clone(), Some(hit.value.clone())))
-                        .expect("worktree cache receiver alive");
-                    false
-                } else {
-                    true
-                }
-            })
-            .cloned()
-            .collect();
-        if !missing.is_empty() {
-            std::thread::scope(|scope| {
-                for (workspace_id, cwd) in &missing {
-                    let tx = tx.clone();
-                    let cwd = cwd.clone();
-                    let workspace_id = workspace_id.clone();
-                    scope.spawn(move || {
-                        // One id per unique cwd: backends keying sessions by
-                        // workspace still see a real id.
-                        let request = json!({
-                            "id": "web:worktree:list:snapshot",
-                            "method": "worktree.list",
-                            "params": { "workspace_id": workspace_id, "cwd": cwd },
-                        });
-                        let response = match api.request_value(request) {
-                            Ok(response) if response.get("error").is_none() => {
-                                // Only real paths are cache keys; a null
-                                // cwd resolves against the unstable process cwd.
-                                if let Some(cwd_key) = &cwd {
-                                    cache.put(cwd_key, response.clone());
-                                }
-                                Some(response)
-                            }
-                            _ => None,
-                        };
-                        tx.send((cwd, response))
-                            .expect("worktree fetch receiver alive");
-                    });
-                }
-            });
-        }
-        drop(tx);
-        rx.into_iter().collect()
-    };
+    let cwd_results: HashMap<Option<String>, Option<serde_json::Value>> =
+        fetch_worktree_results_by_cwd(api, worktree_cache, &unique_cwds);
     for (workspace_id, cwd) in &workspace_ids {
         // Backend-level errors stay null entries, matching the legacy
         // per-workspace fetch where /api/worktrees returned 502 and the
@@ -3749,6 +3908,17 @@ fn enrich_session_snapshot(
         // desktop and mobile reuse their existing per-request parsing on
         // each entry unchanged.
         worktree_results.push(response);
+    }
+    // Stamp worktree metadata onto the workspace rows from the results
+    // just fetched: the external herdr backend ships `worktree` on every
+    // workspace row, but the builtin backend never does, so every
+    // workspace-scoped surface (location bar worktree chip, sidebar repo
+    // grouping, agent repo attribution) went blind on builtin sessions.
+    // Computed here, where the per-cwd worktree.list data already flows,
+    // so both backends end up with the same shape and neither pays an
+    // extra git round trip.
+    if let Some(workspaces_value) = value.pointer_mut(&format!("{base}/workspaces")) {
+        stamp_workspace_worktrees(workspaces_value, &cwd_results);
     }
     // Derived maps from the UNFILTERED arrays (computed before the
     // workspace_id filter narrows them): workspaces_by_id replaces the
