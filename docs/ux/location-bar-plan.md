@@ -320,3 +320,17 @@ Desktop ships when all hold:
    flows with no folder, branch, or worktree selector left in it.
 7. Full frontend suite green; `cargo fmt --check` and `cargo clippy
    --all-targets` green; the phase 5 manual smoke list passes.
+
+## Deferred follow-ups
+
+Agreed after the review round, deliberately out of scope for this arc:
+
+- [ ] Cwd-keyed git-facts store: the bar fetches its own facts and the
+      drawer caches its own; a shared per-cwd store would deduplicate and
+      keep invalidation in one place.
+- [ ] Popover controller extraction: the branch and worktree popover
+      share open/fetch/stale-guard mechanics that could live in one
+      controller module, with the `location_bar.js` name reviewed against
+      its now wider surface.
+- [ ] Shared eager chip stylesheet: the bar loads its styles eagerly, the
+      drawer loads its own; one shared sheet would drop the duplication.
