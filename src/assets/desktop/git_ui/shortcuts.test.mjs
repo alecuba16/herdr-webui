@@ -291,4 +291,31 @@ describe("git_ui shortcuts: Escape contract", () => {
     shortcuts.handleKeydown(after);
     equal(after._stopped, undefined, "released once the active tab is the terminal");
   });
+
+  it("yields the keyboard to an open location-bar popover", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const { shortcuts, calls } = makeShortcuts(ctx);
+    // The bar's popovers render inside the header, outside the git roots.
+    // While one is up the drawer must not consume Escape (which would
+    // navigate or hide the drawer instead of closing the popover) nor
+    // Enter (which drives the new-branch field).
+    let popover = null;
+    ctx.document.querySelector = (selector) => (
+      selector === ".location-bar-branch-popover" || selector === ".location-bar-worktree-popover"
+        ? popover
+        : null
+    );
+
+    popover = {};
+    const escWhileOpen = keyEvent();
+    shortcuts.handleKeydown(escWhileOpen);
+    equal(escWhileOpen._stopped, undefined, "Escape reaches the bar's document-capture handler");
+    equal(calls.hides, 0, "drawer keeps its state while the popover owns the keyboard");
+
+    popover = null;
+    const escAfterClose = keyEvent();
+    shortcuts.handleKeydown(escAfterClose);
+    ok(escAfterClose._stopped, "drawer owns Escape again once the popover is gone");
+  });
 });

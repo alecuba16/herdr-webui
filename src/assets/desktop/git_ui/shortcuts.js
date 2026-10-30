@@ -65,8 +65,26 @@
         (m) => m.style.display && m.style.display !== "none",
       );
     }
+    function locationBarPopoverOpen() {
+      // The location bar renders its branch/worktree popovers inside the
+      // header bar, outside the git UI roots. While one is up, its own
+      // document-capture handler owns the keyboard (Escape closes the
+      // popover, Enter drives the new-branch field). This listener runs on
+      // window capture, ahead of that handler no matter registration
+      // order, so it must yield instead of consuming keys aimed at the
+      // popover.
+      if (typeof document.querySelector !== "function") return false;
+      return !!(
+        document.querySelector(".location-bar-branch-popover")
+        || document.querySelector(".location-bar-worktree-popover")
+      );
+    }
     function handleKeydown(event) {
       if (!visible() || !event) return;
+      // a location-bar popover owns the keyboard while it is open; keys
+      // must reach its handlers so Escape can close it and Enter can
+      // submit the new-branch field.
+      if (locationBarPopoverOpen()) return;
       // a global app overlay (confirm dialogs, settings, palette) owns the
       // keyboard while it is up; muting keys here would strand Escape and
       // lock the user inside the overlay.

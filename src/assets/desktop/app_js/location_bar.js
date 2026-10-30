@@ -587,10 +587,10 @@
       if (bar.branchList && !eventInsideBranchPopover(event)) closeBranchPopover();
       if (bar.worktreeList && !eventInsideWorktreePopover(event)) closeWorktreePopover();
     });
-    // Esc closes any open popover from anywhere. Capture phase: the drawer's
-    // own capture handler consumes Escape while it is visible, and the bar
-    // registered first, so the bar sees the key first when its popover is
-    // the open surface.
+    // Esc closes any open popover from anywhere. Document capture: the
+    // drawer's keyboard handler runs on window capture, ahead of this
+    // listener, so it yields first when a bar popover is open (its
+    // locationBarPopoverOpen check) and the bar sees the key here.
     document.addEventListener(
       "keydown",
       (event) => {

@@ -13,7 +13,7 @@
 // worktree stamp), and the disabled branch chip while facts are unknown.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { equal, match, ok } from "node:assert/strict";
+import { deepEqual, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
@@ -751,5 +751,96 @@ describe("location bar worktree popover", () => {
 
     keydown.listener({ key: "a", stopPropagation() {}, preventDefault() {} });
     ok(true, "other keys pass through the handler untouched");
+  });
+
+  it("drawer yield and bar dismissal agree in real propagation order", async () => {
+    // Reproduces the handler chain the served bundle installs: the drawer
+    // shortcut handler on window capture runs before the bar's document
+    // capture listener. Dispatch drives that order; the drawer must yield
+    // while a popover is open so Escape closes the popover only, and Enter
+    // must survive to the new-branch field's handler.
+    const listeners = [];
+    const routes = {
+      "/api/worktrees": { result: { worktrees: WORKTREES } },
+      "/api/git-ui/branches": { local: [{ name: "main", current: true }], remote: [] },
+    };
+    const { ctx, bar } = loadWorktreePopover({ routes, listeners });
+    const doc = ctx.document;
+    doc.querySelector = (selector) => {
+      if (selector === ".location-bar-branch-popover")
+        return bar.innerHTML.includes("location-bar-branch-popover") ? {} : null;
+      if (selector === ".location-bar-worktree-popover")
+        return bar.innerHTML.includes("location-bar-worktree-popover") ? {} : null;
+      return null;
+    };
+
+    // Drawer side, minimal state: visible changes list, empty nav stack.
+    // With no popover open, Escape would hide the drawer through the
+    // confirm; with a popover open it must not.
+    const drawerSource = readFileSync(
+      new URL("./desktop/git_ui/shortcuts.js", import.meta.url),
+      "utf8",
+    );
+    const drawer = vm.createContext({
+      document: {
+        querySelector: doc.querySelector,
+        querySelectorAll: () => [],
+      },
+      HerdrAppHelpers: { escapeHtml: (value) => String(value) },
+    });
+    drawer.globalThis = drawer;
+    drawer.window = drawer;
+    vm.runInContext(drawerSource, drawer);
+    let drawerHides = 0;
+    const drawerCalls = [];
+    const shortcuts = drawer.HerdrGitUiShortcuts.create({
+      state: { visible: true, shortcutPrefixUntil: 0 },
+      render() {},
+      active: () => ({ tab: "changes", navigationStack: [], file: null, sideEditor: null }),
+      currentMode: () => "changes",
+      gitUiOptions: () => ({}),
+      explorationDefaultDirectory: () => "",
+      canSearchDiff: () => false,
+      canEditCurrentFile: () => false,
+      saveDraftFromDom() {},
+      hide() { drawerHides += 1; },
+      confirmFn(question) { drawerCalls.push(question); return true; },
+      alertFn() {},
+      getGitUi() { return { goBack() {}, showChangesList() {} }; },
+    });
+
+    const keydown = listeners.find((entry) => entry.type === "keydown");
+    function dispatch(event) {
+      // window capture first, then document capture, matching the DOM.
+      shortcuts.handleKeydown(event);
+      if (!event._stopped) keydown.listener(event);
+    }
+
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes("location-bar-branch-popover"), "branch popover is open");
+
+    const esc = { key: "Escape", _stopped: false, defaultPrevented: false, stopPropagation() { this._stopped = true; }, preventDefault() { this.defaultPrevented = true; }, target: { closest: () => null } };
+    dispatch(esc);
+    equal(drawerHides, 0, "drawer did not consume Escape or hide while the popover owned the keyboard");
+    ok(!bar.innerHTML.includes("location-bar-branch-popover"), "popover closed on Escape");
+    ok(esc._stopped && esc.defaultPrevented, "bar consumed the Escape after the drawer yielded");
+
+    // Escape with no popover open still reaches the drawer.
+    const escAfter = { key: "Escape", _stopped: false, defaultPrevented: false, stopPropagation() { this._stopped = true; }, preventDefault() { this.defaultPrevented = true; }, target: { closest: () => null } };
+    shortcuts.handleKeydown(escAfter);
+    if (!escAfter._stopped) keydown.listener(escAfter);
+    equal(drawerHides, 1, "drawer owns Escape again once no popover is open");
+    deepEqual(drawerCalls, ["Hide Git UI?"], "hide path went through the confirm");
+
+    // Enter aimed at the new-branch field while the popover is open: the
+    // drawer must let it reach the field handler, which submits a create.
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ctx.HerdrLocationBar.newBranchDraft("lane-2");
+    const enter = { key: "Enter", _stopped: false, defaultPrevented: false, stopPropagation() { this._stopped = true; }, preventDefault() { this.defaultPrevented = true; }, target: { closest: () => null } };
+    dispatch(enter);
+    equal(enter._stopped, false, "drawer yielded on Enter, no mute before the field handler");
+    ctx.HerdrLocationBar.newBranchKeydown(enter);
+    ok(enter.defaultPrevented, "the field handler consumed Enter for the create submit");
   });
 });
