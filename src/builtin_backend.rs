@@ -9957,20 +9957,41 @@ mod tests {
             .handle_request_inner("worktree.list", json!({ "cwd": lane.to_string_lossy() }))
             .unwrap();
 
-        let repo_str = repo.to_string_lossy().to_string();
-        let lane_str = lane.to_string_lossy().to_string();
-        assert_eq!(result["source"]["repo_root"], json!(repo_str));
-        assert_eq!(result["source"]["repo_key"], json!(repo_str));
+        // git canonicalizes the temp path on macOS (/var/folders is a
+        // symlink to /private/var/folders), so the porcelain rows and the
+        // derived repo identity carry the canonical spelling while the
+        // raw creation path carries the /var spelling. The identity rule
+        // under test: run from inside the lane, repo root must be the
+        // main repo (porcelain first row), not the lane itself.
+        let lane_canonical = lane.canonicalize().unwrap();
+        let repo_canonical = repo.canonicalize().unwrap();
+        assert_eq!(
+            result["source"]["repo_root"],
+            json!(repo_canonical.to_string_lossy().to_string())
+        );
+        assert_eq!(
+            result["source"]["repo_key"],
+            json!(repo_canonical.to_string_lossy().to_string())
+        );
         assert_eq!(result["source"]["repo_name"], "repo");
-        assert_eq!(result["source"]["source_checkout_path"], json!(lane_str));
+        assert_eq!(
+            result["source"]["source_checkout_path"],
+            json!(lane.to_string_lossy().to_string())
+        );
         let paths: Vec<&str> = result["worktrees"]
             .as_array()
             .unwrap()
             .iter()
             .map(|row| row["path"].as_str().unwrap())
             .collect();
-        assert!(paths.contains(&repo_str.as_str()), "main row present");
-        assert!(paths.contains(&lane_str.as_str()), "lane row present");
+        assert!(
+            paths.contains(&repo_canonical.to_string_lossy().to_string().as_str()),
+            "main row present"
+        );
+        assert!(
+            paths.contains(&lane_canonical.to_string_lossy().to_string().as_str()),
+            "lane row present"
+        );
         fs::remove_dir_all(&scratch).ok();
     }
 

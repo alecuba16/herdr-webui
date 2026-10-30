@@ -1534,30 +1534,44 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
 
-        // Plain path: unchanged (parent canonicalized, name kept).
+        // Plain path: unchanged (parent canonicalized, name kept). The
+        // parent's canonical form differs from the literal temp path on
+        // macOS runners (/var/folders -> /private/var/folders), so pin
+        // against the canonicalized parent joined with the name.
         let plain = base.join("plain");
-        assert_eq!(resolve_path(&plain), plain);
+        let plain_expected = fs::canonicalize(&base).unwrap().join("plain");
+        assert_eq!(resolve_path(&plain), plain_expected);
 
-        // Absolute symlink: resolved to its target.
+        // Absolute symlink: resolved to its target. The link stores the
+        // raw spelling, so the walk lands on it verbatim (on CI runners
+        // /var/folders vs /private/var/folders differs, and that exact
+        // spelling is what the function must return).
         let target = base.join("target");
         fs::write(&target, "x").unwrap();
         let link = base.join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert_eq!(resolve_path(&link), target);
 
-        // Relative symlink: resolved against the link's directory.
+        // Relative symlink: resolved against the link's canonicalized
+        // parent, so the landed spelling carries the canonical prefix.
         let rel = base.join("rel");
         std::os::unix::fs::symlink("target", &rel).unwrap();
-        assert_eq!(resolve_path(&rel), target);
+        assert_eq!(
+            resolve_path(&rel),
+            fs::canonicalize(&base).unwrap().join("target")
+        );
 
         // A dangling link keeps pointing at the (missing) target so the
         // copy recreates the destination instead of clobbering the link.
+        // The stored absolute target echoes back verbatim, raw spelling.
         let dangling = base.join("dangling");
         let missing_target = base.join("missing");
         std::os::unix::fs::symlink(&missing_target, &dangling).unwrap();
         assert_eq!(resolve_path(&dangling), missing_target);
 
-        // A link loop must not spin: the bound stops the walk.
+        // A link loop must not spin: the bound stops the walk. The
+        // stored targets are absolute raw spellings, so the landing
+        // point is one of the raw spellings.
         let loop_a = base.join("loop-a");
         let loop_b = base.join("loop-b");
         std::os::unix::fs::symlink(&loop_b, &loop_a).unwrap();
