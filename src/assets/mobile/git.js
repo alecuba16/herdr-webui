@@ -3,12 +3,17 @@
     state,
     api,
     render,
+    el,
     escapeHtml,
     inputAttrs,
     jsArg,
     pathBasename,
     currentWorkspaceCwd,
     confirmFn,
+    // Routes a checked-out-elsewhere branch row to the sibling checkout:
+    // the app wires this to openFolderAsWorkspace so the branch sheet can
+    // hand the user to the worktree that already holds the branch.
+    rerouteToWorktreeFn,
   }) {
     async function loadGitStatus() {
       const cwd = currentWorkspaceCwd();
@@ -237,6 +242,220 @@
       });
     }
 
+    // ---- Branch sheet (location strip parity surface) ----
+    // The strip's branch pill opens this sheet. It keeps its own state
+    // separate from the Git screen's inline branch list: the sheet pins
+    // the cwd it was opened for, so a workspace switch mid-flight can
+    // never land a switch on the wrong checkout, and it carries the
+    // create-branch draft the inline list does not have.
+    const branchSheet = {
+      open: false,
+      cwd: "",
+      loading: false,
+      branches: null,
+      error: "",
+      newBranch: "",
+      creating: false,
+    };
+
+    function branchSheetStale() {
+      return !branchSheet.open || branchSheet.cwd !== currentWorkspaceCwd();
+    }
+
+    async function openBranchSheet() {
+      const cwd = currentWorkspaceCwd();
+      if (!cwd) return;
+      branchSheet.open = true;
+      branchSheet.cwd = cwd;
+      branchSheet.loading = true;
+      branchSheet.branches = null;
+      branchSheet.error = "";
+      branchSheet.newBranch = "";
+      branchSheet.creating = false;
+      render();
+      try {
+        branchSheet.branches = await api(
+          "/api/git-ui/branches?cwd=" + encodeURIComponent(cwd),
+        );
+        branchSheet.loading = false;
+      } catch (error) {
+        branchSheet.error = error.message || String(error);
+        branchSheet.loading = false;
+      }
+      // A workspace switch mid-flight dismisses the sheet on the next
+      // render (pinned-cwd check below); landing data for the old
+      // checkout then re-renders into a closed sheet, which is a no-op.
+      render();
+    }
+
+    function closeBranchSheet() {
+      branchSheet.open = false;
+      branchSheet.branches = null;
+      branchSheet.error = "";
+      branchSheet.newBranch = "";
+      branchSheet.creating = false;
+      const container = el("mobileBranchSheet");
+      const backdrop = el("mobileBranchBackdrop");
+      if (container) container.hidden = true;
+      if (backdrop) backdrop.hidden = true;
+      render();
+    }
+
+    function setBranchCreateName(value) {
+      branchSheet.newBranch = String(value || "");
+    }
+
+    // The branches payload stamps each branch with the worktree folder
+    // it is checked out in. A folder other than the sheet's own cwd
+    // means git will refuse a plain switch there; the row reroutes the
+    // user to that checkout through the folder-change flow instead.
+    function branchCheckoutPath(branches, localName) {
+      const rows = (branches && branches.local) || [];
+      for (const branch of rows) {
+        if (!branch || branch.remote) continue;
+        if (String(branch.name || "") !== String(localName)) continue;
+        const path = String(branch.worktree_path || "");
+        return path ? path : "";
+      }
+      return "";
+    }
+
+    function samePath(a, b) {
+      return String(a || "").replace(/\/+$/, "") === String(b || "").replace(/\/+$/, "");
+    }
+
+    async function switchBranchFromSheet(name) {
+      if (!name || state.gitMutating || branchSheetStale()) return;
+      const localName = String(name);
+      const current = String(((branchSheet.branches || {}).local || []).find((branch) => branch && branch.current && branch.name) || {}).name || "";
+      if (localName === current) {
+        closeBranchSheet();
+        return;
+      }
+      const checkout = branchCheckoutPath(branchSheet.branches, localName);
+      if (checkout && !samePath(checkout, branchSheet.cwd)) {
+        // Checked out in another worktree: hand the user to that folder
+        // through the same route the worktree sheet rows use. No switch
+        // POST happens; git would refuse it anyway.
+        const reroute = typeof rerouteToWorktreeFn === "function" ? rerouteToWorktreeFn : null;
+        if (!reroute) {
+          branchSheet.error = "Folder switching is unavailable.";
+          render();
+          return;
+        }
+        if (!(await confirmFn(`Switch to branch ${localName} in its worktree?`))) return;
+        closeBranchSheet();
+        try {
+          await reroute(checkout);
+        } catch (error) {
+          state.gitError = error.message || String(error);
+          render();
+        }
+        return;
+      }
+      if (!(await confirmFn(`Switch to branch ${localName}?`))) return;
+      await gitMutate("Switching branch", async (cwd) => {
+        await api("/api/git-ui/switch", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cwd, branch: localName }),
+        });
+        state.gitBranches = null;
+        closeBranchSheet();
+        await loadGitStatus();
+      });
+    }
+
+    // New branch stays in the same workspace: the switch endpoint with
+    // create:true checks out a new branch at the given base, same
+    // contract as the desktop bar's create row.
+    async function createBranchFromSheet() {
+      if (branchSheetStale() || branchSheet.creating || state.gitMutating) return;
+      const name = String(branchSheet.newBranch || "").trim();
+      if (!name) {
+        branchSheet.error = "Branch name is required.";
+        render();
+        return;
+      }
+      // Base defaults to the branch the sheet itself marked current: the
+      // status cache can lag a switch that just landed.
+      const base = String(currentSheetBranch() || "HEAD");
+      if (!(await confirmFn(`Create and switch to branch ${name} from ${base}?`))) return;
+      branchSheet.creating = true;
+      render();
+      try {
+        await api("/api/git-ui/switch", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cwd: branchSheet.cwd, branch: name, create: true, base }),
+        });
+        state.gitBranches = null;
+        branchSheet.creating = false;
+        closeBranchSheet();
+        await loadGitStatus();
+      } catch (error) {
+        branchSheet.creating = false;
+        branchSheet.error = error.message || String(error);
+        render();
+      }
+    }
+
+    function isBranchSheetOpen() {
+      return branchSheet.open && branchSheet.cwd === currentWorkspaceCwd();
+    }
+
+    function renderBranchSheet() {
+      if (!branchSheet.open) return;
+      const container = el("mobileBranchSheet");
+      const backdrop = el("mobileBranchBackdrop");
+      if (!container || !backdrop) return;
+      // A workspace switch while the sheet is open must dismiss it: the
+      // rows describe the old checkout and every action would refuse as
+      // stale anyway.
+      if (branchSheet.cwd !== currentWorkspaceCwd()) {
+        closeBranchSheet();
+        return;
+      }
+      container.hidden = false;
+      backdrop.hidden = false;
+      const html = branchSheetHtml();
+      if (container.__lastBranchSheetHtml !== html) {
+        container.innerHTML = html;
+        container.__lastBranchSheetHtml = html;
+      }
+    }
+
+    function branchSheetHtml() {
+      const loading = branchSheet.loading
+        ? '<div class="mobile-loading">Loading branches</div>'
+        : "";
+      const error = branchSheet.error
+        ? `<div class="mobile-error">${escapeHtml(branchSheet.error)}</div>`
+        : "";
+      const branches = branchSheet.branches;
+      const local = (branches && branches.local) || [];
+      const remote = (branches && branches.remote) || [];
+      const rows = (list) => list.map((branch) => {
+        const name = String(branch && branch.name || "");
+        const current = !!branch.current && !branch.remote;
+        const checkout = current ? "" : branchCheckoutPath(branches, name);
+        const elsewhere = checkout && !samePath(checkout, branchSheet.cwd);
+        const meta = current ? "current" : branch.remote ? "remote" : elsewhere ? "checked out in " + checkout : "local";
+        return `<button class="mobile-row mobile-git-branch${current ? " active" : ""}" ${current ? "disabled" : `onclick="HerdrMobile.switchBranchFromSheet(${jsArg(name)})"`}><strong>${escapeHtml(name)}</strong><span>${escapeHtml(meta)}</span></button>`;
+      }).join("");
+      const createLabel = branchSheet.creating ? "Creating..." : "Create";
+      const busy = state.gitMutating && branchSheet.open
+        ? `<div class="mobile-loading">${escapeHtml(state.gitBusy || "Working")}...</div>`
+        : "";
+      return `<div class="mobile-sheet-handle"></div><div class="mobile-sheet-title">Branches</div>${loading}${error}${busy}<div class="mobile-tabs-sheet-list"><h3>Local</h3>${local.length ? rows(local) : '<div class="mobile-empty"><span aria-hidden="true">◍</span>None</div>'}${remote.length ? `<h3>Remote</h3>${rows(remote)}` : ""}</div><label class="mobile-branch-create"><span>New branch from ${escapeHtml(currentSheetBranch() || "HEAD")}</span><input class="mobile-sheet-input" type="text" placeholder="branch-name" value="${escapeHtml(branchSheet.newBranch)}"${inputAttrs("done")} oninput="HerdrMobile.setBranchCreateName(this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.createBranchFromSheet(); }" /><button class="mobile-btn primary" type="button"${branchSheet.creating || state.gitMutating ? " disabled" : ""} onclick="HerdrMobile.createBranchFromSheet()">${createLabel}</button></label>`;
+    }
+
+    function currentSheetBranch() {
+      const local = ((branchSheet.branches || {}).local) || [];
+      const row = local.find((branch) => branch && branch.current && branch.name);
+      return row ? String(row.name) : (state.gitStatus && state.gitCwd === branchSheet.cwd && state.gitStatus.branch) || "";
+    }
+
     async function toggleGitBranches() {
       if (state.gitBranches) {
         state.gitBranches = null;
@@ -360,6 +579,13 @@
       loadGitBranches,
       gitSwitchBranch,
       toggleGitBranches,
+      openBranchSheet,
+      closeBranchSheet,
+      switchBranchFromSheet,
+      setBranchCreateName,
+      createBranchFromSheet,
+      renderBranchSheet,
+      isBranchSheetOpen,
       renderGitScreen,
     };
   }

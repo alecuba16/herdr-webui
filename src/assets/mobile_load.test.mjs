@@ -236,6 +236,18 @@ function context(pathname = "/", options = {}) {
     },
     fetch: async (url, opt = {}) => {
       requests.push({ url, opt });
+      // Fixture override hook: tests pass per-endpoint payloads (or
+      // functions keyed on the request) through the context options; every
+      // fixture below reads through this, so it must resolve before the
+      // first handler that uses it.
+      const optionValue = (key, fallback) => {
+        const value = options[key];
+        return typeof value === "function"
+          ? value({ url, opt, requests })
+          : value === undefined
+            ? fallback
+            : value;
+      };
       if (url === "/api/server-settings")
         return {
           ok: true,
@@ -291,28 +303,33 @@ function context(pathname = "/", options = {}) {
         return {
           ok: true,
           status: 200,
-          json: async () => ({
-            branch: "feature/mobile",
-            state: "dirty",
-            conflicted: [],
-            staged: ["src/staged.js"],
-            unstaged: ["src/mobile.js"],
-            untracked: [],
-          }),
+          json: async () =>
+            optionValue("gitStatus", {
+              branch: "feature/mobile",
+              state: "dirty",
+              conflicted: [],
+              staged: ["src/staged.js"],
+              unstaged: ["src/mobile.js"],
+              untracked: [],
+            }),
         };
       if (String(url).startsWith("/api/git-ui/branches"))
         return {
           ok: true,
           status: 200,
-          json: async () => ({
-            local: [{ name: "main", current: true, remote: false }, { name: "feature/mobile", current: false, remote: false }],
-            remote: [{ name: "origin/main", current: false, remote: true }],
-            branches: [
-              { name: "main", current: true, remote: false },
-              { name: "feature/mobile", current: false, remote: false },
-              { name: "origin/main", current: false, remote: true },
-            ],
-          }),
+          json: async () =>
+            optionValue("gitBranches", {
+              local: [
+                { name: "main", current: true, remote: false },
+                { name: "feature/mobile", current: false, remote: false },
+              ],
+              remote: [{ name: "origin/main", current: false, remote: true }],
+              branches: [
+                { name: "main", current: true, remote: false },
+                { name: "feature/mobile", current: false, remote: false },
+                { name: "origin/main", current: false, remote: true },
+              ],
+            }),
         };
       if (String(url).startsWith("/api/git-ui/stage") || String(url).startsWith("/api/git-ui/unstage") || String(url).startsWith("/api/git-ui/discard"))
         return { ok: true, status: 200, json: async () => ({ ok: true }) };
@@ -347,14 +364,6 @@ function context(pathname = "/", options = {}) {
             ],
           }),
         };
-      const optionValue = (key, fallback) => {
-        const value = options[key];
-        return typeof value === "function"
-          ? value({ url, opt, requests })
-          : value === undefined
-            ? fallback
-            : value;
-      };
       if (url === "/api/sessions")
         return {
           ok: true,
@@ -394,13 +403,14 @@ function context(pathname = "/", options = {}) {
         return {
           ok: true,
           status: 200,
-          json: async () => ({
-            result: {
-              workspace: { workspace_id: "w1" },
-              tab: { tab_id: "w1:t1" },
-              root_pane: { pane_id: "w1:p1" },
-            },
-          }),
+          json: async () =>
+            optionValue("recentWorkspaceOpenResult", {
+              result: {
+                workspace: { workspace_id: "w1" },
+                tab: { tab_id: "w1:t1" },
+                root_pane: { pane_id: "w1:p1" },
+              },
+            }),
         };
       if (
         String(url).startsWith("/api/recent-workspaces") &&
@@ -510,7 +520,7 @@ function context(pathname = "/", options = {}) {
             ]),
           }
         : url.includes("worktrees")
-          ? {
+          ? optionValue("worktreeList", {
               source: { source_workspace_id: "w1", repo_name: "alpha" },
               worktrees: [
                 {
@@ -521,7 +531,7 @@ function context(pathname = "/", options = {}) {
                   last_commit_at: "2026-07-21T10:00:00Z",
                 },
               ],
-            }
+            })
           : url.includes("tabs")
             ? {
                 tabs: optionValue("tabs", [
@@ -704,7 +714,7 @@ describe("mobile bundle load", () => {
     const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
     match(
       mobileCss,
-      /\.mobile-app \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);[\s\S]*?grid-template-rows: auto minmax\(0, 1fr\) auto auto;/,
+      /\.mobile-app \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);[\s\S]*?grid-template-rows: auto auto auto minmax\(0, 1fr\) auto auto;/,
     );
   });
 
@@ -3261,6 +3271,708 @@ describe("mobile bundle load", () => {
     await ctx2.HerdrMobile.refresh();
     await ctx2.settle();
     equal(ctx2.document.getElementById("mobilePanelsChip").hidden, true, "panels chip hidden without workspace");
+  });
+
+  it("renders the location strip pills from the workspace stamp and git status", async () => {
+    // Default fixture: workspace w1 (alpha) with a cwd and no worktree
+    // stamp. The git status fixture loads only when the git screen is
+    // opened or the stamp carries a branch, so the strip's branch pill
+    // starts disabled (unknown, not non-git).
+    const ctx = context("/session/default/workspace/w1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    const strip = () => ctx.document.getElementById("mobileLocationStrip");
+    ok(strip(), "strip mounted in the shell");
+    let html = strip().innerHTML;
+    // Path pill shows the cwd basename, opens the directory picker via
+    // openFolderAsWorkspace() with no argument.
+    ok(html.includes("mobile-location-pill"), "strip renders pills");
+    ok(html.includes(`title="/tmp/alpha"`), "path pill carries the full path as title");
+    ok(html.includes(">alpha</span>"), "path pill label is the cwd basename");
+    ok(html.includes(`onclick="HerdrMobile.openFolderAsWorkspace()"`), "path pill opens the picker");
+    // No worktree stamp on the default workspace: no worktree pill.
+    ok(!html.includes("openWorktreeSheet"), "no worktree pill without a linked-worktree stamp");
+    // Branch pill is present but disabled while unknown: git status was
+    // never fetched for this cwd, and the stamp has no branch.
+    ok(html.includes("disabled"), "branch pill disabled while the branch is unknown");
+    ok(!html.includes("openBranchSheet"), "branch pill carries no sheet handler while unknown");
+
+    // A git status scoped to this cwd unlocks the branch pill: the
+    // default fixture branch is feature/mobile.
+    ctx.HerdrMobile.loadGitStatus();
+    await ctx.settle();
+    html = strip().innerHTML;
+    ok(html.includes("openBranchSheet"), "branch pill opens the branch sheet once known");
+    ok(html.includes(">feature/mobile</span>"), "branch pill shows the status branch");
+
+    // Branch source order: the cwd-scoped status wins over the stamp
+    // when both exist and disagree (the stamp comes from the snapshot
+    // refresh and can lag behind a branch switch done in another pane).
+    const ctx3 = context("/session/default/workspace/w1", {
+      workspaces: [
+        {
+          workspace_id: "w1",
+          label: "alpha",
+          pane_count: 1,
+          cwd: "/tmp/alpha",
+          worktree: {
+            checkout_path: "/tmp/alpha",
+            is_linked_worktree: false,
+            branch: "stale-stamp-branch",
+          },
+        },
+      ],
+      gitStatus: { branch: "fresh-status-branch" },
+    });
+    vm.runInContext(source, ctx3);
+    await ctx3.HerdrMobile.refresh();
+    await ctx3.settle();
+    await ctx3.HerdrMobile.loadGitStatus();
+    await ctx3.settle();
+    const stripHtml3 = ctx3.document.getElementById("mobileLocationStrip").innerHTML;
+    ok(stripHtml3.includes(">fresh-status-branch</span>"), "status branch outranks the stamp branch");
+    ok(!stripHtml3.includes("stale-stamp-branch"), "stamp branch never overrides a scoped status");
+
+    // A non-git status payload removes the branch pill entirely.
+    const ctx2 = context("/session/default/workspace/w1", {
+      gitStatus: { not_git_repository: true },
+    });
+    vm.runInContext(source, ctx2);
+    await ctx2.HerdrMobile.refresh();
+    await ctx2.settle();
+    await ctx2.HerdrMobile.loadGitStatus();
+    await ctx2.settle();
+    const stripHtml2 = ctx2.document.getElementById("mobileLocationStrip").innerHTML;
+    ok(!stripHtml2.includes("openBranchSheet"), "non-git folder drops the branch pill");
+    ok(!stripHtml2.includes(">branch</span>"), "no disabled branch placeholder on non-git folders");
+  });
+
+  it("renders the worktree pill only for linked worktree stamps", async () => {
+    const ctx = context("/session/default/workspace/w2", {
+      workspaces: [
+        {
+          workspace_id: "w2",
+          label: "wt-app",
+          pane_count: 1,
+          cwd: "/tmp/alpha/mobile-worktree",
+          worktree: {
+            checkout_path: "/tmp/alpha/mobile-worktree",
+            is_linked_worktree: true,
+            branch: "feature/mobile",
+          },
+        },
+        {
+          workspace_id: "w1",
+          label: "alpha",
+          pane_count: 1,
+          cwd: "/tmp/alpha",
+          worktree: {
+            checkout_path: "/tmp/alpha",
+            is_linked_worktree: false,
+            branch: "main",
+          },
+        },
+      ],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    const strip = () => ctx.document.getElementById("mobileLocationStrip");
+    let html = strip().innerHTML;
+    // Linked worktree stamp: the worktree pill appears with the
+    // discovery row's label (mobile-worktree) and opens the sheet.
+    ok(html.includes(`onclick="HerdrMobile.openWorktreeSheet()"`), "worktree pill opens the sheet");
+    ok(html.includes(">mobile-worktree</span>"), "worktree pill label from the matched row");
+    // Branch comes from the stamp (no status fetched yet): the pill is
+    // enabled and shows the stamp branch.
+    ok(html.includes(">feature/mobile</span>"), "branch pill shows the stamp branch");
+    // Load the git status for the worktree cwd, then switch: the git
+    // module scopes its payload by cwd, so w1's pill must read its own
+    // stamp branch (main), never the worktree's feature/mobile payload.
+    ctx.HerdrMobile.loadGitStatus();
+    await ctx.settle();
+    equal(strip().innerHTML.includes(">feature/mobile</span>"), true, "status branch shown for its own cwd");
+    // The race the scoping guard protects: a status fetch starts for the
+    // worktree cwd, the switch happens mid-flight, and the payload lands
+    // after selectWorkspace cleared the status. gitCwd still names the
+    // old checkout, so the strip must fall back to w1's stamp branch.
+    const pending = ctx.HerdrMobile.loadGitStatus();
+    ctx.HerdrMobile.selectWorkspace("w1");
+    await pending;
+    await ctx.settle();
+    html = strip().innerHTML;
+    ok(!html.includes("openWorktreeSheet"), "main checkout has no worktree pill");
+    ok(html.includes(">main</span>"), "branch pill switched to the w1 stamp branch");
+    ok(!html.includes(">feature/mobile</span>"), "stale status payload never leaks across the switch");
+  });
+
+  it("renders the open-workspace pill when no workspace is selected", async () => {
+    const ctx = context("/session/default", { workspaces: [] });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    const html = ctx.document.getElementById("mobileLocationStrip").innerHTML;
+    ok(html.includes(">Open workspace</span>"), "empty state shows the open-workspace pill");
+    ok(html.includes(`onclick="HerdrMobile.openWorkspacesSheet()"`), "empty pill opens the switcher sheet");
+    ok(!html.includes("openFolderAsWorkspace"), "no path pill without a workspace");
+    ok(!html.includes("openBranchSheet"), "no branch pill without a workspace");
+  });
+
+  it("re-renders the strip only when the pill set changes", async () => {
+    // The diff guard: strip.innerHTML is assigned once per distinct HTML;
+    // renders with unchanged pills must not rewrite the strip DOM.
+    const ctx = context("/session/default/workspace/w1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    const strip = ctx.document.getElementById("mobileLocationStrip");
+    const writes = [];
+    let last = "";
+    Object.defineProperty(strip, "innerHTML", {
+      configurable: true,
+      get: () => last,
+      set: (value) => {
+        last = value;
+        writes.push(value);
+      },
+    });
+    // Same-pills render: showScreen("home") repaints the screen but
+    // leaves the strip facts untouched (the git screen would fetch the
+    // status and unlock the branch pill, so it must not be used here).
+    ctx.HerdrMobile.showScreen("home");
+    await ctx.settle();
+    equal(writes.length, 0, "unchanged pills never rewrite the strip");
+    // The branch pill unlocks once the status lands for this cwd.
+    ctx.HerdrMobile.loadGitStatus();
+    await ctx.settle();
+    equal(writes.length, 1, "a real pill change rewrites the strip exactly once");
+    ok(writes[0].includes("feature/mobile"), "rewrite carries the new branch pill");
+  });
+
+  it("styles the location strip and hides it while the keyboard is open", async () => {
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    // Strip styles live next to the banner block (header chrome section).
+    match(mobileCss, /\.mobile-location-strip \{[\s\S]*?min-height: 44px;/);
+    match(mobileCss, /\.mobile-location-strip \{[\s\S]*?overflow-x: auto;/);
+    // Pills: 44px touch targets with visible disabled state and focus
+    // outline, no hover-dependent affordances.
+    match(mobileCss, /\.mobile-location-pill \{[\s\S]*?min-height: 44px;/);
+    match(mobileCss, /\.mobile-location-pill:disabled \{[\s\S]*?opacity: 0\.55;/);
+    match(mobileCss, /\.mobile-location-pill:focus-visible \{[\s\S]*?outline: var\(--ring\)/);
+    // Icon sources: folder for path, link for worktree, git for branch.
+    match(mobileCss, /\.mobile-location-pill-icon\.folder \{[\s\S]*?url\("\/assets\/icons\/folder\.svg"\)/);
+    match(mobileCss, /\.mobile-location-pill-icon\.worktree \{[\s\S]*?url\("\/assets\/icons\/link\.svg"\)/);
+    match(mobileCss, /\.mobile-location-pill-icon\.branch \{[\s\S]*?url\("\/assets\/icons\/git\.svg"\)/);
+    // The strip joins the keyboard-open hide list.
+    match(mobileCss, /body\.mobile-keyboard-open \.mobile-location-strip \{[\s\S]*?display: none;/);
+    // The strip is its own grid row, pinned between banner and screen.
+    match(mobileCss, /\.mobile-location-strip \{[\s\S]*?grid-row: 3;/);
+  });
+
+  it("opens the branch sheet from the strip pill and lists branches", async () => {
+    // The sheet pins the cwd it was opened for; rows come from
+    // /api/git-ui/branches and mark the current branch disabled.
+    const ctx = context("/session/default/workspace/w1", {
+      gitBranches: {
+        local: [
+          { name: "main", current: true, remote: false },
+          { name: "feature/sheet", current: false, remote: false },
+        ],
+        remote: [{ name: "origin/main", current: false, remote: true }],
+      },
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openBranchSheet();
+    await ctx.settle();
+    ok(
+      ctx.requests.some((request) => request.url.startsWith("/api/git-ui/branches?cwd=")),
+      "opening the sheet fetches the branch list",
+    );
+    const sheet = ctx.document.getElementById("mobileBranchSheet");
+    const backdrop = ctx.document.getElementById("mobileBranchBackdrop");
+    equal(sheet.hidden, false, "sheet visible");
+    equal(backdrop.hidden, false, "backdrop visible");
+    ok(sheet.innerHTML.includes(">main</strong>"), "current branch listed");
+    ok(sheet.innerHTML.includes("switchBranchFromSheet"), "rows switch from the sheet");
+    ok(sheet.innerHTML.includes(">origin/main</strong>"), "remote rows listed");
+    ok(sheet.innerHTML.includes("disabled"), "current branch row disabled");
+    ok(sheet.innerHTML.includes("setBranchCreateName"), "create row drafts the new branch name");
+    ok(sheet.innerHTML.includes("New branch from main"), "create base names the current branch");
+    ctx.HerdrMobile.closeBranchSheet();
+    await ctx.settle();
+    equal(sheet.hidden, true, "close hides the sheet");
+    equal(backdrop.hidden, true, "close hides the backdrop");
+  });
+
+  it("switches branch from the sheet, posts the switch, and closes", async () => {
+    const ctx = context("/session/default/workspace/w1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openBranchSheet();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileBranchSheet");
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.switchBranchFromSheet("feature/mobile");
+    await ctx.settle();
+    const switchCall = ctx.requests
+      .slice(before)
+      .find((request) => request.url === "/api/git-ui/switch");
+    ok(switchCall, "switch POST fired");
+    if (switchCall) {
+      const body = JSON.parse(switchCall.opt.body);
+      equal(body.branch, "feature/mobile", "switch carries the tapped branch");
+      equal(body.create, undefined, "plain switch never carries create");
+      equal(body.cwd, "/tmp/alpha", "switch targets the sheet's pinned cwd");
+    }
+    equal(sheet.hidden, true, "sheet closed after the switch");
+    ok(
+      ctx.requests.slice(before).some((request) => request.url.startsWith("/api/git-ui/status")),
+      "status refetched after the switch",
+    );
+  });
+
+  it("creates a branch from the sheet with create:true and the current base", async () => {
+    const ctx = context("/session/default/workspace/w1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    // Empty name: inline error, no POST.
+    ctx.HerdrMobile.openBranchSheet();
+    await ctx.settle();
+    let sheet = ctx.document.getElementById("mobileBranchSheet");
+    await ctx.HerdrMobile.createBranchFromSheet();
+    await ctx.settle();
+    ok(sheet.innerHTML.includes("Branch name is required."), "empty create name shows an inline error");
+    const before = ctx.requests.length;
+    // Draft a name and create: the POST carries create:true with the
+    // current branch as base, then the sheet closes.
+    ctx.HerdrMobile.setBranchCreateName("feature/new");
+    await ctx.HerdrMobile.createBranchFromSheet();
+    await ctx.settle();
+    const switchCall = ctx.requests
+      .slice(before)
+      .find((request) => request.url === "/api/git-ui/switch");
+    ok(switchCall, "create switch POST fired");
+    if (switchCall) {
+      const body = JSON.parse(switchCall.opt.body);
+      equal(body.branch, "feature/new", "create carries the drafted name");
+      equal(body.create, true, "create flag set");
+      equal(body.base, "main", "base defaults to the sheet's current branch");
+      equal(body.cwd, "/tmp/alpha", "create targets the pinned cwd");
+    }
+    equal(sheet.hidden, true, "sheet closed after create");
+  });
+
+  it("reroutes a branch checked out in another worktree instead of switching", async () => {
+    // The branches payload stamps worktree_path per branch: a branch
+    // held by a sibling checkout must reroute the user to that folder,
+    // never POST a doomed switch.
+    const ctx = context("/session/default/workspace/w1", {
+      gitBranches: {
+        local: [
+          { name: "main", current: true, remote: false },
+          {
+            name: "feature/sibling",
+            current: false,
+            remote: false,
+            worktree_path: "/tmp/alpha/sibling-worktree",
+          },
+        ],
+        remote: [],
+      },
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openBranchSheet();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileBranchSheet");
+    ok(
+      sheet.innerHTML.includes("checked out in /tmp/alpha/sibling-worktree"),
+      "elsewhere row says which worktree holds the branch",
+    );
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.switchBranchFromSheet("feature/sibling");
+    await ctx.settle();
+    ok(
+      !ctx.requests.slice(before).some((request) => request.url === "/api/git-ui/switch"),
+      "no switch POST for a branch held elsewhere",
+    );
+    const rerouteCall = ctx.requests
+      .slice(before)
+      .find((request) => request.url === "/api/recent-workspaces" && request.opt.method === "POST");
+    ok(rerouteCall, "reroute posts the folder-open flow");
+    if (rerouteCall) {
+      equal(JSON.parse(rerouteCall.opt.body).path, "/tmp/alpha/sibling-worktree", "reroute targets the sibling checkout");
+    }
+    equal(sheet.hidden, true, "sheet closed before the reroute");
+  });
+
+  it("dismisses the branch sheet when the workspace switches underneath it", async () => {
+    // The sheet self-closes on the next render after the selected
+    // workspace moves away from the pinned checkout: stale rows would
+    // otherwise act on a folder the user already left.
+    const ctx = context("/session/default/workspace/w1", {
+      workspaces: [
+        { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+        { workspace_id: "w2", label: "beta", pane_count: 1, cwd: "/tmp/beta" },
+      ],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openBranchSheet();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileBranchSheet");
+    equal(sheet.hidden, false, "sheet open for w1");
+    ctx.HerdrMobile.selectWorkspace("w2");
+    await ctx.settle();
+    equal(sheet.hidden, true, "sheet dismissed after the workspace switch");
+    equal(ctx.document.getElementById("mobileBranchBackdrop").hidden, true, "backdrop dismissed too");
+  });
+
+  it("never renders stale branch rows when the fetch lands after a workspace switch", async () => {
+    // The stale guard: the branches fetch starts for one checkout, the
+    // user switches workspace mid-flight, and the payload lands for the
+    // old folder. The sheet must not show those rows (and the sheet is
+    // already dismissed by then via the pinned-cwd render check).
+    const ctx = context("/session/default/workspace/w1", {
+      workspaces: [
+        { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+        { workspace_id: "w2", label: "beta", pane_count: 1, cwd: "/tmp/beta" },
+      ],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileBranchSheet");
+    const pending = ctx.HerdrMobile.openBranchSheet();
+    ctx.HerdrMobile.selectWorkspace("w2");
+    await pending;
+    await ctx.settle();
+    equal(sheet.hidden, true, "sheet dismissed after the mid-flight switch");
+    ok(
+      !sheet.innerHTML.includes(">main</strong>"),
+      "stale rows for the old checkout never render into the sheet",
+    );
+    // A row tap that lands after the dismissal (slow finger, queued
+    // event) must never post a switch for the abandoned checkout.
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.switchBranchFromSheet("main");
+    await ctx.settle();
+    ok(
+      !ctx.requests.slice(before).some((request) => request.url === "/api/git-ui/switch"),
+      "a stale row tap never posts the switch",
+    );
+  });
+
+  it("rewrites the branch sheet DOM only when its content changes", async () => {
+    // Diff guard: innerHTML is assigned once per distinct sheet HTML;
+    // renders that change nothing must not rewrite the sheet node.
+    const ctx = context("/session/default/workspace/w1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openBranchSheet();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileBranchSheet");
+    const writes = [];
+    let last = sheet.innerHTML;
+    Object.defineProperty(sheet, "innerHTML", {
+      configurable: true,
+      get: () => last,
+      set: (value) => {
+        last = value;
+        writes.push(value);
+      },
+    });
+    // Same-content renders: a screen switch repaints the screen but
+    // leaves the sheet facts untouched.
+    ctx.HerdrMobile.showScreen("home");
+    await ctx.settle();
+    equal(writes.length, 0, "unchanged sheet content never rewrites the DOM");
+    // A real content change (draft text) must rewrite exactly once.
+    ctx.HerdrMobile.setBranchCreateName("feature/draft");
+    ctx.HerdrMobile.showScreen("terminal");
+    await ctx.settle();
+    equal(writes.length, 1, "a changed sheet rewrites exactly once");
+    ok(writes[0].includes('value="feature/draft"'), "rewrite carries the drafted name");
+  });
+
+  it("closes the branch sheet through the Escape cascade and the backdrop", async () => {
+    // Escape must close the sheet before reaching the drawer; the
+    // backdrop onclick is wired in the shell markup. The keydown
+    // listener is driven directly because the harness dispatcher hands
+    // listeners no event object.
+    const ctx = context("/session/default/workspace/w1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openBranchSheet();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileBranchSheet");
+    equal(sheet.hidden, false, "sheet open");
+    const escape = ctx
+      .documentListeners()
+      .keydown.find((listener) => listener.toString().includes('"Escape"'));
+    ok(escape, "the Escape cascade listener is registered");
+    if (escape) {
+      escape({ key: "Escape", defaultPrevented: false, preventDefault() {} });
+      await ctx.settle();
+    }
+    equal(sheet.hidden, true, "Escape closes the branch sheet");
+    // Backdrop wiring: the shell markup must reference the closer.
+    const shellHtml = ctx.document.body.innerHTML;
+    ok(shellHtml.includes('id="mobileBranchBackdrop"'), "backdrop node exists");
+    ok(shellHtml.includes("HerdrMobile.closeBranchSheet()"), "backdrop onclick closes the sheet");
+  });
+
+  it("styles the branch sheet create row for touch", () => {
+    const mobileCss = readFileSync(new URL("./mobile/app.css", import.meta.url), "utf8");
+    match(mobileCss, /\.mobile-branch-create \{[\s\S]*?display: flex;/);
+    match(mobileCss, /\.mobile-branch-create \{[\s\S]*?gap: 8px;/);
+    // The create button rides the same 44px .mobile-btn target the
+    // rest of the sheet uses; only the layout rules are sheet-local.
+    ok(!/\.mobile-branch-create[\s\S]*?min-height: 2[0-9]px/.test(mobileCss), "no sub-44px create button override");
+  });
+
+  it("opens the worktree sheet from the strip pill and lists sibling checkouts", async () => {
+    // The sheet pins the cwd it was opened for; rows come from
+    // /api/worktrees?cwd= and the current checkout row is disabled.
+    const ctx = context("/session/default/workspace/w1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openWorktreeSheet();
+    await ctx.settle();
+    ok(
+      ctx.requests.some((request) => request.url.startsWith("/api/worktrees?cwd=")),
+      "opening the sheet fetches the worktree list",
+    );
+    const sheet = ctx.document.getElementById("mobileWorktreeSheet");
+    const backdrop = ctx.document.getElementById("mobileWorktreeSheetBackdrop");
+    equal(sheet.hidden, false, "sheet visible");
+    equal(backdrop.hidden, false, "backdrop visible");
+    ok(sheet.innerHTML.includes("mobile-worktree"), "sibling checkout listed");
+    ok(sheet.innerHTML.includes("openWorktreeFromSheet"), "rows open through the sheet");
+    ok(sheet.innerHTML.includes("routeToCreateFromSheet"), "create button routes to the create flow");
+    ctx.HerdrMobile.closeWorktreeSheet();
+    await ctx.settle();
+    equal(sheet.hidden, true, "close hides the sheet");
+    equal(backdrop.hidden, true, "close hides the backdrop");
+  });
+
+  it("opens a sibling checkout from the worktree sheet through the folder flow", async () => {
+    const ctx = context("/session/default/workspace/w1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openWorktreeSheet();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileWorktreeSheet");
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.openWorktreeFromSheet(0);
+    await ctx.settle();
+    const openCall = ctx.requests
+      .slice(before)
+      .find((request) => request.url === "/api/recent-workspaces" && request.opt.method === "POST");
+    ok(openCall, "row tap posts the folder-open flow");
+    if (openCall) {
+      equal(JSON.parse(openCall.opt.body).path, "/tmp/alpha/mobile-worktree", "open targets the tapped checkout");
+    }
+    equal(sheet.hidden, true, "sheet closed before the navigation");
+  });
+
+  it("marks the current checkout row in the worktree sheet and never reroutes to it", async () => {
+    // A row whose path equals the pinned cwd is the user's own checkout:
+    // the row disables and a stale tap (queued event on the disabled
+    // button) never posts the open flow.
+    const ctx = context("/session/default/workspace/w1", {
+      worktreeList: {
+        source: { source_workspace_id: "w1", repo_name: "alpha" },
+        worktrees: [
+          { label: "alpha", branch: "feature/mobile", path: "/tmp/alpha", is_linked_worktree: false },
+        ],
+      },
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openWorktreeSheet();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileWorktreeSheet");
+    ok(sheet.innerHTML.includes("(current)"), "own checkout marked current");
+    ok(sheet.innerHTML.includes("disabled"), "own checkout row disabled");
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.openWorktreeFromSheet(0);
+    await ctx.settle();
+    ok(
+      !ctx.requests.slice(before).some((request) => request.url === "/api/recent-workspaces" && request.opt.method === "POST"),
+      "tapping the current checkout never posts the open flow",
+    );
+  });
+
+  it("routes the worktree sheet create button to the worktrees screen disclosure", async () => {
+    const ctx = context("/session/default/workspace/w1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openWorktreeSheet();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileWorktreeSheet");
+    equal(sheet.hidden, false, "sheet open");
+    ctx.HerdrMobile.routeToCreateFromSheet();
+    await ctx.settle();
+    equal(sheet.hidden, true, "create routing closes the sheet");
+    equal(ctx.HerdrMobile.currentScreen(), "worktrees", "create routing lands on the worktrees screen");
+    const state = ctx.HerdrMobileAppDeps.state;
+    equal(state.worktreeCreateExpanded, true, "create disclosure expanded");
+  });
+
+  it("dismisses the worktree sheet when the workspace switches underneath it", async () => {
+    const ctx = context("/session/default/workspace/w1", {
+      workspaces: [
+        { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+        { workspace_id: "w2", label: "beta", pane_count: 1, cwd: "/tmp/beta" },
+      ],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openWorktreeSheet();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileWorktreeSheet");
+    equal(sheet.hidden, false, "sheet open for w1");
+    ctx.HerdrMobile.selectWorkspace("w2");
+    await ctx.settle();
+    equal(sheet.hidden, true, "sheet dismissed after the workspace switch");
+    equal(ctx.document.getElementById("mobileWorktreeSheetBackdrop").hidden, true, "backdrop dismissed too");
+    // A stale row tap after the dismissal must never post the open flow.
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.openWorktreeFromSheet(0);
+    await ctx.settle();
+    ok(
+      !ctx.requests.slice(before).some((request) => request.url === "/api/recent-workspaces" && request.opt.method === "POST"),
+      "a stale row tap never posts the open flow",
+    );
+  });
+
+  it("closes the worktree sheet through the Escape cascade", async () => {
+    const ctx = context("/session/default/workspace/w1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openWorktreeSheet();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileWorktreeSheet");
+    equal(sheet.hidden, false, "sheet open");
+    const escape = ctx
+      .documentListeners()
+      .keydown.find((listener) => listener.toString().includes('"Escape"'));
+    ok(escape, "the Escape cascade listener is registered");
+    if (escape) {
+      escape({ key: "Escape", defaultPrevented: false, preventDefault() {} });
+      await ctx.settle();
+    }
+    equal(sheet.hidden, true, "Escape closes the worktree sheet");
+    const shellHtml = ctx.document.body.innerHTML;
+    ok(shellHtml.includes("HerdrMobile.closeWorktreeSheet()"), "backdrop onclick closes the sheet");
+  });
+
+  it("a stale row tap after a mid-flight switch never posts the open flow", async () => {
+    // Rows land for the abandoned checkout after a workspace switch:
+    // both the render-time self-dismiss and the action-time guard
+    // must hold, so the stale tap posts nothing.
+    const ctx = context("/session/default/workspace/w1", {
+      workspaces: [
+        { workspace_id: "w1", label: "alpha", pane_count: 1, cwd: "/tmp/alpha" },
+        { workspace_id: "w2", label: "beta", pane_count: 1, cwd: "/tmp/beta" },
+      ],
+    });
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    // Hold the worktree fetch in flight until the switch lands: this is
+    // the only window where stale rows can be sitting in the closed
+    // sheet's state when a queued tap fires.
+    const rawFetch = ctx.fetch;
+    let releaseWorktreeFetch;
+    ctx.fetch = (url, opt) => {
+      if (String(url).startsWith("/api/worktrees?cwd=")) {
+        return new Promise((resolve) => {
+          releaseWorktreeFetch = () => resolve(rawFetch(url, opt));
+        });
+      }
+      return rawFetch(url, opt);
+    };
+    const fetchBefore = ctx.requests.length;
+    const sheetPromise = ctx.HerdrMobile.openWorktreeSheet();
+    // Switch while the worktree fetch is still in flight, then let it land.
+    ctx.HerdrMobile.selectWorkspace("w2");
+    await ctx.settle();
+    releaseWorktreeFetch();
+    await sheetPromise;
+    await ctx.settle();
+    ok(
+      ctx.requests.slice(fetchBefore).some((request) => request.url.startsWith("/api/worktrees?cwd=")),
+      "the fetch fired before the switch and landed after it",
+    );
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.openWorktreeFromSheet(0);
+    await ctx.settle();
+    ok(
+      !ctx.requests.slice(before).some((request) => request.url === "/api/recent-workspaces" && request.opt.method === "POST"),
+      "the stale row tap never posts the open flow",
+    );
+  });
+
+  it("declining the confirm cancels the worktree sheet open", async () => {
+    const ctx = context("/session/default/workspace/w1");
+    ctx.confirm = () => false;
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openWorktreeSheet();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileWorktreeSheet");
+    equal(sheet.hidden, false, "sheet open");
+    const before = ctx.requests.length;
+    await ctx.HerdrMobile.openWorktreeFromSheet(0);
+    await ctx.settle();
+    ok(
+      !ctx.requests.slice(before).some((request) => request.url === "/api/recent-workspaces" && request.opt.method === "POST"),
+      "declining the confirm never posts the open flow",
+    );
+    equal(sheet.hidden, false, "sheet stays open on decline");
+  });
+
+  it("re-renders the worktree sheet only when its html changes", async () => {
+    const ctx = context("/session/default/workspace/w1");
+    vm.runInContext(source, ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    ctx.HerdrMobile.openWorktreeSheet();
+    await ctx.settle();
+    const sheet = ctx.document.getElementById("mobileWorktreeSheet");
+    const writes = [];
+    Object.defineProperty(sheet, "innerHTML", {
+      configurable: true,
+      get() {
+        return "";
+      },
+      set(value) {
+        writes.push(value);
+      },
+    });
+    // A render with no data change (git status refetch) must not rewrite
+    // the sheet: the diff guard keeps innerHTML writes to state changes.
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    equal(writes.length, 0, "no innerHTML write when sheet html is unchanged");
   });
 
   it("header title names the current panel when the workspace has several", async () => {

@@ -132,12 +132,38 @@ body.light {
      minmax(0,1fr) clamps the track to the viewport; terminal content
      scrolls inside its own shell instead. */
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  /* Six rows: header, offline banner, location strip, screen, toolbar,
+     nav. Auto-placement breaks as soon as the banner or strip toggles:
+     the next in-flow item slides into the 1fr row and squeezes the
+     screen, so every chrome piece pins its row in the block below. */
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
   height: var(--herdr-mobile-viewport-height);
   max-height: var(--herdr-mobile-viewport-height);
   min-width: 0;
   overflow: hidden;
   background: var(--bg);
+}
+/* Row pins for the shell chrome, in flow order: header 1, banner 2,
+   strip 3, screen 4, toolbar 5, nav 6. Hidden chrome collapses its auto
+   row to zero, so the keyboard-open state needs no row-template override
+   at all: it only toggles display on the pieces it hides. */
+.mobile-header {
+  grid-row: 1;
+}
+.mobile-offline-banner {
+  grid-row: 2;
+}
+.mobile-location-strip {
+  grid-row: 3;
+}
+.mobile-screen {
+  grid-row: 4;
+}
+.mobile-toolbar {
+  grid-row: 5;
+}
+.mobile-nav {
+  grid-row: 6;
 }
 /* Key toolbar sits between the screen and the nav bar (above it); the
    toolbar div is always present in the DOM and toggled via [hidden], so an
@@ -382,6 +408,105 @@ body.mobile-keyboard-open .mobile-toolbar:focus-within .mobile-keybar {
 }
 .mobile-offline-banner[hidden] {
   display: none;
+}
+/* Location strip under the header: the mobile twin of the desktop
+   location bar. Own grid row between banner and screen; pills scroll
+   horizontally instead of wrapping, so a long path never pushes the
+   screen or grows the strip. */
+.mobile-location-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 4px max(12px, env(safe-area-inset-right)) 4px
+    max(12px, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.mobile-location-strip::-webkit-scrollbar {
+  display: none;
+}
+/* Pills are the strip's buttons: 44px touch targets, pill shape over the
+   panel background. The path pill may shrink with an ellipsis on its
+   label so the worktree and branch pills stay reachable without
+   scrolling. */
+.mobile-location-pill {
+  -webkit-appearance: none;
+  appearance: none;
+  align-items: center;
+  background: none;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  color: var(--fg);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 1 auto;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 6px;
+  line-height: 1.2;
+  margin: 0;
+  max-width: 60vw;
+  min-height: 44px;
+  min-width: 0;
+  padding: 6px 12px;
+}
+.mobile-location-pill:active {
+  background: var(--panel2);
+}
+.mobile-location-pill:focus-visible {
+  outline: var(--ring);
+  outline-offset: 1px;
+}
+.mobile-location-pill:disabled {
+  color: var(--muted);
+  opacity: 0.55;
+  cursor: default;
+}
+.mobile-location-pill-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* Mask icons recolored by currentColor, one source per pill kind: folder
+   for the path pill, link for the worktree pill, git for the branch pill
+   (same icon set the desktop location bar uses). */
+.mobile-location-pill-icon {
+  background: currentColor;
+  color: var(--muted);
+  display: inline-block;
+  flex: none;
+  height: 14px;
+  mask: var(--location-strip-icon-src) center / contain no-repeat;
+  width: 14px;
+}
+.mobile-location-pill-icon.folder {
+  --location-strip-icon-src: url("/assets/icons/folder.svg");
+}
+.mobile-location-pill-icon.worktree {
+  --location-strip-icon-src: url("/assets/icons/link.svg");
+}
+.mobile-location-pill-icon.branch {
+  --location-strip-icon-src: url("/assets/icons/git.svg");
+}
+/* Branch sheet: the strip's branch pill opens it. Rows reuse the Git
+   screen row styles; the create row pairs the name input with its
+   button so the 44px target never wraps below the field. */
+.mobile-branch-create {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0 4px;
+}
+.mobile-branch-create > span {
+  color: var(--muted);
+  font-size: 13px;
+}
+.mobile-branch-create .mobile-btn {
+  align-self: flex-end;
 }
 @keyframes mobile-connection-pulse {
   50% {
@@ -949,14 +1074,12 @@ body.mobile-drawer-open .mobile-drawer {
 /* The old More-grid screen was unreachable: the nav More button opens the
    drawer and drawer items navigate straight to target screens, so the
    grid renderer and its mobile-more-* styles are gone. */
-body.mobile-keyboard-open .mobile-app {
-  grid-template-rows: minmax(0, 1fr);
-}
 body.mobile-keyboard-open .mobile-header,
 body.mobile-keyboard-open .mobile-nav,
 body.mobile-keyboard-open .mobile-keybar,
 body.mobile-keyboard-open .mobile-toolbar,
-body.mobile-keyboard-open .mobile-keys-fab {
+body.mobile-keyboard-open .mobile-keys-fab,
+body.mobile-keyboard-open .mobile-location-strip {
   display: none;
 }
 .mobile-actions {
@@ -1824,7 +1947,7 @@ body.mobile-keyboard-open .mobile-keys-fab {
      screen padding. */
   .mobile-app {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
   }
   .mobile-header {
     grid-column: auto;
