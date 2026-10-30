@@ -318,4 +318,29 @@ describe("git_ui shortcuts: Escape contract", () => {
     shortcuts.handleKeydown(escAfterClose);
     ok(escAfterClose._stopped, "drawer owns Escape again once the popover is gone");
   });
+
+  it("the prefix-armed V key opens the bar branch popover with no event", () => {
+    const ctx = makeContext();
+    loadShortcuts(ctx);
+    const { shortcuts, state } = makeShortcuts(ctx);
+    // The action forwards no event so the bar falls back to its rendered
+    // chip; this stub records the call shape the bar receives.
+    const calls = [];
+    ctx.window.HerdrLocationBar = {
+      openBranchPopover(arg) { calls.push(arg); },
+    };
+
+    // Arm the shortcut prefix the way a real Ctrl+B press does.
+    shortcuts.handleKeydown(keyEvent({
+      key: "b",
+      code: "KeyB",
+      ctrlKey: true,
+      target: { closest: () => null },
+    }));
+    equal(calls.length, 0, "the prefix press itself opens nothing");
+
+    shortcuts.handleKeydown(keyEvent({ key: "v", code: "KeyV", target: { closest: () => null } }));
+    equal(calls.length, 1, "prefix-armed V dispatched to the branch action");
+    equal(calls[0], null, "the bar receives no event and must use its chip fallback");
+  });
 });
