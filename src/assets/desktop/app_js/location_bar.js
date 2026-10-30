@@ -92,8 +92,16 @@
     return [state.ws, cwd, facts.branch || "", !!facts.known, !!facts.notGit].join("|");
   }
 
+  // Chip click handlers. Only the path chip acts in phase 2 (opens the
+  // directory picker); branch and worktree chips get their popovers in
+  // phases 3-4.
+  function chipClick(name) {
+    if (name === "path") return ' onclick="HerdrLocationBar.openPathPicker()"';
+    return "";
+  }
+
   function chip(name, title, body, disabled) {
-    return `<button class="git-ui-branch-chip location-bar-${name}-chip" type="button"${disabled ? " disabled" : ""} title="${escapeHtml(title)}"><span class="git-ui-branch-chip-name">${body}</span></button>`;
+    return `<button class="git-ui-branch-chip location-bar-${name}-chip" type="button"${disabled ? " disabled" : ""}${chipClick(name)} title="${escapeHtml(title)}"><span class="git-ui-branch-chip-name">${body}</span></button>`;
   }
 
   function separator() {
@@ -167,5 +175,36 @@
     lastHtml = html;
   }
 
-  window.HerdrLocationBar = { sync };
+  // Path chip: opens the directory picker on the workspace folder. The
+  // picker's selectCurrent dispatches change on the hidden input (the
+  // drawer's openCwdPicker uses the same contract), and the change handler
+  // runs the shared folder-change flow. A no-op pick (same path) keeps
+  // everything untouched.
+  let pickerInput = null;
+  function openPathPicker() {
+    const workspace = selectedWorkspace();
+    const cwd = workspaceCwd(workspace);
+    if (!cwd) return;
+    const picker = window.HerdrDirectoryPicker;
+    if (!picker || typeof picker.open !== "function") return;
+    if (pickerInput && pickerInput.parentNode) pickerInput.remove();
+    pickerInput = document.createElement("input");
+    pickerInput.type = "text";
+    pickerInput.style.display = "none";
+    pickerInput.value = cwd;
+    pickerInput.addEventListener("change", () => {
+      const target = String(pickerInput.value || "").trim();
+      if (pickerInput.parentNode) pickerInput.remove();
+      pickerInput = null;
+      if (!target || samePath(target, cwd)) return;
+      if (!window.HerdrOpenFolder) return;
+      window.HerdrOpenFolder.openFolderAsWorkspace(target).catch((error) =>
+        alert(error.message || String(error)),
+      );
+    });
+    document.body.appendChild(pickerInput);
+    picker.open(pickerInput);
+  }
+
+  window.HerdrLocationBar = { sync, openPathPicker };
 })();

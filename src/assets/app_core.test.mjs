@@ -1749,6 +1749,7 @@ describe("desktop file browser editor integration", () => {
     context.window.document = document;
     vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
     vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/app_js/open_folder_flow.js", import.meta.url), "utf8"), context);
 
     assert.equal(context.window.HerdrFileTree.parentDirectory("~"), "~");
     assert.equal(context.window.HerdrFileTree.parentDirectory("~/code"), "~");
@@ -1810,6 +1811,7 @@ describe("desktop file browser editor integration", () => {
     context.window.document = document;
     vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
     vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/app_js/open_folder_flow.js", import.meta.url), "utf8"), context);
 
     await context.window.HerdrFileBrowser.open({ cwd: "/repo" });
     context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("demo.txt"), "file");
@@ -1845,6 +1847,9 @@ describe("desktop file browser editor integration", () => {
     const bodies = [];
     const navigations = [];
     const context = {
+      // Bundle scope for the shared folder flow (open_folder_flow.js reads
+      // bare state like the desktop bundle provides).
+      state: { ws: null, workspaces: [] },
       window: {
         addEventListener() {},
         HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
@@ -1907,6 +1912,7 @@ describe("desktop file browser editor integration", () => {
     context.window.document = document;
     vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
     vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/app_js/open_folder_flow.js", import.meta.url), "utf8"), context);
 
     await context.window.HerdrFileBrowser.open({ cwd: "/home" });
     context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("repo"), "dir");
@@ -1939,6 +1945,7 @@ describe("desktop file browser editor integration", () => {
     const bodies = [];
     const navigations = [];
     const context = {
+      state: { ws: null, workspaces: [] },
       window: {
         addEventListener() {},
         HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
@@ -1993,6 +2000,7 @@ describe("desktop file browser editor integration", () => {
     context.window.document = document;
     vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
     vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/app_js/open_folder_flow.js", import.meta.url), "utf8"), context);
 
     await context.window.HerdrFileBrowser.open({ cwd: "/home" });
     context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("plain"), "dir");
@@ -2022,6 +2030,7 @@ describe("desktop file browser editor integration", () => {
     const bodies = [];
     const navigations = [];
     const context = {
+      state: { ws: null, workspaces: [] },
       window: {
         addEventListener() {},
         HerdrEditor: { create() { return { getValue() { return ""; }, setValue() {}, destroy() {} }; } },
@@ -2085,6 +2094,7 @@ describe("desktop file browser editor integration", () => {
     context.window.document = document;
     vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
     vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/app_js/open_folder_flow.js", import.meta.url), "utf8"), context);
 
     // repo/docs is inside the repo but is not a checkout row.
     await context.window.HerdrFileBrowser.open({ cwd: "/home" });
@@ -2147,6 +2157,7 @@ describe("desktop file browser editor integration", () => {
     context.window.document = document;
     vm.runInNewContext(readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8"), context);
     vm.runInNewContext(readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8"), context);
+    vm.runInNewContext(readFileSync(new URL("./desktop/app_js/open_folder_flow.js", import.meta.url), "utf8"), context);
 
     await context.window.HerdrFileBrowser.open({ cwd: "/home" });
     context.window.HerdrFileBrowser.menu({ preventDefault() {}, stopPropagation() {}, clientX: 12, clientY: 34 }, encodeURIComponent("demo.txt"), "file");

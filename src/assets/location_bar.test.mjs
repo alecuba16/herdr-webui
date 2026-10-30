@@ -227,4 +227,51 @@ describe("location bar module", () => {
     ctx.HerdrLocationBar.sync();
     equal(cssHrefs.length, 0);
   });
+
+  it("renders the path chip with the picker click and runs the flow on change", () => {
+    const state = { ws: "ws1", workspaces: [workspaceOf("/repo")] };
+    const { ctx, bar } = loadBar({ state });
+    ctx.HerdrLocationBar.sync();
+    match(bar.innerHTML, /onclick="HerdrLocationBar\.openPathPicker\(\)"/);
+
+    // Picker open: hidden input seeded with the workspace cwd, handed to
+    // the picker, removed from the DOM after the change fires.
+    const appended = [];
+    const removed = [];
+    const listeners = {};
+    const pickerInput = {
+      type: "",
+      style: { display: "" },
+      value: "",
+      dataset: {},
+      addEventListener(type, fn) { listeners[type] = fn; },
+      remove() { removed.push(pickerInput); },
+      parentNode: null,
+    };
+    ctx.document.body = { appendChild: (node) => { appended.push(node); node.parentNode = ctx.document.body; } };
+    ctx.document.createElement = () => pickerInput;
+    const pickerCalls = [];
+    ctx.HerdrDirectoryPicker = { open: (input) => pickerCalls.push(input) };
+    const flowCalls = [];
+    ctx.HerdrOpenFolder = {
+      openFolderAsWorkspace: async (dir) => { flowCalls.push(dir); return true; },
+    };
+
+    ctx.HerdrLocationBar.openPathPicker();
+    equal(pickerCalls.length, 1, "picker opened once");
+    equal(pickerInput.value, "/repo", "hidden input seeded with the workspace cwd");
+
+    // Same-path pick: no flow run.
+    pickerInput.value = "/repo";
+    listeners.change();
+    equal(flowCalls.length, 0, "same-path pick is a no-op");
+    equal(removed.length, 1, "input removed after change");
+
+    // Real change: flow runs with the picked folder.
+    ctx.HerdrLocationBar.openPathPicker();
+    pickerInput.value = "/other";
+    listeners.change();
+    equal(flowCalls.length, 1);
+    equal(flowCalls[0], "/other");
+  });
 });

@@ -8153,6 +8153,7 @@ describe("workspace sidebar order", () => {
   // core first, then desktop modules with worktrees.js before shortcuts.js.
   const desktopModules = [
     "./desktop/app_js/core.js",
+    "./desktop/app_js/open_folder_flow.js",
     "./desktop/app_js/workspace_shell.js",
     "./desktop/app_js/right_sidebar.js",
     "./desktop/app_js/workspace_panes.js",
@@ -8276,6 +8277,9 @@ describe("location bar integration", () => {
     ok(concatStart !== -1, "assets.rs still defines the DESKTOP_JS concat");
     const concatBody = assetsRs.slice(concatStart, assetsRs.indexOf(");", concatStart));
     const served = [...concatBody.matchAll(/include_str!\("([^"]+)"\)/g)].map((m) => m[1]);
+    const core = served.indexOf("assets/desktop/app_js/core.js");
+    const folderFlow = served.indexOf("assets/desktop/app_js/open_folder_flow.js");
+    equal(folderFlow, core + 1, "open_folder_flow.js loads right after core.js");
     const panes = served.indexOf("assets/desktop/app_js/workspace_panes.js");
     const bar = served.indexOf("assets/desktop/app_js/location_bar.js");
     const terminals = served.indexOf("assets/desktop/app_js/pane_terminals.js");
@@ -8297,6 +8301,15 @@ describe("location bar integration", () => {
     match(gitUiSource, /view\.railStatus = \{ cwd, state: item\.state, not_git_repository: !!item\.not_git_repository, branch: item\.branch \|\| "" \};/);
     match(gitUiSource, /__probedOnly: true,\n\s*state: item\.state,\n\s*not_git_repository: !!item\.not_git_repository,\n\s*branch: item\.branch \|\| "",/);
     match(gitUiSource, /workspaceBranch\(workspace, cwd\) \{/);
+  });
+
+  it("routes the file browser openWorkspaceHere and the bar path chip through the shared folder flow", () => {
+    const fileBrowserSource = readFileSync(new URL("./desktop/file_browser.js", import.meta.url), "utf8");
+    match(fileBrowserSource, /async function openWorkspaceHere\(path\) \{\n\s*if \(!window\.HerdrOpenFolder\) return;\n\s*await window\.HerdrOpenFolder\.openFolderAsWorkspace\(absoluteFilePath\(path\)\);\n\s*\}/);
+    ok(!fileBrowserSource.includes('await api("/api/worktrees/open"'), "the file browser no longer holds its own checkout flow");
+    const barSource = readFileSync(new URL("./desktop/app_js/location_bar.js", import.meta.url), "utf8");
+    match(barSource, /onclick="HerdrLocationBar\.openPathPicker\(\)"/);
+    match(barSource, /window\.HerdrOpenFolder\.openFolderAsWorkspace\(target\)/);
   });
 });
 
