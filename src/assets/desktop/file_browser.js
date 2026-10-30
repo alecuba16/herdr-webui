@@ -257,9 +257,6 @@
   const editorOptions = searchHelpers.fileBrowserEditorOptions
     ? searchHelpers.fileBrowserEditorOptions
     : () => ({ editorEnabled: true, wordWrap: true, tabSize: 2, bracketMatching: true, folding: true, activeLine: true, whitespace: false });
-  const parentFoldersEnabled = searchHelpers.fileBrowserParentFoldersEnabled
-    ? searchHelpers.fileBrowserParentFoldersEnabled
-    : () => false;
 
   function cacheTreeRoots(target, data) {
     if (!target || !data) return;
@@ -1479,7 +1476,7 @@
   }
 
   function canGoUp() {
-    return !!(state.path || (parentFoldersEnabled() && state.cwd && Tree.parentDirectory(state.cwd) !== state.cwd));
+    return !!state.path;
   }
 
   async function goUp() {
@@ -1487,11 +1484,7 @@
       await loadTree(Tree.parentPath(state.path));
       return;
     }
-    if (!parentFoldersEnabled()) return;
-    const parent = Tree.parentDirectory(state.cwd);
-    if (!parent || parent === state.cwd) return;
-    state.cwd = parent;
-    await loadTree("");
+    // UP stays inside the tree: the workspace cwd is the ceiling.
   }
 
   function flattenEntries(entries, level) {

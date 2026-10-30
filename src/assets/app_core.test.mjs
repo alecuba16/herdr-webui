@@ -1720,7 +1720,7 @@ describe("desktop file browser editor integration", () => {
         syncShellModeButtons() {},
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { writeText: async () => {} } },
       fetch: async (url) => {
         requests.push(String(url));
@@ -1780,7 +1780,7 @@ describe("desktop file browser editor integration", () => {
         syncShellModeButtons() {},
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { async writeText(value) { clipboardWrites.push(value); } } },
       fetch: async (url, options = {}) => {
         const text = String(url);
@@ -1862,7 +1862,7 @@ describe("desktop file browser editor integration", () => {
         go(ws, tab, pane) { navigations.push([ws, tab, pane]); },
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { writeText: async () => {} } },
       fetch: async (url, options = {}) => {
         const text = String(url);
@@ -1958,7 +1958,7 @@ describe("desktop file browser editor integration", () => {
         go(ws, tab, pane) { navigations.push([ws, tab, pane]); },
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { writeText: async () => {} } },
       fetch: async (url, options = {}) => {
         const text = String(url);
@@ -2040,7 +2040,7 @@ describe("desktop file browser editor integration", () => {
         syncShellModeButtons() {},
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { writeText: async () => {} } },
       fetch: async (url, options = {}) => {
         const text = String(url);
@@ -2129,7 +2129,7 @@ describe("desktop file browser editor integration", () => {
         syncShellModeButtons() {},
       },
       document,
-      localStorage: { getItem() { return JSON.stringify({ fileBrowserAllowParent: true, fileBrowserGitStatus: false }); } },
+      localStorage: { getItem() { return JSON.stringify({ fileBrowserGitStatus: false }); } },
       navigator: { clipboard: { writeText: async () => {} } },
       fetch: async (url, options = {}) => {
         const text = String(url);

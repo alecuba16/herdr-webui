@@ -49,10 +49,6 @@
     };
   }
 
-  function fileBrowserParentFoldersEnabled() {
-    return storedOptions().fileBrowserAllowParent === true;
-  }
-
   function fileBrowserDepth() {
     const value = Number(storedOptions().fileBrowserDepth);
     return Math.max(0, Math.min(8, Number.isFinite(value) ? value : 3));
@@ -295,7 +291,6 @@
     fileBrowserGitStatusEnabled,
     fileBrowserLineNumbersEnabled,
     fileBrowserEditorOptions,
-    fileBrowserParentFoldersEnabled,
     fileBrowserDepth,
     textParts,
     uniqueTextParts,

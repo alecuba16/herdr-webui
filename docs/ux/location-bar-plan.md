@@ -289,12 +289,12 @@ The todo tool holds the live plan. This list is the durable copy.
 - [x] 4.7 Verify: full frontend suite plus manual smoke (switch worktree from the bar, old workspace panes intact).
 
 ### Phase 5: Settings cleanup and removal sweep
-- [ ] 5.1 Remove the "File browser parent folders" setting row and `options.fileBrowserAllowParent` (markup, ids list, binding, default, normalize).
-- [ ] 5.2 Remove `fileBrowserParentFoldersEnabled()` from `shared/workspace_search.js` and both file-browser readers; UP clamps to the workspace cwd.
-- [ ] 5.3 Sweep leftover git_ui state keys (`branchList`, `worktreeList`, `branchModal`) and render references.
-- [ ] 5.4 Update `app_core.test.mjs` fixtures (six sites) and `canGoUp` pins.
-- [ ] 5.5 Docs: technical-details, features.md if relevant, release-notes Unreleased entry.
-- [ ] 5.6 Verify: full frontend suite, `cargo fmt --check`, `cargo clippy --all-targets`, manual smoke (UP from a workspace root does nothing, UP within the tree works).
+- [x] 5.1 Remove the "File browser parent folders" setting row and `options.fileBrowserAllowParent` (markup, ids list, binding, default, normalize).
+- [x] 5.2 Remove `fileBrowserParentFoldersEnabled()` from `shared/workspace_search.js` and both file-browser readers; UP clamps to the workspace cwd.
+- [x] 5.3 Sweep leftover git_ui state keys (`branchList`, `worktreeList`, `branchModal`) and render references.
+- [x] 5.4 Update `app_core.test.mjs` fixtures (six sites) and `canGoUp` pins.
+- [x] 5.5 Docs: technical-details, features.md if relevant, release-notes Unreleased entry.
+- [x] 5.6 Verify: full frontend suite, `cargo fmt --check`, `cargo clippy --all-targets`, manual smoke (UP from a workspace root does nothing, UP within the tree works).
 
 ### Phase 6: Mobile
 - [ ] 6.1 Design the mobile location bar against the mobile shell layout (separate doc/phase).

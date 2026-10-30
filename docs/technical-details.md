@@ -302,7 +302,6 @@ Browser-local settings are stored in `localStorage` under `herdr-web-options` an
 | `workspaceSort` | `default` | Workspace ordering. |
 | `scrollLines` | `3` | Terminal wheel/key scroll step, clamped 1 to 20. |
 | `treeIndentPx` | `14` | File tree indent, clamped 0 to 40. |
-| `fileBrowserAllowParent` | `true` | Show parent navigation. |
 | `fileBrowserGitStatus` | `true` | Show backend-provided Git colors. |
 | `fileBrowserLineNumbers` | `true` | Show line numbers in file previews. |
 | `searchWorkspacesEnabled` | `true` | Show workspace/worktree/panel results in unified header search. |

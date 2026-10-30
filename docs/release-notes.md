@@ -70,6 +70,10 @@
   branch chip, and the branch modal are gone. The Help & Shortcuts
   modal, the Git shortcut popup, and the feature docs describe the new
   semantics.
+  The `File browser parent folders` setting leaves with it: folder
+  navigation is workspace-scoped, so the Files Up button moves within
+  the tree only and never above the workspace cwd, on desktop and
+  mobile alike.
 - The parallel bin-suite flake is fixed at the source. The PTY tests
   (client socket attach/re-attach, flood, fanout, events) spawned the
   user's login shell, whose rc-file init can stall past every 20s
