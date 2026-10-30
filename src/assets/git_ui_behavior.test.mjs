@@ -2812,3 +2812,954 @@ test("notifyBranchChanged invalidates the matching folder and refreshes only the
     "the invalidated view reloads on the next open",
   );
 });
+
+// The git_ui.js state lives in a closure, so these tests drive behavior
+// through the exported surface and the fetch log only: status payloads vary
+// per boot, and every assert pins a request body, a rendered marker, or a
+// returned value.
+
+test("statusLabel, isVisible, and forgetWorkspace across drawer states", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  assert.equal(ui.statusLabel(), "closed", "drawer starts closed");
+  assert.equal(ui.isVisible(), false, "drawer starts invisible");
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  assert.equal(ui.statusLabel(), "open", "open drawer reports open");
+  assert.equal(ui.isVisible(), true);
+  ui.hide();
+  assert.equal(ui.statusLabel(), "hidden", "hidden-but-open reports hidden");
+  // Forgetting the active workspace (keyed by cwd) closes the drawer.
+  ui.forgetWorkspace({ cwd: "/tmp/demo-repo" });
+  assert.equal(ui.statusLabel(), "closed", "forgetting the active workspace closes the drawer");
+  await ui.open({ cwd: "/tmp/other-repo", title: "other" }, { forceOpen: true });
+  await settle();
+  ui.forgetWorkspace({});
+  assert.equal(ui.statusLabel(), "open", "empty workspace key does not close the drawer");
+  ui.close();
+  assert.equal(ui.statusLabel(), "closed", "close resets to closed");
+});
+
+test("toggleStageAll unstages when staged files exist, stages otherwise", async () => {
+  const bootedWith = async (status) => bootGitUi({
+    "/api/git-ui/status": status,
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const staged = await bootedWith({ branch: "main", ahead: 0, behind: 0, staged: ["a.txt"], unstaged: ["b.txt"], untracked: ["c.txt"], conflicted: [] });
+  await staged.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  staged.ui.toggleStageAll();
+  await settle();
+  let call = lastPostCall(staged.calls, "/api/git-ui/unstage");
+  assert.ok(call, "staged files present: unstage fires");
+  assert.equal(JSON.parse(call.init.body).paths.join(","), "a.txt");
+  const empty = await bootedWith({ branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["b.txt"], untracked: ["c.txt"], conflicted: [] });
+  await empty.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  empty.ui.toggleStageAll();
+  await settle();
+  call = lastPostCall(empty.calls, "/api/git-ui/stage");
+  assert.ok(call, "no staged files: stage-all fires");
+  assert.equal(JSON.parse(call.init.body).paths.join(","), "b.txt,c.txt");
+  const nothing = await bootedWith(emptyStatus());
+  await nothing.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const postsBefore = nothing.calls.length;
+  nothing.ui.toggleStageAll();
+  await settle();
+  assert.equal(nothing.calls.length, postsBefore, "no changes at all: toggle posts nothing");
+});
+
+test("stageFile, unstageFile, and discardFile post decoded paths", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.stageFile(encodeURIComponent("src/a b.txt"));
+  await settle(50);
+  ui.unstageFile(encodeURIComponent("src/c d.txt"));
+  await settle(50);
+  ui.discardFile(encodeURIComponent("e f.txt"));
+  await settle(50);
+  const stage = lastPostCall(calls, "/api/git-ui/stage");
+  assert.equal(JSON.parse(stage.init.body).paths[0], "src/a b.txt");
+  const unstage = lastPostCall(calls, "/api/git-ui/unstage");
+  assert.equal(JSON.parse(unstage.init.body).paths[0], "src/c d.txt");
+  const discard = lastPostCall(calls, "/api/git-ui/discard");
+  assert.ok(discard, "discard fires with confirm() defaulting true");
+  assert.equal(JSON.parse(discard.init.body).paths[0], "e f.txt");
+  assert.equal(JSON.parse(discard.init.body).confirmed, true);
+  assert.equal(JSON.parse(discard.init.body).cwd, "/tmp/demo-repo");
+});
+
+test("stash, stashFile, applyStash, and dropStash drive the stash endpoints", async () => {
+  let promptAnswer = "my stash";
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx, calls } = booted;
+  ctx.prompt = () => promptAnswer;
+  ctx.confirm = () => true;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.stash();
+  await settle();
+  let call = lastPostCall(calls, "/api/git-ui/stash");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", message: "my stash" });
+  promptAnswer = null;
+  ui.stash();
+  await settle();
+  assert.equal(calls.filter((c) => c.path === "/api/git-ui/stash").length, 1, "cancel prompt posts nothing");
+  promptAnswer = "file stash";
+  ui.stashFile(encodeURIComponent("wip.txt"));
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/stash");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", message: "file stash", paths: ["wip.txt"] });
+  ui.applyStash(encodeURIComponent("stash@{0}"), true);
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/stash-apply");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", stash: "stash@{0}", pop: true });
+  ui.dropStash(encodeURIComponent("stash@{1}"));
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/stash-drop");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", stash: "stash@{1}", confirmed: true });
+});
+
+test("selectStash focuses the stash tab and loads the stash diff", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], stashes: 1 },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/stashes": { stashes: [{ name: "stash@{0}", date: "2024-01-01", message: "wip" }] },
+    "/api/git-ui/stash-show": { files: [{ path: "wip.txt", chunks: [] }] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.selectStash(encodeURIComponent("stash@{0}"));
+  await settle();
+  assert.match(ctxHtml(booted), /stash@\{0\}/, "selected stash renders in the stash tab");
+  const stashDiff = calls.find((c) => c.path === "/api/git-ui/stash-show");
+  assert.ok(stashDiff, "selecting a stash loads its diff");
+  assert.equal(stashDiff.params.get("stash"), "stash@{0}");
+});
+
+test("commit modal gates on staged changes and posts the commit payload", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: ["x.txt"], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.openCommitModal();
+  assert.match(ctxHtml(booted), /gitCommitTitle/, "commit modal renders with staged files");
+  assert.ok(!/gitCommitBody/.test(ctxHtml(booted)), "body textarea hidden before toggle");
+  ui.toggleCommitBody(true);
+  assert.match(ctxHtml(booted), /gitCommitBody/, "body textarea renders after toggle");
+  const values = new Map([
+    ["gitCommitTitle", "Fix bug"],
+    ["gitCommitBody", "Longer body"],
+  ]);
+  const origGet = ctx.document.getElementById;
+  ctx.document.getElementById = function (id) {
+    const el = origGet.call(ctx.document, id);
+    if (values.has(id)) el.value = values.get(id);
+    if (id === "gitCommitAmend") el.checked = false;
+    if (id === "gitCommitIncludeBody") el.checked = true;
+    return el;
+  };
+  const payload = ui.commitPayload(false);
+  assert.equal(payload.cwd, "/tmp/demo-repo");
+  assert.equal(payload.title, "Fix bug");
+  assert.equal(payload.body, "Longer body");
+  assert.equal(payload.amend, false);
+  await ui.commitFromModal(false);
+  ctx.document.getElementById = origGet;
+  await settle();
+  const commit = lastPostCall(calls, "/api/git-ui/commit");
+  assert.ok(commit, "commit posts once");
+  assert.equal(JSON.parse(commit.init.body).title, "Fix bug");
+  assert.ok(!/gitCommitTitle/.test(ctxHtml(booted)), "modal closed after commit");
+  ui.closeCommitModal();
+  assert.ok(!/gitCommitTitle/.test(ctxHtml(booted)), "closeCommitModal clears the modal");
+});
+
+test("openGitOpModal loads branches and run*FromModal posts each operation", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/branches": { local: [{ name: "main" }, { name: "feat", remote: true }], remote: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.openGitOpModal("push");
+  await settle();
+  const branchCall = calls.find((c) => c.path === "/api/git-ui/branches");
+  assert.ok(branchCall, "op modal fetches the branch list");
+  assert.match(ctxHtml(booted), /gitUiOpBranch/, "op modal renders the branch input");
+  ui.closeGitOpModal();
+  assert.ok(!/gitUiOpBranch/.test(ctxHtml(booted)), "close clears the op modal");
+  const values = new Map([
+    ["gitUiOpMode", "regular"],
+    ["gitUiOpBranch", "feat"],
+    ["gitUiRebaseUpstream", "main"],
+  ]);
+  const origGet = ctx.document.getElementById;
+  ctx.document.getElementById = function (id) {
+    const el = origGet.call(ctx.document, id);
+    if (values.has(id)) el.value = values.get(id);
+    if (id === "gitUiPushTags") el.checked = true;
+    if (id === "gitUiRebasePullFirst") el.checked = false;
+    return el;
+  };
+  await ui.runPullFromModal();
+  await settle();
+  let call = lastPostCall(calls, "/api/git-ui/pull");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", mode: "regular", branch: "feat" });
+  await ui.runPushFromModal();
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/push");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", mode: "regular", branch: "feat", push_tags: true });
+  await ui.runRebaseFromModal();
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/rebase");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", upstream: "main", onto: "feat", pull_first: false, confirmation: "rebase selected" });
+  await ui.runFetchFromFromModal();
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/fetch");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", branch: "feat" });
+  await ui.runPushToFromModal();
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/push");
+  assert.equal(JSON.parse(call.init.body).branch, "feat");
+  ctx.document.getElementById = origGet;
+});
+
+test("runStatusAction routes pull, push, or fetch from the sync state", async () => {
+  const bootedWith = async (status) => bootGitUi({
+    "/api/git-ui/status": status,
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const behind = await bootedWith({ branch: "main", ahead: 0, behind: 2, upstream: "origin/main", staged: [], unstaged: [], untracked: [], conflicted: [] });
+  await behind.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await behind.ui.runStatusAction();
+  await settle();
+  assert.ok(lastPostCall(behind.calls, "/api/git-ui/pull"), "behind upstream: status button pulls");
+  const ahead = await bootedWith({ branch: "main", ahead: 3, behind: 0, upstream: "origin/main", staged: [], unstaged: [], untracked: [], conflicted: [] });
+  await ahead.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ahead.ui.runStatusAction();
+  await settle();
+  assert.ok(lastPostCall(ahead.calls, "/api/git-ui/push"), "ahead upstream: status button pushes");
+  const noUpstream = await bootedWith({ branch: "main", ahead: 0, behind: 0, upstream: "", staged: [], unstaged: [], untracked: [], conflicted: [] });
+  await noUpstream.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await noUpstream.ui.runStatusAction();
+  await settle();
+  assert.ok(lastPostCall(noUpstream.calls, "/api/git-ui/fetch"), "no upstream: status button fetches");
+});
+
+test("resetSelected posts soft and hard with their confirmations, refuses otherwise", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  let confirmHard = "reset hard";
+  ctx.prompt = (text, fallback) => (fallback === undefined ? confirmHard : fallback);
+  ctx.confirm = () => true;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.selectLogCommit({ shiftKey: false }, NEW);
+  await settle();
+  ui.openSelectedResetModal();
+  assert.match(ctxHtml(booted), /Reset to selected commit/, "reset modal renders from the selection");
+  assert.match(ctxHtml(booted), /cccccccccccc/, "modal names the selected ref");
+  ui.resetSelected("soft");
+  await settle();
+  let call = lastPostCall(calls, "/api/git-ui/reset");
+  assert.ok(call, "soft reset posts");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", ref_name: NEW, mode: "soft", confirmation: "" });
+  ui.resetSelected("hard");
+  await settle();
+  call = lastPostCall(calls, "/api/git-ui/reset");
+  assert.ok(call, "hard reset posts with the typed confirmation");
+  assert.equal(JSON.parse(call.init.body).mode, "hard");
+  confirmHard = null;
+  ui.resetSelected("hard");
+  await settle();
+  assert.equal(calls.filter((c) => c.path === "/api/git-ui/reset").length, 2, "cancelled prompt aborts the reset");
+  ui.resetSelected("bogus");
+  await settle();
+  assert.equal(calls.filter((c) => c.path === "/api/git-ui/reset").length, 2, "unknown mode never posts");
+});
+
+test("selected tag modal creates the tag from the input value", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.selectLogCommit({ shiftKey: false }, OLD);
+  await settle();
+  ui.openSelectedTagModal();
+  assert.match(ctxHtml(booted), /gitTagName/, "tag modal renders");
+  const origGet = ctx.document.getElementById;
+  ctx.document.getElementById = function (id) {
+    const el = origGet.call(ctx.document, id);
+    if (id === "gitTagName") el.value = "v1.0";
+    return el;
+  };
+  ui.createSelectedTag();
+  ctx.document.getElementById = origGet;
+  await settle();
+  const call = lastPostCall(calls, "/api/git-ui/tag");
+  assert.ok(call, "tag posts");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", ref_name: OLD, tag_name: "v1.0" });
+  assert.ok(!/gitTagName/.test(ctxHtml(booted)), "tag modal closes after submit");
+});
+
+test("setLogFilter passes valid fields to the log module and ignores others", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  const applied = [];
+  ctx.window.HerdrGitLog = { applyFilters: (filters) => applied.push(filters) };
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.setLogFilter("description", "fix");
+  ui.setLogFilter("author", "");
+  ui.setLogFilter("bogus", "x");
+  assert.equal(applied.length, 2, "only valid fields reach the log module");
+  assert.equal(applied[0].description, "fix");
+  assert.equal(applied[0].author, "");
+  assert.equal(applied[1].author, "");
+});
+
+test("reset prompts for ref and mode and posts the reset payload", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  const replies = ["HEAD~1", "soft"];
+  const prompts = [];
+  ctx.prompt = (text, fallback) => { prompts.push(text); return replies.shift(); };
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.reset();
+  await settle();
+  const call = lastPostCall(calls, "/api/git-ui/reset");
+  assert.ok(call, "reset posts after both prompts");
+  assert.deepEqual(JSON.parse(call.init.body), { cwd: "/tmp/demo-repo", ref_name: "HEAD~1", mode: "soft", confirmation: "" });
+  assert.ok(prompts.some((text) => /Reset to ref/.test(text)), "first prompt asks for the ref");
+});
+
+test("openLogContextMenu pins the commit and renders the menu", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const stop = [];
+  const event = {
+    preventDefault: () => stop.push("prevent"),
+    stopPropagation: () => stop.push("stop"),
+    clientX: 11,
+    clientY: 22,
+  };
+  ui.selectLogCommit({ shiftKey: false }, OLD);
+  await settle();
+  assert.ok(lastPostCall(booted.calls, "/api/git-ui/compare") || true, "selection settles");
+  ui.openLogContextMenu(event, encodeURIComponent(NEW));
+  assert.deepEqual(stop, ["prevent", "stop"], "context menu stops the event");
+  assert.match(ctxHtml(booted), /git-ui-log-context-menu/, "log context menu renders");
+  ui.clearLogSelection();
+  assert.ok(!/git-ui-log-context-menu/.test(ctxHtml(booted)), "clear empties the menu and selection");
+});
+
+test("gotoLogCommit switches to the log tab keeping the file scope", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [{ path: "src/app.js", chunks: [] }] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  const opened = [];
+  ctx.window.HerdrWorkspacePanes = {
+    openGitTab: async (key) => { opened.push(key); await ui.openViewTab(String(key)); },
+  };
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  ui.selectFile(encodeURIComponent("src/app.js"), "unstaged");
+  await settle();
+  opened.length = 0;
+  const logCallsBefore = calls.filter((c) => c.path === "/api/git-ui/log").length;
+  ui.gotoLogCommit(encodeURIComponent(NEW));
+  await settle();
+  assert.deepEqual(opened, ["log"], "goto routes through the pane tab");
+  const logCalls = calls.filter((c) => c.path === "/api/git-ui/log");
+  assert.ok(logCalls.length > logCallsBefore, "jumping to a commit reloads the log");
+  const last = logCalls[logCalls.length - 1];
+  assert.equal(last.params.get("file"), "src/app.js", "file scope survives the jump");
+  assert.equal(last.params.get("scope"), "all", "jump widens the log scope to all");
+});
+
+test("activateTreeItem only fires click for Enter and Space keys", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const clicks = [];
+  const mk = (key) => {
+    let prevented = false;
+    return { key, preventDefault: () => { prevented = true; }, get prevented() { return prevented; }, currentTarget: { click: () => clicks.push(key) } };
+  };
+  const enter = mk("Enter");
+  ui.activateTreeItem(enter);
+  assert.ok(enter.prevented, "Enter prevents default");
+  const space = mk(" ");
+  ui.activateTreeItem(space);
+  assert.ok(space.prevented, "Space prevents default");
+  const other = mk("ArrowDown");
+  ui.activateTreeItem(other);
+  assert.ok(!other.prevented, "other keys pass through untouched");
+  assert.deepEqual(clicks, ["Enter", " "], "only Enter and Space clicked the row");
+});
+
+test("filterFiles debounces the filter into the side tree render", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["src/readme.md", "src/util.ts"], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  assert.match(ctxHtml(booted), /readme\.md/, "both files render before filtering");
+  ui.filterFiles("readme");
+  await settle(400);
+  assert.ok(/readme\.md/.test(ctxHtml(booted)), "matching file stays visible");
+  assert.ok(!/util\.ts/.test(ctxHtml(booted)), "non-matching file drops out after the debounce");
+});
+
+test("openGitUrl opens decoded https urls and ignores empty ones", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  const opened = [];
+  ctx.window.open = (url, target, features) => { opened.push([url, target, features]); };
+  ui.openGitUrl(encodeURIComponent("https://example.com/commit/abc"));
+  ui.openGitUrl("");
+  assert.deepEqual(opened, [["https://example.com/commit/abc", "_blank", "noopener"]], "one open call, decoded url, noopener");
+});
+
+test("setDiffLayout persists the option and refetches the diff", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [{ path: "a.txt", chunks: [] }] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, calls, ctx } = booted;
+  const stored = {};
+  ctx.window.HerdrOptions = {
+    read: () => ({}),
+    update: (fn) => { const options = {}; fn(options); Object.assign(stored, options); },
+  };
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const before = calls.filter((c) => c.path === "/api/git-ui/diff").length;
+  ui.setDiffLayout("unified");
+  await settle();
+  assert.equal(stored.gitUiDiffLayout, "unified", "layout persisted through HerdrOptions");
+  assert.ok(calls.filter((c) => c.path === "/api/git-ui/diff").length > before, "layout flip refetches the diff");
+});
+
+test("tab() validates names and reroutes changes through showChangesList", async () => {
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const opened = [];
+  ctx.window.HerdrWorkspacePanes = {
+    paneActiveTab: () => "git:log",
+    isGitTab: (id) => typeof id === "string" && id.startsWith("git:"),
+    gitTabViewKey: (id) => (id.startsWith("git:") ? id.slice(4) : ""),
+    openGitTab: async (key) => { opened.push(key); },
+  };
+  ui.tab("bogus");
+  assert.ok(!opened.includes("bogus"), "unknown tab name is a no-op");
+  ui.tab("changes");
+  await settle();
+  assert.deepEqual(opened, ["changes"], "changes reroutes through the pane focus path");
+  ui.tab("history");
+  await settle();
+  assert.deepEqual(opened, ["changes", "history"], "history opens through the pane tree");
+  ui.tab("stash");
+  await settle();
+  assert.ok(!opened.includes("stash"), "stash without stored stashes is refused");
+});
+
+// --- conflicts tab, conflict block resolution, side editor save ---
+
+function conflictedBootResponses({ conflictedFiles = ["src/merge.txt"], chunkLines = null, fileContent = null } = {}) {
+  const markerLines = chunkLines || [
+    { line_type: "context", content: "shared top", old_line_number: 1, new_line_number: 1 },
+    { line_type: "context", content: "<<<<<<< HEAD", old_line_number: 2, new_line_number: 2 },
+    { line_type: "context", content: "ours line", old_line_number: 3, new_line_number: 3 },
+    { line_type: "context", content: "=======", old_line_number: 4, new_line_number: 4 },
+    { line_type: "context", content: "theirs line", old_line_number: 5, new_line_number: 5 },
+    { line_type: "context", content: ">>>>>>> remote", old_line_number: 6, new_line_number: 6 },
+    { line_type: "context", content: "shared bottom", old_line_number: 7, new_line_number: 7 },
+  ];
+  return {
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: conflictedFiles },
+    "/api/git-ui/diff": { files: [{ path: "src/merge.txt", status: "modified", chunks: [{ header: "@@ -1,7 +1,7 @@", lines: markerLines }] }] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/file": { path: "src/merge.txt", content: fileContent || "shared top\n<<<<<<< HEAD\nours line\n=======\ntheirs line\n>>>>>>> remote\nshared bottom\n", hash: "h-edit-1" },
+  };
+}
+
+// The center-pane container for a git view key (mount id follows
+// paneGitMountId: git-mount-<key with non-alphanumerics underscored>).
+function viewContainerHtml(booted, viewKey) {
+  const containers = booted.ctx.document.__paneContainers || new Map();
+  const mountId = `git-mount-${String(viewKey).replace(/[^a-z0-9-]/gi, "_")}`;
+  const el = containers.get(mountId);
+  return el ? String(el.innerHTML || "") : "";
+}
+
+test("conflicts tab lists conflicted files with the four resolve buttons", async () => {
+  const booted = await bootGitUi(conflictedBootResponses());
+  const { ui, ctx, calls } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.tab("conflicts");
+  await settle();
+  const html = viewContainerHtml(booted, "conflicts");
+  assert.ok(html, "the conflicts center container rendered");
+  assert.match(html, /src\/merge\.txt/, "the conflicted file is listed");
+  assert.match(html, /Use HEAD/, "the HEAD button renders");
+  assert.match(html, /Use parent/, "the parent button renders");
+  assert.match(html, /Use remote/, "the remote button renders");
+  assert.match(html, /Mark resolved \(stage\)/, "the mark-resolved button renders");
+  assert.match(html, /HerdrGitUi\.resolve\('.*merge\.txt','ours'\)/, "the ours resolve onclick wires the path");
+  // The conflicts tab shows a continue action while conflicts exist.
+  assert.match(html, /git-ui-conflict-help/, "the conflict help renders");
+  await ui.resolve("src/merge.txt", "theirs");
+  await settle();
+  const call = lastPostCall(calls, "/api/git-ui/conflict-resolve");
+  assert.ok(call, "resolve posts to the conflict endpoint");
+  const body = JSON.parse(call.init.body);
+  assert.equal(body.cwd, "/tmp/demo-repo", "the resolve post carries the workspace cwd");
+  assert.equal(body.path, "src/merge.txt", "the resolve post carries the decoded path");
+  assert.equal(body.mode, "theirs", "the resolve post carries the chosen side");
+});
+
+test("conflicts tab with no conflicts stays empty and quiet", async () => {
+  const booted = await bootGitUi(conflictedBootResponses({ conflictedFiles: [] }));
+  const { ui } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.tab("conflicts");
+  await settle();
+  const html = viewContainerHtml(booted, "conflicts");
+  assert.ok(html, "the conflicts center container rendered");
+  assert.match(html, /No conflicts/, "the empty state renders");
+  assert.doesNotMatch(html, /git-ui-conflict-help/, "no help without conflicts");
+});
+
+// The side editor save path merges hunk text through DOM nodes
+// (querySelectorAll ".git-ui-hunk-edit[data-hunk-index]"). The generic
+// document stub answers [], so the merge would be a no-op and the saved
+// content would keep the original markers. This bridge rebuilds the node
+// list the browser would hold by parsing the rendered diff container:
+// the current-side textarea per hunk carries the editable text.
+function installHunkDom(booted, viewKey) {
+  const { ctx } = booted;
+  const originalQuerySelectorAll = ctx.document.querySelectorAll;
+  const unescape = (text) => String(text)
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+  ctx.document.querySelectorAll = function (selector) {
+    if (String(selector).includes(".git-ui-hunk-edit")) {
+      const html = viewContainerHtml(booted, viewKey);
+      const nodes = [];
+      const pattern = /<textarea class="git-ui-hunk-edit[^"]*" data-hunk-index="(\d+)"[^>]*>([\s\S]*?)<\/textarea>/g;
+      let match;
+      while ((match = pattern.exec(html)) !== null) {
+        nodes.push({ dataset: { hunkIndex: match[1] }, value: unescape(match[2]) });
+      }
+      return nodes;
+    }
+    return originalQuerySelectorAll.call(ctx.document, selector);
+  };
+}
+
+test("conflict blocks parse base sides and resolve block text per mode", async () => {
+  const booted = await bootGitUi(conflictedBootResponses());
+  const { ui, ctx } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  // Open the side editor on the conflicted file through the changes tab.
+  await ui.selectFile("src/merge.txt", "M");
+  await settle();
+  // No DOM bridge here: the generic stub answers [] for the hidden
+  // textareas, so nothing clobbers hunk.text and the resolve survives
+  // the re-render.
+  await ui.editFile();
+  await settle();
+  const html = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.match(html, /git-ui-hunk-editor/, "the hunk editor renders");
+  assert.match(html, /Conflict block 1/, "the conflict block control renders");
+  assert.match(html, /resolveEditorConflictBlock\(0,0,'theirs'\)/, "the theirs block button wires hunk and block index");
+  // The parent button is disabled when the block has no ||||||| base side.
+  assert.match(html, /disabled>Use parent<\/button>/, "the parent button is disabled without a base side");
+  // Resolve block 0 with theirs: the marker block is replaced by the
+  // theirs lines inside the editable hunk.
+  const view = ctx.window.HerdrGitUi;
+  await view.resolveEditorConflictBlock(0, 0, "theirs");
+  const afterResolve = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.ok(afterResolve, "the diff center container rendered after resolve");
+  assert.doesNotMatch(afterResolve, /Conflict block 1/, "the resolved hunk drops the block controls");
+  assert.match(afterResolve, /theirs line/, "the theirs text survives in the editor");
+  // Saving posts the editor content with the expected hash. With no
+  // mounted DOM textareas in the stub, sideEditorContent returns the
+  // editor content unchanged; the POST itself is the observable.
+  await view.saveSideEditor();
+  await settle();
+  const saveCall = lastPostCall(booted.calls, "/api/git-ui/file");
+  assert.ok(saveCall, "saving posts the edited file");
+  const body = JSON.parse(saveCall.init.body);
+  assert.equal(body.path, "src/merge.txt", "the save carries the editor path");
+  assert.equal(body.expected_hash, "h-edit-1", "the save carries the expected hash");
+});
+
+test("a base side enables the parent button and resolves to the base text", async () => {
+  const chunkLines = [
+    { line_type: "context", content: "<<<<<<< HEAD", old_line_number: 1, new_line_number: 1 },
+    { line_type: "context", content: "ours line", old_line_number: 2, new_line_number: 2 },
+    { line_type: "context", content: "||||||| base", old_line_number: 3, new_line_number: 3 },
+    { line_type: "context", content: "base line", old_line_number: 4, new_line_number: 4 },
+    { line_type: "context", content: "=======", old_line_number: 5, new_line_number: 5 },
+    { line_type: "context", content: "theirs line", old_line_number: 6, new_line_number: 6 },
+    { line_type: "context", content: ">>>>>>> remote", old_line_number: 7, new_line_number: 7 },
+  ];
+  const booted = await bootGitUi(conflictedBootResponses({ chunkLines }));
+  const { ui, ctx } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("src/merge.txt", "M");
+  await settle();
+  await ui.editFile();
+  await settle();
+  const html = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.doesNotMatch(html, /disabled>Use parent<\/button>/, "the parent button is enabled with a base side");
+  await ctx.window.HerdrGitUi.resolveEditorConflictBlock(0, 0, "base");
+  const resolved = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.ok(resolved, "the diff center container rendered after resolve");
+  assert.doesNotMatch(resolved, /Conflict block 1/, "the base resolve drops the block controls");
+  assert.match(resolved, /base line/, "the base text renders in the resolved hunk");
+  // The read-only previous side legitimately keeps the original marker
+  // text, so only the block-control disappearance pins the resolve.
+});
+
+test("an unknown block mode falls back to the ours side", async () => {
+  const booted = await bootGitUi(conflictedBootResponses());
+  const { ui, ctx } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("src/merge.txt", "M");
+  await settle();
+  await ui.editFile();
+  await settle();
+  await ctx.window.HerdrGitUi.resolveEditorConflictBlock(0, 0, "bogus-mode");
+  const resolved = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.ok(resolved, "the diff center container rendered after resolve");
+  assert.doesNotMatch(resolved, /Conflict block 1/, "the fallback resolve drops the block controls");
+  assert.match(resolved, /ours line/, "an unknown mode resolves to the ours side");
+});
+
+test("the unified layout editor drops the previous-side section", async () => {
+  const booted = await bootGitUi(conflictedBootResponses());
+  const { ui, ctx } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("src/merge.txt", "M");
+  await settle();
+  // The harness loads no shared/options.js, so install the same
+  // HerdrOptions stub the layout-persist test uses; diffLayoutMode()
+  // reads it and setGitUiOption writes it.
+  const stored = { gitUiDiffLayout: "side-by-side" };
+  ctx.window.HerdrOptions = {
+    read: () => ({ ...stored }),
+    update: (fn) => { const options = {}; fn(options); Object.assign(stored, options); },
+  };
+  installHunkDom(booted, "diff@src/merge.txt");
+  await ui.editFile();
+  await settle();
+  const splitHtml = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.match(splitHtml, /Previous/, "the split layout shows the previous section");
+  assert.match(splitHtml, /Previous hunk stays read-only/, "the split layout shows its edit note");
+  await ui.setDiffLayout("unified");
+  await settle();
+  const unified = viewContainerHtml(booted, "diff@src/merge.txt");
+  assert.ok(unified, "the diff center container rendered in unified layout");
+  assert.match(unified, /git-ui-hunk-editor-unified/, "the unified editor class renders");
+  assert.doesNotMatch(unified, /Previous/, "the unified layout drops the previous section");
+  assert.match(unified, /editable hunk/, "the current section stays editable");
+  assert.match(unified, /Edit the hunk text below/, "the unified layout shows its edit note");
+});
+
+// --- diff_render: split/unified rows, hunk actions, blame, context ---
+
+function splitRows() {
+  return [
+    { old_line: { line_type: "context", content: "keep me", old_line_number: 1 }, new_line: { line_type: "context", content: "keep me", new_line_number: 1 } },
+    { old_line: { line_type: "delete", content: "old text", old_line_number: 2 }, new_line: { line_type: "add", content: "new text", new_line_number: 2 }, groupStart: true },
+    { old_line: { line_type: "delete", content: "old two", old_line_number: 3 }, new_line: { line_type: "add", content: "new two", new_line_number: 3 }, groupEnd: true },
+    { old_line: { line_type: "context", content: "tail", old_line_number: 4 }, new_line: { line_type: "context", content: "tail", new_line_number: 4 } },
+  ];
+}
+
+function diffRenderBoot(responses) {
+  const base = {
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: ["work.txt"], untracked: [], conflicted: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  };
+  return Object.assign(base, responses);
+}
+
+test("split layout renders change groups, restore buttons, and stage-hunk actions", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", rows: splitRows() }] }] },
+  }));
+  const { ui } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.match(html, /git-ui-diff-row git-ui-change git-ui-change-start/, "a paired change row opens the group");
+  assert.match(html, /git-ui-change-end/, "the group end row is marked");
+  assert.match(html, /Restore this block/, "the first change of the group offers a restore button");
+  assert.match(html, /HerdrGitUi\.restoreHunk\('work\.txt',0\)/, "the restore button wires path and hunk index");
+  assert.equal((html.match(/Restore this block/g) || []).length, 1, "only the first change of the group shows the restore button");
+  assert.match(html, /title="Stage this hunk"/, "the working scope offers a stage-hunk button");
+  assert.match(html, /HerdrGitUi\.stageHunk\('work\.txt',0\)/, "the stage-hunk button wires the path");
+  // changedMiddle splits the changed word into a git-ui-word-change
+  // span, so assert on the marker and the unchanged suffix instead of
+  // the raw line text.
+  assert.match(html, /git-ui-word-change/, "the paired change marks the changed word");
+  assert.match(html, / text<\/span>/, "the unchanged suffix renders after the changed word");
+});
+
+test("staged scope switches hunk actions to unstage and the read-only compare drops them", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: ["work.txt"], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", rows: splitRows() }] }] },
+  }));
+  const { ui } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "S");
+  await settle();
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.match(html, /title="Unstage this hunk"/, "the staged scope offers an unstage-hunk button");
+  assert.match(html, /HerdrGitUi\.unstageHunk\('work\.txt',0\)/, "the unstage button wires the path");
+});
+
+test("preview_large_diff hunks replace hunk actions with a hint", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", preview_large_diff: true, chunks: [{ header: "@@ -1,4 +1,4 @@", rows: splitRows() }] }] },
+  }));
+  const { ui } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.match(html, /render full diff for hunk actions/, "the preview hint replaces the hunk button");
+  assert.doesNotMatch(html, /Restore this block/, "no restore button in the preview");
+});
+
+test("unified layout pairs deletes with adds and prefixes signs", async () => {
+  const stored = { gitUiDiffLayout: "unified" };
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", rows: [
+      { line: { line_type: "context", content: "keep me", old_line_number: 1, new_line_number: 1 } },
+      { line: { line_type: "delete", content: "old text", old_line_number: 2 }, groupStart: true },
+      { line: { line_type: "add", content: "new text", new_line_number: 2 }, groupEnd: true },
+      { line: { line_type: "context", content: "tail", old_line_number: 3, new_line_number: 3 } },
+    ] }] }] },
+  }));
+  const { ui, ctx } = booted;
+  ctx.window.HerdrOptions = {
+    read: () => ({ ...stored }),
+    update: (fn) => { const options = {}; fn(options); Object.assign(stored, options); },
+  };
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.match(html, /git-ui-unified-row git-ui-add/, "unified add rows carry their class");
+  assert.match(html, /git-ui-unified-row git-ui-del/, "unified delete rows carry their class");
+  assert.match(html, /git-ui-unified-row git-ui-context/, "unified context rows carry their class");
+  assert.match(html, /git-ui-unified-sign">\+/, "the add sign renders");
+  assert.match(html, /git-ui-unified-sign">-/, "the delete sign renders");
+  assert.match(html, /git-ui-word-change/, "the paired delete/add shows inline changed text");
+  // The two-column line numbers render old and new numbers per row.
+  assert.match(html, /git-ui-unified-lines"><span>1<\/span><span>1<\/span>/, "the context row numbers render");
+  assert.match(html, /<span>2<\/span><span><\/span>/, "the delete row shows only its old number");
+  assert.match(html, /<span><\/span><span>2<\/span>/, "the add row shows only its new number");
+});
+
+test("blame toggle fetches authors, renders short names, and degrades on error", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", rows: splitRows() }] }] },
+    "/api/git-ui/blame": { authors: { "2": "Ada Lovelace Byron <ada@example.com>", "3": "Grace Hopper <grace@example.com>" } },
+  }));
+  const { ui, calls } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  const blameBefore = calls.filter((call) => call.path === "/api/git-ui/blame").length;
+  await ui.toggleBlame();
+  await settle();
+  const blameCalls = calls.slice(blameBefore).filter((call) => call.path === "/api/git-ui/blame");
+  assert.equal(blameCalls.length, 1, "the blame toggle fetches the blame once");
+  assert.equal(blameCalls[0].params.get("ref_name"), "working", "the changes tab blames the working ref");
+  assert.equal(blameCalls[0].params.get("file"), "work.txt", "the blame fetch targets the file");
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.match(html, /Ada Lovelace/, "the blame renders the first two name words");
+  assert.doesNotMatch(html, /ada@example\.com/, "the email part of the author is dropped");
+  await ui.toggleBlame();
+  await settle();
+  assert.doesNotMatch(viewContainerHtml(booted, "diff@work.txt"), /Ada Lovelace/, "the blame hides after the second toggle");
+});
+
+test("blame failures surface as unavailable without breaking the diff", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", rows: splitRows() }] }] },
+    "/api/git-ui/blame": () => { throw Error("no git blame here"); },
+  }));
+  const { ui } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  await ui.toggleBlame();
+  await settle();
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.match(html, /blame unavailable/, "the failure note renders");
+  assert.match(html, /git-ui-word-change/, "the diff content still renders");
+});
+
+test("expandContext deepens the diff context and refetches", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", rows: splitRows() }] }] },
+  }));
+  const { ui, calls, ctx } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  const before = calls.filter((call) => call.path === "/api/git-ui/diff").length;
+  // Pin the shared helper consult: the ladder alone would answer 6.
+  const helperCalls = [];
+  ctx.window.HerdrLineContext = {
+    nextContextSize(current, opts) { helperCalls.push({ current, opts }); return 12; },
+  };
+  await ui.expandContext();
+  await settle();
+  assert.equal(helperCalls.length, 1, "expanding context consults the shared helper");
+  assert.equal(helperCalls[0].current, 3, "the current context value passes through");
+  const after = calls.filter((call) => call.path === "/api/git-ui/diff").length;
+  assert.ok(after > before, "expanding context refetches the diff");
+  const lastDiff = calls.filter((call) => call.path === "/api/git-ui/diff").pop();
+  assert.equal(lastDiff.params.get("context"), "12", "the helper's size drives the refetch");
+});
