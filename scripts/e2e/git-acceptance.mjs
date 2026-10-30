@@ -129,7 +129,14 @@ function context() {
       __contentEl: contentEl,
       createElement: () => element(),
       execCommand: () => true,
-      querySelector(selector) { return selector === ".git-ui-content" ? contentEl : element(); },
+      // The drawer yields the keyboard while a location-bar popover is up,
+      // probing with these two selectors. No popover ever exists in this
+      // VM, so they must answer null (a truthy stub would swallow every
+      // key this test presses and the Esc ladder would never run).
+      querySelector(selector) {
+        if (selector === ".location-bar-branch-popover" || selector === ".location-bar-worktree-popover") return null;
+        return selector === ".git-ui-content" ? contentEl : element();
+      },
       querySelectorAll: () => [],
       getElementById(id) {
         const el = element();
