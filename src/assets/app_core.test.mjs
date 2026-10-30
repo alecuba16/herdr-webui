@@ -1813,6 +1813,7 @@ describe("desktop file browser editor integration", () => {
     await context.window.HerdrFileBrowser.openAt({ cwd: "/tmp/ws" }, "", { kind: "dir" });
     await new Promise((resolve) => setTimeout(resolve, 0));
     const html = document.getElementById("fileBrowserPanel").innerHTML;
+    assert.match(html, /herdr-file-tree-current/, "the current folder row renders at the workspace root");
     assert.doesNotMatch(html, /↑ Up/, "no Up row at the workspace root");
     const fetches = requests.length;
     await context.window.HerdrFileBrowser.up();

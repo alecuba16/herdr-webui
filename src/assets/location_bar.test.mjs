@@ -524,7 +524,7 @@ describe("location bar worktree popover", () => {
     { path: "/repo-lane", label: "repo-lane", branch: "feature-lane" },
   ];
 
-  function loadWorktreePopover({ routes = {}, state, confirms = true, openFolder } = {}) {
+  function loadWorktreePopover({ routes = {}, state, confirms = true, openFolder, listeners } = {}) {
     const bar = stubNode("locationBar");
     const calls = [];
     const document = {
@@ -532,7 +532,9 @@ describe("location bar worktree popover", () => {
       querySelector: () => null,
       querySelectorAll: () => [],
       createElement: () => ({ rel: "", href: "", set innerHTML(html) { this._html = html; }, get innerHTML() { return this._html || ""; }, firstElementChild: null, replaceWith() {}, querySelector: () => null }),
-      addEventListener: () => {},
+      addEventListener: (type, listener, capture) => {
+        if (listeners) listeners.push({ type, listener, capture });
+      },
       head: { appendChild: () => {} },
     };
     const ctx = {
@@ -681,5 +683,34 @@ describe("location bar worktree popover", () => {
     await pending;
     ok(bar.innerHTML.includes("worktree probe failed"), "error state renders");
     ok(bar.innerHTML.includes("git-ui-error"), "error block renders");
+  });
+
+  it("capture-phase Escape closes whichever popover is open and consumes the event", async () => {
+    const listeners = [];
+    const routes = {
+      "/api/worktrees": { result: { worktrees: WORKTREES } },
+      "/api/git-ui/branches": { result: { local: [{ name: "main" }], remote: [] } },
+    };
+    const { ctx, bar } = loadWorktreePopover({ routes, listeners });
+    ctx.HerdrLocationBar.sync();
+    const keydown = listeners.find((entry) => entry.type === "keydown");
+    ok(keydown, "the bar registers a document keydown listener");
+    ok(keydown.capture === true, "the keydown listener runs in the capture phase");
+
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes("location-bar-branch-popover"), "branch popover is open");
+    let stopped = false;
+    let prevented = false;
+    keydown.listener({ key: "Escape", stopPropagation() { stopped = true; }, preventDefault() { prevented = true; } });
+    ok(!bar.innerHTML.includes("location-bar-branch-popover"), "Escape closed the branch popover");
+    ok(stopped && prevented, "Escape is consumed so the drawer behind stays open");
+
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes("location-bar-worktree-popover"), "worktree popover is open");
+    keydown.listener({ key: "Escape", stopPropagation() {}, preventDefault() {} });
+    ok(!bar.innerHTML.includes("location-bar-worktree-popover"), "Escape closed the worktree popover");
+
+    keydown.listener({ key: "a", stopPropagation() {}, preventDefault() {} });
+    ok(true, "other keys pass through the handler untouched");
   });
 });
