@@ -456,6 +456,81 @@ describe("location bar branch popover", () => {
     ok(!bar.innerHTML.includes("location-bar-branch-popover"), "popover closes after switch");
   });
 
+  it("a branch checked out in another worktree reroutes to that folder, never posts a switch", async () => {
+    const worktreePath = "/repo-wt";
+    const opened = [];
+    const { ctx, bar, calls } = loadPopover({
+      routes: {
+        "/api/git-ui/branches": {
+          local: [
+            { name: "main", current: true, worktree_path: "/repo" },
+            { name: "wt-lane", worktree_path: worktreePath },
+          ],
+          remote: [],
+        },
+        "/api/git-ui/switch": { ok: true },
+      },
+    });
+    ctx.HerdrOpenFolder = {
+      openFolderAsWorkspace(dir) { opened.push(String(dir)); return Promise.resolve(true); },
+    };
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ok(bar.innerHTML.includes(">worktree</i>"), "the checked-out-elsewhere row is badged");
+    ok(bar.innerHTML.includes(`title="Checked out in ${worktreePath}"`), "the badge names the folder");
+    const before = calls.length;
+    await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("wt-lane"), false);
+    equal(JSON.stringify(opened), JSON.stringify([worktreePath]), "folder-change flow received the worktree path");
+    equal(calls.slice(before).filter((call) => call.path === "/api/git-ui/switch").length, 0, "no switch POST for a checked-out branch");
+    ok(!bar.innerHTML.includes("location-bar-branch-popover"), "popover closed before the reroute");
+  });
+
+  it("a branch whose worktree_path is the current folder still switches in place", async () => {
+    const { ctx, bar, calls } = loadPopover({
+      routes: {
+        "/api/git-ui/branches": {
+          local: [
+            { name: "main", current: true, worktree_path: "/repo" },
+            { name: "feature-x", worktree_path: "/repo/" },
+          ],
+          remote: [],
+        },
+        "/api/git-ui/switch": { ok: true },
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ok(!bar.innerHTML.includes(">worktree</i>"), "own-folder checkout carries no badge");
+    const before = calls.length;
+    await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("feature-x"), false);
+    const switchPosts = calls.slice(before).filter((call) => call.path === "/api/git-ui/switch");
+    equal(switchPosts.length, 1, "in-place switch POST fired");
+    equal(JSON.parse(switchPosts[0].init.body).branch, "feature-x");
+  });
+
+  it("a remote row never reroutes even when its local branch has a worktree", async () => {
+    const opened = [];
+    const { ctx, calls } = loadPopover({
+      routes: {
+        "/api/git-ui/branches": {
+          local: [{ name: "main", current: true, worktree_path: "/repo" }],
+          remote: [{ name: "origin/wt-lane", worktree_path: "/repo-wt" }],
+        },
+        "/api/git-ui/switch": { ok: true },
+      },
+    });
+    ctx.HerdrOpenFolder = {
+      openFolderAsWorkspace(dir) { opened.push(String(dir)); return Promise.resolve(true); },
+    };
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    const before = calls.length;
+    await ctx.HerdrLocationBar.switchBranchFromPopover(encodeURIComponent("origin/wt-lane"), true);
+    equal(opened.length, 0, "remote rows never hit the folder-change flow");
+    const switchPosts = calls.slice(before).filter((call) => call.path === "/api/git-ui/switch");
+    equal(switchPosts.length, 1, "remote row posts its switch");
+  });
+
   it("switch refuses the current branch", async () => {
     const { ctx, calls } = loadPopover({
       routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },

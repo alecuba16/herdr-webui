@@ -12,6 +12,12 @@
   const pathBasename =
     helpers.pathBasename ||
     ((p) => String(p || "").split("/").filter(Boolean).pop() || "");
+  const escapeAttr =
+    helpers.escapeAttr ||
+    ((v) =>
+      String(v == null ? "" : v)
+        .replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c])
+        .replace(/'/g, "&#39;"));
   const inputAttrs =
     helpers.inputAttrs ||
     ((hint) =>
@@ -203,6 +209,7 @@
   function branchListRow(branch, currentBranch) {
     const name = String(branch.name || "");
     const isCurrent = !branch.remote && name === currentBranch;
+    const checkout = !branch.remote && !isCurrent ? branchCheckoutPath(bar.branchList, name) : null;
     const author = String(branch.author || "");
     const date = String(branch.date || "");
     const subject = String(branch.subject || "");
@@ -210,6 +217,13 @@
     const hover = [author && `${author}`, exact, subject && `"${subject}"`].filter(Boolean).join(" · ");
     const icon = isCurrent ? `<b class="git-ui-branch-row-check" role="img" aria-label="Current branch" title="Current branch">✓</b>` : `<b class="git-ui-branch-row-icon" aria-hidden="true"></b>`;
     const meta = [author, branchRelativeTime(date)].filter(Boolean).join(" · ");
+    // Checked-out-elsewhere rows keep the switch action, which reroutes to
+    // the worktree, and say so on the row.
+    const badge = branch.remote
+      ? `<i class="git-ui-branch-row-remote">remote</i>`
+      : checkout
+        ? `<i class="git-ui-branch-row-remote" title="Checked out in ${escapeAttr(checkout)}">worktree</i>`
+        : "";
     // Trash only on non-current rows; it stops propagation so the row
     // switch does not fire.
     const trash = isCurrent
@@ -217,7 +231,7 @@
       : `<button class="git-ui-branch-row-trash" title="Delete branch" aria-label="Delete branch ${escapeHtml(name)}" onclick="event.stopPropagation();HerdrLocationBar.deleteBranchFromPopover('${encodeArg(name)}',${branch.remote ? "true" : "false"})"><span></span></button>`;
     return `<div class="git-ui-branch-row${isCurrent ? " current" : ""}" title="${escapeHtml(hover)}">
           <button class="git-ui-branch-row-main" onclick="HerdrLocationBar.switchBranchFromPopover('${encodeArg(name)}',${branch.remote ? "true" : "false"})">
-            <span class="git-ui-branch-row-name">${icon}<span class="git-ui-branch-row-name-text">${escapeHtml(name)}</span>${branch.remote ? `<i class="git-ui-branch-row-remote">remote</i>` : ""}</span>
+            <span class="git-ui-branch-row-name">${icon}<span class="git-ui-branch-row-name-text">${escapeHtml(name)}</span>${badge}</span>
             <span class="git-ui-branch-row-meta">${escapeHtml(meta)}</span>
           </button>${trash}
         </div>`;
@@ -246,6 +260,24 @@
     const draft = String(list.newBranch || "");
     const createDisabled = list.creating ? " disabled" : "";
     return `<div class="git-ui-branch-list location-bar-branch-popover" role="dialog" aria-label="Branches" style="${style}" onclick="event.stopPropagation()">${body}<label class="git-ui-branch-list-new"><span>New branch from ${escapeHtml(list.currentBranch || "HEAD")}</span><div class="git-ui-inline-field"><input value="${escapeHtml(draft)}" placeholder="branch-name" aria-label="New branch name"${inputAttrs("done")} oninput="HerdrLocationBar.newBranchDraft(this.value)" onkeydown="HerdrLocationBar.newBranchKeydown(event)"><button class="git-ui-btn" type="button"${createDisabled} onclick="HerdrLocationBar.createBranchFromPopover()">Create</button></div></label><label class="git-ui-branch-list-filter"><span>Filter</span><input value="${escapeHtml(list.filter || "")}" placeholder="Type to filter" aria-label="Filter branches"${inputAttrs("search")} oninput="HerdrLocationBar.branchPopoverFilter(this.value)"></label></div>`;
+  }
+
+  // The branches payload stamps each branch with the worktree folder it
+  // is checked out in (git worktree list), null when none. A checkout
+  // that matches the popover's own folder is the current branch, not a
+  // destination; anything else means the row must reroute to that
+  // folder instead of posting a switch git will refuse.
+  function branchCheckoutPath(list, localName) {
+    if (!list || !localName) return null;
+    const rows = (list.local || []).concat(list.remote || []);
+    for (const branch of rows) {
+      if (!branch || branch.remote) continue;
+      if (String(branch.name || "") !== String(localName)) continue;
+      const path = String(branch.worktree_path || "");
+      if (!path) return null;
+      return samePath(path, list.cwd) ? null : path;
+    }
+    return null;
   }
 
   function branchPopoverRows(list) {
@@ -505,6 +537,25 @@
     const localName = isRemote ? name.split("/").slice(1).join("/") : name;
     if (!localName) return;
     if (localName === String(list.currentBranch || "")) return;
+    // A branch checked out in another worktree cannot be switched to in
+    // place (git refuses a second checkout): the row hands the user to
+    // that worktree through the same folder-change flow the worktree
+    // popover rows use, which focuses an open workspace on the folder or
+    // opens one.
+    const checkout = branchCheckoutPath(list, localName);
+    if (checkout) {
+      if (!window.confirm(`Switch to branch "${localName}" in its worktree "${checkout}"?`)) return;
+      if (!window.HerdrOpenFolder || !window.HerdrOpenFolder.openFolderAsWorkspace) {
+        alert("Folder switching is unavailable");
+        return;
+      }
+      try {
+        await window.HerdrOpenFolder.openFolderAsWorkspace(checkout);
+      } catch (err) {
+        alert(err.message || String(err));
+      }
+      return;
+    }
     if (!window.confirm(`Switch workspace branch to "${name}"?`)) return;
     try {
       if (typeof showBlocking === "function") showBlocking(`Switching to ${name}`);
