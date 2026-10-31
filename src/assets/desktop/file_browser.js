@@ -21,6 +21,7 @@
     return Object.assign({
       open: false, cwd: "", root: "", home: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, error: "", permissionRequired: false, contextMenu: null, refreshing: false, gitStatus: null,
       filter: "", filterTimer: null, filterEntries: [], filterSelected: "", filterOffset: 0, filterActiveIndex: 0, filterTruncated: false, filterDone: true, filterLoading: false, filterError: "",
+      treeSelected: "", filterCollapsed: {},
     }, initial || {});
   }
 
@@ -80,8 +81,9 @@
 
   function renderFilteringBody() {
     // Server search replaces the tree: results are the list, yellow marks
-    // come from the shared renderer's filterTerm pass.
-    return Tree.renderEntries(filterEntriesList(), {
+    // come from the shared renderer's filterTerm pass. Rows hide under
+    // collapsed folders (filterCollapsed) so left/right fold groups.
+    return Tree.renderEntries(filterCollapsedRows(), {
       callback: "HerdrFileBrowser",
       showMeta: true,
       dirClickMethod: "none",
@@ -90,7 +92,54 @@
       shiftSelectMode: true,
       filterTerm: String(state.filter || "").trim(),
       selectedPath: String(state.filterSelected || ""),
+      rovingTabindex: true,
+      activateMethod: "treeRowKeydown",
+      // Caret clicks (mouse) fold the result group in place, same as Left/
+      // Right: the normal-tree toggle would try to load the dir as a tree.
+      toggleMethod: "toggleFilter",
     });
+  }
+
+  function isFilterCollapsed(path) {
+    return !!state.filterCollapsed[String(path || "")];
+  }
+
+  // Visible result rows: every match plus the ancestor folders it hangs
+  // under, minus the descendants of folders the user collapsed. Dir rows
+  // claim the expanded flag only while a child row is still visible, so
+  // the caret tracks what is on screen instead of the raw server shape.
+  function filterCollapsedRows() {
+    const rows = Tree.searchTreeEntries(filterEntriesList());
+    const parents = new Set();
+    for (const row of rows) {
+      const parts = String(row.path || "").split("/").filter(Boolean);
+      parts.pop();
+      let prefix = "";
+      for (const part of parts) {
+        prefix = prefix ? `${prefix}/${part}` : part;
+        parents.add(prefix);
+      }
+    }
+    return rows.filter((row) => {
+      const parts = String(row.path || "").split("/").filter(Boolean);
+      for (let i = 1; i < parts.length; i++) {
+        if (isFilterCollapsed(parts.slice(0, i).join("/"))) return false;
+      }
+      return true;
+    }).map((row) => row.kind !== "dir" ? row : Object.assign({}, row, { expanded: parents.has(String(row.path || "")) && !isFilterCollapsed(row.path) }));
+  }
+
+  function toggleFilterDir(path) {
+    const collapsed = !isFilterCollapsed(path);
+    state.filterCollapsed[path] = collapsed;
+    // Collapsing hides the selected row: move selection to the folder
+    // being collapsed so the caret does not silently own a hidden row.
+    if (collapsed && filterActive()) {
+      const rows = filterCollapsedRows();
+      const visible = rows.some((row) => row.path === state.filterSelected);
+      if (!visible) setFilterSelection(path, { refocus: false });
+    }
+    renderIfActive(state, true);
   }
 
   function restoreFilterFocus() {
@@ -125,6 +174,9 @@
       target.filterSelected = "";
       target.filterOffset = 0;
       target.filterActiveIndex = 0;
+      // A fresh term restarts the result tree, so per-folder collapse
+      // choices from the previous term must not leak into the new one.
+      target.filterCollapsed = {};
     }
     const refocus = !!(document.activeElement && document.activeElement.id === "fileBrowserFilter");
     target.filterLoading = true;
@@ -175,6 +227,102 @@
     renderIfActive(state, true);
     scrollToFilterMatch(state.filterSelected);
     restoreFilterFocus();
+  }
+
+  // One selection setter for every keyboard move so the DOM side (tabindex
+  // roving, focus, scroll) stays consistent across the surfaces that move
+  // the selection: filter input arrows, tree arrows, collapse fallbacks.
+  function setFilterSelection(path, options) {
+    const entries = filterEntriesList();
+    state.filterSelected = String(path || "");
+    const index = entries.findIndex((entry) => entry.path === state.filterSelected);
+    state.filterActiveIndex = index >= 0 ? index : 0;
+    renderIfActive(state, true);
+    scrollToFilterMatch(state.filterSelected);
+    if (!options || options.refocus !== false) {
+      focusFilterRow(state.filterSelected);
+    }
+  }
+
+  // Focus the row itself after a tree-level keyboard move so the next
+  // arrow press lands on the row, not back on the filter input. The roving
+  // tabindex makes this row the tree's single Tab stop at the same time.
+  function focusFilterRow(path) {
+    if (!path) return;
+    const side = document.querySelector(".file-browser-side");
+    if (!side || !side.querySelector) return;
+    const row = side.querySelector('.herdr-tree-row[title="' + String(path).replace(/"/g, '\\"') + '"]');
+    if (row && typeof row.focus === "function") row.focus({ preventScroll: true });
+  }
+
+  // Visible rows in DOM order. Wrapped in a helper so the keyboard handler
+  // and the roving focus share one definition of "the list".
+  function visibleFilterRows() {
+    const side = document.querySelector(".file-browser-side");
+    if (!side || !side.querySelectorAll) return [];
+    return Array.prototype.slice.call(side.querySelectorAll(".herdr-tree-row"));
+  }
+
+  // Keyboard tree navigation: Up/Down select the previous/next visible row,
+  // Left/Right collapse/expand the focused folder, Enter opens the file.
+  // Runs on the row's own keydown so the filter input keeps its arrows (the
+  // up/down matcher walk) and the tree rows keep theirs.
+  function treeRowKeydown(event) {
+    if (!event) return;
+    if (!filterActive()) return;
+    const rows = visibleFilterRows();
+    if (!rows.length) return;
+    const current = rows.findIndex((row) => row.getAttribute("title") === state.filterSelected);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      const at = current >= 0 ? current : 0;
+      const next = event.key === "ArrowDown"
+        ? Math.min(rows.length - 1, at + 1)
+        : Math.max(0, at - 1);
+      if (next === at && current < 0) return;
+      setFilterSelection(rows[next].getAttribute("title"), { refocus: true });
+      return;
+    }
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      const row = current >= 0 ? rows[current] : null;
+      if (!row) return;
+      const kind = row.classList.contains("dir") ? "dir" : "file";
+      if (kind !== "dir") return;
+      const collapsed = isFilterCollapsed(row.getAttribute("title"));
+      const wantsExpand = event.key === "ArrowRight";
+      if (collapsed === !wantsExpand) return;
+      event.preventDefault();
+      event.stopPropagation();
+      toggleFilterDir(row.getAttribute("title"));
+      focusFilterRow(state.filterSelected);
+      return;
+    }
+    if (event.key === "Tab") {
+      // Tab leaves the tree for the next section; the roving tabindex
+      // means the tree itself is one stop, so the browser default is
+      // already right and the handler only lets it run.
+      return;
+    }
+    if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
+      // Roving rows own every key, so Enter/Space activates here instead
+      // of the renderer's built-in dir keys: files open, folders toggle.
+      const row = current >= 0 ? rows[current] : null;
+      if (!row) return;
+      if (row.classList.contains("dir")) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleFilterDir(row.getAttribute("title"));
+        focusFilterRow(state.filterSelected);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const select = window.HerdrWorkspacePanes && window.HerdrWorkspacePanes.openEditorTab
+        ? () => window.HerdrWorkspacePanes.openEditorTab(row.getAttribute("title"))
+        : () => openEditorTab(row.getAttribute("title"));
+      void select();
+    }
   }
 
   function filterInput(value) {
@@ -1589,6 +1737,13 @@
     focusFilter,
     filterActive,
     sideScroll,
+    treeRowKeydown,
+    toggleFilter(encodedPath) { toggleFilterDir(decodeURIComponent(encodedPath)); },
+    // Test seams: the harness has no DOM, so selection and collapse state
+    // read through direct state probes instead of rendered markup.
+    setFilterSelectedForTest(path) { setFilterSelection(String(path || ""), { refocus: false }); },
+    selectedFilterForTest() { return String(state.filterSelected || ""); },
+    isFilterCollapsedForTest(path) { return isFilterCollapsed(path); },
     toggle(encodedPath) { toggleDir(decodeURIComponent(encodedPath)); },
     enter(encodedPath) { loadTree(decodeURIComponent(encodedPath)); },
     // Tree clicks route through the pane module so the tab lands in the

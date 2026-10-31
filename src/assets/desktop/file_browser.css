@@ -725,6 +725,14 @@
 .herdr-tree-row.filter-active {
   box-shadow: inset 0 0 0 1px var(--accent-1, var(--accent));
 }
+/* Arrow-key selection is the tree's keyboard focus: the ring must show on
+   every selected row, not only :focus-visible, because roving tabindex
+   moves DOM focus with the selection. */
+.herdr-tree-row.filter-active,
+.herdr-tree-row.filter-active:focus {
+  box-shadow: inset 0 0 0 1px var(--accent-1, var(--accent)), var(--focus-ring);
+  outline: none;
+}
 .herdr-content-search {
   display: grid;
   gap: 8px;

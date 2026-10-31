@@ -164,6 +164,15 @@
     return parts.map((part, index) => `<button type="button" class="herdr-tree-crumb" onclick="event.stopPropagation();${callback}.${opts.expandCompactMethod}('${arg(part.path)}')">${esc(part.name)}</button>${index < parts.length - 1 ? '<span class="herdr-tree-sep">/</span>' : ""}`).join("");
   }
 
+  // Roving tabindex: the tree gets one Tab stop. Rows other than the
+  // selected one drop out of tab order; arrow keys inside the surface move
+  // the selection. "0" keeps native focus behavior for surfaces that have
+  // not adopted roving yet.
+  function tabIndexAttr(opts, isSelected) {
+    if (opts.rovingTabindex !== true) return ' tabindex="0"';
+    return isSelected ? ' tabindex="0"' : ' tabindex="-1"';
+  }
+
   function renderEntry(entry, selected, callback, opts) {
     const kind = entry.kind === "dir" || entry.kind === "up" ? "dir" : "file";
     const path = entry.path || entry.name || "";
@@ -179,8 +188,12 @@
     // file browser where double-click enters). Keyboard still needs a path:
     // Enter/Space toggles expansion in place, so the row itself stays the
     // treeitem and the caret below is a mouse shortcut, not a tab stop.
+    // activateMethod (roving surfaces) overrides the built-in dir keys so
+    // the owning surface controls every key, arrows included.
     const dirKeys = kind === "dir" && entry.kind !== "up" && !dirClickMethod
       ? ` onkeydown="if(event.target===this&&['Enter',' ','Spacebar'].includes(event.key)){event.preventDefault();event.stopPropagation();${callback}.${toggleMethod}('${arg(path)}');}"` : "";
+    const rowKeys = opts.activateMethod && entry.kind !== "up"
+      ? ` onkeydown="${callback}.${opts.activateMethod}(event)"` : dirKeys;
     const expandedAttr = kind === "dir" && entry.kind !== "up" ? ` aria-expanded="${expanded ? "true" : "false"}"` : "";
     const caret = entry.kind === "up" ? '<span class="herdr-tree-caret" aria-hidden="true"></span>' : kind === "dir" ? `<span class="herdr-tree-caret" aria-hidden="true" onclick="event.preventDefault();event.stopPropagation();${callback}.${toggleMethod}('${arg(path)}')">${icon(expanded ? "open" : "closed")}</span>` : '<span class="herdr-tree-caret" aria-hidden="true"></span>';
     const action = entry.kind === "up" ? "up" : kind === "dir" ? dirClickMethod : selectMethod;
@@ -189,7 +202,7 @@
     // Optional trailing row action (e.g. a "..." sheet trigger on mobile).
     // Rendered as its own element so the row click handler is untouched.
     const rowAction = opts.rowActionMethod && entry.kind !== "up" ? `<span class="herdr-tree-row-action" role="button" tabindex="0" aria-label="Actions for ${esc(basename(path) || path)}"${keyActivateAttr()} onclick="event.preventDefault();event.stopPropagation();${callback}.${opts.rowActionMethod}('${arg(path)}','${kind}')">${opts.rowActionLabel || "⋯"}</span>` : "";
-    return `<button class="herdr-tree-row ${kind}${entry.kind === "up" ? " up" : ""}${active}${entry.status ? ` git-${entry.status}` : ""}" role="treeitem"${expandedAttr} style="${indentStyle(level, opts)}" title="${esc(path)}"${click}${dirKeys}${dbl}${context}>${caret}<span class="herdr-tree-kind">${icon(entry.kind === "up" ? "up" : kind, path || entry.name)}</span><span class="herdr-tree-name">${highlight(entry.name || basename(path), opts.filterTerm)}</span>${statusBadge(entry.status)}${meta}${rowAction}</button>`;
+    return `<button class="herdr-tree-row ${kind}${entry.kind === "up" ? " up" : ""}${active}${entry.status ? ` git-${entry.status}` : ""}" role="treeitem"${tabIndexAttr(opts, selected === path)}${expandedAttr} style="${indentStyle(level, opts)}" title="${esc(path)}"${click}${rowKeys}${dbl}${context}>${caret}<span class="herdr-tree-kind">${icon(entry.kind === "up" ? "up" : kind, path || entry.name)}</span><span class="herdr-tree-name">${highlight(entry.name || basename(path), opts.filterTerm)}</span>${statusBadge(entry.status)}${meta}${rowAction}</button>`;
   }
 
   function buildGitEntries(files, status) {
