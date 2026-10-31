@@ -65,6 +65,12 @@ content-search-e2e:
 mobile-chord-e2e:
     bash scripts/e2e/run-mobile-chord-e2e.sh
 
+# Real-browser acceptance for the filter-results tree keyboard navigation
+# (Up/Down select, Left/Right collapse/expand, Enter activates, Tab hops
+# sections instead of walking rows). See scripts/e2e/README.md.
+filter-tree-keyboard-e2e:
+    bash scripts/e2e/run-filter-tree-keyboard-e2e.sh
+
 # External-backend graphics probe: isolated herdr 0.9.0 daemon + the webui's
 # protocol.rs types speaking the real ClientShell endpoint protocol. See
 # scripts/e2e/README.md.

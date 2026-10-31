@@ -577,3 +577,144 @@ test("the file browser shortcut map reads the settings scope", async () => {
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(context.HerdrFileBrowser.filterActive(), false, "clearFilter resets the active state");
 });
+
+// ---- filter tree keyboard navigation (arrows own the tree) --------------
+
+// Result rows grouped under ancestor folders, in the shape the shared
+// renderer emits them, so collapse behavior is observable from HTML.
+const NESTED_FILTER_ENTRIES = [
+  { kind: "file", name: "a.js", path: "src/ui/a.js", level: 0, size: 10 },
+  { kind: "file", name: "b.js", path: "src/core/b.js", level: 0, size: 10 },
+  { kind: "dir", name: "docs", path: "src/docs", level: 0 },
+];
+
+async function openNestedFilterResults(loaded) {
+  const { context, nodes } = await openFilterWorkspace(loaded).then(() => loaded);
+  context.fetch = async () => ({ ok: true, statusText: "OK", json: async () => ({ path: "src", entries: NESTED_FILTER_ENTRIES, git_status: null, truncated: false, visited: 5 }) });
+  context.HerdrFileBrowser.filterInput("src");
+  context.HerdrFileBrowser.filterKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  return { context, nodes };
+}
+
+function filterRowsFromHtml(html) {
+  const rows = [];
+  const re = /class="herdr-tree-row (dir|file)([^"]*)" role="treeitem" tabindex="(-1|0)"[^>]*title="([^"]*)"/g;
+  let match;
+  while ((match = re.exec(html))) {
+    rows.push({ kind: match[1], classes: match[2], tabindex: match[3], title: match[4] });
+  }
+  return rows;
+}
+
+test("filter results group into folders with one tab stop per visible list", async () => {
+  const loaded = makeFilterDomContext();
+  const { nodes } = await openNestedFilterResults(loaded);
+  const html = panelHtml(nodes);
+  const rows = filterRowsFromHtml(html);
+  assert.ok(rows.some((row) => row.title === "src" && row.kind === "dir"), "ancestor folders appear as dir rows");
+  assert.ok(rows.some((row) => row.title === "src/ui/a.js"), "nested matches render under their folder");
+  const tabStops = rows.filter((row) => row.tabindex === "0");
+  assert.equal(tabStops.length, 1, "exactly one row is tabbable");
+  assert.ok(tabStops[0].classes.includes(" active"), "the selected row owns the tree's tab stop");
+});
+
+test("left/right collapse and expand folder groups in the results", async () => {
+  const loaded = makeFilterDomContext();
+  const { context, nodes } = await openNestedFilterResults(loaded);
+  const firstSelected = () => filterRowsFromHtml(panelHtml(nodes)).find((row) => row.tabindex === "0");
+
+  // Select the src folder row (first row in DOM order) so collapse targets it.
+  context.HerdrFileBrowser.setFilterSelectedForTest("src");
+  let row = firstSelected();
+  assert.equal(row.title, "src");
+
+  context.HerdrFileBrowser.toggleFilter(encodeURIComponent("src"));
+  let html = panelHtml(nodes);
+  let visible = filterRowsFromHtml(html);
+  assert.ok(!visible.some((r) => r.title.startsWith("src/")), "collapse hides the folder's matches");
+  assert.ok(visible.some((r) => r.title === "src"), "the collapsed folder row stays");
+  assert.ok(html.includes('aria-expanded="false"'), "the collapsed folder carries aria-expanded=false");
+
+  context.HerdrFileBrowser.toggleFilter(encodeURIComponent("src"));
+  html = panelHtml(nodes);
+  visible = filterRowsFromHtml(html);
+  assert.ok(visible.some((r) => r.title === "src/ui/a.js"), "expand brings the matches back");
+  assert.ok(html.includes('aria-expanded="true"'), "the expanded folder carries aria-expanded=true");
+});
+
+test("treeRowKeydown moves selection with up/down and stops at the ends", async () => {
+  const loaded = makeFilterDomContext();
+  const { context, nodes } = await openNestedFilterResults(loaded);
+
+  // The harness has no DOM querySelector, so the rows live in markup: the
+  // keyboard handler runs against a synthetic row list matching the
+  // rendered order.
+  const html = panelHtml(nodes);
+  const order = filterRowsFromHtml(html).map((row) => ({
+    title: row.title,
+    kind: row.kind,
+    classList: { contains: (token) => row.classes.split(/\s+/).includes(token) || row.kind === token },
+    getAttribute: (name) => (name === "title" ? row.title : null),
+    getBoundingClientRect: () => ({ top: 0 }),
+  }));
+  const side = {
+    querySelectorAll: (selector) => (String(selector).includes("herdr-tree-row") ? order : []),
+    querySelector: () => null,
+    scrollTop: 0,
+    getBoundingClientRect: () => ({ top: 0 }),
+  };
+  loaded.context.document.querySelector = () => side;
+
+  const keydown = (key) => context.HerdrFileBrowser.treeRowKeydown({ key, preventDefault() {}, stopPropagation() {} });
+
+  // Selection starts on the first match (src/ui/a.js per fresh-search rule).
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src/ui/a.js");
+  keydown("ArrowUp");
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src/ui", "up from a file lands on its folder row");
+  keydown("ArrowUp");
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src", "up walks to the root folder row");
+  keydown("ArrowUp");
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src", "up from the first row stays put");
+  keydown("ArrowDown");
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src/ui", "down selects the next visible row");
+  keydown("ArrowDown");
+  keydown("ArrowDown");
+  keydown("ArrowDown");
+  keydown("ArrowDown");
+  keydown("ArrowDown");
+  assert.equal(context.HerdrFileBrowser.selectedFilterForTest(), "src/docs", "down stops at the last row");
+});
+
+test("treeRowKeydown left/right on a folder row toggles the group", async () => {
+  const loaded = makeFilterDomContext();
+  const { context, nodes } = await openNestedFilterResults(loaded);
+  const html = panelHtml(nodes);
+  const order = filterRowsFromHtml(html).map((row) => ({
+    title: row.title,
+    kind: row.kind,
+    classList: { contains: (token) => row.classes.split(/\s+/).includes(token) || row.kind === token },
+    getAttribute: (name) => (name === "title" ? row.title : null),
+    getBoundingClientRect: () => ({ top: 0 }),
+  }));
+  const side = {
+    querySelectorAll: (selector) => (String(selector).includes("herdr-tree-row") ? order : []),
+    querySelector: () => null,
+    scrollTop: 0,
+    getBoundingClientRect: () => ({ top: 0 }),
+  };
+  loaded.context.document.querySelector = () => side;
+
+  const keydown = (key) => context.HerdrFileBrowser.treeRowKeydown({ key, preventDefault() {}, stopPropagation() {} });
+
+  context.HerdrFileBrowser.setFilterSelectedForTest("src");
+  keydown("ArrowLeft");
+  assert.ok(context.HerdrFileBrowser.isFilterCollapsedForTest("src"), "left collapses the focused folder");
+  keydown("ArrowRight");
+  assert.equal(context.HerdrFileBrowser.isFilterCollapsedForTest("src"), false, "right expands it again");
+
+  // Left on a file row must not swallow the key (no collapse state change).
+  context.HerdrFileBrowser.setFilterSelectedForTest("src/ui/a.js");
+  keydown("ArrowLeft");
+  assert.equal(context.HerdrFileBrowser.isFilterCollapsedForTest("src"), false, "file rows ignore left/right");
+});

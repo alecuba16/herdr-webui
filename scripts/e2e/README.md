@@ -39,6 +39,18 @@ mobile and desktop guard audits, and tears everything down. For
 ad-hoc real-browser probing beyond that, the external cdp-chrome skill
 and `docs/e2e-external.md` still apply.
 
+## Filter-results tree keyboard navigation (filter-tree-keyboard-e2e)
+
+```sh
+just filter-tree-keyboard-e2e  # or: scripts/e2e/run-filter-tree-keyboard-e2e.sh
+```
+
+Real-browser acceptance for the file browser filter results: arrows own
+the tree (Up/Down move the selected row, Left/Right collapse/expand the
+focused folder, Enter opens a file or toggles a folder) while Tab moves
+between sections. The tree itself is one Tab stop (roving tabindex), so
+Tab can never walk row by row.
+
 ## Git-log hover card (log-hover-e2e)
 
 ```sh
