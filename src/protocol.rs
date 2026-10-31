@@ -2211,11 +2211,23 @@ mod external_probe_tests {
         //    the first graphics scene carries asset + placement together.
         //    A scene that references an already-delivered asset can arrive
         //    placements-only; keep reading until the bytes show up.
+        //    On herdr 0.9.0 the first send can land before the shell consumed
+        //    it (1/14 observed live); the transmit is idempotent (a=T with a
+        //    fixed image id re-uploads and re-places), so re-send while no
+        //    scene arrived, bounded to keep the window meaningful.
         let deadline = Instant::now() + Duration::from_secs(15);
+        let mut next_resend = Instant::now() + Duration::from_secs(4);
         let mut saw_surface = false;
         let mut saw_graphics_scene = false;
         let mut verified_asset = false;
         while Instant::now() < deadline {
+            if !saw_graphics_scene && Instant::now() >= next_resend {
+                api_expect_ok(
+                    "pane.send_text",
+                    serde_json::json!({ "pane_id": pane_id, "text": command }),
+                );
+                next_resend = Instant::now() + Duration::from_secs(4);
+            }
             let Ok(msg) = rx.recv_timeout(Duration::from_millis(500)) else {
                 continue;
             };
