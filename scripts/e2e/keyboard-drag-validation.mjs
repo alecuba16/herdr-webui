@@ -276,6 +276,24 @@ async function main() {
   })()`);
   record("search palette opens and focuses its input", paletteOpen.display === "grid" && paletteOpen.focused === true, JSON.stringify(paletteOpen));
 
+  // Enter on the palette opens the selected row: type "sett", Enter,
+  // the settings modal must open (the palette closes itself).
+  await cdp.send("Input.insertText", { text: "sett" });
+  await sleep(400);
+  await pressKey(cdp, { key: "Enter", code: "Enter" });
+  await sleep(500);
+  const enterOpened = await evalJs(`(() => ({
+    palette: document.getElementById("searchPalette").style.display,
+    settings: document.getElementById("settingsModal").style.display,
+  }))()`);
+  record("palette Enter opens the selected action", enterOpened.palette === "none" && enterOpened.settings === "grid", JSON.stringify(enterOpened));
+  await pressKey(cdp, { key: "Escape", code: "Escape" });
+  await sleep(200);
+
+  // Reopen the palette for the Escape-close contract check below.
+  await evalJs(`(() => { const b = document.getElementById("headerActionsButton"); if (b) b.focus(); if (typeof openSearchPalette === "function") openSearchPalette(); return true; })()`);
+  await sleep(500);
+
   await pressKey(cdp, { key: "Escape", code: "Escape" });
   await sleep(200);
   const paletteClosed = await evalJs(`(() => ({
@@ -588,6 +606,26 @@ async function main() {
     await sleep(250);
     const smClosed = await evalJs(`document.getElementById("sessionManager").style.display`);
     record("Escape closes the session manager", smClosed === "none", `display=${smClosed}`);
+  }
+
+  // 11. Worktree open modal through the palette discover action: mounts
+  // with discovery running, drags, and restores opener focus on Escape.
+  await evalJs(`(() => { const b = document.getElementById("headerActionsButton"); if (b) b.focus(); return true; })()`);
+  await evalJs(`(() => { runSearchAction("discover-worktrees"); return true; })()`);
+  await sleep(800);
+  const wtoUp = await evalJs(`(() => ({ display: document.getElementById("worktreeOpenModal").style.display, active: document.activeElement && document.activeElement.id }))()`);
+  record("worktree open modal opens from the palette action", wtoUp.display === "grid", JSON.stringify(wtoUp));
+  if (wtoUp.display === "grid") {
+    const wtoDrag = await dragCard(cdp, evalJs, {
+      backdropQuery: "#worktreeOpenModal",
+      cardQuery: ".modal",
+      headQuery: ".settings-head h2",
+    });
+    record("pointer drag moves the worktree open card", wtoDrag.moved, wtoDrag.detail);
+    await pressKey(cdp, { key: "Escape", code: "Escape" });
+    await sleep(300);
+    const wtoClosed = await evalJs(`(() => ({ display: document.getElementById("worktreeOpenModal").style.display, active: document.activeElement && document.activeElement.id }))()`);
+    record("worktree open close restores opener focus", wtoClosed.display === "none" && wtoClosed.active === "headerActionsButton", JSON.stringify(wtoClosed));
   }
 
   writeReport(OUT, recorder, { appUrl: APP_URL });

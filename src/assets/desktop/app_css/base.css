@@ -172,11 +172,15 @@ body.light {
   margin: 12px 0;
   width: 2px;
 }
-.sidebar-toggle:hover,
-.sidebar-toggle:focus {
+.sidebar-toggle:hover {
+  background: var(--border);
+  color: var(--fg);
+}
+.sidebar-toggle:focus-visible {
   background: var(--border);
   color: var(--fg);
   outline: none;
+  box-shadow: var(--focus-ring);
 }
 /* "Drag to resize" reads top-to-bottom inside the 18px strip, so the
    hint never pokes outside the column. Hidden while dragging and while

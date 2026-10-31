@@ -79,3 +79,7 @@ known difference, not a bug filed against the desktop build.
   keyboard users do not fall to body after Esc. The session manager is
   excluded (auto-open owns the keyboard) and the picker restores to its
   Browse button when opened from one.
+- Focus indicators: every interactive surface keeps a visible ring on
+  :focus-visible (desktop uses --focus-ring box-shadow, mobile uses
+  --ring outline). No control ships outline: none without a
+  replacement indicator.

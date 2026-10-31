@@ -269,11 +269,16 @@
   border-radius: 6px;
 }
 
-.pane-menu-item:hover,
+.pane-menu-item:hover {
+  background: var(--panel2, var(--panel));
+  color: var(--text);
+}
+
 .pane-menu-item:focus-visible {
   background: var(--panel2, var(--panel));
   color: var(--text);
   outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 /* ---- tab drag between panes (Phase 5) ----

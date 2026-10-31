@@ -1027,10 +1027,12 @@ body.mobile-drawer-open .mobile-drawer {
   font: inherit;
   text-align: left;
 }
-.mobile-drawer-item:active,
+.mobile-drawer-item:active {
+  background: var(--panel2);
+}
 .mobile-drawer-item:focus-visible {
   background: var(--panel2);
-  outline: none;
+  outline: var(--ring);
 }
 .mobile-drawer-icon {
   display: inline-grid;
@@ -1110,11 +1112,14 @@ body.mobile-keyboard-open .mobile-location-strip {
   line-height: 1;
   cursor: pointer;
 }
-.herdr-tree-row-action:active,
+.herdr-tree-row-action:active {
+  color: var(--accent, inherit);
+  border-color: var(--accent, currentColor);
+}
 .herdr-tree-row-action:focus-visible {
   color: var(--accent, inherit);
   border-color: var(--accent, currentColor);
-  outline: none;
+  outline: var(--ring);
 }
 .mobile-sheet-backdrop {
   position: fixed;
