@@ -14,6 +14,18 @@
   events loop for an immediate resubscribe instead of forwarding the
   error as a bogus event, closing the silent-gap desync between browser
   state and backend state.
+- External-mode events fixed end to end. The events loop subscribed to
+  `pane.agent_status_changed` without a `pane_id`, but every herdr 0.9.x
+  external daemon requires one (no wildcard exists), so the daemon rejected
+  the whole `events.subscribe` request and the webui resubscribed forever
+  with zero events delivered; the browser's tab/pane/layout updates fell
+  back to polling and the `events_lost` handler could never fire. The
+  invalid subscription is gone (agent status still reaches the UI through
+  the agents row it refreshes from snapshot data), and `subscribe()` now
+  treats an error ack as a failure instead of a healthy stream, so a
+  rejected subscription surfaces its message instead of cycling silently.
+  Both found by live-validating the events path against a real herdr 0.9.5
+  daemon; builtin mode was unaffected (it ignores subscription params).
 - Filter results in the file browser render every row as its own tab stop,
   so Tab walked file by file while the arrows only cycled matches from
   the input. The rows now use a roving tabindex with one tab stop on the

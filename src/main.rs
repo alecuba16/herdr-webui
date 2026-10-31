@@ -723,7 +723,20 @@ impl ApiClient {
         stream.write_all(b"\n").map_err(|err| err.to_string())?;
         stream.flush().map_err(|err| err.to_string())?;
         let mut reader = BufReader::new(stream);
-        let _ack: serde_json::Value = read_json_line(&mut reader).map_err(|err| err.to_string())?;
+        let ack: serde_json::Value = read_json_line(&mut reader).map_err(|err| err.to_string())?;
+        // A rejected subscribe answers with an error frame and closes the
+        // stream; treating it as a healthy ack left the events loop cycling
+        // subscribe -> EOF -> resubscribe with zero events and no log of why
+        // (observed live against herdr 0.9.5 with an invalid subscription).
+        if let Some(error) = ack.get("error") {
+            return Err(format!(
+                "events.subscribe rejected: {}",
+                error
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
+            ));
+        }
         Ok(EventStream { reader })
     }
 
@@ -6330,8 +6343,16 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
             json!({"type":"pane.moved"}),
             json!({"type":"pane.exited"}),
             json!({"type":"pane.agent_detected"}),
-            json!({"type":"pane.agent_status_changed"}),
         ];
+        // pane.agent_status_changed is deliberately absent: every herdr
+        // 0.9.x external daemon requires a pane_id on it (no wildcard
+        // exists; the poll loop filters pane_id != subscribed pane_id), so a
+        // bare entry made the daemon reject the WHOLE events.subscribe
+        // request and the events loop resubscribed forever with zero events
+        // (verified live against 0.9.5: "missing field pane_id"). The
+        // builtin backend ignores subscription params, and the browser
+        // falls back to the agents row it refreshes from snapshot data
+        // (paneStatusEvents TTL), so external mode loses nothing.
         if backend_protocol.unwrap_or(0) >= 16 {
             subscriptions.push(json!({"type":"layout.updated"}));
         }
