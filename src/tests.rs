@@ -1801,7 +1801,7 @@ async fn no_sleep_update_round_trips_modes_through_api() {
 
 #[test]
 fn classifies_backend_compatibility() {
-    // herdr 0.9.0 requires an exact protocol match: every supported
+    // herdr 0.9.x requires an exact protocol match: every supported
     // release maps 1:1 to its own protocol version.
     assert_eq!(
         backend_compatibility_for_supported_range(Some("0.8.0"), Some(20)),
@@ -1822,8 +1822,22 @@ fn classifies_backend_compatibility() {
         backend_compatibility_for_supported_range(Some("0.9.0"), Some(PROTOCOL_VERSION),),
         BackendCompatibility::Compatible
     );
+    // The tested range spans every 0.9.x release: protocol 22 never
+    // changed between them, so each patch release stays Compatible.
     assert_eq!(
         backend_compatibility_for_supported_range(Some("0.9.1"), Some(PROTOCOL_VERSION)),
+        BackendCompatibility::Compatible
+    );
+    assert_eq!(
+        backend_compatibility_for_supported_range(Some("0.9.5"), Some(PROTOCOL_VERSION)),
+        BackendCompatibility::Compatible
+    );
+    assert_eq!(
+        backend_compatibility_for_supported_range(Some("0.9.6"), Some(PROTOCOL_VERSION)),
+        BackendCompatibility::UntestedNewer
+    );
+    assert_eq!(
+        backend_compatibility_for_supported_range(Some("0.10.0"), Some(PROTOCOL_VERSION)),
         BackendCompatibility::UntestedNewer
     );
     assert_eq!(
@@ -1841,6 +1855,10 @@ fn classifies_backend_compatibility() {
     assert_eq!(
         backend_compatibility_for_supported_range(Some("0.9.0"), Some(PROTOCOL_VERSION + 1)),
         BackendCompatibility::ProtocolMismatch
+    );
+    assert_eq!(
+        backend_compatibility_for_supported_range(Some("0.8.9"), Some(PROTOCOL_VERSION)),
+        BackendCompatibility::TooOld
     );
 }
 
@@ -12676,6 +12694,338 @@ async fn events_socket_survives_backend_subscription_failure() {
     );
 
     server_handle.abort();
+    let _ = fs::remove_dir_all(&config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+/// A backend that answers events.subscribe with an error frame (herdr 0.9.x
+/// does this for any invalid subscription entry; one bad pane_id rejects the
+/// whole stream) must surface as an error message on the WebSocket, never
+/// as a healthy "ready" stream that then delivers nothing. This is the
+/// regression shape of the pane.agent_status_changed bug: the webui sent an
+/// entry every 0.9.x daemon rejects, consumed the error frame as the ack,
+/// and cycled subscribe -> EOF -> resubscribe with zero events.
+#[cfg(unix)]
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn events_socket_reports_rejected_subscription_instead_of_ready() {
+    use futures_util::StreamExt;
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use tokio_tungstenite::connect_async;
+
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-events-rejected-sub");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    // Fake external daemon: rejects every events.subscribe with the same
+    // error frame herdr sends for an invalid subscription (id preserved,
+    // error.code + error.message). Accepts in a loop because the events
+    // thread retries with a backoff.
+    // fake_socket_dir keeps the path short: CI runners have long per-job
+    // temp dirs and a nanos-based name there overflows sun_path (104 bytes),
+    // which makes the listener creation fail before the test even starts.
+    let path = fake_socket_dir().join(format!("events-reject-{}.sock", fake_socket_suffix()));
+    let _ = fs::remove_file(&path);
+    let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    // Leak the accept thread on purpose: it blocks in listener.accept()
+    // for connections that never come once the subscription thread stops
+    // retrying. Same shape as fake_api_socket_events_streaming; the
+    // pid-keyed socket path lets the test-artifact sweeper unlink it later.
+    thread::spawn(move || {
+        for _ in 0..50 {
+            let Ok(mut stream) = listener.accept() else {
+                break;
+            };
+            thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+                let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                let id = request.get("id").cloned().unwrap_or(json!("web:poll"));
+                let response = if method == "events.subscribe" {
+                    json!({
+                        "id": id,
+                        "error": {
+                            "code": "invalid_request",
+                            "message": "invalid request: missing field `pane_id`",
+                        }
+                    })
+                } else if method == "ping" {
+                    json!({ "id": id, "result": { "version": "0.9.5", "protocol": 22 } })
+                } else {
+                    json!({ "id": id, "result": {} })
+                };
+                let _ = stream.write_all(response.to_string().as_bytes());
+                let _ = stream.write_all(b"\n");
+                let _ = stream.flush();
+            });
+        }
+    });
+
+    let mut state = test_state();
+    state.api_socket = Some(path.clone());
+    let app = test_app_with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let url = format!("ws://{addr}/ws/events?backend=external-herdr");
+    let ws_request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(&url)
+        .header("cookie", "herdr_web_session=token-123")
+        .header("host", addr.to_string())
+        .header("connection", "Upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(())
+        .unwrap();
+    let (mut ws_stream, _response) = connect_async(ws_request)
+        .await
+        .expect("Failed to connect to WebSocket");
+
+    // The rejected subscription must surface the daemon's message, and the
+    // "ready" frame must never arrive: ready means a live event stream,
+    // which a rejected subscribe never produced.
+    let mut saw_rejection = false;
+    let mut saw_ready = false;
+    for _ in 0..10 {
+        let msg = match tokio::time::timeout(std::time::Duration::from_secs(10), ws_stream.next())
+            .await
+        {
+            Ok(Some(Ok(m))) => m,
+            Ok(None) => break,
+            Ok(Some(Err(_))) | Err(_) => break,
+        };
+        let text = msg.to_text().expect("expected text message");
+        let value: serde_json::Value = serde_json::from_str(text).expect("invalid json");
+        match value["type"].as_str() {
+            Some("error") => {
+                let message = value["message"].as_str().unwrap_or("");
+                assert!(
+                    message.contains("events.subscribe rejected"),
+                    "error frame must carry the subscribe rejection, got: {message}"
+                );
+                assert!(
+                    message.contains("missing field `pane_id`"),
+                    "error frame must surface the daemon's own message, got: {message}"
+                );
+                saw_rejection = true;
+                break;
+            }
+            Some("ready") => saw_ready = true,
+            _ => {}
+        }
+    }
+    assert!(
+        saw_rejection,
+        "rejected events.subscribe must surface its error frame on /ws/events"
+    );
+    assert!(
+        !saw_ready,
+        "no ready frame may precede a rejected subscribe"
+    );
+
+    drop(ws_stream);
+    server_handle.abort();
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_dir_all(&config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+/// herdr 0.9.2+ (upstream #4225) answers a subscriber that fell behind
+/// retained history with `{"error":{"code":"events_lost"}}` and closes
+/// the stream. The webui must break out of the read loop, resubscribe, and
+/// send a fresh "ready" frame: forwarding the error as a bogus event would
+/// desync the browser silently, and treating the close as terminal would
+/// kill events forever.
+#[cfg(unix)]
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn events_socket_resubscribes_after_events_lost() {
+    use futures_util::StreamExt;
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use tokio_tungstenite::connect_async;
+
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-events-lost");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    // Fake daemon: the first subscribe acks and streams one event, then the
+    // events_lost error frame and EOF (herdr closes the stream after the
+    // error). The second subscribe acks and streams one more event. Later
+    // subscribes keep streaming so a flaky retry cannot starve the test.
+    // fake_socket_dir keeps the path under sun_path even on CI runners
+    // with long per-job temp dirs (same trap as the reject test).
+    let path = fake_socket_dir().join(format!("events-lost-{}.sock", fake_socket_suffix()));
+    let _ = fs::remove_file(&path);
+    let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let subscribe_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let subscribe_count_for_thread = subscribe_count.clone();
+    // Leak the accept thread on purpose (see the rejection test): it blocks
+    // in accept() once the subscription thread stops retrying.
+    thread::spawn(move || {
+        for _ in 0..50 {
+            let Ok(mut stream) = listener.accept() else {
+                break;
+            };
+            let subscribe_count = subscribe_count_for_thread.clone();
+            thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+                let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                let id = request.get("id").cloned().unwrap_or(json!("web:poll"));
+                if method == "events.subscribe" {
+                    let n = subscribe_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let _ = stream.write_all(
+                        json!({ "id": id, "result": { "type": "subscription_started" } })
+                            .to_string()
+                            .as_bytes(),
+                    );
+                    let _ = stream.write_all(b"\n");
+                    if n == 0 {
+                        // First stream: one event, then the history-loss error
+                        // and close, byte-for-byte the frame herdr emits.
+                        let _ = stream.write_all(
+                            json!({ "event": "tab_created", "data": { "tab_id": "t1" } })
+                                .to_string()
+                                .as_bytes(),
+                        );
+                        let _ = stream.write_all(b"\n");
+                        let _ = stream.write_all(
+                            json!({ "id": "web:events", "error": { "code": "events_lost" } })
+                                .to_string()
+                                .as_bytes(),
+                        );
+                        let _ = stream.write_all(b"\n");
+                        drop(stream);
+                        return;
+                    }
+                    // Later streams: keep one event flowing per subscribe.
+                    let _ = stream.write_all(
+                        json!({ "event": "tab_created", "data": { "tab_id": "t2" } })
+                            .to_string()
+                            .as_bytes(),
+                    );
+                    let _ = stream.write_all(b"\n");
+                    let _ = stream.flush();
+                    thread::sleep(std::time::Duration::from_secs(30));
+                } else if method == "ping" {
+                    let _ = stream.write_all(
+                        json!({ "id": id, "result": { "version": "0.9.5", "protocol": 22 } })
+                            .to_string()
+                            .as_bytes(),
+                    );
+                    let _ = stream.write_all(b"\n");
+                    let _ = stream.flush();
+                } else {
+                    let _ =
+                        stream.write_all(json!({ "id": id, "result": {} }).to_string().as_bytes());
+                    let _ = stream.write_all(b"\n");
+                    let _ = stream.flush();
+                }
+            });
+        }
+    });
+
+    let mut state = test_state();
+    state.api_socket = Some(path.clone());
+    let app = test_app_with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let url = format!("ws://{addr}/ws/events?backend=external-herdr");
+    let ws_request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(&url)
+        .header("cookie", "herdr_web_session=token-123")
+        .header("host", addr.to_string())
+        .header("connection", "Upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(())
+        .unwrap();
+    let (mut ws_stream, _response) = connect_async(ws_request)
+        .await
+        .expect("Failed to connect to WebSocket");
+
+    // Expect: ready, the pre-loss event, a SECOND ready (the loop broke on
+    // events_lost and resubscribed), and another event. The events_lost
+    // frame itself must NOT arrive as a bogus "event" frame.
+    let mut ready_count = 0;
+    let mut event_count = 0;
+    let mut saw_bogus_lost_event = false;
+    for _ in 0..20 {
+        let msg = match tokio::time::timeout(std::time::Duration::from_secs(10), ws_stream.next())
+            .await
+        {
+            Ok(Some(Ok(m))) => m,
+            Ok(None) => break,
+            Ok(Some(Err(_))) | Err(_) => break,
+        };
+        let text = msg.to_text().expect("expected text message");
+        let value: serde_json::Value = serde_json::from_str(text).expect("invalid json");
+        match value["type"].as_str() {
+            Some("ready") => ready_count += 1,
+            Some("event") => {
+                // The error frame must never be forwarded as an event.
+                if value["event"]["error"]["code"] == json!("events_lost") {
+                    saw_bogus_lost_event = true;
+                }
+                event_count += 1;
+            }
+            _ => {}
+        }
+        if ready_count >= 2 && event_count >= 2 {
+            break;
+        }
+    }
+    assert!(
+        ready_count >= 2,
+        "events_lost must break the read loop and resubscribe (ready frames: {ready_count})"
+    );
+    assert!(
+        event_count >= 2,
+        "the resubscribed stream must deliver events again (events: {event_count})"
+    );
+    assert!(
+        !saw_bogus_lost_event,
+        "the events_lost error frame must not be forwarded as a bogus event"
+    );
+
+    drop(ws_stream);
+    server_handle.abort();
+    let _ = fs::remove_file(&path);
     let _ = fs::remove_dir_all(&config_home);
     std::env::remove_var("XDG_CONFIG_HOME");
 }

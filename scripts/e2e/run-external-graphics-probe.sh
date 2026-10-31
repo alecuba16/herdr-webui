@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Live probe: verify herdr 0.9.0 ClientShell endpoint graphics delivery on an
+# Live probe: verify herdr 0.9.x ClientShell endpoint graphics delivery on an
 # ISOLATED daemon, using the WebUI's own protocol.rs types over the real wire.
 #
 # Proves (external-backend image support, docs/terminal-image-support.md):
@@ -10,14 +10,22 @@
 #      herdr's own headless tests use) is captured by the daemon's Ghostty
 #      core and delivered to the endpoint client as a PaneSurface frame with a
 #      non-empty graphics scene (1 asset + 1 placement) the WebUI types decode.
+#      The probe hello sets direct_graphics=false (like the production
+#      bridge), so assets travel inline; since 0.9.5 a direct_graphics client
+#      gets them diverted to GraphicsFile host-file uploads instead.
 #   3. Negative control: a second connection reporting NO cell metrics
-#      (cell 0x0) receives surfaces with NO graphics scene — herdr 0.9.0 gates
-#      the scene on cell_size.is_known(), not on the hello's direct_graphics
-#      flag (that flag only arms the GraphicsFile upload path).
+#      (cell 0x0) receives surfaces with NO graphics scene: herdr gates the
+#      scene on cell_size.is_known(), not on the hello's direct_graphics
+#      flag.
 #
 # Isolation: scratch XDG_CONFIG_HOME + scratch HERDR_SESSION under a scratch
 # work dir. Never touches the user's real herdr session or sockets. All
 # spawned processes are killed and the scratch dir removed on exit.
+#
+# The daemon binary comes from HERDR_WEB_HERDR_BIN when set (same env var the
+# webui itself uses for external sessions), else `herdr` from PATH. Pin it
+# when probing a specific release: with a global older herdr on PATH the
+# endpoint welcome never arrives and the probe fails for the wrong reason.
 
 set -euo pipefail
 
@@ -45,7 +53,7 @@ SESSION_DIR="$XDG_CONFIG_HOME/herdr/sessions/$SESSION"
 mkdir -p "$SESSION_DIR"
 
 echo "==> isolated herdr daemon: session=$SESSION work=$WORK"
-herdr server >"$WORK/daemon.log" 2>&1 &
+"${HERDR_WEB_HERDR_BIN:-herdr}" server >"$WORK/daemon.log" 2>&1 &
 DAEMON_PID=$!
 
 for _ in $(seq 1 50); do

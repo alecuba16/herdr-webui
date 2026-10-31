@@ -93,7 +93,7 @@ const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 22;
 const PROTOCOL_VERSION: u32 = 22;
 const MIN_BACKEND_VERSION: &str = "0.9.0";
-const MAX_TESTED_BACKEND_VERSION: &str = "0.9.0";
+const MAX_TESTED_BACKEND_VERSION: &str = "0.9.5";
 const DEFAULT_FOLDER_READ_TIMEOUT: Duration = Duration::from_millis(1500);
 
 type LocalStream = interprocess::local_socket::Stream;
@@ -723,7 +723,20 @@ impl ApiClient {
         stream.write_all(b"\n").map_err(|err| err.to_string())?;
         stream.flush().map_err(|err| err.to_string())?;
         let mut reader = BufReader::new(stream);
-        let _ack: serde_json::Value = read_json_line(&mut reader).map_err(|err| err.to_string())?;
+        let ack: serde_json::Value = read_json_line(&mut reader).map_err(|err| err.to_string())?;
+        // A rejected subscribe answers with an error frame and closes the
+        // stream; treating it as a healthy ack left the events loop cycling
+        // subscribe -> EOF -> resubscribe with zero events and no log of why
+        // (observed live against herdr 0.9.5 with an invalid subscription).
+        if let Some(error) = ack.get("error") {
+            return Err(format!(
+                "events.subscribe rejected: {}",
+                error
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
+            ));
+        }
         Ok(EventStream { reader })
     }
 
@@ -6330,8 +6343,16 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
             json!({"type":"pane.moved"}),
             json!({"type":"pane.exited"}),
             json!({"type":"pane.agent_detected"}),
-            json!({"type":"pane.agent_status_changed"}),
         ];
+        // pane.agent_status_changed is deliberately absent: every herdr
+        // 0.9.x external daemon requires a pane_id on it (no wildcard
+        // exists; the poll loop filters pane_id != subscribed pane_id), so a
+        // bare entry made the daemon reject the WHOLE events.subscribe
+        // request and the events loop resubscribed forever with zero events
+        // (verified live against 0.9.5: "missing field pane_id"). The
+        // builtin backend ignores subscription params, and the browser
+        // falls back to the agents row it refreshes from snapshot data
+        // (paneStatusEvents TTL), so external mode loses nothing.
         if backend_protocol.unwrap_or(0) >= 16 {
             subscriptions.push(json!({"type":"layout.updated"}));
         }
@@ -6357,6 +6378,19 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
                     loop {
                         match stream.next_value() {
                             Ok(Some(value)) => {
+                                // herdr 0.9.2+ (upstream #4225) reports a
+                                // subscription that fell behind retained history
+                                // with an error frame `{error:{code:
+                                // "events_lost"}}` and then closes the stream.
+                                // Silent gaps would desync the UI, so break and
+                                // resubscribe; the backoff reset below makes the
+                                // resync fast, and the browser refresh rebuilds
+                                // state from session.snapshot.
+                                if value.get("error").and_then(|error| error.get("code"))
+                                    == Some(&serde_json::json!("events_lost"))
+                                {
+                                    break;
+                                }
                                 if tx.send(json!({ "type": "event", "event": value })).is_err() {
                                     return;
                                 }
@@ -6379,10 +6413,12 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
                         backoff_secs = 1;
                     }
                 }
-                Err(_) => {
-                    let _ = tx.send(
-                        json!({ "type": "error", "message": "failed to subscribe to Herdr events" }),
-                    );
+                Err(err) => {
+                    // Carry the subscribe() detail ("events.subscribe
+                    // rejected: ...", connect error) instead of a generic
+                    // string: the browser console is the only place a
+                    // rejected subscription becomes diagnosable.
+                    let _ = tx.send(json!({ "type": "error", "message": err.to_string() }));
                 }
             }
             // The WebSocket consumer went away; stop retrying.

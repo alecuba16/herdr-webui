@@ -10,7 +10,8 @@ Compatibility:
 
 | WebUI | Herdr | Protocol | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `0.7.21` | `0.9.0` | `22` exact match | Current | Chat lens conversation endpoints (jcode transcripts, prompt cards, composer submit), notes sidecar shared by desktop rail and mobile screen, resizable sidebars, mobile chat composer in lens. |
+| `0.7.28` | `0.9.0`-`0.9.5` | `22` exact match | Current | herdr 0.9.5 protocol sync: tested range widened to every 0.9.x release (protocol 22 is unchanged across them), the wire mirror gains the `HostDefaultColor` input event from upstream #4710, and an `events_lost` subscription error now triggers a resubscribe plus state resync instead of a silent gap (upstream #4225). |
+| `0.7.21` | `0.9.0` | `22` exact match | Superseded | Chat lens conversation endpoints (jcode transcripts, prompt cards, composer submit), notes sidecar shared by desktop rail and mobile screen, resizable sidebars, mobile chat composer in lens. |
 | `0.4.34` | `0.9.0` | `22` exact match | Superseded | Search palette recent rows open the exact workspace and disabled rows cannot be reopened; workspace shell mode (terminal/Git/Files) persists per workspace and folder across reloads. |
 | `0.4.32` | `0.9.0` | `22` exact match | Superseded | Terminal image support end to end on every render path: wterm core at @wterm 0.5.0 (Kitty graphics capable), Kitty graphics escapes pass the image filter, builtin panes advertise ghostty terminal env hints, and text parsers skip DCS/APC/SOS/PM payloads. |
 | `0.4.30` | `0.9.0` | `22` exact match | Superseded | Built-in session cold starts are serialized (`builtin_start_lock`) so a freshly loaded browser cannot race on the session socket bind. |
@@ -52,7 +53,7 @@ Compatibility:
 | `0.0.45` | `0.7.1` | `14` | Tested | Improves embedded Git UI navigation with Escape handling, all-changes return behavior, split frontend assets, scoped file history controls, keyboard-owned drawer input, and per-file large diff loading. |
 | `0.0.45` | `0.7.0` | `14` | Minimum supported | Uses WebUI's legacy existing-branch worktree fallback when needed. |
 
-Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. Since WebUI 0.4.13, the terminal handshake requires an exact protocol match (protocol `22`) because herdr 0.9.0 rejects mismatched client versions; the older multi-version attach fallback (protocols 20/18/16) was removed. The minimum supported protocol is `22`.
+Newer Herdr builds may work when protocol stays compatible, but WebUI reports them as untested. Since WebUI 0.4.13, the terminal handshake requires an exact protocol match (protocol `22`) because herdr 0.9.x rejects mismatched client versions; the older multi-version attach fallback (protocols 20/18/16) was removed. The minimum supported protocol is `22`. The tested backend range is `0.9.0` through `0.9.5`.
 
 ## Build
 
@@ -298,7 +299,7 @@ If `--session NAME` is supplied, launched Herdr processes receive `HERDR_SESSION
 
 ### `herdr rejected terminal connection: client version 22 is newer than server version X; ...`
 
-This means WebUI is using a different terminal attach protocol than the Herdr server process handling the session. Since herdr 0.9.0 the handshake requires an exact protocol match (WebUI speaks protocol `22`), so a running Herdr server older than WebUI's protocol cannot accept the attach.
+This means WebUI is using a different terminal attach protocol than the Herdr server process handling the session. Since herdr 0.9.x the handshake requires an exact protocol match (WebUI speaks protocol `22`), so a running Herdr server older than WebUI's protocol cannot accept the attach.
 
 Check two things:
 

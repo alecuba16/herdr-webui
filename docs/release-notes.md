@@ -1,6 +1,37 @@
 # Release notes
 
 ## Unreleased
+- herdr 0.9.5 protocol sync. The tested external backend range widens from
+  `0.9.0` to `0.9.0`-`0.9.5`: herdr kept client protocol `22` across the
+  whole 0.9.x series, so every patch release classifies as Compatible
+  instead of UntestedNewer and the compat gate no longer scares users off
+  a current binary. The wire mirror gains the `HostDefaultColor` input
+  event (upstream #4710, host default fg/bg color changes riding the same
+  input stream) so an enclosing input frame from a 0.9.5 backend cannot
+  fail deserialization, with a bincode roundtrip test pinning the shape.
+  An `events_lost` subscription error frame (upstream #4225, herdr 0.9.2+
+  reporting a reader that fell behind retained history) now breaks the
+  events loop for an immediate resubscribe instead of forwarding the
+  error as a bogus event, closing the silent-gap desync between browser
+  state and backend state.
+- External-mode events fixed end to end. The events loop subscribed to
+  `pane.agent_status_changed` without a `pane_id`, but every herdr 0.9.x
+  external daemon requires one (no wildcard exists), so the daemon rejected
+  the whole `events.subscribe` request and the webui resubscribed forever
+  with zero events delivered; the browser's tab/pane/layout updates fell
+  back to polling and the `events_lost` handler could never fire. The
+  invalid subscription is gone (agent status still reaches the UI through
+  the agents row it refreshes from snapshot data), and `subscribe()` now
+  treats an error ack as a failure instead of a healthy stream, so a
+  rejected subscription surfaces its message instead of cycling silently.
+  The events loop now forwards that detail ("events.subscribe rejected:
+  ...", connect errors) to the browser instead of a generic string, so a
+  dead or rejecting backend names itself in the events error frame. Both
+  found by live-validating the events path against a real herdr 0.9.5
+  daemon; builtin mode was unaffected (it ignores subscription params).
+  The resubscribe path is live-proven too: after a `kill -9` daemon
+  restart, the events loop reconnects, resubscribes, and delivers events
+  again.
 - Filter results in the file browser render every row as its own tab stop,
   so Tab walked file by file while the arrows only cycled matches from
   the input. The rows now use a roving tabindex with one tab stop on the

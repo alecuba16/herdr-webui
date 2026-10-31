@@ -54,7 +54,7 @@ use crate::terminal_text::{self, TerminalTextOptions};
 
 const BUILTIN_VERSION: &str = "builtin-0.1.0";
 // Must match the WebUI terminal attach client (`PROTOCOL_VERSION` in main.rs,
-// 22 for herdr 0.9.0): the builtin backend emulates a herdr terminal server
+// 22 for herdr 0.9.x): the builtin backend emulates a herdr terminal server
 // and requires an exact version match at handshake time. A mismatch made
 // every builtin terminal attach fail with a `herdr_error` frame, so the
 // browser offered the (also broken) built-in fallback and its question
