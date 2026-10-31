@@ -1011,8 +1011,7 @@ document.addEventListener("keydown", (e) => {
   // renders after the other static modals in the DOM so it sits on top
   // among them, and git modals cover the session manager. When several
   // are open at once Tab must cycle inside the one the user actually
-  // sees on top. The picker test doubles as its open check (close()
-  // removes the node).
+  // sees on top.
   const scope =
     (pickerBackdropOpen() ? document.getElementById("directoryPickerModal") : null) ||
     (el("questionModal").style.display === "grid" ? el("questionModal") : null) ||
