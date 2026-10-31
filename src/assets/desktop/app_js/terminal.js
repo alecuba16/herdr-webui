@@ -952,7 +952,16 @@ function modalOpen() {
     const m = el(id);
     return m && m.style.display && m.style.display !== "none";
   })) return true;
-  return false;
+  // The session manager opens with display:block, not grid, and the
+  // directory picker root never sets inline display at all; both own
+  // the keyboard while up, so global terminal shortcuts must pause
+  // behind them too. The picker check is class-based: the node exists
+  // only while open, and requiring the backdrop class keeps this honest
+  // on DOM stubs that answer any id query.
+  const sessionManager = el("sessionManager");
+  if (sessionManager && sessionManager.style.display === "block") return true;
+  const picker = document.getElementById("directoryPickerModal");
+  return !!(picker && picker.classList && picker.classList.contains("directory-picker-backdrop"));
 }
 function preserveActiveElementFocus() {
   const active = document.activeElement;

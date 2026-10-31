@@ -880,7 +880,8 @@ describe("app bundle load", () => {
     // Span buttons: Enter/Space triggers the same click path through the
     // delegated keydown; the question modal joins the Tab focus trap.
     match(source, /document\.addEventListener\("keydown", \(e\) => \{[\s\S]*?target\.closest\("\[data-workspace-action\]\"\)[\s\S]*?spanButton\.click\(\)/, "Enter/Space delegation for span buttons");
-    match(source, /"searchPalette",\n\s+"questionModal",\n\s+"directoryPickerModal",\n\s+"sessionManager",\n\s+\];\n\s+const modal = modalIds/, "Tab focus trap lists questionModal");
+    match(source, /"searchPalette",\n\s+"questionModal",\n\s+"directoryPickerModal",\n\s+\];\n\s+const modal = modalIds/, "Tab focus trap lists questionModal");
+    match(source, /sessionManagerOpen =\n\s+el\("sessionManager"\) && el\("sessionManager"\)\.style\.display === "block"/, "Tab focus trap checks the session manager's block display");
     ok(source.includes('role="button" tabindex="0" data-workspace-action="close"'));
     // Pane tab close spans stay reachable: tabindex rides the markup and
     // the same delegated keydown covers them.
@@ -1374,6 +1375,22 @@ describe("app bundle load", () => {
 
   it("opens the right rail search panel with Cmd/Ctrl+F without stealing editor or terminal Ctrl+F", async () => {
     const ctx = context();
+    // The boot and the panel-open path both call refresh(), which probes
+    // the backend. The default fake fetch answers {} for every endpoint,
+    // which makes refresh fail and auto-open the session manager; the
+    // manager owns the keyboard while up (global shortcuts pause behind
+    // it, by design), so the second Ctrl+F below would never reach the
+    // panel. Install a stub that answers the snapshot endpoint with a
+    // valid empty snapshot BEFORE the bundle boots, so every refresh in
+    // this test stays online and the manager never appears.
+    const snapshot = {
+      result: { snapshot: { workspaces: [], tabs: [], panes: [], layouts: [], worktrees: [] } },
+    };
+    ctx.fetch = async (url) => ({
+      ok: true,
+      status: 200,
+      json: async () => (String(url).startsWith("/api/session-snapshot") ? snapshot : {}),
+    });
     runSource(ctx);
     vm.runInContext('state.defaultFolder = "/repo";', ctx);
 

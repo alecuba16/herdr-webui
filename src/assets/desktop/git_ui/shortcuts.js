@@ -60,10 +60,23 @@
       // this bundle; their open state is readable from the DOM without
       // importing app symbols. git-ui modals use .git-ui-modal-backdrop,
       // a different class, so they never trip this guard.
-      return Array.prototype.some.call(
+      if (Array.prototype.some.call(
         document.querySelectorAll(".modal-backdrop"),
         (m) => m.style.display && m.style.display !== "none",
-      );
+      ))
+        return true;
+      // Two more overlays own the keyboard without carrying
+      // .modal-backdrop: the session manager overlay (.session-manager,
+      // display:block while open) and the directory picker (its root is
+      // .directory-picker-backdrop, present only while open). The picker
+      // opens from the git UI itself, so git keys must not fire behind
+      // it. git-ui modals keep their own class and stay exempt. The
+      // picker check is class-based so DOM stubs answering any id query
+      // stay honest.
+      const sessionManager = document.getElementById("sessionManager");
+      if (sessionManager && sessionManager.style.display === "block") return true;
+      const picker = document.getElementById("directoryPickerModal");
+      return !!(picker && picker.classList && picker.classList.contains("directory-picker-backdrop"));
     }
     function locationBarPopoverOpen() {
       // The location bar renders its branch/worktree popovers inside the

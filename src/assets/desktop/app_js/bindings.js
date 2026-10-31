@@ -890,6 +890,14 @@ el("worktreeCreateForm").onsubmit = async (e) => {
   });
 };
 el("worktreeOpenClose").onclick = closeWorktreeOpenModal;
+// The directory picker root mounts with the .directory-picker-backdrop
+// class and no inline display, and close() removes the node. Presence
+// plus the class means open; the class check keeps stub documents that
+// answer any id query honest.
+function pickerBackdropOpen() {
+  const node = document.getElementById("directoryPickerModal");
+  return !!(node && node.classList && node.classList.contains("directory-picker-backdrop"));
+}
 document.addEventListener(
   "keydown",
   (e) => {
@@ -914,11 +922,12 @@ document.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       closePaneMenu();
-    } else if (document.getElementById("directoryPickerModal")) {
+    } else if (pickerBackdropOpen()) {
       // The picker owns its own DOM (removed on close), so it is not in
       // the static-modal list below; close it through its API so focus
       // and any dragged position reset the same way the Close button
-      // does.
+      // does. The class check keeps stub documents that answer any id
+      // query honest.
       e.preventDefault();
       e.stopPropagation();
       window.HerdrDirectoryPicker.close();
@@ -980,15 +989,27 @@ document.addEventListener("keydown", (e) => {
     "searchPalette",
     "questionModal",
     "directoryPickerModal",
-    "sessionManager",
   ];
   const modal = modalIds
     .map((id) => el(id))
-    .find((m) => m && m.style.display === "grid");
+    // The directory picker never touches inline display: its
+    // .directory-picker-backdrop class carries display:grid and the node
+    // exists only while open (close() removes it), so the class check in
+    // pickerBackdropOpen doubles as the open test.
+    .find((m) => m && (m.id !== "directoryPickerModal" ? m.style.display === "grid" : pickerBackdropOpen()));
+  // The session manager opens with display:block (terminal.css), not grid
+  // like the .modal-backdrop cards, so it needs its own visibility check.
+  const sessionManagerOpen =
+    el("sessionManager") && el("sessionManager").style.display === "block";
   // Git modals render per open inside .git-ui-modal-backdrop roots that
-  // the id list above cannot name; find any visible one the same way.
-  const gitModal = document.querySelector(".git-ui-modal-backdrop");
-  const scope = gitModal || modal;
+  // the id list above cannot name; find any live one. querySelector on a
+  // stub document returns a bare element without classes, so require the
+  // backdrop class before treating it as a trap scope.
+  const gitModal = (() => {
+    const node = document.querySelector(".git-ui-modal-backdrop");
+    return node && node.classList && node.classList.contains("git-ui-modal-backdrop") ? node : null;
+  })();
+  const scope = gitModal || (sessionManagerOpen ? el("sessionManager") : null) || modal;
   if (!scope) return;
   const focusable = scope.querySelectorAll(
     'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
