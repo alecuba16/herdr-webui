@@ -410,6 +410,28 @@ async function main() {
     } else console.log("SKIP file new-file sheet: + File button not found");
   }
 
+  // Escape cascade: the drawer must close on Escape and must not close
+  // twice in the same keypress chain (the handler preventDefaults once).
+  {
+    await evalJs(`(() => { const el = document.querySelector('.mobile-nav button[data-screen="more"]'); if (el) el.click(); return true; })()`);
+    await waitFor(`!!document.querySelector('.mobile-drawer-item')`, "drawer for escape check");
+    const drawerOpen = await evalJs(`(() => { const d = document.getElementById('mobileDrawer'); return !!d && !d.hidden; })()`);
+    if (drawerOpen) {
+      await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await sleep(300);
+      const drawerClosed = await evalJs(`(() => { const d = document.getElementById('mobileDrawer'); return !!d && d.hidden; })()`);
+      if (drawerClosed) {
+        console.log("OK   Escape closes the mobile drawer");
+      } else {
+        failures.push("Escape does not close the mobile drawer");
+        console.log("FAIL Escape closes the mobile drawer: drawer still open");
+      }
+    } else {
+      console.log("SKIP Escape drawer check: drawer did not open");
+    }
+  }
+
   console.log("");
   if (failures.length) {
     console.log(`AUDIT FAILED (${failures.length}):`);

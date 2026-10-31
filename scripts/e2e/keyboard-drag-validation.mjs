@@ -414,6 +414,12 @@ async function main() {
   await sleep(500);
   const qUp = await evalJs(`document.getElementById("questionModal").style.display`);
   record("question modal opens over settings", qUp === "grid", `display=${qUp}`);
+  const qDrag = await dragCard(cdp, evalJs, {
+    backdropQuery: "#questionModal",
+    cardQuery: ".question-modal-card",
+    headQuery: ".settings-head h2",
+  });
+  record("pointer drag moves the question card", qDrag.moved, qDrag.detail);
   await pressKey(cdp, { key: "Escape", code: "Escape" });
   await sleep(300);
   const qRestore = await evalJs(`(() => ({
@@ -529,6 +535,60 @@ async function main() {
   await pressKey(cdp, { key: "Escape", code: "Escape" });
   await sleep(250);
   await evalJs(`(() => { if (window.HerdrGitUi && window.HerdrGitUi.hide) window.HerdrGitUi.hide(); return true; })()`);
+
+  // 9. Worktree create modal through the real palette action: Escape must
+  // close it and restore focus to the opener (the header Actions button),
+  // and its card must drag like the other static modals.
+  await evalJs(`(() => { const b = document.getElementById("headerActionsButton"); if (b) b.focus(); return true; })()`);
+  await evalJs(`(() => { runSearchAction("create-worktree"); return true; })()`);
+  await sleep(500);
+  const wtUp = await evalJs(`(() => ({ display: document.getElementById("worktreeCreateModal").style.display, active: document.activeElement && document.activeElement.id }))()`);
+  record("worktree create modal opens from the palette action", wtUp.display === "grid" && wtUp.active === "worktreeBranch", JSON.stringify(wtUp));
+  if (wtUp.display === "grid") {
+    const wtDrag = await dragCard(cdp, evalJs, {
+      backdropQuery: "#worktreeCreateModal",
+      cardQuery: ".modal",
+      headQuery: ".settings-head h2",
+    });
+    record("pointer drag moves the worktree create card", wtDrag.moved, wtDrag.detail);
+    await pressKey(cdp, { key: "Escape", code: "Escape" });
+    await sleep(300);
+    const wtClosed = await evalJs(`(() => ({ display: document.getElementById("worktreeCreateModal").style.display, active: document.activeElement && document.activeElement.id }))()`);
+    record("worktree modal close restores opener focus", wtClosed.display === "none" && wtClosed.active === "headerActionsButton", JSON.stringify(wtClosed));
+  }
+
+  // 10. Tab scoping with the session manager under a git modal: the git
+  // modal is the visible top layer, so Tab must stay inside it even though
+  // the session manager is also open underneath.
+  await evalJs(`(() => { const btn = document.getElementById("footerSessionButton"); if (btn) btn.click(); return "clicked"; })()`);
+  await sleep(400);
+  const smUp = await evalJs(`document.getElementById("sessionManager").style.display`);
+  record("session manager opens under the git drawer", smUp === "block", `display=${smUp}`);
+  if (smUp === "block") {
+    await evalJs(`(() => { const btn = document.getElementById("rightRailGit"); if (btn) btn.click(); return "clicked"; })()`);
+    await sleep(600);
+    await evalJs(`(() => { if (window.HerdrGitUi && window.HerdrGitUi.openCommitModal) window.HerdrGitUi.openCommitModal(); return true; })()`);
+    await sleep(400);
+    const gitOverSm = await evalJs(`!!document.querySelector(".git-ui-commit-modal")`);
+    record("git commit modal opens over the session manager", gitOverSm === true, `up=${gitOverSm}`);
+    if (gitOverSm) {
+      await pressKey(cdp, { key: "Tab", code: "Tab" });
+      await sleep(150);
+      const tabScope = await evalJs(`(() => {
+        const inGit = !!document.activeElement && document.querySelector(".git-ui-commit-modal").contains(document.activeElement);
+        const inSm = !!document.activeElement && document.getElementById("sessionManager").contains(document.activeElement);
+        return { inGit, inSm, active: document.activeElement && (document.activeElement.id || document.activeElement.tagName) };
+      })()`);
+      record("Tab scopes to the git modal over the session manager", tabScope.inGit === true, JSON.stringify(tabScope));
+      await pressKey(cdp, { key: "Escape", code: "Escape" });
+      await sleep(250);
+      await evalJs(`(() => { if (window.HerdrGitUi && window.HerdrGitUi.hide) window.HerdrGitUi.hide(); return true; })()`);
+    }
+    await pressKey(cdp, { key: "Escape", code: "Escape" });
+    await sleep(250);
+    const smClosed = await evalJs(`document.getElementById("sessionManager").style.display`);
+    record("Escape closes the session manager", smClosed === "none", `display=${smClosed}`);
+  }
 
   writeReport(OUT, recorder, { appUrl: APP_URL });
   console.log(`validation probe: ${recorder.failed === 0 ? "PASSED" : "FAILED"} (${recorder.passed} passed, ${recorder.failed} failed)`);
