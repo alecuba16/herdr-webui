@@ -1000,14 +1000,22 @@ fn fzf_rank_matches(query: &str, match_case: bool, paths: &[String]) -> Option<V
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
-    {
-        let stdin = child.stdin.as_mut()?;
+    let mut write_failed = false;
+    // A failed stdin write (broken pipe when fzf dies early) must not skip
+    // the wait below: std never auto-reaps, so every unreaped spawn would
+    // zombie the long-running server one page at a time.
+    if let Some(stdin) = child.stdin.as_mut() {
         for path in paths {
-            writeln!(stdin, "{path}").ok()?;
+            if writeln!(stdin, "{path}").is_err() {
+                write_failed = true;
+                break;
+            }
         }
+    } else {
+        write_failed = true;
     }
     let output = child.wait_with_output().ok()?;
-    if !output.status.success() {
+    if write_failed || !output.status.success() {
         return None;
     }
     let text = String::from_utf8(output.stdout).ok()?;
@@ -1052,7 +1060,6 @@ fn push_search_entries_with_visit_limit(
     dir: &Path,
     matcher: &PathMatcher,
     offset: usize,
-    _visit_offset: usize,
     limit: usize,
     visited: &mut usize,
     matched: &mut usize,
@@ -1145,12 +1152,12 @@ fn push_search_entries_with_visit_limit(
 // deterministic tiebreak (score, then path) so pages re-walk into the same
 // order every time.
 fn rank_search_candidates(matcher: &PathMatcher, candidates: &mut Vec<SearchCandidate>) {
-    let paths: Vec<String> = candidates.iter().map(|c| c.entry.path.clone()).collect();
     let match_case = matches!(matcher, PathMatcher::Substring { match_case, .. } if *match_case);
     // fzf ranking needs a plain needle: regex queries keep deterministic
     // walk order instead. One blocking fzf spawn per ranked page; the
     // boot probe guarantees a miss here is a missing binary, not latency.
     if let Some(needle) = matcher.plain_needle() {
+        let paths: Vec<String> = candidates.iter().map(|c| c.entry.path.clone()).collect();
         if let Some(order) = fzf_rank_matches(needle, match_case, &paths) {
             // fzf answered with a permutation of every input line: order[i]
             // is the original index of the match that ranks i-th. Apply it
@@ -1177,16 +1184,25 @@ fn rank_search_candidates(matcher: &PathMatcher, candidates: &mut Vec<SearchCand
             return;
         }
     }
-    candidates.sort_by(|a, b| {
-        path_search_score(matcher, &a.entry.name, &a.entry.path, a.depth)
-            .cmp(&path_search_score(
+    // Score once per candidate (decorate) instead of inside sort_by, which
+    // would recompute both sides and their lowercased strings per comparison.
+    let mut ranked: Vec<(usize, SearchCandidate)> = candidates
+        .drain(..)
+        .map(|candidate| {
+            let score = path_search_score(
                 matcher,
-                &b.entry.name,
-                &b.entry.path,
-                b.depth,
-            ))
-            .then_with(|| a.entry.path.cmp(&b.entry.path))
+                &candidate.entry.name,
+                &candidate.entry.path,
+                candidate.depth,
+            );
+            (score, candidate)
+        })
+        .collect();
+    ranked.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.entry.path.cmp(&b.1.entry.path))
     });
+    *candidates = ranked.into_iter().map(|(_, candidate)| candidate).collect();
 }
 
 fn content_search_context_lines(value: Option<usize>) -> usize {
@@ -1806,8 +1822,9 @@ fn file_browser_tree_payload(
         // Collect-then-rank search pages re-walk and re-rank the same match
         // set, so the walk resume cursor is no longer page state. The offset
         // alone pages through the ranked list (see
-        // push_search_entries_with_visit_limit).
-        let visit_offset = query.visit_offset.unwrap_or(0);
+        // push_search_entries_with_visit_limit). visit_offset stays in the
+        // schema for older clients but nothing reads it.
+        let _ = query.visit_offset;
         let search_kind = query
             .search_kind
             .as_deref()
@@ -1821,7 +1838,6 @@ fn file_browser_tree_payload(
             &dir,
             &matcher,
             offset,
-            visit_offset,
             limit,
             &mut visited_total,
             &mut matched,
@@ -2801,7 +2817,6 @@ mod tests {
             &root,
             &matcher,
             0,
-            0,
             2,
             &mut visited,
             &mut matched,
@@ -2831,7 +2846,6 @@ mod tests {
             &mut dir_build,
             &root,
             &matcher,
-            0,
             0,
             10,
             &mut visited,
@@ -2876,7 +2890,6 @@ mod tests {
                 &mut build,
                 &root,
                 &matcher,
-                0,
                 0,
                 50,
                 &mut visited,
@@ -2953,7 +2966,6 @@ mod tests {
                 &root,
                 &matcher,
                 offset,
-                0,
                 2,
                 &mut visited,
                 &mut matched,
@@ -3016,7 +3028,6 @@ mod tests {
             &root,
             &matcher,
             0,
-            0,
             10,
             &mut visited,
             &mut matched,
@@ -3048,11 +3059,11 @@ mod tests {
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
-        // 30 filler dirs × 1500 files = 45000 visited entries before the
-        // match, all cheaper than creating 30k real files.
+        // 16 filler dirs × 1500 files = 24000 visited entries before the
+        // match: past the old 20k cap without doubling the suite wall time.
         fs::create_dir_all(root.join("fillers/deep/target")).unwrap();
         fs::write(root.join("fillers/deep/target/needle.txt"), "x").unwrap();
-        for i in 0..30 {
+        for i in 0..16 {
             let filler = root.join(format!("fillers/filler-{i:03}"));
             fs::create_dir_all(&filler).unwrap();
             for j in 0..1500 {
@@ -3074,7 +3085,6 @@ mod tests {
             &root,
             &matcher,
             0,
-            0,
             100,
             &mut visited,
             &mut matched,
@@ -3090,7 +3100,7 @@ mod tests {
         assert_eq!(
             paths,
             vec!["fillers/deep/target/needle.txt"],
-            "a match ~45k visits deep lands on page one"
+            "a match ~24k visits deep lands on page one"
         );
         assert!(
             visited > 20_000,
@@ -3139,7 +3149,6 @@ mod tests {
             &mut build,
             &root,
             &matcher,
-            0,
             0,
             2,
             &mut visited,
@@ -3311,7 +3320,6 @@ mod tests {
             &root,
             &matcher,
             0,
-            0,
             10,
             &mut visited,
             &mut matched,
@@ -3395,7 +3403,6 @@ mod tests {
             &mut build,
             &root,
             &matcher,
-            0,
             0,
             10,
             &mut visited,
