@@ -1,6 +1,17 @@
 # Release notes
 
 ## Unreleased
+- Filter results in the file browser render every row as its own tab stop,
+  so Tab walked file by file while the arrows only cycled matches from
+  the input. The rows now use a roving tabindex with one tab stop on the
+  selected row and carry their own keydown handler: Up and Down move the
+  selection row by row, Left and Right collapse or expand the focused
+  folder group, Enter opens a file or toggles a folder. Results group
+  into ancestor folder rows with per-folder collapse state that resets on
+  a fresh query, and Tab keeps moving between sections: input, filter
+  controls, tree, and out. A new acceptance run (just
+  filter-tree-keyboard-e2e) drives the real app with trusted key events
+  in a headless browser and checks the whole contract.
 - Desktop is now fully keyboard operable. The search palette and the
   sidebar search panel move through results with the arrows and open the
   pick with Enter, every overlay traps Tab inside itself and closes on
