@@ -1019,6 +1019,18 @@ async fn main() -> io::Result<()> {
         terminal_hub: Arc::new(terminal_hub::TerminalHub::new()),
     };
 
+    // fzf detection runs after the server is up so no request pays the spawn
+    // cost and a slow PATH cannot delay the listener. Until it lands, path
+    // search falls back to the built-in collect-then-rank ordering.
+    tokio::spawn(async move {
+        let available = tokio::task::spawn_blocking(file_browser::probe_fzf)
+            .await
+            .unwrap_or(false);
+        if available {
+            eprintln!("fzf detected: path search uses fzf ranking");
+        }
+    });
+
     serve_rebindable(state, rebind_rx, config.tls).await
 }
 
@@ -2660,6 +2672,9 @@ async fn versions(
             "version": herdr_install.version,
             "path": state.herdr_bin,
         },
+        // fzf detection result from the boot probe; the settings search
+        // section surfaces it so the user knows which ranker is active.
+        "fzf_available": file_browser::fzf_available(),
         "compatibility": {
             "status": compatibility.as_str(),
             "compatible": compatibility == BackendCompatibility::Compatible,

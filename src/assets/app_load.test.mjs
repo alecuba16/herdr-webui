@@ -2764,7 +2764,7 @@ describe("app bundle load", () => {
     equal(vm.runInContext("searchPaletteState.matchCase", ctx), false, "Alt+C flips match case back off");
   });
 
-  it("palette loadMorePaths chains the visit cursor and disarms on a stalled walk", async () => {
+  it("palette loadMorePaths pages by offset and disarms on a no-progress page", async () => {
     const ctx = context();
     const requests = [];
     ctx.requests = requests;
@@ -2779,8 +2779,8 @@ describe("app bundle load", () => {
         " pathSearchAvailable: () => true," +
         ' searchPaths: async (args) => {' +
         "  requests.push({ offset: args.offset, visitOffset: args.visitOffset });" +
-        "  if (args.visitOffset === 0) return { entries: [{ name: 'a.txt', path: 'a.txt', kind: 'file' }], git_status: null, truncated: true, visited: 100 };" +
-        "  if (args.visitOffset === 100) return { entries: [], git_status: null, truncated: true, visited: 100 };" +
+        "  if (args.offset === 0) return { entries: [{ name: 'a.txt', path: 'a.txt', kind: 'file' }], git_status: null, truncated: true, visited: 100 };" +
+        "  if (args.offset === 1) return { entries: [], git_status: null, truncated: true, visited: 100 };" +
         "  return { entries: [], git_status: null, truncated: false, visited: 200 };" +
         " }," +
         ' searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),' +
@@ -2794,14 +2794,15 @@ describe("app bundle load", () => {
 
     await vm.runInContext("runWorkspaceSearch(false)", ctx);
     equal(requests.length, 1, "first page requested");
-    equal(requests[0].visitOffset, 0, "first page starts at the walk beginning");
-    equal(vm.runInContext("searchPaletteState.pathVisited", ctx), 100, "first page stores the absolute cursor");
+    equal(requests[0].offset, 0, "first page starts at the ranked list beginning");
+    equal(requests[0].visitOffset, undefined, "no walk cursor is sent");
+    equal(vm.runInContext("searchPaletteState.pathOffset", ctx), 1, "first page advances the offset by its length");
     equal(vm.runInContext("searchPaletteState.pathDone", ctx), false, "truncated page keeps load more armed");
 
     await vm.runInContext("HerdrSearchPalette.loadMorePaths()", ctx);
     equal(requests.length, 2, "second page requested once");
-    equal(requests[1].visitOffset, 100, "second page resumes from the stored cursor");
-    equal(vm.runInContext("searchPaletteState.pathDone", ctx), true, "stalled walk disarms load more");
+    equal(requests[1].offset, 1, "second page resumes after the first page length");
+    equal(vm.runInContext("searchPaletteState.pathDone", ctx), true, "no-progress page disarms load more");
 
     await vm.runInContext("HerdrSearchPalette.loadMorePaths()", ctx);
     equal(requests.length, 2, "disarmed palette sends no third request");

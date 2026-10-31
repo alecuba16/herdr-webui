@@ -23,7 +23,14 @@ use crate::{expand_user_path_string, home_folder_path, require_auth, WebState};
 use herdr_webui::markdown::parse_markdown_outline;
 
 const MAX_ENTRIES: usize = 1000;
-const MAX_SEARCH_VISITS: usize = 20_000;
+// Collect-then-rank search walks further per page so deep matches (for
+// example ~/Documents/projects/<repo> from a home-rooted search) land on the
+// first ranked page instead of behind many "Load more" clicks. The walk is
+// still bounded; pages past the cap keep the old windowed behavior.
+const MAX_RANKED_SEARCH_VISITS: usize = 100_000;
+// Hard ceiling on matches kept for ranking, so a one-character query over a
+// huge tree collects a bounded set.
+const MAX_COLLECTED_SEARCH_MATCHES: usize = 10_000;
 const DEFAULT_SEARCH_LIMIT: usize = 100;
 const MAX_SEARCH_LIMIT: usize = 500;
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
@@ -126,9 +133,10 @@ struct FileBrowserQuery {
     search_kind: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
-    // Visit-cursor for search pagination: skip this many walk entries
-    // before matching, resuming the previous page's deterministic BFS
-    // walk so entries past the per-page visit cap can surface.
+    // Legacy visit-cursor from the walk-window pagination. Ranked search
+    // re-walks and re-ranks the same match set per page, so this is ignored;
+    // the offset alone pages through the ranked list. Kept in the schema so
+    // older clients keep working.
     visit_offset: Option<usize>,
     // Filename search matching mode, mirroring content search: match the
     // query exactly (true) or fold case (false, default).
@@ -883,26 +891,181 @@ impl PathMatcher {
             Self::Regex(regex) => regex.is_match(name) || regex.is_match(path),
         }
     }
+
+    fn plain_needle(&self) -> Option<&str> {
+        match self {
+            Self::Substring { needle, .. } => Some(needle.as_str()),
+            Self::Regex(_) => None,
+        }
+    }
 }
 
+// Fuzzy ranking, fzf-style: score each matched path so the nearest matches
+// sort first. Only the plain substring matcher ranks (regex matches keep walk
+// order); lower score wins.
+fn path_search_score(matcher: &PathMatcher, name: &str, path: &str, depth: usize) -> usize {
+    let Some(needle) = matcher.plain_needle() else {
+        return depth;
+    };
+    let needle_lower = needle.to_lowercase();
+    let name_lower = name.to_lowercase();
+    let path_lower = path.to_lowercase();
+    // Same-flag comparisons on both sides keep the ordering case-stable.
+    let name_hit = if needle == needle_lower {
+        name_lower.contains(&needle_lower)
+    } else {
+        name.contains(needle)
+    };
+    let name_index = if needle == needle_lower {
+        name_lower.find(&needle_lower)
+    } else {
+        name.find(needle)
+    };
+    let path_index = if needle == needle_lower {
+        path_lower.find(&needle_lower)
+    } else {
+        path.find(needle)
+    };
+    let (tier, position) =
+        if name_lower == needle_lower || (needle != needle_lower && name.eq(needle)) {
+            // Exact name match.
+            (0, 0)
+        } else if name_hit {
+            // Match inside the file or folder name.
+            (1, name_index.unwrap_or(0))
+        } else {
+            // Match only in a parent path segment.
+            (2, path_index.unwrap_or(0))
+        };
+    tier * 1_000 + position.min(500) + depth.min(200)
+}
+
+// fzf detection: --filter mode ranks stdin lines by fuzzy match quality, so
+// the backend can use it for nearest-match ordering when it is installed.
+// The probe result is seeded once the server is up (see the probe_fzf spawn
+// in main.rs), so no search request pays the spawn cost; the atomic starts
+// "absent" so a search before the probe falls back to the built-in ranker.
+static FZF_DETECTED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+const FZF_ABSENT: u8 = 1;
+const FZF_PRESENT: u8 = 2;
+
+// Runs one `fzf --version` (blocking; call via spawn_blocking). Sets the
+// process-global detection result that every later path search reads.
+pub(crate) fn probe_fzf() -> bool {
+    #[cfg(target_os = "macos")]
+    let available = std::process::Command::new("fzf")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    #[cfg(not(target_os = "macos"))]
+    let available = false;
+    std::sync::atomic::AtomicU8::store(
+        &FZF_DETECTED,
+        if available { FZF_PRESENT } else { FZF_ABSENT },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    available
+}
+
+// Current detection answer. False before the boot probe lands or when fzf
+// is missing, so callers fall back to the built-in ranking without ever
+// blocking on a probe.
+pub(crate) fn fzf_available() -> bool {
+    std::sync::atomic::AtomicU8::load(&FZF_DETECTED, std::sync::atomic::Ordering::Relaxed)
+        == FZF_PRESENT
+}
+
+// Feed every matched relative path through `fzf --filter` and keep the
+// returned order. `--filter` prints nothing on zero matches (exit 1) and
+// echoes all input lines for an empty query (exit 0), so the caller must do
+// its own matching first and treat a partial or failed ranking output as
+// "keep the built-in ranker". Input lines are unique by construction
+// (relative paths).
+fn fzf_rank_matches(query: &str, match_case: bool, paths: &[String]) -> Option<Vec<usize>> {
+    if !fzf_available() || paths.len() < 2 {
+        return None;
+    }
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("fzf")
+        .arg("--filter")
+        .arg(query)
+        // Smart-case mirrors the search default: lowercase queries fold case.
+        // A match-case query keeps fzf case-sensitive through the same flag.
+        .arg(if match_case { "-i" } else { "+i" })
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    {
+        let stdin = child.stdin.as_mut()?;
+        for path in paths {
+            writeln!(stdin, "{path}").ok()?;
+        }
+    }
+    let output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let index_by_path: std::collections::HashMap<&str, usize> = paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.as_str(), i))
+        .collect();
+    let mut ranked: Vec<usize> = Vec::with_capacity(paths.len());
+    for line in text.lines() {
+        if let Some(i) = index_by_path.get(line) {
+            ranked.push(*i);
+        }
+    }
+    if ranked.len() != paths.len() {
+        return None;
+    }
+    Some(ranked)
+}
+
+// One matched candidate collected during the search walk. Kept as a tuple
+// of the entry plus its walk depth so the ranker can prefer shallower
+// matches without re-reading metadata.
+struct SearchCandidate {
+    entry: FileBrowserEntry,
+    depth: usize,
+}
+
+// Collect-then-rank search: walk the tree, keep every match (up to a hard
+// collected cap so a broad query cannot balloon memory), then order the
+// matches by relevance and return one page of them.
+//
+// Page navigation contract (differs from the legacy walk-window paging):
+// every page re-walks the same tree, so `visited` and the walk cursor are no
+// longer the pagination state. The caller advances `offset` by the returned
+// page length and the backend re-ranks the identical match set each time;
+// the walk stays deterministic (sorted BFS), so every match is reachable and
+// pages never overlap or strand results. `truncated=true` means the ranked
+// set covers a partial walk, not that more pages exist.
 fn push_search_entries_with_visit_limit(
     build: &mut TreeBuild,
     dir: &Path,
     matcher: &PathMatcher,
     offset: usize,
-    visit_offset: usize,
+    _visit_offset: usize,
     limit: usize,
     visited: &mut usize,
     matched: &mut usize,
     search_kind: Option<&str>,
     max_visits: usize,
 ) -> Result<(), String> {
-    if build.entries.len() >= limit {
+    if offset >= MAX_COLLECTED_SEARCH_MATCHES {
         return Ok(());
     }
-    let mut queue = VecDeque::from([dir.to_path_buf()]);
+    let mut queue = VecDeque::from([(dir.to_path_buf(), 0usize)]);
     let mut is_initial = true;
-    while let Some(current_dir) = queue.pop_front() {
+    let mut candidates: Vec<SearchCandidate> = Vec::new();
+    while let Some((current_dir, depth)) = queue.pop_front() {
         // The initial directory must be readable so the UI can surface a
         // permission prompt when the workspace root itself is inaccessible.
         // Subdirectories (e.g. macOS ~/Library) are skipped on read failure
@@ -917,22 +1080,20 @@ fn push_search_entries_with_visit_limit(
             }
         };
         for entry in entries {
-            // Visit-cursor pagination: skip the leading entries the previous
-            // page already walked so this page starts at its resume point.
-            let skipped = *visited < visit_offset;
-            if !skipped && *visited - visit_offset >= max_visits {
-                build.truncated = true;
-                return Ok(());
-            }
             *visited += 1;
+            if *visited >= max_visits {
+                build.truncated = true;
+                break;
+            }
             let is_dir = entry.metadata.is_dir();
             let kind = if is_dir { "dir" } else { "file" };
             let kind_matches = search_kind.is_none_or(|wanted| wanted == kind);
             if kind_matches
                 && matcher.matches(&entry.name, &relative_to_root(build.root, &entry.path))
+                && candidates.len() < MAX_COLLECTED_SEARCH_MATCHES
             {
-                if !skipped && *matched >= offset && build.entries.len() < limit {
-                    build.entries.push(FileBrowserEntry {
+                candidates.push(SearchCandidate {
+                    entry: FileBrowserEntry {
                         name: entry.name.clone(),
                         path: relative_to_root(build.root, &entry.path),
                         kind: kind.to_string(),
@@ -949,24 +1110,83 @@ fn push_search_entries_with_visit_limit(
                             .map(|duration| duration.as_millis() as u64),
                         level: 0,
                         expanded: false,
-                    });
-                }
-                // Count skipped-prefix matches too, so `offset` ranks matches
-                // globally across pages: a resumed page must skip exactly the
-                // entries earlier pages already returned, not re-rank the tail
-                // window from zero and strand matches in between.
-                *matched += 1;
-                if !skipped && build.entries.len() >= limit {
-                    build.truncated = true;
-                    return Ok(());
-                }
+                    },
+                    depth,
+                });
             }
             if is_dir {
-                queue.push_back(entry.path);
+                queue.push_back((entry.path, depth + 1));
             }
         }
+        if build.truncated {
+            break;
+        }
     }
+    *matched = candidates.len();
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    rank_search_candidates(matcher, &mut candidates);
+    let page: Vec<FileBrowserEntry> = candidates
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|candidate| candidate.entry)
+        .collect();
+    if offset + page.len() < *matched {
+        build.truncated = true;
+    }
+    build.entries = page;
     Ok(())
+}
+
+// Order the collected matches by relevance: fzf ranking when the boot probe
+// detected it, otherwise the built-in nearest-match score. Both paths keep a
+// deterministic tiebreak (score, then path) so pages re-walk into the same
+// order every time.
+fn rank_search_candidates(matcher: &PathMatcher, candidates: &mut Vec<SearchCandidate>) {
+    let paths: Vec<String> = candidates.iter().map(|c| c.entry.path.clone()).collect();
+    let match_case = matches!(matcher, PathMatcher::Substring { match_case, .. } if *match_case);
+    // fzf ranking needs a plain needle: regex queries keep deterministic
+    // walk order instead. One blocking fzf spawn per ranked page; the
+    // boot probe guarantees a miss here is a missing binary, not latency.
+    if let Some(needle) = matcher.plain_needle() {
+        if let Some(order) = fzf_rank_matches(needle, match_case, &paths) {
+            // fzf answered with a permutation of every input line: order[i]
+            // is the original index of the match that ranks i-th. Apply it
+            // in one pass without touching the source vector mid-iteration.
+            let mut ranked: Vec<SearchCandidate> = Vec::with_capacity(candidates.len());
+            let mut source: std::collections::HashMap<usize, SearchCandidate> = candidates
+                .drain(..)
+                .enumerate()
+                .map(|(i, c)| (i, c))
+                .collect();
+            for index in order {
+                if let Some(candidate) = source.remove(&index) {
+                    ranked.push(candidate);
+                }
+            }
+            // Deterministic backstop if fzf dropped a line: append the rest
+            // by original order so pagination never loses a match.
+            for index in 0..paths.len() {
+                if let Some(candidate) = source.remove(&index) {
+                    ranked.push(candidate);
+                }
+            }
+            *candidates = ranked;
+            return;
+        }
+    }
+    candidates.sort_by(|a, b| {
+        path_search_score(matcher, &a.entry.name, &a.entry.path, a.depth)
+            .cmp(&path_search_score(
+                matcher,
+                &b.entry.name,
+                &b.entry.path,
+                b.depth,
+            ))
+            .then_with(|| a.entry.path.cmp(&b.entry.path))
+    });
 }
 
 fn content_search_context_lines(value: Option<usize>) -> usize {
@@ -1583,8 +1803,10 @@ fn file_browser_tree_payload(
             .unwrap_or(DEFAULT_SEARCH_LIMIT)
             .clamp(1, MAX_SEARCH_LIMIT);
         let offset = query.offset.unwrap_or(0);
-        // Resume cursor from the previous page: lets "Load more" reach
-        // entries past the per-page visit cap instead of replaying page one.
+        // Collect-then-rank search pages re-walk and re-rank the same match
+        // set, so the walk resume cursor is no longer page state. The offset
+        // alone pages through the ranked list (see
+        // push_search_entries_with_visit_limit).
         let visit_offset = query.visit_offset.unwrap_or(0);
         let search_kind = query
             .search_kind
@@ -1604,7 +1826,7 @@ fn file_browser_tree_payload(
             &mut visited_total,
             &mut matched,
             search_kind,
-            MAX_SEARCH_VISITS,
+            MAX_RANKED_SEARCH_VISITS,
         ) {
             return Err((StatusCode::BAD_GATEWAY, err));
         }
@@ -2584,7 +2806,7 @@ mod tests {
             &mut visited,
             &mut matched,
             Some("file"),
-            MAX_SEARCH_VISITS,
+            MAX_RANKED_SEARCH_VISITS,
         )
         .unwrap();
 
@@ -2615,7 +2837,7 @@ mod tests {
             &mut visited,
             &mut matched,
             Some("dir"),
-            MAX_SEARCH_VISITS,
+            MAX_RANKED_SEARCH_VISITS,
         )
         .unwrap();
         let dir_paths = dir_build
@@ -2660,7 +2882,7 @@ mod tests {
                 &mut visited,
                 &mut matched,
                 Some("file"),
-                MAX_SEARCH_VISITS,
+                MAX_RANKED_SEARCH_VISITS,
             )
             .unwrap();
             build
@@ -2671,11 +2893,12 @@ mod tests {
         };
 
         // Case-insensitive default: uppercase query still matches lowercase.
-        // Walk order sorts dirs/files by lowercase name, so the expectations
-        // below follow that order.
+        // Both rank as name-prefix hits on the lowercased needle; the path
+        // tiebreak keeps a deterministic order regardless of fzf presence
+        // (fzf only orders when installed, tests must not depend on it).
         assert_eq!(
             search("PRIVATE", false, false),
-            vec!["private-notes.md", "Private.txt"]
+            vec!["Private.txt", "private-notes.md"]
         );
         // Case-sensitive: only the exact-case file matches.
         assert_eq!(search("Private", true, false), vec!["Private.txt"]);
@@ -2696,12 +2919,13 @@ mod tests {
     }
 
     #[test]
-    fn search_visit_cursor_resumes_past_the_page_visit_cap() {
-        // Layout: 3 leading filler dirs then matching files, so a walk capped
-        // at 2 visits cannot reach any match on page 1, but resuming with the
-        // returned visit cursor must reach them all.
+    fn search_offset_pages_reach_every_ranked_match() {
+        // Layout: matching files spread across dirs. Offset-only pagination
+        // re-walks and re-ranks the same match set per page, so paging must
+        // partition the ranked list with no gaps and no duplicates even
+        // when a page boundary falls mid-list.
         let root = std::env::temp_dir().join(format!(
-            "herdr-webui-search-visit-cursor-test-{}",
+            "herdr-webui-search-offset-paging-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
@@ -2714,75 +2938,8 @@ mod tests {
 
         let root = root.canonicalize().unwrap();
         let matcher = PathMatcher::new("hit-", false, false).unwrap();
-        let mut collected = Vec::new();
-        let mut visit_cursor = 0usize;
-        loop {
-            let mut build = TreeBuild {
-                root: &root,
-                entries: Vec::new(),
-                truncated: false,
-            };
-            let mut visited = 0;
-            let mut matched = 0;
-            push_search_entries_with_visit_limit(
-                &mut build,
-                &root,
-                &matcher,
-                0,
-                visit_cursor,
-                2,
-                &mut visited,
-                &mut matched,
-                Some("file"),
-                3,
-            )
-            .unwrap();
-            collected.extend(
-                build
-                    .entries
-                    .iter()
-                    .map(|entry| entry.path.as_str().to_string()),
-            );
-            if !build.truncated {
-                break;
-            }
-            assert!(
-                visited > visit_cursor,
-                "the cursor must advance or pagination loops forever"
-            );
-            visit_cursor = visited;
-        }
-        assert_eq!(
-            collected,
-            vec!["a-fill/hit-1.txt", "b-fill/hit-2.txt", "c-fill/hit-3.txt"],
-            "paged walk with visit cursor reaches every match past the cap"
-        );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn search_offset_ranks_matches_globally_across_visit_pages() {
-        // The UI advances both cursors: offset by returned entries, the visit
-        // cursor by the returned walk position. Pages must then partition the
-        // match list with no gaps and no duplicates, even when a resumed window
-        // opens on a dense prefix it must skip.
-        let root = std::env::temp_dir().join(format!(
-            "herdr-webui-search-global-offset-test-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        for i in 0..6 {
-            fs::create_dir_all(root.join(format!("dir-{i}"))).unwrap();
-            for j in 0..3 {
-                fs::write(root.join(format!("dir-{i}/hit-{i}-{j}.txt")), "x").unwrap();
-            }
-        }
-
-        let root = root.canonicalize().unwrap();
-        let matcher = PathMatcher::new("hit-", false, false).unwrap();
         let mut collected: Vec<String> = Vec::new();
         let mut offset = 0usize;
-        let mut visit_cursor = 0usize;
         loop {
             let mut build = TreeBuild {
                 root: &root,
@@ -2796,12 +2953,12 @@ mod tests {
                 &root,
                 &matcher,
                 offset,
-                visit_cursor,
-                4,
+                0,
+                2,
                 &mut visited,
                 &mut matched,
                 Some("file"),
-                20,
+                MAX_RANKED_SEARCH_VISITS,
             )
             .unwrap();
             let page: Vec<String> = build
@@ -2809,32 +2966,135 @@ mod tests {
                 .iter()
                 .map(|entry| entry.path.as_str().to_string())
                 .collect();
+            assert_eq!(page.len(), page.len().min(2), "pages respect the limit");
             offset += page.len();
             collected.extend(page);
             if !build.truncated {
                 break;
             }
-            assert!(
-                visited > visit_cursor,
-                "the visit cursor must advance or pagination loops forever"
-            );
-            visit_cursor = visited;
         }
-        let expected: Vec<String> = (0..6)
-            .flat_map(|i| (0..3).map(move |j| format!("dir-{i}/hit-{i}-{j}.txt")))
+        let mut expected = vec![
+            "a-fill/hit-1.txt".to_string(),
+            "b-fill/hit-2.txt".to_string(),
+            "c-fill/hit-3.txt".to_string(),
+        ];
+        expected.sort();
+        assert_eq!(
+            collected, expected,
+            "offset paging reaches every match with no gaps or duplicates"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn path_search_ranks_nearest_match_first() {
+        // Ranking tiers: exact file name beats a name-contains match, which
+        // beats a path-fragment-only match. fzf never runs in tests (the
+        // boot probe stays absent), so the built-in ranker defines this
+        // order deterministically.
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-search-ranking-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(root.join("app/app"), "x").unwrap();
+        fs::write(root.join("app/patch-app.js"), "x").unwrap();
+        fs::write(root.join("app/notes.md"), "x").unwrap();
+
+        let root = root.canonicalize().unwrap();
+        let matcher = PathMatcher::new("app", false, false).unwrap();
+        let mut build = TreeBuild {
+            root: &root,
+            entries: Vec::new(),
+            truncated: false,
+        };
+        let mut visited = 0;
+        let mut matched = 0;
+        push_search_entries_with_visit_limit(
+            &mut build,
+            &root,
+            &matcher,
+            0,
+            0,
+            10,
+            &mut visited,
+            &mut matched,
+            Some("file"),
+            MAX_RANKED_SEARCH_VISITS,
+        )
+        .unwrap();
+        let paths: Vec<&str> = build
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
             .collect();
         assert_eq!(
-            collected.len(),
-            expected.len(),
-            "dual-cursor paging must surface every match"
+            paths,
+            vec!["app/app", "app/patch-app.js", "app/notes.md"],
+            "exact name first, name-contains second, path-fragment last"
         );
-        let mut sorted_collected = collected.clone();
-        sorted_collected.sort();
-        let mut sorted_expected = expected.clone();
-        sorted_expected.sort();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn search_reaches_matches_past_the_old_visit_cap() {
+        // Regression for the motivating bug: a match deep in the walk (the
+        // real case sat at BFS visit ~29.8k) was unreachable past the old
+        // 20k-visit first page. The ranked walk must visit far past that
+        // cap and surface the match on page one.
+        let root = std::env::temp_dir().join(format!(
+            "herdr-webui-search-deep-visit-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        // 30 filler dirs × 1500 files = 45000 visited entries before the
+        // match, all cheaper than creating 30k real files.
+        fs::create_dir_all(root.join("fillers/deep/target")).unwrap();
+        fs::write(root.join("fillers/deep/target/needle.txt"), "x").unwrap();
+        for i in 0..30 {
+            let filler = root.join(format!("fillers/filler-{i:03}"));
+            fs::create_dir_all(&filler).unwrap();
+            for j in 0..1500 {
+                fs::write(filler.join(format!("pad-{j:04}.txt")), "x").unwrap();
+            }
+        }
+
+        let root = root.canonicalize().unwrap();
+        let matcher = PathMatcher::new("needle", false, false).unwrap();
+        let mut build = TreeBuild {
+            root: &root,
+            entries: Vec::new(),
+            truncated: false,
+        };
+        let mut visited = 0;
+        let mut matched = 0;
+        push_search_entries_with_visit_limit(
+            &mut build,
+            &root,
+            &matcher,
+            0,
+            0,
+            100,
+            &mut visited,
+            &mut matched,
+            Some("file"),
+            MAX_RANKED_SEARCH_VISITS,
+        )
+        .unwrap();
+        let paths: Vec<&str> = build
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
         assert_eq!(
-            sorted_collected, sorted_expected,
-            "no gaps and no duplicates across pages"
+            paths,
+            vec!["fillers/deep/target/needle.txt"],
+            "a match ~45k visits deep lands on page one"
+        );
+        assert!(
+            visited > 20_000,
+            "the walk must visit past the old 20k cap, visited={visited}"
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -2845,9 +3105,10 @@ mod tests {
     }
 
     #[test]
-    fn push_search_entries_returns_when_page_already_full() {
+    fn push_search_entries_replaces_a_prefilled_page() {
         // A caller that pre-fills the page (impossible via the HTTP layer,
-        // but the function contract allows it) must not walk at all.
+        // but the function contract allows it) gets the ranked page back:
+        // collect-then-rank always walks and owns the entries it returns.
         let root =
             std::env::temp_dir().join(format!("herdr-webui-search-prefull-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -2887,9 +3148,17 @@ mod tests {
             3,
         )
         .unwrap();
-        assert_eq!(build.entries.len(), 2, "pre-filled page stays untouched");
-        assert_eq!(visited, 0, "no walk happens when the page is already full");
-        assert_eq!(matched, 0, "no matches counted without a walk");
+        assert_eq!(
+            build.entries.len(),
+            1,
+            "the ranked walk replaces the pre-filled page with the real match"
+        );
+        assert_eq!(build.entries[0].path, "hit.txt");
+        assert!(
+            visited > 0,
+            "the walk runs even when the page was pre-filled"
+        );
+        assert_eq!(matched, 1, "the single match is counted");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3132,7 +3401,7 @@ mod tests {
             &mut visited,
             &mut matched,
             Some("file"),
-            MAX_SEARCH_VISITS,
+            MAX_RANKED_SEARCH_VISITS,
         )
         .unwrap();
 

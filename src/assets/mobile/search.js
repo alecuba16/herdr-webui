@@ -5,6 +5,7 @@
     escapeHtml,
     currentWorkspace,
     currentWorkspaceCwd,
+    searchRootFn,
     workspaceTitle,
     workspaceMeta,
     worktreeForWorkspace,
@@ -29,7 +30,6 @@
       pathError: "",
       pathDone: true,
       pathOffset: 0,
-      pathVisited: 0,
       content: globalThis.HerdrWorkspaceSearch ? globalThis.HerdrWorkspaceSearch.createContentState() : { query: "", files: [], expanded: {}, snippets: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 },
       sectionsExpanded: { actions: true, workspaces: true, files: true, content: true },
     };
@@ -184,11 +184,17 @@
       mobileSearch.timer = setTimeout(() => runMobileWorkspaceSearch(false), 180);
     }
 
+    // Search root resolver injected from app.js; falls back to the
+    // selected workspace cwd only for legacy hosts without the injection.
+    function mobileSearchRoot() {
+      return typeof searchRootFn === "function" ? searchRootFn() : currentWorkspaceCwd();
+    }
+
     async function runMobileWorkspaceSearch(append) {
       const helper = globalThis.HerdrWorkspaceSearch;
       if (!helper) return;
       const query = String(mobileSearch.query || "").trim();
-      const cwd = currentWorkspaceCwd();
+      const cwd = mobileSearchRoot();
       const seq = ++mobileSearch.requestSeq;
       const opts = helper.settings();
       normalizeMobilePathKind(opts);
@@ -204,7 +210,6 @@
         mobileSearch.pathEntries = [];
         mobileSearch.pathGitStatus = null;
         mobileSearch.pathOffset = 0;
-        mobileSearch.pathVisited = 0;
         mobileSearch.pathDone = true;
         mobileSearch.pathLoading = false;
         mobileSearch.pathError = "";
@@ -222,18 +227,17 @@
       render();
       try {
         const offset = append ? mobileSearch.pathOffset : 0;
-        const visitOffset = append ? mobileSearch.pathVisited : 0;
-        const data = await helper.searchPaths({ cwd, query, kind: mobileSearch.pathKind, offset, visitOffset });
+        const data = await helper.searchPaths({ cwd, query, kind: mobileSearch.pathKind, offset });
         if (seq !== mobileSearch.requestSeq) return;
         const entries = data.entries || [];
         mobileSearch.pathEntries = append ? mobileSearch.pathEntries.concat(entries) : entries;
         mobileSearch.pathGitStatus = data.git_status || null;
         mobileSearch.pathOffset = offset + entries.length;
-        // Visit cursor: data.visited is the absolute walk position, so keep it
-        // as-is and keep paging on truncated pages even with zero entries:
-        // matches may live past the visit cap; only a stalled walk ends here.
-        mobileSearch.pathVisited = Number(data.visited || 0);
-        mobileSearch.pathDone = !data.truncated || (append && entries.length === 0 && mobileSearch.pathVisited <= visitOffset);
+        // Offset-only pagination: every page re-walks and re-ranks the
+        // same match set, so truncated=false is the natural end. A page
+        // with zero entries cannot advance the offset, so it disarms
+        // instead of replaying the same empty page forever.
+        mobileSearch.pathDone = !data.truncated || entries.length === 0;
         mobileSearch.pathError = "";
       } catch (error) {
         if (seq !== mobileSearch.requestSeq) return;
@@ -366,13 +370,12 @@
         mobileSearch.pathKind = kind === "dir" ? "dir" : "file";
         mobileSearch.pathEntries = [];
         mobileSearch.pathOffset = 0;
-        mobileSearch.pathVisited = 0;
         render();
         runMobileWorkspaceSearch(false);
       },
       loadMorePaths() {
         if (mobileSearch.pathLoading || mobileSearch.pathDone) return;
-        runMobilePathSearch(++mobileSearch.requestSeq, mobileSearch.query, currentWorkspaceCwd(), true).then(renderPreservingScroll);
+        runMobilePathSearch(++mobileSearch.requestSeq, mobileSearch.query, mobileSearchRoot(), true).then(renderPreservingScroll);
       },
       openTarget(index) {
         const row = mobileSearch.targets[index];
@@ -413,7 +416,7 @@
       },
       openFile(encodedPath) { globalThis.HerdrMobileSearch.openPath(decodeURIComponent(encodedPath), "file"); },
       openMatch(encodedPath, encodedMatchId) { globalThis.HerdrMobileSearch.openContent(decodeURIComponent(encodedPath), decodeURIComponent(encodedMatchId)); },
-      loadMore() { runMobileContentSearch(++mobileSearch.requestSeq, mobileSearch.query, currentWorkspaceCwd(), true, { preserveScroll: true }).then(renderPreservingScroll); },
+      loadMore() { runMobileContentSearch(++mobileSearch.requestSeq, mobileSearch.query, mobileSearchRoot(), true, { preserveScroll: true }).then(renderPreservingScroll); },
       // The shared content picker renders "Load all matches" for a
       // truncated file; desktop's palette re-searches that one file with a
       // higher per-file cap and swaps the entry in. Same behavior here so
@@ -422,7 +425,7 @@
         const helper = globalThis.HerdrWorkspaceSearch;
         const path = decodeURIComponent(encodedPath || "");
         const query = String(mobileSearch.query || "").trim();
-        const cwd = currentWorkspaceCwd();
+        const cwd = mobileSearchRoot();
         if (!helper || !helper.searchContentFile || !path || !query || !cwd) return;
         const seq = ++mobileSearch.requestSeq;
         try {
@@ -447,7 +450,7 @@
           : Math.min(20, current < 3 ? 3 : current * 2);
         const path = decodeURIComponent(_path || "");
         if (path) mobileSearch.content.expanded[path] = true;
-        runMobileContentSearch(++mobileSearch.requestSeq, mobileSearch.query, currentWorkspaceCwd(), false, { preserveExpanded: true, preserveScroll: true }).then(renderPreservingScroll);
+        runMobileContentSearch(++mobileSearch.requestSeq, mobileSearch.query, mobileSearchRoot(), false, { preserveExpanded: true, preserveScroll: true }).then(renderPreservingScroll);
       },
     };
 

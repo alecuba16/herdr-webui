@@ -29,7 +29,6 @@ function createSearchPaletteState() {
     pathEntries: [],
     pathGitStatus: null,
     pathOffset: 0,
-    pathVisited: 0,
     pathDone: true,
     pathLoading: false,
     pathError: "",
@@ -149,6 +148,23 @@ function targetForWorkspace(wsId) {
     null;
   const pane = tab && state.panes.find((p) => p.tab_id === tab.tab_id);
   return { ws: wsId, tab: tab && tab.tab_id, pane: pane && pane.pane_id };
+}
+
+// The palette's file and content search root: the default folder from
+// settings, falling back to ~. Workspace scoping belongs to the sidebar
+// panel (search_panel.js).
+function paletteSearchRoot() {
+  return defaultFolderPath() || "~";
+}
+
+function paletteSearchWorkspace() {
+  if (typeof defaultFolderWorkspace === "function") {
+    const workspace = defaultFolderWorkspace();
+    if (workspace) return workspace;
+  }
+  const cwd = paletteSearchRoot();
+  if (!cwd) return null;
+  return { workspace_id: "__default_folder__", label: "Default folder", cwd, default_folder: true };
 }
 
 function currentSearchWorkspace() {
@@ -347,13 +363,11 @@ async function runWorkspaceSearch(append = false) {
     renderSearchPalette();
     return;
   }
-  // The search root mirrors panelSearchWorkspace and the palette's own
-  // open handlers: the selected workspace, else the default folder. The
-  // palette is reachable on the boot-clean desktop (header button,
-  // search shortcut), where currentSearchWorkspace alone is null and
-  // the search would silently no-op.
-  const workspace = currentSearchWorkspace()
-    || (typeof selectedOrDefaultWorkspace === "function" ? selectedOrDefaultWorkspace() : null);
+  // The palette's file and content search root is always the default
+  // folder (settings) with ~ as the last resort. It is the global
+  // action-triggered surface; the workspace-scoped root belongs to the
+  // search panel (see search_panel.js).
+  const workspace = paletteSearchWorkspace();
   const cwd = helper.workspaceCwd(workspace);
   const opts = helper.settings();
   normalizePalettePathKind(opts);
@@ -384,24 +398,22 @@ async function runWorkspaceSearch(append = false) {
 async function runPathSearch(seq, query, cwd, append) {
   const helper = window.HerdrWorkspaceSearch;
   const offset = append ? searchPaletteState.pathOffset : 0;
-  const visitOffset = append ? searchPaletteState.pathVisited : 0;
   searchPaletteState.pathLoading = true;
   searchPaletteState.pathError = "";
   renderSearchPalette();
   try {
-    const data = await helper.searchPaths({ cwd, query, kind: searchPaletteState.pathKind, offset, visitOffset, matchCase: searchPaletteState.matchCase, regex: searchPaletteState.regex });
+    const data = await helper.searchPaths({ cwd, query, kind: searchPaletteState.pathKind, offset, matchCase: searchPaletteState.matchCase, regex: searchPaletteState.regex });
     if (seq !== searchPaletteState.requestSeq) return;
     const entries = data.entries || [];
     searchPaletteState.pathEntries = append ? searchPaletteState.pathEntries.concat(entries) : entries;
     searchPaletteState.pathGitStatus = data.git_status || null;
     searchPaletteState.pathOffset = offset + entries.length;
-    // Visit cursor: "Load more" resumes the backend walk where this page
-    // stopped. data.visited is the absolute walk position (skipped prefix
-    // included), so never re-add visitOffset. Keep paging on truncated pages
-    // even with zero entries: matches may live past the visit cap; only a
-    // walk that stops advancing can end the chain.
-    searchPaletteState.pathVisited = Number(data.visited || 0);
-    searchPaletteState.pathDone = !data.truncated || (append && entries.length === 0 && searchPaletteState.pathVisited <= visitOffset);
+    // Offset-only pagination: the backend re-walks and re-ranks the same
+    // match set for every page, so truncated=false is the natural end. One
+    // guard stays: a page with zero entries cannot advance the offset, so
+    // paging on would replay the same empty page forever (a walk past the
+    // collect cap with no new matches). No progress means done.
+    searchPaletteState.pathDone = !data.truncated || entries.length === 0;
     searchPaletteState.pathError = "";
   } catch (error) {
     if (seq !== searchPaletteState.requestSeq) return;
@@ -447,8 +459,17 @@ async function runContentSearchForPalette(seq, query, cwd, append, options = {})
 }
 
 function activeWorkspaceLabel() {
-  const workspace = currentSearchWorkspace();
-  return workspace ? workspaceDisplayTitle(workspace) : "No workspace selected";
+  // Section header shows where this surface searches. The palette (and the
+  // panel, which borrows this renderer) both reach here while
+  // searchPaletteState points at the calling surface's state, so tag the
+  // panel state with its own scope: the panel searches the selected
+  // workspace, the palette the default folder.
+  if (searchPaletteState.panelScope && typeof currentSearchWorkspace === "function") {
+    const workspace = currentSearchWorkspace();
+    return workspace ? workspaceDisplayTitle(workspace) : "No workspace selected";
+  }
+  const root = paletteSearchRoot();
+  return root ? `Searching ${root}` : "No default folder";
 }
 
 async function loadRecentWorkspaces() {
@@ -504,12 +525,12 @@ function buildSearchSelectionRows(actions, targets, order, opts) {
       for (const entry of searchPaletteState.pathEntries || []) {
         const kind = entry.kind === "dir" ? "dir" : "file";
         if (kind !== searchPaletteState.pathKind) continue;
-        rows.push({ type: "path", kind, path: entry.path, title: entry.name || entry.path, workspace: currentSearchWorkspace() });
+        rows.push({ type: "path", kind, path: entry.path, title: entry.name || entry.path });
       }
     }
     if (section === "content" && opts.searchContentEnabled !== false && searchPaletteState.sectionsExpanded.content !== false) {
       for (const item of (window.HerdrWorkspaceSearch ? window.HerdrWorkspaceSearch.flattenContentMatches(searchPaletteState.content.files) : [])) {
-        rows.push({ type: "content", file: item.file, match: item.match, title: item.file.path, workspace: currentSearchWorkspace() });
+        rows.push({ type: "content", file: item.file, match: item.match, title: item.file.path });
       }
     }
   }
@@ -654,7 +675,7 @@ function renderWorkspacePathSection(opts = searchSettings(), callbacks = {}) {
     ? searchPaletteState.pathEntries.length
       ? helper.renderPathTree(searchPaletteState.pathEntries, { query, kind, gitStatus: searchPaletteState.pathGitStatus, selectedPath, callback: callbacks.tree || "HerdrSearchPaletteTree" })
       : `<div class="search-empty">${searchPaletteState.pathLoading ? "Searching..." : `No ${noun} found.`}</div>`
-    : '<div class="search-empty">Type to search files or folders in current workspace.</div>';
+    : `<div class="search-empty">${searchPaletteState.panelScope ? "Type to search files or folders in this workspace." : "Type to search files or folders in the default folder."}</div>`;
   const api = callbacks.panel || "HerdrSearchPalette";
   const more = query && !searchPaletteState.pathDone ? `<button class="git-ui-btn search-more" onclick="${api}.loadMorePaths()">Load more ${noun}</button>` : "";
   return `<section class="search-section search-path-section"><button class="search-section-head search-section-toggle" onclick="${api}.toggleSection('files')" aria-expanded="${expanded ? "true" : "false"}"><strong><span class="herdr-tree-icon herdr-tree-icon-${expanded ? "chevron-down" : "chevron-right"}" aria-hidden="true"></span>Files and folders</strong><span>${escapeHtml(activeWorkspaceLabel())}</span></button>${expanded ? `<div class="search-scope-tabs"><button class="git-ui-btn ${kind === "file" ? "active" : ""}" ${opts.searchFilesEnabled === false ? "disabled" : ""} onclick="${api}.setPathKind('file')">Files</button><button class="git-ui-btn ${kind === "dir" ? "active" : ""}" ${opts.searchFoldersEnabled === false ? "disabled" : ""} onclick="${api}.setPathKind('dir')">Folders</button></div>${searchPaletteState.pathError ? `<div class="file-browser-error">${escapeHtml(searchPaletteState.pathError)}</div>` : ""}${tree}${searchPaletteState.pathLoading ? '<div class="file-browser-searching">Searching...</div>' : ""}${more}` : ""}</section>`;
@@ -816,12 +837,10 @@ function searchPaletteKeydown(e) {
 }
 
 async function openWorkspaceSearchPath(path, kind) {
-  // The search root mirrors panelSearchWorkspace: the selected
-  // workspace, else the default folder. currentSearchWorkspace alone is
-  // null on the boot-clean desktop (no selection after a restart),
-  // which silently dropped result clicks for a default-folder search.
-  const workspace = currentSearchWorkspace()
-    || (typeof selectedOrDefaultWorkspace === "function" ? selectedOrDefaultWorkspace() : null);
+  // Results come from the default-folder root (see runPaletteSearches),
+  // so they open in the default folder even when no workspace is
+  // selected.
+  const workspace = paletteSearchWorkspace();
   closeSearchPalette();
   if (!workspace) return;
   try {
@@ -837,10 +856,9 @@ async function openWorkspaceSearchPath(path, kind) {
 
 async function openWorkspaceSearchContent(file, match) {
   const helper = window.HerdrWorkspaceSearch;
-  // Same default-folder fallback as openWorkspaceSearchPath: content
-  // matches from a default-folder search open in the default folder.
-  const workspace = currentSearchWorkspace()
-    || (typeof selectedOrDefaultWorkspace === "function" ? selectedOrDefaultWorkspace() : null);
+  // Same default-folder root as openWorkspaceSearchPath: content matches
+  // from a default-folder search open in the default folder.
+  const workspace = paletteSearchWorkspace();
   closeSearchPalette();
   if (!workspace || !file) return;
   try {
@@ -897,7 +915,6 @@ const HerdrSearchPalette = {
     searchPaletteState.pathKind = kind === "dir" ? "dir" : "file";
     searchPaletteState.pathEntries = [];
     searchPaletteState.pathOffset = 0;
-    searchPaletteState.pathVisited = 0;
     searchPaletteState.pathDone = true;
     renderSearchPalette();
     runWorkspaceSearch(false);
@@ -909,20 +926,19 @@ const HerdrSearchPalette = {
     searchPaletteState[mode] = !searchPaletteState[mode];
     searchPaletteState.pathEntries = [];
     searchPaletteState.pathOffset = 0;
-    searchPaletteState.pathVisited = 0;
     searchPaletteState.pathDone = true;
     renderSearchPalette();
     runWorkspaceSearch(false);
   },
-  // Ignore repeat clicks while a page is in flight or the walk is
-  // finished, or two appends can duplicate rows.
+  // Ignore repeat clicks while a page is in flight or the ranked list is
+  // exhausted, or two appends can duplicate rows.
   loadMorePaths() {
     if (searchPaletteState.pathLoading || searchPaletteState.pathDone) return;
-    runPathSearch(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(currentSearchWorkspace()), true).then(renderSearchPalette);
+    runPathSearch(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(paletteSearchWorkspace()), true).then(renderSearchPalette);
   },
   loadMoreContent() {
     if (searchPaletteState.content.loading || searchPaletteState.content.done) return;
-    runContentSearchForPalette(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(currentSearchWorkspace()), true, { preserveScroll: true }).then(renderSearchPalettePreservingScroll);
+    runContentSearchForPalette(++searchPaletteState.requestSeq, searchPaletteState.query, window.HerdrWorkspaceSearch.workspaceCwd(paletteSearchWorkspace()), true, { preserveScroll: true }).then(renderSearchPalettePreservingScroll);
   },
 };
 
@@ -953,7 +969,7 @@ const HerdrSearchPaletteContent = {
   loadMore() { HerdrSearchPalette.loadMoreContent(); },
   async loadFile(encodedPath) {
     const helper = window.HerdrWorkspaceSearch;
-    const workspace = currentSearchWorkspace();
+    const workspace = paletteSearchWorkspace();
     const path = decodeURIComponent(encodedPath || "");
     const query = String(searchPaletteState.query || "").trim();
     const cwd = helper && helper.workspaceCwd(workspace);
@@ -982,7 +998,7 @@ const HerdrSearchPaletteContent = {
       ? window.HerdrLineContext.nextContextSize(current, { min: 3, max: 20 })
       : Math.min(20, current < 3 ? 3 : current * 2);
     if (path) searchPaletteState.content.expanded[path] = true;
-    runContentSearchForPalette(++searchPaletteState.requestSeq, searchPaletteState.query, helper.workspaceCwd(currentSearchWorkspace()), false, { preserveExpanded: true, preserveScroll: true }).then(renderSearchPalettePreservingScroll);
+    runContentSearchForPalette(++searchPaletteState.requestSeq, searchPaletteState.query, helper.workspaceCwd(paletteSearchWorkspace()), false, { preserveExpanded: true, preserveScroll: true }).then(renderSearchPalettePreservingScroll);
   },
 };
 

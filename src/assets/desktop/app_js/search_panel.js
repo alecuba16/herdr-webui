@@ -26,10 +26,16 @@
       pathEntries: [],
       pathGitStatus: null,
       pathOffset: 0,
-      pathVisited: 0,
       pathDone: true,
       pathLoading: false,
       pathError: "",
+      // True while no workspace is selected: the panel is workspace-scoped
+      // with no search root, so renderPanel shows the notice.
+      noWorkspace: false,
+      // Marks this state as the sidebar panel's while it borrows the palette
+      // section renderers: activeWorkspaceLabel reads it to show the
+      // workspace scope instead of the palette's default-folder root.
+      panelScope: true,
       recent: [],
       recentLoaded: false,
       // The palette row renderer ranks rows through results/selectedIndex;
@@ -61,16 +67,12 @@
     return !!(panel && panel.parentNode);
   }
 
-  // The search root: the selected workspace folder, else the default
-  // folder. currentSearchWorkspace alone returns null on the boot-clean
-  // desktop (nothing selected after a restart), which used to leave the
-  // panel without a cwd and every keystroke searched nowhere.
+  // The search root: only the selected workspace folder. Unlike the
+  // action-triggered palette (which searches the default folder, see
+  // search.js), this panel is scoped to the current workspace, so no
+  // workspace selected means no file or content search at all.
   function panelSearchWorkspace() {
-    if (typeof currentSearchWorkspace === "function") {
-      const selected = currentSearchWorkspace();
-      if (selected) return selected;
-    }
-    if (typeof selectedOrDefaultWorkspace === "function") return selectedOrDefaultWorkspace();
+    if (typeof currentSearchWorkspace === "function") return currentSearchWorkspace();
     return null;
   }
 
@@ -105,6 +107,10 @@
         content: actionsOnly || opts.searchContentEnabled === false ? "" : (typeof renderWorkspaceContentSection === "function" ? renderWorkspaceContentSection(cb) : ""),
       };
       const recent = actionsOnly || typeof recentWorkspaceCandidates !== "function" ? [] : recentWorkspaceCandidates(state.recent);
+      // Workspace-scoped panel with no workspace selected: files and
+      // content sections show why nothing is searched instead of an
+      // empty list that reads as zero matches.
+      const noRoot = !actionsOnly && state.noWorkspace && query.trim() ? `<div class="search-empty search-panel-no-root">No workspace selected. Open a workspace to search its files, folders, and contents here.</div>` : "";
       // innerHTML replaces the head with the input node; capture focus and
       // caret before the swap and restore after so typing keeps the caret.
       const active = document.activeElement && document.activeElement.id === "searchPanelInput" ? document.activeElement : null;
@@ -112,7 +118,7 @@
       const caretEnd = active && typeof active.selectionEnd === "number" ? active.selectionEnd : caret;
       const caseToggle = `<button type="button" class="mini search-mode-toggle${state.matchCase ? " active" : ""}" id="searchPanelCaseToggle" title="Match case (Alt+C)" aria-label="Match case" aria-pressed="${state.matchCase ? "true" : "false"}" onclick="HerdrSearchPanel.panel.setSearchMode('matchCase')">Aa</button>`;
       const regexToggle = `<button type="button" class="mini search-mode-toggle${state.regex ? " active" : ""}" id="searchPanelRegexToggle" title="Regular expression (Alt+R)" aria-label="Regular expression" aria-pressed="${state.regex ? "true" : "false"}" onclick="HerdrSearchPanel.panel.setSearchMode('regex')">.*</button>`;
-      panel.innerHTML = `<div class="search-panel-head"><span class="search-icon" aria-hidden="true">⌕</span><input id="searchPanelInput" class="search-panel-input" placeholder="Search workspaces, files, folders, or file contents..."${inputAttrs("search")} aria-label="Search workspaces, files, folders, or file contents" />${caseToggle}${regexToggle}<button class="mini settings-close" id="searchPanelClear" title="Clear" aria-label="Clear search"><span aria-hidden="true">✕</span></button></div><div class="search-panel-results" id="searchPanelResults">${typeof renderRecentSection === "function" ? renderRecentSection(recent, cb) : ""}${order.map((key) => sections[key] || "").join("")}</div>`;
+      panel.innerHTML = `<div class="search-panel-head"><span class="search-icon" aria-hidden="true">⌕</span><input id="searchPanelInput" class="search-panel-input" placeholder="Search workspaces, files, folders, or file contents..."${inputAttrs("search")} aria-label="Search workspaces, files, folders, or file contents" />${caseToggle}${regexToggle}<button class="mini settings-close" id="searchPanelClear" title="Clear" aria-label="Clear search"><span aria-hidden="true">✕</span></button></div><div class="search-panel-results" id="searchPanelResults">${typeof renderRecentSection === "function" ? renderRecentSection(recent, cb) : ""}${noRoot}${order.map((key) => sections[key] || "").join("")}</div>`;
       const input = panel.querySelector("#searchPanelInput");
       const clear = panel.querySelector("#searchPanelClear");
       if (input) {
@@ -162,7 +168,6 @@
           s.pathError = "";
           s.pathGitStatus = null;
           s.pathOffset = 0;
-          s.pathVisited = 0;
           if (window.HerdrWorkspaceSearch) window.HerdrWorkspaceSearch.resetContentState(s.content, "");
           renderPanel();
           if (keepOpen) {
@@ -192,10 +197,14 @@
       state.pathDone = true;
       state.pathLoading = false;
       state.pathError = "";
+      // No selected workspace means the panel has no search root: say so
+      // instead of leaving an empty list that looks like zero matches.
+      state.noWorkspace = !cwd;
       helper.resetContentState(state.content, "");
       renderPanel();
       return;
     }
+    state.noWorkspace = false;
     const tasks = [];
     if (typeof pathSearchAvailable === "function" && pathSearchAvailable(opts)) tasks.push(runPathSearch(seq, query, cwd, append && state.pathLoading === false));
     if (opts.searchContentEnabled !== false) tasks.push(runContentSearch(seq, query, cwd, append && state.content.loading === false));
@@ -210,22 +219,20 @@
     const helper = window.HerdrWorkspaceSearch;
     const state = ensureState();
     const offset = append ? state.pathOffset : 0;
-    const visitOffset = append ? state.pathVisited : 0;
     state.pathLoading = true;
     state.pathError = "";
     try {
-      const data = await helper.searchPaths({ cwd, query, kind: state.pathKind, offset, visitOffset, matchCase: state.matchCase, regex: state.regex });
+      const data = await helper.searchPaths({ cwd, query, kind: state.pathKind, offset, matchCase: state.matchCase, regex: state.regex });
       if (seq !== state.requestSeq) return;
       const entries = data.entries || [];
       state.pathEntries = append ? state.pathEntries.concat(entries) : entries;
       state.pathGitStatus = data.git_status || null;
       state.pathOffset = offset + entries.length;
-      // Visit cursor: "Load more" resumes the backend walk where this
-      // page stopped. data.visited is absolute, so never re-add visitOffset.
-      // Keep paging on truncated pages even with zero entries: matches may
-      // live past the visit cap; only a stalled walk can end the chain.
-      state.pathVisited = Number(data.visited || 0);
-      state.pathDone = !data.truncated || (append && entries.length === 0 && state.pathVisited <= visitOffset);
+      // Offset-only pagination: every page re-walks and re-ranks the
+      // same match set, so truncated=false is the natural end. A page with
+      // zero entries cannot advance the offset, so it disarms instead of
+      // replaying the same empty page forever.
+      state.pathDone = !data.truncated || entries.length === 0;
     } catch (error) {
       if (seq !== state.requestSeq) return;
       state.pathError = error.message || String(error);
@@ -421,7 +428,6 @@
       state.pathKind = kind === "dir" ? "dir" : "file";
       state.pathEntries = [];
       state.pathOffset = 0;
-      state.pathVisited = 0;
       state.pathDone = true;
       renderPanel();
       runSearch(false);
@@ -434,15 +440,14 @@
       state[mode] = !state[mode];
       state.pathEntries = [];
       state.pathOffset = 0;
-      state.pathVisited = 0;
       state.pathDone = true;
       renderPanel();
       runSearch(false);
     },
     loadMorePaths() {
       const state = ensureState();
-      // Ignore repeat clicks while a page is in flight or the walk is
-      // finished, or two appends can duplicate rows.
+      // Ignore repeat clicks while a page is in flight or the ranked
+      // list is exhausted, or two appends can duplicate rows.
       if (state.pathLoading || state.pathDone) return;
       const helper = window.HerdrWorkspaceSearch;
       const cwd = helper.workspaceCwd(panelSearchWorkspace());
