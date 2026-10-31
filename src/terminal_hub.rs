@@ -20,6 +20,7 @@
 use crate::protocol::{
     read_message, write_message, ClientMessage, ServerMessage, PROTOCOL_VERSION,
 };
+use interprocess::local_socket::traits::Stream as _;
 use interprocess::local_socket::Stream as LocalStream;
 use interprocess::TryClone as _;
 use std::collections::{HashMap, VecDeque};
@@ -236,6 +237,10 @@ pub(crate) enum AttachError {
     ReadHandshake,
     Rejected(String),
     Attach,
+    /// Handshake steps exceeded the deadline: the backend accepted the
+    /// socket but never completed the welcome/attach exchange. A wedged
+    /// backend must surface as a closeable error, not browser silence.
+    TimedOut,
 }
 
 impl AttachError {
@@ -246,6 +251,10 @@ impl AttachError {
             Self::ReadHandshake => "failed to read herdr handshake\r\n".to_string(),
             Self::Rejected(error) => format!("herdr rejected terminal connection: {error}\r\n"),
             Self::Attach => "failed to attach herdr terminal\r\n".to_string(),
+            Self::TimedOut => {
+                "backend accepted the attach socket but never completed the handshake\r\n"
+                    .to_string()
+            }
         }
     }
 
@@ -256,17 +265,29 @@ impl AttachError {
             Self::ReadHandshake => "handshake_failed",
             Self::Rejected(_) => "handshake_rejected",
             Self::Attach => "attach_failed",
+            Self::TimedOut => "attach_timeout",
         }
     }
 
     pub(crate) fn suggests_builtin(&self) -> bool {
-        matches!(self, Self::ReadHandshake | Self::Rejected(_))
+        matches!(
+            self,
+            Self::ReadHandshake | Self::Rejected(_) | Self::TimedOut
+        )
     }
 }
 
 /// herdr 0.9.0 requires an exact client protocol version match at
 /// handshake time; the backend either accepts the version or rejects the
 /// connection with a `Welcome{error}`.
+///
+/// A backend that accepts the socket but stalls mid-handshake used to
+/// hang the browser's loading overlay forever. The deadline turns that
+/// silence into the same `herdr_error` + 4404 close every other attach
+/// failure gets; the control socket already bounds its requests
+/// (`backend_client::DEFAULT_REQUEST_TIMEOUT`) the same way.
+const ATTACH_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn connect_terminal_attach(
     path: &Path,
     terminal_id: &str,
@@ -274,6 +295,12 @@ fn connect_terminal_attach(
     rows: u16,
 ) -> Result<LocalStream, AttachError> {
     let mut stream = crate::connect_local_stream(path).map_err(|_| AttachError::Connect)?;
+    stream
+        .set_recv_timeout(Some(ATTACH_HANDSHAKE_TIMEOUT))
+        .map_err(|_| AttachError::Connect)?;
+    stream
+        .set_send_timeout(Some(ATTACH_HANDSHAKE_TIMEOUT))
+        .map_err(|_| AttachError::Connect)?;
     let hello = ClientMessage::TerminalHello {
         version: PROTOCOL_VERSION,
         cols,
@@ -302,6 +329,13 @@ fn connect_terminal_attach(
         },
     )
     .map_err(|_| AttachError::Attach)?;
+    // The recv deadline stays armed for the attach's first frame: both
+    // backends answer AttachTerminal with the full history frame, so a
+    // healthy backend writes it immediately. A backend that handshakes
+    // but then stalls before that frame is a wedged attach and must fail,
+    // not hang. The reader thread clears the deadline after the first
+    // frame: idle terminals regularly sit far longer than the deadline
+    // with no output at all.
     Ok(stream)
 }
 
@@ -500,9 +534,20 @@ fn spawn_attach_threads(
     // a slow browser client is dropped, this thread never blocks.
     std::thread::spawn(move || {
         let mut stream = stream;
+        // The attach handshake left a recv deadline armed so a backend
+        // that stalls before its first frame fails instead of hanging the
+        // browser overlay. Both backends send the full history frame right
+        // after AttachTerminal, so once one frame lands the attach is
+        // live and the deadline must come off: idle terminals produce no
+        // output for far longer than the handshake budget.
+        let mut first_frame = true;
         loop {
             match read_message::<_, ServerMessage>(&mut stream, crate::MAX_GRAPHICS_FRAME_SIZE) {
                 Ok(ServerMessage::Terminal(frame)) => {
+                    if first_frame {
+                        first_frame = false;
+                        let _ = stream.set_recv_timeout(None);
+                    }
                     if frame.full {
                         // Full frame = the backend's authoritative replay
                         // (fresh attach): it replaces the ring instead of
@@ -515,11 +560,29 @@ fn spawn_attach_threads(
                     attach.publish(HubClientEvent::Bytes(frame.bytes));
                 }
                 Ok(ServerMessage::Graphics { bytes }) => {
+                    if first_frame {
+                        first_frame = false;
+                        let _ = stream.set_recv_timeout(None);
+                    }
                     attach.publish(HubClientEvent::Bytes(bytes));
                 }
                 Ok(ServerMessage::ServerShutdown { .. }) => break,
                 Ok(_) => {}
-                Err(_) => break,
+                Err(err) => {
+                    // A deadline expiry before any frame arrived is a wedged
+                    // attach, not a stream death: surface the structured
+                    // error (kind + builtin hint) so the browser shows its
+                    // failed state instead of hanging on silence.
+                    if first_frame && is_deadline_error(&err) {
+                        attach.fail(HubClientEvent::Error {
+                            kind: AttachError::TimedOut.error_kind(),
+                            message: AttachError::TimedOut.user_message(),
+                            suggests_builtin: AttachError::TimedOut.suggests_builtin(),
+                        });
+                        return;
+                    }
+                    break;
+                }
             }
         }
         // Stream ended (graceful detach, shutdown, or death): mark the
@@ -541,6 +604,12 @@ fn replay_cap() -> usize {
         .and_then(|value| value.parse().ok())
         .filter(|cap| *cap > 0)
         .unwrap_or(REPLAY_RING_BYTES)
+}
+
+/// `read_message` wraps io errors in Strings and a recv deadline lapses as
+/// either platform phrasing (same match the builtin backend's tests use).
+fn is_deadline_error(err: &str) -> bool {
+    err.contains("timed out") || err.contains("Resource temporarily unavailable")
 }
 
 /// Handle returned by `join`; keeps the hub's client count honest.
@@ -907,6 +976,41 @@ mod tests {
             matches!(result, Err(AttachError::ReadHandshake)),
             "expected ReadHandshake on EOF, got {}",
             result.err().map(|e| e.error_kind()).unwrap_or("ok")
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_terminal_attach_silent_backend_fails_within_deadline() {
+        use std::io::Read;
+        let path = attach_socket_path("stall");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut hello = [0u8; 512];
+            let _ = conn.read(&mut hello);
+            // Wedged backend: keeps the socket open, never replies. The
+            // handshake deadline must convert the silence into an error
+            // instead of blocking forever.
+            std::thread::sleep(std::time::Duration::from_secs(12));
+            drop(conn);
+        });
+        let started = std::time::Instant::now();
+        let result = connect_terminal_attach(&path, "t1", 80, 24);
+        // Measure before joining: the wedged server sleeps past the
+        // deadline on purpose, so the join itself would eat the margin
+        // the assert checks.
+        let elapsed = started.elapsed();
+        server.join().unwrap();
+        assert!(
+            matches!(result, Err(AttachError::ReadHandshake)),
+            "expected ReadHandshake on a silent backend, got {}",
+            result.err().map(|e| e.error_kind()).unwrap_or("ok")
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(11),
+            "handshake must respect the 10s deadline, took {elapsed:?}"
         );
         let _ = std::fs::remove_file(&path);
     }

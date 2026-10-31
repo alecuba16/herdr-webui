@@ -99,12 +99,24 @@ async function loadTerminalModule() {
     console,
     TextEncoder,
     setTimeout: (fn) => {
+      // Monotonic ids + a cancelled set: the real event loop honors
+      // clearTimeout, so a cancelled timer (the attach watchdog after
+      // the first frame) must never fire when the drain loop runs the
+      // captured callbacks. Splice-based array indices would collide
+      // after each flush, so ids never reset.
+      sandbox.__timerSeq = (sandbox.__timerSeq || 0) + 1;
+      const id = sandbox.__timerSeq;
       sandbox.__timers = sandbox.__timers || [];
-      sandbox.__timers.push(fn);
-      return sandbox.__timers.length;
+      sandbox.__timers.push(() => {
+        if (sandbox.__cancelledTimers && sandbox.__cancelledTimers.has(id)) return;
+        fn();
+      });
+      return id;
     },
-    clearTimeout: () => {},
-    clearTimeoutNoop: true,
+    clearTimeout: (id) => {
+      if (id == null) return;
+      (sandbox.__cancelledTimers = sandbox.__cancelledTimers || new Set()).add(id);
+    },
     requestAnimationFrame: (fn) => {
       sandbox.__raf = fn;
       return 1;
@@ -210,6 +222,13 @@ async function loadTerminalModule() {
           if (this.readyState !== 0) return;
           this.readyState = 1;
           if (this.onopen) this.onopen();
+          // Production delivers the attach's first (binary) frame right
+          // after open; the attach watchdog cancels on it. Without this,
+          // the captured-timer drain later fires the still-armed
+          // watchdog and tears the socket down mid-test.
+          if (this.onmessage) {
+            this.onmessage({ data: new Uint8Array(16) });
+          }
         });
       }
       send(data) { this.sent.push(data); }

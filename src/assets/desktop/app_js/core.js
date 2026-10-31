@@ -4113,6 +4113,7 @@ function setTerminalLoading(show, status) {
   loading.innerHTML = `<span>Connecting panel</span><div class="terminal-loading-skeleton">${skeleton}</div>`;
 }
 function resetTerminalConnection(clear = false, destroy = false) {
+  if (typeof cancelTerminalAttachWatchdog === "function") cancelTerminalAttachWatchdog();
   if (inputFlushTimer) {
     clearTimeout(inputFlushTimer);
     inputFlushTimer = null;
@@ -4650,6 +4651,7 @@ async function finishRefreshOnline(seq, routeWs, routeTab, routePane) {
     // Zero-tab workspace: no terminal to connect, the empty-leaf body
     // owns the screen. Any workspace with panes connects as before.
     if (state.pane) connectTerminal();
+    else setTerminalLoading(false);
     if (window.HerdrWorkspacePanes) window.HerdrWorkspacePanes.renderWorkspacePanes();
     syncRightSidebarRail();
   }

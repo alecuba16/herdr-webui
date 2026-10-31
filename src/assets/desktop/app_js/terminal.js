@@ -424,6 +424,7 @@ async function connectTerminal(fitOverride = null) {
     terminalReconnectAttemptWs = ws;
   }
   ws.binaryType = "arraybuffer";
+  armTerminalAttachWatchdog(ws, target);
   ws.onopen = () => {
     if (termWs === ws) {
       terminalAttachPending = true;
@@ -459,6 +460,7 @@ async function connectTerminal(fitOverride = null) {
     // the socket, so no raw binary preamble can be mistaken for
     // terminal data (the storm's per-cycle backoff reset).
     noteTerminalAttachSuccess();
+    cancelTerminalAttachWatchdog();
     // Don't hide loading overlay here for attach frames; the write callback
     // in flushTerminalFrames will reveal the terminal once parsing completes.
     // For normal frames, hide it immediately.
@@ -467,6 +469,7 @@ async function connectTerminal(fitOverride = null) {
   };
   ws.onclose = (event) => {
     if (termWs === ws) {
+      cancelTerminalAttachWatchdog();
       const wasRecoveryAttempt = terminalReconnectTarget === target;
       flushTerminalFramesFor(target);
       termWs = null;
@@ -630,6 +633,43 @@ function noteTerminalAttachSuccess() {
     clearTimeout(terminalReconnectTimer);
     terminalReconnectTimer = null;
   }
+}
+
+// Attach watchdog. Nothing on the browser side guarantees the attach
+// makes progress: a relay that stops forwarding or a silent stall between
+// WS open and the first data frame left the "Connecting panel" overlay
+// up forever. The watchdog closes the stalled socket and drives the
+// existing failure flow (failed overlay + backoff reconnect).
+// 15s > the server's own 10s handshake deadline in terminal_hub.rs, so a
+// healthy attach that beats the server's budget always clears it first.
+const TERMINAL_ATTACH_TIMEOUT_MS = 15000;
+let terminalAttachWatchdogTimer = null;
+
+function cancelTerminalAttachWatchdog() {
+  if (terminalAttachWatchdogTimer) {
+    clearTimeout(terminalAttachWatchdogTimer);
+    terminalAttachWatchdogTimer = null;
+  }
+}
+
+function armTerminalAttachWatchdog(ws, target) {
+  cancelTerminalAttachWatchdog();
+  terminalAttachWatchdogTimer = setTimeout(() => {
+    terminalAttachWatchdogTimer = null;
+    if (termWs !== ws || connectedTerminalId !== target) return;
+    // Same failure bookkeeping as a server-side stall close, so the
+    // overlay lands on the reconnect card and the backoff gates the
+    // retry instead of an immediate reconnect storm.
+    noteTerminalAttachFailure(target);
+    setTerminalLoading(true, "failed");
+    try {
+      ws.onclose = null;
+      ws.close();
+    } catch (e) {}
+    termWs = null;
+    connectedTerminalId = null;
+    connectedSize = "";
+  }, TERMINAL_ATTACH_TIMEOUT_MS);
 }
 
 function enqueueTerminalFrame(data) {
