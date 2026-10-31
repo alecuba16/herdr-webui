@@ -992,9 +992,10 @@ fn fzf_rank_matches(query: &str, match_case: bool, paths: &[String]) -> Option<V
     let mut child = std::process::Command::new("fzf")
         .arg("--filter")
         .arg(query)
-        // Smart-case mirrors the search default: lowercase queries fold case.
-        // A match-case query keeps fzf case-sensitive through the same flag.
-        .arg(if match_case { "-i" } else { "+i" })
+        // Smart-case mirrors the search default: lowercase queries fold case
+        // in fzf, but a match-case query must stay exact. fzf flags: +i is
+        // case-sensitive, -i is case-insensitive (verified against 0.74.5).
+        .arg(if match_case { "+i" } else { "-i" })
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -1888,7 +1889,8 @@ fn file_browser_tree_payload(
         "entries": build.entries,
         "truncated": build.truncated,
         "query": search,
-        // Walk position of this page: pass back as visit_offset to resume.
+        // Walk position of this page, for observability only; pages resume
+        // via offset, not via this number.
         "visited": visited_total,
         "git_status": git_status,
     }))
