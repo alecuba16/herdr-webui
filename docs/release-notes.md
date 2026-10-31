@@ -1,6 +1,22 @@
 # Release notes
 
 ## Unreleased
+- Desktop is now fully keyboard operable. The search palette and the
+  sidebar search panel move through results with the arrows and open the
+  pick with Enter, every overlay traps Tab inside itself and closes on
+  Escape, and closing one hands focus back to the control that opened
+  it. Modals drag by their title bar and the offset resets on reopen.
+  The git drawer tree rows, workspace cards, and settings sections all
+  carry role=button/treeitem with tabindex, so the delegated Enter and
+  Space twin reaches every action. Workspace rename, previously a
+  double-click shortcut, now also starts from the keyboard: Enter or F2
+  on the selected card, F2 on any other. LSP diagnostic rows are
+  buttons that jump from Enter or Space. Focus rings cover every
+  remaining bare control. docs/ui-parity.md documents the keyboard
+  contract across desktop, mobile, and TUI, and live probes
+  (scripts/e2e/keyboard-drag-validation.sh, 54 checks, plus the desktop
+  and mobile keyboard-guards audits) fail on any keyboard-dead
+  control.
 - Path search now ranks the whole match set, nearest match first, so a
   deep result such as a repository under ~/Documents lands on the first
   page instead of behind many load-more clicks. fzf ranks the matches when
