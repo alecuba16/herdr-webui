@@ -57,28 +57,29 @@ mod terminal_text;
 use assets::{
     app_boot_js, app_html, desktop_css, desktop_directory_picker_css, desktop_directory_picker_js,
     desktop_file_browser_css, desktop_file_browser_js, desktop_git_ui_css, desktop_git_ui_js,
-    desktop_js, desktop_notes_css, desktop_notes_js, desktop_search_css, desktop_search_js,
-    desktop_shortcuts_css, favicon_attention_svg, favicon_error_svg, favicon_svg,
-    icon_chevron_down_svg, icon_chevron_right_svg, icon_clock_svg, icon_columns_svg, icon_copy_svg,
-    icon_eye_off_svg, icon_eye_svg, icon_file_svg, icon_folder_svg, icon_folder_up_svg,
-    icon_git_svg, icon_help_svg, icon_link_svg, icon_lock_open_svg, icon_lock_svg, icon_pencil_svg,
-    icon_refresh_svg, icon_save_svg, icon_search_svg, icon_settings_svg, icon_terminal_svg,
-    icon_theme_auto_svg, icon_trash_svg, icon_x_svg, jetbrains_mono_nerd_font, login_css,
-    login_html, login_js, mobile_actions_js, mobile_attention_js, mobile_backend_js,
-    mobile_composer_js, mobile_core_js, mobile_css, mobile_directory_picker_js, mobile_events_js,
-    mobile_file_browser_js, mobile_git_js, mobile_js, mobile_lens_js, mobile_notes_js,
-    mobile_panels_js, mobile_screens_js, mobile_search_js, mobile_sessions_js, mobile_settings_js,
-    mobile_terminal_js, mobile_theme_js, mobile_workmeta_js, mobile_worktrees_js,
-    shared_actions_js, shared_alert_card_css, shared_alert_card_js, shared_attention_js,
-    shared_colors_css, shared_content_search_css, shared_core_js, shared_editor_js,
-    shared_file_content_search_js, shared_file_icons_css, shared_file_icons_js,
-    shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js, shared_http_js,
-    shared_line_context_js, shared_lsp_js, shared_markdown_preview_css, shared_markdown_preview_js,
-    shared_options_js, shared_primitives_css, shared_settings_confirm_js,
-    shared_settings_feedback_js, shared_skeleton_css, shared_skeleton_js,
-    shared_terminal_adapter_js, shared_terminal_fit_js, shared_terminal_scroll_js,
-    shared_tokens_css, shared_workspace_search_js, vendor_codemirror_js, vendor_dompurify_js,
-    vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js, vendor_wterm_css, vendor_wterm_js,
+    desktop_js, desktop_modal_drag_js, desktop_notes_css, desktop_notes_js, desktop_search_css,
+    desktop_search_js, desktop_shortcuts_css, favicon_attention_svg, favicon_error_svg,
+    favicon_svg, icon_chevron_down_svg, icon_chevron_right_svg, icon_clock_svg, icon_columns_svg,
+    icon_copy_svg, icon_eye_off_svg, icon_eye_svg, icon_file_svg, icon_folder_svg,
+    icon_folder_up_svg, icon_git_svg, icon_help_svg, icon_link_svg, icon_lock_open_svg,
+    icon_lock_svg, icon_pencil_svg, icon_refresh_svg, icon_save_svg, icon_search_svg,
+    icon_settings_svg, icon_terminal_svg, icon_theme_auto_svg, icon_trash_svg, icon_x_svg,
+    jetbrains_mono_nerd_font, login_css, login_html, login_js, mobile_actions_js,
+    mobile_attention_js, mobile_backend_js, mobile_composer_js, mobile_core_js, mobile_css,
+    mobile_directory_picker_js, mobile_events_js, mobile_file_browser_js, mobile_git_js, mobile_js,
+    mobile_lens_js, mobile_notes_js, mobile_panels_js, mobile_screens_js, mobile_search_js,
+    mobile_sessions_js, mobile_settings_js, mobile_terminal_js, mobile_theme_js,
+    mobile_workmeta_js, mobile_worktrees_js, shared_actions_js, shared_alert_card_css,
+    shared_alert_card_js, shared_attention_js, shared_colors_css, shared_content_search_css,
+    shared_core_js, shared_editor_js, shared_file_content_search_js, shared_file_icons_css,
+    shared_file_icons_js, shared_file_tree_css, shared_file_tree_js, shared_graphics_bridge_js,
+    shared_http_js, shared_line_context_js, shared_lsp_js, shared_markdown_preview_css,
+    shared_markdown_preview_js, shared_options_js, shared_primitives_css,
+    shared_settings_confirm_js, shared_settings_feedback_js, shared_skeleton_css,
+    shared_skeleton_js, shared_terminal_adapter_js, shared_terminal_fit_js,
+    shared_terminal_scroll_js, shared_tokens_css, shared_workspace_search_js, vendor_codemirror_js,
+    vendor_dompurify_js, vendor_ghostty_wasm, vendor_marked_js, vendor_mermaid_js,
+    vendor_wterm_css, vendor_wterm_js,
 };
 use compat::SimpleVersion;
 use compat::{backend_compatibility, BackendCompatibility};
@@ -1499,6 +1500,7 @@ fn app_router(state: WebState) -> Router {
             get(desktop_directory_picker_js),
         )
         .route("/assets/desktop/search.js", get(desktop_search_js))
+        .route("/assets/desktop/modal-drag.js", get(desktop_modal_drag_js))
         .route("/assets/desktop/notes.js", get(desktop_notes_js))
         .route("/assets/desktop/app.js", get(desktop_js))
         .route("/assets/login.css", get(login_css))

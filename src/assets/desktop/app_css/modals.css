@@ -57,6 +57,32 @@
   margin: 0 0 12px 0;
   font-size: 18px;
 }
+/* Modal drag handles (desktop/modal_drag.js): the head strips of every
+   centered card carry a grab cursor at pointer widths. Phone sheets keep
+   the default cursor because drag is disabled there. The dragging card
+   drops its shadow slightly so the move reads as a lift, not a repaint. */
+@media (min-width: 641px) {
+  .settings-head,
+  .search-head,
+  .directory-picker-head,
+  .git-ui-modal-head,
+  .prompt-card-head,
+  .session-hero {
+    cursor: grab;
+  }
+  .modal-dragging,
+  .modal-dragging .settings-head,
+  .modal-dragging .search-head,
+  .modal-dragging .directory-picker-head,
+  .modal-dragging .git-ui-modal-head,
+  .modal-dragging .prompt-card-head,
+  .modal-dragging .session-hero {
+    cursor: grabbing;
+  }
+  .modal-dragging {
+    box-shadow: 0 24px 60px #000a;
+  }
+}
 .option {
   display: flex;
   gap: 10px;

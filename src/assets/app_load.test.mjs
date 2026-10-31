@@ -880,7 +880,9 @@ describe("app bundle load", () => {
     // Span buttons: Enter/Space triggers the same click path through the
     // delegated keydown; the question modal joins the Tab focus trap.
     match(source, /document\.addEventListener\("keydown", \(e\) => \{[\s\S]*?target\.closest\("\[data-workspace-action\]\"\)[\s\S]*?spanButton\.click\(\)/, "Enter/Space delegation for span buttons");
-    match(source, /"searchPalette",\n\s+"questionModal",\n\s+\];\n\s+const modal = modalIds/, "Tab focus trap lists questionModal");
+    match(source, /"searchPalette",\n\s+\];/, "Tab focus trap keeps the static modal id list");
+    match(source, /pickerBackdropOpen\(\) \? document\.getElementById\("directoryPickerModal"\) : null\) \|\|\n\s+\(el\("questionModal"\)\.style\.display === "grid" \? el\("questionModal"\) : null\) \|\|\n\s+\(gitModalScope\(\)\) \|\|\n\s+\(sessionManagerOpen\(\) \? el\("sessionManager"\) : null\)/, "Tab trap scopes by visual stacking: picker, question, git modal, session manager");
+    match(source, /function sessionManagerOpen\(\) \{[\s\S]*?style\.display === "block"/, "Tab focus trap checks the session manager's block display");
     ok(source.includes('role="button" tabindex="0" data-workspace-action="close"'));
     // Pane tab close spans stay reachable: tabindex rides the markup and
     // the same delegated keydown covers them.
@@ -1374,6 +1376,22 @@ describe("app bundle load", () => {
 
   it("opens the right rail search panel with Cmd/Ctrl+F without stealing editor or terminal Ctrl+F", async () => {
     const ctx = context();
+    // The boot and the panel-open path both call refresh(), which probes
+    // the backend. The default fake fetch answers {} for every endpoint,
+    // which makes refresh fail and auto-open the session manager; the
+    // manager owns the keyboard while up (global shortcuts pause behind
+    // it, by design), so the second Ctrl+F below would never reach the
+    // panel. Install a stub that answers the snapshot endpoint with a
+    // valid empty snapshot BEFORE the bundle boots, so every refresh in
+    // this test stays online and the manager never appears.
+    const snapshot = {
+      result: { snapshot: { workspaces: [], tabs: [], panes: [], layouts: [], worktrees: [] } },
+    };
+    ctx.fetch = async (url) => ({
+      ok: true,
+      status: 200,
+      json: async () => (String(url).startsWith("/api/session-snapshot") ? snapshot : {}),
+    });
     runSource(ctx);
     vm.runInContext('state.defaultFolder = "/repo";', ctx);
 
@@ -2332,7 +2350,7 @@ describe("app bundle load", () => {
     match(directoryPickerSource, /Grant folder access/);
     match(directoryPickerSource, /function ensureStyles\(\)/);
     match(directoryPickerSource, /\/assets\/desktop\/directory-picker\.css/);
-    match(directoryPickerSource, /ensureStyles\(\);\n\s+state\.input = input;/);
+    match(directoryPickerSource, /ensureStyles\(\);\n\s+if \(window\.HerdrModalFocus\) window\.HerdrModalFocus\.rememberModalOpener\("directoryPickerModal"\);\n\s+state\.input = input;/);
     match(directoryPickerSource, /directory-picker-error/);
     match(directoryPickerCss, /\.directory-picker-error \{/);
     match(appBootSource, /\/assets\/shared\/file-tree\.css/);
@@ -2966,7 +2984,8 @@ describe("app bundle load", () => {
 
     const html = ctx.worktreeOpenModalHtml();
 
-    match(html, /<h2>Open workspace or worktree<\/h2>/);
+    match(html, /<h2 id="worktreeOpenTitle">Open workspace or worktree<\/h2>/);
+    match(html, /id="worktreeOpenModal" role="dialog" aria-modal="true" aria-labelledby="worktreeOpenTitle"/);
     match(html, /id="worktreeDiscoverPath"/);
     match(html, /id="worktreeWorkspaceLabel"/);
     match(html, /id="worktreeWorkspaceSubmit"/);
@@ -8303,6 +8322,48 @@ describe("workspace sidebar order", () => {
       ctx,
     );
     equal(updatedOrder, "ws_b|ws_c|ws_a");
+  });
+
+  it("workspace cards expose the dblclick rename from the keyboard", () => {
+    const ctx = context();
+    vm.runInContext(bundleSource, ctx);
+    vm.runInContext(
+      `state.ws = "ws_a";
+       state.workspaces = [
+         { workspace_id: "ws_a", label: "alpha" },
+         { workspace_id: "ws_b", label: "beta" },
+       ];`,
+      ctx,
+    );
+
+    const selectedHtml = vm.runInContext("renderWorkspaceCard(state.workspaces[0])", ctx);
+    match(selectedHtml, /class="item active " role="button" tabindex="0"/);
+    match(selectedHtml, /onkeydown="workspaceCardKeydown\(event,'ws_a','alpha',true\)"/);
+
+    const unselectedHtml = vm.runInContext("renderWorkspaceCard(state.workspaces[1])", ctx);
+    match(unselectedHtml, /onkeydown="workspaceCardKeydown\(event,'ws_b','beta',false\)"/);
+
+    // Keyboard twin runs the same rename path: selected card Enter and
+    // unselected card F2 both reach startWorkspaceRename.
+    vm.runInContext(
+      `globalThis.__renamed = [];
+       const realStart = startWorkspaceRename;
+       startWorkspaceRename = (id, label) => { globalThis.__renamed.push([id, label]); realStart(id, label); };
+       workspaceCardKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {}, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }, "ws_a", "alpha", true);
+       workspaceCardKeydown({ key: "F2", preventDefault() {}, stopPropagation() {}, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }, "ws_b", "beta", false);`,
+      ctx,
+    );
+    equal(vm.runInContext("globalThis.__renamed.length", ctx), 2);
+    equal(vm.runInContext("globalThis.__renamed[0].join(':')", ctx), "ws_a:alpha");
+    equal(vm.runInContext("globalThis.__renamed[1].join(':')", ctx), "ws_b:beta");
+
+    // Enter on the unselected anchor stays native navigation.
+    vm.runInContext(
+      `globalThis.__renamed = [];
+       workspaceCardKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {}, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }, "ws_b", "beta", false);`,
+      ctx,
+    );
+    equal(vm.runInContext("globalThis.__renamed.length", ctx), 0);
   });
 });
 

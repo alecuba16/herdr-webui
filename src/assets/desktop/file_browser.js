@@ -1086,14 +1086,20 @@
     }
     list.innerHTML = diagnostics
       .slice(0, 50)
-      .map((d) => `<div class="herdr-lsp-diagnostic ${esc(d.severity)}" data-from="${d.from}" data-to="${d.to}">${esc(d.message)}</div>`)
+      .map((d) => `<div class="herdr-lsp-diagnostic ${esc(d.severity)}" data-from="${d.from}" data-to="${d.to}" role="button" tabindex="0">${esc(d.message)}</div>`)
       .join("");
     list.querySelectorAll(".herdr-lsp-diagnostic").forEach((item) => {
-      item.addEventListener("click", () => {
+      const jump = () => {
         const mount2 = item.closest(".herdr-editor-mount") || mount;
         const editorApi = (mount2.closest("[id^='pane-editor-']") || mount)._herdrEditorApi;
         if (!editorApi || !editorApi.selectRange) return;
         editorApi.selectRange(Number(item.dataset.from), Number(item.dataset.to));
+      };
+      item.addEventListener("click", jump);
+      item.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        jump();
       });
     });
   }

@@ -92,6 +92,7 @@ function openWorktreeCreateModal(id) {
   el("worktreePullBase").checked = false;
   el("worktreeCreateError").textContent = "";
   setCreateWorktreeLoading(false);
+  if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("worktreeCreateModal");
   el("worktreeCreateModal").style.display = "grid";
   setTimeout(() => {
     el("worktreeBranch").focus();
@@ -100,6 +101,8 @@ function openWorktreeCreateModal(id) {
 function closeWorktreeCreateModal() {
   const m = el("worktreeCreateModal");
   if (m) m.style.display = "none";
+  if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
+  if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("worktreeCreateModal");
   clearTimeout(state.createWorktreeAutodiscoverTimer);
   state.createWorktreeWorkspace = null;
   state.createWorktreeOriginalSource = "";
@@ -133,6 +136,8 @@ function closeWorktreeOpenModal() {
   setWorktreeLoading(false);
   const m = el("worktreeOpenModal");
   if (m) m.style.display = "none";
+  if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
+  if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("worktreeOpenModal");
 }
 function resetWorktreeOpenModal(path = explorationDefaultDirectoryOption()) {
   path = worktreeOpenInitialPath(path);
@@ -162,6 +167,7 @@ function resetWorktreeOpenModal(path = explorationDefaultDirectoryOption()) {
 }
 function openWorktreeOpenModal(path, discoverNow = false) {
   resetWorktreeOpenModal(path);
+  if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("worktreeOpenModal");
   el("worktreeOpenModal").style.display = "grid";
   if (discoverNow && el("worktreeDiscoverPath").value.trim()) discoverWorktrees();
   setTimeout(() => {
@@ -221,6 +227,7 @@ function openWorktreesForRepo(keyToken, fallbackPath = "") {
   );
   syncSmartWorkspaceLabel();
   renderWorktreeOpenList();
+  if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("worktreeOpenModal");
   el("worktreeOpenModal").style.display = "grid";
   if (el("worktreeDiscoverPath").value.trim()) discoverWorktrees();
   else loadWorktreeBranchOptions();
@@ -1090,6 +1097,19 @@ function startWorkspaceRename(id, label) {
     const input = document.querySelector(".workspace-rename-input");
     if (input) input.select();
   }, 0);
+}
+// Keyboard twin of the card's dblclick rename. The selected card is a
+// div role=button: Enter starts rename (it has no navigation to hijack).
+// Unselected cards are anchors: Enter keeps native navigation, F2 renames.
+function workspaceCardKeydown(e, id, label, selected) {
+  if (e.key !== "F2" && !(selected && (e.key === "Enter" || e.key === " " || e.key === "Spacebar"))) return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+  const target = e.target;
+  if (target && target.closest && target.closest("input, select, textarea, [contenteditable='true']")) return;
+  if (target && target.closest && target.closest("[data-workspace-action]")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  startWorkspaceRename(id, label);
 }
 function workspaceRenameKey(e, id) {
   if (e.key === "Enter") {

@@ -190,6 +190,7 @@
   function openSettingsModalAt(sectionSelector) {
     const m = modal();
     if (!m) return;
+    if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("settingsModal");
     m.style.display = "grid";
     // prepareSettingsModalOpen (core.js) runs the open chores: apply
     // options, server settings, confirm-row watchers, search reset.

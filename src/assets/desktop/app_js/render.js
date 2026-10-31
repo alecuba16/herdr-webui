@@ -466,8 +466,8 @@ function renderWorkspaceCard(w, extraClass) {
   const meta = selected ? selectedSpaceMeta(w) : spaceMeta(w);
   const body = `<div class="space-title"><span>${statusDot(w.agent_status)}</span>${label}${selectedWorkspaceActionButtons(w)}</div><div class="muted space-meta-line">${meta}</div>`;
   if (selected)
-    return `<div class="item active ${extraClass || ""}" data-workspace-id="${escapeAttr(w.workspace_id)}"${drag} ondblclick="event.preventDefault();event.stopPropagation();startWorkspaceRename('${w.workspace_id}','${escapeAttr(w.label)}')">${body}</div>`;
-  return `<a class="item ${extraClass || ""}" data-workspace-id="${escapeAttr(w.workspace_id)}" href="${escapeAttr(selectionPath(w.workspace_id))}" target="herdr-selection"${drag} onclick="if(state.editingWorkspace){event.preventDefault();return false}return navigateSelection(event,'${w.workspace_id}')" ondblclick="event.preventDefault();event.stopPropagation();startWorkspaceRename('${w.workspace_id}','${escapeAttr(w.label)}')">${body}</a>`;
+    return `<div class="item active ${extraClass || ""}" role="button" tabindex="0" data-workspace-id="${escapeAttr(w.workspace_id)}"${drag} ondblclick="event.preventDefault();event.stopPropagation();startWorkspaceRename('${w.workspace_id}','${escapeAttr(w.label)}')" onkeydown="workspaceCardKeydown(event,'${w.workspace_id}','${escapeAttr(w.label)}',true)">${body}</div>`;
+  return `<a class="item ${extraClass || ""}" data-workspace-id="${escapeAttr(w.workspace_id)}" href="${escapeAttr(selectionPath(w.workspace_id))}" target="herdr-selection"${drag} onclick="if(state.editingWorkspace){event.preventDefault();return false}return navigateSelection(event,'${w.workspace_id}')" ondblclick="event.preventDefault();event.stopPropagation();startWorkspaceRename('${w.workspace_id}','${escapeAttr(w.label)}')" onkeydown="workspaceCardKeydown(event,'${w.workspace_id}','${escapeAttr(w.label)}',false)">${body}</a>`;
 }
 
 function syncGitWorkspaceToggle() {

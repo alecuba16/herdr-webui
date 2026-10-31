@@ -48,6 +48,7 @@ function openSearchPalette() {
   searchPaletteState = createSearchPaletteState();
   searchPaletteState.pathKind = previousScope;
   input.value = "";
+  if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("searchPalette");
   modal.style.display = "grid";
   renderSearchPalette();
   loadRecentWorkspaces();
@@ -57,7 +58,11 @@ function openSearchPalette() {
 
 function closeSearchPalette() {
   const modal = el("searchPalette");
-  if (modal) modal.style.display = "none";
+  if (modal) {
+    modal.style.display = "none";
+    if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(modal);
+    if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("searchPalette");
+  }
   if (searchPaletteState.timer) clearTimeout(searchPaletteState.timer);
   searchPaletteState = createSearchPaletteState();
 }
@@ -658,7 +663,7 @@ function renderTargetResult(result, index, trailingHtml = "", callbacks = {}) {
   const cls = `search-result${index === searchPaletteState.selectedIndex ? " active" : ""}${disabled ? " search-result-disabled" : ""}`;
   const title = disabled ? `${escapeHtml(result.title)} <span class="search-result-open-hint">(already open)</span>` : escapeHtml(result.title);
   const choose = callbacks.choose || "chooseSearchResult";
-  return `<div class="${cls}"${disabled ? ' aria-disabled="true"' : ""}${disabled ? "" : ` onclick="${choose}(${index})"`}><span class="search-result-icon">${escapeHtml(result.icon)}</span><div class="search-result-body"><div class="search-result-title">${title}</div><div class="search-result-subtitle">${escapeHtml(result.subtitle || result.kind)}</div></div>${trailingHtml}</div>`;
+  return `<div class="${cls}" role="option"${disabled ? ' aria-disabled="true"' : ""}${disabled ? "" : ` onclick="${choose}(${index})"`}><span class="search-result-icon">${escapeHtml(result.icon)}</span><div class="search-result-body"><div class="search-result-title">${title}</div><div class="search-result-subtitle">${escapeHtml(result.subtitle || result.kind)}</div></div>${trailingHtml}</div>`;
 }
 
 function renderWorkspacePathSection(opts = searchSettings(), callbacks = {}) {

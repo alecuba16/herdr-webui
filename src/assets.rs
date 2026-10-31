@@ -89,6 +89,7 @@ const DESKTOP_GIT_UI_JS: &str = concat!(
     include_str!("assets/desktop/git_ui.js"),
 );
 const DESKTOP_SEARCH_JS: &str = include_str!("assets/desktop/search.js");
+const DESKTOP_MODAL_DRAG_JS: &str = include_str!("assets/desktop/modal_drag.js");
 const DESKTOP_NOTES_JS: &str = include_str!("assets/desktop/notes.js");
 const DESKTOP_FILE_BROWSER_JS: &str = include_str!("assets/desktop/file_browser.js");
 const DESKTOP_DIRECTORY_PICKER_JS: &str = include_str!("assets/desktop/directory_picker.js");
@@ -472,6 +473,14 @@ pub(crate) async fn desktop_search_js(headers: HeaderMap) -> Response {
     static_text(
         &headers,
         DESKTOP_SEARCH_JS,
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(crate) async fn desktop_modal_drag_js(headers: HeaderMap) -> Response {
+    static_text(
+        &headers,
+        DESKTOP_MODAL_DRAG_JS,
         "application/javascript; charset=utf-8",
     )
 }

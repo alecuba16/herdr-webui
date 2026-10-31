@@ -1112,6 +1112,10 @@ describe("location bar worktree popover", () => {
       document: {
         querySelector: doc.querySelector,
         querySelectorAll: () => [],
+        // The drawer context runs no app shell, so no static modals, no
+        // session manager, and no directory picker can exist here; the
+        // shortcut guard probes by id and must always hear "none".
+        getElementById: () => null,
       },
       HerdrAppHelpers: { escapeHtml: (value) => String(value) },
     });

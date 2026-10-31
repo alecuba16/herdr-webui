@@ -108,6 +108,7 @@
 
   function open(input) {
     ensureStyles();
+    if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("directoryPickerModal");
     state.input = input;
     const parts = splitPath(initialPickerPath(input));
     state.root = parts.root;
@@ -180,7 +181,11 @@
 
   function close() {
     const node = document.getElementById("directoryPickerModal");
-    if (node) node.remove();
+    if (node) {
+      if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(node);
+      node.remove();
+    }
+    if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("directoryPickerModal");
     state.input = null;
   }
 
@@ -263,6 +268,12 @@
       modal = document.createElement("div");
       modal.id = "directoryPickerModal";
       modal.className = "directory-picker-backdrop";
+      // The backdrop is the dialog for assistive tech; the card inside is
+      // its content. Set with the attributes up front so the picker never
+      // renders as a nameless region.
+      modal.setAttribute("role", "dialog");
+      modal.setAttribute("aria-modal", "true");
+      modal.setAttribute("aria-label", "Choose folder");
       document.body.appendChild(modal);
     }
     const active = document.activeElement;

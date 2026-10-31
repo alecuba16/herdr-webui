@@ -117,6 +117,7 @@
       ] : [
         "/assets/desktop/search.js",
         "/assets/desktop/directory-picker.js",
+        "/assets/desktop/modal-drag.js",
         "/assets/desktop/app.js",
       ]),
     ]);

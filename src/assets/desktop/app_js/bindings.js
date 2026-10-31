@@ -116,7 +116,10 @@ el("shortcutsToggle").onclick = () => {
   else openSettingsModal();
 };
 el("settingsClose").onclick = () => {
-  el("settingsModal").style.display = "none";
+  const m = el("settingsModal");
+  m.style.display = "none";
+  if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
+  if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("settingsModal");
 };
 const settingsModalScrollSync = () => {
   const sections = window.HerdrSettingsSections;
@@ -129,8 +132,12 @@ el("settingsModal").addEventListener("pointerdown", (e) => {
   settingsBackdropDown = e.target === el("settingsModal");
 });
 el("settingsModal").addEventListener("click", (e) => {
-  if (settingsBackdropDown && e.target === el("settingsModal"))
-    el("settingsModal").style.display = "none";
+  if (settingsBackdropDown && e.target === el("settingsModal")) {
+    const m = el("settingsModal");
+    m.style.display = "none";
+    if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
+    if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("settingsModal");
+  }
   settingsBackdropDown = false;
 });
 el("searchPaletteClose").onclick = closeSearchPalette;
@@ -885,6 +892,28 @@ el("worktreeCreateForm").onsubmit = async (e) => {
   });
 };
 el("worktreeOpenClose").onclick = closeWorktreeOpenModal;
+// The directory picker root mounts with the .directory-picker-backdrop
+// class and no inline display, and close() removes the node. Presence
+// plus the class means open; the class check keeps stub documents that
+// answer any id query honest.
+function pickerBackdropOpen() {
+  const node = document.getElementById("directoryPickerModal");
+  return !!(node && node.classList && node.classList.contains("directory-picker-backdrop"));
+}
+// Git modals render per open inside .git-ui-modal-backdrop roots that no
+// static id list can name; find any live one. querySelector on a stub
+// document returns a bare element without classes, so require the
+// backdrop class before treating it as a trap scope.
+function gitModalScope() {
+  const node = document.querySelector(".git-ui-modal-backdrop");
+  return node && node.classList && node.classList.contains("git-ui-modal-backdrop") ? node : null;
+}
+// The session manager opens with display:block (terminal.css), not grid
+// like the .modal-backdrop cards, so it needs its own visibility check.
+function sessionManagerOpen() {
+  const node = document.getElementById("sessionManager");
+  return !!(node && node.style.display === "block");
+}
 document.addEventListener(
   "keydown",
   (e) => {
@@ -909,6 +938,19 @@ document.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       closePaneMenu();
+    } else if (pickerBackdropOpen()) {
+      // The picker owns its own DOM (removed on close), so it is not in
+      // the static-modal list below; close it through its API so focus
+      // and any dragged position reset the same way the Close button
+      // does. The class check keeps stub documents that answer any id
+      // query honest.
+      e.preventDefault();
+      e.stopPropagation();
+      window.HerdrDirectoryPicker.close();
+    } else if (el("sessionManager").style.display === "block") {
+      e.preventDefault();
+      e.stopPropagation();
+      hideSessionManager();
     } else if (el("questionModal").style.display === "grid") {
       e.preventDefault();
       e.stopPropagation();
@@ -932,7 +974,10 @@ document.addEventListener(
     } else if (el("settingsModal").style.display === "grid") {
       e.preventDefault();
       e.stopPropagation();
-      el("settingsModal").style.display = "none";
+      const m = el("settingsModal");
+      m.style.display = "none";
+      if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
+      if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("settingsModal");
     }
   },
   true,
@@ -959,13 +1004,22 @@ document.addEventListener("keydown", (e) => {
     "worktreeOpenModal",
     "workspaceCreateModal",
     "searchPalette",
-    "questionModal",
   ];
-  const modal = modalIds
-    .map((id) => el(id))
-    .find((m) => m && m.style.display === "grid");
-  if (!modal) return;
-  const focusable = modal.querySelectorAll(
+  // Scope priority must follow the visual stacking, not this list order:
+  // the directory picker floats above every .modal-backdrop and git modal
+  // (z-index 1200 vs 1100, directory_picker.css), the question modal
+  // renders after the other static modals in the DOM so it sits on top
+  // among them, and git modals cover the session manager. When several
+  // are open at once Tab must cycle inside the one the user actually
+  // sees on top.
+  const scope =
+    (pickerBackdropOpen() ? document.getElementById("directoryPickerModal") : null) ||
+    (el("questionModal").style.display === "grid" ? el("questionModal") : null) ||
+    (gitModalScope()) ||
+    (sessionManagerOpen() ? el("sessionManager") : null) ||
+    modalIds.map((id) => el(id)).find((m) => m && m.style.display === "grid");
+  if (!scope) return;
+  const focusable = scope.querySelectorAll(
     'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
   );
   if (!focusable.length) {
@@ -980,12 +1034,12 @@ document.addEventListener("keydown", (e) => {
   const first = filtered[0],
     last = filtered[filtered.length - 1];
   if (e.shiftKey) {
-    if (active === first || !modal.contains(active)) {
+    if (active === first || !scope.contains(active)) {
       e.preventDefault();
       last.focus();
     }
   } else {
-    if (active === last || !modal.contains(active)) {
+    if (active === last || !scope.contains(active)) {
       e.preventDefault();
       first.focus();
     }
