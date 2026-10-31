@@ -8569,6 +8569,244 @@ describe("terminal loading and failed states", () => {
     match(tokensCss, /--term-red: #f38ba8;/);
     match(tokensCss, /--term-bright-white: #ffffff;/);
   });
+
+  // The stuck-"Connecting panel" repro: a browser WS that opens but never
+  // delivers a frame used to leave the overlay up forever. The attach
+  // watchdog must convert that silence into the failed state with a
+  // reconnect button instead of hanging.
+  it("fails the loading overlay when the attach socket never delivers a frame", async () => {
+    const ctx = context();
+    const timers = [];
+    ctx.setTimeout = (fn) => {
+      timers.push(fn);
+      return timers.length;
+    };
+    ctx.clearTimeout = () => {};
+    // Boot refresh() must agree with the armed selection or its
+    // fixVanishedWorkspaceSelection sweep resets the connection mid-test.
+    ctx.fetch = async (url) => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        if (url.includes("/api/session-snapshot"))
+          return {
+            result: {
+              snapshot: {
+                workspaces: [{ workspace_id: "ws1", label: "WS" }],
+                tabs: [{ tab_id: "tab_1", workspace_id: "ws1", title: "t", focused: true }],
+                panes: [{ pane_id: "pane_1", tab_id: "tab_1", workspace_id: "ws1", terminal_id: "term_1", focused: true }],
+                agents: [],
+              },
+              worktree_results: [],
+              workspace_order: [],
+              workspace_counts: {},
+              tab_labels_by_id: {},
+            },
+          };
+        return { result: {} };
+      },
+    });
+    const sockets = [];
+    ctx.WebSocket = class {
+      constructor(url) {
+        this.url = url;
+        this.readyState = 1;
+        this.onopen = null;
+        this.onmessage = null;
+        this.onclose = null;
+        this.closed = false;
+        sockets.push(this);
+      }
+      send() {}
+      close() {
+        this.closed = true;
+        this.readyState = 3;
+      }
+    };
+    ctx.HerdrTerminalRenderer = {
+      create: async () => ({
+        element: ctx.terminal,
+        resize() {},
+        write() {},
+        dispose() {},
+        focus() {},
+        setRenderingPaused() {},
+        rowHeight() {
+          return 17;
+        },
+        scrollToBottom() {},
+        usesNormalBuffer() {
+          return true;
+        },
+        wheelForwardedToProgram() {
+          return false;
+        },
+        setLinksEnabled() {},
+      }),
+    };
+    runSource(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    vm.runInContext(
+      `state.ws = "ws1"; state.tab = "tab_1"; state.pane = "pane_1"; state.terminalId = "term_1";`,
+      ctx,
+    );
+    await vm.runInContext("connectTerminal()", ctx);
+    const termSockets = sockets.filter((s) => s.url.includes("/ws/terminal"));
+    equal(termSockets.length, 1, "attach socket opened");
+    const socket = termSockets[0];
+    // Server accepted the WS (onopen fires) but never sends a frame.
+    socket.onopen();
+    const loading = ctx.document.getElementById("terminalLoading");
+    ok(loading.classList.contains("show"), "overlay shown while attach is silent");
+    // Fire the watchdog timer captured by the harness.
+    const watchdog = timers[timers.length - 1];
+    ok(typeof watchdog === "function", "watchdog timer armed");
+    watchdog();
+    ok(loading.classList.contains("failed"), "silent attach lands on the failed state");
+    ok(loading.innerHTML.includes("terminalReconnectButton"), "reconnect button offered");
+    ok(socket.closed, "stalled socket closed");
+    const button = ctx.document.getElementById("terminalReconnectButton");
+    ok(button && typeof button.onclick === "function", "reconnect handler wired");
+  });
+
+  it("clears the watchdog when the first attach frame lands", async () => {
+    const ctx = context();
+    const timers = [];
+    ctx.setTimeout = (fn) => {
+      timers.push(fn);
+      return timers.length;
+    };
+    const cleared = [];
+    ctx.clearTimeout = (id) => {
+      cleared.push(id);
+    };
+    // Boot refresh() must agree with the armed selection or its
+    // fixVanishedWorkspaceSelection sweep resets the connection mid-test.
+    ctx.fetch = async (url) => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        if (url.includes("/api/session-snapshot"))
+          return {
+            result: {
+              snapshot: {
+                workspaces: [{ workspace_id: "ws1", label: "WS" }],
+                tabs: [{ tab_id: "tab_1", workspace_id: "ws1", title: "t", focused: true }],
+                panes: [{ pane_id: "pane_1", tab_id: "tab_1", workspace_id: "ws1", terminal_id: "term_1", focused: true }],
+                agents: [],
+              },
+              worktree_results: [],
+              workspace_order: [],
+              workspace_counts: {},
+              tab_labels_by_id: {},
+            },
+          };
+        return { result: {} };
+      },
+    });
+    const sockets = [];
+    ctx.WebSocket = class {
+      constructor(url) {
+        this.url = url;
+        this.readyState = 1;
+        this.onopen = null;
+        this.onmessage = null;
+        this.onclose = null;
+        this.closed = false;
+        sockets.push(this);
+      }
+      send() {}
+      close() {
+        this.closed = true;
+        this.readyState = 3;
+      }
+    };
+    ctx.HerdrTerminalRenderer = {
+      create: async () => ({
+        element: ctx.terminal,
+        resize() {},
+        write() {},
+        dispose() {},
+        focus() {},
+        setRenderingPaused() {},
+        rowHeight() {
+          return 17;
+        },
+        scrollToBottom() {},
+        usesNormalBuffer() {
+          return true;
+        },
+        wheelForwardedToProgram() {
+          return false;
+        },
+        setLinksEnabled() {},
+      }),
+    };
+    runSource(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    vm.runInContext(
+      `state.ws = "ws1"; state.tab = "tab_1"; state.pane = "pane_1"; state.terminalId = "term_1";`,
+      ctx,
+    );
+    await vm.runInContext("connectTerminal()", ctx);
+    const socket = sockets.filter((s) => s.url.includes("/ws/terminal"))[0];
+    socket.onopen();
+    const watchdogTimerCount = timers.length;
+    // A binary data frame arrives, matching production (terminal data
+    // is always arraybuffer; only herdr_error frames are strings). The
+    // watchdog must be cancelled before the frame write path runs, so a
+    // later flush of the timer array finds nothing armed for this socket.
+    socket.onmessage({ data: new Uint8Array(64).fill(1) });
+    ok(
+      cleared.some((id) => id === watchdogTimerCount),
+      "first frame cancels the attach watchdog",
+    );
+    const loading = ctx.document.getElementById("terminalLoading");
+    ok(!loading.classList.contains("failed"), "healthy attach never shows failed");
+  });
+
+  // A refresh that resolves no pane (workspace whose tab list is empty
+  // server-side, or a filtered snapshot lag) used to leave the overlay
+  // shown with nothing to connect: nothing called setTerminalLoading(false).
+  it("hides the loading overlay when a refresh resolves no pane", async () => {
+    const ctx = context();
+    ctx.fetch = async (url) => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        if (url.includes("/api/session-snapshot")) {
+          return {
+            result: {
+              snapshot: { workspaces: [{ workspace_id: "ws1", label: "WS" }], tabs: [], panes: [], agents: [] },
+              worktree_results: [],
+              workspace_order: [],
+              workspace_counts: {},
+              tab_labels_by_id: {},
+            },
+          };
+        }
+        if (url.includes("/api/workspaces"))
+          return { result: { workspaces: [{ workspace_id: "ws1", label: "WS" }] } };
+        if (url.includes("/api/tabs")) return { result: { tabs: [] } };
+        if (url.includes("/api/panes")) return { result: { panes: [] } };
+        if (url.includes("/api/agents")) return { result: { agents: [] } };
+        return { result: {} };
+      },
+    });
+    runSource(ctx);
+    vm.runInContext(
+      `state.ws = "ws1"; state.tab = "tab_1"; state.pane = "pane_1"; state.terminalId = "term_1";`,
+      ctx,
+    );
+    vm.runInContext("setTerminalLoading(true)", ctx);
+    const loading = ctx.document.getElementById("terminalLoading");
+    ok(loading.classList.contains("show"), "overlay armed before refresh");
+    await vm.runInContext("refresh()", ctx);
+    ok(
+      !loading.classList.contains("show"),
+      "overlay hidden after a refresh that resolves no pane",
+    );
+  });
 });
 
 describe("a11y audit contract", () => {
