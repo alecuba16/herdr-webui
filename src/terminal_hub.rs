@@ -270,7 +270,10 @@ impl AttachError {
     }
 
     pub(crate) fn suggests_builtin(&self) -> bool {
-        matches!(self, Self::ReadHandshake | Self::Rejected(_) | Self::TimedOut)
+        matches!(
+            self,
+            Self::ReadHandshake | Self::Rejected(_) | Self::TimedOut
+        )
     }
 }
 
