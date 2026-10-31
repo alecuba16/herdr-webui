@@ -10,6 +10,7 @@ The README is the short project summary. This `docs/` directory holds detailed f
 | --- | --- |
 | [Installation and local run](installation.md) | Requirements, local HTTPS, CLI, macOS install/update/uninstall, auth, sessions, FAQ. |
 | [Features](features.md) | User-facing desktop and mobile behavior, file explorer, Git UI, terminal, settings, worktrees. |
+| [UI parity](ui-parity.md) | Desktop/mobile/TUI feature matrix, known gaps, desktop keyboard contract. |
 | [Technical details](technical-details.md) | Architecture, backend/frontend responsibilities, static assets, file explorer internals, settings, performance, styling, safety. |
 | [TUI backend API and prototype](tui-backend-api.md) | Built-in backend client API, `herdr-webui-tui`, supported features, and remaining parity gaps. |
 | [TUI screenshots](tui-screenshots.md) | Every `herdr-webui-tui` screen with captions and an animated tour GIF. |

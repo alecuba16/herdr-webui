@@ -606,7 +606,7 @@ if (settingsModal && !settingsModal.dataset.ux) {
     const head = document.createElement("div");
     head.className = "settings-head";
     head.innerHTML =
-      `<div><h2>Settings</h2><p>Browser-local preferences for terminal, theme, and agent behavior.</p></div><label class="settings-search"><span>Search settings</span><input id="settingsSearch" type="search" placeholder="Search theme, terminal, Git..."${inputAttrs("search")}></label><button class="mini settings-close" id="settingsCloseTop" title="Close" aria-label="Close settings"><span aria-hidden="true">✕</span></button>`;
+      `<div><h2>Settings</h2><p>Browser-local preferences for terminal, theme, and agent behavior.</p></div><label class="settings-search"><span>Search settings</span><input id="settingsSearch" type="search" placeholder="Search theme, terminal, Git..."${inputAttrs("search")}></label><button class="mini settings-close" id="settingsCloseTop" title="Close (Esc)" aria-label="Close settings"><span aria-hidden="true">✕</span></button>`;
     heading.replaceWith(head);
     const body = document.createElement("div");
     body.className = "settings-body";
@@ -618,6 +618,7 @@ if (settingsModal && !settingsModal.dataset.ux) {
     else modal.appendChild(body);
     el("settingsCloseTop").onclick = () => {
       settingsModal.style.display = "none";
+      if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(settingsModal);
     };
   }
   settingsModal.dataset.ux = "1";
@@ -655,7 +656,7 @@ function worktreeCreateModalHtml() {
             <h2>Create worktree</h2>
             <p>Creates a linked Git worktree from the selected parent workspace and opens it.</p>
           </div>
-          <button class="mini settings-close" id="worktreeCreateClose" title="Close" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
+          <button class="mini settings-close" id="worktreeCreateClose" title="Close (Esc)" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
         </div>
         <div class="worktree-open-controls">
           <label>
@@ -698,7 +699,7 @@ function worktreeOpenModalHtml() {
             <h2>Open workspace or worktree</h2>
             <p>Pick a folder. Git repos show branches and worktrees; normal folders can be opened as workspaces.</p>
           </div>
-          <button class="mini settings-close" id="worktreeOpenClose" title="Close" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
+          <button class="mini settings-close" id="worktreeOpenClose" title="Close (Esc)" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
         </div>
         <div class="worktree-open-controls">
           <label>
@@ -753,7 +754,7 @@ function workspaceCreateModalHtml() {
             <h2>New workspace</h2>
             <p>Pick an existing folder first, then confirm the workspace name.</p>
           </div>
-          <button class="mini settings-close" id="workspaceCreateClose" title="Close" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
+          <button class="mini settings-close" id="workspaceCreateClose" title="Close (Esc)" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
         </div>
         <form class="worktree-form" id="workspaceCreateForm">
           <label>
@@ -2991,7 +2992,10 @@ function askQuestion({ title = "Confirm action", message = "Continue?", confirmT
 }
 function closeQuestion(answer) {
   const modal = el("questionModal");
-  if (modal) modal.style.display = "none";
+  if (modal) {
+    modal.style.display = "none";
+    if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(modal);
+  }
   const resolve = state.questionResolve;
   state.questionResolve = null;
   const opener = state.questionOpener;
@@ -3159,7 +3163,10 @@ function setupSessionChrome() {
     m.className = "session-manager";
     m.id = "sessionManager";
     m.innerHTML =
-      '<div class="session-card"><div class="session-hero"><div><h1 id="sessionManagerTitle">Sessions</h1><p id="sessionManagerText">Choose a built-in or Herdr backend session to open.</p></div><div class="session-current"><span class="dot unknown"></span><span id="sessionCurrentLabel">default · built-in</span></div><button class="mini settings-close" id="sessionManagerClose" title="Close" aria-label="Close session manager">✕</button></div><div class="session-actions"><div class="session-list" id="sessionList"></div><div class="session-line session-new"><span><strong>Create or target session</strong><small>Choose where to create/open it. Built-in starts inside WebUI. Herdr starts external daemon.</small></span><span class="session-controls"><button class="session-button primary" id="newBuiltinSessionTarget">New built-in</button><button class="session-button" id="newHerdrSessionTarget">New Herdr</button></span></div><div class="session-line session-cleanup"><span><strong>Clean up closed sessions</strong><small>Remove stale built-in sessions left behind by crashes or closes. Running sessions and the default slot are kept.</small></span><span class="session-controls"><button class="session-button" id="cleanupSessionsButton" title="Remove stale built-in sessions">Clean up</button></span></div></div></div>';
+      '<div class="session-card"><div class="session-hero"><div><h1 id="sessionManagerTitle">Sessions</h1><p id="sessionManagerText">Choose a built-in or Herdr backend session to open.</p></div><div class="session-current"><span class="dot unknown"></span><span id="sessionCurrentLabel">default · built-in</span></div><button class="mini settings-close" id="sessionManagerClose" title="Close (Esc)" aria-label="Close session manager">✕</button></div><div class="session-actions"><div class="session-list" id="sessionList"></div><div class="session-line session-new"><span><strong>Create or target session</strong><small>Choose where to create/open it. Built-in starts inside WebUI. Herdr starts external daemon.</small></span><span class="session-controls"><button class="session-button primary" id="newBuiltinSessionTarget">New built-in</button><button class="session-button" id="newHerdrSessionTarget">New Herdr</button></span></div><div class="session-line session-cleanup"><span><strong>Clean up closed sessions</strong><small>Remove stale built-in sessions left behind by crashes or closes. Running sessions and the default slot are kept.</small></span><span class="session-controls"><button class="session-button" id="cleanupSessionsButton" title="Remove stale built-in sessions">Clean up</button></span></div></div></div>';
+    m.setAttribute("role", "dialog");
+    m.setAttribute("aria-modal", "true");
+    m.setAttribute("aria-label", "Session manager");
     document.querySelector(".main").prepend(m);
     // Backdrop click closes: only clicks on the manager itself (outside the
     // card) dismiss it.
@@ -3387,7 +3394,10 @@ async function showSessionManager(title, text, { auto = false } = {}) {
 function hideSessionManager() {
   const manager = el("sessionManager");
   sessionManagerAutoOpened = false;
-  if (manager) manager.style.display = "none";
+  if (manager) {
+    manager.style.display = "none";
+    if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(manager);
+  }
 }
 async function launchBackend(session = state.session, backend = currentSessionBackend()) {
   if (backend === "external-herdr" && !backendEnabled("external-herdr")) {

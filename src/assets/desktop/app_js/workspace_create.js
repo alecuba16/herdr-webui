@@ -7,7 +7,9 @@ function openWorkspaceCreateModal() {
   setTimeout(() => el("workspaceCreatePath").focus(), 0);
 }
 function closeWorkspaceCreateModal() {
-  el("workspaceCreateModal").style.display = "none";
+  const m = el("workspaceCreateModal");
+  m.style.display = "none";
+  if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
 }
 function focusWorkspaceCreateLabel() {
   syncWorkspaceCreateLabel();

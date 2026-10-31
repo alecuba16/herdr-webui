@@ -116,7 +116,9 @@ el("shortcutsToggle").onclick = () => {
   else openSettingsModal();
 };
 el("settingsClose").onclick = () => {
-  el("settingsModal").style.display = "none";
+  const m = el("settingsModal");
+  m.style.display = "none";
+  if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
 };
 const settingsModalScrollSync = () => {
   const sections = window.HerdrSettingsSections;
@@ -129,8 +131,11 @@ el("settingsModal").addEventListener("pointerdown", (e) => {
   settingsBackdropDown = e.target === el("settingsModal");
 });
 el("settingsModal").addEventListener("click", (e) => {
-  if (settingsBackdropDown && e.target === el("settingsModal"))
-    el("settingsModal").style.display = "none";
+  if (settingsBackdropDown && e.target === el("settingsModal")) {
+    const m = el("settingsModal");
+    m.style.display = "none";
+    if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
+  }
   settingsBackdropDown = false;
 });
 el("searchPaletteClose").onclick = closeSearchPalette;
@@ -909,6 +914,18 @@ document.addEventListener(
       e.preventDefault();
       e.stopPropagation();
       closePaneMenu();
+    } else if (document.getElementById("directoryPickerModal")) {
+      // The picker owns its own DOM (removed on close), so it is not in
+      // the static-modal list below; close it through its API so focus
+      // and any dragged position reset the same way the Close button
+      // does.
+      e.preventDefault();
+      e.stopPropagation();
+      window.HerdrDirectoryPicker.close();
+    } else if (el("sessionManager").style.display === "block") {
+      e.preventDefault();
+      e.stopPropagation();
+      hideSessionManager();
     } else if (el("questionModal").style.display === "grid") {
       e.preventDefault();
       e.stopPropagation();
@@ -932,7 +949,9 @@ document.addEventListener(
     } else if (el("settingsModal").style.display === "grid") {
       e.preventDefault();
       e.stopPropagation();
-      el("settingsModal").style.display = "none";
+      const m = el("settingsModal");
+      m.style.display = "none";
+      if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
     }
   },
   true,
@@ -960,12 +979,18 @@ document.addEventListener("keydown", (e) => {
     "workspaceCreateModal",
     "searchPalette",
     "questionModal",
+    "directoryPickerModal",
+    "sessionManager",
   ];
   const modal = modalIds
     .map((id) => el(id))
     .find((m) => m && m.style.display === "grid");
-  if (!modal) return;
-  const focusable = modal.querySelectorAll(
+  // Git modals render per open inside .git-ui-modal-backdrop roots that
+  // the id list above cannot name; find any visible one the same way.
+  const gitModal = document.querySelector(".git-ui-modal-backdrop");
+  const scope = gitModal || modal;
+  if (!scope) return;
+  const focusable = scope.querySelectorAll(
     'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
   );
   if (!focusable.length) {
@@ -980,12 +1005,12 @@ document.addEventListener("keydown", (e) => {
   const first = filtered[0],
     last = filtered[filtered.length - 1];
   if (e.shiftKey) {
-    if (active === first || !modal.contains(active)) {
+    if (active === first || !scope.contains(active)) {
       e.preventDefault();
       last.focus();
     }
   } else {
-    if (active === last || !modal.contains(active)) {
+    if (active === last || !scope.contains(active)) {
       e.preventDefault();
       first.focus();
     }

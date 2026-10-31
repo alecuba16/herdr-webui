@@ -118,7 +118,7 @@
       const caretEnd = active && typeof active.selectionEnd === "number" ? active.selectionEnd : caret;
       const caseToggle = `<button type="button" class="mini search-mode-toggle${state.matchCase ? " active" : ""}" id="searchPanelCaseToggle" title="Match case (Alt+C)" aria-label="Match case" aria-pressed="${state.matchCase ? "true" : "false"}" onclick="HerdrSearchPanel.panel.setSearchMode('matchCase')">Aa</button>`;
       const regexToggle = `<button type="button" class="mini search-mode-toggle${state.regex ? " active" : ""}" id="searchPanelRegexToggle" title="Regular expression (Alt+R)" aria-label="Regular expression" aria-pressed="${state.regex ? "true" : "false"}" onclick="HerdrSearchPanel.panel.setSearchMode('regex')">.*</button>`;
-      panel.innerHTML = `<div class="search-panel-head"><span class="search-icon" aria-hidden="true">⌕</span><input id="searchPanelInput" class="search-panel-input" placeholder="Search workspaces, files, folders, or file contents..."${inputAttrs("search")} aria-label="Search workspaces, files, folders, or file contents" />${caseToggle}${regexToggle}<button class="mini settings-close" id="searchPanelClear" title="Clear" aria-label="Clear search"><span aria-hidden="true">✕</span></button></div><div class="search-panel-results" id="searchPanelResults">${typeof renderRecentSection === "function" ? renderRecentSection(recent, cb) : ""}${noRoot}${order.map((key) => sections[key] || "").join("")}</div>`;
+      panel.innerHTML = `<div class="search-panel-head"><span class="search-icon" aria-hidden="true">⌕</span><input id="searchPanelInput" class="search-panel-input" placeholder="Search workspaces, files, folders, or file contents..."${inputAttrs("search")} aria-label="Search workspaces, files, folders, or file contents" />${caseToggle}${regexToggle}<button class="mini settings-close" id="searchPanelClear" title="Clear" aria-label="Clear search"><span aria-hidden="true">✕</span></button></div><div class="search-panel-results" id="searchPanelResults" role="listbox" aria-label="Search results">${typeof renderRecentSection === "function" ? renderRecentSection(recent, cb) : ""}${noRoot}${order.map((key) => sections[key] || "").join("")}</div><div class="search-help" aria-hidden="true">Enter opens selection · ↑/↓ moves · Alt+↑/↓ more context · Alt+F files · Alt+D folders · Alt+C match case · Alt+R regex · Esc clears, then closes</div>`;
       const input = panel.querySelector("#searchPanelInput");
       const clear = panel.querySelector("#searchPanelClear");
       if (input) {
@@ -133,23 +133,7 @@
             renderPanel();
           });
           input.addEventListener("keydown", (e) => {
-            if (e.key === "Escape") {
-              e.preventDefault();
-              const s = ensureState();
-              if (s.query) {
-                input.value = "";
-                s.query = "";
-                runSearch(false).then(renderPanel);
-              } else if (window.HerdrRightSidebar) {
-                window.HerdrRightSidebar.setCollapsed(true);
-              }
-            } else if (e.altKey && e.key && e.key.toLowerCase() === "c") {
-              e.preventDefault();
-              Panel.setSearchMode("matchCase");
-            } else if (e.altKey && e.key && e.key.toLowerCase() === "r") {
-              e.preventDefault();
-              Panel.setSearchMode("regex");
-            }
+            panelKeydown(e);
           });
         }
         if (active) {
@@ -180,6 +164,85 @@
       if (window.resolveSearchPaletteState) window.resolveSearchPaletteState(paletteBackup);
     }
     if (window.HerdrRightSidebar) window.HerdrRightSidebar.afterDrawerRender();
+  }
+
+  // Selection movement mirrors moveSearchSelection in search.js but stays
+  // local: this state is the panel's, never the palette's.
+  function movePanelSelection(delta) {
+    const state = ensureState();
+    const selectable = state.results.filter((row) => !(row && row.type === "recent" && row.isOpen));
+    if (!selectable.length) return;
+    const current = state.results[state.selectedIndex];
+    let position = current && !(current.type === "recent" && current.isOpen) ? selectable.indexOf(current) : -1;
+    if (position === -1) position = delta > 0 ? -1 : 0;
+    const next = selectable[(position + delta + selectable.length) % selectable.length];
+    state.selectedIndex = state.results.indexOf(next);
+    renderPanel();
+    scrollSelectedIntoView();
+  }
+
+  // The highlighted row after a render; scrollSelectedIntoView uses it.
+  function selectedRowNode() {
+    const results = document.getElementById("searchPanelResults");
+    if (!results) return null;
+    return results.querySelector(".search-result.active");
+  }
+
+  function scrollSelectedIntoView() {
+    const node = selectedRowNode();
+    if (node && typeof node.scrollIntoView === "function")
+      node.scrollIntoView({ block: "nearest" });
+  }
+
+  function expandSelectedContent(direction) {
+    const state = ensureState();
+    const result = state.results[state.selectedIndex];
+    if (!result || result.type !== "content" || !result.file || !result.match) return false;
+    PanelContent.expandSnippet(result.file.path, result.match.id, direction);
+    return true;
+  }
+
+  // Same key contract as the palette (search.js searchPaletteKeydown):
+  // arrows move, Enter opens, Alt+Arrow expands snippet context, Alt+C/R
+  // flip match modes, Alt+F/D switch path kind, Esc clears then closes.
+  function panelKeydown(e) {
+    const s = ensureState();
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (s.query) {
+        const input = document.getElementById("searchPanelInput");
+        if (input) input.value = "";
+        s.query = "";
+        runSearch(false).then(renderPanel);
+      } else if (window.HerdrRightSidebar) {
+        window.HerdrRightSidebar.setCollapsed(true);
+      }
+    } else if (e.altKey && e.key === "ArrowUp") {
+      if (expandSelectedContent("up")) e.preventDefault();
+    } else if (e.altKey && e.key === "ArrowDown") {
+      if (expandSelectedContent("down")) e.preventDefault();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      movePanelSelection(1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      movePanelSelection(-1);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      Panel.chooseSearchResult();
+    } else if (e.altKey && e.key && e.key.toLowerCase() === "c") {
+      e.preventDefault();
+      Panel.setSearchMode("matchCase");
+    } else if (e.altKey && e.key && e.key.toLowerCase() === "r") {
+      e.preventDefault();
+      Panel.setSearchMode("regex");
+    } else if (e.altKey && e.key && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      Panel.setPathKind("file");
+    } else if (e.altKey && e.key && e.key.toLowerCase() === "d") {
+      e.preventDefault();
+      Panel.setPathKind("dir");
+    }
   }
 
   async function runSearch(append = false) {
@@ -363,6 +426,33 @@
         renderPanel();
       }
     },
+    expandSnippet(_path, _match, _direction) {
+      // Same contract as HerdrSearchPaletteContent.expandSnippet, applied to
+      // panel state: grow the context window, keep the file expanded, and
+      // rerun the content page for the current query.
+      const helper = window.HerdrWorkspaceSearch;
+      const state = ensureState();
+      const opts = helper ? helper.settings() : { contextLines: 2 };
+      const current = Number(state.content.contextLines ?? opts.contextLines ?? 2);
+      state.content.contextLines = window.HerdrLineContext && window.HerdrLineContext.nextContextSize
+        ? window.HerdrLineContext.nextContextSize(current, { min: 3, max: 20 })
+        : Math.min(20, current < 3 ? 3 : current * 2);
+      const path = decodeURIComponent(_path || "");
+      if (path) state.content.expanded[path] = true;
+      const workspace = panelSearchWorkspace();
+      const cwd = helper ? helper.workspaceCwd(workspace) : null;
+      if (!helper || !cwd) return;
+      const seq = ++state.requestSeq;
+      runContentSearch(seq, state.query, cwd, false).then(() => {
+        if (seq === state.requestSeq && state.content.files) {
+          // Keep the expanded file open across the fresh page so the
+          // snippet growth is visible, mirroring the palette's
+          // preserveExpanded contract.
+          if (path) state.content.expanded[path] = true;
+          renderPanel();
+        }
+      });
+    },
   };
 
   const Panel = {
@@ -451,7 +541,9 @@
       if (state.pathLoading || state.pathDone) return;
       const helper = window.HerdrWorkspaceSearch;
       const cwd = helper.workspaceCwd(panelSearchWorkspace());
-      runPathSearch(++state.requestSeq, state.query, cwd, true).then(renderPanel);
+      // Append in the same request epoch: bumping requestSeq here would
+      // invalidate the page the main runSearch() is still waiting on.
+      runPathSearch(state.requestSeq, state.query, cwd, true).then(renderPanel);
     },
   };
 

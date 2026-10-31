@@ -100,6 +100,7 @@ function openWorktreeCreateModal(id) {
 function closeWorktreeCreateModal() {
   const m = el("worktreeCreateModal");
   if (m) m.style.display = "none";
+  if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
   clearTimeout(state.createWorktreeAutodiscoverTimer);
   state.createWorktreeWorkspace = null;
   state.createWorktreeOriginalSource = "";
@@ -133,6 +134,7 @@ function closeWorktreeOpenModal() {
   setWorktreeLoading(false);
   const m = el("worktreeOpenModal");
   if (m) m.style.display = "none";
+  if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
 }
 function resetWorktreeOpenModal(path = explorationDefaultDirectoryOption()) {
   path = worktreeOpenInitialPath(path);

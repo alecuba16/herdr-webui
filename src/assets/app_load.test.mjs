@@ -880,7 +880,7 @@ describe("app bundle load", () => {
     // Span buttons: Enter/Space triggers the same click path through the
     // delegated keydown; the question modal joins the Tab focus trap.
     match(source, /document\.addEventListener\("keydown", \(e\) => \{[\s\S]*?target\.closest\("\[data-workspace-action\]\"\)[\s\S]*?spanButton\.click\(\)/, "Enter/Space delegation for span buttons");
-    match(source, /"searchPalette",\n\s+"questionModal",\n\s+\];\n\s+const modal = modalIds/, "Tab focus trap lists questionModal");
+    match(source, /"searchPalette",\n\s+"questionModal",\n\s+"directoryPickerModal",\n\s+"sessionManager",\n\s+\];\n\s+const modal = modalIds/, "Tab focus trap lists questionModal");
     ok(source.includes('role="button" tabindex="0" data-workspace-action="close"'));
     // Pane tab close spans stay reachable: tabindex rides the markup and
     // the same delegated keydown covers them.

@@ -180,7 +180,10 @@
 
   function close() {
     const node = document.getElementById("directoryPickerModal");
-    if (node) node.remove();
+    if (node) {
+      if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(node);
+      node.remove();
+    }
     state.input = null;
   }
 

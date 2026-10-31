@@ -57,8 +57,9 @@ mod terminal_text;
 use assets::{
     app_boot_js, app_html, desktop_css, desktop_directory_picker_css, desktop_directory_picker_js,
     desktop_file_browser_css, desktop_file_browser_js, desktop_git_ui_css, desktop_git_ui_js,
-    desktop_js, desktop_notes_css, desktop_notes_js, desktop_search_css, desktop_search_js,
-    desktop_shortcuts_css, favicon_attention_svg, favicon_error_svg, favicon_svg,
+    desktop_js, desktop_modal_drag_js, desktop_notes_css, desktop_notes_js, desktop_search_css,
+    desktop_search_js, desktop_shortcuts_css, favicon_attention_svg, favicon_error_svg,
+    favicon_svg,
     icon_chevron_down_svg, icon_chevron_right_svg, icon_clock_svg, icon_columns_svg, icon_copy_svg,
     icon_eye_off_svg, icon_eye_svg, icon_file_svg, icon_folder_svg, icon_folder_up_svg,
     icon_git_svg, icon_help_svg, icon_link_svg, icon_lock_open_svg, icon_lock_svg, icon_pencil_svg,
@@ -1499,6 +1500,7 @@ fn app_router(state: WebState) -> Router {
             get(desktop_directory_picker_js),
         )
         .route("/assets/desktop/search.js", get(desktop_search_js))
+        .route("/assets/desktop/modal-drag.js", get(desktop_modal_drag_js))
         .route("/assets/desktop/notes.js", get(desktop_notes_js))
         .route("/assets/desktop/app.js", get(desktop_js))
         .route("/assets/login.css", get(login_css))
