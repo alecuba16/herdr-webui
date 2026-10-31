@@ -12851,6 +12851,194 @@ async fn events_socket_reports_rejected_subscription_instead_of_ready() {
     std::env::remove_var("XDG_CONFIG_HOME");
 }
 
+/// herdr 0.9.2+ (upstream #4225) answers a subscriber that fell behind
+/// retained history with `{"error":{"code":"events_lost"}}` and closes
+/// the stream. The webui must break out of the read loop, resubscribe, and
+/// send a fresh "ready" frame: forwarding the error as a bogus event would
+/// desync the browser silently, and treating the close as terminal would
+/// kill events forever.
+#[cfg(unix)]
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn events_socket_resubscribes_after_events_lost() {
+    use futures_util::StreamExt;
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use tokio_tungstenite::connect_async;
+
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-events-lost");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    // Fake daemon: the first subscribe acks and streams one event, then the
+    // events_lost error frame and EOF (herdr closes the stream after the
+    // error). The second subscribe acks and streams one more event. Later
+    // subscribes keep streaming so a flaky retry cannot starve the test.
+    let path = std::env::temp_dir().join(format!(
+        "herdr-webui-events-lost-{}-{}.sock",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = fs::remove_file(&path);
+    let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    let subscribe_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let subscribe_count_for_thread = subscribe_count.clone();
+    // Leak the accept thread on purpose (see the rejection test): it blocks
+    // in accept() once the subscription thread stops retrying.
+    thread::spawn(move || {
+        for _ in 0..50 {
+            let Ok(mut stream) = listener.accept() else {
+                break;
+            };
+            let subscribe_count = subscribe_count_for_thread.clone();
+            thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+                let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                let id = request.get("id").cloned().unwrap_or(json!("web:poll"));
+                if method == "events.subscribe" {
+                    let n = subscribe_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let _ = stream.write_all(
+                        json!({ "id": id, "result": { "type": "subscription_started" } })
+                            .to_string()
+                            .as_bytes(),
+                    );
+                    let _ = stream.write_all(b"\n");
+                    if n == 0 {
+                        // First stream: one event, then the history-loss error
+                        // and close, byte-for-byte the frame herdr emits.
+                        let _ = stream.write_all(
+                            json!({ "event": "tab_created", "data": { "tab_id": "t1" } })
+                                .to_string()
+                                .as_bytes(),
+                        );
+                        let _ = stream.write_all(b"\n");
+                        let _ = stream.write_all(
+                            json!({ "id": "web:events", "error": { "code": "events_lost" } })
+                                .to_string()
+                                .as_bytes(),
+                        );
+                        let _ = stream.write_all(b"\n");
+                        drop(stream);
+                        return;
+                    }
+                    // Later streams: keep one event flowing per subscribe.
+                    let _ = stream.write_all(
+                        json!({ "event": "tab_created", "data": { "tab_id": "t2" } })
+                            .to_string()
+                            .as_bytes(),
+                    );
+                    let _ = stream.write_all(b"\n");
+                    let _ = stream.flush();
+                    thread::sleep(std::time::Duration::from_secs(30));
+                } else if method == "ping" {
+                    let _ = stream.write_all(
+                        json!({ "id": id, "result": { "version": "0.9.5", "protocol": 22 } })
+                            .to_string()
+                            .as_bytes(),
+                    );
+                    let _ = stream.write_all(b"\n");
+                    let _ = stream.flush();
+                } else {
+                    let _ =
+                        stream.write_all(json!({ "id": id, "result": {} }).to_string().as_bytes());
+                    let _ = stream.write_all(b"\n");
+                    let _ = stream.flush();
+                }
+            });
+        }
+    });
+
+    let mut state = test_state();
+    state.api_socket = Some(path.clone());
+    let app = test_app_with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let url = format!("ws://{addr}/ws/events?backend=external-herdr");
+    let ws_request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(&url)
+        .header("cookie", "herdr_web_session=token-123")
+        .header("host", addr.to_string())
+        .header("connection", "Upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(())
+        .unwrap();
+    let (mut ws_stream, _response) = connect_async(ws_request)
+        .await
+        .expect("Failed to connect to WebSocket");
+
+    // Expect: ready, the pre-loss event, a SECOND ready (the loop broke on
+    // events_lost and resubscribed), and another event. The events_lost
+    // frame itself must NOT arrive as a bogus "event" frame.
+    let mut ready_count = 0;
+    let mut event_count = 0;
+    let mut saw_bogus_lost_event = false;
+    for _ in 0..20 {
+        let msg = match tokio::time::timeout(std::time::Duration::from_secs(10), ws_stream.next())
+            .await
+        {
+            Ok(Some(Ok(m))) => m,
+            Ok(None) => break,
+            Ok(Some(Err(_))) | Err(_) => break,
+        };
+        let text = msg.to_text().expect("expected text message");
+        let value: serde_json::Value = serde_json::from_str(text).expect("invalid json");
+        match value["type"].as_str() {
+            Some("ready") => ready_count += 1,
+            Some("event") => {
+                // The error frame must never be forwarded as an event.
+                if value["event"]["error"]["code"] == json!("events_lost") {
+                    saw_bogus_lost_event = true;
+                }
+                event_count += 1;
+            }
+            _ => {}
+        }
+        if ready_count >= 2 && event_count >= 2 {
+            break;
+        }
+    }
+    assert!(
+        ready_count >= 2,
+        "events_lost must break the read loop and resubscribe (ready frames: {ready_count})"
+    );
+    assert!(
+        event_count >= 2,
+        "the resubscribed stream must deliver events again (events: {event_count})"
+    );
+    assert!(
+        !saw_bogus_lost_event,
+        "the events_lost error frame must not be forwarded as a bogus event"
+    );
+
+    drop(ws_stream);
+    server_handle.abort();
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_dir_all(&config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
 /// Notes CRUD round-trips through the real router: create, list, update,
 /// delete, all behind require_auth. Persistence lands in the notes.json
 /// sidecar under the isolated XDG_CONFIG_HOME, never webui-settings.json.
