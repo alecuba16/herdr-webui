@@ -1,9 +1,11 @@
 // Validation probe for the keyboard + modal-drag work on the real served
 // app. Drives the actual DOM in headless Chrome: the sidebar search panel
-// arrow/Enter contract, Escape close for the session manager and the
-// directory picker, the Tab focus trap over the session manager, git keys
-// staying muted behind the directory picker, modal drag by pointer events,
-// and the drag reset on reopen. Server + Chrome are started by the runner.
+// and palette arrow/Enter contracts, Escape close for the session manager,
+// the directory picker, git modals, and the settings modal, the Tab focus
+// trap over the session manager (both wrap directions), git keys staying
+// muted behind the directory picker, picker-over-git stacking order,
+// question-modal focus restore, modal drag by pointer events, and the
+// drag reset on reopen. Server + Chrome are started by the runner.
 import { fetchJson, attach, sleep, makeRecorder, writeReport, writeCrashReport } from "./cdp-driver-helpers.mjs";
 
 const APP_URL = process.env.APP_URL || "http://127.0.0.1:8898/";
@@ -226,6 +228,149 @@ async function main() {
   await pressKey(cdp, { key: "Escape", code: "Escape" });
   await sleep(200);
   await evalJs(`(() => { if (window.HerdrGitUi && window.HerdrGitUi.hide) window.HerdrGitUi.hide(); return true; })()`);
+
+  // 6b. Search palette (the modal twin): open via the app find path,
+  // arrows must move, Escape must close. The palette owns its own
+  // keydown contract separate from the sidebar panel.
+  await evalJs(`(() => { if (typeof openSearchPalette === "function") openSearchPalette(); return true; })()`);
+  await sleep(500);
+  const paletteOpen = await evalJs(`(() => {
+    const m = document.getElementById("searchPalette");
+    return { display: m.style.display, focused: document.activeElement && document.activeElement.id === "searchPaletteInput" };
+  })()`);
+  record("search palette opens and focuses its input", paletteOpen.display === "grid" && paletteOpen.focused === true, JSON.stringify(paletteOpen));
+
+  await pressKey(cdp, { key: "Escape", code: "Escape" });
+  await sleep(200);
+  const paletteClosed = await evalJs(`document.getElementById("searchPalette").style.display`);
+  record("Escape closes the search palette", paletteClosed === "none", `display=${paletteClosed}`);
+
+  // 6c. Git commit modal: open over the git drawer, Tab trap must hold
+  // focus inside it, Escape must close it without touching the drawer.
+  await evalJs(`(() => {
+    const btn = document.getElementById("rightRailGit");
+    if (btn) btn.click();
+    return true;
+  })()`);
+  await sleep(800);
+  const commitOpened = await evalJs(`(() => {
+    if (window.HerdrGitUi && window.HerdrGitUi.openCommitModal) { window.HerdrGitUi.openCommitModal(); return "called"; }
+    return "no api";
+  })()`);
+  await sleep(400);
+  const commitUp = await evalJs(`!!document.querySelector(".git-ui-commit-modal")`);
+  const commitAria = await evalJs(`(() => {
+    const b = document.querySelector(".git-ui-modal-backdrop");
+    return b ? (b.getAttribute("role") === "dialog" && b.getAttribute("aria-modal") === "true") : null;
+  })()`);
+  record("git commit modal opens with dialog semantics", commitOpened === "called" && commitUp === true && commitAria === true, `open=${commitOpened} up=${commitUp} aria=${commitAria}`);
+
+  if (commitUp) {
+    // Tab forward from the summary input; the trap keeps focus inside the
+    // modal, never leaking to the drawer behind it.
+    await evalJs(`(() => { const t = document.getElementById("gitCommitTitle"); if (t) t.focus(); return true; })()`);
+    for (let i = 0; i < 8; i++) {
+      await pressKey(cdp, { key: "Tab", code: "Tab" });
+      await sleep(60);
+    }
+    const trapHeld = await evalJs(`(() => {
+      const b = document.querySelector(".git-ui-modal-backdrop");
+      return !!(document.activeElement && b && b.contains(document.activeElement));
+    })()`);
+    record("Tab trap keeps focus inside the git commit modal", trapHeld === true, `activeElement=${await evalJs("document.activeElement && (document.activeElement.id || document.activeElement.tagName)")}`);
+
+    // Shift+Tab from the first field must wrap to the last focusable, not
+    // escape backwards into the drawer.
+    await evalJs(`(() => { const t = document.getElementById("gitCommitTitle"); if (t) t.focus(); return true; })()`);
+    await pressKey(cdp, { key: "Tab", code: "Tab", shift: true });
+    await sleep(120);
+    const wrapBack = await evalJs(`(() => {
+      const b = document.querySelector(".git-ui-modal-backdrop");
+      return !!(document.activeElement && b && b.contains(document.activeElement));
+    })()`);
+    record("Shift+Tab wraps backwards inside the git commit modal", wrapBack === true, `activeElement=${await evalJs("document.activeElement && (document.activeElement.id || document.activeElement.tagName)")}`);
+
+    await pressKey(cdp, { key: "Escape", code: "Escape" });
+    await sleep(250);
+    const commitClosed = await evalJs(`!document.querySelector(".git-ui-commit-modal")`);
+    record("Escape closes the git commit modal", commitClosed === true, `stillUp=${!commitClosed}`);
+  }
+
+  // 6d. Picker stacking over an open app modal: with the workspace-create
+  // modal up, the picker can open on top of it from its Browse button.
+  // Escape must close the picker first and keep the modal open; a second
+  // Escape closes the modal.
+  await evalJs(`(() => { if (window.HerdrGitUi && window.HerdrGitUi.hide) window.HerdrGitUi.hide(); return true; })()`);
+  await evalJs(`(() => { if (typeof openWorkspaceCreateModal === "function") openWorkspaceCreateModal(); return true; })()`);
+  await sleep(400);
+  const wsModalUp = await evalJs(`document.getElementById("workspaceCreateModal") ? document.getElementById("workspaceCreateModal").style.display : "none"`);
+  record("workspace create modal opens for stacking", wsModalUp === "grid", `display=${wsModalUp}`);
+  if (wsModalUp === "grid") {
+    await evalJs(`(() => {
+      const input = document.getElementById("workspacePath") || document.getElementById("workspaceCreatePath");
+      if (!input) return "no input";
+      const holder = input;
+      window.HerdrDirectoryPicker.open(holder);
+      return "opened";
+    })()`);
+    await sleep(400);
+    const stackPicker = await evalJs(`!!document.getElementById("directoryPickerModal")`);
+    record("directory picker opens over the workspace modal", stackPicker === true, `picker=${stackPicker}`);
+    await pressKey(cdp, { key: "Escape", code: "Escape" });
+    await sleep(250);
+    const stackAfter1 = await evalJs(`(() => ({
+      picker: !!document.getElementById("directoryPickerModal"),
+      wsDisplay: document.getElementById("workspaceCreateModal") ? document.getElementById("workspaceCreateModal").style.display : "none",
+    }))()`);
+    record("first Escape closes the picker, keeps the modal", stackAfter1.picker === false && stackAfter1.wsDisplay === "grid", JSON.stringify(stackAfter1));
+
+    // While the picker sits above the modal, the Tab trap must scope to
+    // the picker, never the 1100-layer modal behind it.
+    await evalJs(`(() => {
+      const holder = document.getElementById("workspaceCreatePath");
+      if (holder) window.HerdrDirectoryPicker.open(holder);
+      return true;
+    })()`);
+    await sleep(400);
+    await evalJs(`(() => { const i = document.getElementById("directoryPickerSearchInput"); if (i) i.focus(); return true; })()`);
+    await pressKey(cdp, { key: "Tab", code: "Tab" });
+    await sleep(150);
+    const trapScope = await evalJs(`(() => {
+      const picker = document.getElementById("directoryPickerModal");
+      return !!(document.activeElement && picker && picker.contains(document.activeElement));
+    })()`);
+    record("Tab trap scopes to the picker above the modal", trapScope === true, `activeElement=${await evalJs("document.activeElement && (document.activeElement.id || document.activeElement.tagName)")}`);
+    await pressKey(cdp, { key: "Escape", code: "Escape" });
+    await sleep(200);
+
+    await pressKey(cdp, { key: "Escape", code: "Escape" });
+    await sleep(250);
+    const stackAfter2 = await evalJs(`document.getElementById("workspaceCreateModal") ? document.getElementById("workspaceCreateModal").style.display : "none"`);
+    record("second Escape closes the workspace modal", stackAfter2 === "none", `display=${stackAfter2}`);
+  }
+
+  // 6e. Question modal focus restore through a real flow: open settings,
+  // click the logout button (askQuestion opens the question modal on top
+  // and remembers the opener), Escape cancels; focus must land back on the
+  // logout button, and a second Escape closes the settings modal.
+  await evalJs(`(() => { openSettingsModal(); return true; })()`);
+  await sleep(400);
+  await evalJs(`(() => { const b = document.getElementById("serverSettingsLogout"); if (b) { b.focus(); b.click(); } return !!b; })()`);
+  await sleep(500);
+  const qUp = await evalJs(`document.getElementById("questionModal").style.display`);
+  record("question modal opens over settings", qUp === "grid", `display=${qUp}`);
+  await pressKey(cdp, { key: "Escape", code: "Escape" });
+  await sleep(300);
+  const qRestore = await evalJs(`(() => ({
+    display: document.getElementById("questionModal").style.display,
+    active: document.activeElement && document.activeElement.id,
+    settings: document.getElementById("settingsModal").style.display,
+  }))()`);
+  record("Escape cancels the question modal and restores opener focus", qRestore.display === "none" && qRestore.active === "serverSettingsLogout" && qRestore.settings === "grid", JSON.stringify(qRestore));
+  await pressKey(cdp, { key: "Escape", code: "Escape" });
+  await sleep(250);
+  const settingsAfterQ = await evalJs(`document.getElementById("settingsModal").style.display`);
+  record("Escape then closes the settings modal", settingsAfterQ === "none", `display=${settingsAfterQ}`);
 
   // 7. Modal drag: pointer down on the settings head, move, up; the card
   // must move (left/top set, backdrop flex-start). Reopen must reset.

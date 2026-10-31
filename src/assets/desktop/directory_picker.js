@@ -266,6 +266,12 @@
       modal = document.createElement("div");
       modal.id = "directoryPickerModal";
       modal.className = "directory-picker-backdrop";
+      // The backdrop is the dialog for assistive tech; the card inside is
+      // its content. Set with the attributes up front so the picker never
+      // renders as a nameless region.
+      modal.setAttribute("role", "dialog");
+      modal.setAttribute("aria-modal", "true");
+      modal.setAttribute("aria-label", "Choose folder");
       document.body.appendChild(modal);
     }
     const active = document.activeElement;

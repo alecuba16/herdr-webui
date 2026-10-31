@@ -649,11 +649,11 @@ function questionModalHtml() {
 }
 function worktreeCreateModalHtml() {
   return `
-    <div class="modal-backdrop" id="worktreeCreateModal">
+    <div class="modal-backdrop" id="worktreeCreateModal" role="dialog" aria-modal="true" aria-labelledby="worktreeCreateTitle">
       <div class="modal">
         <div class="settings-head">
           <div>
-            <h2>Create worktree</h2>
+            <h2 id="worktreeCreateTitle">Create worktree</h2>
             <p>Creates a linked Git worktree from the selected parent workspace and opens it.</p>
           </div>
           <button class="mini settings-close" id="worktreeCreateClose" title="Close (Esc)" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
@@ -692,11 +692,11 @@ function worktreeCreateModalHtml() {
 }
 function worktreeOpenModalHtml() {
   return `
-    <div class="modal-backdrop" id="worktreeOpenModal">
+    <div class="modal-backdrop" id="worktreeOpenModal" role="dialog" aria-modal="true" aria-labelledby="worktreeOpenTitle">
       <div class="modal">
         <div class="settings-head">
           <div>
-            <h2>Open workspace or worktree</h2>
+            <h2 id="worktreeOpenTitle">Open workspace or worktree</h2>
             <p>Pick a folder. Git repos show branches and worktrees; normal folders can be opened as workspaces.</p>
           </div>
           <button class="mini settings-close" id="worktreeOpenClose" title="Close (Esc)" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>
@@ -747,11 +747,11 @@ function worktreeOpenModalHtml() {
 }
 function workspaceCreateModalHtml() {
   return `
-    <div class="modal-backdrop" id="workspaceCreateModal">
+    <div class="modal-backdrop" id="workspaceCreateModal" role="dialog" aria-modal="true" aria-labelledby="workspaceCreateTitle">
       <div class="modal">
         <div class="settings-head">
           <div>
-            <h2>New workspace</h2>
+            <h2 id="workspaceCreateTitle">New workspace</h2>
             <p>Pick an existing folder first, then confirm the workspace name.</p>
           </div>
           <button class="mini settings-close" id="workspaceCreateClose" title="Close (Esc)" aria-label="Close dialog"><span aria-hidden="true">✕</span></button>

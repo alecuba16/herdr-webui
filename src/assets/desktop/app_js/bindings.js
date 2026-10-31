@@ -898,6 +898,20 @@ function pickerBackdropOpen() {
   const node = document.getElementById("directoryPickerModal");
   return !!(node && node.classList && node.classList.contains("directory-picker-backdrop"));
 }
+// Git modals render per open inside .git-ui-modal-backdrop roots that no
+// static id list can name; find any live one. querySelector on a stub
+// document returns a bare element without classes, so require the
+// backdrop class before treating it as a trap scope.
+function gitModalScope() {
+  const node = document.querySelector(".git-ui-modal-backdrop");
+  return node && node.classList && node.classList.contains("git-ui-modal-backdrop") ? node : null;
+}
+// The session manager opens with display:block (terminal.css), not grid
+// like the .modal-backdrop cards, so it needs its own visibility check.
+function sessionManagerOpen() {
+  const node = document.getElementById("sessionManager");
+  return !!(node && node.style.display === "block");
+}
 document.addEventListener(
   "keydown",
   (e) => {
@@ -987,29 +1001,21 @@ document.addEventListener("keydown", (e) => {
     "worktreeOpenModal",
     "workspaceCreateModal",
     "searchPalette",
-    "questionModal",
-    "directoryPickerModal",
   ];
-  const modal = modalIds
-    .map((id) => el(id))
-    // The directory picker never touches inline display: its
-    // .directory-picker-backdrop class carries display:grid and the node
-    // exists only while open (close() removes it), so the class check in
-    // pickerBackdropOpen doubles as the open test.
-    .find((m) => m && (m.id !== "directoryPickerModal" ? m.style.display === "grid" : pickerBackdropOpen()));
-  // The session manager opens with display:block (terminal.css), not grid
-  // like the .modal-backdrop cards, so it needs its own visibility check.
-  const sessionManagerOpen =
-    el("sessionManager") && el("sessionManager").style.display === "block";
-  // Git modals render per open inside .git-ui-modal-backdrop roots that
-  // the id list above cannot name; find any live one. querySelector on a
-  // stub document returns a bare element without classes, so require the
-  // backdrop class before treating it as a trap scope.
-  const gitModal = (() => {
-    const node = document.querySelector(".git-ui-modal-backdrop");
-    return node && node.classList && node.classList.contains("git-ui-modal-backdrop") ? node : null;
-  })();
-  const scope = gitModal || (sessionManagerOpen ? el("sessionManager") : null) || modal;
+  // Scope priority must follow the visual stacking, not this list order:
+  // the directory picker floats above every .modal-backdrop and git modal
+  // (z-index 1200 vs 1100, directory_picker.css), the question modal
+  // renders after the other static modals in the DOM so it sits on top
+  // among them, and git modals cover the session manager. When several
+  // are open at once Tab must cycle inside the one the user actually
+  // sees on top. The picker test doubles as its open check (close()
+  // removes the node).
+  const scope =
+    (pickerBackdropOpen() ? document.getElementById("directoryPickerModal") : null) ||
+    (el("questionModal").style.display === "grid" ? el("questionModal") : null) ||
+    (gitModalScope()) ||
+    (sessionManagerOpen() ? el("sessionManager") : null) ||
+    modalIds.map((id) => el(id)).find((m) => m && m.style.display === "grid");
   if (!scope) return;
   const focusable = scope.querySelectorAll(
     'input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',

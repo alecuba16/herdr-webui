@@ -880,8 +880,9 @@ describe("app bundle load", () => {
     // Span buttons: Enter/Space triggers the same click path through the
     // delegated keydown; the question modal joins the Tab focus trap.
     match(source, /document\.addEventListener\("keydown", \(e\) => \{[\s\S]*?target\.closest\("\[data-workspace-action\]\"\)[\s\S]*?spanButton\.click\(\)/, "Enter/Space delegation for span buttons");
-    match(source, /"searchPalette",\n\s+"questionModal",\n\s+"directoryPickerModal",\n\s+\];\n\s+const modal = modalIds/, "Tab focus trap lists questionModal");
-    match(source, /sessionManagerOpen =\n\s+el\("sessionManager"\) && el\("sessionManager"\)\.style\.display === "block"/, "Tab focus trap checks the session manager's block display");
+    match(source, /"searchPalette",\n\s+\];/, "Tab focus trap keeps the static modal id list");
+    match(source, /pickerBackdropOpen\(\) \? document\.getElementById\("directoryPickerModal"\) : null\) \|\|\n\s+\(el\("questionModal"\)\.style\.display === "grid" \? el\("questionModal"\) : null\) \|\|\n\s+\(gitModalScope\(\)\) \|\|\n\s+\(sessionManagerOpen\(\) \? el\("sessionManager"\) : null\)/, "Tab trap scopes by visual stacking: picker, question, git modal, session manager");
+    match(source, /function sessionManagerOpen\(\) \{[\s\S]*?style\.display === "block"/, "Tab focus trap checks the session manager's block display");
     ok(source.includes('role="button" tabindex="0" data-workspace-action="close"'));
     // Pane tab close spans stay reachable: tabindex rides the markup and
     // the same delegated keydown covers them.
@@ -2983,7 +2984,8 @@ describe("app bundle load", () => {
 
     const html = ctx.worktreeOpenModalHtml();
 
-    match(html, /<h2>Open workspace or worktree<\/h2>/);
+    match(html, /<h2 id="worktreeOpenTitle">Open workspace or worktree<\/h2>/);
+    match(html, /id="worktreeOpenModal" role="dialog" aria-modal="true" aria-labelledby="worktreeOpenTitle"/);
     match(html, /id="worktreeDiscoverPath"/);
     match(html, /id="worktreeWorkspaceLabel"/);
     match(html, /id="worktreeWorkspaceSubmit"/);
