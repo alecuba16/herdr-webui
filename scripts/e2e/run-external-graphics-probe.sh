@@ -21,6 +21,11 @@
 # Isolation: scratch XDG_CONFIG_HOME + scratch HERDR_SESSION under a scratch
 # work dir. Never touches the user's real herdr session or sockets. All
 # spawned processes are killed and the scratch dir removed on exit.
+#
+# The daemon binary comes from HERDR_WEB_HERDR_BIN when set (same env var the
+# webui itself uses for external sessions), else `herdr` from PATH. Pin it
+# when probing a specific release: with a global older herdr on PATH the
+# endpoint welcome never arrives and the probe fails for the wrong reason.
 
 set -euo pipefail
 
@@ -48,7 +53,7 @@ SESSION_DIR="$XDG_CONFIG_HOME/herdr/sessions/$SESSION"
 mkdir -p "$SESSION_DIR"
 
 echo "==> isolated herdr daemon: session=$SESSION work=$WORK"
-herdr server >"$WORK/daemon.log" 2>&1 &
+"${HERDR_WEB_HERDR_BIN:-herdr}" server >"$WORK/daemon.log" 2>&1 &
 DAEMON_PID=$!
 
 for _ in $(seq 1 50); do
