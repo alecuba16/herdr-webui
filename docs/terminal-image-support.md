@@ -1131,3 +1131,40 @@ Full battery re-run after the fixes: fmt + clippy clean (0 warnings),
 557 Rust tests, 568 Node tests, and the live external-graphics E2E
 16/16 (desktop + mobile, pixel sample still exactly
 `[255, 0, 0, 255]`); with the teardown checks the E2E is 18/18.
+
+## herdr 0.9.5 re-validation (2026-10-31)
+
+The protocol gate widened to 0.9.0-0.9.5 (client protocol 22 is
+unchanged across the series), so the live probe was re-run against a
+built herdr 0.9.5 daemon. One real behavior change surfaced, in the
+exact area this document tracks:
+
+- **0.9.5 diverts eligible RGBA assets from direct_graphics clients
+  into `GraphicsFile` host-file uploads** (new upstream module
+  `src/server/headless/native_graphics.rs`, feeding from
+  `headless.rs::client_supports_direct_graphics`: ClientShell mode +
+  `direct_graphics: true` + `pixel_mouse: true`). For such a client the
+  first scene after a Kitty emission arrives with placements but no
+  inline asset bytes: `prepare_with_sources` removes the selected
+  asset from `scene.assets` and ships its bytes separately. In 0.9.0
+  the flag was inert for terminal-emitted images (GraphicsFile fired
+  only for API-initiated direct leases).
+- The production webui graphics bridge is unaffected: it declares
+  `direct_graphics: false` + `pixel_mouse: false`
+  (`connect_terminal_graphics_shell` in main.rs), so scenes keep
+  arriving with inline asset bytes, and the browser-side asset cache
+  (`graphics_bridge.js`) already tolerates placement-only scenes that
+  reference previously delivered assets.
+- The env-gated probe test had inherited `direct_graphics: true` from
+  its 0.9.0 research days and panicked on the first placement-only
+  scene (`assets.first().unwrap()` on `protocol.rs`). Its hello now
+  mirrors the production bridge flags, and step 5 separately asserts
+  (a) a graphics scene arrives, and (b) the asset bytes arrive inline
+  and still decode to RGBA `[255, 0, 0, 255]`.
+- Unchanged and re-verified in 0.9.5 source: the scene gate is still
+  `cell_size.is_known()` (a 0x0-cell client receives empty scenes), a
+  bare `ClientShellHello` is still rejected, and the four v1 codecs
+  answer the welcome identically.
+
+Probe result against 0.9.5: PASS with the inline-asset assertion
+intact (1 asset + 1 placement, first asset RGBA `[255, 0, 0, 255]`).

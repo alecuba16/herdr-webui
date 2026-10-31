@@ -1124,11 +1124,19 @@ mod wire_roundtrip_tests {
         assert_eq!(
             roundtrip_bincode(&ClientInputEvent::HostDefaultColor {
                 kind: ClientHostDefaultColorKind::Background,
-                color: ClientHostColor { r: 18, g: 52, b: 86 },
+                color: ClientHostColor {
+                    r: 18,
+                    g: 52,
+                    b: 86
+                },
             }),
             ClientInputEvent::HostDefaultColor {
                 kind: ClientHostDefaultColorKind::Background,
-                color: ClientHostColor { r: 18, g: 52, b: 86 },
+                color: ClientHostColor {
+                    r: 18,
+                    g: 52,
+                    b: 86
+                },
             }
         );
         assert_eq!(
@@ -1934,9 +1942,10 @@ mod wire_roundtrip_tests {
 
 #[cfg(test)]
 mod external_probe_tests {
-    //! Live probe against a real, isolated herdr 0.9.0 daemon, proving the
-    //! WebUI's `ClientMessage`/`ServerMessage` types can speak the external
-    //! backend's ClientShell endpoint protocol and receive pane graphics.
+    //! Live probe against a real, isolated herdr 0.9.x daemon (last run
+    //! against 0.9.5), proving the WebUI's `ClientMessage`/`ServerMessage`
+    //! types can speak the external backend's ClientShell endpoint protocol
+    //! and receive pane graphics.
     //!
     //! Gated on `HERDR_WEBUI_EXTERNAL_PROBE` (set to the session data dir
     //! holding `herdr-client.sock`) so normal `cargo test` runs never spawn
@@ -2037,17 +2046,22 @@ mod external_probe_tests {
     }
 
     /// JSON payload for the `endpoint.hello.v1` EndpointControl handshake.
-    /// `direct_graphics` arms the GraphicsFile upload path; the graphics scene
-    /// itself is gated on known cell metrics (collect_scene checks
-    /// `cell_size.is_known()`), so the probe sends real cell dimensions.
-    fn endpoint_hello_json(direct_graphics: bool) -> String {
+    /// The graphics scene is gated on known cell metrics (collect_scene
+    /// checks `cell_size.is_known()`). `direct_graphics` stays false like
+    /// the production bridge (main.rs `connect_terminal_graphics_shell`):
+    /// since 0.9.5, a client declaring `direct_graphics: true` +
+    /// `pixel_mouse: true` gets eligible RGBA assets stripped from the
+    /// scene and delivered as `GraphicsFile` host-file uploads instead
+    /// (src/server/headless/native_graphics.rs `prepare_with_sources`),
+    /// so its scenes can arrive placement-only.
+    fn endpoint_hello_json() -> String {
         serde_json::json!({
             "generation": 1,
             "cell_width_px": 10,
             "cell_height_px": 20,
             "surface_size": { "cols": 80, "rows": 24 },
-            "pixel_mouse": true,
-            "direct_graphics": direct_graphics,
+            "pixel_mouse": false,
+            "direct_graphics": false,
             "endpoint_keybindings": false,
             "mouse_capture": false,
             "surface_active": true,
@@ -2141,13 +2155,13 @@ mod external_probe_tests {
         }
 
         // 1. Endpoint hello as the FIRST client message (client_transport.rs
-        //    rejects a bare ClientShellHello in 0.9.0).
+        //    rejects a bare ClientShellHello in 0.9.x).
         let mut stream = connect(&client_socket_path());
         send_client_message(
             &mut stream,
             &ClientMessage::EndpointControl {
                 kind: "endpoint.hello.v1".into(),
-                data: endpoint_hello_json(true),
+                data: endpoint_hello_json(),
             },
         );
         let rx = spawn_reader(stream);
@@ -2192,9 +2206,15 @@ mod external_probe_tests {
         );
 
         // 5. PaneSurface frames must arrive, and one must carry graphics.
+        //    With direct_graphics=false the asset bytes travel inline in the
+        //    scene (GraphicsFile uploads only fire for direct clients), so
+        //    the first graphics scene carries asset + placement together.
+        //    A scene that references an already-delivered asset can arrive
+        //    placements-only; keep reading until the bytes show up.
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut saw_surface = false;
-        let mut saw_graphics = false;
+        let mut saw_graphics_scene = false;
+        let mut verified_asset = false;
         while Instant::now() < deadline {
             let Ok(msg) = rx.recv_timeout(Duration::from_millis(500)) else {
                 continue;
@@ -2203,28 +2223,32 @@ mod external_probe_tests {
                 ServerMessage::PaneSurface(frame) => {
                     saw_surface = true;
                     let scene = &frame.graphics;
-                    if !scene.assets.is_empty() || !scene.placements.is_empty() {
-                        saw_graphics = true;
-                        let asset = scene.assets.first().unwrap();
-                        println!(
-                            "PROBE graphics scene: {} assets, {} placements, {} retained; first asset format={:?} len={} data[0..8]={:02x?}",
-                            scene.assets.len(),
-                            scene.placements.len(),
-                            scene.retained_assets.len(),
-                            asset.key.format,
-                            asset.data.len(),
-                            &asset.data[..asset.data.len().min(8)],
-                        );
-                        assert_eq!(
-                            asset.data,
-                            vec![255, 0, 0, 255],
-                            "1x1 f=32 asset must decode to red RGBA"
-                        );
-                        assert_eq!(asset.key.image_width, 1);
-                        assert_eq!(asset.key.image_height, 1);
-                        assert!(matches!(asset.key.format, SurfaceGraphicsFormat::Rgba));
-                        break;
+                    if scene.assets.is_empty() && scene.placements.is_empty() {
+                        continue;
                     }
+                    saw_graphics_scene = true;
+                    let Some(asset) = scene.assets.first() else {
+                        continue;
+                    };
+                    println!(
+                        "PROBE graphics scene: {} assets, {} placements, {} retained; first asset format={:?} len={} data[0..8]={:02x?}",
+                        scene.assets.len(),
+                        scene.placements.len(),
+                        scene.retained_assets.len(),
+                        asset.key.format,
+                        asset.data.len(),
+                        &asset.data[..asset.data.len().min(8)],
+                    );
+                    assert_eq!(
+                        asset.data,
+                        vec![255, 0, 0, 255],
+                        "1x1 f=32 asset must decode to red RGBA"
+                    );
+                    assert_eq!(asset.key.image_width, 1);
+                    assert_eq!(asset.key.image_height, 1);
+                    assert!(matches!(asset.key.format, SurfaceGraphicsFormat::Rgba));
+                    verified_asset = true;
+                    break;
                 }
                 ServerMessage::EndpointControl { kind, .. } if kind == "endpoint.snapshot.v1" => {
                     // shell snapshot precedes surfaces; expected.
@@ -2237,17 +2261,20 @@ mod external_probe_tests {
         }
         assert!(saw_surface, "never received a PaneSurface frame");
         assert!(
-            saw_graphics,
-            "no graphics scene arrived with direct_graphics=true"
+            saw_graphics_scene,
+            "no graphics scene arrived with known cell metrics"
+        );
+        assert!(
+            verified_asset,
+            "graphics scene never carried the asset bytes inline"
         );
 
         // 6. Negative control: a second connection reporting NO cell metrics
         //    (cell 0x0) must receive surfaces without any graphics scene.
-        //    In herdr 0.9.0 the scene gate is `cell_size.is_known()`
-        //    (kitty_graphics/surface.rs collect_scene); the hello's
-        //    `direct_graphics` flag only arms the GraphicsFile upload path.
+        //    The scene gate is `cell_size.is_known()` (kitty_graphics/
+        //    surface.rs collect_scene), unchanged from 0.9.0 through 0.9.5.
         let mut plain = connect(&client_socket_path());
-        let mut no_cell_hello = endpoint_hello_json(false);
+        let mut no_cell_hello = endpoint_hello_json();
         {
             let mut hello: serde_json::Value = serde_json::from_str(&no_cell_hello).unwrap();
             hello["cell_width_px"] = serde_json::json!(0);
