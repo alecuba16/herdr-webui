@@ -1164,11 +1164,8 @@ fn rank_search_candidates(matcher: &PathMatcher, candidates: &mut Vec<SearchCand
             // is the original index of the match that ranks i-th. Apply it
             // in one pass without touching the source vector mid-iteration.
             let mut ranked: Vec<SearchCandidate> = Vec::with_capacity(candidates.len());
-            let mut source: std::collections::HashMap<usize, SearchCandidate> = candidates
-                .drain(..)
-                .enumerate()
-                .map(|(i, c)| (i, c))
-                .collect();
+            let mut source: std::collections::HashMap<usize, SearchCandidate> =
+                candidates.drain(..).enumerate().collect();
             for index in order {
                 if let Some(candidate) = source.remove(&index) {
                     ranked.push(candidate);
