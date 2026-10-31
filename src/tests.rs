@@ -12721,14 +12721,10 @@ async fn events_socket_reports_rejected_subscription_instead_of_ready() {
     // error frame herdr sends for an invalid subscription (id preserved,
     // error.code + error.message). Accepts in a loop because the events
     // thread retries with a backoff.
-    let path = std::env::temp_dir().join(format!(
-        "herdr-webui-events-reject-{}-{}.sock",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    // fake_socket_dir keeps the path short: CI runners have long per-job
+    // temp dirs and a nanos-based name there overflows sun_path (104 bytes),
+    // which makes the listener creation fail before the test even starts.
+    let path = fake_socket_dir().join(format!("events-reject-{}.sock", fake_socket_suffix()));
     let _ = fs::remove_file(&path);
     let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new()
@@ -12873,14 +12869,9 @@ async fn events_socket_resubscribes_after_events_lost() {
     // events_lost error frame and EOF (herdr closes the stream after the
     // error). The second subscribe acks and streams one more event. Later
     // subscribes keep streaming so a flaky retry cannot starve the test.
-    let path = std::env::temp_dir().join(format!(
-        "herdr-webui-events-lost-{}-{}.sock",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    // fake_socket_dir keeps the path under sun_path even on CI runners
+    // with long per-job temp dirs (same trap as the reject test).
+    let path = fake_socket_dir().join(format!("events-lost-{}.sock", fake_socket_suffix()));
     let _ = fs::remove_file(&path);
     let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new()
