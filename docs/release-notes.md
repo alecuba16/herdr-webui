@@ -1,6 +1,17 @@
 # Release notes
 
 ## Unreleased
+- Path search now ranks the whole match set, nearest match first, so a
+  deep result such as a repository under ~/Documents lands on the first
+  page instead of behind many load-more clicks. fzf ranks the matches when
+  the boot probe finds it, otherwise the built-in scorer orders the page,
+  and settings say which ranker is active and hint at `brew install fzf`
+  when it is missing. Offset-only pagination replaces the visit cursor, so
+  every page re-ranks the same set and no match sits behind a stale visit
+  cap. Each surface got its own root: the sidebar panel searches only the
+  selected workspace and says so when none is selected, the palette and
+  mobile search use the settings default folder with ~ as fallback, and
+  pickers keep their selected folder.
 - TUI: an action's status line now holds for a moment against the
   periodic backend summary. The event loop drains the background
   refresh in the same pass that renders key feedback, so a branch
