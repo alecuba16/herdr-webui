@@ -6413,10 +6413,12 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
                         backoff_secs = 1;
                     }
                 }
-                Err(_) => {
-                    let _ = tx.send(
-                        json!({ "type": "error", "message": "failed to subscribe to Herdr events" }),
-                    );
+                Err(err) => {
+                    // Carry the subscribe() detail ("events.subscribe
+                    // rejected: ...", connect error) instead of a generic
+                    // string: the browser console is the only place a
+                    // rejected subscription becomes diagnosable.
+                    let _ = tx.send(json!({ "type": "error", "message": err.to_string() }));
                 }
             }
             // The WebSocket consumer went away; stop retrying.

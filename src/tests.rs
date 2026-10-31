@@ -1856,6 +1856,10 @@ fn classifies_backend_compatibility() {
         backend_compatibility_for_supported_range(Some("0.9.0"), Some(PROTOCOL_VERSION + 1)),
         BackendCompatibility::ProtocolMismatch
     );
+    assert_eq!(
+        backend_compatibility_for_supported_range(Some("0.8.9"), Some(PROTOCOL_VERSION)),
+        BackendCompatibility::TooOld
+    );
 }
 
 #[test]
@@ -12690,6 +12694,159 @@ async fn events_socket_survives_backend_subscription_failure() {
     );
 
     server_handle.abort();
+    let _ = fs::remove_dir_all(&config_home);
+    std::env::remove_var("XDG_CONFIG_HOME");
+}
+
+/// A backend that answers events.subscribe with an error frame (herdr 0.9.x
+/// does this for any invalid subscription entry; one bad pane_id rejects the
+/// whole stream) must surface as an error message on the WebSocket, never
+/// as a healthy "ready" stream that then delivers nothing. This is the
+/// regression shape of the pane.agent_status_changed bug: the webui sent an
+/// entry every 0.9.x daemon rejects, consumed the error frame as the ack,
+/// and cycled subscribe -> EOF -> resubscribe with zero events.
+#[cfg(unix)]
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn events_socket_reports_rejected_subscription_instead_of_ready() {
+    use futures_util::StreamExt;
+    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use tokio_tungstenite::connect_async;
+
+    let _guard = lock_env();
+    let (config_home, _config_guard) = temp_guard("herdr-webui-events-rejected-sub");
+    std::env::set_var("XDG_CONFIG_HOME", &config_home);
+
+    // Fake external daemon: rejects every events.subscribe with the same
+    // error frame herdr sends for an invalid subscription (id preserved,
+    // error.code + error.message). Accepts in a loop because the events
+    // thread retries with a backoff.
+    let path = std::env::temp_dir().join(format!(
+        "herdr-webui-events-reject-{}-{}.sock",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = fs::remove_file(&path);
+    let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+    let listener = ListenerOptions::new()
+        .name(name)
+        .try_overwrite(true)
+        .create_sync()
+        .unwrap();
+    // Leak the accept thread on purpose: it blocks in listener.accept()
+    // for connections that never come once the subscription thread stops
+    // retrying. Same shape as fake_api_socket_events_streaming; the
+    // pid-keyed socket path lets the test-artifact sweeper unlink it later.
+    thread::spawn(move || {
+        for _ in 0..50 {
+            let Ok(mut stream) = listener.accept() else {
+                break;
+            };
+            thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+                let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                let id = request.get("id").cloned().unwrap_or(json!("web:poll"));
+                let response = if method == "events.subscribe" {
+                    json!({
+                        "id": id,
+                        "error": {
+                            "code": "invalid_request",
+                            "message": "invalid request: missing field `pane_id`",
+                        }
+                    })
+                } else if method == "ping" {
+                    json!({ "id": id, "result": { "version": "0.9.5", "protocol": 22 } })
+                } else {
+                    json!({ "id": id, "result": {} })
+                };
+                let _ = stream.write_all(response.to_string().as_bytes());
+                let _ = stream.write_all(b"\n");
+                let _ = stream.flush();
+            });
+        }
+    });
+
+    let mut state = test_state();
+    state.api_socket = Some(path.clone());
+    let app = test_app_with_state(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let url = format!("ws://{addr}/ws/events?backend=external-herdr");
+    let ws_request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(&url)
+        .header("cookie", "herdr_web_session=token-123")
+        .header("host", addr.to_string())
+        .header("connection", "Upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(())
+        .unwrap();
+    let (mut ws_stream, _response) = connect_async(ws_request)
+        .await
+        .expect("Failed to connect to WebSocket");
+
+    // The rejected subscription must surface the daemon's message, and the
+    // "ready" frame must never arrive: ready means a live event stream,
+    // which a rejected subscribe never produced.
+    let mut saw_rejection = false;
+    let mut saw_ready = false;
+    for _ in 0..10 {
+        let msg = match tokio::time::timeout(std::time::Duration::from_secs(10), ws_stream.next())
+            .await
+        {
+            Ok(Some(Ok(m))) => m,
+            Ok(None) => break,
+            Ok(Some(Err(_))) | Err(_) => break,
+        };
+        let text = msg.to_text().expect("expected text message");
+        let value: serde_json::Value = serde_json::from_str(text).expect("invalid json");
+        match value["type"].as_str() {
+            Some("error") => {
+                let message = value["message"].as_str().unwrap_or("");
+                assert!(
+                    message.contains("events.subscribe rejected"),
+                    "error frame must carry the subscribe rejection, got: {message}"
+                );
+                assert!(
+                    message.contains("missing field `pane_id`"),
+                    "error frame must surface the daemon's own message, got: {message}"
+                );
+                saw_rejection = true;
+                break;
+            }
+            Some("ready") => saw_ready = true,
+            _ => {}
+        }
+    }
+    assert!(
+        saw_rejection,
+        "rejected events.subscribe must surface its error frame on /ws/events"
+    );
+    assert!(
+        !saw_ready,
+        "no ready frame may precede a rejected subscribe"
+    );
+
+    drop(ws_stream);
+    server_handle.abort();
+    let _ = fs::remove_file(&path);
     let _ = fs::remove_dir_all(&config_home);
     std::env::remove_var("XDG_CONFIG_HOME");
 }

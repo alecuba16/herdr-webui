@@ -24,8 +24,14 @@
   the agents row it refreshes from snapshot data), and `subscribe()` now
   treats an error ack as a failure instead of a healthy stream, so a
   rejected subscription surfaces its message instead of cycling silently.
-  Both found by live-validating the events path against a real herdr 0.9.5
+  The events loop now forwards that detail ("events.subscribe rejected:
+  ...", connect errors) to the browser instead of a generic string, so a
+  dead or rejecting backend names itself in the events error frame. Both
+  found by live-validating the events path against a real herdr 0.9.5
   daemon; builtin mode was unaffected (it ignores subscription params).
+  The resubscribe path is live-proven too: after a `kill -9` daemon
+  restart, the events loop reconnects, resubscribes, and delivers events
+  again.
 - Filter results in the file browser render every row as its own tab stop,
   so Tab walked file by file while the arrows only cycled matches from
   the input. The rows now use a roving tabindex with one tab stop on the
