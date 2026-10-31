@@ -396,6 +396,14 @@ describe("file browser LSP integration", () => {
     match(FILE_BROWSER_SOURCE, /herdr-lsp-diagnostic/);
   });
 
+  it("diagnostic rows activate from the keyboard", () => {
+    // Jump-to-range rows are divs: without role+tabindex they never enter
+    // the tab order, and without a keydown twin Enter does nothing. Both
+    // must survive refactors.
+    match(FILE_BROWSER_SOURCE, /herdr-lsp-diagnostic \$\{esc\(d\.severity\)\}" data-from="\$\{d\.from\}" data-to="\$\{d\.to\}" role="button" tabindex="0"/);
+    match(FILE_BROWSER_SOURCE, /item\.addEventListener\("keydown", \(event\) => \{[\s\S]*?if \(event\.key !== "Enter" && event\.key !== " "\) return;[\s\S]*?jump\(\);/);
+  });
+
   it("renders diagnostics inline in the editor mount", () => {
     // Phase 3b: the toolbar badge died with the file-browser toolbar;
     // diagnostics render inline under the pane editor mount instead.

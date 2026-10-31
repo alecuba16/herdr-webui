@@ -8323,6 +8323,48 @@ describe("workspace sidebar order", () => {
     );
     equal(updatedOrder, "ws_b|ws_c|ws_a");
   });
+
+  it("workspace cards expose the dblclick rename from the keyboard", () => {
+    const ctx = context();
+    vm.runInContext(bundleSource, ctx);
+    vm.runInContext(
+      `state.ws = "ws_a";
+       state.workspaces = [
+         { workspace_id: "ws_a", label: "alpha" },
+         { workspace_id: "ws_b", label: "beta" },
+       ];`,
+      ctx,
+    );
+
+    const selectedHtml = vm.runInContext("renderWorkspaceCard(state.workspaces[0])", ctx);
+    match(selectedHtml, /class="item active " role="button" tabindex="0"/);
+    match(selectedHtml, /onkeydown="workspaceCardKeydown\(event,'ws_a','alpha',true\)"/);
+
+    const unselectedHtml = vm.runInContext("renderWorkspaceCard(state.workspaces[1])", ctx);
+    match(unselectedHtml, /onkeydown="workspaceCardKeydown\(event,'ws_b','beta',false\)"/);
+
+    // Keyboard twin runs the same rename path: selected card Enter and
+    // unselected card F2 both reach startWorkspaceRename.
+    vm.runInContext(
+      `globalThis.__renamed = [];
+       const realStart = startWorkspaceRename;
+       startWorkspaceRename = (id, label) => { globalThis.__renamed.push([id, label]); realStart(id, label); };
+       workspaceCardKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {}, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }, "ws_a", "alpha", true);
+       workspaceCardKeydown({ key: "F2", preventDefault() {}, stopPropagation() {}, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }, "ws_b", "beta", false);`,
+      ctx,
+    );
+    equal(vm.runInContext("globalThis.__renamed.length", ctx), 2);
+    equal(vm.runInContext("globalThis.__renamed[0].join(':')", ctx), "ws_a:alpha");
+    equal(vm.runInContext("globalThis.__renamed[1].join(':')", ctx), "ws_b:beta");
+
+    // Enter on the unselected anchor stays native navigation.
+    vm.runInContext(
+      `globalThis.__renamed = [];
+       workspaceCardKeydown({ key: "Enter", preventDefault() {}, stopPropagation() {}, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }, "ws_b", "beta", false);`,
+      ctx,
+    );
+    equal(vm.runInContext("globalThis.__renamed.length", ctx), 0);
+  });
 });
 
 describe("location bar integration", () => {

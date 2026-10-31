@@ -499,6 +499,56 @@ async function main() {
     await sleep(150);
   }
 
+  // 7b. Keyboard-dead control audit: walk every visible clickable element
+  // (onclick attr, role=button/tab/option/treeitem/menuitem, or inherited
+  // cursor:pointer) and flag the ones a keyboard user cannot reach. A
+  // decorative span inside an interactive row inherits the row's cursor
+  // and its keyboard path, so classification is host-based: the nearest
+  // interactive ancestor (or the element itself) must be native or carry
+  // tabIndex >= 0. Runs on the base shell, the git drawer, and the
+  // settings modal since those carry the densest action surfaces.
+  const auditKeyboardDead = async (surface) => {
+    const dead = await evalJs(`(() => {
+      const root = ${surface};
+      if (!root) return null;
+      const nativeTags = "a, button, input, select, textarea";
+      const interactive = nativeTags + ", [role='button'], [role='tab'], [role='option'], [role='treeitem'], [role='menuitem'], [data-workspace-action]";
+      return [...root.querySelectorAll("*")]
+        .filter((el) => {
+          const role = el.getAttribute("role");
+          if (!(el.onclick || role === "button" || role === "tab" || role === "option" || role === "treeitem" || role === "menuitem")) {
+            if (getComputedStyle(el).cursor !== "pointer") return false;
+          }
+          if (el.hasAttribute("disabled") || el.getAttribute("aria-disabled") === "true") return false;
+          if (el.closest('[aria-hidden="true"]')) return false;
+          const r = el.getBoundingClientRect();
+          if (!(r.width > 0 && r.height > 0)) return false;
+          const host = el.closest(interactive);
+          if (host && host !== el) return !(host.tabIndex >= 0 || host.matches(nativeTags));
+          return !(el.tabIndex >= 0 || el.matches(nativeTags));
+        })
+        .map((el) => ({ tag: el.tagName, cls: String(el.className).slice(0, 40), id: el.id || "", role: el.getAttribute("role") || "" }))
+        .slice(0, 12);
+    })()`);
+    return dead;
+  };
+  {
+    const shellDead = await auditKeyboardDead(`document.body`);
+    record("base shell has no keyboard-dead clickable elements", shellDead === null || shellDead.length === 0, JSON.stringify(shellDead));
+
+    await evalJs(`(() => { const btn = document.getElementById("rightRailGit"); if (btn) btn.click(); return true; })()`);
+    await sleep(600);
+    const gitDead = await auditKeyboardDead(`document.getElementById("gitUiPanel") || document.body`);
+    record("git drawer has no keyboard-dead clickable elements", gitDead === null || gitDead.length === 0, JSON.stringify(gitDead));
+
+    await evalJs(`(() => { if (window.HerdrGitUi && window.HerdrGitUi.hide) window.HerdrGitUi.hide(); openSettingsModal(); return true; })()`);
+    await sleep(500);
+    const settingsDead = await auditKeyboardDead(`document.getElementById("settingsModal")`);
+    record("settings modal has no keyboard-dead clickable elements", settingsDead === null || settingsDead.length === 0, JSON.stringify(settingsDead));
+    await pressKey(cdp, { key: "Escape", code: "Escape" });
+    await sleep(200);
+  }
+
   // 8. Drag the two remaining card families the settings check does not
   // cover: the directory picker (class-mounted card, backdrop recreated
   // per open) and the git commit modal (git-ui backdrop). Both must move

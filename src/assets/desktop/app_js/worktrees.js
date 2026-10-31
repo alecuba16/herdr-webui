@@ -1098,6 +1098,19 @@ function startWorkspaceRename(id, label) {
     if (input) input.select();
   }, 0);
 }
+// Keyboard twin of the card's dblclick rename. The selected card is a
+// div role=button: Enter starts rename (it has no navigation to hijack).
+// Unselected cards are anchors: Enter keeps native navigation, F2 renames.
+function workspaceCardKeydown(e, id, label, selected) {
+  if (e.key !== "F2" && !(selected && (e.key === "Enter" || e.key === " " || e.key === "Spacebar"))) return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+  const target = e.target;
+  if (target && target.closest && target.closest("input, select, textarea, [contenteditable='true']")) return;
+  if (target && target.closest && target.closest("[data-workspace-action]")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  startWorkspaceRename(id, label);
+}
 function workspaceRenameKey(e, id) {
   if (e.key === "Enter") {
     e.preventDefault();

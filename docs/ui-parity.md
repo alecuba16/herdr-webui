@@ -83,3 +83,9 @@ known difference, not a bug filed against the desktop build.
   :focus-visible (desktop uses --focus-ring box-shadow, mobile uses
   --ring outline). No control ships outline: none without a
   replacement indicator.
+- Action inventory: every desktop click action is either a native
+  button/anchor/input or a div/span carrying role=button (or
+  treeitem/option) plus tabindex=0 and an Enter/Space keydown twin
+  (delegated for spans, inline for tree rows). The live probe walks the
+  shell, git drawer, and settings modal and fails on any clickable
+  element a keyboard cannot reach.
