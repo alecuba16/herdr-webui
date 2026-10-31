@@ -1,4 +1,4 @@
-//! Wire protocol mirror for herdr 0.9.0 (client protocol 22).
+//! Wire protocol mirror for herdr 0.9.0-0.9.5 (client protocol 22).
 //!
 //! This module mirrors the subset of herdr's `src/protocol/wire.rs` that the
 //! WebUI client and the embedded built-in backend speak over the local client
@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 
 use serde::{Deserialize, Serialize};
 
-/// Client protocol version spoken by herdr 0.9.0.
+/// Client protocol version spoken by herdr 0.9.x (0.9.0 through 0.9.5).
 ///
 /// herdr validates this exact value at handshake time; there is no
 /// cross-version compatibility window.
@@ -28,7 +28,7 @@ pub(crate) const PROTOCOL_VERSION: u32 = 22;
 pub(crate) const MIN_BACKEND_VERSION: &str = "0.9.0";
 /// Maximum herdr backend version this WebUI has been tested against.
 #[allow(dead_code)]
-pub(crate) const MAX_TESTED_BACKEND_VERSION: &str = "0.9.0";
+pub(crate) const MAX_TESTED_BACKEND_VERSION: &str = "0.9.5";
 
 pub(crate) fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<(), String> {
     let payload = bincode::serde::encode_to_vec(msg, bincode::config::standard())
@@ -159,6 +159,14 @@ pub(crate) enum ClientInputEvent {
     },
     FocusGained,
     FocusLost,
+    /// Host terminal default fg/bg color change, captured at client startup
+    /// or on SIGWINCH re-reads (herdr 0.9.5, upstream #4710). A web client
+    /// never produces this; it only needs to deserialize it from newer
+    /// backends without rejecting the enclosing input frame.
+    HostDefaultColor {
+        kind: ClientHostDefaultColorKind,
+        color: ClientHostColor,
+    },
 }
 
 /// Source of a key event. A web client always synthesizes keys, so the other
@@ -1110,6 +1118,18 @@ mod wire_roundtrip_tests {
         assert_eq!(
             roundtrip_bincode(&ClientInputEvent::FocusLost),
             ClientInputEvent::FocusLost
+        );
+        // herdr 0.9.5 (upstream #4710): host default color events ride the
+        // same input stream, so the mirror must survive a bincode roundtrip.
+        assert_eq!(
+            roundtrip_bincode(&ClientInputEvent::HostDefaultColor {
+                kind: ClientHostDefaultColorKind::Background,
+                color: ClientHostColor { r: 18, g: 52, b: 86 },
+            }),
+            ClientInputEvent::HostDefaultColor {
+                kind: ClientHostDefaultColorKind::Background,
+                color: ClientHostColor { r: 18, g: 52, b: 86 },
+            }
         );
         assert_eq!(
             roundtrip_bincode(&ClientInputEvent::TextCommit("hi".to_string())),

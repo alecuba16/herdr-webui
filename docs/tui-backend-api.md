@@ -177,7 +177,7 @@ The future TUI may copy these features/functionality as a guide while keeping or
 
 ## Protocol version note
 
-The TUI backend client uses `BUILTIN_TUI_PROTOCOL_VERSION: u32 = 22`, matching the server's protocol version (`src/protocol.rs`). herdr 0.9.0 requires an exact client protocol version match at handshake time, so both the WebUI server and the TUI client send `version: 22` and a mismatch is rejected with a `Welcome{error}` (there is no multi-version fallback anymore; earlier WebUI releases retried protocols 20/18/16 in descending order, that chain was removed with the herdr 0.9.0 upgrade in WebUI 0.4.13).
+The TUI backend client uses `BUILTIN_TUI_PROTOCOL_VERSION: u32 = 22`, matching the server's protocol version (`src/protocol.rs`). herdr 0.9.x (0.9.0 through the tested 0.9.5) requires an exact client protocol version match at handshake time, so both the WebUI server and the TUI client send `version: 22` and a mismatch is rejected with a `Welcome{error}` (there is no multi-version fallback anymore; earlier WebUI releases retried protocols 20/18/16 in descending order, that chain was removed with the herdr 0.9.0 upgrade in WebUI 0.4.13).
 
 ## Current gaps
 

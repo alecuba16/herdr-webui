@@ -1801,7 +1801,7 @@ async fn no_sleep_update_round_trips_modes_through_api() {
 
 #[test]
 fn classifies_backend_compatibility() {
-    // herdr 0.9.0 requires an exact protocol match: every supported
+    // herdr 0.9.x requires an exact protocol match: every supported
     // release maps 1:1 to its own protocol version.
     assert_eq!(
         backend_compatibility_for_supported_range(Some("0.8.0"), Some(20)),
@@ -1822,8 +1822,22 @@ fn classifies_backend_compatibility() {
         backend_compatibility_for_supported_range(Some("0.9.0"), Some(PROTOCOL_VERSION),),
         BackendCompatibility::Compatible
     );
+    // The tested range spans every 0.9.x release: protocol 22 never
+    // changed between them, so each patch release stays Compatible.
     assert_eq!(
         backend_compatibility_for_supported_range(Some("0.9.1"), Some(PROTOCOL_VERSION)),
+        BackendCompatibility::Compatible
+    );
+    assert_eq!(
+        backend_compatibility_for_supported_range(Some("0.9.5"), Some(PROTOCOL_VERSION)),
+        BackendCompatibility::Compatible
+    );
+    assert_eq!(
+        backend_compatibility_for_supported_range(Some("0.9.6"), Some(PROTOCOL_VERSION)),
+        BackendCompatibility::UntestedNewer
+    );
+    assert_eq!(
+        backend_compatibility_for_supported_range(Some("0.10.0"), Some(PROTOCOL_VERSION)),
         BackendCompatibility::UntestedNewer
     );
     assert_eq!(

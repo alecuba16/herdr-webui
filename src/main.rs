@@ -93,7 +93,7 @@ const MAX_GRAPHICS_FRAME_SIZE: usize = 32 * 1024 * 1024;
 const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 22;
 const PROTOCOL_VERSION: u32 = 22;
 const MIN_BACKEND_VERSION: &str = "0.9.0";
-const MAX_TESTED_BACKEND_VERSION: &str = "0.9.0";
+const MAX_TESTED_BACKEND_VERSION: &str = "0.9.5";
 const DEFAULT_FOLDER_READ_TIMEOUT: Duration = Duration::from_millis(1500);
 
 type LocalStream = interprocess::local_socket::Stream;
@@ -6357,6 +6357,19 @@ async fn events_socket(state: WebState, api: ApiClient, mut socket: WebSocket) {
                     loop {
                         match stream.next_value() {
                             Ok(Some(value)) => {
+                                // herdr 0.9.2+ (upstream #4225) reports a
+                                // subscription that fell behind retained history
+                                // with an error frame `{error:{code:
+                                // "events_lost"}}` and then closes the stream.
+                                // Silent gaps would desync the UI, so break and
+                                // resubscribe; the backoff reset below makes the
+                                // resync fast, and the browser refresh rebuilds
+                                // state from session.snapshot.
+                                if value.get("error").and_then(|error| error.get("code"))
+                                    == Some(&serde_json::json!("events_lost"))
+                                {
+                                    break;
+                                }
                                 if tx.send(json!({ "type": "event", "event": value })).is_err() {
                                     return;
                                 }
