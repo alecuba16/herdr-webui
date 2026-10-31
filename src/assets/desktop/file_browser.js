@@ -20,14 +20,14 @@
   function createState(initial) {
     return Object.assign({
       open: false, cwd: "", root: "", home: "", path: "", entries: [], children: {}, expanded: {}, loading: {}, error: "", permissionRequired: false, contextMenu: null, refreshing: false, gitStatus: null,
-      filter: "", filterTimer: null, filterEntries: [], filterSelected: "", filterOffset: 0, filterVisited: 0, filterActiveIndex: 0, filterTruncated: false, filterDone: true, filterLoading: false, filterError: "",
+      filter: "", filterTimer: null, filterEntries: [], filterSelected: "", filterOffset: 0, filterActiveIndex: 0, filterTruncated: false, filterDone: true, filterLoading: false, filterError: "",
     }, initial || {});
   }
 
   // Server-side tree filter (mobile loadFiltered pattern): 500ms debounce,
-  // q= search over the workspace, offset/visit_offset pagination. Filter
-  // state lives on the per-workspace state object so switching panes never
-  // leaks a query into another tree.
+  // q= search over the workspace, offset pagination. Filter state lives on
+  // the per-workspace state object so switching panes never leaks a query
+  // into another tree.
   const FILTER_DEBOUNCE_MS = 500;
   // Debounce timer id lives on the state object; this sequence number is
   // module-level so it survives state switches and drops stale responses.
@@ -132,18 +132,17 @@
     renderIfActive(target, true);
     try {
       const offset = append ? Number(target.filterOffset) || 0 : 0;
-      const visitOffset = append ? Number(target.filterVisited) || 0 : 0;
-      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(target.path || "")}&q=${encodeURIComponent(query)}&offset=${offset}&visit_offset=${visitOffset}&limit=${searchPageSize()}${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
+      const data = await api(`/api/file-browser/tree?cwd=${encodeURIComponent(target.cwd)}&path=${encodeURIComponent(target.path || "")}&q=${encodeURIComponent(query)}&offset=${offset}&limit=${searchPageSize()}${gitStatusEnabled() ? "&include_git_status=true" : ""}`);
       if (seq !== filterSeq) return;
       const entries = data.entries || [];
       const fresh = !append;
       target.filterEntries = fresh ? entries : (target.filterEntries || []).concat(entries);
       target.gitStatus = data.git_status || target.gitStatus;
       target.filterOffset = offset + entries.length;
-      // "visited" is the server's absolute walk position: the next page
-      // resumes from it without re-adding offset. filterDone follows the
-      // mobile semantics: done unless truncated and the walk still advances.
-      target.filterVisited = Number(data.visited || 0);
+      // Ranked search: every page re-walks and re-ranks the same match
+      // set, so truncated=false is the natural end. A zero-entry page
+      // cannot advance the offset, so it disarms the chain instead of
+      // looping on the same empty page.
       target.filterDone = !data.truncated || entries.length === 0;
       target.filterTruncated = !!data.truncated;
       target.filterError = "";
@@ -205,7 +204,6 @@
     state.filterEntries = [];
     state.filterSelected = "";
     state.filterOffset = 0;
-    state.filterVisited = 0;
     state.filterActiveIndex = 0;
     state.filterTruncated = false;
     state.filterDone = true;
@@ -553,7 +551,6 @@
     target.filterEntries = [];
     target.filterSelected = "";
     target.filterOffset = 0;
-    target.filterVisited = 0;
     target.filterActiveIndex = 0;
     target.filterTruncated = false;
     target.filterDone = true;

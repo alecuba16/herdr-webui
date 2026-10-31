@@ -144,7 +144,7 @@
     return body;
   }
 
-  async function searchPaths({ cwd, query, kind = "file", offset = 0, limit, path = "", visitOffset, matchCase, regex }) {
+  async function searchPaths({ cwd, query, kind = "file", offset = 0, limit, path = "", matchCase, regex }) {
     const opts = settings();
     const normalizedKind = Tree && Tree.normalizeSearchKind ? Tree.normalizeSearchKind(kind) : kind === "dir" ? "dir" : "file";
     const kindEnabled = normalizedKind === "dir" ? opts.searchFoldersEnabled : opts.searchFilesEnabled;
@@ -154,7 +154,9 @@
     // the settings so the panel/palette can offer live switches.
     const useMatchCase = matchCase == null ? opts.matchCase : matchCase === true;
     const useRegex = regex == null ? opts.regex : regex === true;
-    const url = `/api/file-browser/tree?cwd=${encodeURIComponent(cwd || "")}&path=${encodeURIComponent(path || "")}&q=${encodeURIComponent(String(query || "").trim())}&${kindQuery}&offset=${Number(offset) || 0}&visit_offset=${Number(visitOffset) || 0}&limit=${Number(limit || opts.pathPageSize)}&match_case=${useMatchCase ? "true" : "false"}&regex=${useRegex ? "true" : "false"}${opts.gitStatusEnabled ? "&include_git_status=true" : ""}`;
+    // Ranking search pages re-walk the same match set server-side, so the
+    // offset alone pages through it; no walk cursor is sent.
+    const url = `/api/file-browser/tree?cwd=${encodeURIComponent(cwd || "")}&path=${encodeURIComponent(path || "")}&q=${encodeURIComponent(String(query || "").trim())}&${kindQuery}&offset=${Number(offset) || 0}&limit=${Number(limit || opts.pathPageSize)}&match_case=${useMatchCase ? "true" : "false"}&regex=${useRegex ? "true" : "false"}${opts.gitStatusEnabled ? "&include_git_status=true" : ""}`;
     return apiJson(url);
   }
 

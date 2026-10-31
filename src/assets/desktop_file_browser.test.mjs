@@ -419,7 +419,7 @@ test("filter input renders the row and defers the server search by debounce", as
   assert.equal(requests.length, 1, "the debounce commits one request");
   const url = requests[0];
   assert.ok(url.includes("q=filter"), "the query rides the tree route");
-  assert.ok(url.includes("visit_offset=0"), "the first page starts at walk position zero");
+  assert.ok(!url.includes("visit_offset"), "ranked search pages carry no walk cursor");
   assert.ok(!url.includes("search_kind"), "the filter searches all kinds, no search_kind param");
   assert.ok(url.includes("limit=100"), "the page size comes from search settings");
 });
@@ -546,7 +546,7 @@ test("scroll near the bottom appends the next result page", async () => {
   const searchRequests = requests.filter((url) => url.includes("q="));
   assert.equal(searchRequests.length, 2, "the scroll appends one page");
   assert.ok(searchRequests[1].includes("offset=3"), "the append resumes after the first page");
-  assert.ok(searchRequests[1].includes("visit_offset=5"), "the append resumes the walk cursor");
+  assert.ok(!searchRequests[1].includes("visit_offset"), "the append pages by offset only");
 });
 
 test("navigation away ends the filter", async () => {

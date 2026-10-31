@@ -162,9 +162,10 @@
       state.entries = append ? state.entries.concat(entries) : entries;
       state.gitStatus = data.git_status || null;
       state.filterOffset = offset + entries.length;
-      // The server walks the tree with a visit cap, so `truncated` can be
-      // true even when a page comes back short. Keep paging available as
-      // long as the server reports more matches.
+      // Ranked search: every page re-walks and re-ranks the same match
+      // set, so truncated=false is the natural end. A zero-entry page
+      // cannot advance the offset, so it disarms the chain instead of
+      // looping on the same empty page.
       state.filterDone = !data.truncated || entries.length === 0;
       state.error = "";
       state.permissionRequired = false;

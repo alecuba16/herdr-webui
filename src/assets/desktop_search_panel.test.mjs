@@ -315,13 +315,12 @@ test("typing keeps focus and caret across the re-render", async () => {
   assert.equal(afterSecond.selectionStart, 5, "caret follows typing");
 });
 
-test("search falls back to the default folder when nothing is selected", async () => {
+test("search stays workspace-scoped and shows a notice when nothing is selected", async () => {
   const { nodes, document } = buildDom();
   const searched = [];
   const ctx = loadPanel(document, {
     state: { ws: null, workspaces: [], workspaceShell: {} },
     currentSearchWorkspace: () => null,
-    selectedOrDefaultWorkspace: () => ({ workspace_id: "__default_folder__", label: "Default folder", cwd: "/Users/alejandro.blanco", default_folder: true }),
     HerdrWorkspaceSearch: {
       settings: () => ({ searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, searchSectionOrder: ["workspaces", "files", "content"], contentMinChars: 3 }),
       createContentState: () => ({ query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 }),
@@ -333,7 +332,7 @@ test("search falls back to the default folder when nothing is selected", async (
   });
 
   await ctx.HerdrSearchPanel.open("ws-1", {});
-  // Boot-clean state: nothing selected, default folder is the root.
+  // Boot-clean state: nothing selected, so the panel has no search root.
   const state = ctx.HerdrSearchPanel;
   assert.ok(state, "panel api exposed");
   const input = nodes.searchPanelInput;
@@ -343,11 +342,13 @@ test("search falls back to the default folder when nothing is selected", async (
   // The debounced runSearch fires after 180ms; the input event already
   // re-rendered. Wait for the debounce, then inspect the searched roots.
   await new Promise((resolve) => setTimeout(resolve, 260));
-  assert.ok(searched.some((s) => s.cwd === "/Users/alejandro.blanco"), "paths searched the default folder");
-  assert.ok(searched.some((s) => s.cwd === "/Users/alejandro.blanco" && s.kind === "content"), "content search used the default folder");
+  assert.equal(searched.length, 0, "no search ran without a workspace root");
+  const markup = String(nodes.searchPanel.innerHTML);
+  assert.match(markup, /search-panel-no-root/, "no-workspace notice rendered");
+  assert.match(markup, /No workspace selected/, "notice explains the scope");
 });
 
-test("selected workspace folder wins over the default folder", async () => {
+test("selected workspace folder is the search root", async () => {
   const { nodes, document } = buildDom();
   const searched = [];
   const ctx = loadPanel(document, {
@@ -422,7 +423,7 @@ test("setSearchMode flips the mode, re-renders the toggle state, and reruns the 
   assert.equal(lastContent.regex, true, "content search reran with regex on");
 });
 
-test("load more paths chains the visit cursor so pages can reach deep results", async () => {
+test("load more paths pages by offset so pages can reach deep results", async () => {
   const { document } = buildDom();
   const requests = [];
   const ctx = loadPanel(document, {
@@ -433,9 +434,9 @@ test("load more paths chains the visit cursor so pages can reach deep results", 
       workspaceCwd: (w) => (w && w.cwd) || "",
       searchPaths: async (args) => {
         requests.push({ offset: args.offset, visitOffset: args.visitOffset });
-        // Page one reports 100 entries visited and stays truncated; page two
-        // resumes at the cursor and finishes.
-        const firstPage = args.visitOffset === 0;
+        // Page one returns one ranked match and stays truncated; page two
+        // resumes after the first page length and finishes.
+        const firstPage = args.offset === 0;
         return {
           entries: firstPage ? [{ name: "a.txt", path: "a.txt", kind: "file" }] : [{ name: "b.txt", path: "b.txt", kind: "file" }],
           git_status: null,
@@ -455,10 +456,11 @@ test("load more paths chains the visit cursor so pages can reach deep results", 
   await ctx.HerdrSearchPanel.panel.loadMorePaths();
 
   assert.equal(requests.length, 2, "two path pages requested");
-  assert.equal(requests[1].visitOffset, 100, "second page resumes from the first page visit cursor");
+  assert.equal(requests[1].offset, 1, "second page resumes after the first page length");
+  assert.equal(requests[1].visitOffset, undefined, "no walk cursor is sent");
 });
 
-test("empty truncated pages keep load more armed and the cursor stays absolute", async () => {
+test("a completed ranked set disarms load more and a further click is silent", async () => {
   const { document } = buildDom();
   const requests = [];
   const ctx = loadPanel(document, {
@@ -467,13 +469,12 @@ test("empty truncated pages keep load more armed and the cursor stays absolute",
       createContentState: () => ({ query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 }),
       resetContentState: () => {},
       workspaceCwd: (w) => (w && w.cwd) || "",
+      // Page one carries one match and reports truncation; the second page
+      // completes the ranked list, so done disarms the button.
       searchPaths: async (args) => {
-        requests.push({ offset: args.offset, visitOffset: args.visitOffset });
-        // Walk hits the visit cap with zero matches in the first window,
-        // then a deep page finally finds the match and the walk completes.
-        if (args.visitOffset === 0) return { entries: [], git_status: null, truncated: true, visited: 20000 };
-        if (args.visitOffset === 20000) return { entries: [{ name: "deep.txt", path: "deep.txt", kind: "file" }], git_status: null, truncated: false, visited: 27119 };
-        return { entries: [], git_status: null, truncated: false, visited: 0 };
+        requests.push({ offset: args.offset });
+        if (args.offset === 0) return { entries: [{ name: "deep.txt", path: "deep.txt", kind: "file" }], git_status: null, truncated: true, visited: 20000 };
+        return { entries: [], git_status: null, truncated: false, visited: 27119 };
       },
       searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),
     },
@@ -485,19 +486,18 @@ test("empty truncated pages keep load more armed and the cursor stays absolute",
   input.__fire("input");
   await new Promise((resolve) => setTimeout(resolve, 260));
 
-  // First page was empty but truncated: load more must still be armed, so a
-  // click issues the second page at the absolute cursor (not re-added).
+  // First page was truncated: load more stays armed and the click appends.
   await ctx.HerdrSearchPanel.panel.loadMorePaths();
-  assert.equal(requests.length, 2, "second page requested after an empty truncated page");
-  assert.equal(requests[1].visitOffset, 20000, "second page resumes at the absolute cursor, no re-adding");
+  assert.equal(requests.length, 2, "second page requested while truncated");
+  assert.equal(requests[1].offset, 1, "second page resumes after the first page length");
 
-  // The deep page completes the walk: a further click must not request again.
+  // The second page completes the ranked set: a further click must not request again.
   await ctx.HerdrSearchPanel.panel.loadMorePaths();
   await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.equal(requests.length, 2, "completed walk disarms load more");
+  assert.equal(requests.length, 2, "completed ranked set disarms load more");
 });
 
-test("a stalled walk ends load more instead of looping forever", async () => {
+test("a no-progress page ends load more instead of looping forever", async () => {
   const { document } = buildDom();
   const requests = [];
   const ctx = loadPanel(document, {
@@ -506,9 +506,12 @@ test("a stalled walk ends load more instead of looping forever", async () => {
       createContentState: () => ({ query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 }),
       resetContentState: () => {},
       workspaceCwd: (w) => (w && w.cwd) || "",
-      // Backend stuck reporting truncated with a walk that never advances.
+      // First page carries one match so load more stays armed; every later
+      // page is empty but truncated (a walk past the collect cap with no
+      // new matches). No progress must disarm instead of looping.
       searchPaths: async (args) => {
-        requests.push({ visitOffset: args.visitOffset });
+        requests.push({ offset: args.offset });
+        if (args.offset === 0) return { entries: [{ name: "only.txt", path: "only.txt", kind: "file" }], git_status: null, truncated: true, visited: 100 };
         return { entries: [], git_status: null, truncated: true, visited: 100 };
       },
       searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),
@@ -523,10 +526,10 @@ test("a stalled walk ends load more instead of looping forever", async () => {
   await ctx.HerdrSearchPanel.panel.loadMorePaths();
   await new Promise((resolve) => setTimeout(resolve, 60));
 
-  assert.equal(requests.length, 2, "second page requested once");
+  assert.equal(requests.length, 2, "the no-progress page was requested once");
   await ctx.HerdrSearchPanel.panel.loadMorePaths();
   await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.equal(requests.length, 2, "stalled walk disarms load more");
+  assert.equal(requests.length, 2, "no-progress page disarms load more");
 });
 
 test("panel result callbacks use panel-local rows and route file opens", async () => {

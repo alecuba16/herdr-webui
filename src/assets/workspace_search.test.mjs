@@ -60,7 +60,7 @@ test("searchContentFile encodes the file query and clamps expansion limits", asy
   assert.match(requests[0].url, /regex=true/);
 });
 
-test("searchPaths forwards per-query match mode and the visit cursor", async () => {
+test("searchPaths forwards per-query match mode and never sends a walk cursor", async () => {
   const { search, requests } = loadWorkspaceSearch({
     fileContentSearchMatchCase: true,
     fileContentSearchRegex: true,
@@ -70,13 +70,16 @@ test("searchPaths forwards per-query match mode and the visit cursor", async () 
   await search.searchPaths({ cwd: "/repo", query: "needle" });
   assert.match(requests[0].url, /match_case=true/);
   assert.match(requests[0].url, /regex=true/);
-  assert.match(requests[0].url, /visit_offset=0/);
+  // Ranked search pages re-walk server-side, so the request carries no
+  // visit cursor even if a stale caller still passes one.
+  assert.doesNotMatch(requests[0].url, /visit_offset=/);
 
   // Per-query arguments override the stored settings.
-  await search.searchPaths({ cwd: "/repo", query: "[a-z]+", matchCase: false, regex: false, visitOffset: 150 });
+  await search.searchPaths({ cwd: "/repo", query: "[a-z]+", matchCase: false, regex: false, offset: 150 });
   assert.match(requests[1].url, /match_case=false/);
   assert.match(requests[1].url, /regex=false/);
-  assert.match(requests[1].url, /visit_offset=150/);
+  assert.match(requests[1].url, /offset=150/);
+  assert.doesNotMatch(requests[1].url, /visit_offset=/);
 });
 
 test("disabled content search does not make a backend request", async () => {

@@ -266,9 +266,9 @@ function context(pathname = "/", options = {}) {
           ok: true,
           status: 200,
           json: async () => {
-            const visitOffset = Number((String(url).match(/visit_offset=(\d+)/) || [])[1] || 0);
-            // First page: one match at cursor 0, walk still truncated.
-            if (visitOffset === 0)
+            const offset = Number((String(url).match(/offset=(\d+)/) || [])[1] || 0);
+            // First page: two ranked matches, more remain.
+            if (offset === 0)
               return {
                 path: "",
                 entries: [
@@ -279,7 +279,7 @@ function context(pathname = "/", options = {}) {
                 visited: 50,
                 git_status: null,
               };
-            // Resumed page: cursor advances, walk completes.
+            // Next page: offset advanced by the first page length, done.
             return {
               path: "",
               entries: [{ kind: "file", name: "alpha2.txt", path: "docs/alpha2.txt" }],
@@ -1830,16 +1830,19 @@ describe("mobile bundle load", () => {
     const occurrences = html.split("docs/alpha.txt").length - 1;
     ok(occurrences === 1, `first page rows survive the append (occurrences=${occurrences})`);
     ok(html.includes("docs/alpha2.txt"), "resumed page appends its own matches");
-    // The visit cursor is absolute: the resumed request starts at the
-    // first page's cursor, and the completed walk removes the button.
-    const resumed = ctx.requests.find((r) => String(r.url).includes("visit_offset=50"));
-    ok(resumed, "second page resumes from the stored visit cursor");
+    // Offset pagination: the resumed request starts after the first page
+    // length, and the completed match set removes the button.
+    const resumed = ctx.requests.find((r) => String(r.url).includes("offset=2"));
+    ok(resumed, "second page resumes after the first page length");
+    ok(!String(resumed && resumed.url).includes("visit_offset"), "no walk cursor is sent");
     ok(!html.includes("HerdrMobileSearch.loadMorePaths"), "completed walk drops the load more button");
   });
 
   it("mobile load more disarms when the walk stalls", async () => {
     const ctx = context();
-    // Backend stuck reporting truncated with a walk that never advances.
+    // Backend stuck reporting truncated with pages that never advance the
+    // offset (zero entries past the collect cap). The no-progress guard
+    // must disarm instead of looping on the same empty page.
     ctx.fetch = async (url) => {
       if (String(url).startsWith("/api/file-browser/tree"))
         return {
@@ -1864,7 +1867,7 @@ describe("mobile bundle load", () => {
     await ctx.HerdrMobileSearch.loadMorePaths();
     await ctx.settle();
     let html = ctx.document.getElementById("mobileSearchResults").innerHTML;
-    ok(!html.includes("HerdrMobileSearch.loadMorePaths"), "stalled walk removes the load more button");
+    ok(!html.includes("HerdrMobileSearch.loadMorePaths"), "no-progress page removes the load more button");
     const before = ctx.requests.filter((r) => String(r.url).includes("q=stuck")).length;
     await ctx.HerdrMobileSearch.loadMorePaths();
     await ctx.settle();

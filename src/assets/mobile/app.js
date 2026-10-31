@@ -1464,6 +1464,19 @@
     escapeHtml,
     currentWorkspace,
     currentWorkspaceCwd,
+    // Action-triggered search root: the configured default folder with ~
+    // as last resort, mirroring the desktop palette scope. Never the
+    // selected workspace, which belongs to the desktop search panel.
+    searchRootFn: () => {
+      const fromState = String(state.defaultFolder || "").trim();
+      if (fromState && fromState !== "/") return fromState;
+      try {
+        const parsed = globalThis.HerdrOptions ? globalThis.HerdrOptions.read() : {};
+        const exploration = String(parsed.explorationDefaultDirectory || "").trim();
+        if (exploration && exploration !== "/") return exploration;
+      } catch (_) {}
+      return "~";
+    },
     workspaceTitle,
     workspaceMeta,
     worktreeForWorkspace,
