@@ -72,6 +72,11 @@ document.addEventListener("keydown", (e) => {
   // and the body-level focus left after the last tab closes.
   // state.ws && !state.tab mirrors syncWorkspaceEmptyLeaf's show
   // condition in render.js: the leaf is on screen exactly then.
+  // Buttons keep their native Enter path (the early return above), so a
+  // focused pane control (the card's own New terminal button, pane strip
+  // buttons) still activates itself: this branch only fires for
+  // non-button targets, which is why the leaf focus claim in
+  // syncWorkspaceEmptyLeaf matters more than the scope check.
   if (
     e.key === "Enter" &&
     state.ws &&

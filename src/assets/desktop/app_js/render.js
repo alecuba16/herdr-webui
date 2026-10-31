@@ -170,10 +170,25 @@ function syncWorkspaceEmptyLeaf() {
   // target instead of relying on body-level focus alone. A modal holds
   // its own focus (open-workspace dialog, question modal), and so does
   // anything the user actually focused; only the body-level default
-  // is up for grabs.
+  // is up for grabs. One exception rides along: the control that opened
+  // the workspace (header Actions, dashboard card) gets its focus back
+  // when the open-workspace modal closes, so the zero-tab render lands
+  // with that button focused. Enter would then natively re-click it
+  // (Actions reopens the palette) instead of creating the first
+  // terminal the card advertises. A button outside the pane column is
+  // never something the user focused on purpose here: focus landed on
+  // it from the modal-restore, so the leaf claims it too.
   if (!emptyLeafFocused && !modalOpen()) {
     const active = document.activeElement;
-    if ((!active || active === document.body || active === document.documentElement) && emptyLeaf.focus) {
+    const staleOpenerButton =
+      active &&
+      active.tagName === "BUTTON" &&
+      !(active.closest && active.closest("#workspacePanes")) &&
+      !(active.closest && active.closest("input, select, textarea, [contenteditable='true']"));
+    if (
+      ((!active || active === document.body || active === document.documentElement) || staleOpenerButton) &&
+      emptyLeaf.focus
+    ) {
       emptyLeaf.focus();
       emptyLeafFocused = true;
     }
