@@ -73,3 +73,9 @@ known difference, not a bug filed against the desktop build.
   modals and the directory picker.
 - Session manager and directory picker were added to the Escape cascade
   and Tab trap as part of this work.
+- Focus restore: opener-side modals (settings, worktree create/open,
+  workspace create, search palette, directory picker, question card)
+  record the focused element on open and hand focus back on close, so
+  keyboard users do not fall to body after Esc. The session manager is
+  excluded (auto-open owns the keyboard) and the picker restores to its
+  Browse button when opened from one.

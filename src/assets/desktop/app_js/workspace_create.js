@@ -3,6 +3,7 @@ function openWorkspaceCreateModal() {
   el("workspaceCreatePath").value = explorationDefaultDirectoryOption();
   el("workspaceCreateLabel").value = "";
   el("workspaceCreateError").textContent = "";
+  if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("workspaceCreateModal");
   el("workspaceCreateModal").style.display = "grid";
   setTimeout(() => el("workspaceCreatePath").focus(), 0);
 }
@@ -10,6 +11,7 @@ function closeWorkspaceCreateModal() {
   const m = el("workspaceCreateModal");
   m.style.display = "none";
   if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
+  if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("workspaceCreateModal");
 }
 function focusWorkspaceCreateLabel() {
   syncWorkspaceCreateLabel();

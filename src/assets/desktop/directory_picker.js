@@ -108,6 +108,7 @@
 
   function open(input) {
     ensureStyles();
+    if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("directoryPickerModal");
     state.input = input;
     const parts = splitPath(initialPickerPath(input));
     state.root = parts.root;
@@ -184,6 +185,7 @@
       if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(node);
       node.remove();
     }
+    if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("directoryPickerModal");
     state.input = null;
   }
 

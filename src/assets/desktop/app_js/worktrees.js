@@ -92,6 +92,7 @@ function openWorktreeCreateModal(id) {
   el("worktreePullBase").checked = false;
   el("worktreeCreateError").textContent = "";
   setCreateWorktreeLoading(false);
+  if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("worktreeCreateModal");
   el("worktreeCreateModal").style.display = "grid";
   setTimeout(() => {
     el("worktreeBranch").focus();
@@ -101,6 +102,7 @@ function closeWorktreeCreateModal() {
   const m = el("worktreeCreateModal");
   if (m) m.style.display = "none";
   if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
+  if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("worktreeCreateModal");
   clearTimeout(state.createWorktreeAutodiscoverTimer);
   state.createWorktreeWorkspace = null;
   state.createWorktreeOriginalSource = "";
@@ -135,6 +137,7 @@ function closeWorktreeOpenModal() {
   const m = el("worktreeOpenModal");
   if (m) m.style.display = "none";
   if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
+  if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("worktreeOpenModal");
 }
 function resetWorktreeOpenModal(path = explorationDefaultDirectoryOption()) {
   path = worktreeOpenInitialPath(path);
@@ -164,6 +167,7 @@ function resetWorktreeOpenModal(path = explorationDefaultDirectoryOption()) {
 }
 function openWorktreeOpenModal(path, discoverNow = false) {
   resetWorktreeOpenModal(path);
+  if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("worktreeOpenModal");
   el("worktreeOpenModal").style.display = "grid";
   if (discoverNow && el("worktreeDiscoverPath").value.trim()) discoverWorktrees();
   setTimeout(() => {
@@ -223,6 +227,7 @@ function openWorktreesForRepo(keyToken, fallbackPath = "") {
   );
   syncSmartWorkspaceLabel();
   renderWorktreeOpenList();
+  if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("worktreeOpenModal");
   el("worktreeOpenModal").style.display = "grid";
   if (el("worktreeDiscoverPath").value.trim()) discoverWorktrees();
   else loadWorktreeBranchOptions();

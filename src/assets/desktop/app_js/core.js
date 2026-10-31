@@ -509,6 +509,26 @@ function selectedOrDefaultWorkspace(id = state.ws) {
 }
 window.defaultFolderPath = defaultFolderPath;
 window.HerdrWorkspacePath = workspacePath;
+// Keyboard users lose their place when a modal closes: focus falls to
+// body and the next Tab restarts from the top of the document. Every
+// opener-side modal records the focused element before opening and hands
+// focus back on close, the same contract the question modal always had.
+// The record is keyed per modal id so stacked overlays (picker over a
+// modal) restore in the right order, and a vanished opener is skipped
+// instead of throwing.
+const modalOpeners = new Map();
+function rememberModalOpener(id) {
+  const active = document.activeElement;
+  if (!active || active === document.body) return;
+  modalOpeners.set(id, active);
+}
+function restoreModalOpener(id) {
+  const opener = modalOpeners.get(id);
+  modalOpeners.delete(id);
+  if (opener && document.contains(opener) && typeof opener.focus === "function")
+    opener.focus();
+}
+window.HerdrModalFocus = { rememberModalOpener, restoreModalOpener };
 function appRefreshIconButton({ className = "", title = "Refresh", label = "Refresh", spinning = false, onclick = "" } = {}) {
   const classes = ["app-refresh-icon", className, spinning ? "spinning" : ""]
     .filter(Boolean)
@@ -619,6 +639,7 @@ if (settingsModal && !settingsModal.dataset.ux) {
     el("settingsCloseTop").onclick = () => {
       settingsModal.style.display = "none";
       if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(settingsModal);
+      if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("settingsModal");
     };
   }
   settingsModal.dataset.ux = "1";
@@ -2420,6 +2441,7 @@ function openSettingsModal() {
   }
   const m = el("settingsModal");
   if (!m) return;
+  if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("settingsModal");
   m.style.display = "grid";
   prepareSettingsModalOpen();
 }

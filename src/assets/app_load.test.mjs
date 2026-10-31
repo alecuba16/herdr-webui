@@ -2350,7 +2350,7 @@ describe("app bundle load", () => {
     match(directoryPickerSource, /Grant folder access/);
     match(directoryPickerSource, /function ensureStyles\(\)/);
     match(directoryPickerSource, /\/assets\/desktop\/directory-picker\.css/);
-    match(directoryPickerSource, /ensureStyles\(\);\n\s+state\.input = input;/);
+    match(directoryPickerSource, /ensureStyles\(\);\n\s+if \(window\.HerdrModalFocus\) window\.HerdrModalFocus\.rememberModalOpener\("directoryPickerModal"\);\n\s+state\.input = input;/);
     match(directoryPickerSource, /directory-picker-error/);
     match(directoryPickerCss, /\.directory-picker-error \{/);
     match(appBootSource, /\/assets\/shared\/file-tree\.css/);

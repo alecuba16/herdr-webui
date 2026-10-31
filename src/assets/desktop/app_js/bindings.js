@@ -119,6 +119,7 @@ el("settingsClose").onclick = () => {
   const m = el("settingsModal");
   m.style.display = "none";
   if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
+  if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("settingsModal");
 };
 const settingsModalScrollSync = () => {
   const sections = window.HerdrSettingsSections;
@@ -135,6 +136,7 @@ el("settingsModal").addEventListener("click", (e) => {
     const m = el("settingsModal");
     m.style.display = "none";
     if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
+    if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("settingsModal");
   }
   settingsBackdropDown = false;
 });
@@ -975,6 +977,7 @@ document.addEventListener(
       const m = el("settingsModal");
       m.style.display = "none";
       if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(m);
+      if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("settingsModal");
     }
   },
   true,

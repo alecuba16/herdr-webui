@@ -944,7 +944,6 @@ function modalOpen() {
     "workspaceCreateModal",
     "worktreeCreateModal",
     "worktreeOpenModal",
-    "shortcutsModal",
     "searchPalette",
     "questionModal",
   ];

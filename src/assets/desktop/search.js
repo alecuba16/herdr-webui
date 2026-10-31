@@ -48,6 +48,7 @@ function openSearchPalette() {
   searchPaletteState = createSearchPaletteState();
   searchPaletteState.pathKind = previousScope;
   input.value = "";
+  if (window.HerdrModalFocus) window.HerdrModalFocus.rememberModalOpener("searchPalette");
   modal.style.display = "grid";
   renderSearchPalette();
   loadRecentWorkspaces();
@@ -60,6 +61,7 @@ function closeSearchPalette() {
   if (modal) {
     modal.style.display = "none";
     if (window.HerdrModalDrag) window.HerdrModalDrag.resetByBackdrop(modal);
+    if (window.HerdrModalFocus) window.HerdrModalFocus.restoreModalOpener("searchPalette");
   }
   if (searchPaletteState.timer) clearTimeout(searchPaletteState.timer);
   searchPaletteState = createSearchPaletteState();

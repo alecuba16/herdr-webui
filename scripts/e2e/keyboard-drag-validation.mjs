@@ -27,6 +27,40 @@ async function pressKey(cdp, { key, code, alt = false, ctrl = false, shift = fal
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", modifiers, ...base });
 }
 
+// Pointer-drag a modal card by its head strip and report the card's
+// inline left/top plus the backdrop's place-items, the three signals the
+// drag helper sets when a drag actually moved the card.
+async function dragCard(cdp, evalJs, { backdropQuery, cardQuery, headQuery, label }) {
+  const geom = await evalJs(`(() => {
+    const backdrop = document.querySelector(${JSON.stringify(backdropQuery)});
+    if (!backdrop) return null;
+    const card = backdrop.querySelector(${JSON.stringify(cardQuery)});
+    const head = backdrop.querySelector(${JSON.stringify(headQuery)});
+    if (!card || !head) return null;
+    const r = head.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + 8) };
+  })()`);
+  if (!geom) {
+    return { moved: false, detail: "no card/head" };
+  }
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: geom.x, y: geom.y, button: "left", clickCount: 1 });
+  await sleep(60);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: geom.x + 100, y: geom.y + 60, button: "left", buttons: 1 });
+  await sleep(60);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: geom.x + 100, y: geom.y + 70, button: "left", buttons: 1 });
+  await sleep(80);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: geom.x + 100, y: geom.y + 70, button: "left", clickCount: 1 });
+  await sleep(120);
+  const after = await evalJs(`(() => {
+    const backdrop = document.querySelector(${JSON.stringify(backdropQuery)});
+    if (!backdrop) return null;
+    const card = backdrop.querySelector(${JSON.stringify(cardQuery)});
+    return { left: card.style.left, top: card.style.top, placeItems: backdrop.style.placeItems };
+  })()`);
+  const moved = !!after && after.left !== "" && after.top !== "" && after.placeItems === "start";
+  return { moved, detail: JSON.stringify(after), label };
+}
+
 async function main() {
   const recorder = makeRecorder();
   const record = recorder.record.bind(recorder);
@@ -231,7 +265,9 @@ async function main() {
 
   // 6b. Search palette (the modal twin): open via the app find path,
   // arrows must move, Escape must close. The palette owns its own
-  // keydown contract separate from the sidebar panel.
+  // keydown contract separate from the sidebar panel. Closing it must
+  // hand focus back to the element that had it before the open.
+  await evalJs(`(() => { const b = document.getElementById("headerActionsButton"); if (b) b.focus(); return !!b; })()`);
   await evalJs(`(() => { if (typeof openSearchPalette === "function") openSearchPalette(); return true; })()`);
   await sleep(500);
   const paletteOpen = await evalJs(`(() => {
@@ -242,8 +278,12 @@ async function main() {
 
   await pressKey(cdp, { key: "Escape", code: "Escape" });
   await sleep(200);
-  const paletteClosed = await evalJs(`document.getElementById("searchPalette").style.display`);
-  record("Escape closes the search palette", paletteClosed === "none", `display=${paletteClosed}`);
+  const paletteClosed = await evalJs(`(() => ({
+    display: document.getElementById("searchPalette").style.display,
+    active: document.activeElement && document.activeElement.id,
+  }))()`);
+  record("Escape closes the search palette", paletteClosed.display === "none", `display=${paletteClosed.display}`);
+  record("palette close restores opener focus", paletteClosed.active === "headerActionsButton", `activeElement=${paletteClosed.active}`);
 
   // 6c. Git commit modal: open over the git drawer, Tab trap must hold
   // focus inside it, Escape must close it without touching the drawer.
@@ -306,6 +346,21 @@ async function main() {
   const wsModalUp = await evalJs(`document.getElementById("workspaceCreateModal") ? document.getElementById("workspaceCreateModal").style.display : "none"`);
   record("workspace create modal opens for stacking", wsModalUp === "grid", `display=${wsModalUp}`);
   if (wsModalUp === "grid") {
+    // Drive the real Browse button: focus it, click, the picker opens and
+    // must remember the button as its opener; Escape must close the
+    // picker and hand focus back to the Browse button.
+    await evalJs(`(() => { const b = document.getElementById("workspaceCreatePathBrowse"); if (b) { b.focus(); b.click(); } return !!b; })()`);
+    await sleep(400);
+    const viaBrowse = await evalJs(`!!document.getElementById("directoryPickerModal")`);
+    record("picker opens through the Browse button", viaBrowse === true, `picker=${viaBrowse}`);
+    await pressKey(cdp, { key: "Escape", code: "Escape" });
+    await sleep(250);
+    const pickerFocusBack = await evalJs(`(() => ({
+      picker: !!document.getElementById("directoryPickerModal"),
+      active: document.activeElement && document.activeElement.id,
+    }))()`);
+    record("picker close restores the Browse button focus", pickerFocusBack.picker === false && pickerFocusBack.active === "workspaceCreatePathBrowse", JSON.stringify(pickerFocusBack));
+
     await evalJs(`(() => {
       const input = document.getElementById("workspacePath") || document.getElementById("workspaceCreatePath");
       if (!input) return "no input";
@@ -419,6 +474,61 @@ async function main() {
     await pressKey(cdp, { key: "Escape", code: "Escape" });
     await sleep(150);
   }
+
+  // 8. Drag the two remaining card families the settings check does not
+  // cover: the directory picker (class-mounted card, backdrop recreated
+  // per open) and the git commit modal (git-ui backdrop). Both must move
+  // by their head strips like the settings card does.
+  await evalJs(`(() => {
+    const holder = document.createElement("input");
+    holder.value = "/";
+    window.HerdrDirectoryPicker.open(holder);
+    return true;
+  })()`);
+  await sleep(500);
+  const pickerDrag = await dragCard(cdp, evalJs, {
+    backdropQuery: ".directory-picker-backdrop",
+    cardQuery: ".directory-picker",
+    headQuery: ".directory-picker-head strong",
+  });
+  record("pointer drag moves the directory picker card", pickerDrag.moved, pickerDrag.detail);
+  // Closing must clear the dragged offset even though close() removes
+  // the node: the next open builds a fresh backdrop.
+  await pressKey(cdp, { key: "Escape", code: "Escape" });
+  await sleep(250);
+  await evalJs(`(() => {
+    const holder = document.createElement("input");
+    holder.value = "/";
+    window.HerdrDirectoryPicker.open(holder);
+    return true;
+  })()`);
+  await sleep(500);
+  const pickerReset = await evalJs(`(() => {
+    const backdrop = document.querySelector(".directory-picker-backdrop");
+    const card = backdrop && backdrop.querySelector(".directory-picker");
+    return card ? { left: card.style.left, top: card.style.top, placeItems: backdrop.style.placeItems } : null;
+  })()`);
+  record("picker drag resets on reopen", !!pickerReset && pickerReset.left === "" && pickerReset.top === "" && (pickerReset.placeItems === "" || pickerReset.placeItems === "normal"), JSON.stringify(pickerReset));
+  await pressKey(cdp, { key: "Escape", code: "Escape" });
+  await sleep(200);
+
+  await evalJs(`(() => {
+    const btn = document.getElementById("rightRailGit");
+    if (btn) btn.click();
+    return true;
+  })()`);
+  await sleep(800);
+  await evalJs(`(() => { if (window.HerdrGitUi && window.HerdrGitUi.openCommitModal) window.HerdrGitUi.openCommitModal(); return true; })()`);
+  await sleep(400);
+  const commitDrag = await dragCard(cdp, evalJs, {
+    backdropQuery: ".git-ui-modal-backdrop",
+    cardQuery: ".git-ui-commit-modal",
+    headQuery: ".git-ui-modal-head strong",
+  });
+  record("pointer drag moves the git commit card", commitDrag.moved, commitDrag.detail);
+  await pressKey(cdp, { key: "Escape", code: "Escape" });
+  await sleep(250);
+  await evalJs(`(() => { if (window.HerdrGitUi && window.HerdrGitUi.hide) window.HerdrGitUi.hide(); return true; })()`);
 
   writeReport(OUT, recorder, { appUrl: APP_URL });
   console.log(`validation probe: ${recorder.failed === 0 ? "PASSED" : "FAILED"} (${recorder.passed} passed, ${recorder.failed} failed)`);
