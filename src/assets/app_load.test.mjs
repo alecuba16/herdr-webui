@@ -1076,6 +1076,44 @@ describe("app bundle load", () => {
     equal(focusCalls, 2, "focus claimed once body focus returns");
   });
 
+  it("claims the leaf from a stale opener button after the workspace-open flow", () => {
+    // Live bug: closing the open-workspace modal restores focus to the
+    // button that opened it (header Actions, dashboard card). The leaf
+    // used to refuse the claim then, so Enter natively re-clicked that
+    // button (Actions reopened the palette) instead of creating the
+    // first terminal the card advertises. The claim now takes over from
+    // any button outside the pane column: that focus arrived from the
+    // modal restore, not from the user.
+    const ctx = context();
+    runSource(ctx);
+    const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
+    vm.runInContext(
+      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
+      ctx,
+    );
+
+    let focusCalls = 0;
+    emptyLeaf.focus = () => {
+      focusCalls += 1;
+    };
+
+    const headerButton = {
+      tagName: "BUTTON",
+      // A header button sits outside #workspacePanes and is no input.
+      closest: (sel) =>
+        sel === "#workspacePanes" || sel.includes("input") ? null : {},
+    };
+    ctx.document.activeElement = headerButton;
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(focusCalls, 1, "leaf claims focus from a stale opener button");
+
+    // The tracker still gates: a later sync with the same button focused
+    // does not re-focus.
+    ctx.document.activeElement = headerButton;
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(focusCalls, 1, "second sync does not re-focus the leaf");
+  });
+
   it("fires the zero-tab Enter handler across its guard matrix", () => {
     // The fake document drops listeners on the floor, so record them
     // before the bundle runs and drive the real handler by hand.
