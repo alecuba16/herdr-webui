@@ -152,6 +152,42 @@
       });
     }
 
+    // Stage-all toggle, same contract as the desktop drawer's
+    // toggleStageAll: with anything staged it unstages everything,
+    // otherwise it stages unstaged + untracked. The desktop version
+    // needs no confirm; the mobile surface asks because one tap on a
+    // wide button should not move every file at once.
+    async function gitToggleStageAll() {
+      const status = state.gitStatus;
+      if (!status || state.gitMutating) return;
+      const staged = status.staged || [];
+      if (staged.length) {
+        if (!(await confirmFn(`Unstage all ${staged.length} staged file${staged.length === 1 ? "" : "s"}?`))) return;
+        await gitMutate("Unstaging all", async (cwd) => {
+          await api("/api/git-ui/unstage", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ cwd, paths: staged }),
+          });
+          state.gitFile = "";
+          state.gitKind = "";
+          state.gitDiff = null;
+          state.gitDiffError = "";
+        });
+        return;
+      }
+      const paths = [...(status.unstaged || []), ...(status.untracked || [])];
+      if (!paths.length) return;
+      if (!(await confirmFn(`Stage all ${paths.length} file${paths.length === 1 ? "" : "s"}?`))) return;
+      await gitMutate("Staging all", async (cwd) => {
+        await api("/api/git-ui/stage", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cwd, paths }),
+        });
+      });
+    }
+
     // Commit: staged changes only, same contract as the desktop drawer.
     // POST /api/git-ui/commit with {cwd, title, body, amend}.
     function openCommitSheet() {
@@ -163,7 +199,7 @@
         return;
       }
       state.gitError = "";
-      state.gitCommitSheet = { title: "", body: "" };
+      state.gitCommitSheet = { title: "", body: "", amend: false };
       render();
     }
 
@@ -174,7 +210,8 @@
 
     function setCommitField(field, value) {
       if (!state.gitCommitSheet) return;
-      state.gitCommitSheet[field] = String(value || "");
+      // `amend` is the one boolean field; the rest are text inputs.
+      state.gitCommitSheet[field] = field === "amend" ? !!value : String(value || "");
     }
 
     async function submitCommit() {
@@ -195,7 +232,7 @@
         await api("/api/git-ui/commit", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ cwd, title, body: sheet.body || "", amend: false }),
+          body: JSON.stringify({ cwd, title, body: sheet.body || "", amend: !!sheet.amend }),
         });
         state.gitCommitSheet = null;
         state.gitCommitDone = true;
@@ -239,6 +276,64 @@
         state.gitBranches = null;
         await loadGitStatus();
         await loadGitBranches();
+      });
+    }
+
+    // Delete a local branch from the inline list, same endpoint and
+    // payload as the desktop location bar's delete ({force: false,
+    // confirmed: true}). The current branch stays untappable (the row
+    // is disabled), matching the desktop popover.
+    async function gitDeleteBranch(name) {
+      if (!name || state.gitMutating) return;
+      if (!(await confirmFn(`Delete branch ${name}?`))) return;
+      await gitMutate("Deleting branch", async (cwd) => {
+        await api("/api/git-ui/branch-delete", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cwd, branch: name, force: false, confirmed: true }),
+        });
+        state.gitBranches = null;
+        await loadGitStatus();
+        await loadGitBranches();
+      });
+    }
+
+    // Remote ops (desktop status-button contracts): Pull is the
+    // update mode (fetch + ff-only), Push is regular without tags,
+    // Fetch is a plain origin fetch. Each asks first: on mobile these
+    // are full-width buttons, not a small rail pill.
+    async function gitPullUpdate() {
+      if (state.gitMutating) return;
+      if (!(await confirmFn("Update from upstream (fast-forward only)?"))) return;
+      await gitMutate("Updating from upstream", async (cwd) => {
+        await api("/api/git-ui/pull", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cwd, mode: "update" }),
+        });
+      });
+    }
+
+    async function gitPushNow() {
+      if (state.gitMutating) return;
+      if (!(await confirmFn("Push commits to the upstream?"))) return;
+      await gitMutate("Pushing", async (cwd) => {
+        await api("/api/git-ui/push", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cwd, mode: "regular", push_tags: false }),
+        });
+      });
+    }
+
+    async function gitFetchOrigin() {
+      if (state.gitMutating) return;
+      await gitMutate("Fetching origin", async (cwd) => {
+        await api("/api/git-ui/fetch", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cwd }),
+        });
       });
     }
 
@@ -499,19 +594,33 @@
         : `<button class="mobile-btn mobile-wide" onclick="HerdrMobile.toggleGitBranches()">Branches</button>${state.gitBranchesError ? `<div class="mobile-error">${escapeHtml(state.gitBranchesError)}</div>` : ""}`;
       const stagedCount = ((status.staged || []).length);
       const commitSheet = state.gitCommitSheet
-        ? `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.closeCommitSheet()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Commit staged changes"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">Commit ${stagedCount} staged file${stagedCount === 1 ? "" : "s"}</p><input id="mobileCommitTitle" class="mobile-sheet-input" type="text"${inputAttrs("done")} placeholder="commit title" value="${escapeHtml(state.gitCommitSheet.title)}" oninput="HerdrMobile.setCommitField('title', this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.submitCommit(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.closeCommitSheet(); }" /><textarea id="mobileCommitBody" class="mobile-sheet-input" rows="3"${inputAttrs()} placeholder="details (optional)" oninput="HerdrMobile.setCommitField('body', this.value)">${escapeHtml(state.gitCommitSheet.body)}</textarea><div class="mobile-sheet-actions"><button class="mobile-btn" ${state.gitMutating ? "disabled" : ""} onclick="HerdrMobile.closeCommitSheet()">Cancel</button><button class="mobile-btn primary" id="mobileCommitSubmit" ${state.gitMutating ? "disabled" : ""} onclick="HerdrMobile.submitCommit()">${state.gitMutating ? "Committing…" : "Commit"}</button></div></div>`
+        ? `<div class="mobile-sheet-backdrop" onclick="HerdrMobile.closeCommitSheet()"></div><div class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Commit staged changes"><div class="mobile-sheet-handle"></div><p class="mobile-sheet-title">Commit ${stagedCount} staged file${stagedCount === 1 ? "" : "s"}</p><input id="mobileCommitTitle" class="mobile-sheet-input" type="text"${inputAttrs("done")} placeholder="commit title" value="${escapeHtml(state.gitCommitSheet.title)}" oninput="HerdrMobile.setCommitField('title', this.value)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); HerdrMobile.submitCommit(); } if (event.key === 'Escape') { event.preventDefault(); HerdrMobile.closeCommitSheet(); }" /><textarea id="mobileCommitBody" class="mobile-sheet-input" rows="3"${inputAttrs()} placeholder="details (optional)" oninput="HerdrMobile.setCommitField('body', this.value)">${escapeHtml(state.gitCommitSheet.body)}</textarea><label class="mobile-commit-amend"><input type="checkbox"${inputAttrs()} ${state.gitCommitSheet.amend ? "checked" : ""} onchange="HerdrMobile.setCommitField('amend', this.checked)" /><span>Amend previous commit</span></label><div class="mobile-sheet-actions"><button class="mobile-btn" ${state.gitMutating ? "disabled" : ""} onclick="HerdrMobile.closeCommitSheet()">Cancel</button><button class="mobile-btn primary" id="mobileCommitSubmit" ${state.gitMutating ? "disabled" : ""} onclick="HerdrMobile.submitCommit()">${state.gitMutating ? "Committing…" : "Commit"}</button></div></div>`
         : "";
       const commitDone = state.gitCommitDone
         ? `<div class="mobile-commit-done" role="status"><span>Commit created</span><button class="mobile-btn mini" onclick="HerdrMobile.dismissCommitDone()">Done</button></div>`
         : "";
       const commitButton = `<button class="mobile-btn primary mobile-wide" ${stagedCount ? "" : "disabled"} title="${stagedCount ? "Commit staged changes" : "Stage changes before committing"}" onclick="HerdrMobile.openCommitSheet()">Commit staged</button>`;
-      screen.innerHTML = `<section class="mobile-section mobile-git"><h2>Git</h2><p class="mobile-help">${escapeHtml(status.branch || "detached")} · ${escapeHtml(status.state || "")}</p><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadGitStatus()">Refresh</button>${commitButton}${busy}${commitDone}${state.gitError ? `<div class="mobile-error">${escapeHtml(state.gitError)}</div>` : ""}${rows}${branchesBlock}${commitSheet}</section>`;
+      // Stage-all + remote ops row: same contracts as the desktop
+      // drawer (toggleStageAll, pull update, push regular, fetch).
+      // Enablement follows the status flags the server already sends
+      // (ahead/behind/upstream) so the buttons state what they do.
+      const hasStaged = stagedCount > 0;
+      const canToggleStage = hasStaged || (status.unstaged || []).length > 0 || (status.untracked || []).length > 0;
+      const stageAllButton = `<button class="mobile-btn mobile-wide" ${state.gitMutating || !canToggleStage ? "disabled" : ""} onclick="HerdrMobile.gitToggleStageAll()">${hasStaged ? "Unstage all" : "Stage all"}</button>`;
+      const upstream = String(status.upstream || "").trim();
+      const ahead = Number(status.ahead) || 0;
+      const behind = Number(status.behind) || 0;
+      const remoteOps = `<div class="mobile-git-remote-ops"><button class="mobile-btn" ${state.gitMutating || (upstream && behind > 0) ? "" : "disabled"} title="${upstream && behind > 0 ? "Fetch and fast-forward from upstream" : "Not behind upstream"}" onclick="HerdrMobile.gitPullUpdate()">Pull</button><button class="mobile-btn" ${state.gitMutating || (upstream && ahead > 0) ? "" : "disabled"} title="${upstream && ahead > 0 ? "Push commits to upstream" : "Nothing to push"}" onclick="HerdrMobile.gitPushNow()">Push</button><button class="mobile-btn" ${state.gitMutating ? "disabled" : ""} onclick="HerdrMobile.gitFetchOrigin()">Fetch</button></div>`;
+      screen.innerHTML = `<section class="mobile-section mobile-git"><h2>Git</h2><p class="mobile-help">${escapeHtml(status.branch || "detached")} · ${escapeHtml(status.state || "")}${upstream ? ` · ${ahead}↑ ${behind}↓` : ""}</p><button class="mobile-btn primary mobile-wide" onclick="HerdrMobile.loadGitStatus()">Refresh</button>${stageAllButton}${commitButton}${remoteOps}${busy}${commitDone}${state.gitError ? `<div class="mobile-error">${escapeHtml(state.gitError)}</div>` : ""}${rows}${branchesBlock}${commitSheet}</section>`;
     }
 
     function renderGitBranchList(branchesData) {
       const local = (branchesData && branchesData.local) || [];
       const remote = (branchesData && branchesData.remote) || [];
-      const row = (branch) => `<button class="mobile-row mobile-git-branch${branch.current ? " active" : ""}" ${branch.current ? "disabled" : `onclick="HerdrMobile.gitSwitchBranch(${jsArg(branch.name)})"`}><strong>${escapeHtml(branch.name)}</strong><span>${branch.current ? "current" : branch.remote ? "remote" : branch.upstream ? escapeHtml("upstream " + branch.upstream) : "local"}</span></button>`;
+      // Rows carry a delete affordance for non-current local branches
+      // (desktop location-bar popover parity); stopPropagation keeps the
+      // row's own switch handler out of the tap.
+      const row = (branch) => `<button class="mobile-row mobile-git-branch${branch.current ? " active" : ""}" ${branch.current ? "disabled" : `onclick="HerdrMobile.gitSwitchBranch(${jsArg(branch.name)})"`}><strong>${escapeHtml(branch.name)}</strong><span>${branch.current ? "current" : branch.remote ? "remote" : branch.upstream ? escapeHtml("upstream " + branch.upstream) : "local"}</span>${!branch.current && !branch.remote && !state.gitMutating ? `<span class="mobile-btn mini danger agent-action" role="button" tabindex="0" onclick="event.stopPropagation();HerdrMobile.gitDeleteBranch(${jsArg(branch.name)})" aria-label="Delete branch ${escapeHtml(branch.name)}" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); HerdrMobile.gitDeleteBranch(${jsArg(branch.name)}); }">Delete</span>` : ""}</button>`;
       return `<div class="mobile-git-branches"><button class="mobile-btn mobile-wide" onclick="HerdrMobile.toggleGitBranches()">Hide branches</button><h3>Local</h3>${local.length ? local.map(row).join("") : '<div class="mobile-empty"><span aria-hidden="true">◍</span>None</div>'}${remote.length ? `<h3>Remote</h3>${remote.map(row).join("")}` : ""}</div>`;
     }
 
@@ -571,6 +680,11 @@
       gitStageFile,
       gitUnstageFile,
       gitDiscardFile,
+      gitToggleStageAll,
+      gitDeleteBranch,
+      gitPullUpdate,
+      gitPushNow,
+      gitFetchOrigin,
       openCommitSheet,
       closeCommitSheet,
       setCommitField,
