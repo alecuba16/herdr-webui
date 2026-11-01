@@ -4,6 +4,7 @@ pub mod model;
 pub mod panels;
 pub mod render;
 pub mod search;
+pub mod sessions;
 pub mod terminal;
 pub mod theme;
 pub mod web_api;
@@ -25,8 +26,8 @@ pub use keys::{PrefixState, Shortcut};
 use lens::{refusal_reason_copy, LensGate, LensState};
 use model::{parse_worktree_list_response, same_checkout_path, value_str, value_u64};
 pub use model::{
-    snapshot_summary, SidebarFocus, TuiAgent, TuiMode, TuiPane, TuiSnapshot, TuiTab, TuiWorkspace,
-    TuiWorktreeStamp,
+    snapshot_summary, SidebarFocus, TuiAgent, TuiMode, TuiPane, TuiSessionRow, TuiSnapshot, TuiTab,
+    TuiWorkspace, TuiWorktreeStamp,
 };
 use panels::files::{content_rows, content_search, run_content_search, ContentRow, SearchKind};
 use panels::git::{ConflictAction, ConflictResolveMode};
@@ -125,6 +126,9 @@ pub(crate) enum FooterContext {
     /// Chat lens overlay (prefix `L`): transcript reading view over the
     /// terminal pane; j/k scroll, follow re-arms at the bottom.
     Lens,
+    /// Session manager overlay (prefix Shift+P): j/k move, Enter
+    /// targets a built-in session, l launch, x close, c cleanup, n new.
+    SessionManager,
     /// Commit message modal: typing, Enter commits, Esc cancels.
     CommitInput,
     /// Any typed prompt (rename, confirm, new file, ...).
@@ -169,6 +173,9 @@ impl FooterContext {
             }
             Self::Lens => {
                 " j/k scroll · G bottom resumes follow · Esc closes · Ctrl+B ? help "
+            }
+            Self::SessionManager => {
+                " Enter switch · l launch · x close · c cleanup · n new · j/k moves · Esc closes · Ctrl+B ? help "
             }
             Self::CommitInput => {
                 " type the message · Enter commits · Esc cancels · Ctrl+U clears · Ctrl+B ? help "
@@ -255,6 +262,9 @@ impl FooterContext {
             Self::TerminalMain => " Enter attach · . , focus · Ctrl+B ? help ",
             Self::Terminal(TuiMode::Attach) => " Ctrl+B ? help · Ctrl-G detach ",
             Self::Lens => " j/k scroll · G bottom · Esc close · Ctrl+B ? help ",
+            Self::SessionManager => {
+                " Enter switch · l launch · x close · c cleanup · n new · Esc closes · Ctrl+B ? help "
+            }
             Self::Terminal(_) => " j/k select · Enter attach · q quit · Ctrl+B ? help ",
             Self::Files(_) => " j/k · Enter · e edit · Ctrl+B ? help ",
             Self::Git(_, GitView::Changes) => " s stage · d discard · c commit · Ctrl+B ? help ",
@@ -411,6 +421,22 @@ pub struct TuiApp {
     /// `L`): transcript overlay over the terminal pane, follow/unread
     /// scroller semantics.
     pub lens: LensState,
+    /// Session manager overlay state (webui session manager, prefix
+    /// `P`): server-known sessions, cursor, and the load error when
+    /// the HTTP API is unreachable.
+    pub session_rows: Vec<TuiSessionRow>,
+    pub session_selected: usize,
+    pub session_load_error: Option<String>,
+    /// Backend session the client is currently pointed at. Tracked
+    /// apart from the client itself so the overlay can mark the
+    /// active row and skip no-op retargets.
+    pub current_session: String,
+    pub current_backend: String,
+    /// Bumped on every session retarget. The bin loop watches it to
+    /// drop a `LiveTerminal` pty still bound to the old session's
+    /// terminal socket (the pty reader thread would otherwise keep
+    /// feeding rows from a session that no longer owns the view).
+    pub session_generation: u64,
     /// Per-pane composer drafts (webui composer box keeps its content
     /// per pane, not per view). Keyed by pane id.
     pub composer_drafts: std::collections::HashMap<String, String>,
@@ -503,6 +529,9 @@ pub enum PromptKind {
     /// is submitted through the server's pane submit route (agent.prompt
     /// semantics). Per-pane draft like the webui composer box.
     ComposerMessage,
+    /// Session manager `n`: new session name. Enter launches it as a
+    /// built-in session (webui "New built-in" input) and switches.
+    CreateSession,
 }
 
 impl PromptKind {
@@ -545,6 +574,7 @@ impl PromptKind {
             Self::CreateDirectory => "New directory",
             Self::ReplaceInFile => "Replace in file",
             Self::ComposerMessage => "Send a message",
+            Self::CreateSession => "New built-in session",
         }
     }
 
@@ -568,6 +598,7 @@ impl PromptKind {
                 "type the replacement, Enter replaces the current match (! = all)"
             }
             Self::ComposerMessage => "type the message, Enter sends it to the selected panel",
+            Self::CreateSession => "type the session name, Enter launches it and switches",
             Self::ConfirmCleanupDelete => {
                 "y deletes the selected items, yb also deletes their branches"
             }
@@ -648,6 +679,8 @@ impl TuiApp {
         web_api: WebApiClient,
     ) -> Self {
         let cwd = "";
+        // Read before the literal moves `client` into the struct.
+        let current_session = client.session_name();
         Self {
             client,
             web_api,
@@ -702,6 +735,12 @@ impl TuiApp {
             help_filter: String::new(),
             search_palette: search::SearchPalette::default(),
             lens: LensState::default(),
+            session_rows: Vec::new(),
+            session_selected: 0,
+            session_load_error: None,
+            current_session,
+            current_backend: "builtin".to_string(),
+            session_generation: 0,
             composer_drafts: std::collections::HashMap::new(),
             quit_prev_mode: TuiMode::Navigate,
             overlay_stack: Vec::new(),
@@ -1002,6 +1041,7 @@ impl TuiApp {
             TuiMode::WorktreeList => return FooterContext::WorktreeList,
             TuiMode::BranchPicker => return FooterContext::BranchPicker,
             TuiMode::SearchPalette => return FooterContext::SearchPalette,
+            TuiMode::SessionManager => return FooterContext::SessionManager,
             _ => {}
         }
         // The lens overlays the terminal screen (both Navigate and
@@ -1160,6 +1200,7 @@ impl TuiApp {
             TuiMode::WorktreeList => self.handle_worktree_list_key(key),
             TuiMode::BranchPicker => self.handle_branch_picker_key(key),
             TuiMode::SearchPalette => self.handle_search_palette_key(key),
+            TuiMode::SessionManager => self.handle_session_manager_key(key),
             TuiMode::Navigate => self.handle_navigation_key(key),
             TuiMode::Attach => {
                 if self.screen == TuiScreen::Terminal {
@@ -1472,6 +1513,19 @@ impl TuiApp {
             }
             PromptKind::ComposerMessage => {
                 self.submit_composer_message(text);
+            }
+            PromptKind::CreateSession => {
+                // Session manager `n` (webui "New built-in" input):
+                // the server launches the typed name, then the app
+                // retargets to it. Names reuse the socket component
+                // sanitizer server-side, so no extra validation here.
+                let name = text.trim();
+                if name.is_empty() {
+                    self.error = Some("type a session name".to_string());
+                } else {
+                    let result = self.session_launch_and_target(name, "builtin");
+                    self.workspace_status(result);
+                }
             }
         }
     }
@@ -2334,6 +2388,46 @@ impl TuiApp {
             }
             Shortcut::GitStashFile => self.run_git_action(|panel, api| panel.stash_changes(api)),
             Shortcut::GitPush => self.run_git_action(|panel, api| panel.push(api)),
+            Shortcut::GitStageAll => {
+                // Webui `stageAll: KeyG` behind the prefix (audit fix):
+                // toggle stage-all from the Changes view. run_git_action
+                // switches to Changes first so plain `G` on other views
+                // still lands in the right list.
+                if self.git_panel.cwd.is_empty() {
+                    self.error = Some("git: no repository selected".to_string());
+                } else {
+                    self.open_git_screen();
+                    self.git_panel.view = GitView::Changes;
+                    match self.git_panel.toggle_stage_all(&self.web_api) {
+                        Ok(()) => self.status = "staged state toggled".to_string(),
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                }
+            }
+            Shortcut::GitFocusFile => {
+                // Desktop `focusFile: KeyI` behind the prefix (audit fix:
+                // plain `i` was shadowed by the Shift+I cwd picker and
+                // now resolves to this like the desktop binding).
+                self.open_git_screen();
+                if self.git_panel.view != GitView::Changes {
+                    self.git_panel.view = GitView::Changes;
+                    self.refresh_active_screen();
+                }
+                // Focus model is a flag, not a region variant (walk_focus):
+                // the file list lives in the main region.
+                self.main_focused = true;
+                self.status = if self.git_panel.selected_file().is_some() {
+                    "git: file list focused".to_string()
+                } else {
+                    "git: no files in the list".to_string()
+                };
+            }
+            Shortcut::SessionManager => {
+                // Webui session manager surface (footer button there,
+                // free chord here): list sessions, switch, launch,
+                // close, cleanup, create.
+                self.open_session_manager();
+            }
         }
     }
 

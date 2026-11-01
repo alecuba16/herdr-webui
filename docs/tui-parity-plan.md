@@ -171,7 +171,15 @@ Panel/workspace management:
    but the whole temporary-terminal overlay was later removed in the
    split-pane rework on every surface (desktop, mobile, TUI); no temp
    keys exist anymore. The old TUI-only prefix `P` push stays moved
-   aside (the git screen keeps the in-screen `P`).
+   aside (the git screen keeps the in-screen `P`); prefix `Shift+P`
+   now opens the session manager overlay (webui session manager
+   surface, HTTP endpoints `/api/sessions`, `/api/session/launch|close|
+   cleanup`; Enter targets a running session, `l` launches, `x` closes,
+   `c` cleans up stale built-in slots, `n` opens the create prompt,
+   switching rebuilds the backend client and resets the view like the
+   webui `switchSession` teardown). The desktop has no session-manager
+   chord (its footer button opens it), so the TUI chord is additive,
+   not a deviation.
 
 Git management gaps:
 
@@ -482,10 +490,13 @@ noted in code):
 - `focusTerminal: KeyF` — webui-only DOM focus (xterm surface); the TUI
   terminal always owns the keyboard, so no parity key exists. Prefix `f`
   keeps the TUI-era Files screen (the webui has no files shortcut).
-- `stageAll: KeyG`: the TUI git screen keeps its own in-screen plain
-  `G` toggle for stage-all while the webui binds `KeyG`; the earlier
-  temporary-Git-overlay move of stage-all to `Shift+G` went away with
-  the overlay.
+- `stageAll: KeyG`: prefix `G` now toggles stage-all from the Changes
+  view (webui `KeyG` parity, audit fix), and the git screen keeps its
+  own in-screen plain `G` toggle; the earlier temporary-Git-overlay
+  move of stage-all to `Shift+G` went away with the overlay.
+- `focusFile: KeyI`: prefix `i` focuses the git file list (audit fix:
+  plain `i` previously did nothing, shadowed by the Shift+I cwd
+  picker chord); the Shift+I cwd picker keeps its chord.
 - `sidebar: KeyB` — plain `b` stays git branches; sidebar collapse is
   `Shift+B`.
 - `rightSidebar: KeyQ`: webui-only column toggle (Files/Git/Search rail);

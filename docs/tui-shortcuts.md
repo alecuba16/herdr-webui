@@ -115,6 +115,9 @@ answered from the webui's chat lens card. The server-side parser
 | `Shift+C` | chat composer |
 | `e`, `E` | edit the current file (Files preview or Git Changes selection) |
 | `s` | settings overlay (t cycles the theme) |
+| `Shift+P` | session manager (Enter switch, l launch, x close, c cleanup, n new) |
+| `G` | git: toggle stage all (webui `KeyG` parity) |
+| `i` | git: focus the file list (webui `KeyI` parity) |
 | `I` | git cwd: type a repo path |
 | `1`-`4` | git: changes / commit modal / log / stash |
 | `b` | git: branches |
@@ -122,7 +125,6 @@ answered from the webui's chat lens card. The server-side parser
 | `c` | git: commit modal |
 | `v` | git: switch branch |
 | `y` / `u` / `d` / `z` | git: stage / unstage / discard / stash the selected file |
-| `I` | git cwd: type a repo path |
 | `h` | git: file history of the Changes selection |
 | `o` | git: back to Changes |
 | `m` | git: toggle blame in the diff |
