@@ -481,6 +481,37 @@ impl WebApiClient {
         self.post("/api/recent-workspaces/clear", &serde_json::json!({}))
     }
 
+    /// `GET /api/sessions`: every session the server knows (built-in
+    /// plus external herdr), each with backend/running/api_socket.
+    /// HTTP-only: the list and its probes live in the WebUI server.
+    pub fn sessions_list(&self) -> Result<Value, WebApiError> {
+        self.get("/api/sessions")
+    }
+
+    /// `POST /api/session/launch`: start (or revive) a session and
+    /// switch the response to it. `backend` is "builtin" or
+    /// "external-herdr".
+    pub fn session_launch(&self, name: &str, backend: &str) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/session/launch",
+            &serde_json::json!({ "session": name, "backend": backend }),
+        )
+    }
+
+    /// `POST /api/session/close`: stop the session's backend.
+    pub fn session_close(&self, name: &str, backend: &str) -> Result<Value, WebApiError> {
+        self.post(
+            "/api/session/close",
+            &serde_json::json!({ "session": name, "backend": backend }),
+        )
+    }
+
+    /// `POST /api/session/cleanup`: delete stale built-in session
+    /// slots (dead sockets from crashes). Server refuses non-builtin.
+    pub fn session_cleanup(&self) -> Result<Value, WebApiError> {
+        self.post("/api/session/cleanup", &serde_json::json!({}))
+    }
+
     /// `POST /api/panes/{pane_id}/submit`: send one composer message to
     /// the pane's agent through the server's `agent.prompt` (ux
     /// overhaul composer parity). The server owns validation, error

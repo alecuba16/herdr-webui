@@ -92,6 +92,25 @@ impl BackendClient {
         &self.api_socket
     }
 
+    /// Session name for built-in (`.../builtin/<name>/`) and external
+    /// (`.../sessions/<name>/`) socket paths, "default" otherwise. The
+    /// TUI session manager uses this to mark the active row.
+    pub fn session_name(&self) -> String {
+        let Some(dir) = self.api_socket.ancestors().nth(1) else {
+            return "default".to_string();
+        };
+        let is_session_dir = dir
+            .parent()
+            .is_some_and(|parent| parent.ends_with("builtin") || parent.ends_with("sessions"));
+        if is_session_dir {
+            dir.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| "default".to_string())
+        } else {
+            "default".to_string()
+        }
+    }
+
     pub fn terminal_socket(&self) -> &Path {
         &self.terminal_socket
     }

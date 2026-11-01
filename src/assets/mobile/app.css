@@ -1216,6 +1216,29 @@ body.mobile-keyboard-open .mobile-location-strip {
   color: var(--status-done, #89b4fa);
   font-size: 14px;
 }
+/* Remote ops share the file-action row contract: same gap, same wrap,
+   full-width buttons split the row evenly. */
+.mobile-git-remote-ops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mobile-git-remote-ops .mobile-btn {
+  flex: 1;
+  min-width: 0;
+}
+.mobile-commit-amend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--fg);
+  padding: 4px 0;
+}
+.mobile-commit-amend input {
+  width: 18px;
+  height: 18px;
+}
 /* Prompt card is a bottom sheet now (same .mobile-sheet chrome as the
    confirm/rename sheets). These rules only tune the question specifics. */
 .mobile-prompt-card {

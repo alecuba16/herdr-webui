@@ -9430,3 +9430,186 @@ fn empty_tab_bar_names_the_open_workspaces_binding() {
         "the empty tab bar carries the Ctrl+B w call to action"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Session manager overlay (webui parity): row parsing, overlay open and
+// cursor movement against a dead WebAPI, and the retarget client rebuild.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn session_rows_parse_the_sessions_response() {
+    let rows = TuiSessionRow::list_from_response(&json!({
+        "sessions": [
+            {"name":"default","backend":"builtin","backend_label":"built-in","running":true,"api_socket":"/tmp/herdr-webui/builtin/default/herdr.sock"},
+            {"name":"work","backend":"builtin","backend_label":"built-in","running":false,"api_socket":"/tmp/herdr-webui/builtin/work/herdr.sock"},
+            {"name":"ext","backend":"external-herdr","backend_label":"Herdr","running":true,"api_socket":"/tmp/herdr/sessions/ext/herdr.sock"}
+        ]
+    }));
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].name, "default");
+    assert!(rows[0].running);
+    assert_eq!(
+        rows[0].api_socket,
+        "/tmp/herdr-webui/builtin/default/herdr.sock"
+    );
+    assert!(!rows[1].running);
+    assert_eq!(rows[2].backend, "external-herdr");
+
+    // Malformed rows drop out instead of poisoning the list.
+    let rows = TuiSessionRow::list_from_response(&json!({
+        "sessions": [
+            {"name":"ok","backend":"builtin"},
+            {"running":true},
+            "junk"
+        ]
+    }));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "ok");
+}
+
+#[test]
+fn session_manager_opens_with_rows_from_the_web_api() {
+    let mut app = app_with_snapshot();
+    // The overlay reloads rows on every open, so the WebAPI must be dead
+    // before it opens; the seeded rows below then stand in for a
+    // successful listing (rendering and keys do not re-fetch).
+    point_web_api_at_dead_port(&mut app);
+    app.open_session_manager();
+    assert_eq!(app.mode, TuiMode::SessionManager);
+    app.session_load_error = None;
+    app.session_rows = vec![
+        TuiSessionRow {
+            name: "default".to_string(),
+            backend: "builtin".to_string(),
+            backend_label: "built-in".to_string(),
+            running: true,
+            api_socket: "/tmp/herdr-webui/builtin/default/herdr.sock".to_string(),
+        },
+        TuiSessionRow {
+            name: "work".to_string(),
+            backend: "builtin".to_string(),
+            backend_label: "built-in".to_string(),
+            running: false,
+            api_socket: "/tmp/herdr-webui/builtin/work/herdr.sock".to_string(),
+        },
+    ];
+    // The overlay renders rows with status badges and the active marker.
+    let rendered = draw(&app, 100, 30);
+    assert!(rendered.contains("default"), "row names render");
+    assert!(rendered.contains("work"), "second row renders");
+    assert!(rendered.contains("offline"), "offline badge renders");
+    assert!(
+        rendered.contains("Enter switch"),
+        "the overlay names its actions"
+    );
+
+    // j/k move the cursor without leaving the overlay.
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.session_selected, 1);
+    assert_eq!(app.mode, TuiMode::SessionManager);
+    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.session_selected, 0);
+
+    // Esc closes back to the mode the overlay opened from.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(app.mode, TuiMode::Navigate);
+}
+
+#[test]
+fn session_manager_open_shows_load_error_without_the_server() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.open_session_manager();
+    // The overlay still opens (webui surface stays usable for local
+    // navigation when its own fetch fails); the error names the API.
+    assert_eq!(app.mode, TuiMode::SessionManager);
+    assert!(app.session_rows.is_empty());
+    assert!(app.session_load_error.is_some());
+    let rendered = draw(&app, 100, 30);
+    assert!(
+        rendered.contains("load failed"),
+        "the error renders in place of rows"
+    );
+}
+
+#[test]
+fn session_target_refuses_offline_rows_and_noop_targets() {
+    let mut app = app_with_snapshot();
+    app.session_rows = vec![TuiSessionRow {
+        name: "work".to_string(),
+        backend: "builtin".to_string(),
+        backend_label: "built-in".to_string(),
+        running: false,
+        api_socket: "/tmp/herdr-webui/builtin/work/herdr.sock".to_string(),
+    }];
+    // Offline row: refused without touching the client.
+    let err = app.session_target("work", "builtin").unwrap_err();
+    assert!(err.contains("offline"));
+    assert_eq!(app.current_session, "default");
+
+    // Unlisted session: refused outright.
+    assert!(app.session_target("ghost", "builtin").is_err());
+
+    // Already-targeted pair: no-op success, no client rebuild.
+    app.session_rows = vec![TuiSessionRow {
+        name: "default".to_string(),
+        backend: "builtin".to_string(),
+        backend_label: "built-in".to_string(),
+        running: true,
+        api_socket: "/nonexistent.sock".to_string(),
+    }];
+    let message = app.session_target("default", "builtin").unwrap();
+    assert_eq!(message, "already targeting this session");
+}
+
+#[test]
+fn session_retarget_rebuilds_the_client_for_builtin_rows() {
+    let mut app = app_with_snapshot();
+    assert_eq!(app.current_session, "default");
+    app.session_rows = vec![TuiSessionRow {
+        name: "work".to_string(),
+        backend: "builtin".to_string(),
+        backend_label: "built-in".to_string(),
+        running: true,
+        api_socket: "/stale/listing/socket.sock".to_string(),
+    }];
+    // The retarget rebuilds through builtin_session (canonical sockets)
+    // even when the listed api_socket came from a stale listing. The
+    // refresh against the dead socket fails, but the client must already
+    // point at the new session's canonical socket path.
+    let result = app.session_target("work", "builtin");
+    assert!(result.is_err(), "refresh fails against the dead socket");
+    assert_eq!(app.current_session, "work");
+    assert_eq!(app.current_backend, "builtin");
+    assert!(
+        app.client.api_socket().ends_with("builtin/work/herdr.sock"),
+        "client points at the builtin work socket, got {}",
+        app.client.api_socket().display()
+    );
+    // Generation bump tells the bin loop to drop the old pty.
+    assert_eq!(app.session_generation, 1);
+    // The view reset back to Navigate (webui switchSession teardown).
+    assert_eq!(app.mode, TuiMode::Navigate);
+}
+
+#[test]
+fn session_manager_keys_map_to_actions_and_prompt() {
+    let mut app = app_with_snapshot();
+    point_web_api_at_dead_port(&mut app);
+    app.open_session_manager();
+    assert_eq!(app.mode, TuiMode::SessionManager);
+    // `n` opens the create prompt (webui "New built-in" input).
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    assert!(app.prompt_input.is_some());
+    assert_eq!(
+        app.prompt_input.as_ref().map(|p| p.kind),
+        Some(crate::tui::PromptKind::CreateSession)
+    );
+    // Typing a name and submitting launches through the dead API: the
+    // error surfaces, the prompt closes.
+    app.handle_key(KeyEvent::from(KeyCode::Char('w')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('o')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.prompt_input.is_none());
+    assert!(app.error.is_some());
+}

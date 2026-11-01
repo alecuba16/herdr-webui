@@ -51,6 +51,7 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
         || app.mode == TuiMode::WorktreeList
         || app.mode == TuiMode::BranchPicker
         || app.mode == TuiMode::SearchPalette
+        || app.mode == TuiMode::SessionManager
         || (app.lens.active && app.screen == TuiScreen::Terminal)
         || app.commit_input.is_some()
         || app.prompt_input.is_some();
@@ -77,6 +78,9 @@ pub fn render(frame: &mut Frame<'_>, app: &TuiApp) {
     }
     if app.mode == TuiMode::SearchPalette {
         render_search_palette(frame, area, app, p);
+    }
+    if app.mode == TuiMode::SessionManager {
+        render_session_manager(frame, area, app, p);
     }
     if app.commit_input.is_some() {
         render_commit_input(frame, area, app, p);
@@ -1736,6 +1740,12 @@ fn render_prompt_input(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pale
                 )
             })
             .unwrap_or_default(),
+        // New session: the backend label lands in the modal title, the
+        // subject names the current target for context (webui modal
+        // shows the backend selector instead).
+        crate::tui::PromptKind::CreateSession => {
+            format!("from {} · {}", app.current_session, app.current_backend)
+        }
     };
     let title = format!(" {} ", prompt.kind.title());
     // The typed text wraps instead of clipping: the box grows with the
@@ -1909,6 +1919,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
         TuiMode::WorktreeList => "WORKTREES",
         TuiMode::BranchPicker => "BRANCHES",
         TuiMode::SearchPalette => "SEARCH",
+        TuiMode::SessionManager => "SESSIONS",
     };
     let prefix = if app.prefix.is_armed() {
         "Ctrl+B> "
@@ -2503,6 +2514,79 @@ fn render_search_palette(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Pa
             ))
             .style(Style::default().fg(p.text).bg(p.panel_bg))
             .scroll((scroll as u16, 0)),
+        rect,
+    );
+}
+
+/// Session manager overlay (webui session manager surface, prefix
+/// Shift+P): server-known sessions with running/offline badges, the
+/// active row marked ✓ (name + backend match), j/k cursor, Enter
+/// targets a running session, `l` launches, `x` closes, `c` cleans
+/// up stale built-in slots, `n` opens the create prompt.
+fn render_session_manager(frame: &mut Frame<'_>, area: Rect, app: &TuiApp, p: &Palette) {
+    let rows = &app.session_rows;
+    let error_height = if app.session_load_error.is_some() {
+        1
+    } else {
+        0
+    };
+    let height = ((rows.len() as u16 + 5 + error_height).min(20)).max(7 + error_height);
+    let rect = overlay_rect(area, area.width.min(76), height);
+    render_shadow(frame, rect, p);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            " Sessions ",
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "targeting {} · {} ",
+                app.current_session, app.current_backend
+            ),
+            Style::default().fg(p.muted),
+        ),
+    ])];
+    if let Some(err) = &app.session_load_error {
+        lines.push(Line::from(Span::styled(
+            format!(" load failed: {err} "),
+            Style::default().fg(p.red),
+        )));
+    }
+    if rows.is_empty() && app.session_load_error.is_none() {
+        lines.push(Line::from(Span::styled(
+            " No sessions found (n creates one, r reloads) ",
+            Style::default().fg(p.muted),
+        )));
+    }
+    for (index, row) in rows.iter().enumerate() {
+        let selected = index == app.session_selected;
+        let cursor = if selected { "▸ " } else { "  " };
+        let active = row.name == app.current_session && row.backend == app.current_backend;
+        let title_style = if selected {
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(p.text)
+        };
+        let title = if active {
+            format!("✓ {}", row.name)
+        } else {
+            row.name.clone()
+        };
+        let status = if row.running { "running" } else { "offline" };
+        lines.push(Line::from(vec![
+            Span::styled(cursor, Style::default().fg(p.accent)),
+            Span::styled(title, title_style),
+            Span::styled(
+                format!("  {} · {}", row.backend_label, status),
+                Style::default().fg(if row.running { p.muted } else { p.red }),
+            ),
+        ]));
+    }
+    let title = " Sessions · Enter switch · l launch · x close · c cleanup · n new · r reload · Esc closes ";
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(overlay_panel(title, p))
+            .style(Style::default().fg(p.text).bg(p.panel_bg)),
         rect,
     );
 }

@@ -22,15 +22,16 @@ known difference, not a bug filed against the desktop build.
 | Recent workspaces (server-persisted) | Full (palette section, per-row remove, clear) | Full (Worktrees screen, per-entry open/remove, clear) | Full (palette, `Ctrl+X` remove, `Ctrl+Shift+X` clear) |
 | File browser (tree, preview, edit, find/replace) | Full | Full (without find/replace bar; per-platform editor) | Full (edit buffer, Ctrl-F/Ctrl-H) |
 | Content search with snippet expansion | Full | Full | Full |
-| Git: changes, per-file diff, stage/discard | Full | Full (files + diff + actions; conflicts shown as a file section, no resolution UI) | Full (plus hunk staging via `H`) |
+| Git: changes, per-file diff, stage/discard | Full | Full (files + diff + actions; stage-all toggle, amend commit, pull/push/fetch; conflicts shown as a file section, no resolution UI) | Full (plus hunk staging via `H`) |
 | Git: log, two-commit compare, file history | Full | No | Full |
-| Git: branches (create, switch, delete) | Full | Full (bottom sheet) | Full |
+| Git: branches (create, switch, delete) | Full | Full (bottom sheet + inline delete) | Full |
+| Git: remote ops (push, pull, fetch) | Full (drawer status buttons) | Full (Git screen buttons, confirm-gated) | Full (in-screen `P` push, `p` pull, `f` fetch) |
 | Git: stash (list, apply, drop) | Full | No | Full |
 | Git: cleanup (worktree/repo cleanup scan) | Full | No | Full |
 | Git: conflict resolution UI | Full | No (conflicted files listed only) | Full (conflicts panel) |
 | Git: tag/reset/rebase actions | Full | No | Full |
 | Notes panel | Full (right sidebar view) | Full (Notes screen) | No |
-| Session manager (built-in/external session picker) | Full (overlay) | Full (Sessions screen with create/cleanup) | No |
+| Session manager (built-in/external session picker) | Full (overlay) | Full (Sessions screen with create/cleanup) | Full (Shift+P overlay: switch, launch, close, cleanup, create) |
 | Directory/cwd picker | Full (directory_picker.js modal) | Full (directory_picker.js sheet) | No (paths typed in prompts) |
 | Settings | Full (merged modal + sections rail + search) | Full (screen, rollback chips) | Partial (read-only overlay, theme cycle only) |
 | Worktree create/open flows | Full | Full | Full (prompts) |
@@ -45,11 +46,13 @@ known difference, not a bug filed against the desktop build.
 
 ## Known intentional gaps
 
-- Mobile git surface is status/changes/branches/commit only: log, stash,
-  cleanup, tag/reset/rebase, and conflict resolution are desktop/TUI. The
-  mobile Files screen covers browsing and editing.
-- TUI has no notes panel, session manager, or directory picker: the
-  terminal surface answers prompts by typing paths.
+- Mobile git surface is status/changes/branches/commit plus the core
+  remote ops (stage-all, amend, pull/push/fetch, branch delete): log,
+  stash, cleanup, tag/reset/rebase, and conflict resolution stay
+  desktop/TUI. The mobile Files screen covers browsing and editing.
+- TUI has no notes panel or directory picker: the terminal surface
+  answers prompts by typing paths. The session manager is the
+  Shift+P overlay (HTTP surface, same endpoints as the webui).
 - TUI settings overlay is read-only by design; theme cycling is the one
   live control. Browser-local settings belong to the browser frontends.
 - Draggable modals are a desktop pointer feature. Mobile equivalents are
@@ -89,3 +92,17 @@ known difference, not a bug filed against the desktop build.
   (delegated for spans, inline for tree rows). The live probe walks the
   shell, git drawer, and settings modal and fails on any clickable
   element a keyboard cannot reach.
+
+## Shortcut parity notes (TUI chord table)
+
+- The TUI prefix table now mirrors the desktop `DEFAULT_WEBUI_SHORTCUTS`
+  and `DEFAULT_GIT_SHORTCUTS` chord for chord: `G` stage-all, `i`
+  focus-file (previously unbound; the cwd picker keeps `Shift+I`), and
+  the 5s prefix arm window matches the desktop prefix overlay timeout.
+- `Shift+P` opens the TUI session manager. The desktop has no chord for
+  it (the footer button opens the surface), so the chord is additive.
+- Pane-grid chords (`D`/`Shift+D` split, `E` close pane, `M` move tab
+  to next pane, `Shift+M` maximize, `F10` pane menu) are
+  N/A-by-architecture in the TUI: it renders one pane at a time, so
+  there is no grid to split, maximize, or menu. The webui keeps them
+  for the desktop pane grid only.

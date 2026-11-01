@@ -86,9 +86,20 @@ fn run_interactive(
     }
     app.refresh()?;
     let mut live_terminal: Option<LiveTerminal> = None;
+    // Watched so a session-manager retarget drops the pty bound to
+    // the old session's terminal socket before anything reattaches.
+    let mut session_generation = app.session_generation;
     let mut last_draw = Instant::now();
 
     loop {
+        if app.session_generation != session_generation {
+            session_generation = app.session_generation;
+            // Detach, do not kill: the old session's backend owns the
+            // process; only the TUI's reader thread must stop.
+            if let Some(live) = live_terminal.take() {
+                live.detach();
+            }
+        }
         drain_live_terminal(&mut live_terminal, &mut app);
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {

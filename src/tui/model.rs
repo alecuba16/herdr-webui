@@ -22,6 +22,14 @@ pub enum TuiMode {
     /// single-line query over workspaces, panels, agents, files and
     /// content; j/k moves, Enter commits/navigates, Esc closes.
     SearchPalette,
+    /// Session manager overlay (webui session manager, prefix `P`):
+    /// server-known sessions with running/offline state. Enter targets
+    /// a row (built-in rows reconnect the backend client), `l` launches
+    /// or revives, `x` closes, `c` cleans up stale built-in slots, `n`
+    /// prompts a new session name. HTTP-only surface: the list and the
+    /// launch/close/cleanup actions live in the WebUI server, not the
+    /// backend socket dispatch.
+    SessionManager,
     /// Branch picker overlay (desktop location-bar branch popover,
     /// prefix `v`): local branches of the selected workspace repo with
     /// the current branch pinned first, type-to-filter, j/k cursor.
@@ -35,6 +43,60 @@ pub enum TuiMode {
 pub enum SidebarFocus {
     Workspaces,
     Agents,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TuiSessionRow {
+    pub name: String,
+    /// "builtin" or "external-herdr"; external rows keep their own
+    /// socket layout, so retargets use the listed `api_socket` path.
+    pub backend: String,
+    pub backend_label: String,
+    pub running: bool,
+    /// Server-recorded API socket for the session; used as the
+    /// retarget target for external rows (built-in rows rebuild
+    /// through `builtin_session` instead).
+    pub api_socket: String,
+}
+
+impl TuiSessionRow {
+    /// Parse one row of the `GET /api/sessions` list. Rows the server
+    /// stamps with an unknown backend are skipped by the caller.
+    pub fn from_session_value(value: &Value) -> Option<Self> {
+        Some(Self {
+            name: value.get("name")?.as_str()?.to_string(),
+            backend: value.get("backend")?.as_str()?.to_string(),
+            backend_label: value
+                .get("backend_label")
+                .and_then(Value::as_str)
+                .unwrap_or("built-in")
+                .to_string(),
+            running: value
+                .get("running")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            api_socket: value
+                .get("api_socket")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        })
+    }
+
+    /// Parse the `sessions` array of the `GET /api/sessions` response.
+    /// Malformed rows drop out; an empty list is valid (a server with
+    /// no sessions yet).
+    pub fn list_from_response(value: &Value) -> Vec<Self> {
+        value
+            .get("sessions")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(TuiSessionRow::from_session_value)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

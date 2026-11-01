@@ -1,13 +1,20 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::time::{Duration, Instant};
+
+/// How long the prefix stays armed before it disarms itself. Mirrors
+/// the WebUI prefix overlay, which hides after 5s (`shortcutPrefixUntil
+/// = Date.now() + 5000`).
+const PREFIX_ARM_WINDOW: Duration = Duration::from_secs(5);
 
 /// Herdr-style prefix state machine for the TUI.
 ///
 /// `Ctrl+B` is the main switch key (same default as the WebUI). Pressing it
 /// arms the prefix for a short window; the next key dispatches a shortcut
 /// instead of reaching the terminal or panel. `Esc` cancels the prefix.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrefixState {
     armed: bool,
+    armed_at: Option<Instant>,
 }
 
 impl PrefixState {
@@ -15,20 +22,45 @@ impl PrefixState {
         Self::default()
     }
 
+    /// True while the prefix is armed and inside the arm window. The
+    /// deadline is checked here too so probes never report a stale
+    /// armed state; expiry itself still lands on the next feed.
     pub fn is_armed(&self) -> bool {
         self.armed
+            && self
+                .armed_at
+                .is_some_and(|at| at.elapsed() < PREFIX_ARM_WINDOW)
     }
 
     pub fn arm(&mut self) {
         self.armed = true;
+        self.armed_at = Some(Instant::now());
     }
 
     pub fn cancel(&mut self) {
         self.armed = false;
+        self.armed_at = None;
+    }
+
+    /// Disarm when the arm window elapsed. Key events carry no clock,
+    /// so the deadline is checked lazily on every feed and is_armed
+    /// probe, exactly like the WebUI comparing `shortcutPrefixUntil`
+    /// against `Date.now()` before dispatching.
+    fn expire(&mut self) -> bool {
+        if self.armed
+            && self
+                .armed_at
+                .is_some_and(|at| at.elapsed() >= PREFIX_ARM_WINDOW)
+        {
+            self.cancel();
+            return true;
+        }
+        false
     }
 
     /// Feed a key event. Returns the shortcut that should run, if any.
     pub fn feed(&mut self, key: KeyEvent) -> Option<Shortcut> {
+        self.expire();
         if is_prefix_key(key) {
             if self.armed {
                 // Ctrl+B twice: keep armed but treat as toggle-off like the
@@ -119,6 +151,15 @@ pub enum Shortcut {
     // server-side submit). Opens the message prompt for the selected
     // pane; the server owns validation and refusal copy.
     Composer,
+    // Webui git `stageAll: KeyG`: toggle stage all from anywhere via
+    // the prefix, not only the in-screen Changes `G`.
+    GitStageAll,
+    // Webui git `focusFile: KeyI`: focus the git file list.
+    GitFocusFile,
+    // Session manager overlay. Webui reaches it from the footer
+    // button (no prefix default); the TUI needs a chord, so Shift+P
+    // takes it (plain p stays new tab).
+    SessionManager,
 }
 
 impl Shortcut {
@@ -169,6 +210,9 @@ impl Shortcut {
             Self::FocusPrev => "focus previous",
             Self::Lens => "chat lens",
             Self::Composer => "composer",
+            Self::GitStageAll => "toggle stage all",
+            Self::GitFocusFile => "focus file list",
+            Self::SessionManager => "session manager",
         }
     }
 }
@@ -269,9 +313,18 @@ pub fn shortcut_for_key(key: KeyEvent) -> Option<Shortcut> {
         // Settings overlay: webui `settings: KeyS` is plain S. Stash
         // stays on `4` (webui `stash: Digit4`); the old TUI-only
         // prefix-`s` stash binding moved aside for parity.
-        // Git cwd picker: prefix I (no webui default; its location bar is
-        // mouse-driven). Uppercase so plain `i` stays free.
-        (KeyCode::Char('I'), _) => Some(Shortcut::GitCwdPicker),
+        // Webui git `stageAll: KeyG`: prefix G toggles stage all
+        // from anywhere (the in-screen Changes `G` stays).
+        (KeyCode::Char('G'), true) => Some(Shortcut::GitStageAll),
+        // Webui git `focusFile: KeyI`: plain i focuses the git file
+        // list; Shift+I stays the TUI-only cwd picker (the webui
+        // location bar it replaces is mouse-driven).
+        (KeyCode::Char('i'), false) => Some(Shortcut::GitFocusFile),
+        (KeyCode::Char('I'), true) => Some(Shortcut::GitCwdPicker),
+        // Session manager: webui opens it from the footer button (no
+        // prefix default there); Shift+P fills the chord here because
+        // plain p is already new tab.
+        (KeyCode::Char('P'), true) => Some(Shortcut::SessionManager),
         _ => None,
     }
 }
@@ -389,8 +442,14 @@ pub fn help_rows() -> Vec<(&'static str, &'static str)> {
             "diff search: n/N cycle, Enter keeps, Esc clears",
         ),
         ("git: c (branches)", "create and switch to a new branch"),
-        ("Ctrl+B I", "git cwd: type a repo path"),
         ("Ctrl+B s", "settings overlay (t cycles the theme)"),
+        (
+            "Ctrl+B Shift+P",
+            "session manager (Enter targets, l launch, x close, c cleanup, n new)",
+        ),
+        ("Ctrl+B G", "git: toggle stage all"),
+        ("Ctrl+B i", "git: focus the file list"),
+        ("Ctrl+B Shift+I", "git cwd: type a repo path"),
     ]
 }
 
@@ -511,6 +570,37 @@ mod tests {
         assert_eq!(prefix.feed(key('f')), None);
         assert_eq!(prefix.feed(key('1')), None);
         assert!(!prefix.is_armed());
+    }
+
+    #[test]
+    fn prefix_expires_after_the_arm_window() {
+        // Freshly armed: the deadline-aware is_armed keeps it armed.
+        let mut prefix = PrefixState::new();
+        prefix.feed(ctrl('b'));
+        assert!(prefix.is_armed());
+        // Push past the 5s window (desktop default): the chord key
+        // after it must not dispatch a shortcut.
+        prefix.armed_at = Some(Instant::now() - PREFIX_ARM_WINDOW - Duration::from_millis(50));
+        assert!(!prefix.is_armed());
+        assert_eq!(prefix.feed(key('f')), None);
+    }
+
+    #[test]
+    fn session_and_git_chords_map_to_shortcuts() {
+        let mut prefix = PrefixState::new();
+        // Shift+P opens the session manager (webui surface has a footer
+        // button; the chord is free in the desktop map).
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(shift_key('p')), Some(Shortcut::SessionManager));
+        // Plain G stages all (desktop stageAll: KeyG).
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(shift_key('g')), Some(Shortcut::GitStageAll));
+        // Plain i focuses the file list (desktop focusFile: KeyI);
+        // Shift+I stays the cwd picker.
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(key('i')), Some(Shortcut::GitFocusFile));
+        prefix.feed(ctrl('b'));
+        assert_eq!(prefix.feed(shift_key('i')), Some(Shortcut::GitCwdPicker));
     }
 
     #[test]

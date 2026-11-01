@@ -246,6 +246,16 @@ describe("mobile parity feature guards", () => {
     assert.match(gitSource, /globalThis\.HerdrMobileGitModule = \{ create: createMobileGit \}/);
     assert.match(gitSource, /async function loadGitStatus\(\)/);
     assert.match(gitSource, /confirmFn\(`Discard all uncommitted changes/);
+    // Core ops parity: stage-all toggle, amend, branch delete, remote
+    // ops all reuse the desktop drawer's endpoints and payloads.
+    assert.match(gitSource, /async function gitToggleStageAll\(\)/);
+    assert.match(gitSource, /"\/api\/git-ui\/stage", \{[\s\S]*body: JSON\.stringify\(\{ cwd, paths \}\)/);
+    assert.match(gitSource, /amend: !!sheet\.amend/);
+    assert.match(gitSource, /async function gitDeleteBranch\(name\) \{/);
+    assert.match(gitSource, /branch: name, force: false, confirmed: true/);
+    assert.match(gitSource, /mode: "update"/);
+    assert.match(gitSource, /mode: "regular", push_tags: false/);
+    assert.match(gitSource, /"\/api\/git-ui\/fetch"/);
     const gitIndex = bootSource.indexOf("/assets/mobile/git.js");
     const appIndex = bootSource.indexOf("/assets/mobile/app.js");
     assert.ok(gitIndex > -1 && gitIndex < appIndex, "git.js loads before app.js");
