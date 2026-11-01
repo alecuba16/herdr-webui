@@ -1,6 +1,28 @@
 # Release notes
 
 ## Unreleased
+- TUI session manager. `Ctrl+B Shift+P` opens the session manager
+  overlay the webui already had: rows load from the same
+  `/api/sessions` endpoint on every open, `Enter` targets the selected
+  running session, `l` launches or revives one, `x` closes its backend,
+  `c` cleans up stale built-in slots, and `n` opens a typed-name prompt
+  that launches a new built-in session and switches to it. Switching
+  rebuilds the backend client on the new session's sockets and resets
+  the view the way the webui `switchSession` teardown does (selection,
+  tail, lens, per-pane buffers), and a generation counter tells the
+  event loop to detach a live terminal still bound to the old socket.
+- TUI shortcut parity fixes from the audit: prefix `G` toggles
+  stage-all (webui `KeyG`), plain `i` focuses the git file list
+  (webui `focusFile`, previously unbound; the cwd picker keeps
+  `Shift+I`), and the prefix chord window arms for 5 seconds like the
+  desktop prefix overlay.
+- Mobile git core ops. The git screen gains a stage-all toggle with
+  the webui `KeyG` semantics (unstage-all when something is staged),
+  an amend checkbox in the commit sheet, branch delete with the same
+  confirm dialog as the desktop trash icon, and pull/push/fetch
+  buttons gated by the ahead/behind status so a disabled button
+  explains itself. Log, stash, cleanup, tag/reset/rebase stay
+  desktop/TUI per the parity plan.
 - herdr 0.9.5 protocol sync. The tested external backend range widens from
   `0.9.0` to `0.9.0`-`0.9.5`: herdr kept client protocol `22` across the
   whole 0.9.x series, so every patch release classifies as Compatible
