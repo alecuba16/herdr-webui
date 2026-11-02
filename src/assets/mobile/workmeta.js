@@ -195,7 +195,7 @@
 
     return {
       invalidateWorkspace(cwd) {
-        for (const workspace of state.workspaces) {
+        for (const workspace of state.workspaces.concat(Object.values(state.workspacesById || {}))) {
           if (!workspace.worktree || !samePath(workspace.worktree.checkout_path, cwd)) continue;
           workspace.worktree.branch = null;
           workspace.worktree.is_detached = false;

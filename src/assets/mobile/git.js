@@ -480,14 +480,15 @@
       const base = String(currentSheetBranch() || "HEAD");
       if (!(await confirmFn(`Create and switch to branch ${name} from ${base}?`))) return;
       branchSheet.creating = true;
+      const cwd = branchSheet.cwd;
       render();
       try {
         await api("/api/git-ui/switch", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ cwd: branchSheet.cwd, branch: name, create: true, base }),
+          body: JSON.stringify({ cwd, branch: name, create: true, base }),
         });
-        if (onBranchChanged) await onBranchChanged(branchSheet.cwd);
+        if (onBranchChanged) await onBranchChanged(cwd);
         state.gitBranches = null;
         branchSheet.creating = false;
         closeBranchSheet();

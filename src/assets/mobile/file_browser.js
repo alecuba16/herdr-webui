@@ -12,6 +12,7 @@
     let rootOverride = "";
     let overrideWorkspaceCwd = "";
     let displayedRoot = "";
+    let cacheGeneration = 0;
 
     function claimScreenRequest() {
       screenRequestSeq += 1;
@@ -535,6 +536,7 @@
     }
 
     async function runContentSearch(append = false) {
+      const generation = cacheGeneration;
       const root = cwd();
       const content = local.contentSearch;
       content.query = local.filter;
@@ -554,6 +556,7 @@
       deps.render();
       try {
         const data = await deps.api(`/api/file-browser/content-search?cwd=${encodeURIComponent(root)}&path=${encodeURIComponent(local.path || "")}&q=${encodeURIComponent(content.query.trim())}&offset=${offset}&limit=${content.pageSize}&context_lines=${content.contextLines}&max_matches_per_file=${content.maxMatchesPerFile}&match_case=${content.matchCase ? "true" : "false"}&regex=${content.regex ? "true" : "false"}`);
+        if (generation !== cacheGeneration) return;
         const files = data.files || [];
         content.files = append ? content.files.concat(files) : files;
         content.totalFiles = data.total_files || files.length;
@@ -571,6 +574,7 @@
           for (const file of files) if (!Object.prototype.hasOwnProperty.call(content.expanded, file.path)) content.expanded[file.path] = expanded;
         }
       } catch (error) {
+        if (generation !== cacheGeneration) return;
         content.error = error.message || String(error);
         content.done = true;
       }
@@ -613,13 +617,14 @@
     }
 
     async function loadContentSearchFile(path, extraContext) {
+      const generation = cacheGeneration;
       const root = cwd();
       const content = local.contentSearch;
       if (!root || !content.query.trim()) return;
       syncContentSearchOptions();
       const contextLines = Math.max(content.contextLines, Number(extraContext) || content.contextLines);
       const data = await deps.api(`/api/file-browser/content-search/file?cwd=${encodeURIComponent(root)}&file=${encodeURIComponent(path)}&q=${encodeURIComponent(content.query.trim())}&context_lines=${contextLines}&max_matches_per_file=500&match_case=${content.matchCase ? "true" : "false"}&regex=${content.regex ? "true" : "false"}`);
-      if (!data.file) return;
+      if (generation !== cacheGeneration || !data.file) return;
       const index = local.contentSearch.files.findIndex((file) => file.path === path);
       if (index >= 0) local.contentSearch.files[index] = data.file;
       local.contentSearch.expanded[path] = true;
@@ -795,6 +800,7 @@
       renderScreen,
       async invalidateWorkspace(root) {
         if (root !== (displayedRoot || cwd())) return;
+        cacheGeneration++;
         claimScreenRequest();
         clearTimeout(local.filterTimer);
         clearTimeout(local.contentSearch.timer);
@@ -803,9 +809,12 @@
         local.filterOffset = 0;
         local.filterDone = true;
         clearContentSearchResults();
-        if (state.screen === "files") await load(local.path);
+        local.loading = false;
+        local.contentSearch.loading = false;
+        if (state.screen === "files" && cwd() === root) await load(local.path);
       },
       reset() {
+        cacheGeneration++;
         rootOverride = "";
         displayedRoot = "";
         if (local.file && local.file.path) lspDidClose(local.file.path);
@@ -929,6 +938,7 @@
         if (root === displayedRoot && options.kind !== "dir" && local.file && local.file.path === path) return;
         if (!(await confirmDiscardDraft())) return;
         if (root !== cwd()) {
+          cacheGeneration++;
           local.path = "";
           local.entries = [];
           local.gitStatus = null;
