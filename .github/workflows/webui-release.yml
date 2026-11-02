@@ -194,9 +194,11 @@ jobs:
           fi
           # A 401/403 here means expired or wrongly scoped: fail this step so
           # the release page shows the tap update did not happen.
-          if ! gh api --method GET repos/alecuba16/homebrew-tap \
-              -H "Authorization: Bearer $HOMEBREW_TAP_TOKEN" > /dev/null 2>&1; then
-            echo "::error::HOMEBREW_TAP_TOKEN was rejected (expired or missing tap access). Rotate it: Settings > Secrets and variables > Actions > HOMEBREW_TAP_TOKEN."
+          code="$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer $HOMEBREW_TAP_TOKEN" \
+              https://api.github.com/repos/alecuba16/homebrew-tap)"
+          if [ "$code" != "200" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN was rejected (HTTP $code, expired or missing tap access). Rotate it: Settings > Secrets and variables > Actions > HOMEBREW_TAP_TOKEN."
             exit 1
           fi
           echo "tap token accepted"
