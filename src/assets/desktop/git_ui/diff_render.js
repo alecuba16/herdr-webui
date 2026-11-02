@@ -52,11 +52,12 @@
       const actions = canMutateDiff()
         ? `<span class="git-ui-hunk-actions">${hunkButton}</span>`
         : `<span class="git-ui-muted">read only</span>`;
-      // Rows come from the server: {line} entries in unified mode,
-      // {old_line,new_line} pairs in side-by-side mode. The server only
-      // decorates chunks for the requested layout, so a layout flip must
-      // refetch before render (loadDiff handles that).
-      const rows = chunk.rows && chunk.rows.length ? markChangeGroups(chunk.rows) : [];
+      // Rows come from the server when it decorates the requested layout
+      // ({line} entries unified, {old_line,new_line} pairs side-by-side);
+      // rowsFromChunk derives the same shapes from chunk.lines otherwise
+      // (unified fetches, large-diff previews that strip server rows, older
+      // backends). A layout flip still refetches (loadDiff handles that).
+      const rows = markChangeGroups(rowsFromChunk(chunk));
       const contextArrows = contextArrowsForChunk(file.chunks || [], index);
       const body = diffLayoutMode() === "unified"
         ? rows.map((row, rowIndex) => renderUnifiedLine(row, path, index, rows, rowIndex, contextArrows, !!file.preview_large_diff)).join("")
@@ -85,11 +86,39 @@
       return (start || 0) + Math.max(0, (count || 0) - 1);
     }
 
-    // Rows are server-provided ({line} unified, {old_line,new_line}
-    // side-by-side); markChangeGroups still runs client-side to tag
-    // group starts/ends for the change-borders CSS.
+    // Rows come from the server: {line} entries in unified mode,
+    // {old_line,new_line} pairs in side-by-side mode. The server only
+    // decorates chunks for the requested layout, so a layout flip must
+    // refetch before render (loadDiff handles that). previewDiffFile strips
+    // server rows from previewed chunks (they only match the full chunk),
+    // so rowsFromChunk derives both shapes from chunk.lines on demand.
     function rowsFromChunk(chunk) {
-      return (chunk && chunk.rows) || [];
+      if (chunk && Array.isArray(chunk.rows) && chunk.rows.length) return chunk.rows;
+      if (!chunk || !Array.isArray(chunk.lines) || !chunk.lines.length) return [];
+      return diffLayoutMode() === "unified"
+        ? chunk.lines.map((line) => ({ line }))
+        : sideBySideRows(chunk.lines);
+    }
+
+    function sideBySideRows(lines) {
+      const rows = [];
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.line_type === "delete") {
+          const deletes = [];
+          const adds = [];
+          while (lines[i] && lines[i].line_type === "delete") deletes.push(lines[i++]);
+          while (lines[i] && lines[i].line_type === "add") adds.push(lines[i++]);
+          i--;
+          const count = Math.max(deletes.length, adds.length);
+          for (let j = 0; j < count; j++) rows.push({ old_line: deletes[j] || null, new_line: adds[j] || null });
+        } else if (line.line_type === "add") {
+          rows.push({ old_line: null, new_line: line });
+        } else {
+          rows.push({ old_line: line, new_line: line });
+        }
+      }
+      return rows;
     }
 
     function renderLine(row, path, hunkIndex, rows, rowIndex, contextArrows, previewLargeDiff) {

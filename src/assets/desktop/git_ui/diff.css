@@ -155,11 +155,11 @@
   gap: 6px;
 }
 .git-ui-editor-preview.del .git-ui-editor-line {
-  background: color-mix(in srgb, var(--git-diff-del), transparent 82);
+  background: color-mix(in srgb, var(--git-diff-del), transparent 82%);
   border-left: 4px solid var(--git-diff-del);
 }
 .git-ui-hunk-edit {
-  background: color-mix(in srgb, var(--git-diff-add), transparent 90);
+  background: color-mix(in srgb, var(--git-diff-add), transparent 90%);
   border: 0;
   border-left: 4px solid var(--git-diff-add);
   box-sizing: border-box;
@@ -193,7 +193,7 @@
   padding: 0 4px;
 }
 .git-ui-editor-line.changed {
-  background: color-mix(in srgb, var(--git-diff-del), transparent 82);
+  background: color-mix(in srgb, var(--git-diff-del), transparent 82%);
   border-left: 4px solid var(--git-diff-del);
   padding-left: 8px;
 }
@@ -214,7 +214,7 @@
   top: 0;
 }
 .git-ui-editor-bands span {
-  background: color-mix(in srgb, var(--git-diff-add), transparent 82);
+  background: color-mix(in srgb, var(--git-diff-add), transparent 82%);
   border-left: 4px solid var(--git-diff-add);
   height: calc(var(--line-count) * 1.5em);
   left: 0;
@@ -523,23 +523,23 @@
 .git-ui-add .git-ui-code-new,
 .git-ui-change .git-ui-code-new,
 .git-ui-add .git-ui-code-unified {
-  background: color-mix(in srgb, var(--git-diff-add), transparent 82);
+  background: color-mix(in srgb, var(--git-diff-add), transparent 82%);
   border-left: 4px solid var(--git-diff-add);
 }
 .git-ui-del .git-ui-code-old,
 .git-ui-change .git-ui-code-old,
 .git-ui-del .git-ui-code-unified {
-  background: color-mix(in srgb, var(--git-diff-del), transparent 82);
+  background: color-mix(in srgb, var(--git-diff-del), transparent 82%);
   border-left: 4px solid var(--git-diff-del);
 }
 .git-ui-add .git-ui-word-change,
 .git-ui-change .git-ui-code-new .git-ui-word-change {
-  background: color-mix(in srgb, var(--git-diff-add), transparent 58);
+  background: color-mix(in srgb, var(--git-diff-add), transparent 58%);
   border-radius: 2px;
 }
 .git-ui-del .git-ui-word-change,
 .git-ui-change .git-ui-code-old .git-ui-word-change {
-  background: color-mix(in srgb, var(--git-diff-del), transparent 64);
+  background: color-mix(in srgb, var(--git-diff-del), transparent 64%);
   border-radius: 2px;
 }
 .git-ui-search-match {
@@ -550,14 +550,14 @@
 }
 .git-ui-hunk-old-mount .git-ui-side-line-del,
 .git-ui-hunk-current-mount .git-ui-side-line-del {
-  background: color-mix(in srgb, var(--git-diff-del), transparent 86);
+  background: color-mix(in srgb, var(--git-diff-del), transparent 86%);
   border-left: 4px solid var(--git-diff-del);
 }
 .git-ui-hunk-old-mount .git-ui-side-line-add,
 .git-ui-hunk-current-mount .git-ui-side-line-add {
-  background: color-mix(in srgb, var(--git-diff-add), transparent 86);
+  background: color-mix(in srgb, var(--git-diff-add), transparent 86%);
   border-left: 4px solid var(--git-diff-add);
 }
 .git-ui-hunk-current-mount .git-ui-side-line-edit {
-  background: color-mix(in srgb, var(--git-changed-color), transparent 78);
+  background: color-mix(in srgb, var(--git-changed-color), transparent 78%);
 }

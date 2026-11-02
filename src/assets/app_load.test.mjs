@@ -2592,7 +2592,10 @@ describe("app bundle load", () => {
     match(gitUiSource, /state\.focusDiffSearch = true/);
     match(readFileSync(new URL("./desktop/git_ui/diff_search.js", import.meta.url), "utf8"), /function highlightDiffText\(code, path\)/);
     const gitDiffRenderRowsSource = readFileSync(new URL("./desktop/git_ui/diff_render.js", import.meta.url), "utf8");
-    match(gitDiffRenderRowsSource, /const rows = chunk\.rows && chunk\.rows\.length \? markChangeGroups\(chunk\.rows\) : \[\];/);
+    match(gitDiffRenderRowsSource, /const rows = markChangeGroups\(rowsFromChunk\(chunk\)\);/);
+    match(gitDiffRenderRowsSource, /function rowsFromChunk\(chunk\) \{/);
+    match(gitDiffRenderRowsSource, /chunk\.lines\.map\(\(line\) => \(\{ line \}\)\)/);
+    match(gitDiffRenderRowsSource, /function sideBySideRows\(lines\) \{/);
     match(readFileSync(new URL("./desktop/git_ui/diff_search.js", import.meta.url), "utf8"), /<mark class="git-ui-search-match">/);
     match(gitDiffRenderRowsSource, /renderDiffCode\(oldLine, newLine, path, "old"\)/);
     match(gitDiffRenderRowsSource, /renderDiffCode\(oldLine, newLine, path, "new"\)/);
