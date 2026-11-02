@@ -1,7 +1,6 @@
 use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::process::Command;
 
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -107,7 +106,7 @@ fn git_ui_working_file_hash(repo: &str, path: &str) -> Result<String, String> {
     if !full.exists() {
         return Ok(String::new());
     }
-    let output = Command::new("git")
+    let output = crate::git_bin::command()
         .arg("-C")
         .arg(repo)
         .args(["hash-object", "--", path])

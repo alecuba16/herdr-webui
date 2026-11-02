@@ -44,6 +44,7 @@ mod builtin_events;
 mod chat_lens;
 mod compat;
 mod file_browser;
+mod git_bin;
 mod git_ui;
 mod jcode_transcript;
 mod lsp;
@@ -4884,7 +4885,7 @@ async fn create_worktree(
 }
 
 fn run_git_capture(args: &[&str]) -> Result<std::process::Output, String> {
-    Command::new("git")
+    crate::git_bin::command()
         .args(args)
         .output()
         .map_err(|err| err.to_string())
@@ -5096,7 +5097,7 @@ async fn remove_worktree_path(
     // git worktree remove is a subprocess that can block; offload it.
     let path_for_response = path.clone();
     match tokio::task::spawn_blocking(move || {
-        let mut command = Command::new("git");
+        let mut command = crate::git_bin::command();
         command
             .arg("-C")
             .arg(&repo_root)
@@ -5192,7 +5193,7 @@ fn list_git_branches(
 ) -> Result<Vec<String>, String> {
     let cwd = expand_path_prefix(cwd);
     if fetch_remote {
-        let output = Command::new("git")
+        let output = crate::git_bin::command()
             .arg("-C")
             .arg(&cwd)
             .args(["fetch", "--all", "--prune"])
@@ -5206,7 +5207,7 @@ fn list_git_branches(
     if include_remote {
         refs.push("refs/remotes");
     }
-    let output = Command::new("git")
+    let output = crate::git_bin::command()
         .arg("-C")
         .arg(cwd)
         .args(["for-each-ref", "--format=%(refname:short)"])

@@ -1,7 +1,6 @@
 use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::process::Command;
 
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -117,7 +116,7 @@ fn is_base_conflict_mode(mode: &str) -> bool {
 fn git_ui_conflict_stage_to_file(cwd: &str, path: &str, stage: u8) -> Result<String, String> {
     let repo = git_ui_repo(cwd)?;
     let spec = git_conflict_stage_spec(stage, path);
-    let output = Command::new("git")
+    let output = crate::git_bin::command()
         .arg("-C")
         .arg(&repo)
         .args(["show", &spec])
@@ -191,7 +190,6 @@ pub(super) async fn git_ui_conflict_action(
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
@@ -250,7 +248,7 @@ mod tests {
         std::fs::write(repo.join("file.txt"), "remote\n").unwrap();
         run_git(&repo, &["commit", "-am", "remote"]);
         run_git(&repo, &["checkout", "feature"]);
-        let merge = Command::new("git")
+        let merge = crate::git_bin::command()
             .arg("-C")
             .arg(&repo)
             .args(["merge", base_branch.as_str()])
@@ -287,7 +285,7 @@ mod tests {
     }
 
     fn run_git(repo: &Path, args: &[&str]) {
-        let output = Command::new("git")
+        let output = crate::git_bin::command()
             .arg("-C")
             .arg(repo)
             .args(args)
@@ -302,7 +300,7 @@ mod tests {
     }
 
     fn git_text(repo: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = crate::git_bin::command()
             .arg("-C")
             .arg(repo)
             .args(args)

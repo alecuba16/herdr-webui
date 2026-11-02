@@ -318,7 +318,7 @@ mod tests {
             std::env::temp_dir().join(format!("herdr-webui-branch-details-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let output = std::process::Command::new("git")
+        let output = crate::git_bin::command()
             .arg("-C")
             .arg(&root)
             .args(["init", "-b", "main"])
@@ -329,7 +329,7 @@ mod tests {
             ["config", "user.email", "t@t"],
             ["config", "user.name", "T"],
         ] {
-            let out = std::process::Command::new("git")
+            let out = crate::git_bin::command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -339,7 +339,7 @@ mod tests {
         }
         std::fs::write(root.join("a.txt"), "base\n").unwrap();
         for args in [vec!["add", "-A"], vec!["commit", "-m", "hello"]] {
-            let out = std::process::Command::new("git")
+            let out = crate::git_bin::command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -356,7 +356,7 @@ mod tests {
 
         // parity: batched for-each-ref path must match the per-ref git show
         // path on the same fixture, two branches on purpose.
-        let out = std::process::Command::new("git")
+        let out = crate::git_bin::command()
             .arg("-C")
             .arg(&root)
             .args(["switch", "-c", "feature"])
@@ -365,7 +365,7 @@ mod tests {
         assert!(out.status.success());
         std::fs::write(root.join("b.txt"), "feature\n").unwrap();
         for args in [vec!["add", "-A"], vec!["commit", "-m", "feature work"]] {
-            let out = std::process::Command::new("git")
+            let out = crate::git_bin::command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -409,7 +409,7 @@ mod tests {
             ["config", "user.email", "t@t"],
             ["config", "user.name", "\u{00dc}nicode \u{00c0}uthor"],
         ] {
-            let out = std::process::Command::new("git")
+            let out = crate::git_bin::command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -431,7 +431,7 @@ mod tests {
             }
             args.push("-m");
             args.push(subject);
-            let out = std::process::Command::new("git")
+            let out = crate::git_bin::command()
                 .arg("-C")
                 .arg(&root)
                 .args(&args)
@@ -448,7 +448,7 @@ mod tests {
             "batched vs per-ref mismatch on empty subject"
         );
         // a branch pinned to the unicode-subject commit covers that case too
-        let out = std::process::Command::new("git")
+        let out = crate::git_bin::command()
             .arg("-C")
             .arg(&root)
             .args(["branch", "uni-tip", "HEAD~1"])
