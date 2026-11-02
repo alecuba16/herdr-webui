@@ -1,5 +1,12 @@
 /* Shell */
-.git-ui-panel {
+/* The git-ui custom properties must reach BOTH surfaces that render git
+   markup: the sidebar panel host (.git-ui-panel, overlays + side) and the
+   center pane tab mounts (.pane-git-container, .git-ui-panel-main). Rows
+   rendered inside a pane tab inherit nothing from the panel, so scoping
+   these vars to the panel alone left pane diffs uncolored. */
+.git-ui-panel,
+.pane-git-container,
+.git-ui-panel-main {
   --git-add-color: var(--git-added-color);
   --git-del-color: var(--git-deleted-color);
   /* Diff markers need stronger hues than the status text colors, tuned per
@@ -17,6 +24,8 @@
   --git-syn-num: var(--muted);
   --git-syn-str: var(--fg);
   --git-syn-type: var(--accent);
+}
+.git-ui-panel {
   background: var(--bg);
   border-top: 1px solid var(--border2);
   box-shadow: none;
@@ -33,7 +42,9 @@
   min-height: 0;
   width: 100%;
 }
-body.light .git-ui-panel {
+body.light .git-ui-panel,
+body.light .pane-git-container,
+body.light .git-ui-panel-main {
   --git-log-main: #2150ae;
   --git-log-origin: #92400e;
   --git-log-current: #b91c1c;

@@ -3811,6 +3811,61 @@ test("preview_large_diff hunks replace hunk actions with a hint", async () => {
   assert.doesNotMatch(html, /Restore this block/, "no restore button in the preview");
 });
 
+// The real server only attaches chunk.rows for layout=side-by-side;
+// layout=unified responses carry bare chunk.lines. The renderer must
+// derive {line} rows client-side or unified hunks render empty.
+test("unified layout renders rows when the server sends no chunk.rows", async () => {
+  const stored = { gitUiDiffLayout: "unified" };
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,4 @@", lines: [
+      { line_type: "context", content: "keep me", old_line_number: 1, new_line_number: 1 },
+      { line_type: "delete", content: "old text", old_line_number: 2 },
+      { line_type: "add", content: "new text", new_line_number: 2 },
+      { line_type: "context", content: "tail", old_line_number: 3, new_line_number: 3 },
+    ] }] }] },
+  }));
+  const { ui, ctx } = booted;
+  ctx.window.HerdrOptions = {
+    read: () => ({ ...stored }),
+    update: (fn) => { const options = {}; fn(options); Object.assign(stored, options); },
+  };
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.match(html, /git-ui-unified-row git-ui-add/, "unified add rows derive from chunk.lines");
+  assert.match(html, /git-ui-unified-row git-ui-del/, "unified delete rows derive from chunk.lines");
+  assert.match(html, /git-ui-unified-row git-ui-context/, "unified context rows derive from chunk.lines");
+});
+
+// Large-diff previews strip server rows (previewDiffFile deletes them
+// because they only match the full chunk) and older backends never sent
+// them; the split renderer must pair chunk.lines itself in those cases.
+test("side-by-side layout renders rows when the server sends no chunk.rows", async () => {
+  const booted = await bootGitUi(diffRenderBoot({
+    "/api/git-ui/diff": { files: [{ path: "work.txt", status: "modified", chunks: [{ header: "@@ -1,4 +1,5 @@", lines: [
+      { line_type: "context", content: "keep me", old_line_number: 1, new_line_number: 1 },
+      { line_type: "delete", content: "old text", old_line_number: 2 },
+      { line_type: "add", content: "new text", new_line_number: 2 },
+      { line_type: "add", content: "brand new", new_line_number: 3 },
+      { line_type: "context", content: "tail", old_line_number: 3, new_line_number: 4 },
+    ] }] }] },
+  }));
+  const { ui } = booted;
+  installRealPaneChain(booted);
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  await ui.selectFile("work.txt", "M");
+  await settle();
+  const html = viewContainerHtml(booted, "diff@work.txt");
+  assert.ok(html, "the diff center container rendered");
+  assert.match(html, /git-ui-diff-row git-ui-change/, "paired change rows derive from chunk.lines");
+  assert.match(html, /git-ui-diff-row git-ui-add/, "lone add rows derive from chunk.lines");
+});
+
 test("unified layout pairs deletes with adds and prefixes signs", async () => {
   const stored = { gitUiDiffLayout: "unified" };
   const booted = await bootGitUi(diffRenderBoot({
