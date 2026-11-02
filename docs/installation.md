@@ -194,12 +194,22 @@ brew install alecuba16/tap/herdr-webui
 
 The formula pours both `herdr-webui` and `herdr-webui-tui` into the brew prefix. The tap tracks the latest GitHub release automatically: a scheduled workflow polls releases daily and regenerates the formula, so `brew upgrade` moves you forward.
 
-Brew does not run or manage the service. To install as a service, keep using the built-in installers (they copy the brew-poured binaries into `~/.local/bin` and manage the LaunchAgent/systemd unit):
+The formula ships a service block, so brew can run WebUI as a background service that starts at login and restarts on upgrade:
+
+```sh
+brew services start alecuba16/tap/herdr-webui
+```
+
+Logs land in `$(brew --prefix)/var/log/herdr-webui.log` and `herdr-webui.err.log` (WebUI logs to stderr, so the err file carries most output). The service runs the binary without flags; set bind, TLS, and credentials in `~/.config/herdr-webui/webui-settings.json` instead of command-line arguments.
+
+If you prefer the built-in per-user installers (they copy the brew-poured binaries into `~/.local/bin` and manage the LaunchAgent/systemd unit themselves), they still work:
 
 ```sh
 herdr-webui install-mac    # after brew upgrade: herdr-webui update-mac
 herdr-webui install-linux  # after brew upgrade: herdr-webui update-linux
 ```
+
+Pick one mechanism and stick to it; running both leaves two agents on the same port.
 
 Install as a per-user macOS LaunchAgent:
 

@@ -21,11 +21,11 @@ On macOS or Linux with [Homebrew](https://brew.sh), the same binaries are availa
 
 ```bash
 brew install alecuba16/tap/herdr-webui
-herdr-webui --https off --backend-mode builtin
-# open http://127.0.0.1:8787
+brew services start alecuba16/tap/herdr-webui   # run it as a background service
+# or run it in the foreground: herdr-webui --https off --backend-mode builtin
 ```
 
-The formula pours both `herdr-webui` and `herdr-webui-tui`. It tracks the latest release automatically (the tap polls releases daily and regenerates the formula), so `brew upgrade` picks up new versions.
+The formula pours both `herdr-webui` and `herdr-webui-tui`, and its service block lets `brew services` run WebUI at login and restart it on upgrade. The tap polls releases daily and regenerates the formula, so `brew upgrade` picks up new versions.
 
 To build from source instead, the same quick start works with the Rust toolchain. From a fresh clone:
 
