@@ -1,6 +1,7 @@
 # Release notes
 
 ## Unreleased
+- Git diff coloring is back in every layout. Unified hunks rendered zero rows since the browser-logic move made the renderer depend on server chunk rows that only side-by-side ever had, so the client now derives unified rows and side-by-side pairs from chunk lines when the server sends none, which also covers large-diff previews that strip server rows. Row backgrounds had been silently invalid since the theme rework wrote color-mix percentages without the percent sign, so 11 tint declarations dropped their backgrounds while borders kept working and hid the bug. The diff color variables also only resolved inside the sidebar panel, while diff rows render in center pane tabs since the split-pane rework, so the variable block now scopes onto the pane mounts too.
 - Brew now runs the WebUI as a service. The tap formula ships a
   `service` block, so `brew services start alecuba16/tap/herdr-webui`
   runs it as a background LaunchAgent/systemd unit that starts at login
