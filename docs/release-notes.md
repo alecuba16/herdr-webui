@@ -1,6 +1,20 @@
 # Release notes
 
 ## Unreleased
+- Brew now runs the WebUI as a service. The tap formula ships a
+  `service` block, so `brew services start alecuba16/tap/herdr-webui`
+  runs it as a background LaunchAgent/systemd unit that starts at login
+  and restarts across upgrades; `keep_alive` relaunches it if it dies.
+  The service passes no flags, so bind, TLS, and credentials live in
+  `webui-settings.json`, and output lands in
+  `$(brew --prefix)/var/log/herdr-webui.err.log` (WebUI logs to stderr).
+  The README and installation docs lead with `brew services start` and
+  keep `install-mac`/`install-linux` as the alternative, with a warning
+  that running both leaves two agents fighting over port 8787.
+- Release tooling fixes riding along: the tap token preflight checks the
+  401/403 itself with a curl bearer call instead of unauthenticated `gh
+  api` (which rejected good tokens), and the formula test line uses
+  `shell_output("#{bin}/herdr-webui --version")`.
 - Branch deletes and worktree removals cascade like switches. The git
   drawer's cleanup tab (bulk and single deletes, worktree removes) now
   runs the same cross-surface cascade a branch switch does, because a
