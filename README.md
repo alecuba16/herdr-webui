@@ -25,7 +25,7 @@ herdr-webui --https off --backend-mode builtin
 # open http://127.0.0.1:8787
 ```
 
-The formula pours both `herdr-webui` and `herdr-webui-tui`. It tracks the latest release automatically (the tap polls releases weekly and regenerates the formula), so `brew upgrade` picks up new versions.
+The formula pours both `herdr-webui` and `herdr-webui-tui`. It tracks the latest release automatically (the tap polls releases daily and regenerates the formula), so `brew upgrade` picks up new versions.
 
 To build from source instead, the same quick start works with the Rust toolchain. From a fresh clone:
 
