@@ -1,6 +1,12 @@
 # Release notes
 
 ## Unreleased
+- The location bar's branch popover gains a `＋ Create worktree` action.
+  Plain-checkout repos render path + branch chips with no worktree chip,
+  so the branch popover was the one git selector that could not start a
+  worktree. The action opens the existing worktree create modal prefilled
+  with the current branch, and after creation the workspace switches to
+  the new worktree while panels in the old workspace stay open.
 - TUI session manager. `Ctrl+B Shift+P` opens the session manager
   overlay the webui already had: rows load from the same
   `/api/sessions` endpoint on every open, `Enter` targets the selected

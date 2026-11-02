@@ -196,6 +196,11 @@ branch and worktree chips stay until phases 3 and 4 move them.
   rows and the current branch refused).
 - New branch action: `/api/git-ui/switch` with `{cwd, branch, create: true,
   base}`; stays in the same workspace; popover refreshes after.
+- Create-worktree row (added 2026-11-02): the branch popover also carries
+  a `＋ Create worktree` action that opens
+  `openWorktreeCreateFromGitBranch(cwd, branch)` prefilled with the current
+  branch. The plain-checkout shape has no worktree chip, so this row is
+  the only bar surface that starts a worktree there.
 - `b` re-targets the bar popover; shortcut help text updated.
 - Then remove from the drawer: the branch chip, the copied branch
   handlers, the branch modal and its markup, and the modal's pinned tests
