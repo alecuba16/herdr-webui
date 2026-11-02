@@ -286,7 +286,17 @@ pub(super) async fn git_ui_switch(
         vec!["switch".to_string(), branch.to_string()]
     };
     let cwd = body.cwd;
-    git_spawn(move || git_ui_switch_blocking(cwd, args)).await
+    // The worktree list cache serves rows stamped with the checked-out
+    // branch; a successful switch moves HEAD, so the cached answer for
+    // this cwd is stale. Drop it so the next snapshot/worktrees fetch
+    // reads the real repo instead of riding out the TTL.
+    let worktree_cache = state.worktree_list_cache.clone();
+    let switch_cwd = cwd.clone();
+    let response = git_spawn(move || git_ui_switch_blocking(cwd, args)).await;
+    if response.status().is_success() {
+        worktree_cache.invalidate(&switch_cwd);
+    }
+    response
 }
 
 #[cfg(test)]

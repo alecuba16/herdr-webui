@@ -22,6 +22,7 @@
       pathKind: "file",
       timer: null,
       requestSeq: 0,
+      root: "",
       actions: [],
       targets: [],
       pathEntries: [],
@@ -221,6 +222,7 @@
     }
 
     async function runMobilePathSearch(seq, query, cwd, append) {
+      mobileSearch.root = cwd;
       const helper = globalThis.HerdrWorkspaceSearch;
       mobileSearch.pathLoading = true;
       mobileSearch.pathError = "";
@@ -256,6 +258,7 @@
     }
 
     async function runMobileContentSearch(seq, query, cwd, append, options = {}) {
+      mobileSearch.root = cwd;
       const helper = globalThis.HerdrWorkspaceSearch;
       const opts = helper.settings();
       mobileSearch.content.query = query;
@@ -388,7 +391,7 @@
         close();
         showScreen("files");
         const resolvedKind = kind === "dir" ? "dir" : "file";
-        openAt(path, { kind: resolvedKind, preserveContext: resolvedKind === "file" });
+        openAt(path, { cwd: mobileSearch.root || mobileSearchRoot(), kind: resolvedKind, preserveContext: resolvedKind === "file" });
       },
       openContent(path, matchId) {
         const helper = globalThis.HerdrWorkspaceSearch;
@@ -396,7 +399,7 @@
         const match = globalThis.HerdrContentSearch && globalThis.HerdrContentSearch.findMatch(file, matchId);
         close();
         showScreen("files");
-        openAt(path, { kind: "file", preserveContext: true, highlight: helper && helper.matchHighlight(match, mobileSearch.query) });
+        openAt(path, { cwd: mobileSearch.root || mobileSearchRoot(), kind: "file", preserveContext: true, highlight: helper && helper.matchHighlight(match, mobileSearch.query) });
       },
     };
 
@@ -455,6 +458,22 @@
     };
 
     return {
+      invalidateWorkspace(cwd) {
+        const scope = String(mobileSearch.root || mobileSearchRoot() || "");
+        const root = scope.replace(/\/+$/, "");
+        const changed = String(cwd || "").replace(/\/+$/, "");
+        if (scope !== "/" && !scope.startsWith("~") && (!root || !(root === changed || changed.startsWith(root + "/") || root.startsWith(changed + "/")))) return;
+        clearTimeout(mobileSearch.timer);
+        mobileSearch.requestSeq++;
+        mobileSearch.pathEntries = [];
+        mobileSearch.pathGitStatus = null;
+        mobileSearch.pathOffset = 0;
+        mobileSearch.pathDone = true;
+        mobileSearch.pathLoading = false;
+        mobileSearch.pathError = "";
+        if (globalThis.HerdrWorkspaceSearch) globalThis.HerdrWorkspaceSearch.resetContentState(mobileSearch.content, mobileSearch.query);
+        render();
+      },
       close,
       open,
       render,

@@ -42,7 +42,10 @@ stabilizes.
    helper, desktop and mobile readers) is removed entirely.
 7. **Explorer follows the bar.** When the bar switches the workspace folder
    (worktree or plain folder change), the file explorer reloads its tree
-   rooted at the new cwd. Branch-only changes do not reload the explorer.
+   rooted at the new cwd. Branch-only changes reload the explorer too:
+   the switch moves HEAD, and the tree's git status colors and the
+   drawer's status/diff parks all key on the folder (see the sync
+   contract below).
 8. **Picker is the existing interactive one.** The bar's folder selector is
    `HerdrDirectoryPicker` (tree, search, git status colors on entries,
    Home and Select actions), not a text input. It already colors entries by
@@ -263,7 +266,7 @@ The todo tool holds the live plan. This list is the durable copy.
 ### Phase 2: Folder switching
 - [x] 2.1 Extract `openWorkspaceHere` from `file_browser.js` to the shell-level folder-change helper (focus-or-create semantics preserved).
 - [x] 2.2 Path chip opens `HerdrDirectoryPicker` with after-select into the helper.
-- [x] 2.3 Explorer follow after folder navigation; branch-only changes do not reload.
+- [x] 2.3 Explorer follow after folder navigation; branch-only changes follow the task 2 sync contract (reload on a matching folder).
 - [x] 2.4 Verify picker git colors on git paths (run `directory_picker.test.mjs`).
 - [x] 2.5 Tests: folder-change flow tests (mock go, worktrees, workspaces, recents); file browser pinned tests updated.
 - [x] 2.6 Verify: `node --test src/assets/*.test.mjs`.
@@ -303,6 +306,43 @@ The todo tool holds the live plan. This list is the durable copy.
 
 ### Phase 6: Mobile
 - [ ] 6.1 Design the mobile location bar against the mobile shell layout (separate doc/phase).
+
+## Cross-surface sync contract (task 2)
+
+A branch switch or create moves HEAD for one checkout. Every surface
+reading that folder must answer from the new HEAD, not from a cached
+pre-switch answer. The contract, per surface:
+
+- Server: `git-ui/switch` drops the `worktree.list` cache entry for the
+  switched cwd on success (`WorktreeListCache::invalidate`), so the next
+  snapshot or worktree fetch reads the real repo instead of riding out
+  the 2s TTL.
+- Git drawer: `notifyBranchChanged(cwd)` invalidates the drawer's own
+  status/diff/focused-diff parks for that folder and reloads the visible
+  view when it is showing it.
+- File browser: the same notify refreshes the tree when the active
+  browser state is the switched folder (`HerdrFileBrowser.activeCwd()`),
+  because the tree rows carry git status colors.
+- Search panel: an open panel scoped to the switched workspace re-runs
+  its search (`HerdrSearchPanel.scopeCwd()`); results from the old branch
+  die with the old HEAD.
+- Shell: `window.HerdrShellNoteBranchMoved(cwd)` (core.js) drops the
+  rail's parked `state.gitStatusCache` for that folder and schedules
+  `scheduleRefresh(50)` so worktree rows and branch attribution re-sync.
+- TUI: the branch picker and the in-panel switch both drop the 2s
+  worktree stamp cache for the cwd (`invalidate_stamp`), so the branch
+  badge answers from a real `worktree.list` on the next refresh.
+- Mobile: every switch site invalidates the file browser tree and status
+  caches, the search result caches, the worktree discovery rows, and the
+  header stamps for the affected workspace, then reloads the git view.
+
+Selector anchoring rule (task 2, Gap C): a surface's open action anchors
+on the same root its results came from. The desktop search panel scopes
+results to the selected workspace and passes that workspace through to
+`openWorkspaceSearchPath`/`openWorkspaceSearchContent`; the palette keeps
+opening against its default-folder root because that is what it searches.
+Mobile mirrors the rule with its own reversed mismatch fixed the same
+way: opens anchor on the search root that produced the results.
 
 ## Acceptance criteria
 

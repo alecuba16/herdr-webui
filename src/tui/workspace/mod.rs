@@ -631,6 +631,10 @@ impl TuiApp {
         self.web_api
             .git_switch(&cwd, &row.name, false)
             .map_err(|err| err.to_string())?;
+        // The worktree stamp cache still answers with the pre-switch
+        // branch; drop it so the next refresh re-stamps the workspace
+        // badge from a real worktree.list call.
+        self.invalidate_stamp(&cwd);
         // Best effort: the switch already happened, so a failed refresh
         // (e.g. the snapshot socket hiccuping) must not fail the report.
         let _ = self.refresh();
@@ -647,6 +651,9 @@ impl TuiApp {
         self.web_api
             .git_switch(&cwd, name, true)
             .map_err(|err| err.to_string())?;
+        // Same stamp rule as a plain switch: the cached worktree list
+        // names the branch the create moved off of.
+        self.invalidate_stamp(&cwd);
         // Best effort: the create already happened, so a failed refresh
         // must not fail the report.
         let _ = self.refresh();

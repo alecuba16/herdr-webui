@@ -4691,6 +4691,20 @@ function scheduleRefresh(delay = 500) {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(refresh, delay);
 }
+// A branch moved outside the shell's own flows (git drawer's
+// notifyBranchChanged, fed by the location bar). The rail's parked
+// status cache (state.gitStatusCache) still describes the pre-switch
+// HEAD, so drop it for that folder only; refreshOnline then rebuilds
+// the worktree rows and branch attribution, and the server answers
+// fresh because it dropped its worktree cache on the switch.
+function shellNoteBranchMoved(cwd) {
+  const folder = String(cwd || "");
+  if (folder && state.gitStatusCache && samePath(state.gitStatusCache.cwd || "", folder)) {
+    state.gitStatusCache = null;
+  }
+  scheduleRefresh(50);
+}
+window.HerdrShellNoteBranchMoved = shellNoteBranchMoved;
 function scheduleRefreshBurst(delays = [50, 250, 1000]) {
   for (const delay of delays) setTimeout(refresh, delay);
 }

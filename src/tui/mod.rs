@@ -1002,6 +1002,19 @@ impl TuiApp {
         }
     }
 
+    /// Drop the cached `worktree.list` reply for a cwd whose repo state
+    /// just changed out of band (branch switch through the picker or the
+    /// git panel). The cached stamp names the pre-switch branch, so the
+    /// badge would answer with the old HEAD for the rest of the TTL.
+    pub(crate) fn invalidate_stamp(&mut self, cwd: &str) {
+        self.stamp_cache.remove(cwd);
+        for workspace in &mut self.snapshot.workspaces {
+            if workspace.cwd == cwd {
+                workspace.worktree = None;
+            }
+        }
+    }
+
     /// Focused UI context for the statusbar hint (lazygit-style context
     /// resolution): resolves in the same priority order as `handle_key`,
     /// so the hint always describes the keys that actually do something
@@ -3350,6 +3363,11 @@ impl TuiApp {
                     if let Err(err) = self.git_panel.switch_selected(&self.web_api) {
                         self.error = Some(err.to_string());
                     } else {
+                        // The worktree stamp cache still answers with the
+                        // pre-switch branch; drop it so the next refresh
+                        // re-stamps the workspace badge from a real
+                        // worktree.list call.
+                        self.invalidate_stamp(&self.git_panel.cwd.clone());
                         self.status = format!(
                             "switched to {}",
                             self.git_panel
@@ -3357,7 +3375,7 @@ impl TuiApp {
                                 .get(self.git_panel.branch_selected)
                                 .map(|entry| entry.name.clone())
                                 .unwrap_or_default()
-                        );
+                        )
                     }
                 }
                 GitView::Log => {

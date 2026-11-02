@@ -2813,6 +2813,79 @@ test("notifyBranchChanged invalidates the matching folder and refreshes only the
   );
 });
 
+test("notifyBranchChanged cascades to the other folder-scoped surfaces", async () => {
+  // The bar's switch moves HEAD for every surface reading the folder,
+  // not just the drawer. A branch switch on the folder the file
+  // browser is showing must reload its tree, an open search panel
+  // scoped to the same workspace must re-run its search, and the shell
+  // bridge must fire so the rail's parked status cache drops and the
+  // worktree rows refresh. Surfaces on other folders stay untouched.
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "old", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+
+  const browserRefreshed = [];
+  const searched = [];
+  const shellNotes = [];
+  ctx.window.HerdrFileBrowser = {
+    activeCwd: () => "/tmp/demo-repo/",
+    refresh: () => browserRefreshed.push("demo-repo"),
+  };
+  ctx.window.HerdrSearchPanel = {
+    scopeCwd: () => "/tmp/demo-repo",
+    search: (append) => searched.push(append),
+  };
+  ctx.window.HerdrShellNoteBranchMoved = (cwd) => shellNotes.push(cwd);
+
+  ui.notifyBranchChanged("/tmp/demo-repo");
+  await settle();
+  assert.deepEqual(browserRefreshed, ["demo-repo"], "file browser on the switched folder reloads");
+  assert.deepEqual(searched, [false], "open search panel on the same workspace re-searches");
+  assert.deepEqual(shellNotes, ["/tmp/demo-repo"], "shell bridge fires for the switched folder");
+
+  // Different folder: no surface reloads, and the bridge still fires
+  // so the shell can drop its own parked cache for that folder.
+  browserRefreshed.length = 0;
+  searched.length = 0;
+  shellNotes.length = 0;
+  ui.notifyBranchChanged("/tmp/other-repo");
+  await settle();
+  assert.deepEqual(browserRefreshed, [], "file browser on another folder does not reload");
+  assert.deepEqual(searched, [], "search panel scoped elsewhere does not re-search");
+  assert.deepEqual(shellNotes, ["/tmp/other-repo"], "shell bridge fires for the other folder too");
+});
+
+test("notifyBranchChanged skips absent surfaces and empty cwd", async () => {
+  // The cascade must not throw when a surface has not loaded yet
+  // (file browser lazy-loads, search panel may be absent) and must
+  // ignore an empty cwd instead of dropping every cache it can find.
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "old", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  delete ctx.window.HerdrFileBrowser;
+  delete ctx.window.HerdrSearchPanel;
+  let shellNote = null;
+  ctx.window.HerdrShellNoteBranchMoved = (cwd) => { shellNote = cwd; };
+  ui.notifyBranchChanged("");
+  await settle();
+  assert.equal(shellNote, null, "empty cwd never reaches the bridge");
+  ui.notifyBranchChanged("/tmp/demo-repo");
+  await settle();
+  assert.equal(shellNote, "/tmp/demo-repo", "absent surfaces do not break the cascade");
+});
+
 // The git_ui.js state lives in a closure, so these tests drive behavior
 // through the exported surface and the fetch log only: status payloads vary
 // per boot, and every assert pins a request body, a rendered marker, or a

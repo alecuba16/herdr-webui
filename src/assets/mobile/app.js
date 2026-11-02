@@ -1503,6 +1503,12 @@
     // Branch rows checked out in a sibling worktree reroute through the
     // folder-open flow instead of a doomed switch POST.
     rerouteToWorktreeFn: (path) => mobileWorktrees.openFolderAsWorkspace(path),
+    onBranchChanged: async (cwd) => {
+      mobileWorkmeta.invalidateWorkspace(cwd);
+      mobileWorktrees.invalidateWorkspace(cwd);
+      mobileSearch.invalidateWorkspace(cwd);
+      await Promise.all([mobileFileBrowser.invalidateWorkspace(cwd), refresh()]);
+    },
   });
 
   mobileComposer = globalThis.HerdrMobileComposerModule.create({

@@ -1,6 +1,21 @@
 # Release notes
 
 ## Unreleased
+- Branch switches keep every folder-scoped surface honest. A switch or
+  create from the location bar, the git drawer, the TUI, or mobile now
+  invalidates what it staled: the server drops its 2s `worktree.list`
+  cache entry for the switched cwd, the drawer re-searches its status
+  and diff parks, the file explorer reloads the tree when it is
+  showing the switched folder (git status colors move with HEAD), an
+  open search panel re-runs its search, the rail's parked status drops,
+  and worktree rows re-sync on the next shell refresh. The TUI's branch
+  badge no longer answers from its 2s stamp cache right after a switch.
+- Search panel opens anchor where its results came from. The panel
+  scopes results to the selected workspace, and its file and match
+  opens now pass that workspace through, so they open in the workspace
+  the results list searched instead of the default folder. The palette
+  keeps its default-folder anchoring because that is the root it
+  searches. Mobile search opens follow the same rule.
 - The location bar's branch popover gains a `＋ Create worktree` action.
   Plain-checkout repos render path + branch chips with no worktree chip,
   so the branch popover was the one git selector that could not start a

@@ -157,8 +157,54 @@ function createModule({ fileContent = "print('hello')", writeResult = {}, writeE
     context.HerdrLineContext = lineContext;
   }
   const module = context.HerdrMobileFileBrowser.create(deps);
-  return { module, requests, editors, lspCalls, diagnosticLists, getSavedContent: () => savedContent, getRenamed: () => renamed, getDeleted: () => deleted, content: context.HerdrMobileFilesContent };
+  return { module, requests, editors, lspCalls, diagnosticLists, state: deps.state, getSavedContent: () => savedContent, getRenamed: () => renamed, getDeleted: () => deleted, content: context.HerdrMobileFilesContent };
 }
+
+describe("mobile file browser branch and search roots", () => {
+  it("opens results at their search root and keeps subsequent navigation there", async () => {
+    const { module, requests } = createModule();
+    await module.openAt("src/demo.py", { cwd: "/tmp/default", kind: "file", preserveContext: true });
+    await module.backToTree();
+    await module.select(encodeURIComponent("src/demo.py"));
+    await module.openAt("docs", { cwd: "/tmp/default", kind: "dir" });
+    assert.equal(requests.length, 3);
+    for (const request of requests) assert.equal(new URL(request.url, "http://localhost").searchParams.get("cwd"), "/tmp/default");
+  });
+
+  it("does not reuse the same file path across different roots", async () => {
+    const { module, requests } = createModule();
+    await module.openAt("src/demo.py", { cwd: "/tmp/one", kind: "file", preserveContext: true });
+    await module.openAt("src/demo.py", { cwd: "/tmp/two", kind: "file", preserveContext: true });
+    assert.equal(requests.length, 2);
+    assert.equal(new URL(requests[1].url, "http://localhost").searchParams.get("cwd"), "/tmp/two");
+  });
+
+  it("refreshes only the matching visible tree and clears hidden cached rows", async () => {
+    const { module, requests, state } = createModule();
+    await module.load("");
+    assert.match(module.renderScreen(), /demo.py/);
+    const before = requests.length;
+    await module.invalidateWorkspace("/tmp/other");
+    assert.equal(requests.length, before);
+    await module.invalidateWorkspace("/tmp/repo");
+    assert.equal(requests.length, before + 1);
+    state.screen = "terminal";
+    await module.invalidateWorkspace("/tmp/repo");
+    assert.equal(requests.length, before + 1);
+    assert.doesNotMatch(module.renderScreen(), /demo.py/);
+  });
+
+  it("rejects a tree response started before branch invalidation", async () => {
+    let finish;
+    const { module, state } = createModule({ api: () => new Promise((resolve) => { finish = resolve; }) });
+    const pending = module.load("");
+    state.screen = "terminal";
+    await module.invalidateWorkspace("/tmp/repo");
+    finish({ entries: [{ kind: "file", name: "stale.py", path: "stale.py" }], git_status: { stale: true } });
+    await pending;
+    assert.doesNotMatch(module.renderScreen(), /stale.py/);
+  });
+});
 
 describe("mobile file browser edit mode", () => {
   it("opens files read-only with an Edit action and no save button", async () => {

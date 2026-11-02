@@ -245,7 +245,9 @@
       );
     }
 
+    let discoverySeq = 0;
     async function load() {
+      const seq = ++discoverySeq;
       if (!state.ws && !state.worktreeDiscoverPath.trim()) return;
       state.worktreeError = "";
       setLoading(true, "Discovering worktrees...");
@@ -254,8 +256,11 @@
         const query = path
           ? "cwd=" + encodeURIComponent(path)
           : "workspace_id=" + encodeURIComponent(state.ws);
-        applyResult(await api("/api/worktrees?" + query));
+        const response = await api("/api/worktrees?" + query);
+        if (seq !== discoverySeq) return;
+        applyResult(response);
       } catch (error) {
+        if (seq !== discoverySeq) return;
         state.worktreeError = error.message || String(error);
       } finally {
         setLoading(false);
@@ -399,6 +404,7 @@
         // the app-wide fallback path wraps it in {result} the same way
         // applyResult accepts both.
         const envelope = data && data.result ? data.result : data;
+        if (worktreeSheetStale()) return;
         worktreeSheet.rows = (envelope && envelope.worktrees) || [];
         worktreeSheet.loading = false;
       } catch (error) {
@@ -557,7 +563,12 @@
       refresh();
     }
 
-    return { applyResult, clearRecent, closeWorkspaceOnLastTerminalFlag, closeWorktreeSheet, create, isWorktreeSheetOpen, load, loadRecent, open, openFolderAsWorkspace, openRecent, openWorktreeSheet, openWorktreeFromSheet, removeRecent, renderScreen, renderWorktreeSheet, routeToCreateFromSheet, setCreateExpanded, updateField };
+    return { invalidateWorkspace(cwd) {
+      discoverySeq++;
+      state.worktreeRows = [];
+      state.worktreeSource = null;
+      if (worktreeSheet.cwd === cwd) closeWorktreeSheet();
+    }, applyResult, clearRecent, closeWorkspaceOnLastTerminalFlag, closeWorktreeSheet, create, isWorktreeSheetOpen, load, loadRecent, open, openFolderAsWorkspace, openRecent, openWorktreeSheet, openWorktreeFromSheet, removeRecent, renderScreen, renderWorktreeSheet, routeToCreateFromSheet, setCreateExpanded, updateField };
   }
 
   globalThis.HerdrMobileWorktrees = { create: createMobileWorktrees };

@@ -1472,8 +1472,14 @@
     // The drawer never made the request, so its cached views still hold
     // the pre-mutation HEAD: status, diffs, focused-diff parks. Invalidate
     // every view keyed to this folder and reload the visible one; views
-    // for other folders stay untouched. The shell render that follows the
-    // bar action picks up the fresh state on the next open.
+    // for other folders stay untouched. The switch also moves HEAD for
+    // every other surface reading this folder: the file browser tree
+    // (git status colors), the open search panel (results carry the old
+    // branch's matches), and the shell-side status park that would keep
+    // tinting the rail with the old branch. Each one reloads only when it
+    // is showing this folder, then the shell refresh re-syncs worktree
+    // rows and branch attribution (the server drops its worktree cache
+    // on a successful switch).
     notifyBranchChanged(cwd) {
       const folder = String(cwd || "");
       if (!folder) return;
@@ -1488,6 +1494,20 @@
         const view = active();
         if (view && samePath(view.cwd || "", folder)) refresh();
       }
+      if (window.HerdrFileBrowser && typeof window.HerdrFileBrowser.activeCwd === "function") {
+        if (samePath(window.HerdrFileBrowser.activeCwd() || "", folder))
+          window.HerdrFileBrowser.refresh();
+      }
+      if (window.HerdrSearchPanel && typeof window.HerdrSearchPanel.scopeCwd === "function") {
+        if (samePath(String(window.HerdrSearchPanel.scopeCwd() || ""), folder))
+          window.HerdrSearchPanel.search(false);
+      }
+      // Shell-side caches and worktree rows live in the concatenated
+      // app script's lexical scope; the bridge drops the rail's parked
+      // status for this folder and schedules the shell refresh that
+      // re-syncs worktree rows and branch attribution.
+      if (typeof globalThis.HerdrShellNoteBranchMoved === "function")
+        globalThis.HerdrShellNoteBranchMoved(folder);
     },
     isVisible() { return state.visible; },
     isWorkspaceVisible(key) { return state.visible && state.activeKey === key; },

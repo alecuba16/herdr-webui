@@ -194,6 +194,13 @@
     }
 
     return {
+      invalidateWorkspace(cwd) {
+        for (const workspace of state.workspaces) {
+          if (!workspace.worktree || !samePath(workspace.worktree.checkout_path, cwd)) continue;
+          workspace.worktree.branch = null;
+          workspace.worktree.is_detached = false;
+        }
+      },
       currentWorkspace,
       currentTab,
       currentPane,

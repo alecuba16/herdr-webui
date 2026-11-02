@@ -3633,6 +3633,16 @@ impl WorktreeListCache {
             );
         }
     }
+
+    /// Drop the cached `worktree.list` for a cwd whose repo state just
+    /// changed out of band (branch switch, reset): the rows carry the
+    /// checked-out branch, so a served cache hit would answer with the
+    /// pre-switch HEAD for the rest of the TTL.
+    fn invalidate(&self, cwd: &str) {
+        if let Ok(mut guard) = self.entries.lock() {
+            guard.remove(cwd);
+        }
+    }
 }
 
 /// One `worktree.list` per unique cwd, fetched in parallel through the

@@ -9,6 +9,7 @@
     jsArg,
     pathBasename,
     currentWorkspaceCwd,
+    onBranchChanged,
     confirmFn,
     // Routes a checked-out-elsewhere branch row to the sibling checkout:
     // the app wires this to openFolderAsWorkspace so the branch sheet can
@@ -273,6 +274,7 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ cwd, branch: name }),
         });
+        if (onBranchChanged) await onBranchChanged(cwd);
         state.gitBranches = null;
         await loadGitStatus();
         await loadGitBranches();
@@ -455,6 +457,7 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ cwd, branch: localName }),
         });
+        if (onBranchChanged) await onBranchChanged(cwd);
         state.gitBranches = null;
         closeBranchSheet();
         await loadGitStatus();
@@ -484,6 +487,7 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ cwd: branchSheet.cwd, branch: name, create: true, base }),
         });
+        if (onBranchChanged) await onBranchChanged(branchSheet.cwd);
         state.gitBranches = null;
         branchSheet.creating = false;
         closeBranchSheet();

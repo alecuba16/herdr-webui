@@ -9,6 +9,9 @@
     }
     const local = { path: "", entries: [], selected: "", file: null, error: "", loading: false, filter: "", filterVisible: false, filterTimer: null, filterOffset: 0, filterDone: true, filterKind: "file", scrollTop: 0, gitStatus: null, editing: false, draft: "", dirty: false, saving: false, saveError: "", actionSheet: null, rename: null, newFile: null, mutating: false, contentSearch: createContentSearchState() };
     let screenRequestSeq = 0;
+    let rootOverride = "";
+    let overrideWorkspaceCwd = "";
+    let displayedRoot = "";
 
     function claimScreenRequest() {
       screenRequestSeq += 1;
@@ -20,7 +23,9 @@
     }
 
     function cwd() {
-      return deps.currentWorkspaceCwd() || "";
+      const selected = deps.currentWorkspaceCwd() || "";
+      if (selected !== overrideWorkspaceCwd) rootOverride = "";
+      return rootOverride || selected;
     }
 
     // Option readers and the depth clamp live in shared/workspace_search.js
@@ -185,6 +190,7 @@
 
     async function load(path, preserveFocus = false) {
       const root = cwd();
+      displayedRoot = root;
       if (!root) {
         local.error = "No workspace path available";
         deps.render();
@@ -270,6 +276,7 @@
 
     async function openFile(path, searchHighlight) {
       const root = cwd();
+      displayedRoot = root;
       if (local.file && local.file.path && local.file.path !== path) lspDidClose(local.file.path);
       const seq = claimScreenRequest();
       local.selected = path;
@@ -721,7 +728,7 @@
     }
 
     function currentDirectoryRoot() {
-      return deps.currentWorkspaceCwd() || "";
+      return cwd();
     }
 
     function currentDirectoryPath() {
@@ -786,7 +793,21 @@
     return {
       load,
       renderScreen,
+      async invalidateWorkspace(root) {
+        if (root !== (displayedRoot || cwd())) return;
+        claimScreenRequest();
+        clearTimeout(local.filterTimer);
+        clearTimeout(local.contentSearch.timer);
+        local.entries = [];
+        local.gitStatus = null;
+        local.filterOffset = 0;
+        local.filterDone = true;
+        clearContentSearchResults();
+        if (state.screen === "files") await load(local.path);
+      },
       reset() {
+        rootOverride = "";
+        displayedRoot = "";
         if (local.file && local.file.path) lspDidClose(local.file.path);
         local.path = "";
         local.entries = [];
@@ -904,8 +925,17 @@
         },
       async openAt(path, opts) {
         const options = opts || {};
-        if (options.kind !== "dir" && local.file && local.file.path === path) return;
-        if (!confirmDiscardDraft()) return;
+        const root = options.cwd || cwd();
+        if (root === displayedRoot && options.kind !== "dir" && local.file && local.file.path === path) return;
+        if (!(await confirmDiscardDraft())) return;
+        if (root !== cwd()) {
+          local.path = "";
+          local.entries = [];
+          local.gitStatus = null;
+          clearContentSearchResults();
+        }
+        rootOverride = root;
+        overrideWorkspaceCwd = deps.currentWorkspaceCwd() || "";
         const preserveContext = options.preserveContext === true && options.kind !== "dir";
         if (!preserveContext) {
           local.filter = "";
