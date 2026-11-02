@@ -184,6 +184,23 @@ jobs:
     # Reuses the tap's own generator so the formula here and the formula the
     # daily poll produces can never drift apart.
     steps:
+      - name: Check tap token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not set in repo secrets. The formula push to the tap is skipped until the secret is added (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          # A 401/403 here means expired or wrongly scoped: fail this step so
+          # the release page shows the tap update did not happen.
+          if ! gh api --method GET repos/alecuba16/homebrew-tap \
+              -H "Authorization: Bearer $HOMEBREW_TAP_TOKEN" > /dev/null 2>&1; then
+            echo "::error::HOMEBREW_TAP_TOKEN was rejected (expired or missing tap access). Rotate it: Settings > Secrets and variables > Actions > HOMEBREW_TAP_TOKEN."
+            exit 1
+          fi
+          echo "tap token accepted"
+
       - name: Checkout tap
         uses: actions/checkout@v7
         with:
