@@ -961,6 +961,11 @@ async fn main() -> io::Result<()> {
         );
     }
     let auth = Arc::new(Mutex::new(auth_config));
+    let worktree_list_cache = Arc::new(WorktreeListCache::default());
+    // The socket transport (TUI git panels via the builtin backend) can
+    // switch branches without a WebState; the registry lets those
+    // switches drop this server's cache entry too.
+    register_worktree_list_cache(worktree_list_cache.clone());
     let backend_mode = resolve_backend_mode(
         server_settings.backend_mode,
         config.session.as_deref(),
@@ -1021,7 +1026,7 @@ async fn main() -> io::Result<()> {
         herdr_bin: std::env::var("HERDR_WEB_HERDR_BIN").unwrap_or_else(|_| "herdr".to_string()),
         herdr_install_cache: Arc::new(Mutex::new(None)),
         auth,
-        worktree_list_cache: Arc::new(WorktreeListCache::default()),
+        worktree_list_cache,
         login_limiter: Arc::new(LoginRateLimiter::new()),
         server_settings,
         no_sleep: Arc::new(Mutex::new(NoSleepState::default())),
@@ -3598,18 +3603,52 @@ fn filter_snapshot_rows_by_workspace(
 /// Short-TTL cache keyed by cwd. Consecutive panel-switch snapshots
 /// re-ask the same checkouts, and the small TTL keeps worktree changes reflecting.
 #[derive(Default)]
-struct WorktreeListCache {
+pub(crate) struct WorktreeListCache {
     entries: Mutex<HashMap<String, WorktreeCacheEntry>>,
 }
 
+// The git-ui switch handlers must drop the cached `worktree.list` for
+// the switched cwd, but the socket transport (TUI via the builtin
+// backend) has no WebState to carry the handle. The builtin backend runs
+// in this process, so the webui registers its cache here once and every
+// transport reaches it through git_ui::worktree_cache_invalidated.
+static WORKTREE_LIST_CACHES: std::sync::OnceLock<Mutex<Vec<std::sync::Arc<WorktreeListCache>>>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn register_worktree_list_cache(cache: std::sync::Arc<WorktreeListCache>) {
+    let registry = WORKTREE_LIST_CACHES.get_or_init(Mutex::default);
+    if let Ok(mut caches) = registry.lock() {
+        // Re-registering the same handle (test apps) replaces, not grows.
+        caches.retain(|registered| !std::sync::Arc::ptr_eq(registered, &cache));
+        caches.push(cache);
+    }
+}
+
+fn invalidate_registered_worktree_caches(cwd: &str) {
+    if let Some(registry) = WORKTREE_LIST_CACHES.get() {
+        if let Ok(caches) = registry.lock() {
+            for cache in caches.iter() {
+                cache.invalidate(cwd);
+            }
+        }
+    }
+}
+
+/// Entry point for git-ui switch paths in every transport (HTTP handler
+/// and the builtin socket dispatch): drop the cached `worktree.list`
+/// answer for a cwd whose HEAD just moved.
+pub(crate) fn worktree_cache_invalidated(cwd: &str) {
+    invalidate_registered_worktree_caches(cwd);
+}
+
 #[derive(Clone)]
-struct WorktreeCacheEntry {
+pub(crate) struct WorktreeCacheEntry {
     fetched_at: std::time::Instant,
     value: serde_json::Value,
 }
 
 impl WorktreeListCache {
-    fn get(&self, cwd: &Option<String>) -> Option<WorktreeCacheEntry> {
+    pub(crate) fn get(&self, cwd: &Option<String>) -> Option<WorktreeCacheEntry> {
         let cwd = cwd.as_deref()?;
         let guard = self.entries.lock().ok()?;
         let entry = guard.get(cwd)?;
@@ -3622,7 +3661,7 @@ impl WorktreeListCache {
         }
     }
 
-    fn put(&self, cwd: &str, value: serde_json::Value) {
+    pub(crate) fn put(&self, cwd: &str, value: serde_json::Value) {
         if let Ok(mut guard) = self.entries.lock() {
             guard.insert(
                 cwd.to_string(),
@@ -3638,7 +3677,7 @@ impl WorktreeListCache {
     /// changed out of band (branch switch, reset): the rows carry the
     /// checked-out branch, so a served cache hit would answer with the
     /// pre-switch HEAD for the rest of the TTL.
-    fn invalidate(&self, cwd: &str) {
+    pub(crate) fn invalidate(&self, cwd: &str) {
         if let Ok(mut guard) = self.entries.lock() {
             guard.remove(cwd);
         }

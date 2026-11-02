@@ -2637,6 +2637,84 @@ test("cleanup delete retries with force when Git requires it", async () => {
   assert.equal(postBody(removed[1]).force, true);
 });
 
+test("cleanup delete cascades the branch-changed notification to the touched repos", async () => {
+  // A deleted branch may have been the current one (the server
+  // auto-switches to main/master first), so a cleanup delete must run
+  // the same cross-surface cascade a switch does: the shell bridge
+  // fires per touched repo, once per repo regardless of item count.
+  const scan = cleanupScanFixture();
+  const booted = await bootCleanup(() => scan);
+  const { ui, ctx } = booted;
+  const shellNotes = [];
+  ctx.window.HerdrShellNoteBranchMoved = (cwd) => shellNotes.push(cwd);
+
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/demo-repo|1"), true);
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/other-repo|1"), true);
+  ui.openCleanupDeleteConfirm();
+  await ui.confirmCleanupDelete();
+  await settle();
+  assert.deepEqual(
+    shellNotes.sort(),
+    ["/tmp/demo-repo", "/tmp/other-repo"],
+    "every touched repo gets one branch-changed notification"
+  );
+
+  // Total failure deletes nothing: no repo cascades, the selection
+  // stays for a retry.
+  const failingScan = cleanupScanFixture();
+  const failing = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/cleanup-scan": () => failingScan,
+    "/api/git-ui/worktree-remove": () => ({ error: "refusing" }),
+    "/api/git-ui/branch-delete": () => ({ error: "refusing" }),
+  });
+  failing.ctx.window.HerdrShellNoteBranchMoved = (cwd) => shellNotes.push(cwd);
+  await failing.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  failing.ui.tab("cleanup");
+  await failing.ui.scanCleanup();
+  shellNotes.length = 0;
+  failing.ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/demo-repo|1"), true);
+  failing.ui.openCleanupDeleteConfirm();
+  await failing.ui.confirmCleanupDelete();
+  await settle();
+  assert.deepEqual(shellNotes, [], "nothing deleted means no cascade");
+});
+
+test("single branch delete from the cleanup tab notifies the repo folder", async () => {
+  const scan = cleanupScanFixture();
+  const booted = await bootCleanup(() => scan);
+  const { ui, ctx, calls } = booted;
+  const shellNotes = [];
+  ctx.window.HerdrShellNoteBranchMoved = (cwd) => shellNotes.push(cwd);
+
+  const before = calls.length;
+  await ui.deleteCleanupBranch(0, "wt-a-branch", false);
+  await settle();
+  assert.equal(cleanupPosts(calls, "/api/git-ui/branch-delete", before).length, 1);
+  assert.deepEqual(shellNotes, ["/tmp/demo-repo"], "branch delete cascades like a switch");
+});
+
+test("single worktree remove from the cleanup tab notifies repo and removed paths", async () => {
+  const scan = cleanupScanFixture();
+  const booted = await bootCleanup(() => scan);
+  const { ui, ctx, calls } = booted;
+  const shellNotes = [];
+  ctx.window.HerdrShellNoteBranchMoved = (cwd) => shellNotes.push(cwd);
+
+  const before = calls.length;
+  await ui.deleteCleanupWorktree(0, 1, false);
+  await settle();
+  assert.equal(cleanupPosts(calls, "/api/git-ui/worktree-remove", before).length, 1);
+  assert.deepEqual(
+    shellNotes.sort(),
+    ["/tmp/demo-repo", "/tmp/wt-a"],
+    "the repo root and the removed checkout both notify"
+  );
+});
+
 test("cleanup delete runs repos in parallel but items of one repo sequentially", async () => {
   // Two repos, two worktrees each. Deferred handlers gate the calls so
   // the test observes real interleaving: repo A's first item blocks

@@ -316,10 +316,22 @@ pre-switch answer. The contract, per surface:
 - Server: `git-ui/switch` drops the `worktree.list` cache entry for the
   switched cwd on success (`WorktreeListCache::invalidate`), so the next
   snapshot or worktree fetch reads the real repo instead of riding out
-  the 2s TTL.
+  the 2s TTL. Both transports drop it: the HTTP handler and the
+  builtin socket dispatch share the blocking fn, and a process-wide
+  registry (`WORKTREE_LIST_CACHES`) lets the socket path (TUI via the
+  builtin backend, no WebState handle) reach the webui's cache.
+  Mutations beyond the switch follow the same rule: deleting the
+  current branch auto-switches first, so the auto-switch drops the
+  entry; worktree remove drops both the repo root's and the removed
+  checkout's entry; prune drops it only when something was pruned;
+  the builtin backend's `worktree.create`/`worktree.remove` methods
+  drop the same entries in-process.
 - Git drawer: `notifyBranchChanged(cwd)` invalidates the drawer's own
   status/diff/focused-diff parks for that folder and reloads the visible
-  view when it is showing it.
+  view when it is showing it. Cleanup deletes ride the same notify: a
+  deleted current branch auto-switches and a removed worktree drops
+  rows, so bulk and single deletes notify every touched repo (single
+  worktree removes notify the removed path too) before rescanning.
 - File browser: the same notify refreshes the tree when the active
   browser state is the switched folder (`HerdrFileBrowser.activeCwd()`),
   because the tree rows carry git status colors.
@@ -331,7 +343,9 @@ pre-switch answer. The contract, per surface:
   `scheduleRefresh(50)` so worktree rows and branch attribution re-sync.
 - TUI: the branch picker and the in-panel switch both drop the 2s
   worktree stamp cache for the cwd (`invalidate_stamp`), so the branch
-  badge answers from a real `worktree.list` on the next refresh.
+  badge answers from a real `worktree.list` on the next refresh. The
+  cleanup delete-selected flow and the prune action drop the stamp
+  entries for their touched repos with the same call.
 - Mobile: every switch site invalidates the file browser tree and status
   caches, the search result caches, the worktree discovery rows, and the
   header stamps for the affected workspace, then reloads the git view.

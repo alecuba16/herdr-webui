@@ -1,6 +1,17 @@
 # Release notes
 
 ## Unreleased
+- Branch deletes and worktree removals cascade like switches. The git
+  drawer's cleanup tab (bulk and single deletes, worktree removes) now
+  runs the same cross-surface cascade a branch switch does, because a
+  deleted current branch auto-switches to main/master on the server
+  and a removed worktree drops rows everywhere. On the server, every
+  transport (HTTP and the TUI/builtin socket path) drops the 2s
+  `worktree.list` cache for the touched cwd on switch, current-branch
+  delete, worktree remove, and prune; the builtin backend's own
+  worktree create/remove do the same. The TUI's cleanup delete and
+  prune drop its stamp cache entries so badges never answer with the
+  removed rows.
 - Branch switches keep every folder-scoped surface honest. A switch or
   create from the location bar, the git drawer, the TUI, or mobile now
   invalidates what it staled: the server drops its 2s `worktree.list`

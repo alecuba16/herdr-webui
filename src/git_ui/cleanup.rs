@@ -331,7 +331,14 @@ pub(super) fn git_ui_worktree_remove_blocking(
         vec!["worktree", "remove", path.as_str()]
     };
     match git_ui_text(&cwd, &args) {
-        Ok(text) => Ok(json!({ "ok": true, "message": text })),
+        Ok(text) => {
+            // A removed worktree drops a row from every worktree.list
+            // answer for this repo; both transports end here, so the
+            // cache drop lives with the operation.
+            crate::worktree_cache_invalidated(&cwd);
+            crate::worktree_cache_invalidated(&path);
+            Ok(json!({ "ok": true, "message": text }))
+        }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -372,6 +379,11 @@ pub(super) fn git_ui_worktree_prune_blocking(
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             // git writes "Removing worktrees/<name>: <reason>" to stderr
             let pruned: Vec<&str> = stderr.lines().filter(|l| !l.is_empty()).collect();
+            if !pruned.is_empty() {
+                // A real prune (not a dry run reporting candidates) drops
+                // rows; cached worktree.list answers must not outlive it.
+                crate::worktree_cache_invalidated(&cwd);
+            }
             Ok(json!({ "ok": true, "pruned": pruned, "message": stdout }))
         }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),

@@ -1761,8 +1761,11 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Delete branch of \$\{worktreeBranches\} selected \$\{noun\} too/);
     match(gitUiSource, /toggleCleanupDeleteBranch\(checked\)/);
     match(gitUiSource, /state\.cleanupConfirmDeleteBranch = false;/);
-    match(gitUiSource, /if \(deleted > 0\) await this\.scanCleanup\(\);/);
+    // The delete flow cascades like a switch (a deleted current branch
+    // auto-switches, a removed worktree drops rows) before rescanning.
+    match(gitUiSource, /if \(deleted > 0\) \{[\s\S]*?notifyBranchChanged\(repoPath\)[\s\S]*?await this\.scanCleanup\(\);/);
     match(gitUiSource, /await Promise\.all\(\[\.\.\.groups\.values\(\)\]/);
+
     const cleanupRs = readFileSync(new URL("../git_ui/cleanup.rs", import.meta.url), "utf8");
     const branchRs = readFileSync(new URL("../git_ui/branch.rs", import.meta.url), "utf8");
     match(cleanupRs, /\.filter\(\|worktree\| !worktree\.primary\)/);

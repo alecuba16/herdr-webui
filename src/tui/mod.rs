@@ -1380,11 +1380,25 @@ impl TuiApp {
                 // safe default.
                 let branch_too =
                     text.trim() == "yb" && self.git_panel.cleanup_branch_option_available();
+                let touched_repos: Vec<String> = self
+                    .git_panel
+                    .cleanup_pending_items()
+                    .into_iter()
+                    .map(|item| item.repo)
+                    .collect();
                 match self
                     .git_panel
                     .cleanup_delete_selected(&self.web_api, branch_too)
                 {
                     Ok(deleted) => {
+                        // A removed worktree drops rows from the cached
+                        // worktree.list replies; a deleted current branch
+                        // auto-switches on the server. Both change what the
+                        // stamp cache would serve for the touched repo, so
+                        // drop those entries like a switch does.
+                        for repo in &touched_repos {
+                            self.invalidate_stamp(repo);
+                        }
                         self.status = format!("deleted {deleted} cleanup item(s)");
                     }
                     Err(err) => self.error = Some(err.to_string()),
@@ -3482,7 +3496,19 @@ impl TuiApp {
             }
             KeyCode::Char('B') if self.git_panel.view == GitView::Cleanup => {
                 match self.git_panel.cleanup_prune(&self.web_api) {
-                    Ok(()) => self.status = "worktrees pruned".to_string(),
+                    Ok(()) => {
+                        // A prune that removed administrative entries
+                        // changed the worktree.list rows; drop the stamp
+                        // cache for the pane's own repo so the next
+                        // refresh re-stamps from a real reply.
+                        let repo = self
+                            .git_panel
+                            .selected_cleanup_item()
+                            .map(|item| item.repo)
+                            .unwrap_or_else(|| self.git_panel.cwd.clone());
+                        self.invalidate_stamp(&repo);
+                        self.status = "worktrees pruned".to_string();
+                    }
                     Err(err) => self.error = Some(err.to_string()),
                 }
             }
