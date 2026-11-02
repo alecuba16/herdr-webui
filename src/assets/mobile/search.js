@@ -22,6 +22,9 @@
       pathKind: "file",
       timer: null,
       requestSeq: 0,
+      root: "",
+      pathRoot: "",
+      contentRoot: "",
       actions: [],
       targets: [],
       pathEntries: [],
@@ -221,6 +224,7 @@
     }
 
     async function runMobilePathSearch(seq, query, cwd, append) {
+      mobileSearch.root = cwd;
       const helper = globalThis.HerdrWorkspaceSearch;
       mobileSearch.pathLoading = true;
       mobileSearch.pathError = "";
@@ -229,6 +233,7 @@
         const offset = append ? mobileSearch.pathOffset : 0;
         const data = await helper.searchPaths({ cwd, query, kind: mobileSearch.pathKind, offset });
         if (seq !== mobileSearch.requestSeq) return;
+        mobileSearch.pathRoot = cwd;
         const entries = data.entries || [];
         mobileSearch.pathEntries = append ? mobileSearch.pathEntries.concat(entries) : entries;
         mobileSearch.pathGitStatus = data.git_status || null;
@@ -256,6 +261,7 @@
     }
 
     async function runMobileContentSearch(seq, query, cwd, append, options = {}) {
+      mobileSearch.root = cwd;
       const helper = globalThis.HerdrWorkspaceSearch;
       const opts = helper.settings();
       mobileSearch.content.query = query;
@@ -270,6 +276,7 @@
       try {
         const offset = append ? mobileSearch.content.offset : 0;
         const data = await helper.searchContent({ cwd, query, offset, contextLines: mobileSearch.content.contextLines });
+        if (seq === mobileSearch.requestSeq) mobileSearch.contentRoot = cwd;
         if (seq !== mobileSearch.requestSeq) return;
         helper.applyContentResults(mobileSearch.content, data, append, { preserveExpanded: !!options.preserveExpanded });
       } catch (error) {
@@ -384,11 +391,11 @@
         if (row.type === "workspace") selectWorkspace(row.workspace.workspace_id);
         else if (row.agent) selectAgent(row.agent.workspace_id, row.agent.tab_id, row.agent.pane_id);
       },
-      openPath(path, kind) {
+      openPath(path, kind, root) {
         close();
         showScreen("files");
         const resolvedKind = kind === "dir" ? "dir" : "file";
-        openAt(path, { kind: resolvedKind, preserveContext: resolvedKind === "file" });
+        openAt(path, { cwd: root || mobileSearch.pathRoot || mobileSearch.root || mobileSearchRoot(), kind: resolvedKind, preserveContext: resolvedKind === "file" });
       },
       openContent(path, matchId) {
         const helper = globalThis.HerdrWorkspaceSearch;
@@ -396,7 +403,7 @@
         const match = globalThis.HerdrContentSearch && globalThis.HerdrContentSearch.findMatch(file, matchId);
         close();
         showScreen("files");
-        openAt(path, { kind: "file", preserveContext: true, highlight: helper && helper.matchHighlight(match, mobileSearch.query) });
+        openAt(path, { cwd: mobileSearch.contentRoot || mobileSearch.root || mobileSearchRoot(), kind: "file", preserveContext: true, highlight: helper && helper.matchHighlight(match, mobileSearch.query) });
       },
     };
 
@@ -414,7 +421,7 @@
         mobileSearch.content.expanded[path] = !mobileSearch.content.expanded[path];
         render();
       },
-      openFile(encodedPath) { globalThis.HerdrMobileSearch.openPath(decodeURIComponent(encodedPath), "file"); },
+      openFile(encodedPath) { globalThis.HerdrMobileSearch.openPath(decodeURIComponent(encodedPath), "file", mobileSearch.contentRoot || mobileSearch.root); },
       openMatch(encodedPath, encodedMatchId) { globalThis.HerdrMobileSearch.openContent(decodeURIComponent(encodedPath), decodeURIComponent(encodedMatchId)); },
       loadMore() { runMobileContentSearch(++mobileSearch.requestSeq, mobileSearch.query, mobileSearchRoot(), true, { preserveScroll: true }).then(renderPreservingScroll); },
       // The shared content picker renders "Load all matches" for a
@@ -455,6 +462,24 @@
     };
 
     return {
+      invalidateWorkspace(cwd) {
+        const changed = String(cwd || "").replace(/\/+$/, "");
+        const covered = [mobileSearch.root || mobileSearchRoot(), mobileSearch.pathRoot, mobileSearch.contentRoot].some((scope) => {
+          const root = String(scope || "").replace(/\/+$/, "");
+          return scope === "/" || String(scope || "").startsWith("~") || (root && (root === changed || changed.startsWith(root + "/") || root.startsWith(changed + "/")));
+        });
+        if (!covered) return;
+        clearTimeout(mobileSearch.timer);
+        mobileSearch.requestSeq++;
+        mobileSearch.pathEntries = [];
+        mobileSearch.pathGitStatus = null;
+        mobileSearch.pathOffset = 0;
+        mobileSearch.pathDone = true;
+        mobileSearch.pathLoading = false;
+        mobileSearch.pathError = "";
+        if (globalThis.HerdrWorkspaceSearch) globalThis.HerdrWorkspaceSearch.resetContentState(mobileSearch.content, mobileSearch.query);
+        render();
+      },
       close,
       open,
       render,

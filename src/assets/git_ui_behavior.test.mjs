@@ -2637,6 +2637,84 @@ test("cleanup delete retries with force when Git requires it", async () => {
   assert.equal(postBody(removed[1]).force, true);
 });
 
+test("cleanup delete cascades the branch-changed notification to the touched repos", async () => {
+  // A deleted branch may have been the current one (the server
+  // auto-switches to main/master first), so a cleanup delete must run
+  // the same cross-surface cascade a switch does: the shell bridge
+  // fires per touched repo, once per repo regardless of item count.
+  const scan = cleanupScanFixture();
+  const booted = await bootCleanup(() => scan);
+  const { ui, ctx } = booted;
+  const shellNotes = [];
+  ctx.window.HerdrShellNoteBranchMoved = (cwd) => shellNotes.push(cwd);
+
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/demo-repo|1"), true);
+  ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/other-repo|1"), true);
+  ui.openCleanupDeleteConfirm();
+  await ui.confirmCleanupDelete();
+  await settle();
+  assert.deepEqual(
+    shellNotes.sort(),
+    ["/tmp/demo-repo", "/tmp/other-repo"],
+    "every touched repo gets one branch-changed notification"
+  );
+
+  // Total failure deletes nothing: no repo cascades, the selection
+  // stays for a retry.
+  const failingScan = cleanupScanFixture();
+  const failing = await bootGitUi({
+    "/api/git-ui/status": { branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+    "/api/git-ui/cleanup-scan": () => failingScan,
+    "/api/git-ui/worktree-remove": () => ({ error: "refusing" }),
+    "/api/git-ui/branch-delete": () => ({ error: "refusing" }),
+  });
+  failing.ctx.window.HerdrShellNoteBranchMoved = (cwd) => shellNotes.push(cwd);
+  await failing.ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  failing.ui.tab("cleanup");
+  await failing.ui.scanCleanup();
+  shellNotes.length = 0;
+  failing.ui.toggleCleanupSelection(encodeURIComponent("worktree|/tmp/demo-repo|1"), true);
+  failing.ui.openCleanupDeleteConfirm();
+  await failing.ui.confirmCleanupDelete();
+  await settle();
+  assert.deepEqual(shellNotes, [], "nothing deleted means no cascade");
+});
+
+test("single branch delete from the cleanup tab notifies the repo folder", async () => {
+  const scan = cleanupScanFixture();
+  const booted = await bootCleanup(() => scan);
+  const { ui, ctx, calls } = booted;
+  const shellNotes = [];
+  ctx.window.HerdrShellNoteBranchMoved = (cwd) => shellNotes.push(cwd);
+
+  const before = calls.length;
+  await ui.deleteCleanupBranch(0, "wt-a-branch", false);
+  await settle();
+  assert.equal(cleanupPosts(calls, "/api/git-ui/branch-delete", before).length, 1);
+  assert.deepEqual(shellNotes, ["/tmp/demo-repo"], "branch delete cascades like a switch");
+});
+
+test("single worktree remove from the cleanup tab notifies repo and removed paths", async () => {
+  const scan = cleanupScanFixture();
+  const booted = await bootCleanup(() => scan);
+  const { ui, ctx, calls } = booted;
+  const shellNotes = [];
+  ctx.window.HerdrShellNoteBranchMoved = (cwd) => shellNotes.push(cwd);
+
+  const before = calls.length;
+  await ui.deleteCleanupWorktree(0, 1, false);
+  await settle();
+  assert.equal(cleanupPosts(calls, "/api/git-ui/worktree-remove", before).length, 1);
+  assert.deepEqual(
+    shellNotes.sort(),
+    ["/tmp/demo-repo", "/tmp/wt-a"],
+    "the repo root and the removed checkout both notify"
+  );
+});
+
 test("cleanup delete runs repos in parallel but items of one repo sequentially", async () => {
   // Two repos, two worktrees each. Deferred handlers gate the calls so
   // the test observes real interleaving: repo A's first item blocks
@@ -2811,6 +2889,79 @@ test("notifyBranchChanged invalidates the matching folder and refreshes only the
     calls.some((call) => call.path === "/api/git-ui/status" && call.params.get("cwd") === "/tmp/other-repo"),
     "the invalidated view reloads on the next open",
   );
+});
+
+test("notifyBranchChanged cascades to the other folder-scoped surfaces", async () => {
+  // The bar's switch moves HEAD for every surface reading the folder,
+  // not just the drawer. A branch switch on the folder the file
+  // browser is showing must reload its tree, an open search panel
+  // scoped to the same workspace must re-run its search, and the shell
+  // bridge must fire so the rail's parked status cache drops and the
+  // worktree rows refresh. Surfaces on other folders stay untouched.
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "old", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+
+  const browserRefreshed = [];
+  const searched = [];
+  const shellNotes = [];
+  ctx.window.HerdrFileBrowser = {
+    activeCwd: () => "/tmp/demo-repo/",
+    refresh: () => browserRefreshed.push("demo-repo"),
+  };
+  ctx.window.HerdrSearchPanel = {
+    scopeCwd: () => "/tmp/demo-repo",
+    search: (append) => searched.push(append),
+  };
+  ctx.window.HerdrShellNoteBranchMoved = (cwd) => shellNotes.push(cwd);
+
+  ui.notifyBranchChanged("/tmp/demo-repo");
+  await settle();
+  assert.deepEqual(browserRefreshed, ["demo-repo"], "file browser on the switched folder reloads");
+  assert.deepEqual(searched, [false], "open search panel on the same workspace re-searches");
+  assert.deepEqual(shellNotes, ["/tmp/demo-repo"], "shell bridge fires for the switched folder");
+
+  // Different folder: no surface reloads, and the bridge still fires
+  // so the shell can drop its own parked cache for that folder.
+  browserRefreshed.length = 0;
+  searched.length = 0;
+  shellNotes.length = 0;
+  ui.notifyBranchChanged("/tmp/other-repo");
+  await settle();
+  assert.deepEqual(browserRefreshed, [], "file browser on another folder does not reload");
+  assert.deepEqual(searched, [], "search panel scoped elsewhere does not re-search");
+  assert.deepEqual(shellNotes, ["/tmp/other-repo"], "shell bridge fires for the other folder too");
+});
+
+test("notifyBranchChanged skips absent surfaces and empty cwd", async () => {
+  // The cascade must not throw when a surface has not loaded yet
+  // (file browser lazy-loads, search panel may be absent) and must
+  // ignore an empty cwd instead of dropping every cache it can find.
+  const booted = await bootGitUi({
+    "/api/git-ui/status": { branch: "old", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] },
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  delete ctx.window.HerdrFileBrowser;
+  delete ctx.window.HerdrSearchPanel;
+  let shellNote = null;
+  ctx.window.HerdrShellNoteBranchMoved = (cwd) => { shellNote = cwd; };
+  ui.notifyBranchChanged("");
+  await settle();
+  assert.equal(shellNote, null, "empty cwd never reaches the bridge");
+  ui.notifyBranchChanged("/tmp/demo-repo");
+  await settle();
+  assert.equal(shellNote, "/tmp/demo-repo", "absent surfaces do not break the cascade");
 });
 
 // The git_ui.js state lives in a closure, so these tests drive behavior

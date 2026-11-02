@@ -215,9 +215,15 @@ fn maybe_switch_before_delete(cwd: &str, branch: &str) -> Result<(), (StatusCode
             "main or master branch is required before deleting the current branch".to_string(),
         ));
     };
-    git_ui_text(cwd, &["switch", "--", default_branch])
-        .map(|_| ())
-        .map_err(|err| (StatusCode::BAD_GATEWAY, err))
+    match git_ui_text(cwd, &["switch", "--", default_branch]) {
+        Ok(_) => {
+            // The auto-switch moves HEAD like any switch: the cached
+            // worktree.list rows for this cwd must not outlive it.
+            crate::worktree_cache_invalidated(cwd);
+            Ok(())
+        }
+        Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
+    }
 }
 
 fn is_default_branch(branch: &str) -> bool {
@@ -252,7 +258,14 @@ pub(super) fn git_ui_switch_blocking(
 ) -> Result<serde_json::Value, (StatusCode, String)> {
     let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     match git_ui_text(&cwd, &refs) {
-        Ok(text) => Ok(json!({ "ok": true, "message": text })),
+        Ok(text) => {
+            // Both transports end here (HTTP handler and builtin socket
+            // dispatch), so the cache drop lives with the operation: a
+            // switch moves HEAD and the cached worktree.list rows for
+            // this cwd name the pre-switch branch.
+            crate::worktree_cache_invalidated(&cwd);
+            Ok(json!({ "ok": true, "message": text }))
+        }
         Err(err) => Err((StatusCode::BAD_GATEWAY, err)),
     }
 }
@@ -286,7 +299,8 @@ pub(super) async fn git_ui_switch(
         vec!["switch".to_string(), branch.to_string()]
     };
     let cwd = body.cwd;
-    git_spawn(move || git_ui_switch_blocking(cwd, args)).await
+    let response = git_spawn(move || git_ui_switch_blocking(cwd, args)).await;
+    response
 }
 
 #[cfg(test)]

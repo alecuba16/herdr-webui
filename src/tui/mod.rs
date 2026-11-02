@@ -1002,6 +1002,19 @@ impl TuiApp {
         }
     }
 
+    /// Drop the cached `worktree.list` reply for a cwd whose repo state
+    /// just changed out of band (branch switch through the picker or the
+    /// git panel). The cached stamp names the pre-switch branch, so the
+    /// badge would answer with the old HEAD for the rest of the TTL.
+    pub(crate) fn invalidate_stamp(&mut self, cwd: &str) {
+        self.stamp_cache.remove(cwd);
+        for workspace in &mut self.snapshot.workspaces {
+            if workspace.cwd == cwd {
+                workspace.worktree = None;
+            }
+        }
+    }
+
     /// Focused UI context for the statusbar hint (lazygit-style context
     /// resolution): resolves in the same priority order as `handle_key`,
     /// so the hint always describes the keys that actually do something
@@ -1367,11 +1380,25 @@ impl TuiApp {
                 // safe default.
                 let branch_too =
                     text.trim() == "yb" && self.git_panel.cleanup_branch_option_available();
+                let touched_repos: Vec<String> = self
+                    .git_panel
+                    .cleanup_pending_items()
+                    .into_iter()
+                    .map(|item| item.repo)
+                    .collect();
                 match self
                     .git_panel
                     .cleanup_delete_selected(&self.web_api, branch_too)
                 {
                     Ok(deleted) => {
+                        // A removed worktree drops rows from the cached
+                        // worktree.list replies; a deleted current branch
+                        // auto-switches on the server. Both change what the
+                        // stamp cache would serve for the touched repo, so
+                        // drop those entries like a switch does.
+                        for repo in &touched_repos {
+                            self.invalidate_stamp(repo);
+                        }
                         self.status = format!("deleted {deleted} cleanup item(s)");
                     }
                     Err(err) => self.error = Some(err.to_string()),
@@ -3350,6 +3377,11 @@ impl TuiApp {
                     if let Err(err) = self.git_panel.switch_selected(&self.web_api) {
                         self.error = Some(err.to_string());
                     } else {
+                        // The worktree stamp cache still answers with the
+                        // pre-switch branch; drop it so the next refresh
+                        // re-stamps the workspace badge from a real
+                        // worktree.list call.
+                        self.invalidate_stamp(&self.git_panel.cwd.clone());
                         self.status = format!(
                             "switched to {}",
                             self.git_panel
@@ -3357,7 +3389,7 @@ impl TuiApp {
                                 .get(self.git_panel.branch_selected)
                                 .map(|entry| entry.name.clone())
                                 .unwrap_or_default()
-                        );
+                        )
                     }
                 }
                 GitView::Log => {
@@ -3464,7 +3496,19 @@ impl TuiApp {
             }
             KeyCode::Char('B') if self.git_panel.view == GitView::Cleanup => {
                 match self.git_panel.cleanup_prune(&self.web_api) {
-                    Ok(()) => self.status = "worktrees pruned".to_string(),
+                    Ok(()) => {
+                        // A prune that removed administrative entries
+                        // changed the worktree.list rows; drop the stamp
+                        // cache for the pane's own repo so the next
+                        // refresh re-stamps from a real reply.
+                        let repo = self
+                            .git_panel
+                            .selected_cleanup_item()
+                            .map(|item| item.repo)
+                            .unwrap_or_else(|| self.git_panel.cwd.clone());
+                        self.invalidate_stamp(&repo);
+                        self.status = "worktrees pruned".to_string();
+                    }
                     Err(err) => self.error = Some(err.to_string()),
                 }
             }

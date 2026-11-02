@@ -678,6 +678,95 @@ function runSource(ctx) {
 }
 
 describe("mobile bundle load", () => {
+  for (const site of ["list", "sheet", "create"]) {
+    it(`invalidates mobile surfaces after a successful ${site} branch switch`, async () => {
+      const ctx = context("/session/default/workspace/w1");
+      const fetch = ctx.fetch;
+      ctx.fetch = async (url, opt) => {
+        if (String(url).startsWith("/api/file-browser/tree")) {
+          ctx.requests.push({ url, opt: opt || {} });
+          return { ok: true, status: 200, json: async () => ({ entries: [{ kind: "file", name: "demo.py", path: "src/demo.py" }] }) };
+        }
+        return fetch(url, opt);
+      };
+      const invalidations = [];
+      let search;
+      const modules = ["HerdrMobileWorkmetaModule", "HerdrMobileWorktrees", "HerdrMobileSearchModule", "HerdrMobileFileBrowser"];
+      const scripts = getMobileBundleScripts();
+      for (const script of scripts.slice(0, -1)) script.runInContext(ctx);
+      for (const name of modules) {
+        const create = ctx[name].create;
+        ctx[name].create = (deps) => {
+          const instance = create(deps);
+          const invalidate = instance.invalidateWorkspace;
+          instance.invalidateWorkspace = (cwd) => {
+            invalidations.push([name, cwd]);
+            return invalidate(cwd);
+          };
+          if (name === "HerdrMobileSearchModule") search = instance;
+          return instance;
+        };
+      }
+      scripts.at(-1).runInContext(ctx);
+      await ctx.HerdrMobile.refresh();
+      await ctx.settle();
+      ctx.HerdrMobile.showScreen("files");
+      await ctx.settle();
+      search.state.root = "/tmp";
+      search.state.pathEntries = [{ path: "old.js" }];
+      search.state.pathGitStatus = { old: true };
+      if (site !== "list") {
+        ctx.HerdrMobile.openBranchSheet();
+        await ctx.settle();
+      }
+      const before = ctx.requests.length;
+      if (site === "list") await ctx.HerdrMobile.gitSwitchBranch("feature/mobile");
+      else if (site === "sheet") await ctx.HerdrMobile.switchBranchFromSheet("feature/mobile");
+      else {
+        ctx.HerdrMobile.setBranchCreateName("feature/new");
+        await ctx.HerdrMobile.createBranchFromSheet();
+      }
+      await ctx.settle();
+      equal(invalidations.length, 4);
+      for (const [name, cwd] of invalidations) equal(cwd, "/tmp/alpha", name);
+      equal(search.state.pathEntries.length, 0);
+      equal(search.state.pathGitStatus, null);
+      const after = ctx.requests.slice(before);
+      ok(after.some((request) => request.url.startsWith("/api/file-browser/tree?cwd=%2Ftmp%2Falpha")), "visible tree refreshed");
+      ok(after.some((request) => request.url.startsWith("/api/worktrees?") || request.url.startsWith("/api/session-snapshot")), "workspace metadata refreshed");
+    });
+  }
+
+  it("keeps search opens anchored to the result root after the default folder changes", async () => {
+    const ctx = context("/session/default/workspace/w1");
+    const fetch = ctx.fetch;
+    ctx.fetch = async (url, opt) => {
+      if (String(url).startsWith("/api/file-browser/tree")) {
+        ctx.requests.push({ url, opt: opt || {} });
+        return { ok: true, status: 200, json: async () => ({ entries: [{ kind: "file", name: "demo.py", path: "src/demo.py" }] }) };
+      }
+      return fetch(url, opt);
+    };
+    let search;
+    const scripts = getMobileBundleScripts();
+    for (const script of scripts.slice(0, -1)) script.runInContext(ctx);
+    const create = ctx.HerdrMobileSearchModule.create;
+    ctx.HerdrMobileSearchModule.create = (deps) => (search = create(deps));
+    scripts.at(-1).runInContext(ctx);
+    await ctx.HerdrMobile.refresh();
+    await ctx.settle();
+    search.state.root = "/tmp/default";
+    ctx.HerdrMobileAppDeps.state.defaultFolder = "/tmp/new-default";
+    ctx.HerdrMobileSearch.openPath("src/demo.py", "file");
+    await ctx.settle();
+    ok(ctx.requests.some((request) => request.url.startsWith("/api/file-browser/file?cwd=%2Ftmp%2Fdefault&path=src%2Fdemo.py")));
+    search.state.pathEntries = [{ path: "unchanged.js" }];
+    search.invalidateWorkspace("/tmp/unrelated");
+    equal(search.state.pathEntries.length, 1);
+    search.invalidateWorkspace("/tmp/default/nested");
+    equal(search.state.pathEntries.length, 0);
+  });
+
   const source =
     readFileSync(new URL("./shared/options.js", import.meta.url), "utf8") +
     "\n" +

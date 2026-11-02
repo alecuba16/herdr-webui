@@ -544,7 +544,37 @@ test("panel result callbacks use panel-local rows and route file opens", async (
   await ctx.HerdrSearchPanel.open("ws-1", {});
   ctx.HerdrSearchPanel.panel.chooseSearchResult(0);
 
-  assert.deepEqual(opened, [["src/lib.rs", "file"]], "clicking a panel result opens its file through the shared path flow");
+  assert.equal(opened.length, 1, "clicking a panel result opens its file through the shared path flow");
+  assert.equal(opened[0][0], "src/lib.rs");
+  assert.equal(opened[0][1], "file");
+  assert.deepEqual(
+    { workspace_id: opened[0][2] && opened[0][2].workspace_id, cwd: opened[0][2] && opened[0][2].cwd },
+    { workspace_id: "ws-1", cwd: "/repo" },
+    "the open carries the panel's workspace so it anchors where the results came from",
+  );
+});
+
+test("panel scopeCwd mirrors the workspace its results search", async () => {
+  // The HEAD-moved cascade (git drawer) asks the panel which folder it
+  // would search; the answer must be the panel scope, not the palette's
+  // default-folder root, and empty when the panel is closed.
+  const { document } = buildDom();
+  const ctx = loadPanel(document, {
+    HerdrWorkspaceSearch: {
+      settings: () => ({ searchWorkspacesEnabled: true, searchFilesEnabled: true, searchFoldersEnabled: true, searchContentEnabled: true, searchSectionOrder: ["workspaces", "files", "content"], contentMinChars: 3 }),
+      createContentState: () => ({ query: "", files: [], expanded: {}, loading: false, error: "", done: true, offset: 0, total_files: 0, total_matches: 0 }),
+      resetContentState: () => {},
+      workspaceCwd: (workspace) => (workspace && workspace.cwd) || "",
+      searchPaths: async () => ({ entries: [], git_status: null, truncated: false }),
+      searchContent: async () => ({ files: [], total_files: 0, total_matches: 0, truncated: false }),
+    },
+  });
+
+  assert.equal(ctx.HerdrSearchPanel.scopeCwd(), "", "closed panel reports no scope");
+  await ctx.HerdrSearchPanel.open("ws-1", { forceOpen: true });
+  assert.equal(ctx.HerdrSearchPanel.scopeCwd(), "/repo", "open panel reports its workspace root");
+  ctx.HerdrSearchPanel.close();
+  assert.equal(ctx.HerdrSearchPanel.scopeCwd(), "", "closing clears the scope again");
 });
 
 test("panel content expansion uses the per-file search endpoint", async () => {

@@ -1780,6 +1780,9 @@
     },
     menuAction(action) { return handleMenuAction(action); },
     isVisible() { return state.open; },
+    // Read-only probe for the HEAD-moved cascade (git drawer): the tree
+    // only reloads when the active browser state is the switched folder.
+    activeCwd() { return state.open ? state.cwd : ""; },
     isWorkspaceVisible(workspace) { return state.open && activeKey === workspaceKey(workspace); },
   };
 })();

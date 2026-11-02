@@ -17,6 +17,16 @@ tar -xzf herdr-webui-macos-aarch64.tar.gz
 
 Each tarball contains `herdr-webui`, `herdr-webui-tui`, and a `README.txt`; a matching `.sha256` checksum is published next to it. The binary can also install itself as a service: `./herdr-webui install-mac` or `install-linux` (see [docs/installation.md](docs/installation.md)).
 
+On macOS or Linux with [Homebrew](https://brew.sh), the same binaries are available from the tap:
+
+```bash
+brew install alecuba16/tap/herdr-webui
+herdr-webui --https off --backend-mode builtin
+# open http://127.0.0.1:8787
+```
+
+The formula pours both `herdr-webui` and `herdr-webui-tui`. It tracks the latest release automatically (the tap polls releases daily and regenerates the formula), so `brew upgrade` picks up new versions.
+
 To build from source instead, the same quick start works with the Rust toolchain. From a fresh clone:
 
 ```bash

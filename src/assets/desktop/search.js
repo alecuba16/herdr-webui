@@ -841,11 +841,12 @@ function searchPaletteKeydown(e) {
   }
 }
 
-async function openWorkspaceSearchPath(path, kind) {
-  // Results come from the default-folder root (see runPaletteSearches),
-  // so they open in the default folder even when no workspace is
-  // selected.
-  const workspace = paletteSearchWorkspace();
+async function openWorkspaceSearchPath(path, kind, workspaceOverride) {
+  // The palette always searches the default-folder root, so its results
+  // open there. The embedded panel scopes results to the selected
+  // workspace and passes that workspace through, so its opens anchor
+  // where its results actually came from.
+  const workspace = workspaceOverride || paletteSearchWorkspace();
   closeSearchPalette();
   if (!workspace) return;
   try {
@@ -859,11 +860,12 @@ async function openWorkspaceSearchPath(path, kind) {
   }
 }
 
-async function openWorkspaceSearchContent(file, match) {
+async function openWorkspaceSearchContent(file, match, workspaceOverride) {
   const helper = window.HerdrWorkspaceSearch;
-  // Same default-folder root as openWorkspaceSearchPath: content matches
-  // from a default-folder search open in the default folder.
-  const workspace = paletteSearchWorkspace();
+  // Same anchoring rule as openWorkspaceSearchPath: the palette's
+  // matches come from the default folder, the panel's from its own
+  // scope, and each opens where its results were found.
+  const workspace = workspaceOverride || paletteSearchWorkspace();
   closeSearchPalette();
   if (!workspace || !file) return;
   try {

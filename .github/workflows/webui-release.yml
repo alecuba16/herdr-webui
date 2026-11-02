@@ -176,3 +176,57 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.sha256
+
+  publish-tap:
+    name: Update Homebrew tap
+    runs-on: ubuntu-latest
+    needs: release
+    # Reuses the tap's own generator so the formula here and the formula the
+    # daily poll produces can never drift apart.
+    steps:
+      - name: Check tap token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not set in repo secrets. The formula push to the tap is skipped until the secret is added (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          # A 401/403 here means expired or wrongly scoped: fail this step so
+          # the release page shows the tap update did not happen.
+          if ! gh api --method GET repos/alecuba16/homebrew-tap \
+              -H "Authorization: Bearer $HOMEBREW_TAP_TOKEN" > /dev/null 2>&1; then
+            echo "::error::HOMEBREW_TAP_TOKEN was rejected (expired or missing tap access). Rotate it: Settings > Secrets and variables > Actions > HOMEBREW_TAP_TOKEN."
+            exit 1
+          fi
+          echo "tap token accepted"
+
+      - name: Checkout tap
+        uses: actions/checkout@v7
+        with:
+          repository: alecuba16/homebrew-tap
+          # Fine-grained PAT, contents:write on alecuba16/homebrew-tap only.
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Regenerate formula for ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          chmod +x scripts/generate_formula.sh
+          # Explicit tag: no latest-release race with the just-published one.
+          ./scripts/generate_formula.sh Formula/herdr-webui.rb "${GITHUB_REF_NAME}"
+          ruby -c Formula/herdr-webui.rb
+
+      - name: Commit when changed
+        run: |
+          if git diff --quiet -- Formula/herdr-webui.rb; then
+            echo "formula already at ${GITHUB_REF_NAME}, nothing to commit"
+            exit 0
+          fi
+          git config user.name "alecuba16-release-bot"
+          git config user.email "actions@github.com"
+          git add Formula/herdr-webui.rb
+          git commit -m "herdr-webui ${GITHUB_REF_NAME#v}"
+          # The tap's daily poll can race this push; rebase once on the fresh
+          # tip and retry. Single-file regeneration rebases trivially.
+          git push || { git pull --rebase origin main && git push; }

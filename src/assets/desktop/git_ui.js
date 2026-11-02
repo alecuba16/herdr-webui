@@ -1472,11 +1472,17 @@
     // The drawer never made the request, so its cached views still hold
     // the pre-mutation HEAD: status, diffs, focused-diff parks. Invalidate
     // every view keyed to this folder and reload the visible one; views
-    // for other folders stay untouched. The shell render that follows the
-    // bar action picks up the fresh state on the next open.
+    // for other folders stay untouched. The switch also moves HEAD for
+    // every other surface reading this folder: the file browser tree
+    // (git status colors), the open search panel (results carry the old
+    // branch's matches), and the shell-side status park that would keep
+    // tinting the rail with the old branch. Each one reloads only when it
+    // is showing this folder, then the shell refresh re-syncs worktree
+    // rows and branch attribution (the server drops its worktree cache
+    // on a successful switch).
     notifyBranchChanged(cwd) {
       const folder = String(cwd || "");
-      if (!folder) return;
+      if (!folder) return Promise.resolve();
       Object.keys(state.cache || {}).forEach((key) => {
         const view = state.cache[key];
         if (!view || !samePath(view.cwd || "", folder)) return;
@@ -1484,10 +1490,29 @@
         if (view.status && !view.status.__probedOnly) view.status = null;
         view.diff = null;
       });
+      let drawerRefresh = Promise.resolve();
       if (state.visible) {
         const view = active();
-        if (view && samePath(view.cwd || "", folder)) refresh();
+        if (view && samePath(view.cwd || "", folder)) drawerRefresh = refresh();
       }
+      if (window.HerdrFileBrowser && typeof window.HerdrFileBrowser.activeCwd === "function") {
+        if (samePath(window.HerdrFileBrowser.activeCwd() || "", folder))
+          window.HerdrFileBrowser.refresh();
+      }
+      if (window.HerdrSearchPanel && typeof window.HerdrSearchPanel.scopeCwd === "function") {
+        if (samePath(String(window.HerdrSearchPanel.scopeCwd() || ""), folder))
+          window.HerdrSearchPanel.search(false);
+      }
+      // Shell-side caches and worktree rows live in the concatenated
+      // app script's lexical scope; the bridge drops the rail's parked
+      // status for this folder and schedules the shell refresh that
+      // re-syncs worktree rows and branch attribution.
+      if (typeof globalThis.HerdrShellNoteBranchMoved === "function")
+        globalThis.HerdrShellNoteBranchMoved(folder);
+      // Cleanup flows await this: an un-awaited drawer refresh would
+      // flash Loading Git state over a just-rendered per-item failure
+      // list before the caller's own render.
+      return drawerRefresh;
     },
     isVisible() { return state.visible; },
     isWorkspaceVisible(key) { return state.visible && state.activeKey === key; },
@@ -2151,7 +2176,14 @@
       }
       // Rescan only when at least one deletion succeeded; on total failure
       // the scan result and selection stay so the user can retry.
-      if (deleted > 0) await this.scanCleanup();
+      if (deleted > 0) {
+        // A deleted branch may have been the current one (the server
+        // auto-switches to main/master first), and removed worktrees drop
+        // rows from every folder-scoped surface: cascade like a switch.
+        const touchedRepos = [...new Set(items.map((item) => item.repo))].filter(Boolean);
+        await Promise.all(touchedRepos.map((repoPath) => this.notifyBranchChanged(repoPath)));
+        await this.scanCleanup();
+      }
       if (failures.length) view.cleanupError = failures.join("\n");
       if (failures.length) {
         const latest = active();
@@ -2172,6 +2204,7 @@
       if (typeof showBlocking === "function") showBlocking("Deleting branch...");
       try {
         await api("/api/git-ui/branch-delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo.path, branch, force, confirmed: true }) });
+        await this.notifyBranchChanged(repo.path);
         await this.scanCleanup();
       } catch (err) {
         view.cleanupError = err.message || String(err);
@@ -2196,6 +2229,8 @@
       if (typeof showBlocking === "function") showBlocking("Removing worktree...");
       try {
         await api("/api/git-ui/worktree-remove", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: repo.path, path: worktree.path, force, confirmed: true }) });
+        await this.notifyBranchChanged(repo.path);
+        await this.notifyBranchChanged(worktree.path);
         await this.scanCleanup();
       } catch (err) {
         view.cleanupError = err.message || String(err);

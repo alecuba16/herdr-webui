@@ -371,6 +371,36 @@ describe("location bar branch popover", () => {
     ok(html.includes("New branch from feature-x"), "new-branch names the base");
   });
 
+  it("branch popover carries a create-worktree row for plain checkouts", async () => {
+    const { ctx, bar } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    ok(!bar.innerHTML.includes("location-bar-worktree-chip"), "branch-only shape: no worktree chip");
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    const html = bar.innerHTML;
+    ok(html.includes('aria-label="Create worktree"'), "create row is named");
+    ok(
+      html.includes("onclick=\"HerdrLocationBar.createWorktreeFromBranchPopover('feature-x')\""),
+      "create row targets the current branch",
+    );
+    const scroll = html.indexOf("git-ui-branch-list-scroll");
+    ok(scroll > -1 && html.indexOf('aria-label="Create worktree"') > scroll, "create row renders inside the scrolled list");
+  });
+
+  it("create-worktree from the branch popover opens the modal prefilled and closes the popover", async () => {
+    const created = [];
+    const { ctx, bar } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.openWorktreeCreateFromGitBranch = (cwd, branch) => created.push([cwd, branch]);
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    ctx.HerdrLocationBar.createWorktreeFromBranchPopover(encodeURIComponent("feature-x"));
+    equal(JSON.stringify(created), JSON.stringify([["/repo", "feature-x"]]), "modal opens with cwd + the popover's branch");
+    ok(!bar.innerHTML.includes("location-bar-branch-popover"), "popover closes before the modal opens");
+  });
+
   it("re-opening the chip toggles the popover closed", async () => {
     const { ctx, bar } = loadPopover({
       routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },

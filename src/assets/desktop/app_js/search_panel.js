@@ -380,7 +380,7 @@
       const path = decodeURIComponent(encodedPath);
       const state = ensureState();
       const entry = (state.pathEntries || []).find((item) => item.path === path);
-      openWorkspaceSearchPath(path, entry && entry.kind === "dir" ? "dir" : state.pathKind);
+      openWorkspaceSearchPath(path, entry && entry.kind === "dir" ? "dir" : state.pathKind, panelSearchWorkspace());
     },
   };
 
@@ -392,14 +392,14 @@
       renderPanel();
     },
     openFile(encodedPath) {
-      openWorkspaceSearchPath(decodeURIComponent(encodedPath), "file");
+      openWorkspaceSearchPath(decodeURIComponent(encodedPath), "file", panelSearchWorkspace());
     },
     openMatch(encodedPath, encodedMatchId) {
       const path = decodeURIComponent(encodedPath);
       const state = ensureState();
       const file = (state.content.files || []).find((item) => item.path === path);
       const match = window.HerdrContentSearch && window.HerdrContentSearch.findMatch(file, decodeURIComponent(encodedMatchId));
-      openWorkspaceSearchContent(file, match);
+      openWorkspaceSearchContent(file, match, panelSearchWorkspace());
     },
     loadMore() {
       runSearch(true);
@@ -462,9 +462,9 @@
       if (!result || (result.type === "recent" && result.isOpen)) return;
       close();
       if (result.type === "path") {
-        openWorkspaceSearchPath(result.path, result.kind);
+        openWorkspaceSearchPath(result.path, result.kind, panelSearchWorkspace());
       } else if (result.type === "content") {
-        openWorkspaceSearchContent(result.file, result.match);
+        openWorkspaceSearchContent(result.file, result.match, panelSearchWorkspace());
       } else if (result.type === "action") {
         runSearchAction(result.action);
       } else if (result.type === "recent") {
@@ -551,6 +551,16 @@
     open,
     close,
     isOpen,
+    // The git drawer's HEAD-moved cascade asks which folder the open
+    // panel would search right now; runSearch re-derives the scope
+    // itself, so this only steers the refresh decision. Empty when the
+    // panel is closed or the scope resolves to nothing.
+    scopeCwd() {
+      if (!isOpen()) return "";
+      const helper = window.HerdrWorkspaceSearch;
+      const workspace = panelSearchWorkspace();
+      return helper ? helper.workspaceCwd(workspace) : (workspace && workspace.cwd) || "";
+    },
     render: renderPanel,
     search: runSearch,
     tree: PanelTree,

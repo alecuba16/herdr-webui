@@ -3793,6 +3793,146 @@ mod tests {
         );
     }
 
+    // The TUI switches branches through socket_dispatch; the webui's
+    // worktree.list cache lives in the same process (builtin backend), so
+    // every socket switch/delete/remove/prune must drop the cached rows
+    // for the touched cwd. These tests ride the real registry the server
+    // installs at startup.
+    struct RegisteredCache {
+        cache: std::sync::Arc<crate::WorktreeListCache>,
+    }
+
+    impl RegisteredCache {
+        fn install() -> Self {
+            let cache = std::sync::Arc::new(crate::WorktreeListCache::default());
+            crate::register_worktree_list_cache(cache.clone());
+            Self { cache }
+        }
+
+        fn seed(&self, cwd: &str, branch: &str) {
+            self.cache
+                .put(cwd, json!([{ "path": cwd, "branch": branch }]));
+        }
+
+        fn alive(&self, cwd: &str) -> bool {
+            self.cache.get(&Some(cwd.to_string())).is_some()
+        }
+    }
+
+    #[test]
+    fn socket_switch_drops_cached_worktree_rows() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        repo.git(&["switch", "-c", "feature"]);
+        repo.git(&["switch", "main"]);
+        let cwd = repo.path.to_str().unwrap().to_string();
+        let other = TempRepo::new();
+        other.commit_initial();
+        let other_cwd = other.path.to_str().unwrap().to_string();
+
+        let registered = RegisteredCache::install();
+        registered.seed(&cwd, "main");
+        registered.seed(&other_cwd, "main");
+
+        socket_dispatch("git.switch", json!({ "cwd": &cwd, "branch": "feature" })).unwrap();
+
+        assert!(
+            !registered.alive(&cwd),
+            "the switched cwd must lose its cached worktree.list rows"
+        );
+        assert!(
+            registered.alive(&other_cwd),
+            "an untouched cwd keeps its cached rows"
+        );
+    }
+
+    #[test]
+    fn socket_branch_delete_auto_switch_drops_cached_worktree_rows() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        repo.git(&["switch", "-c", "feature"]);
+        let cwd = repo.path.to_str().unwrap().to_string();
+
+        let registered = RegisteredCache::install();
+        registered.seed(&cwd, "feature");
+
+        // Deleting the current branch auto-switches to main first; both
+        // operations move HEAD, so the cached rows for this cwd are gone.
+        socket_dispatch(
+            "git.branch.delete",
+            json!({ "cwd": &cwd, "branch": "feature", "confirmed": true }),
+        )
+        .unwrap();
+
+        assert!(
+            !registered.alive(&cwd),
+            "deleting the current branch auto-switches, so the cached rows must drop"
+        );
+    }
+
+    #[test]
+    fn socket_worktree_remove_drops_rows_for_repo_and_removed_path() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        repo.git(&[
+            "worktree",
+            "add",
+            "--detach",
+            repo.path.join("side-checkout").to_str().unwrap(),
+        ]);
+        let cwd = repo.path.to_str().unwrap().to_string();
+        let side = repo.path.join("side-checkout");
+        let side_cwd = side.to_str().unwrap().to_string();
+
+        let registered = RegisteredCache::install();
+        registered.seed(&cwd, "main");
+        registered.seed(&side_cwd, "detached");
+
+        socket_dispatch(
+            "git.worktree_remove",
+            json!({ "cwd": &cwd, "path": &side_cwd, "confirmed": true }),
+        )
+        .unwrap();
+
+        assert!(
+            !registered.alive(&cwd),
+            "the repo root loses its cached rows after a worktree removal"
+        );
+        assert!(
+            !registered.alive(&side_cwd),
+            "the removed checkout loses its cached rows too"
+        );
+    }
+
+    #[test]
+    fn socket_worktree_prune_drops_rows_only_when_something_was_pruned() {
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        let cwd = repo.path.to_str().unwrap().to_string();
+
+        let registered = RegisteredCache::install();
+        registered.seed(&cwd, "main");
+
+        // A prune with nothing to remove keeps the cache: no rows changed.
+        socket_dispatch("git.worktree_prune", json!({ "cwd": &cwd })).unwrap();
+        assert!(
+            registered.alive(&cwd),
+            "a no-op prune must not drop fresh cached rows"
+        );
+
+        // A stale administrative entry (directory deleted behind git's
+        // back) is a real prune: the cache must drop.
+        let side = repo.path.join("pruned-checkout");
+        repo.git(&["worktree", "add", "--detach", side.to_str().unwrap()]);
+        std::fs::remove_dir_all(&side).unwrap();
+        registered.seed(&cwd, "main");
+        socket_dispatch("git.worktree_prune", json!({ "cwd": &cwd })).unwrap();
+        assert!(
+            !registered.alive(&cwd),
+            "a prune that removed worktrees drops the cached rows"
+        );
+    }
+
     #[test]
     fn socket_dispatch_guards_destructive_confirmation_gates() {
         let repo = TempRepo::new();

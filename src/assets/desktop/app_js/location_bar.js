@@ -246,6 +246,19 @@
         </div>`;
   }
 
+  // Create-worktree row under the branch sections. Sits inside the
+  // scrolled rows area so it reads as a sibling action of the branch
+  // list, not a header control. The bar's branch-only shape (plain
+  // checkout: path + branch chips, no worktree chip) has no other surface
+  // that can start a worktree, so this row is what makes creation
+  // reachable there. Carries the createWorktreeFromBranchPopover
+  // contract: worktree add refuses a branch already checked out, the
+  // create modal surfaces that before the POST.
+  function branchPopoverWorktreeRow(list) {
+    const branch = String((list && list.currentBranch) || "");
+    return `<button class="git-ui-worktree-create" title="Create a new worktree from this branch" aria-label="Create worktree" onclick="HerdrLocationBar.createWorktreeFromBranchPopover('${encodeArg(branch)}')">＋ Create worktree</button>`;
+  }
+
   function remoteBranchPreload() {
     try {
       const options = window.HerdrOptions && window.HerdrOptions.read ? window.HerdrOptions.read() : {};
@@ -312,7 +325,7 @@
     const loadMore = !list.remoteLoading && !list.remoteLoaded && remoteAll.length > remote.length
       ? `<button class="git-ui-branch-load-more" onclick="HerdrLocationBar.loadMoreBranches()">Load more branches (${remoteAll.length - remote.length} more)</button>`
       : "";
-    return `<div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${loadMore}${empty}</div>`;
+    return `<div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${loadMore}${empty}${branchPopoverWorktreeRow(list)}</div>`;
   }
 
   function anchorFromEvent(event, chipSelector) {
@@ -901,6 +914,24 @@
     }
   }
 
+  // Same modal entry the worktree popover uses, prefilled with the row's
+  // branch. Git refuses a second checkout of an already-checked-out branch,
+  // so the modal (discoverWorktrees stamps the checked-out rows) is the one
+  // surface that can catch it before the POST.
+  function createWorktreeFromBranchPopover(encodedName) {
+    const name = decodeURIComponent(String(encodedName || ""));
+    const cwd = currentCwd();
+    const list = bar.branchList;
+    if (!cwd || !name || !list) return;
+    if (popoverContextStale(list)) return; // opening outlived its workspace or folder
+    closeBranchPopover();
+    if (typeof openWorktreeCreateFromGitBranch === "function") {
+      openWorktreeCreateFromGitBranch(cwd, name);
+    } else if (typeof openWorktreeOpenModal === "function") {
+      openWorktreeOpenModal(cwd, true);
+    }
+  }
+
   // Path chip: opens the directory picker on the workspace folder. The
   // picker's selectCurrent dispatches change on the hidden input (the same
   // contract the worktree selector rows use), and the change
@@ -948,5 +979,6 @@
     closeWorktreePopover,
     selectWorktreeFromPopover,
     createWorktreeFromPopover,
+    createWorktreeFromBranchPopover,
   };
 })();

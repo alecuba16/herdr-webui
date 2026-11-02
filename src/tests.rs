@@ -14930,3 +14930,44 @@ fn expand_path_prefix_resolves_home_relative_and_absolute_paths() {
         None => std::env::remove_var("HOME"),
     }
 }
+
+#[test]
+fn worktree_list_cache_invalidate_drops_only_the_asked_cwd() {
+    // A branch switch through git-ui moves HEAD for one checkout. The
+    // worktree.list rows for that cwd carry the checked-out branch, so
+    // the cached answer must drop; other cwds keep their fresh entries
+    // and a missing cwd stays a no-op.
+    let cache = WorktreeListCache::default();
+    cache.put(
+        "/tmp/repo-a",
+        serde_json::json!([{"path": "/tmp/repo-a", "branch": "main"}]),
+    );
+    cache.put(
+        "/tmp/repo-b",
+        serde_json::json!([{"path": "/tmp/repo-b", "branch": "dev" }]),
+    );
+
+    cache.invalidate("/tmp/repo-a");
+
+    assert!(
+        cache.get(&Some("/tmp/repo-a".to_string())).is_none(),
+        "switched cwd loses its cached rows"
+    );
+    assert!(
+        cache.get(&Some("/tmp/repo-b".to_string())).is_some(),
+        "untouched cwd keeps its cached rows"
+    );
+    cache.invalidate("/tmp/never-cached");
+    assert!(
+        cache.get(&Some("/tmp/repo-b".to_string())).is_some(),
+        "no-op invalidate keeps other entries"
+    );
+
+    // Re-put after invalidate serves again: the switch path must not
+    // permanently poison the cwd.
+    cache.put(
+        "/tmp/repo-a",
+        serde_json::json!([{"path": "/tmp/repo-a", "branch": "feature" }]),
+    );
+    assert!(cache.get(&Some("/tmp/repo-a".to_string())).is_some());
+}

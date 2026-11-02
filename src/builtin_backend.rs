@@ -2197,6 +2197,11 @@ impl BuiltinState {
                 .collect()
         };
         run_git(repo, &args)?;
+        // The webui's worktree.list cache may hold pre-remove rows for the
+        // repo root and the removed checkout; the removed event refreshes
+        // clients, but a cached answer would still serve the old rows.
+        crate::worktree_cache_invalidated(&repo.to_string_lossy());
+        crate::worktree_cache_invalidated(&path);
 
         // The worktree directory is gone: every open workspace rooted
         // there would keep a dead cwd, dead PTYs, and a snapshot entry no
@@ -2262,6 +2267,10 @@ impl BuiltinState {
                 &base,
             ],
         )?;
+        // Same rule as remove: a new row exists that a cached
+        // worktree.list answer predates.
+        crate::worktree_cache_invalidated(&cwd.to_string_lossy());
+        crate::worktree_cache_invalidated(&path.to_string_lossy());
         self.worktree_open(json!({ "path": path.to_string_lossy(), "branch": branch, "label": optional_string(&params, "label") }))
             .map(|mut value| {
                 if let Some(object) = value.as_object_mut() {
