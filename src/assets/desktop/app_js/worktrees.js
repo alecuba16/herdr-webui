@@ -613,11 +613,13 @@ function renderWorktreeOpenList() {
   if (!rows.length) {
     const path = el("worktreeDiscoverPath").value.trim();
     let message = "Enter a folder. Git repos are discovered automatically.";
-    if (state.openWorktreeSource)
+    if (state.openWorktreeDiscoveryError)
+      message = `Git discovery failed: ${state.openWorktreeDiscoveryError}`;
+    else if (state.openWorktreeSource)
       message = "Git repo found. No linked worktrees found; create a new worktree or open the repo as a workspace.";
     else if (path)
       message = "No Git worktrees available for this folder. Create a workspace instead.";
-    list.innerHTML = `<div class="worktree-open-empty">${message}</div>`;
+    list.innerHTML = `<div class="worktree-open-empty">${escapeHtml(message)}</div>`;
     return;
   }
   list.innerHTML = rows
@@ -643,9 +645,10 @@ async function discoverWorktrees() {
     let url = "/api/worktrees";
     if (path) url += "?cwd=" + encodeURIComponent(path);
     const r = await api(url);
-    const source = (r.result || {}).source || {};
+    const result = r.result || {};
+    const source = result.source || {};
     const sourceCwd = textValue(source.source_checkout_path) || path || null;
-    state.openWorktreeDiscoveryError = "";
+    state.openWorktreeDiscoveryError = textValue(result.git_error);
     const previousSourceKey = worktreeSourceKey(state.openWorktreeSource);
     state.openWorktreeSource = {
       workspace_id: source.source_workspace_id || null,

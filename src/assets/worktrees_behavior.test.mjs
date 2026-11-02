@@ -289,7 +289,7 @@ describe("worktree discovery modal", () => {
     );
   });
 
-  it("discoverWorktrees failure with a path shows the no-worktrees hint", async () => {
+  it("discoverWorktrees transport failure with a path surfaces the error", async () => {
     const { ctx, getElement } = boot({
       "/api/worktrees": () => { throw new Error("boom"); },
     });
@@ -297,7 +297,25 @@ describe("worktree discovery modal", () => {
     await ctx.discoverWorktrees();
     assert.match(
       getElement("worktreeOpenList").innerHTML,
-      /No Git worktrees available for this folder\. Create a workspace instead\./,
+      /Git discovery failed: boom/,
+    );
+  });
+
+  it("discoverWorktrees surfaces a backend git_error as a discovery failure", async () => {
+    const { ctx, getElement } = boot({
+      "/api/worktrees": () => ({
+        result: {
+          source: { repo_name: "app", source_checkout_path: "/repo/main" },
+          worktrees: [],
+          git_error: "xcrun: error: unable to load libxcrun",
+        },
+      }),
+    });
+    getElement("worktreeDiscoverPath").value = "/repo/main";
+    await ctx.discoverWorktrees();
+    assert.match(
+      getElement("worktreeOpenList").innerHTML,
+      /Git discovery failed: xcrun: error: unable to load libxcrun/,
     );
   });
 

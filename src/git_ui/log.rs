@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::net::SocketAddr;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -707,7 +707,7 @@ pub(super) fn git_ui_apply_patch_blocking(
         Ok(repo) => repo,
         Err(err) => return Err((StatusCode::BAD_REQUEST, err)),
     };
-    let mut command = Command::new("git");
+    let mut command = crate::git_bin::command();
     command.arg("-C").arg(&repo).arg("apply");
     if reverse {
         command.arg("-R");
@@ -824,7 +824,6 @@ pub(super) fn chunk_patch(body: &GitUiApplyPatchRequest) -> Result<Option<String
 mod tests {
     use super::*;
     use std::path::Path;
-    use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1137,7 +1136,7 @@ mod tests {
     }
 
     fn run_git(repo: &Path, args: &[&str]) {
-        let output = Command::new("git")
+        let output = crate::git_bin::command()
             .arg("-C")
             .arg(repo)
             .args(args)
@@ -1152,7 +1151,7 @@ mod tests {
     }
 
     fn git_text(repo: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = crate::git_bin::command()
             .arg("-C")
             .arg(repo)
             .args(args)

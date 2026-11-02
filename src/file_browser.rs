@@ -1571,7 +1571,7 @@ fn propagate_git_status(
 }
 
 fn git_repo_root(root: &Path) -> Option<(PathBuf, String)> {
-    let output = std::process::Command::new("git")
+    let output = crate::git_bin::command()
         .arg("-C")
         .arg(root)
         .args(["rev-parse", "--show-toplevel"])
@@ -1610,7 +1610,7 @@ fn collect_git_status(
     root: &Path,
     _dir: &Path,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
-    let output = std::process::Command::new("git")
+    let output = crate::git_bin::command()
         .arg("-C")
         .arg(root)
         .args(["status", "--porcelain=v1", "--untracked-files=all"])
@@ -1657,7 +1657,7 @@ fn collect_git_status(
 /// without a remote.
 fn branch_diff_base(root: &Path) -> Option<String> {
     let resolves = |name: &str| {
-        std::process::Command::new("git")
+        crate::git_bin::command()
             .arg("-C")
             .arg(root)
             .args(["rev-parse", "--verify", "--quiet", name])
@@ -1666,7 +1666,7 @@ fn branch_diff_base(root: &Path) -> Option<String> {
             .filter(|output| output.status.success())
             .is_some()
     };
-    let symbolic_ref = std::process::Command::new("git")
+    let symbolic_ref = crate::git_bin::command()
         .arg("-C")
         .arg(root)
         .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
@@ -1683,7 +1683,7 @@ fn branch_diff_base(root: &Path) -> Option<String> {
         }
     }
     for candidate in ["main", "master"] {
-        let output = std::process::Command::new("git")
+        let output = crate::git_bin::command()
             .arg("-C")
             .arg(root)
             .args([
@@ -1703,7 +1703,7 @@ fn branch_diff_base(root: &Path) -> Option<String> {
 
 /// Current branch name, or None when HEAD is detached.
 fn current_branch_name(root: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
+    let output = crate::git_bin::command()
         .arg("-C")
         .arg(root)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -1734,7 +1734,7 @@ fn merge_branch_changes(
     if branch == base.trim_start_matches("origin/") {
         return;
     }
-    let output = std::process::Command::new("git")
+    let output = crate::git_bin::command()
         .arg("-C")
         .arg(root)
         .args([
@@ -3970,7 +3970,7 @@ mod tests {
         fs::write(root.join("src/deleted/file.rs"), "old").unwrap();
         fs::write(root.join("src/new/file.rs"), "new").unwrap();
 
-        let init = std::process::Command::new("git")
+        let init = crate::git_bin::command()
             .arg("-C")
             .arg(&root)
             .arg("init")
@@ -3983,7 +3983,7 @@ mod tests {
             let _ = fs::remove_dir_all(&root);
             return;
         }
-        let add = std::process::Command::new("git")
+        let add = crate::git_bin::command()
             .arg("-C")
             .arg(&root)
             .args(["add", "src/changed/file.rs", "src/deleted/file.rs"])
@@ -4046,7 +4046,7 @@ mod tests {
         fs::write(root.join("src/plain/file.rs"), "plain").unwrap();
 
         let git = |args: &[&str]| {
-            std::process::Command::new("git")
+            crate::git_bin::command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -4099,7 +4099,7 @@ mod tests {
         fs::write(root.join("src/branch/file.rs"), "branch").unwrap();
 
         let git = |args: &[&str]| {
-            std::process::Command::new("git")
+            crate::git_bin::command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -4153,7 +4153,7 @@ mod tests {
         fs::write(root.join("README.md"), "base").unwrap();
 
         let git = |args: &[&str]| {
-            std::process::Command::new("git")
+            crate::git_bin::command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -4192,7 +4192,7 @@ mod tests {
         fs::write(root.join("README.md"), "base").unwrap();
 
         let git = |args: &[&str]| {
-            std::process::Command::new("git")
+            crate::git_bin::command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -4237,7 +4237,7 @@ mod tests {
         fs::write(root.join("src/gone.rs"), "base").unwrap();
 
         let git = |args: &[&str]| {
-            std::process::Command::new("git")
+            crate::git_bin::command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -4286,7 +4286,7 @@ mod tests {
         fs::write(root.join("workspace/README.md"), "base").unwrap();
 
         let git = |args: &[&str]| {
-            std::process::Command::new("git")
+            crate::git_bin::command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -4341,7 +4341,7 @@ mod tests {
         fs::write(root.join("README.md"), "base").unwrap();
 
         let git = |args: &[&str]| {
-            std::process::Command::new("git")
+            crate::git_bin::command()
                 .arg("-C")
                 .arg(&root)
                 .args(args)
@@ -4364,7 +4364,7 @@ mod tests {
         assert!(git(&["commit", "-m", "feat", "--no-gpg-sign"]).success());
         // Stale origin/HEAD: symbolic-ref resolves textually but the target
         // remote ref does not exist (common after remote branch deletions).
-        let symbolic_ok = std::process::Command::new("git")
+        let symbolic_ok = crate::git_bin::command()
             .arg("-C")
             .arg(&root)
             .args([

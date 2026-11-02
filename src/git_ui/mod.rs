@@ -1,7 +1,6 @@
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -532,7 +531,7 @@ pub(super) fn git_ui_cwd(cwd: &str) -> Result<String, String> {
 pub(super) fn git_ui_repo(cwd: &str) -> Result<String, String> {
     let validated = safe_git_token(cwd, "repository path")?;
     let expanded = expand_user_path_string(validated);
-    let output = Command::new("git")
+    let output = crate::git_bin::command()
         .arg("-C")
         .arg(&expanded)
         .args(["rev-parse", "--show-toplevel"])
@@ -547,7 +546,7 @@ pub(super) fn git_ui_repo(cwd: &str) -> Result<String, String> {
 fn git_repo_root(cwd: &str) -> Result<String, String> {
     let validated = safe_git_token(cwd, "repository path")?;
     let expanded = expand_user_path_string(validated);
-    let output = Command::new("git")
+    let output = crate::git_bin::command()
         .arg("-C")
         .arg(&expanded)
         .args(["rev-parse", "--show-toplevel"])
@@ -759,7 +758,7 @@ async fn git_ui_permalink(
 
 pub(super) fn git_ui_output(cwd: &str, args: &[&str]) -> Result<std::process::Output, String> {
     let repo = git_ui_repo(cwd)?;
-    Command::new("git")
+    crate::git_bin::command()
         .arg("-C")
         .arg(repo)
         .args(args)
@@ -1522,7 +1521,7 @@ mod tests {
         }
 
         fn git(&self, args: &[&str]) -> String {
-            let output = Command::new("git")
+            let output = crate::git_bin::command()
                 .current_dir(&self.path)
                 .args(args)
                 .output()
@@ -2280,7 +2279,7 @@ mod tests {
             assert_eq!(json["behind"], 0);
 
             // Advance upstream by one commit so local also falls behind.
-            Command::new("git")
+            crate::git_bin::command()
                 .current_dir(repo.path.as_os_str())
                 .args([
                     "clone",
@@ -2290,33 +2289,33 @@ mod tests {
                 ])
                 .output()
                 .unwrap();
-            Command::new("git")
+            crate::git_bin::command()
                 .current_dir(&work)
                 .args(["checkout", "-q", "main"])
                 .output()
                 .unwrap();
-            Command::new("git")
+            crate::git_bin::command()
                 .current_dir(&work)
                 .args(["config", "user.email", "test@example.com"])
                 .output()
                 .unwrap();
-            Command::new("git")
+            crate::git_bin::command()
                 .current_dir(&work)
                 .args(["config", "user.name", "Test User"])
                 .output()
                 .unwrap();
             fs::write(work.join("upstream-change.txt"), "x\n").unwrap();
-            Command::new("git")
+            crate::git_bin::command()
                 .current_dir(&work)
                 .args(["add", "upstream-change.txt"])
                 .output()
                 .unwrap();
-            Command::new("git")
+            crate::git_bin::command()
                 .current_dir(&work)
                 .args(["commit", "-qm", "upstream ahead"])
                 .output()
                 .unwrap();
-            Command::new("git")
+            crate::git_bin::command()
                 .current_dir(&work)
                 .args(["push", "-q", "origin", "main"])
                 .output()
@@ -2353,7 +2352,7 @@ mod tests {
             repo.git(&["switch", "main"]);
             repo.write("conflict.txt", "main\n");
             repo.git(&["commit", "-am", "main change"]);
-            let merge = Command::new("git")
+            let merge = crate::git_bin::command()
                 .current_dir(&repo.path)
                 .args(["merge", "other"])
                 .output()
@@ -2385,7 +2384,7 @@ mod tests {
                 "{}-remote.git",
                 repo.path.file_name().unwrap().to_string_lossy()
             ));
-            let remote_output = Command::new("git")
+            let remote_output = crate::git_bin::command()
                 .args(["init", "--bare"])
                 .arg(&remote_path)
                 .output()
@@ -3339,7 +3338,7 @@ mod tests {
             repo.git(&["switch", "main"]);
             repo.write("conflict.txt", "main\n");
             repo.git(&["commit", "-am", "main change"]);
-            let merge = Command::new("git")
+            let merge = crate::git_bin::command()
                 .current_dir(&repo.path)
                 .args(["merge", "other"])
                 .output()
@@ -3384,7 +3383,7 @@ mod tests {
                 .contains("conflict.txt"));
 
             repo.git(&["merge", "--abort"]);
-            let merge = Command::new("git")
+            let merge = crate::git_bin::command()
                 .current_dir(&repo.path)
                 .args(["merge", "other"])
                 .output()
@@ -3417,40 +3416,40 @@ mod tests {
         fs::create_dir_all(&scan_root).unwrap();
         let base_path = scan_root.join("base");
         fs::create_dir_all(&base_path).unwrap();
-        Command::new("git")
+        crate::git_bin::command()
             .current_dir(&base_path)
             .args(["init"])
             .output()
             .unwrap();
-        Command::new("git")
+        crate::git_bin::command()
             .current_dir(&base_path)
             .args(["checkout", "-b", "main"])
             .output()
             .unwrap();
-        Command::new("git")
+        crate::git_bin::command()
             .current_dir(&base_path)
             .args(["config", "user.email", "test@example.com"])
             .output()
             .unwrap();
-        Command::new("git")
+        crate::git_bin::command()
             .current_dir(&base_path)
             .args(["config", "user.name", "Test"])
             .output()
             .unwrap();
         fs::write(base_path.join("file.txt"), "content\n").unwrap();
-        Command::new("git")
+        crate::git_bin::command()
             .current_dir(&base_path)
             .args(["add", "."])
             .output()
             .unwrap();
-        Command::new("git")
+        crate::git_bin::command()
             .current_dir(&base_path)
             .args(["commit", "-m", "init"])
             .output()
             .unwrap();
         let worktree_dir = scan_root.join("worktrees").join("feature");
         fs::create_dir_all(scan_root.join("worktrees")).unwrap();
-        Command::new("git")
+        crate::git_bin::command()
             .current_dir(&base_path)
             .args([
                 "worktree",
@@ -3496,7 +3495,7 @@ mod tests {
             "wt-r-{}",
             base.path.file_name().unwrap().to_string_lossy()
         ));
-        Command::new("git")
+        crate::git_bin::command()
             .current_dir(&base.path)
             .args([
                 "worktree",

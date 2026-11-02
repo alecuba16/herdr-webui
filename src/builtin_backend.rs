@@ -1979,8 +1979,25 @@ impl BuiltinState {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let repo_root = git_output(&cwd, &["rev-parse", "--show-toplevel"])
             .unwrap_or_else(|_| cwd.to_string_lossy().to_string());
-        let list = git_output(Path::new(&repo_root), &["worktree", "list", "--porcelain"])
-            .unwrap_or_default();
+        let list = git_output(Path::new(&repo_root), &["worktree", "list", "--porcelain"]);
+        // A plain folder is not a git failure: `worktree list --porcelain`
+        // errors there too, but the folder is exactly what the caller
+        // asked to browse, so empty rows keep the cwd identity and no error
+        // rides the envelope. A git failure inside a repo checkout (broken
+        // git binary, damaged worktree admin) must not masquerade as an
+        // empty list: it is reported so clients can distinguish "no
+        // worktrees" from "discovery failed".
+        let (list, git_error) = match list {
+            Ok(list) => (list, None),
+            Err(err) => {
+                let inside_repo = Path::new(&repo_root).join(".git").exists();
+                if inside_repo {
+                    (String::new(), Some(err))
+                } else {
+                    (String::new(), None)
+                }
+            }
+        };
         let mut worktrees = parse_git_worktrees(&list);
         // `rev-parse --show-toplevel` reports the queried checkout's own
         // toplevel, so inside a linked worktree it names the lane, not the
@@ -2012,6 +2029,7 @@ impl BuiltinState {
                 "source_workspace_id": null,
             },
             "worktrees": worktrees,
+            "git_error": git_error,
         }))
     }
 
@@ -4610,7 +4628,7 @@ fn strip_ansi_lossy(input: &str) -> String {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {
-    let output = std::process::Command::new("git")
+    let output = crate::git_bin::command()
         .arg("-C")
         .arg(cwd)
         .args(args)
@@ -4624,7 +4642,7 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {
 }
 
 fn git_output(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let output = std::process::Command::new("git")
+    let output = crate::git_bin::command()
         .arg("-C")
         .arg(cwd)
         .args(args)
@@ -9992,6 +10010,71 @@ mod tests {
             paths.contains(&lane_canonical.to_string_lossy().to_string().as_str()),
             "lane row present"
         );
+        fs::remove_dir_all(&scratch).ok();
+    }
+
+    /// `worktree.list` must not report a broken git as an empty list.
+    /// A repo checkout whose `git worktree list` fails carries the git
+    /// error in the envelope (`git_error`), while a plain folder keeps
+    /// the silent empty-rows identity: same transport shape, different
+    /// honesty. Brokenness comes from a corrupted HEAD (rev-parse and
+    /// worktree list both fail, the `.git` dir still exists), so the
+    /// test needs no env override of the process-wide git resolution.
+    #[test]
+    fn builtin_worktree_list_reports_git_failure_not_empty_rows() {
+        let scratch = std::env::temp_dir().join(format!(
+            "herdr-wt-git-error-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo = scratch.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]).unwrap();
+        run_git(&repo, &["config", "user.email", "t@t"]).unwrap();
+        run_git(&repo, &["config", "user.name", "T"]).unwrap();
+        fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&repo, &["add", "."]).unwrap();
+        run_git(&repo, &["commit", "-q", "-m", "base"]).unwrap();
+        // Corrupt HEAD after the commit: the checkout still looks like a
+        // repo (`.git` exists) but every git read fails, the same shape the
+        // xcrun shim failure produces inside a Rosetta service.
+        fs::write(repo.join(".git/HEAD"), "garbage\n").unwrap();
+
+        let state = BuiltinState::new(
+            std::env::temp_dir(),
+            Some(default_shell()),
+            JcodeDetectionVariant::Vanilla,
+        )
+        .unwrap();
+        let result = state
+            .handle_request_inner("worktree.list", json!({ "cwd": repo.to_string_lossy() }))
+            .unwrap();
+
+        assert!(
+            result["git_error"].as_str().is_some(),
+            "corrupted repo must report git_error, got {result}"
+        );
+        assert_eq!(
+            result["worktrees"].as_array().unwrap().len(),
+            0,
+            "failed discovery reports zero rows alongside the error"
+        );
+
+        // Plain folder: git also fails there, but a folder is not a repo,
+        // so no git_error rides the envelope.
+        let plain = scratch.join("plain");
+        fs::create_dir_all(&plain).unwrap();
+        let result = state
+            .handle_request_inner("worktree.list", json!({ "cwd": plain.to_string_lossy() }))
+            .unwrap();
+        assert_eq!(
+            result["git_error"],
+            serde_json::Value::Null,
+            "plain folder keeps the silent empty-rows identity"
+        );
+
         fs::remove_dir_all(&scratch).ok();
     }
 
