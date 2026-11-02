@@ -186,6 +186,21 @@ If either configured cert file is missing when HTTPS starts, WebUI falls back to
 
 ## Install
 
+Install via Homebrew (macOS aarch64/x86_64, Linux x86_64):
+
+```sh
+brew install alecuba16/tap/herdr-webui
+```
+
+The formula pours both `herdr-webui` and `herdr-webui-tui` into the brew prefix. The tap tracks the latest GitHub release automatically: a scheduled workflow polls releases weekly and regenerates the formula, so `brew upgrade` moves you forward.
+
+Brew does not run or manage the service. To install as a service, keep using the built-in installers (they copy the brew-poured binaries into `~/.local/bin` and manage the LaunchAgent/systemd unit):
+
+```sh
+herdr-webui install-mac    # after brew upgrade: herdr-webui update-mac
+herdr-webui install-linux  # after brew upgrade: herdr-webui update-linux
+```
+
 Install as a per-user macOS LaunchAgent:
 
 ```sh
