@@ -950,13 +950,16 @@ function rescueLiveSurfaces(container, element) {
   // The terminal shell is the singleton surface: it must never detach.
   // Its display stays untouched: the owner branch of the next render
   // decides visibility (shown in the owner slot, hidden at the home).
-  // The dashboard is id-resolved the same way (syncProjectDashboard reads
-  // el("projectDashboard")), so a dropped pane hosting it must park it
-  // home too or it becomes unreachable from every id lookup.
+  // The dashboard and the empty-leaf card are id-resolved the same way
+  // (syncProjectDashboard / syncWorkspaceEmptyLeaf read them by el()), so a
+  // dropped pane hosting one must park it home too or it becomes
+  // unreachable from every id lookup and the syncs silently no-op.
   const shell = el("terminalShell");
   if (shell && nodeWithin(element, shell)) container.appendChild(shell);
   const dashboard = el("projectDashboard");
   if (dashboard && nodeWithin(element, dashboard)) container.appendChild(dashboard);
+  const emptyLeaf = el("workspaceEmptyLeaf");
+  if (emptyLeaf && nodeWithin(element, emptyLeaf)) container.appendChild(emptyLeaf);
 }
 
 function paneTabButtonHtml(tab, isActive, index, tabs) {
