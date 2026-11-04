@@ -167,6 +167,7 @@
           discovery.createMode,
           discovery.creating,
           discovery.createError,
+          discovery.pullBase,
           discovery.sourceLoading,
           discovery.sourceError,
           !!discovery.source,
@@ -953,36 +954,24 @@
     }
   }
 
-  function createWorktreeFromPopover() {
+  async function createWorktreeFromPopover() {
     const cwd = currentCwd();
     const workspace = selectedWorkspace();
-    const list = bar.worktreeList;
-    if (popoverContextStale(list)) return; // opening outlived its workspace or folder
     const facts = workspace ? gitFacts(workspace, cwd) : { branch: "" };
-    closeWorktreePopover();
-    if (typeof openWorktreeCreateFromGitBranch === "function") {
-      openWorktreeCreateFromGitBranch(cwd, facts.branch || "");
-    } else if (typeof openWorktreeOpenModal === "function") {
-      openWorktreeOpenModal(cwd, true);
-    }
+    const branch = String(facts.branch || "");
+    if (!cwd) return;
+    await openDiscoveryForFolder(cwd, { createMode: "worktree", prefillBranch: branch, prefillBase: branch });
   }
 
   // Same modal entry the worktree popover uses, prefilled with the row's
   // branch. Git refuses a second checkout of an already-checked-out branch,
   // so the modal (discoverWorktrees stamps the checked-out rows) is the one
   // surface that can catch it before the POST.
-  function createWorktreeFromBranchPopover(encodedName) {
+  async function createWorktreeFromBranchPopover(encodedName) {
     const name = decodeURIComponent(String(encodedName || ""));
     const cwd = currentCwd();
-    const list = bar.branchList;
-    if (!cwd || !name || !list) return;
-    if (popoverContextStale(list)) return; // opening outlived its workspace or folder
-    closeBranchPopover();
-    if (typeof openWorktreeCreateFromGitBranch === "function") {
-      openWorktreeCreateFromGitBranch(cwd, name);
-    } else if (typeof openWorktreeOpenModal === "function") {
-      openWorktreeOpenModal(cwd, true);
-    }
+    if (!cwd || !name) return;
+    await openDiscoveryForFolder(cwd, { createMode: "worktree", prefillBranch: localWorktreeBranchName(name), prefillBase: name });
   }
 
   // Discovery rows capture the picked folder independently of shell navigation.
@@ -1030,7 +1019,9 @@
       return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Open ${escapeHtml(list.folder || "folder")}" style="${style}" onclick="event.stopPropagation()">${head}<div class="git-ui-loading" role="status"><span></span><strong>Discovering folder</strong></div>${footer}</div>`;
     if (list.error)
       return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Open ${escapeHtml(list.folder || "folder")}" style="${style}" onclick="event.stopPropagation()">${head}<div class="git-ui-error" role="alert">${escapeHtml(list.error)}</div>${footer}</div>`;
-    const body = list.mode === "worktrees" ? discoveryWorktreeRows(list) + (list.createMode === "worktree" ? discoveryCreateForm(list) : "") : discoveryBranchBody(list);
+    const body = list.mode === "worktrees"
+      ? discoveryWorktreeRows(list) + (list.createMode === "worktree" ? discoveryCreateForm(list) : "")
+      : discoveryBranchBody(list);
     const frozenBody = list.creating ? body.replace(/<(button|input)\b(?![^>]*\sdisabled(?:\s|>|=))/g, '<$1 disabled') : body;
     return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Choose ${list.mode === "worktrees" ? "worktree" : "branch"} in ${escapeHtml(list.folder)}" style="${style}" onclick="event.stopPropagation()">${head}${frozenBody}${footer}</div>`;
   }
@@ -1088,8 +1079,9 @@
     const baseDatalist = `<datalist id="${discoveryBaseDatalistId}">${baseOptions}</datalist>`;
     const basePickerExtra = `<button class="git-ui-btn" type="button" data-discovery-focus="load-refs" aria-disabled="${list.baseLoading || list.creating ? "true" : "false"}" onclick="HerdrLocationBar.discoveryLoadBaseOptions()">Load refs</button><button class="git-ui-btn" type="button" data-discovery-focus="fetch-remotes" aria-disabled="${list.baseLoading || list.creating ? "true" : "false"}" onclick="HerdrLocationBar.discoveryLoadBaseOptions(true)">Fetch remotes</button>`;
     const baseFeedback = list.baseLoading ? `<div role="status">Loading refs…</div>` : list.baseError ? `<div class="git-ui-error" role="alert">${escapeHtml(list.baseError)} Use free text or retry Load refs / Fetch remotes.</div>` : "";
+    const pullControl = worktree ? `<label class="git-ui-discovery-pull option" for="locationBarDiscoveryPullBase"><input id="locationBarDiscoveryPullBase" type="checkbox" data-discovery-focus="pull-base"${list.pullBase ? " checked" : ""}${list.creating ? " disabled" : ""} onchange="HerdrLocationBar.discoveryTogglePullBase(this.checked)"><span>Pull base branch before create<small>Runs a fast-forward Git update in the source repo first. If the branch diverged, you can continue without pulling.</small></span></label>` : "";
     const feedback = worktree ? (list.sourceLoading ? `<div role="status">Loading worktree source…</div>` : list.sourceError ? `<div class="git-ui-error" role="alert">${escapeHtml(list.sourceError)}</div><button class="git-ui-btn" type="button" data-discovery-focus="retry-worktree-source" onclick="HerdrLocationBar.discoveryRetryWorktreeSource()">Retry worktree source</button>` : "") + (list.creating ? `<div role="status" data-discovery-focus="worktree-status">Creating worktree</div><div class="git-ui-muted">Closing this dialog does not cancel creation</div>` : list.createError ? `<div class="git-ui-error" role="alert">${escapeHtml(list.createError)}</div>` : "") : "";
-    return `${baseDatalist}<div class="git-ui-branch-list-new${worktree ? " location-bar-discovery-worktree-form" : ""}"><label for="locationBarDiscoveryName">${worktree ? "Worktree branch name" : "New branch name"}</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryName" value="${escapeHtml(list.newBranch || "")}" placeholder="branch-name"${inputAttrs("done")} onfocus="HerdrLocationBar.discoveryLoadBaseOptions(false, true)" oninput="HerdrLocationBar.discoveryDraft('newBranch', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"></div><label for="locationBarDiscoveryBase">Base ref</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryBase" value="${escapeHtml(list.newBase || "")}" list="${discoveryBaseDatalistId}" placeholder="default ${escapeHtml(list.currentBranch || "HEAD")}"${inputAttrs("done")} onfocus="HerdrLocationBar.discoveryLoadBaseOptions(false, true)" oninput="HerdrLocationBar.discoveryDraft('newBase', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"><button class="git-ui-btn" type="button" data-discovery-focus="create"${list.creating || unavailable || !String(list.newBranch || "").trim() ? " disabled" : ""} onclick="HerdrLocationBar.${worktree ? "discoverySubmitWorktree" : "discoveryCreateBranch"}()">${worktree ? (list.creating ? "Creating worktree" : list.createError ? "Retry worktree creation" : "Create worktree") : "Create"}</button>${worktree ? `<button class="git-ui-btn" type="button" data-discovery-focus="cancel-worktree" onclick="HerdrLocationBar.discoveryCancelWorktree()">Cancel worktree</button>` : ""}</div><div class="git-ui-inline-field">${basePickerExtra}</div>${baseFeedback}${feedback}</div>`;
+    return `${baseDatalist}<div class="git-ui-branch-list-new${worktree ? " location-bar-discovery-worktree-form" : ""}"><label for="locationBarDiscoveryName">${worktree ? "Worktree branch name" : "New branch name"}</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryName" value="${escapeHtml(list.newBranch || "")}" placeholder="branch-name"${inputAttrs("done")} onfocus="HerdrLocationBar.discoveryLoadBaseOptions(false, true)" oninput="HerdrLocationBar.discoveryDraft('newBranch', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"></div><label for="locationBarDiscoveryBase">Base ref</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryBase" value="${escapeHtml(list.newBase || "")}" list="${discoveryBaseDatalistId}" placeholder="default ${escapeHtml(list.currentBranch || "HEAD")}"${inputAttrs("done")} onfocus="HerdrLocationBar.discoveryLoadBaseOptions(false, true)" oninput="HerdrLocationBar.discoveryDraft('newBase', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"><button class="git-ui-btn" type="button" data-discovery-focus="create"${list.creating || unavailable || !String(list.newBranch || "").trim() ? " disabled" : ""} onclick="HerdrLocationBar.${worktree ? "discoverySubmitWorktree" : "discoveryCreateBranch"}()">${worktree ? (list.creating ? "Creating worktree" : list.createError ? "Retry worktree creation" : "Create worktree") : "Create"}</button>${worktree ? `<button class="git-ui-btn" type="button" data-discovery-focus="cancel-worktree" onclick="HerdrLocationBar.discoveryCancelWorktree()">Cancel worktree</button>` : ""}</div><div class="git-ui-inline-field">${basePickerExtra}</div>${pullControl}${baseFeedback}${feedback}</div>`;
   }
 
   const discoveryBaseDatalistId = "locationBarDiscoveryBaseOptions";
@@ -1216,6 +1208,42 @@
     restoreDiscoveryFocus({ key: "create-worktree" });
   }
 
+  // Mirrors the worktrees modal's "Update base first": a fast-forward pull of
+  // the base branch in the source repo before the worktree is created.
+  function discoveryTogglePullBase(checked) {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating) return;
+    list.pullBase = !!checked;
+    sync();
+  }
+
+  function localWorktreeBranchName(branch) {
+    const text = String(branch || "").trim();
+    if (text.startsWith("origin/")) return text.slice("origin/".length);
+    if (text.startsWith("upstream/")) return text.slice("upstream/".length);
+    return text;
+  }
+
+  function pullFastForwardFailed(message) {
+    const text = String(message || "").toLowerCase();
+    return (
+      text.includes("fast-forward") &&
+      (text.includes("diverging") || text.includes("not possible") || text.includes("fatal"))
+    );
+  }
+
+  // Same contract as the worktrees modal: a diverged base branch asks once
+  // whether to create without pulling, instead of failing outright.
+  async function confirmContinueWithoutPull(message) {
+    if (!pullFastForwardFailed(message)) return false;
+    if (typeof askQuestion !== "function") return false;
+    return askQuestion({
+      title: "Base branch diverged",
+      message: `Git could not fast-forward the base branch before creating the worktree:\n\n${message}\n\nCreate the worktree without pulling first?`,
+      confirmText: "Create without pull",
+    });
+  }
+
   function discoverySourceAvailable(source) {
     return !!(source && String(source.repo_root || "").trim() && String(source.repo_name || "").trim());
   }
@@ -1253,7 +1281,7 @@
       const root = worktreeRootForSource(list.source);
       const path = root && joinPath(root, list.source.repo_name, branchPathSlug(branch));
       if (!path) throw Error("Worktree checkout path is unavailable.");
-      body = buildWorktreeCreateBody({ source: { cwd: list.folder, workspace_id: null }, branch, base, path, label: null, pullBase: false });
+      body = buildWorktreeCreateBody({ source: { cwd: list.folder, workspace_id: null }, branch, base, path, label: null, pullBase: !!list.pullBase });
     } catch (err) {
       list.createError = err.message || String(err);
       sync();
@@ -1271,7 +1299,14 @@
       closeDiscoveryPopover();
       go(result.workspace.workspace_id, result.tab && result.tab.tab_id, result.root_pane && result.root_pane.pane_id);
     } catch (err) {
-      if (discoveryOpeningActive(list)) list.createError = err.message || String(err);
+      const message = err.message || String(err);
+      if (discoveryOpeningActive(list) && list.pullBase && await confirmContinueWithoutPull(message)) {
+        list.pullBase = false;
+        list.creating = false;
+        sync();
+        return discoverySubmitWorktree();
+      }
+      if (discoveryOpeningActive(list)) list.createError = message;
     } finally {
       if (discoveryOpeningActive(list)) {
         list.creating = false;
@@ -1447,8 +1482,11 @@
   }
 
   // Both probe completions must still belong to the same opening and shell origin.
-  async function openDiscoveryForFolder(folder) {
+  async function openDiscoveryForFolder(folder, openingOptions) {
     const target = String(folder || "").replace(/\/+$/, "") || "/";
+    const createMode = String((openingOptions && openingOptions.createMode) || "branch");
+    const prefillBranch = String((openingOptions && openingOptions.prefillBranch) || "");
+    const prefillBase = String((openingOptions && openingOptions.prefillBase) || "");
     closeBranchPopover();
     closeWorktreePopover();
     const anchor = anchorFromEvent(null, ".location-bar-path-chip");
@@ -1465,10 +1503,11 @@
       remoteLoaded: false,
       remoteLoading: false,
       remoteRequestId: 0,
-      newBranch: "",
-      newBase: "",
+      newBranch: prefillBranch,
+      newBase: prefillBase,
+      pullBase: false,
       creating: false,
-      createMode: "branch",
+      createMode,
       createError: "",
       source: null,
       sourceLoading: false,
@@ -1500,12 +1539,16 @@
         bar.discoveryList = {
           ...bar.discoveryList,
           loading: false,
-          mode: "worktrees",
-          worktrees: rows,
-          currentBranch: String((rows.slice().sort((a, b) => String(b.path || "").length - String(a.path || "").length).find((row) => samePath(row.path, target) || target.startsWith(String(row.path || "").replace(/\/+$/, "") + "/")) || {}).branch || ""),
-          repoLabel,
-        };
-        sync();
+        mode: "worktrees",
+        worktrees: rows,
+        createMode,
+        currentBranch: String((rows.slice().sort((a, b) => String(b.path || "").length - String(a.path || "").length).find((row) => samePath(row.path, target) || target.startsWith(String(row.path || "").replace(/\/+$/, "") + "/")) || {}).branch || ""),
+        repoLabel,
+      };
+      if (createMode === "worktree" && !bar.discoveryList.source) {
+        discoveryRetryWorktreeSource();
+      }
+      sync();
         focusDiscoveryAfterLoad();
         return;
       }
@@ -1625,5 +1668,6 @@
     selectWorktreeFromPopover,
     createWorktreeFromPopover,
     createWorktreeFromBranchPopover,
+    discoveryTogglePullBase,
   };
 })();

@@ -269,6 +269,30 @@
   flex-basis: 100%;
 }
 
+.location-bar-discovery-popover .location-bar-discovery-worktree-form .git-ui-discovery-pull {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 2px 0;
+  cursor: pointer;
+}
+
+.location-bar-discovery-popover .git-ui-discovery-pull input[type="checkbox"] {
+  margin: 2px 0 0;
+  flex: 0 0 auto;
+}
+
+.location-bar-discovery-popover .git-ui-discovery-pull span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.location-bar-discovery-popover .git-ui-discovery-pull small {
+  color: var(--muted);
+}
+
 .location-bar .location-bar-discovery-popover :is(input, .git-ui-btn) {
   border-color: var(--muted);
 }
