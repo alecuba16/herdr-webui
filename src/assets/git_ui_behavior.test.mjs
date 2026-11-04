@@ -99,7 +99,7 @@ function context(fetchImpl) {
       // guard probes them; a blanket truthy stub would swallow every Esc);
       // the generic stub answers everything else as before.
       querySelector: (selector) => (
-        selector === ".location-bar-branch-popover" || selector === ".location-bar-worktree-popover"
+        selector === ".location-bar-branch-popover" || selector === ".location-bar-worktree-popover" || selector === ".location-bar-discovery-popover"
           ? null
           : element()
       ),

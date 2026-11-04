@@ -7534,7 +7534,7 @@ describe("app bundle load", () => {
     // the pick through HerdrOpenFolder.
     const barSource = readFileSync(new URL("./desktop/app_js/location_bar.js", import.meta.url), "utf8");
     match(barSource, /onclick="HerdrLocationBar\.openPathPicker\(\)"/);
-    match(barSource, /window\.HerdrOpenFolder\.openFolderAsWorkspace\(target\)/);
+    match(barSource, /window\.HerdrLocationBar\.openDiscoveryForFolder\(target\)/);
     match(gitUiSource, /workspaceCwd: nextWorkspaceCwd/);
     match(readFileSync(new URL("./desktop/git_ui/workspace_nav.js", import.meta.url), "utf8"), /function gitCwdMatchesWorkspace\(view\)/);
     match(gitDiffViewSource, /git-ui-current-changes-icon/);
@@ -8463,7 +8463,9 @@ describe("location bar integration", () => {
     ok(!fileBrowserSource.includes('await api("/api/worktrees/open"'), "the file browser no longer holds its own checkout flow");
     const barSource = readFileSync(new URL("./desktop/app_js/location_bar.js", import.meta.url), "utf8");
     match(barSource, /onclick="HerdrLocationBar\.openPathPicker\(\)"/);
-    match(barSource, /window\.HerdrOpenFolder\.openFolderAsWorkspace\(target\)/);
+    match(barSource, /window\.HerdrLocationBar\.openDiscoveryForFolder\(target\)/);
+    // Every discovery exit still lands in the shared ladder.
+    match(barSource, /flow\.openFolderAsWorkspace\(folder\)/);
   });
 });
 
