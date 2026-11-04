@@ -1545,6 +1545,22 @@ describe("location bar discovery popover", () => {
     deepEqual(notified, ["/repo"], "drawer notified after create");
   });
 
+  it("refreshes shell branch facts when the Git drawer has not loaded", async () => {
+    const { ctx } = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { worktrees: [] } },
+      "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+    } });
+    const moved = [];
+    ctx.HerdrShellNoteBranchMoved = (cwd) => moved.push(cwd);
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    await ctx.HerdrLocationBar.discoveryBranchRowOpen("other", false);
+    deepEqual(moved, ["/repo"]);
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "fresh");
+    await ctx.HerdrLocationBar.discoveryCreateBranch();
+    deepEqual(moved, ["/repo", "/repo"]);
+  });
+
   it("a stale completion after the footer ran never mutates a closed popover", async () => {
     const gates = [];
     const { ctx, bar } = loadDiscovery({

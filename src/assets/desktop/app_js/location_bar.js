@@ -1110,6 +1110,8 @@
       });
       if (window.HerdrGitUi && window.HerdrGitUi.notifyBranchChanged)
         window.HerdrGitUi.notifyBranchChanged(folder);
+      else if (typeof window.HerdrShellNoteBranchMoved === "function")
+        window.HerdrShellNoteBranchMoved(folder);
     } catch (err) {
       alert(`"${folder}" opened on its current branch. ${create ? "Branch creation" : "Branch switch"} failed: ${err.message || String(err)}`);
     } finally {
