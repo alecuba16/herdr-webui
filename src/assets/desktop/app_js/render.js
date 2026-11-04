@@ -772,7 +772,7 @@ function runWorkspaceContextAction(action, button, workspaceId) {
     ? state.workspaces.find((x) => x.workspace_id === workspaceId)
     : selectedWorkspace();
   if (!w) return;
-  if (action === "create-worktree") openWorktreeCreateModal(w.workspace_id);
+  if (action === "create-worktree") window.HerdrLocationBar.openDiscoveryCreateForRepo(w.worktree && w.worktree.repo_root ? w.worktree.repo_root : workspacePath(w), workspaceBranch(w));
   else if (action === "open-worktrees") openWorktreesForWorkspace(w, button.dataset.key || "");
   else if (action === "close") closeWorkspace(w.workspace_id);
   else if (action === "remove-worktree") removeWorktree(w.workspace_id);

@@ -789,7 +789,8 @@ describe("app bundle load", () => {
     match(dashboard, /Actions menu/);
     ok(!dashboard.includes("runSearchAction('temp-terminal')"));
     ok(!dashboard.includes("runSearchAction('sessions')"));
-    match(source, /if \(action === "open-workspace" \|\| action === "discover-worktrees"\) openWorktreeOpenModal\(selectedWorkspaceRepoPath\(\), true\);/);
+    match(source, /if \(action === "open-workspace" \|\| action === "discover-worktrees"\) window\.HerdrLocationBar\.openDiscoveryForFolder\(selectedWorkspaceRepoPath\(\) \|\| explorationDefaultDirectoryOption\(\)\);/);
+    match(source, /else if \(action === "create-worktree"\) \{\n\s*const w = selectedWorkspace\(\);\n\s*window\.HerdrLocationBar\.openDiscoveryCreateForRepo\(selectedWorkspaceRepoPath\(\), w \? workspaceBranch\(w\) : ""\);/);
     match(source, /else if \(action === "sessions"\) showSessionManager\(\);/);
     match(source, /else if \(action === "files"\) openWorkspaceFileBrowser\(state\.ws\);/);
     match(source, /else if \(action === "git"\) openWorkspaceGitUi\(state\.ws\);/);
@@ -2716,6 +2717,9 @@ describe("app bundle load", () => {
     // folder exists. The palette is reachable here (header button, search
     // shortcut), so its search root must match the panel's fallback.
     vm.runInContext("state.workspaces = []; state.ws = null; state.defaultFolder = '/Users/alejandro.blanco';", ctx);
+    // openDiscoveryForFolder's own initializer performs the discovery
+    // fetch for the resolved path; the stub wraps it, so the request
+    // assertion below still exercises the real chain.
     vm.runInContext('searchPaletteState.query = "needle";', ctx);
     vm.runInContext(
       "window.HerdrWorkspaceSearch = {" +
@@ -2921,44 +2925,26 @@ describe("app bundle load", () => {
     match(panesCss, /\.search-head \.search-mode-toggle/);
   });
 
-  it("prefix-P without a workspace opens the seeded worktree modal instead of dying", () => {
+  it("prefix-P without a workspace opens the seeded discovery flow instead of dying", () => {
     const ctx = context();
-    const requests = [];
-    ctx.fetch = async (url) => {
-      requests.push(String(url));
-      return { status: 200, json: async () => ({ result: { worktrees: [], source: {} } }) };
-    };
     runSource(ctx);
     // The strip + and prefix-P share one contract: with a workspace the
-    // press creates a panel, without one it routes to the open flow
-    // seeded with the current folder. selectedWorkspaceRepoPath() is
-    // "" in this state by design; the modal's own initializer falls
-    // back to the default folder, so pin that chain end to end.
+    // press creates a panel, without one it routes to the discovery open
+    // flow seeded with the default folder. selectedWorkspaceRepoPath() is
+    // "" in this state by design; the redirect falls back to the default
+    // folder, so pin that chain end to end.
     vm.runInContext("state.workspaces = []; state.ws = null; state.defaultFolder = '/Users/alejandro.blanco';", ctx);
-    vm.runInContext(
-      "window.__opens = []; " +
-        "const __realOpen = openWorktreeOpenModal; " +
-        "openWorktreeOpenModal = (path, discover) => { window.__opens.push({ path, discover }); return __realOpen(path, discover); }; " +
-        "newTab = async () => { throw new Error('newTab must not run without a workspace'); };",
-      ctx,
-    );
-    const handled = vm.runInContext(
-      "runPrefixedShortcut({ code: 'KeyP', key: 'p', shiftKey: false })",
-      ctx,
-    );
+    // location_bar.js is served after this bundle; the shortcut must
+    // resolve the entry through the exported namespace so the real
+    // popover opens once that module loads.
+    vm.runInContext("window.__opens = []; window.HerdrLocationBar = window.HerdrLocationBar || { sync: () => {} }; window.HerdrLocationBar.sync = window.HerdrLocationBar.sync || (() => {}); window.HerdrLocationBar.openDiscoveryForFolder = (path) => { window.__opens.push({ path }); }; newTab = async () => { throw new Error('newTab must not run without a workspace'); };", ctx);
+    const handled = vm.runInContext("runPrefixedShortcut({ code: 'KeyP', key: 'p', shiftKey: false })", ctx);
     equal(handled, true, "prefix-P is still a consumed shortcut");
     const opens = vm.runInContext("window.__opens", ctx);
-    equal(opens.length, 1, "the press opens the worktree modal");
-    equal(opens[0].discover, true, "modal starts discovery right away");
-    equal(
-      vm.runInContext("document.getElementById('worktreeDiscoverPath').value", ctx),
-      "/Users/alejandro.blanco",
-      "modal seeds the default folder",
-    );
-    ok(
-      requests.some((url) => url.startsWith("/api/worktrees?cwd=")),
-      "discovery request fired for the seeded folder",
-    );
+    equal(opens.length, 1, "the press opens the discovery flow");
+    equal(opens[0].path, "/Users/alejandro.blanco", "discovery seeds the default folder");
+    const shortcutSource = readFileSync(new URL("./desktop/app_js/shortcuts.js", import.meta.url), "utf8");
+    match(shortcutSource, /window\.HerdrLocationBar\.openDiscoveryForFolder\(selectedWorkspaceRepoPath\(\) \|\| explorationDefaultDirectoryOption\(\)\)/);
   });
 
   it("uses shared search settings to skip disabled APIs and clamp query params", async () => {
@@ -7667,7 +7653,7 @@ describe("app bundle load", () => {
     match(gitLogSource, /function selectedBranchForHash/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /item\("Worktree", "createWorktreeFromSelectedBranch\(\)", !view \|\| !view\.selectedLogBranch\)/);
     match(gitUiSource, /createWorktreeFromSelectedBranch\(\) \{/);
-    match(source, /function openWorktreeCreateFromGitBranch\(cwd, branch\)/);
+    match(gitUiSource, /window\.HerdrLocationBar\.openDiscoveryCreateForRepo\(view\.cwd, branch\)/);
     match(source, /id="worktreeFetchRemotes"/);
     match(source, /Fetch remote branches…/);
     match(source, /remote=true/);
@@ -7720,36 +7706,9 @@ describe("app bundle load", () => {
     );
   });
 
-  it("opens the worktree modal prefilled from a selected Git log branch", async () => {
+  it("routes a selected Git log branch into the shared discovery create entry", async () => {
     const ctx = context();
-    const urls = [];
-    ctx.fetch = async (url) => {
-      urls.push(String(url));
-      if (String(url).startsWith("/api/worktrees")) {
-        return {
-          ok: true,
-          status: 200,
-          statusText: "OK",
-          json: async () => ({
-            result: {
-              source: {
-                source_checkout_path: "/repo",
-                repo_name: "repo",
-                repo_root: "/repo",
-                default_worktree_directory: "/worktrees",
-              },
-              worktrees: [],
-            },
-          }),
-        };
-      }
-      return {
-        ok: true,
-        status: 200,
-        statusText: "OK",
-        json: async () => ({ branches: ["main", "feature/local", "origin/feature/remote"] }),
-      };
-    };
+    ctx.fetch = async () => ({ ok: true, status: 200, statusText: "OK", json: async () => ({}) });
     runSource(ctx);
 
     match(source, /id="worktreeNewTitle">Create worktree/);
@@ -7759,16 +7718,15 @@ describe("app bundle load", () => {
     equal(ctx.localWorktreeBranchName("origin/feature/remote"), "feature/remote");
     equal(ctx.localWorktreeBranchName("upstream/release/candidate"), "release/candidate");
 
-    await ctx.openWorktreeCreateFromGitBranch("/repo", "origin/feature/remote");
-
-    equal(ctx.document.getElementById("worktreeOpenModal").style.display, "grid");
-    equal(ctx.document.getElementById("worktreeDiscoverPath").value, "/repo");
-    equal(ctx.document.getElementById("worktreeNewBase").value, "origin/feature/remote");
-    equal(ctx.document.getElementById("worktreeNewBranch").value, "feature/remote");
-    match(ctx.document.getElementById("worktreeNewPath").value, /\/worktrees\/repo\/feature-remote$/);
-
-    await ctx.fetchWorktreeRemoteBranches();
-    ok(urls.some((url) => url.includes("/api/git-branches?") && url.includes("remote=true") && url.includes("fetch=true")));
+    // The git-log Worktree item now routes through the shared inline
+    // discovery entry: the legacy modal adapter is gone. git_ui.js needs
+    // its own bundle harness (git_ui_behavior.test.mjs boots it with the
+    // full shared module set), so pin the routing at source level here.
+    const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+    match(gitUiSource, /async createWorktreeFromSelectedBranch\(\) \{\n      const view = active\(\);\n      const branch = view && view\.selectedLogBranch;\n      if \(!view \|\| !branch\) return;\n      window\.HerdrLocationBar\.openDiscoveryCreateForRepo\(view\.cwd, branch\);\n    \},/);
+    ok(!gitUiSource.includes("openWorktreeCreateFromGitBranch"), "legacy modal adapter no longer called");
+    ok(!source.includes("function openWorktreeCreateFromGitBranch"), "the adapter itself is removed from the app bundle");
+    equal(ctx.localWorktreeBranchName("origin/feature/remote"), "feature/remote", "helper strips the remote prefix");
   });
 
   it("does not load git branch options for non-Git workspace browse folders", async () => {

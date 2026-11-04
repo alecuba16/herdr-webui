@@ -784,10 +784,10 @@ function runSearchAction(action) {
     "toggle-sidebar": "sidebar",
   }[action];
   if (hintAction) showShortcutHintToast("webuiShortcuts", hintAction);
-  if (action === "open-workspace" || action === "discover-worktrees") openWorktreeOpenModal(selectedWorkspaceRepoPath(), true);
+  if (action === "open-workspace" || action === "discover-worktrees") window.HerdrLocationBar.openDiscoveryForFolder(selectedWorkspaceRepoPath() || explorationDefaultDirectoryOption());
   else if (action === "create-worktree") {
-    if (state.ws) openWorktreeCreateModal(state.ws);
-    else openWorktreeOpenModal(selectedWorkspaceRepoPath(), true);
+    const w = selectedWorkspace();
+    window.HerdrLocationBar.openDiscoveryCreateForRepo(selectedWorkspaceRepoPath(), w ? workspaceBranch(w) : "");
   } else if (action === "sessions") showSessionManager();
   else if (action === "files") openWorkspaceFileBrowser(state.ws);
   else if (action === "git") openWorkspaceGitUi(state.ws);

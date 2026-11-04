@@ -153,8 +153,9 @@ pick folder F
   free-text fallback, draft retention and focus behavior with branch
   creation. Local refs precede remote refs in either discovery shape.
   Submit uses existing POST /api/worktrees, with cwd captured as F,
-  branch, base, generated checkout path, default label and pull_base:
-  false. Reuse pure naming/default-directory helpers, not modal actions.
+  branch, base, generated checkout path, default label and the user's
+  pull-base choice (unchecked by default). Reuse pure
+  naming/default-directory helpers, not modal actions.
   During the request, show Creating worktree, disable duplicate submits
   and keep the draft visible. Failure shows an inline alert and retry,
   keeping name/base. Success closes discovery and selects the returned
@@ -170,8 +171,8 @@ pick folder F
   when generating the checkout path. A failed first probe is retried on
   inline worktree entry, with inline error/retry if source is still
   unavailable. Do not submit a malformed path. The request's source is
-  separately fixed to {cwd:F, workspace_id:null}, label:null and
-  pull_base:false, never the origin workspace or modal state.
+  separately fixed to {cwd:F, workspace_id:null} and label:null, never
+  the origin workspace or modal state; pull_base carries the checkbox.
 - **Pending worktree creation.** Freeze the submitted name/base and all
   competing in-dialog actions until the request settles: list rows,
   mode changes, ref loads, Cancel worktree and the plain-open footer.

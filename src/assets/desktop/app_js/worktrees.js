@@ -176,8 +176,7 @@ function openWorktreeOpenModal(path, discoverNow = false) {
 }
 function openWorktreesForWorkspace(workspace, keyToken) {
   const fallbackPath = workspacePath(workspace) || explorationDefaultDirectoryOption();
-  if (keyToken) openWorktreesForRepo(keyToken, fallbackPath);
-  else openWorktreeOpenModal(fallbackPath, true);
+  window.HerdrLocationBar.openDiscoveryForFolder(fallbackPath);
 }
 function openWorktreesForRepo(keyToken, fallbackPath = "") {
   const key = decodeURIComponent(keyToken),
@@ -382,20 +381,6 @@ async function fetchWorktreeRemoteBranches() {
 function isRemoteWorktreeBranch(branch) {
   const text = String(branch || "").trim();
   return text.startsWith("origin/") || text.startsWith("upstream/");
-}
-
-async function openWorktreeCreateFromGitBranch(cwd, branch) {
-  const sourcePath = worktreeOpenInitialPath(cwd);
-  openWorktreeOpenModal(sourcePath, false);
-  el("worktreeDiscoverPath").value = sourcePath;
-  await discoverWorktrees();
-  const base = String(branch || "").trim();
-  const localBranch = localWorktreeBranchName(base);
-  el("worktreeNewBase").value = isRemoteWorktreeBranch(base) ? base : "";
-  el("worktreeNewBranch").value = localBranch;
-  state.openWorktreeBaseBranchName = localBranch;
-  syncWorktreeCheckoutPath();
-  setTimeout(() => el("worktreeNewPath").focus(), 0);
 }
 
 function localWorktreeBranchName(branch) {

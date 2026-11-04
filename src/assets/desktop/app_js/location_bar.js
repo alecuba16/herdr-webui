@@ -960,13 +960,16 @@
     const facts = workspace ? gitFacts(workspace, cwd) : { branch: "" };
     const branch = String(facts.branch || "");
     if (!cwd) return;
-    await openDiscoveryForFolder(cwd, { createMode: "worktree", prefillBranch: branch, prefillBase: branch });
+    // The current branch is already checked out in this folder, so it
+    // cannot be the new worktree's branch name (Git refuses a second
+    // checkout). Seed it as the base ref only and leave the name empty.
+    await openDiscoveryForFolder(cwd, { createMode: "worktree", prefillBranch: "", prefillBase: branch });
   }
 
-  // Same modal entry the worktree popover uses, prefilled with the row's
-  // branch. Git refuses a second checkout of an already-checked-out branch,
-  // so the modal (discoverWorktrees stamps the checked-out rows) is the one
-  // surface that can catch it before the POST.
+  // Same inline create form the worktree popover uses, prefilled with the
+  // row's branch. Git refuses a second checkout of an already-checked-out
+  // branch, so the discovery list's checked-out stamps and the backend's
+  // creation error both surface the conflict.
   async function createWorktreeFromBranchPopover(encodedName) {
     const name = decodeURIComponent(String(encodedName || ""));
     const cwd = currentCwd();
@@ -1277,9 +1280,10 @@
     if (!branch) return;
     const base = String(list.newBase || "").trim() || String(list.currentBranch || "") || "HEAD";
     let body;
+    let path;
     try {
       const root = worktreeRootForSource(list.source);
-      const path = root && joinPath(root, list.source.repo_name, branchPathSlug(branch));
+      path = root && joinPath(root, list.source.repo_name, branchPathSlug(branch));
       if (!path) throw Error("Worktree checkout path is unavailable.");
       body = buildWorktreeCreateBody({ source: { cwd: list.folder, workspace_id: null }, branch, base, path, label: null, pullBase: !!list.pullBase });
     } catch (err) {
@@ -1291,22 +1295,46 @@
     list.creating = true;
     list.createError = "";
     sync();
+    const postOnce = (withPullBase) =>
+      api("/api/worktrees", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          withPullBase
+            ? body
+            : buildWorktreeCreateBody({ source: { cwd: list.folder, workspace_id: null }, branch, base, path, label: null, pullBase: false }),
+        ),
+      });
     try {
-      const data = await api("/api/worktrees", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      try {
+        const data = await postOnce(true);
+        if (!discoveryOpeningActive(list)) return;
+        const result = data.result || {};
+        if (!result.workspace || !result.workspace.workspace_id) throw Error("Created worktree response has no workspace.");
+        closeDiscoveryPopover();
+        go(result.workspace.workspace_id, result.tab && result.tab.tab_id, result.root_pane && result.root_pane.pane_id);
+        return;
+      } catch (err) {
+        const message = err.message || String(err);
+        // Diverged base with pull requested: ask once, then re-POST
+        // without pulling inside this same pending frame. A recursive
+        // submit would hit its own creating guard, and clearing the
+        // flag first would unlock the form while the retry is in
+        // flight, so the second POST lives here under the same lock.
+        if (!(discoveryOpeningActive(list) && list.pullBase && await confirmContinueWithoutPull(message))) {
+          if (discoveryOpeningActive(list)) list.createError = message;
+          return;
+        }
+      }
+      const data = await postOnce(false);
       if (!discoveryOpeningActive(list)) return;
       const result = data.result || {};
       if (!result.workspace || !result.workspace.workspace_id) throw Error("Created worktree response has no workspace.");
+      list.pullBase = false;
       closeDiscoveryPopover();
       go(result.workspace.workspace_id, result.tab && result.tab.tab_id, result.root_pane && result.root_pane.pane_id);
     } catch (err) {
-      const message = err.message || String(err);
-      if (discoveryOpeningActive(list) && list.pullBase && await confirmContinueWithoutPull(message)) {
-        list.pullBase = false;
-        list.creating = false;
-        sync();
-        return discoverySubmitWorktree();
-      }
-      if (discoveryOpeningActive(list)) list.createError = message;
+      if (discoveryOpeningActive(list)) list.createError = err.message || String(err);
     } finally {
       if (discoveryOpeningActive(list)) {
         list.creating = false;
@@ -1470,6 +1498,22 @@
     refocusChip(node);
   }
 
+  // Centralized create entry for palette actions and keyboard shortcuts:
+  // opens the same discovery create form the popover buttons use, seeded
+  // from the selected workspace's repo and current branch.
+  async function openDiscoveryCreateForRepo(repoPath, branch) {
+    const name = String(branch || "").trim();
+    // No selected repo (empty app, palette create): seed discovery with
+    // the default directory instead of dying silently, matching the
+    // open-workspace fallback.
+    const folder = String(repoPath || "").trim() || explorationDefaultDirectoryOption();
+    await openDiscoveryForFolder(folder, {
+      createMode: "worktree",
+      prefillBranch: name ? localWorktreeBranchName(name) : "",
+      prefillBase: name || "",
+    });
+  }
+
   function closeDiscoveryPopover() {
     if (!bar.discoveryList) return;
     bar.discoveryList = null;
@@ -1602,6 +1646,17 @@
     if (!discoveryOpeningActive(list)) return;
     requestAnimationFrame(() => {
       if (!discoveryOpeningActive(list)) return;
+      // Entries that land straight in the create form (chip popovers,
+      // palette, shortcuts) owe the user the name field, not the first
+      // list row; reveal it so it is visible on short viewports too.
+      if (list.createMode === "worktree" && list.mode !== "worktrees") {
+        const nameField = document.querySelector(".location-bar-discovery-popover #locationBarDiscoveryName");
+        if (nameField && nameField.focus) {
+          nameField.focus();
+          if (nameField.scrollIntoView) nameField.scrollIntoView({ block: "nearest" });
+          return;
+        }
+      }
       const active = document.activeElement;
       if (active && active !== document.body && !(active.getAttribute && active.getAttribute("data-discovery-focus") === "dialog")) return;
       const selector = list.mode === "worktrees" ? ".git-ui-worktree-option" : ".git-ui-branch-list-filter input";
@@ -1640,6 +1695,7 @@
     sync,
     openPathPicker,
     openDiscoveryForFolder,
+    openDiscoveryCreateForRepo,
     closeDiscoveryPopover,
     discoveryOpenPlain,
     discoveryWorktreeRowOpen,

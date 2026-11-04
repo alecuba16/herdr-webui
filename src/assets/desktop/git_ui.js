@@ -2698,8 +2698,7 @@
       const view = active();
       const branch = view && view.selectedLogBranch;
       if (!view || !branch) return;
-      if (typeof openWorktreeCreateFromGitBranch !== "function") return;
-      await openWorktreeCreateFromGitBranch(view.cwd, branch);
+      window.HerdrLocationBar.openDiscoveryCreateForRepo(view.cwd, branch);
     },
     rebaseAfterSelected() {
       const view = active();

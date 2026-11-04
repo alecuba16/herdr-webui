@@ -365,22 +365,23 @@ function runPrefixedShortcut(e) {
       return true;
     },
     newWorkspace: () => {
-      openWorktreeOpenModal();
+      window.HerdrLocationBar.openDiscoveryForFolder(explorationDefaultDirectoryOption());
       return true;
     },
     newPanel: () => {
       // With no workspace the panel cannot exist yet: route the press to
       // the open flow instead, mirroring the strip + fallback.
       if (state.ws) newTab();
-      else openWorktreeOpenModal(selectedWorkspaceRepoPath(), true);
+      else window.HerdrLocationBar.openDiscoveryForFolder(selectedWorkspaceRepoPath() || explorationDefaultDirectoryOption());
       return true;
     },
     openWorktrees: () => {
-      openWorktreeOpenModal();
+      window.HerdrLocationBar.openDiscoveryForFolder(selectedWorkspaceRepoPath() || explorationDefaultDirectoryOption());
       return true;
     },
     createWorktree: () => {
-      if (state.ws) openWorktreeCreateModal(state.ws);
+      const w = selectedWorkspace();
+      window.HerdrLocationBar.openDiscoveryCreateForRepo(selectedWorkspaceRepoPath(), w ? workspaceBranch(w) : "");
       return true;
     },
     closePanel: () => {

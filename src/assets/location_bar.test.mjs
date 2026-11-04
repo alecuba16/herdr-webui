@@ -1055,6 +1055,25 @@ describe("location bar worktree popover", () => {
     ok(bar.innerHTML.includes('id="locationBarDiscoveryPullBase"'), "pull-base checkbox is part of the create form");
   });
 
+  it("keeps a checked-out current branch as the base only, never the prefilled name", async () => {
+    const { ctx, bar } = loadWorktreePopover({
+      routes: {
+        "/api/worktrees": { result: { source: { repo_root: "/projects/repo", repo_name: "repo", default_worktree_directory: "../checkouts" }, worktrees: WORKTREES } },
+        "/api/git-ui/branches": { local: [{ name: "main", current: true }, { name: "feature-lane" }], remote: [] },
+      },
+    });
+    // The current checkout sits on main: the chip create must offer it
+    // as the base ref only, never as the proposed worktree name.
+    ctx.go = () => {};
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: null });
+    await ctx.HerdrLocationBar.createWorktreeFromPopover();
+    match(bar.innerHTML, /id="locationBarDiscoveryName"[^>]*value=""/);
+    match(bar.innerHTML, /id="locationBarDiscoveryBase"/);
+    ok(!bar.innerHTML.includes('value="main" id="locationBarDiscoveryName"'), "current branch is never the proposed name");
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryBase" value="main"'), "current branch still seeds the base ref");
+  });
+
   it("opening one popover closes the other", async () => {
     const { ctx, bar } = loadWorktreePopover({
       routes: {
@@ -1984,12 +2003,14 @@ describe("location bar discovery popover", () => {
 
   it("a diverged base with pull-base offers create-without-pull once, then resubmits without it", async () => {
     let fail = true;
+    let releaseSecond;
+    const secondPending = new Promise((resolve) => { releaseSecond = resolve; });
     const { ctx, bar, calls } = loadDiscovery({
       routes: {
         "/api/worktrees": (_url, init) => {
           if (init && init.method === "POST") {
             if (fail) { fail = false; return { error: "fatal: Not possible to fast-forward ab, diverging" }; }
-            return CREATED;
+            return secondPending.then(() => CREATED);
           }
           return { result: { source: INLINE_SOURCE, worktrees: [{ path: "/picked", branch: "main" }, { path: "/sibling", branch: "other" }] } };
         },
@@ -2003,15 +2024,24 @@ describe("location bar discovery popover", () => {
     await ctx.HerdrLocationBar.discoveryCreateWorktree();
     ctx.HerdrLocationBar.discoveryDraft("newBranch", "topic");
     ctx.HerdrLocationBar.discoveryTogglePullBase(true);
-    await ctx.HerdrLocationBar.discoverySubmitWorktree();
+    const submitting = ctx.HerdrLocationBar.discoverySubmitWorktree();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     equal(questions.length, 1);
     equal(questions[0].confirmText, "Create without pull");
     const posts = calls.filter((call) => call.init && call.init.method === "POST");
     equal(posts.length, 2);
     equal(JSON.parse(posts[0].init.body).pull_base, true);
     equal(JSON.parse(posts[1].init.body).pull_base, false);
+    // The retry POST is still in flight: every competing action stays
+    // disabled and a duplicate submit sends no third POST.
+    match(bar.innerHTML, /id="locationBarDiscoveryPullBase"[^>]*disabled/);
+    await ctx.HerdrLocationBar.discoverySubmitWorktree();
+    equal(calls.filter((call) => call.init && call.init.method === "POST").length, 2);
+    releaseSecond();
+    await submitting;
     ok(!bar.innerHTML.includes("location-bar-discovery-popover"), "second submit succeeds and closes the dialog");
   });
+
 
   it("uses configured default directory and HEAD when current branch is unavailable", async () => {
     const { ctx, calls } = inlineHarness({ currentBranch: "" });
