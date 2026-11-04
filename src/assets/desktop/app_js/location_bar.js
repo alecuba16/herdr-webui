@@ -1325,6 +1325,10 @@
           if (discoveryOpeningActive(list)) list.createError = message;
           return;
         }
+        // The confirmation wait is user-paced: the workspace can change
+        // or the discovery can close meanwhile. A stale opening must
+        // never fire the retry POST.
+        if (!discoveryOpeningActive(list)) return;
       }
       const data = await postOnce(false);
       if (!discoveryOpeningActive(list)) return;
@@ -1646,10 +1650,18 @@
     if (!discoveryOpeningActive(list)) return;
     requestAnimationFrame(() => {
       if (!discoveryOpeningActive(list)) return;
+      // If the user already moved into a live field while the discovery
+      // data landed, keep their focus. Autofocus runs only when focus
+      // still sits on the body or the dialog container itself.
+      const active = document.activeElement;
+      const userMoved =
+        active &&
+        active !== document.body &&
+        !(active.getAttribute && active.getAttribute("data-discovery-focus") === "dialog");
       // Entries that land straight in the create form (chip popovers,
       // palette, shortcuts) owe the user the name field, not the first
       // list row; reveal it so it is visible on short viewports too.
-      if (list.createMode === "worktree" && list.mode !== "worktrees") {
+      if (list.createMode === "worktree" && !userMoved) {
         const nameField = document.querySelector(".location-bar-discovery-popover #locationBarDiscoveryName");
         if (nameField && nameField.focus) {
           nameField.focus();
@@ -1657,8 +1669,7 @@
           return;
         }
       }
-      const active = document.activeElement;
-      if (active && active !== document.body && !(active.getAttribute && active.getAttribute("data-discovery-focus") === "dialog")) return;
+      if (userMoved) return;
       const selector = list.mode === "worktrees" ? ".git-ui-worktree-option" : ".git-ui-branch-list-filter input";
       const target = document.querySelector(`.location-bar-discovery-popover ${selector}`);
       if (target && target.focus) target.focus();

@@ -1323,6 +1323,7 @@ describe("location bar discovery popover", () => {
       if (key) return nodes.find((node) => node.getAttribute("data-discovery-focus") === key[1]) || null;
       if (selector.includes("git-ui-branch-list-filter")) return document.getElementById("locationBarDiscoveryFilter");
       if (selector.includes("git-ui-worktree-option")) return nodes.find((node) => node.className.includes("git-ui-worktree-option")) || null;
+      if (selector.includes("#locationBarDiscoveryName")) return document.getElementById("locationBarDiscoveryName");
       return null;
     };
     Object.defineProperty(bar, "innerHTML", {
@@ -2040,6 +2041,73 @@ describe("location bar discovery popover", () => {
     releaseSecond();
     await submitting;
     ok(!bar.innerHTML.includes("location-bar-discovery-popover"), "second submit succeeds and closes the dialog");
+  });
+
+  it("a stale opening after the divergence question never sends the retry POST", async () => {
+    let fail = true;
+    let answerQuestion;
+    const questionGate = new Promise((resolve) => { answerQuestion = resolve; });
+    const { ctx, calls } = loadDiscovery({
+      routes: {
+        "/api/worktrees": (_url, init) => {
+          if (init && init.method === "POST") {
+            if (fail) { fail = false; return { error: "fatal: Not possible to fast-forward ab, diverging" }; }
+            return CREATED;
+          }
+          return { result: { source: INLINE_SOURCE, worktrees: [{ path: "/picked", branch: "main" }, { path: "/sibling", branch: "other" }] } };
+        },
+        "/api/git-ui/branches": { local: [{ name: "main", current: true }, { name: "other" }], remote: [] },
+      },
+    });
+    const questions = [];
+    // The confirmation waits on the user, so the app state can change
+    // while the question is open.
+    ctx.askQuestion = async () => { questions.push(1); await questionGate; return true; };
+    ctx.go = () => {};
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "topic");
+    ctx.HerdrLocationBar.discoveryTogglePullBase(true);
+    const submitting = ctx.HerdrLocationBar.discoverySubmitWorktree();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    equal(questions.length, 1, "the question is open");
+    // The workspace changes while the question is pending.
+    ctx.state.ws = "ws2";
+    answerQuestion(true);
+    await submitting;
+    const posts = calls.filter((call) => call.init && call.init.method === "POST");
+    equal(posts.length, 1, "the stale opening never sends the retry POST");
+  });
+
+  it("create entries focus the name field in the multi-worktree shape", async () => {
+    const harness = loadDiscovery({
+      routes: {
+        "/api/worktrees": { result: { source: INLINE_SOURCE, worktrees: [{ path: "/picked", branch: "main" }, { path: "/sibling", branch: "other" }] } },
+      },
+    });
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    ctx.go = () => {};
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked", { createMode: "worktree", prefillBranch: "", prefillBase: "main" });
+    equal(document.activeElement.id, "locationBarDiscoveryName", "the name input takes focus even when the list shows worktree rows");
+  });
+
+  it("create entries keep a focus the user already moved", async () => {
+    const harness = loadDiscovery({
+      routes: {
+        "/api/worktrees": { result: { source: INLINE_SOURCE, worktrees: [] } },
+      },
+    });
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    ctx.go = () => {};
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked", { createMode: "worktree", prefillBranch: "", prefillBase: "main" });
+    // The user tabs into the base field while the create form is live:
+    // the load-time autofocus must not steal it.
+    const baseField = document.getElementById("locationBarDiscoveryBase");
+    baseField.focus();
+    ctx.HerdrLocationBar.discoveryLoadBaseOptions(false, true);
+    equal(document.activeElement.id, "locationBarDiscoveryBase", "user focus survives the load settle");
   });
 
 
