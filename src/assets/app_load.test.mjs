@@ -2565,14 +2565,23 @@ describe("app bundle load", () => {
   it("uses shared file tree rows for Git files with Git metadata", () => {
     const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+    const gitSideTreeSource = readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8");
+    const gitDiffViewSource = readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8");
 
-    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /FileTree\.renderPathTree\(files, \{/);
-    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /statusForPath,/);
-    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function fileSummaryEntries\(path, kind\)/);
-    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function normalizeFileTreeStatus\(status, kind\)/);
+    match(gitSideTreeSource, /FileTree\.renderPathTree\(files, \{\s*indentPx: 20,/);
+    match(gitSideTreeSource, /function section\(title, files, kind, treeStyle = false\)/);
+    match(gitSideTreeSource, /section\(`Committed files \$\{label\}`, filterFiles\(files, filter\), "C", true\)/);
+    match(gitSideTreeSource, /class="git-ui-list\$\{treeStyle \? " git-ui-tree-list" : ""\}" role="tree"/);
+    match(gitDiffViewSource, /section\(`Committed files \$\{historicalFileCommitLabel\(view\)\}`,[\s\S]*?, "C", true\)/);
+    match(gitSideTreeSource, /statusForPath,/);
+    match(gitSideTreeSource, /function fileSummaryEntries\(path, kind\)/);
+    match(gitSideTreeSource, /function normalizeFileTreeStatus\(status, kind\)/);
     match(fileTreeSource, /opts\.statusForPath\(dirPath, opts\.kind\)/);
     match(fileTreeSource, /opts\.metaForPath\(dirPath, opts\.kind\)/);
-    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file \{[\s\S]*?display: grid;/);
+    match(gitLayoutCss, /\.git-ui-list\.git-ui-tree-list \{[\s\S]*?--git-tree-indent: 20px;[\s\S]*?gap: 0;/);
+    match(gitLayoutCss, /repeating-linear-gradient\(to right, transparent 0 7px, var\(--git-tree-guide\) 7px 8px/);
+    match(gitLayoutCss, /height: 24px;\s*contain-intrinsic-size: auto 24px;/);
+    match(gitLayoutCss, /\.git-ui-list\.git-ui-tree-list \.herdr-tree-row\.git-ui-file \{[\s\S]*?display: grid;/);
     match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\)/);
     match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\) \{\s*color: var\(--fg\);/);
     match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-dir:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\) \{\s*color: var\(--muted\);/);

@@ -266,6 +266,72 @@ async function main() {
   const tinted = !!alphaMatch && parseFloat(alphaMatch[1]) < 1 && !!rgbMatch && parseFloat(rgbMatch[2]) > parseFloat(rgbMatch[1]) && parseFloat(rgbMatch[3]) > parseFloat(rgbMatch[1]);
   record("selected row background is the accent tint, not an opaque panel grey", tinted, `computed ${bg}`);
 
+  const treeStyle = await evalExpr(`new Promise((resolve) => {
+    const started = Date.now();
+    const check = () => {
+      const row = document.querySelector('.git-ui-tree-list .herdr-tree-row[data-git-path="src/nested/config.toml"]');
+      const tree = row && row.parentElement;
+      if (tree && row) {
+        const rowStyle = getComputedStyle(row);
+        const treeStyle = getComputedStyle(tree);
+        resolve(JSON.stringify({
+          height: row.getBoundingClientRect().height,
+          rowGap: treeStyle.rowGap,
+          indent: rowStyle.getPropertyValue("--git-tree-indent").trim(),
+          guides: rowStyle.backgroundImage.includes("repeating-linear-gradient"),
+          nestedGuideExtent: rowStyle.backgroundSize.includes("40px"),
+        }));
+        return;
+      }
+      if (Date.now() - started > 15000) resolve("tree-timeout");
+      else setTimeout(check, 250);
+    };
+    check();
+  })`);
+  let treeStyleInfo = null;
+  try { treeStyleInfo = JSON.parse(treeStyle); } catch { treeStyleInfo = null; }
+  record("commit tree uses 20px nested indentation guides", !!treeStyleInfo && treeStyleInfo.indent === "20px" && treeStyleInfo.guides && treeStyleInfo.nestedGuideExtent, treeStyle.slice(0, 200));
+  record("commit tree rows use compact spacing", !!treeStyleInfo && treeStyleInfo.height === 24 && treeStyleInfo.rowGap === "0px", treeStyle.slice(0, 200));
+
+  const treeFileClick = await evalExpr(`new Promise((resolve) => {
+    const path = "src/nested/config.toml";
+    const row = document.querySelector('.git-ui-tree-list .herdr-tree-row[data-git-path="' + path + '"]');
+    if (!row) { resolve("no nested file row"); return; }
+    row.click();
+    const started = Date.now();
+    const check = () => {
+      const selected = document.querySelector('.git-ui-tree-list .herdr-tree-row.active[data-git-path="' + path + '"]');
+      if (selected) { resolve("selected"); return; }
+      if (Date.now() - started > 8000) resolve("not selected");
+      else setTimeout(check, 200);
+    };
+    check();
+  })`);
+  record("nested commit file remains selectable", treeFileClick === "selected", treeFileClick);
+
+  const treeDirectoryToggle = await evalExpr(`new Promise((resolve) => {
+    const directory = document.querySelector(".git-ui-tree-list .herdr-tree-row.dir");
+    if (!directory) { resolve("no directory row"); return; }
+    const initialExpanded = directory.getAttribute("aria-expanded") === "true";
+    const waitFor = (expanded, done) => {
+      const started = Date.now();
+      const check = () => {
+        const row = Array.from(document.querySelectorAll(".git-ui-tree-list .herdr-tree-row.dir"))
+          .find((candidate) => candidate.getAttribute("aria-expanded") === String(expanded));
+        if (row) { done(row); return; }
+        if (Date.now() - started > 8000) { resolve("directory state timeout"); return; }
+        setTimeout(check, 200);
+      };
+      check();
+    };
+    directory.click();
+    waitFor(!initialExpanded, (toggled) => {
+      toggled.click();
+      waitFor(initialExpanded, () => resolve(initialExpanded ? "collapsed->expanded->collapsed" : "expanded->collapsed->expanded"));
+    });
+  })`);
+  record("commit tree directory still expands and collapses", ["expanded->collapsed->expanded", "collapsed->expanded->collapsed"].includes(treeDirectoryToggle), treeDirectoryToggle);
+
   // Screenshot evidence of the reworked card.
   try {
     await evalExpr(`(() => { const row = document.querySelector(".git-ui-log-row[data-log-hash]"); if (row) row.scrollIntoView({block: "center"}); return "ok"; })()`);
@@ -314,6 +380,24 @@ async function main() {
     record("no duplicate element ids in the document", audit.dupes.length === 0, JSON.stringify(audit.dupes));
     record("optLayoutMode appears exactly once", audit.layoutCount === 1, `count ${audit.layoutCount}`);
   }
+
+  const lightTreeStyle = await evalExpr(`(() => {
+    const select = document.getElementById("optTheme");
+    if (!select) return "missing theme control";
+    select.value = "light";
+    select.dispatchEvent(new Event("change"));
+    const row = document.querySelector('.git-ui-tree-list .herdr-tree-row[data-git-path="src/nested/config.toml"]');
+    if (!row) return "missing nested row after theme change";
+    const style = getComputedStyle(row);
+    return JSON.stringify({
+      light: document.body.classList.contains("light"),
+      guides: style.backgroundImage.includes("repeating-linear-gradient"),
+      nestedGuideExtent: style.backgroundSize.includes("40px"),
+    });
+  })()`);
+  let lightTreeInfo = null;
+  try { lightTreeInfo = JSON.parse(lightTreeStyle); } catch { lightTreeInfo = null; }
+  record("tree guides remain visible in light theme", !!lightTreeInfo && lightTreeInfo.light && lightTreeInfo.guides && lightTreeInfo.nestedGuideExtent, lightTreeStyle.slice(0, 200));
 
   // The vendored terminal IME textarea must carry an id/name pair after the
   // wterm build patch (Chrome flags unnamed form fields).

@@ -1,6 +1,6 @@
 (function () {
   function createGitUiSideTree({ active, esc, arg, currentMode, diffFile, fileListMode, largeSectionFileLimit, titleWithGitShortcut, FileTree }) {
-    function section(title, files, kind) {
+    function section(title, files, kind, treeStyle = false) {
       const view = active() || {};
       const list = files || [];
       const collapsed = !!((view.collapsedSections || {})[title]);
@@ -9,7 +9,7 @@
       const limited = limit > 0 && list.length > limit && !((view.expandedLargeSections || {})[title]);
       const visibleList = limited ? list.slice(0, limit) : list;
       const largeNote = limited ? `<div class="git-ui-large-file-diff"><button class="git-ui-large-file-load" type="button" onclick="HerdrGitUi.expandLargeSection('${arg(title)}')"><strong>Show all ${esc(title.toLowerCase())} files</strong></button><p>Showing first ${limit} of ${list.length} files to keep browser responsive.</p></div>` : "";
-      return `<div class="git-ui-section"><div class="git-ui-section-head"><button class="git-ui-section-toggle" onclick="HerdrGitUi.toggleSection('${arg(title)}')"><span>${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><strong>${esc(title)}</strong><em>${list.length}</em></button>${action}</div>${collapsed ? "" : `<div class="git-ui-list" role="tree" aria-label="${esc(title)} files">${visibleList.length ? renderFileTree(visibleList, kind, view) : `<div class="git-ui-empty-row">No ${esc(title.toLowerCase())} files</div>`}${largeNote}</div>`}</div>`;
+      return `<div class="git-ui-section"><div class="git-ui-section-head"><button class="git-ui-section-toggle" onclick="HerdrGitUi.toggleSection('${arg(title)}')"><span>${treeIcon(collapsed ? "chevron-right" : "chevron-down")}</span><strong>${esc(title)}</strong><em>${list.length}</em></button>${action}</div>${collapsed ? "" : `<div class="git-ui-list${treeStyle ? " git-ui-tree-list" : ""}" role="tree" aria-label="${esc(title)} files">${visibleList.length ? renderFileTree(visibleList, kind, view) : `<div class="git-ui-empty-row">No ${esc(title.toLowerCase())} files</div>`}${largeNote}</div>`}</div>`;
     }
 
     function sectionBulkAction(title, kind, files) {
@@ -33,6 +33,7 @@
       const statusForPath = overrides.statusForPath !== undefined ? overrides.statusForPath : fileTreeStatus;
       if (FileTree && FileTree.renderPathTree) {
         return FileTree.renderPathTree(files, {
+          indentPx: 20,
           callback: "HerdrGitUi",
           toggleMethod: "toggleDir",
           selectMethod,
@@ -170,7 +171,7 @@
       if (preview.loading) return `<div class="git-ui-section"><div class="git-ui-section-head"><strong>Committed files</strong><em>${esc(label)}</em></div><div class="git-ui-empty-row">Loading commit files…</div></div>`;
       if (preview.error) return `<div class="git-ui-section"><div class="git-ui-section-head"><strong>Committed files</strong><em>${esc(label)}</em></div><div class="git-ui-error">${esc(preview.error)}</div></div>`;
       const files = ((preview.diff && preview.diff.files) || []).map((file) => file.path);
-      return section(`Committed files ${label}`, filterFiles(files, filter), "C");
+      return section(`Committed files ${label}`, filterFiles(files, filter), "C", true);
     }
 
     function stashListHtml(view) {
