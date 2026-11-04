@@ -49,6 +49,7 @@ function loadBar(overrides = {}) {
   const ctx = {
     document,
     state: overrides.state || { ws: null, workspaces: [] },
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
     ...overrides.extra,
   };
   ctx.globalThis = ctx;
@@ -315,6 +316,7 @@ describe("location bar branch popover", () => {
     };
     const ctx = {
       document,
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
       state: state || {
         ws: "ws1",
         workspaces: [workspaceOf("/repo")],
@@ -900,6 +902,7 @@ describe("location bar worktree popover", () => {
     };
     const ctx = {
       document,
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
       state: state || {
         ws: "ws1",
         workspaces: [workspaceOf("/repo", { worktree: { is_linked_worktree: true } })],
@@ -1246,6 +1249,26 @@ describe("location bar discovery popover", () => {
   ];
   const REMOTE = [{ name: "origin/main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" }];
 
+  it("renders the discovery popover from the empty boot state", async () => {
+    // The empty app's open-workspace / create-worktree entries seed the
+    // default directory into the discovery flow, so the popover must
+    // render inside the empty bar too, not only next to workspace chips.
+    const harness = loadDiscovery({
+      routes: {
+        "/api/worktrees": { result: { worktrees: [] } },
+        "/api/git-branches": { branches: ["main"] },
+      },
+      state: { ws: null, workspaces: [] },
+    });
+    const { ctx, bar } = harness;
+    const promise = ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ok(bar.innerHTML.includes("location-bar-discovery-popover"), "loading popover renders inside the empty bar");
+    await promise;
+    ok(bar.innerHTML.includes("location-bar-discovery-popover"), "popover stays after the folder resolves");
+    ok(bar.innerHTML.includes("location-bar-empty"), "empty bar keeps its Open workspace button");
+  });
+
   function loadDiscovery({ routes = {}, state, confirms = true, deferFetch } = {}) {
     const bar = stubNode("locationBar");
     const calls = [];
@@ -1260,6 +1283,7 @@ describe("location bar discovery popover", () => {
     };
     const ctx = {
       document,
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
       state: state || {
         ws: "ws1",
         workspaces: [workspaceOf("/repo")],
@@ -1865,6 +1889,24 @@ describe("location bar discovery popover", () => {
     ok(bar.innerHTML.includes("Local branches"));
   });
 
+  it("keeps discovery open when the initiating dashboard click bubbles to the document", async () => {
+    // The dashboard card (and palette rows) run the open inside their own
+    // click handler, so the very same click reaches the outside-closer a
+    // moment later. The just-opened flag must swallow that one bubble.
+    const pending = [];
+    const { ctx, bar, listeners } = loadDiscovery({ deferFetch: () => new Promise((resolve) => pending.push(resolve)) });
+    const opened = ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    listeners.click({ target: { closest: () => null } });
+    ok(bar.innerHTML.includes("Discovering folder"), "the opening click itself must not close the popover");
+    pending[0]({ result: { worktrees: [] } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    pending[1]({ local: LOCAL, remote: [] });
+    await opened;
+    ok(bar.innerHTML.includes("Local branches"), "popover survives its opening click and loads");
+    listeners.click({ target: { closest: () => null } });
+    ok(!bar.innerHTML.includes("Local branches"), "a later outside click still closes it");
+  });
+
   it("derives a containing checkout branch rather than a sibling for worktree creation", async () => {
     const { ctx, bar } = loadDiscovery({ routes: { "/api/worktrees": { result: { source: { repo_root: "/repo", repo_name: "repo" }, worktrees: [
       { path: "/repo-other", branch: "wrong" }, { path: "/repo", branch: "picked" },
@@ -2287,7 +2329,12 @@ describe("location bar discovery popover", () => {
       ctx.go = () => { navigated++; };
       const pending = ctx.HerdrLocationBar.discoverySubmitWorktree();
       if (dismissal === "Escape") listeners.keydown({ key: "Escape", stopPropagation() {}, preventDefault() {} });
-      if (dismissal === "outside") listeners.click({ target: { closest: () => null } });
+      if (dismissal === "outside") {
+        // A real outside click always lands a macrotask after the opening
+        // click consumed the just-opened grace window.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        listeners.click({ target: { closest: () => null } });
+      }
       if (dismissal === "origin") ctx.state.workspaces[0].cwd = "/changed";
       if (dismissal === "replacement") {
         ctx.fetch = originalFetch;

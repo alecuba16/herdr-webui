@@ -199,7 +199,13 @@
     // workspaces) with the one action this state admits: opening the
     // workspace picker, the same modal the palette's open-workspace
     // action and the project dashboard button already open.
-    return `<button class="location-bar-empty" type="button" onclick="runSearchAction('open-workspace')" title="Open a workspace folder" aria-label="Open workspace"><i class="location-bar-chip-icon location-bar-chip-icon-path" aria-hidden="true"></i><span>Open workspace</span></button>`;
+    // The discovery popover belongs here too: its open/create entries
+    // work from the empty app (they seed the default directory), so the
+    // popover must render even while no chip row exists yet.
+    return (
+      `<button class="location-bar-empty" type="button" onclick="runSearchAction('open-workspace')" title="Open a workspace folder" aria-label="Open workspace"><i class="location-bar-chip-icon location-bar-chip-icon-path" aria-hidden="true"></i><span>Open workspace</span></button>` +
+      (bar.discoveryList ? renderDiscoveryPopover() : "")
+    );
   }
 
   function renderBar(workspace, cwd, facts) {
@@ -766,9 +772,17 @@
 
   if (typeof document !== "undefined" && document.addEventListener) {
     document.addEventListener("click", (event) => {
+      // An entry button (dashboard card, palette row) opens discovery in
+      // its own click handler; that same click then bubbles here. The
+      // just-opened flag lets this one bubble-through pass without
+      // closing what the click itself opened. Any later outside click
+      // closes normally, and the timeout drops the flag for keyboard
+      // opens that no click ever follows.
+      const discoveryJustOpened = bar.discoveryOpenedDuringClick;
+      bar.discoveryOpenedDuringClick = false;
       if (bar.branchList && !eventInsideBranchPopover(event)) closeBranchPopover();
       if (bar.worktreeList && !eventInsideWorktreePopover(event)) closeWorktreePopover();
-      if (bar.discoveryList && !eventInsideDiscoveryPopover(event)) closeDiscoveryPopover();
+      if (bar.discoveryList && !discoveryJustOpened && !eventInsideDiscoveryPopover(event)) closeDiscoveryPopover();
     });
     // Esc closes any open popover from anywhere. Document capture: the
     // drawer's keyboard handler runs on window capture, ahead of this
@@ -984,7 +998,14 @@
   }
 
   function discoveryContextStale(list) {
-    return !list || String(list.wsId || "") !== String(state.ws || "") || !samePath(list.originCwd, currentCwd());
+    if (!list) return true;
+    if (String(list.wsId || "") !== String(state.ws || "")) return true;
+    // The empty app opens discovery seeded with the default directory;
+    // two empty cwds are the same context, not a stale one.
+    const origin = String(list.originCwd || "");
+    const now = String(currentCwd() || "");
+    if (!origin && !now) return false;
+    return !samePath(origin, now);
   }
 
   function discoveryOpeningActive(list) {
@@ -1538,6 +1559,8 @@
     closeBranchPopover();
     closeWorktreePopover();
     const anchor = anchorFromEvent(null, ".location-bar-path-chip");
+    bar.discoveryOpenedDuringClick = true;
+    if (typeof setTimeout === "function") setTimeout(() => { bar.discoveryOpenedDuringClick = false; }, 0);
     bar.discoveryList = {
       loading: true,
       error: "",
