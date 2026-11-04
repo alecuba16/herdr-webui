@@ -1154,6 +1154,8 @@ test("rescue parks the empty-leaf card before a collapsed pane subtree is droppe
     "card survives the collapse reachable by id");
   assert.equal(card.parentNode, container,
     "rescue parked the card at the workspacePanes home");
+  assert.equal(card.hidden, true,
+    "parked card is hidden so it cannot paint a phantom pane for a tick");
   // The sync can mount it again: el() finds it, so mountEmptyLeafInPane
   // re-parents it into a pane content slot instead of silently no-opping.
   panes.mountEmptyLeafInPane(true);

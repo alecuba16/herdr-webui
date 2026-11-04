@@ -808,6 +808,14 @@ function renderWorkspacePanes() {
   // Non-owner terminal leaves own aux surfaces; anything not still on
   // screen (closed or promoted leaf, tab moved to the owner) disposes.
   if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseStale(auxTabs);
+  // A reshape can drop the leaf hosting the empty-leaf card (split
+  // collapse, close-promote, maximize): rescue parks it home hidden, and
+  // only this sync decides whether the zero-tab state still warrants it.
+  // Without the call here a quiet zero-tab workspace has no event-driven
+  // refresh coming, so the card stayed parked and gone until some other
+  // action rendered. Same bare-function guard style as the callers in
+  // this file: standalone VM harnesses load this module without render.js.
+  if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
 }
 
 function paneLeafElement(container, root, leaf) {
@@ -959,7 +967,15 @@ function rescueLiveSurfaces(container, element) {
   const dashboard = el("projectDashboard");
   if (dashboard && nodeWithin(element, dashboard)) container.appendChild(dashboard);
   const emptyLeaf = el("workspaceEmptyLeaf");
-  if (emptyLeaf && nodeWithin(element, emptyLeaf)) container.appendChild(emptyLeaf);
+  if (emptyLeaf && nodeWithin(element, emptyLeaf)) {
+    // Parked means hidden for the card too: #workspacePanes paints its
+    // direct children, so a shown card would float as a phantom pane for
+    // the tick until syncWorkspaceEmptyLeaf re-hides and re-mounts it.
+    // The sync owns this attribute every tick, so it lifts the hide on
+    // its own next pass when the zero-tab state still warrants the card.
+    emptyLeaf.hidden = true;
+    container.appendChild(emptyLeaf);
+  }
 }
 
 function paneTabButtonHtml(tab, isActive, index, tabs) {

@@ -348,6 +348,35 @@ async function main() {
     `tab=${afterEnter.tab} tabs=${afterEnter.tabs} leafHidden=${afterEnter.leafHidden}`,
   );
 
+  // 12. Close that first terminal (confirming the modal): the workspace
+  // falls back to zero tabs and the card must come back on its own terms,
+  // not because a file/Git tab closed. The workspace auto-close prompt is
+  // declined so the zero-tab workspace stays open with its card.
+  const termClosed = await evalExpr(`new Promise(async (resolve) => {
+    try {
+      options.closeWorkspaceOnLastTerminal = false;
+      saveOptions();
+      const closing = state.tab;
+      const ask = closeTab(closing);
+      await new Promise((r) => setTimeout(r, 400));
+      const confirmBtn = document.getElementById("questionConfirm");
+      if (confirmBtn) confirmBtn.click();
+      await ask;
+      await new Promise((r) => setTimeout(r, 900));
+      const leaf = document.getElementById("workspaceEmptyLeaf");
+      resolve({
+        wsKept: state.ws,
+        tabs: (state.tabs || []).length,
+        shown: leaf && !leaf.hidden,
+      });
+    } catch (e) { resolve({ err: String(e && e.message ? e.message : e) }); }
+  })`);
+  record(
+    "closing the last terminal restores the card",
+    termClosed.wsKept && termClosed.tabs === 0 && termClosed.shown,
+    `wsKept=${termClosed.wsKept} tabs=${termClosed.tabs} shown=${termClosed.shown} err=${termClosed.err || "none"}`,
+  );
+
   writeReport(outPath, recorder);
   process.exit(recorder.failed ? 1 : 0);
 }
