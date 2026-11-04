@@ -2288,10 +2288,13 @@ impl BuiltinState {
     }
 
     fn pull_base_branch(&self, cwd: &Path, base: &str) -> Result<(), String> {
+        // --no-rebase keeps the fast-forward promise even when the user has
+        // pull.rebase configured globally; a rebase on a dirty tree would fail
+        // where a fast-forward would succeed.
         let args: Vec<&str> = if base == "HEAD" {
-            vec!["pull", "--ff-only"]
+            vec!["pull", "--ff-only", "--no-rebase"]
         } else {
-            vec!["pull", "--ff-only", "origin", base]
+            vec!["pull", "--ff-only", "--no-rebase", "origin", base]
         };
         run_git(cwd, &args).map_err(|err| format!("git pull: {err}"))
     }

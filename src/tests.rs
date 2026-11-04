@@ -9243,6 +9243,76 @@ async fn create_worktree_pull_base_error_returns_bad_request() {
     assert!(body["error"].as_str().is_some_and(|e| !e.is_empty()));
 }
 
+// ── pull_base_branch honors --ff-only even with pull.rebase configured ──
+// A repo-local pull.rebase=true plus a dirty tree must not turn the promised
+// fast-forward pull into a failed rebase ("cannot pull with rebase: You have
+// unstaged changes").
+#[test]
+fn pull_base_branch_fast_forwards_despite_rebase_config_and_dirty_tree() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let origin = std::env::temp_dir().join(format!("herdr-webui-pull-origin-{stamp}"));
+    let clone = std::env::temp_dir().join(format!("herdr-webui-pull-clone-{stamp}"));
+    let _ = fs::remove_dir_all(&origin);
+    let _ = fs::remove_dir_all(&clone);
+
+    let git = |cwd: Option<&Path>, args: &[&str]| {
+        let mut cmd = Command::new("git");
+        if let Some(dir) = cwd {
+            cmd.arg("-C").arg(dir);
+        }
+        assert!(cmd.args(args).output().unwrap().status.success());
+    };
+
+    git(None, &["init", "-b", "main", origin.to_str().unwrap()]);
+    fs::write(origin.join("file.txt"), "one").unwrap();
+    git(Some(&origin), &["add", "."]);
+    git(
+        Some(&origin),
+        &["-c", "user.name=test", "-c", "user.email=t@example.com", "commit", "-m", "init"],
+    );
+    git(
+        None,
+        &["clone", origin.to_str().unwrap(), clone.to_str().unwrap()],
+    );
+    // The problematic configuration: pulls become rebases.
+    git(Some(&clone), &["config", "pull.rebase", "true"]);
+    // Dirty tree: a rebase would refuse to start, a fast-forward succeeds.
+    fs::write(clone.join("local.txt"), "dirty").unwrap();
+    // Advance origin so the clone has something to fast-forward to.
+    fs::write(origin.join("file.txt"), "two").unwrap();
+    git(Some(&origin), &["add", "."]);
+    git(
+        Some(&origin),
+        &[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-m",
+            "advance",
+        ],
+    );
+
+    let clone_str = clone.to_string_lossy().to_string();
+    pull_base_branch(&clone_str, "main").expect("fast-forward pull must succeed");
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(&clone)
+        .args(["log", "-1", "--format=%s"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "advance");
+    // Dirty file must survive the pull.
+    assert!(clone.join("local.txt").exists());
+
+    let _ = fs::remove_dir_all(&origin);
+    let _ = fs::remove_dir_all(&clone);
+}
+
 // ── create_worktree with existing branch in a real git repo (NativeCreate or LegacyOpen) ──
 
 #[cfg(unix)]
