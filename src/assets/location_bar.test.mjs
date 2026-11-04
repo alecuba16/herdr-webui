@@ -1255,7 +1255,7 @@ describe("location bar discovery popover", () => {
           };
         }
         const route = routes[path] || (() => ({}));
-        const body = typeof route === "function" ? route() : route;
+        const body = typeof route === "function" ? route(String(url), init) : route;
         return Promise.resolve({
           ok: true,
           statusText: "OK",
@@ -1277,6 +1277,14 @@ describe("location bar discovery popover", () => {
       focusWorkspaceOnFolder: async () => null,
     };
     const contextObject = vm.createContext(ctx);
+    vm.runInContext(readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"), contextObject);
+    Object.assign(ctx, {
+      options: {},
+      branchPathSlug: ctx.HerdrAppHelpers.branchPathSlug,
+      normalizeAbsolutePath: ctx.HerdrAppHelpers.normalizeAbsolutePath,
+      buildWorktreeCreateBody: ctx.HerdrAppHelpers.buildWorktreeCreateBody,
+    });
+    vm.runInContext(readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8"), contextObject);
     locationBarScript.runInContext(contextObject);
     return { ctx, bar, calls, listeners };
   }
@@ -1364,6 +1372,8 @@ describe("location bar discovery popover", () => {
     equal(document.activeElement.selectionEnd, 6);
     finish({ branches: ["main"] });
     await new Promise((resolve) => setTimeout(resolve, 0));
+    finish({ branches: ["main", "company/main"] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     equal(document.activeElement.id, "locationBarDiscoveryName");
     equal(document.activeElement.selectionDirection, "backward");
     ok(bar.innerHTML.includes('<option value="main">'));
@@ -1442,7 +1452,8 @@ describe("location bar discovery popover", () => {
     await ctx.HerdrLocationBar.discoveryLoadBaseOptions();
     const baseCall = calls.find((call) => call.path === "/api/git-branches");
     ok(baseCall, "base options fetched");
-    match(baseCall.url, /remote=true/);
+    ok(!baseCall.url.includes("remote=true"), "local membership comes from the local-only endpoint");
+    match(calls.filter((call) => call.path === "/api/git-branches")[1].url, /remote=true/);
     ok(!baseCall.url.includes("fetch=true"), "no automatic remote fetch");
   });
 
@@ -1584,20 +1595,26 @@ describe("location bar discovery popover", () => {
     ok(!bar.innerHTML.includes("location-bar-discovery-popover"), "stale completion did not reopen the popover");
   });
 
-  it("create worktree opens the existing modal entry and closes the popover", async () => {
-    const { ctx, bar } = loadDiscovery({
+  it("create worktree expands inline without invoking either modal", async () => {
+    const harness = loadDiscovery({
       routes: {
-        "/api/worktrees": { result: { worktrees: [{ path: "/repo", branch: "main" }, { path: "/repo-wt", branch: "feature-x" }], source: { repo_name: "repo.git" } } },
+        "/api/worktrees": { result: { worktrees: [{ path: "/repo", branch: "main" }, { path: "/repo-wt", branch: "feature-x" }], source: { repo_name: "repo.git", repo_root: "/repo" } } },
       },
     });
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
     await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
     const modalCalls = [];
     ctx.openWorktreeCreateFromGitBranch = (cwd, branch) => modalCalls.push({ cwd, branch });
-    ctx.HerdrLocationBar.discoveryCreateWorktree();
-    equal(modalCalls.length, 1, "modal opened once");
-    equal(modalCalls[0].cwd, "/repo");
-    equal(modalCalls[0].branch, "main", "worktree shape carries the picked checkout branch");
-    ok(!bar.innerHTML.includes("location-bar-discovery-popover"), "popover closed before the modal");
+    ctx.openWorktreeOpenModal = () => modalCalls.push("fallback");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    equal(modalCalls.length, 0);
+    ok(bar.innerHTML.includes("location-bar-discovery-popover"));
+    ok(bar.innerHTML.includes("git-ui-worktree-option"));
+    match(bar.innerHTML, /<label for="locationBarDiscoveryName">Worktree branch name<\/label>/);
+    equal(document.activeElement.id, "locationBarDiscoveryName");
+    equal((bar.innerHTML.match(/<input\b/g) || []).length, 2);
+    ok(bar.innerHTML.includes("--discovery-top:"));
   });
 
   it("mutual exclusion: opening discovery closes an open branch popover and vice versa", async () => {
@@ -1665,7 +1682,7 @@ describe("location bar discovery popover", () => {
     const { ctx, bar, calls } = loadDiscovery({ routes: {
       "/api/worktrees": { result: { worktrees: [] } },
       "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
-      "/api/git-branches": { branches: ["origin/main", "z-local", "main", "feature-x"] },
+      "/api/git-branches": (url) => ({ branches: url.includes("remote=true") ? ["origin/main", "z-local", "main", "feature-x"] : ["z-local", "main", "feature-x"] }),
     } });
     await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
     equal(calls.length, 2);
@@ -1826,14 +1843,12 @@ describe("location bar discovery popover", () => {
   });
 
   it("derives a containing checkout branch rather than a sibling for worktree creation", async () => {
-    const { ctx } = loadDiscovery({ routes: { "/api/worktrees": { result: { worktrees: [
+    const { ctx, bar } = loadDiscovery({ routes: { "/api/worktrees": { result: { source: { repo_root: "/repo", repo_name: "repo" }, worktrees: [
       { path: "/repo-other", branch: "wrong" }, { path: "/repo", branch: "picked" },
     ] } } } });
-    let seeded;
-    ctx.openWorktreeCreateFromGitBranch = (cwd, branch) => { seeded = [cwd, branch]; };
     await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo/src");
-    ctx.HerdrLocationBar.discoveryCreateWorktree();
-    deepEqual(seeded, ["/repo/src", "picked"]);
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    ok(bar.innerHTML.includes('placeholder="default picked"'));
   });
 
   it("row arguments survive apostrophes and remote names decode to local", async () => {
@@ -1864,4 +1879,278 @@ describe("location bar discovery popover", () => {
     equal(switchCall.branch, "lane's", "remote row posts the bare local name");
     equal(switchCall.cwd, "/repo");
   });
+
+  const INLINE_SOURCE = { repo_root: "/projects/repo", repo_name: "repo", default_worktree_directory: "../checkouts" };
+  const CREATED = { result: { workspace: { workspace_id: "created" }, tab: { tab_id: "created-tab" }, root_pane: { pane_id: "created-pane" } } };
+
+  function inlineHarness({ shape = "branches", source = INLINE_SOURCE, currentBranch = "main" } = {}) {
+    return loadDiscovery({
+      state: { ws: "ws1", workspaces: [workspaceOf("/origin")], worktrees: [] },
+      routes: {
+        "/api/worktrees": (_url, init) => init && init.method === "POST" ? CREATED : { result: { source, worktrees: shape === "worktrees" ? [{ path: "/picked", branch: currentBranch }, { path: "/sibling", branch: "other" }] : [] } },
+        "/api/git-ui/branches": { local: currentBranch ? [{ name: currentBranch, current: true }, { name: "other" }] : [], remote: [] },
+        "/api/git-branches": (url) => ({ branches: url.includes("remote=true") ? ["company/main", "z-local", "company/topic", "main"] : ["z-local", "company/topic", "main"] }),
+      },
+    });
+  }
+
+  it("reuses the branch create fields and cancel restores the live row and retained drafts", async () => {
+    const harness = inlineHarness();
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    const modalCalls = [];
+    ctx.openWorktreeCreateFromGitBranch = () => modalCalls.push("branch modal");
+    ctx.openWorktreeOpenModal = () => modalCalls.push("fallback modal");
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "kept/name");
+    ctx.HerdrLocationBar.discoveryDraft("newBase", "company/release");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    equal((bar.innerHTML.match(/id="locationBarDiscoveryName"/g) || []).length, 1);
+    equal((bar.innerHTML.match(/id="locationBarDiscoveryBase"/g) || []).length, 1);
+    ok(bar.innerHTML.includes("Local branches"));
+    ok(!bar.innerHTML.includes("New branch name"));
+    ok(bar.innerHTML.includes('class="git-ui-branch-list-new location-bar-discovery-worktree-form"'));
+    equal(document.activeElement.id, "locationBarDiscoveryName");
+    ctx.HerdrLocationBar.discoveryCancelWorktree();
+    equal(document.activeElement.getAttribute("data-discovery-focus"), "create-worktree");
+    ok(bar.innerHTML.includes("New branch name"));
+    ok(!bar.innerHTML.includes("location-bar-discovery-worktree-form"));
+    ok(!bar.innerHTML.includes("Cancel worktree"));
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    equal(document.getElementById("locationBarDiscoveryName").value, "kept/name");
+    equal(document.getElementById("locationBarDiscoveryBase").value, "company/release");
+    deepEqual(modalCalls, []);
+  });
+
+  it("collapses worktree creation without removing rows or drafts", async () => {
+    const harness = inlineHarness({ shape: "worktrees" });
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "retained");
+    ctx.HerdrLocationBar.discoveryDraft("newBase", "custom/base");
+    ctx.HerdrLocationBar.discoveryCancelWorktree();
+    ok(!bar.innerHTML.includes('id="locationBarDiscoveryName"'));
+    ok(bar.innerHTML.includes("git-ui-worktree-option"));
+    equal(document.activeElement.getAttribute("data-discovery-focus"), "create-worktree");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    equal(document.getElementById("locationBarDiscoveryName").value, "retained");
+    equal(document.getElementById("locationBarDiscoveryBase").value, "custom/base");
+  });
+
+  for (const shape of ["branches", "worktrees"]) {
+    it(`submits exact picked-folder payload and navigates returned IDs in ${shape} shape`, async () => {
+      const { ctx, bar, calls } = inlineHarness({ shape });
+      const navigations = [];
+      let opened = 0;
+      let confirmed = 0;
+      ctx.go = (...args) => navigations.push(args);
+      ctx.HerdrOpenFolder.openFolderAsWorkspace = async () => { opened++; };
+      ctx.confirm = () => { confirmed++; return true; };
+      ctx.state.openWorktreeSource = { cwd: "/wrong", workspace_id: "wrong" };
+      await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+      await ctx.HerdrLocationBar.discoveryCreateWorktree();
+      ctx.HerdrLocationBar.discoveryDraft("newBranch", "  Feature/New  ");
+      await ctx.HerdrLocationBar.discoverySubmitWorktree();
+      const posts = calls.filter((call) => call.init && call.init.method === "POST");
+      equal(posts.length, 1);
+      deepEqual(JSON.parse(posts[0].init.body), { workspace_id: null, cwd: "/picked", branch: "Feature/New", base: "main", label: null, path: "/projects/checkouts/repo/feature-new", pull_base: false });
+      deepEqual(navigations, [["created", "created-tab", "created-pane"]]);
+      equal(opened, 0);
+      equal(confirmed, 0);
+      ok(!bar.innerHTML.includes("location-bar-discovery-popover"));
+      equal(calls.filter((call) => call.path === "/api/worktrees" && !(call.init && call.init.method === "POST")).length, 1, "probe source was retained");
+    });
+  }
+
+  it("uses configured default directory and HEAD when current branch is unavailable", async () => {
+    const { ctx, calls } = inlineHarness({ currentBranch: "" });
+    ctx.options.worktreeDefaultDirectory = "~/custom-worktrees";
+    ctx.go = () => {};
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "topic/a");
+    await ctx.HerdrLocationBar.discoverySubmitWorktree();
+    const post = calls.find((call) => call.init && call.init.method === "POST");
+    equal(JSON.parse(post.init.body).base, "HEAD");
+    equal(JSON.parse(post.init.body).path, "~/custom-worktrees/repo/topic-a");
+  });
+
+  it("uses explicit free-text base and the existing relative-directory fallback", async () => {
+    const { ctx, calls } = inlineHarness({ source: { repo_root: "/projects/repo", repo_name: "repo" } });
+    ctx.go = () => {};
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "topic");
+    ctx.HerdrLocationBar.discoveryDraft("newBase", "  refs/tags/v1  ");
+    await ctx.HerdrLocationBar.discoverySubmitWorktree();
+    const body = JSON.parse(calls.find((call) => call.init && call.init.method === "POST").init.body);
+    equal(body.base, "refs/tags/v1");
+    equal(body.path, "/projects/worktrees/repo/topic");
+  });
+
+  it("authoritatively orders custom remote refs after slash-containing locals in both shapes", async () => {
+    for (const shape of ["branches", "worktrees"]) {
+      const { ctx, bar, calls } = inlineHarness({ shape });
+      await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+      await ctx.HerdrLocationBar.discoveryCreateWorktree();
+      await ctx.HerdrLocationBar.discoveryLoadBaseOptions();
+      deepEqual([...bar.innerHTML.matchAll(/<option value="([^"]+)"/g)].map((match) => match[1]), ["z-local", "company/topic", "main", "company/main"]);
+      const cached = calls.filter((call) => call.path === "/api/git-branches");
+      equal(cached.length, 2);
+      ok(!cached[0].url.includes("remote=true"));
+      ok(cached[1].url.includes("remote=true"));
+      ok(!cached.some((call) => call.url.includes("fetch=true")));
+      await ctx.HerdrLocationBar.discoveryLoadBaseOptions(true);
+      const fetched = calls.filter((call) => call.path === "/api/git-branches").slice(2);
+      equal(fetched.length, 2);
+      ok(fetched[0].url.includes("remote=true&fetch=true"));
+      ok(!fetched[1].url.includes("remote=true"));
+      ok(!fetched[1].url.includes("fetch=true"));
+    }
+  });
+
+  it("retries failed probe metadata on entry and blocks malformed submits until retry succeeds", async () => {
+    let sourceCalls = 0;
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": () => { sourceCalls++; return sourceCalls <= 2 ? { error: "source offline" } : { result: { source: INLINE_SOURCE } }; },
+      "/api/git-ui/branches": { local: LOCAL, remote: [] },
+    } });
+    const { ctx, bar, calls } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+    equal(sourceCalls, 1);
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "kept");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    equal(sourceCalls, 2);
+    match(bar.innerHTML, /role="alert">source offline/);
+    ok(bar.innerHTML.includes('data-discovery-focus="retry-worktree-source"'));
+    ctx.HerdrLocationBar.discoveryDraft("newBase", "kept/base");
+    equal(document.querySelector('[data-discovery-focus="create"]').disabled, true);
+    await ctx.HerdrLocationBar.discoverySubmitWorktree();
+    equal(calls.filter((call) => call.init && call.init.method === "POST").length, 0);
+    await ctx.HerdrLocationBar.discoveryRetryWorktreeSource();
+    equal(sourceCalls, 3);
+    ok(!bar.innerHTML.includes("source offline"));
+    equal(document.querySelector('[data-discovery-focus="create"]').disabled, false);
+    equal(document.getElementById("locationBarDiscoveryName").value, "kept");
+    equal(document.getElementById("locationBarDiscoveryBase").value, "kept/base");
+  });
+
+  it("keeps blank or incomplete metadata unsubmitable without a malformed path", async () => {
+    const { ctx, bar, calls } = inlineHarness({ source: { repo_name: "repo" } });
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "topic");
+    await ctx.HerdrLocationBar.discoverySubmitWorktree();
+    match(bar.innerHTML, /role="alert">Worktree source is unavailable/);
+    equal(calls.filter((call) => call.init && call.init.method === "POST").length, 0);
+  });
+
+  for (const shape of ["branches", "worktrees"]) {
+    it(`guards duplicate Enter/click and all competing pending actions in ${shape} shape`, async () => {
+      const harness = inlineHarness({ shape });
+      const { ctx, bar, calls } = harness;
+      const document = installDiscoveryFocusDOM(harness);
+      await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+      await ctx.HerdrLocationBar.discoveryCreateWorktree();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      ctx.HerdrLocationBar.discoveryDraft("newBranch", "submitted");
+      ctx.HerdrLocationBar.discoveryDraft("newBase", "submitted/base");
+      let finish;
+      let posts = 0;
+      let confirmed = 0;
+      ctx.confirm = () => { confirmed++; return true; };
+      ctx.fetch = (_url, init) => { posts++; ok(init.method === "POST"); return new Promise((resolve) => { finish = (body) => resolve({ ok: true, json: async () => body }); }); };
+      const pending = ctx.HerdrLocationBar.discoverySubmitWorktree();
+      const count = calls.length;
+      const discoveryHtml = bar.innerHTML.slice(bar.innerHTML.indexOf('class="git-ui-branch-list git-ui-worktree-list location-bar-discovery-popover"'));
+      for (const control of discoveryHtml.matchAll(/<(?:button|input)\b([^>]*)>/g)) ok(/\bdisabled\b/.test(control[1]), control[0]);
+      match(bar.innerHTML, /role="status" data-discovery-focus="worktree-status">Creating worktree/);
+      ok(bar.innerHTML.includes("Closing this dialog does not cancel creation"));
+      equal(document.getElementById("locationBarDiscoveryName").disabled, true);
+      await ctx.HerdrLocationBar.discoverySubmitWorktree();
+      await ctx.HerdrLocationBar.discoveryCreateKeydown({ key: "Enter", preventDefault() {} });
+      await ctx.HerdrLocationBar.discoveryCreateBranch();
+      ctx.HerdrLocationBar.discoveryDraft("newBranch", "mutated");
+      ctx.HerdrLocationBar.discoveryDraft("newBase", "mutated/base");
+      ctx.HerdrLocationBar.discoveryCancelWorktree();
+      await ctx.HerdrLocationBar.discoveryCreateWorktree();
+      await ctx.HerdrLocationBar.discoveryWorktreeRowOpen(encodeURIComponent("/sibling"));
+      await ctx.HerdrLocationBar.discoveryBranchRowOpen("other", false);
+      await ctx.HerdrLocationBar.discoveryOpenPlain();
+      ctx.HerdrLocationBar.discoveryLoadMore();
+      ctx.HerdrLocationBar.discoveryFilter("other");
+      await ctx.HerdrLocationBar.discoveryLoadBaseOptions(true);
+      await ctx.HerdrLocationBar.discoveryRetryWorktreeSource();
+      equal(posts, 1);
+      equal(calls.length, count);
+      equal(confirmed, 0);
+      equal(document.getElementById("locationBarDiscoveryName").value, "submitted");
+      equal(document.getElementById("locationBarDiscoveryBase").value, "submitted/base");
+      finish({ error: "path already exists" });
+      await pending;
+      match(bar.innerHTML, /role="alert">path already exists/);
+      equal(document.querySelector('[data-discovery-focus="create"]').disabled, false);
+      equal(document.getElementById("locationBarDiscoveryName").disabled, false);
+      ok(bar.innerHTML.includes("Retry worktree creation"));
+      const navigation = [];
+      ctx.go = (...args) => navigation.push(args);
+      const retry = ctx.HerdrLocationBar.discoverySubmitWorktree();
+      finish(CREATED);
+      await retry;
+      equal(posts, 2);
+      deepEqual(navigation, [["created", "created-tab", "created-pane"]]);
+    });
+  }
+
+  it("dispatches Enter to worktree submit then branch creation after cancel", async () => {
+    const { ctx, calls } = inlineHarness();
+    ctx.go = () => {};
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    let prevented = 0;
+    await ctx.HerdrLocationBar.discoveryCreateKeydown({ key: "Enter", preventDefault() { prevented++; } });
+    equal(calls.filter((call) => call.init && call.init.method === "POST").length, 0, "blank Enter does nothing");
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "topic");
+    await ctx.HerdrLocationBar.discoveryCreateKeydown({ key: "Enter", preventDefault() { prevented++; } });
+    equal(calls.filter((call) => call.path === "/api/worktrees" && call.init && call.init.method === "POST").length, 1);
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+    await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    ctx.HerdrLocationBar.discoveryDraft("newBranch", "branch-topic");
+    ctx.HerdrLocationBar.discoveryCancelWorktree();
+    await ctx.HerdrLocationBar.discoveryCreateKeydown({ key: "Enter", preventDefault() { prevented++; } });
+    equal(calls.filter((call) => call.path === "/api/git-ui/switch").length, 1);
+    equal(prevented, 3);
+  });
+
+  for (const dismissal of ["Escape", "outside", "origin", "replacement"]) {
+    it(`ignores stale creation success after ${dismissal}`, async () => {
+      const { ctx, bar, listeners } = inlineHarness();
+      await ctx.HerdrLocationBar.openDiscoveryForFolder("/picked");
+      await ctx.HerdrLocationBar.discoveryCreateWorktree();
+      ctx.HerdrLocationBar.discoveryDraft("newBranch", "late");
+      const originalFetch = ctx.fetch;
+      let finish;
+      ctx.fetch = () => new Promise((resolve) => { finish = (body) => resolve({ ok: true, json: async () => body }); });
+      let navigated = 0;
+      ctx.go = () => { navigated++; };
+      const pending = ctx.HerdrLocationBar.discoverySubmitWorktree();
+      if (dismissal === "Escape") listeners.keydown({ key: "Escape", stopPropagation() {}, preventDefault() {} });
+      if (dismissal === "outside") listeners.click({ target: { closest: () => null } });
+      if (dismissal === "origin") ctx.state.workspaces[0].cwd = "/changed";
+      if (dismissal === "replacement") {
+        ctx.fetch = originalFetch;
+        await ctx.HerdrLocationBar.openDiscoveryForFolder("/replacement");
+        ctx.HerdrLocationBar.discoveryDraft("newBranch", "replacement-draft");
+        ctx.HerdrLocationBar.sync();
+      }
+      const before = bar.innerHTML;
+      finish(CREATED);
+      await pending;
+      equal(navigated, 0);
+      equal(bar.innerHTML, before, "late completion does not repaint or close another opening");
+    });
+  }
 });

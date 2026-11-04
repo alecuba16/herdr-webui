@@ -164,6 +164,12 @@
           discovery.baseLoading,
           discovery.baseError,
           discovery.baseRemoteLoaded,
+          discovery.createMode,
+          discovery.creating,
+          discovery.createError,
+          discovery.sourceLoading,
+          discovery.sourceError,
+          !!discovery.source,
           JSON.stringify(discovery.baseOptions || []),
         ].join(":");
     return [state.ws, cwd, facts.branch || "", !!facts.known, !!facts.notGit, branchToken, worktreeToken, discoveryToken].join("|");
@@ -1008,6 +1014,7 @@
     const target = (saved.id ? document.getElementById(saved.id) : saved.key && document.querySelector(`[data-discovery-focus="${saved.key}"]`)) || document.querySelector('.location-bar-discovery-popover[data-discovery-focus="dialog"]');
     if (!target || !target.focus) return;
     target.focus();
+    if (target.scrollIntoView) target.scrollIntoView({ block: "nearest" });
     try { if (saved.start != null) target.setSelectionRange(saved.start, saved.end, saved.direction); } catch (_) {}
   }
 
@@ -1015,16 +1022,17 @@
     const list = bar.discoveryList;
     if (!list) return "";
     const anchor = list.anchor || { left: 10, top: 40, width: 360 };
-    const style = `left:${Math.max(8, anchor.left)}px;top:${anchor.top}px;width:${anchor.width}px`;
+    const style = `left:${Math.max(8, anchor.left)}px;top:${anchor.top}px;width:${anchor.width}px;--discovery-top:${anchor.top}px`;
     const label = escapeHtml(list.repoLabel || pathBasename(list.folder) || list.folder);
     const head = `<div class="git-ui-branch-list-section">${label}${list.folder ? `<div class="location-bar-discovery-path">${escapeHtml(list.folder)}</div>` : ""}</div>`;
-    const footer = `<div class="location-bar-discovery-footer"><button class="git-ui-btn" data-discovery-focus="footer" type="button" onclick="HerdrLocationBar.discoveryOpenPlain()">Open folder as workspace</button></div>`;
+    const footer = `<div class="location-bar-discovery-footer"><button class="git-ui-btn" data-discovery-focus="footer" type="button"${list.creating ? " disabled" : ""} onclick="HerdrLocationBar.discoveryOpenPlain()">Open folder as workspace</button></div>`;
     if (list.loading)
       return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Open ${escapeHtml(list.folder || "folder")}" style="${style}" onclick="event.stopPropagation()">${head}<div class="git-ui-loading" role="status"><span></span><strong>Discovering folder</strong></div>${footer}</div>`;
     if (list.error)
       return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Open ${escapeHtml(list.folder || "folder")}" style="${style}" onclick="event.stopPropagation()">${head}<div class="git-ui-error" role="alert">${escapeHtml(list.error)}</div>${footer}</div>`;
-    if (list.mode === "worktrees") return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Choose worktree in ${escapeHtml(list.folder)}" style="${style}" onclick="event.stopPropagation()">${head}${discoveryWorktreeRows(list)}${footer}</div>`;
-    return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Choose branch in ${escapeHtml(list.folder)}" style="${style}" onclick="event.stopPropagation()">${head}${discoveryBranchBody(list)}${footer}</div>`;
+    const body = list.mode === "worktrees" ? discoveryWorktreeRows(list) + (list.createMode === "worktree" ? discoveryCreateForm(list) : "") : discoveryBranchBody(list);
+    const frozenBody = list.creating ? body.replace(/<(button|input)\b(?![^>]*\sdisabled(?:\s|>|=))/g, '<$1 disabled') : body;
+    return `<div class="${discoveryPopoverClasses()}" data-discovery-focus="dialog" tabindex="-1" role="dialog" aria-label="Choose ${list.mode === "worktrees" ? "worktree" : "branch"} in ${escapeHtml(list.folder)}" style="${style}" onclick="event.stopPropagation()">${head}${frozenBody}${footer}</div>`;
   }
 
   function discoveryWorktreeRows(list) {
@@ -1068,13 +1076,20 @@
     const loadMore = !list.remoteLoading && !list.remoteLoaded && remoteAll.length > remote.length
       ? `<button class="git-ui-branch-load-more" data-discovery-focus="load-more" onclick="HerdrLocationBar.discoveryLoadMore()">Load more branches (${remoteAll.length - remote.length} more)</button>`
       : "";
+    const create = discoveryCreateForm(list);
+    const worktreeRow = `<button class="git-ui-worktree-create" data-discovery-focus="create-worktree" title="Create a new worktree for this repository" aria-label="Create worktree" onclick="HerdrLocationBar.discoveryCreateWorktree()">＋ Create worktree</button>`;
+    return `<label class="git-ui-branch-list-filter"><span>Filter</span><input id="locationBarDiscoveryFilter" value="${escapeHtml(list.filter || "")}" placeholder="Type to filter" aria-label="Filter branches"${inputAttrs("search")} oninput="HerdrLocationBar.discoveryFilter(this.value)"></label><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${loadMore}${empty}${worktreeRow}</div>${create}`;
+  }
+
+  function discoveryCreateForm(list) {
+    const worktree = list.createMode === "worktree";
+    const unavailable = worktree && (!list.source || list.sourceLoading || !!list.sourceError);
     const baseOptions = (list.baseOptions || []).map((ref) => `<option value="${escapeAttr(ref)}"></option>`).join("");
     const baseDatalist = `<datalist id="${discoveryBaseDatalistId}">${baseOptions}</datalist>`;
-    const basePickerExtra = `<button class="git-ui-btn" type="button" data-discovery-focus="load-refs" aria-disabled="${list.baseLoading ? "true" : "false"}" onclick="HerdrLocationBar.discoveryLoadBaseOptions()">Load refs</button><button class="git-ui-btn" type="button" data-discovery-focus="fetch-remotes" aria-disabled="${list.baseLoading ? "true" : "false"}" onclick="HerdrLocationBar.discoveryLoadBaseOptions(true)">Fetch remotes</button>`;
+    const basePickerExtra = `<button class="git-ui-btn" type="button" data-discovery-focus="load-refs" aria-disabled="${list.baseLoading || list.creating ? "true" : "false"}" onclick="HerdrLocationBar.discoveryLoadBaseOptions()">Load refs</button><button class="git-ui-btn" type="button" data-discovery-focus="fetch-remotes" aria-disabled="${list.baseLoading || list.creating ? "true" : "false"}" onclick="HerdrLocationBar.discoveryLoadBaseOptions(true)">Fetch remotes</button>`;
     const baseFeedback = list.baseLoading ? `<div role="status">Loading refs…</div>` : list.baseError ? `<div class="git-ui-error" role="alert">${escapeHtml(list.baseError)} Use free text or retry Load refs / Fetch remotes.</div>` : "";
-    const create = `<div class="git-ui-branch-list-new"><label for="locationBarDiscoveryName">New branch name</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryName" value="${escapeHtml(list.newBranch || "")}" placeholder="branch-name"${inputAttrs("done")} onfocus="HerdrLocationBar.discoveryLoadBaseOptions(false, true)" oninput="HerdrLocationBar.discoveryDraft('newBranch', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"></div><label for="locationBarDiscoveryBase">Base ref</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryBase" value="${escapeHtml(list.newBase || "")}" list="${discoveryBaseDatalistId}" placeholder="default ${escapeHtml(list.currentBranch || "HEAD")}"${inputAttrs("done")} onfocus="HerdrLocationBar.discoveryLoadBaseOptions(false, true)" oninput="HerdrLocationBar.discoveryDraft('newBase', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"><button class="git-ui-btn" type="button" data-discovery-focus="create"${list.creating || !String(list.newBranch || "").trim() ? " disabled" : ""} onclick="HerdrLocationBar.discoveryCreateBranch()">Create</button></div><div class="git-ui-inline-field">${basePickerExtra}</div>${baseFeedback}</div>`;
-    const worktreeRow = `<button class="git-ui-worktree-create" data-discovery-focus="create-worktree" title="Create a new worktree for this repository" aria-label="Create worktree" onclick="HerdrLocationBar.discoveryCreateWorktree()">＋ Create worktree</button>`;
-    return `${baseDatalist}<label class="git-ui-branch-list-filter"><span>Filter</span><input id="locationBarDiscoveryFilter" value="${escapeHtml(list.filter || "")}" placeholder="Type to filter" aria-label="Filter branches"${inputAttrs("search")} oninput="HerdrLocationBar.discoveryFilter(this.value)"></label><div class="git-ui-branch-list-scroll">${rows(local, "Local branches")}${rows(remote, "Remote branches")}${loadingRemote}${loadMore}${empty}${worktreeRow}</div>${create}`;
+    const feedback = worktree ? (list.sourceLoading ? `<div role="status">Loading worktree source…</div>` : list.sourceError ? `<div class="git-ui-error" role="alert">${escapeHtml(list.sourceError)}</div><button class="git-ui-btn" type="button" data-discovery-focus="retry-worktree-source" onclick="HerdrLocationBar.discoveryRetryWorktreeSource()">Retry worktree source</button>` : "") + (list.creating ? `<div role="status" data-discovery-focus="worktree-status">Creating worktree</div><div class="git-ui-muted">Closing this dialog does not cancel creation</div>` : list.createError ? `<div class="git-ui-error" role="alert">${escapeHtml(list.createError)}</div>` : "") : "";
+    return `${baseDatalist}<div class="git-ui-branch-list-new${worktree ? " location-bar-discovery-worktree-form" : ""}"><label for="locationBarDiscoveryName">${worktree ? "Worktree branch name" : "New branch name"}</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryName" value="${escapeHtml(list.newBranch || "")}" placeholder="branch-name"${inputAttrs("done")} onfocus="HerdrLocationBar.discoveryLoadBaseOptions(false, true)" oninput="HerdrLocationBar.discoveryDraft('newBranch', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"></div><label for="locationBarDiscoveryBase">Base ref</label><div class="git-ui-inline-field"><input id="locationBarDiscoveryBase" value="${escapeHtml(list.newBase || "")}" list="${discoveryBaseDatalistId}" placeholder="default ${escapeHtml(list.currentBranch || "HEAD")}"${inputAttrs("done")} onfocus="HerdrLocationBar.discoveryLoadBaseOptions(false, true)" oninput="HerdrLocationBar.discoveryDraft('newBase', this.value)" onkeydown="HerdrLocationBar.discoveryCreateKeydown(event)"><button class="git-ui-btn" type="button" data-discovery-focus="create"${list.creating || unavailable || !String(list.newBranch || "").trim() ? " disabled" : ""} onclick="HerdrLocationBar.${worktree ? "discoverySubmitWorktree" : "discoveryCreateBranch"}()">${worktree ? (list.creating ? "Creating worktree" : list.createError ? "Retry worktree creation" : "Create worktree") : "Create"}</button>${worktree ? `<button class="git-ui-btn" type="button" data-discovery-focus="cancel-worktree" onclick="HerdrLocationBar.discoveryCancelWorktree()">Cancel worktree</button>` : ""}</div><div class="git-ui-inline-field">${basePickerExtra}</div>${baseFeedback}${feedback}</div>`;
   }
 
   const discoveryBaseDatalistId = "locationBarDiscoveryBaseOptions";
@@ -1130,7 +1145,7 @@
 
   async function discoveryBranchRowOpen(encodedName, isRemote) {
     const list = bar.discoveryList;
-    if (!list || discoveryContextStale(list)) return;
+    if (!list || discoveryContextStale(list) || list.creating) return;
     const name = decodeURIComponent(String(encodedName || ""));
     const folder = String(list.folder || "");
     if (!name || !folder) return;
@@ -1169,7 +1184,7 @@
 
   async function discoveryCreateBranch() {
     const list = bar.discoveryList;
-    if (!list || discoveryContextStale(list) || list.creating) return;
+    if (!list || discoveryContextStale(list) || list.creating || list.createMode === "worktree") return;
     const name = String(list.newBranch || "").trim();
     const folder = String(list.folder || "");
     if (!name || !folder) return;
@@ -1180,21 +1195,87 @@
   function discoveryCreateKeydown(event) {
     if (event && event.key === "Enter") {
       event.preventDefault();
-      discoveryCreateBranch();
+      return bar.discoveryList && bar.discoveryList.createMode === "worktree" ? discoverySubmitWorktree() : discoveryCreateBranch();
     }
   }
 
-  function discoveryCreateWorktree() {
+  async function discoveryCreateWorktree() {
     const list = bar.discoveryList;
-    if (!discoveryOpeningActive(list)) return;
-    const folder = String(list.folder || "");
-    if (!folder) return;
-    const current = String(list.currentBranch || "");
-    closeDiscoveryPopover();
-    if (typeof openWorktreeCreateFromGitBranch === "function") {
-      openWorktreeCreateFromGitBranch(folder, current);
-    } else if (typeof openWorktreeOpenModal === "function") {
-      openWorktreeOpenModal(folder, true);
+    if (!discoveryOpeningActive(list) || list.loading || list.error || list.creating) return;
+    list.createMode = "worktree";
+    sync();
+    restoreDiscoveryFocus({ id: "locationBarDiscoveryName" });
+    if (!list.source) await discoveryRetryWorktreeSource();
+  }
+
+  function discoveryCancelWorktree() {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating) return;
+    list.createMode = "branch";
+    sync();
+    restoreDiscoveryFocus({ key: "create-worktree" });
+  }
+
+  function discoverySourceAvailable(source) {
+    return !!(source && String(source.repo_root || "").trim() && String(source.repo_name || "").trim());
+  }
+
+  async function discoveryRetryWorktreeSource() {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.creating || list.sourceLoading || list.createMode !== "worktree") return;
+    list.sourceLoading = true;
+    list.sourceError = "";
+    sync();
+    try {
+      const data = await api(`/api/worktrees?cwd=${encodeURIComponent(list.folder)}`);
+      if (!discoveryOpeningActive(list)) return;
+      const source = (data.result || {}).source;
+      if (!discoverySourceAvailable(source)) throw Error("Worktree source is unavailable. Retry before creating.");
+      list.source = source;
+    } catch (err) {
+      if (discoveryOpeningActive(list)) list.sourceError = err.message || String(err);
+    } finally {
+      if (discoveryOpeningActive(list)) {
+        list.sourceLoading = false;
+        sync();
+      }
+    }
+  }
+
+  async function discoverySubmitWorktree() {
+    const list = bar.discoveryList;
+    if (!discoveryOpeningActive(list) || list.createMode !== "worktree" || list.creating || list.sourceLoading || !discoverySourceAvailable(list.source) || list.sourceError) return;
+    const branch = String(list.newBranch || "").trim();
+    if (!branch) return;
+    const base = String(list.newBase || "").trim() || String(list.currentBranch || "") || "HEAD";
+    let body;
+    try {
+      const root = worktreeRootForSource(list.source);
+      const path = root && joinPath(root, list.source.repo_name, branchPathSlug(branch));
+      if (!path) throw Error("Worktree checkout path is unavailable.");
+      body = buildWorktreeCreateBody({ source: { cwd: list.folder, workspace_id: null }, branch, base, path, label: null, pullBase: false });
+    } catch (err) {
+      list.createError = err.message || String(err);
+      sync();
+      return;
+    }
+    list.creating = true;
+    list.createError = "";
+    sync();
+    try {
+      const data = await api("/api/worktrees", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      if (!discoveryOpeningActive(list)) return;
+      const result = data.result || {};
+      if (!result.workspace || !result.workspace.workspace_id) throw Error("Created worktree response has no workspace.");
+      closeDiscoveryPopover();
+      go(result.workspace.workspace_id, result.tab && result.tab.tab_id, result.root_pane && result.root_pane.pane_id);
+    } catch (err) {
+      if (discoveryOpeningActive(list)) list.createError = err.message || String(err);
+    } finally {
+      if (discoveryOpeningActive(list)) {
+        list.creating = false;
+        sync();
+      }
     }
   }
 
@@ -1202,7 +1283,7 @@
   // the switch (opening the worktree is the whole action).
   async function discoveryWorktreeRowOpen(encodedPath) {
     const list = bar.discoveryList;
-    if (!discoveryOpeningActive(list)) return;
+    if (!discoveryOpeningActive(list) || list.creating) return;
     const path = decodeURIComponent(String(encodedPath || ""));
     if (!path) return;
     if (!window.confirm(`Open worktree "${path}"?`)) return;
@@ -1220,7 +1301,7 @@
 
   async function discoveryOpenPlain() {
     const list = bar.discoveryList;
-    if (!discoveryOpeningActive(list)) return;
+    if (!discoveryOpeningActive(list) || list.creating) return;
     const folder = String(list.folder || "");
     if (!folder) return;
     // The footer cancels the probe: bump the requestId so late
@@ -1265,7 +1346,7 @@
 
   function discoveryFilter(value) {
     const list = bar.discoveryList;
-    if (!discoveryOpeningActive(list) || list.loading) return;
+    if (!discoveryOpeningActive(list) || list.loading || list.creating) return;
     list.filter = String(value || "");
     const requestId = nextPopoverRequestId();
     list.remoteRequestId = requestId;
@@ -1295,22 +1376,22 @@
 
   function discoveryLoadMore() {
     const list = bar.discoveryList;
-    if (!discoveryOpeningActive(list)) return;
+    if (!discoveryOpeningActive(list) || list.creating) return;
     list.remoteLoaded = true;
     sync();
   }
 
   function discoveryDraft(field, value) {
     const list = bar.discoveryList;
-    if (!discoveryOpeningActive(list) || (field !== "newBranch" && field !== "newBase")) return;
+    if (!discoveryOpeningActive(list) || list.creating || (field !== "newBranch" && field !== "newBase")) return;
     list[field] = String(value || "");
     const createButton = document.querySelector && document.querySelector('.location-bar-discovery-popover [data-discovery-focus="create"]');
-    if (createButton) createButton.disabled = list.creating || !String(list.newBranch || "").trim();
+    if (createButton) createButton.disabled = list.creating || !String(list.newBranch || "").trim() || (list.createMode === "worktree" && (!list.source || list.sourceLoading || !!list.sourceError));
   }
 
   async function discoveryLoadBaseOptions(fetchRemotes = false, fromFocus = false) {
     const list = bar.discoveryList;
-    if (!discoveryOpeningActive(list) || list.baseLoading || (fromFocus && list.baseLoaded && !fetchRemotes)) return;
+    if (!discoveryOpeningActive(list) || list.creating || list.baseLoading || (fromFocus && list.baseLoaded && !fetchRemotes)) return;
     if (fromFocus && list.baseError) return;
     const folder = String(list.folder || "");
     if (!folder) return;
@@ -1318,14 +1399,14 @@
     list.baseError = "";
     sync();
     try {
-      const data = await api(`/api/git-branches?cwd=${encodeURIComponent(folder)}&remote=true${fetchRemotes ? "&fetch=true" : ""}`);
+      const url = `/api/git-branches?cwd=${encodeURIComponent(folder)}`;
+      let localData = fetchRemotes ? null : await api(url);
       if (!discoveryOpeningActive(list)) return;
-      const remotePrefixes = new Set((list.remote || []).map((branch) => String(branch.name || "").split("/")[0]));
-      remotePrefixes.add("origin");
-      remotePrefixes.add("upstream");
-      const localNames = new Set((list.local || []).map((branch) => String(branch.name || "")));
-      const isRemote = (name) => !localNames.has(name) && remotePrefixes.has(name.split("/")[0]);
-      list.baseOptions = [...new Set((data.branches || []).map(String))].sort((a, b) => Number(isRemote(a)) - Number(isRemote(b)) || a.localeCompare(b));
+      const data = await api(`${url}&remote=true${fetchRemotes ? "&fetch=true" : ""}`);
+      if (!discoveryOpeningActive(list)) return;
+      if (fetchRemotes) localData = await api(url);
+      if (!discoveryOpeningActive(list)) return;
+      list.baseOptions = [...new Set((localData.branches || []).concat(data.branches || []).map(String))];
       list.baseLoaded = true;
       if (fetchRemotes) list.baseRemoteLoaded = true;
     } catch (err) {
@@ -1379,6 +1460,11 @@
       newBranch: "",
       newBase: "",
       creating: false,
+      createMode: "branch",
+      createError: "",
+      source: null,
+      sourceLoading: false,
+      sourceError: "",
       baseOptions: [],
       baseLoaded: false,
       baseLoading: false,
@@ -1399,6 +1485,7 @@
       if (!discoveryRequestActive(request)) return;
       const rows = ((data && data.result) || {}).worktrees || [];
       const source = ((data && data.result) || {}).source || {};
+      bar.discoveryList.source = discoverySourceAvailable(source) ? source : null;
       const repoLabel = String(source.repo_name || source.repo_key || source.repo_root || "");
       bar.discoveryList.repoLabel = repoLabel;
       if (rows.length >= 2) {
@@ -1508,6 +1595,9 @@
     discoveryBranchRowOpen,
     discoveryCreateBranch,
     discoveryCreateWorktree,
+    discoverySubmitWorktree,
+    discoveryCancelWorktree,
+    discoveryRetryWorktreeSource,
     discoveryFilter,
     discoveryLoadMore,
     discoveryDraft,

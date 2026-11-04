@@ -178,7 +178,7 @@
 /* Fixed anchoring keeps discovery outside the scrolling location bar. */
 .location-bar .location-bar-discovery-popover {
   bottom: auto;
-  max-height: min(70vh, calc(100vh - 56px));
+  max-height: min(70vh, calc(100vh - var(--discovery-top, 48px) - 8px));
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -261,6 +261,14 @@
   width: auto;
 }
 
+.location-bar-discovery-popover .location-bar-discovery-worktree-form .git-ui-inline-field {
+  flex-wrap: wrap;
+}
+
+.location-bar-discovery-worktree-form #locationBarDiscoveryBase {
+  flex-basis: 100%;
+}
+
 .location-bar .location-bar-discovery-popover input {
   border-color: var(--muted);
 }
@@ -270,7 +278,7 @@
   outline-offset: 2px;
 }
 
-.location-bar-discovery-popover .git-ui-btn:is(:disabled, [aria-disabled="true"]) {
+.location-bar-discovery-popover :is(button, input):is(:disabled, [aria-disabled="true"]) {
   cursor: not-allowed;
   opacity: 0.6;
 }
