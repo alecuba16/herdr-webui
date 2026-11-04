@@ -58,9 +58,9 @@ only, with no base picker.
      `/api/git-branches?cwd=<folder>&remote=true` (local first, remote
      section extendable by the existing "Fetch remote branches" afford
      when the endpoint is asked with `&fetch=true`).
-   - Create worktree: branch name + base + path + label, reusing the
-     existing worktree create modal's field contract, opened from the
-     discovery popover.
+   - Create worktree: branch name + base, inside this same discovery
+     dialog. No action modal opens. Checkout path and label follow the
+     existing generated defaults instead of adding two more inputs.
 6. **No git repo = plain workspace, immediately.** No popover at all;
    the existing 3-step ladder runs to completion (focus, else open
    checkout, else create workspace + recents record). This keeps the
@@ -136,14 +136,56 @@ pick folder F
   state, same pattern as the chip popover's newBranch draft. Name and
   base have separate visible labels. Fetching remote refs is an explicit
   action, not a side effect of picking a folder or typing a filter.
-- **Worktree create.** The discovery popover's create action opens the
-  EXISTING open-worktree modal via openWorktreeCreateFromGitBranch(F,
-  picked current branch), the same modal entry the chip popovers use.
-  The modal's own base/branch/label/path fields and its own base
-  datalist (local + explicit remote fetch, the shipped pattern) serve
-  as the base picker; no new form is built in the popover. Closing the
-  modal returns the user to the shell (discovery popover closes before
-  the modal opens, so Esc ordering stays modal-first by construction).
+- **Worktree create, revised by user on 2026-11-04 (v3).** Clicking
+  Create worktree keeps the discovery dialog and its list open. The
+  create area shows two labeled inputs: Worktree branch name and Base
+  ref, plus Create worktree and Cancel worktree buttons. In the branch
+  chooser this reuses its existing name/base area, changing the submit
+  action rather than duplicating fields. In the worktree chooser the
+  area expands below its rows. Focus moves to the name input. Cancel
+  collapses worktree creation, keeps the list and drafts, and returns
+  focus to the Create worktree row. Esc still closes the whole dialog.
+  No existing action modal, directory picker, label input or path input
+  is opened by this action. Existing chip creation flows are unchanged.
+- **Inline worktree submit.** A nonblank branch name enables Create
+  worktree. The base defaults to the picked checkout's current branch,
+  else HEAD. It shares lazy local/cached refs, explicit Fetch remotes,
+  free-text fallback, draft retention and focus behavior with branch
+  creation. Local refs precede remote refs in either discovery shape.
+  Submit uses existing POST /api/worktrees, with cwd captured as F,
+  branch, base, generated checkout path, default label and pull_base:
+  false. Reuse pure naming/default-directory helpers, not modal actions.
+  During the request, show Creating worktree, disable duplicate submits
+  and keep the draft visible. Failure shows an inline alert and retry,
+  keeping name/base. Success closes discovery and selects the returned
+  workspace/tab/pane. A stale opening never navigates after completion.
+  There is no pre-submit navigation to F and no extra confirmation modal.
+- **Authoritative refs and source.** Lazy base loading obtains the
+  local-only list from GET /api/git-branches?cwd=F and the combined list
+  with remote=true, emitting local entries first and then combined
+  entries absent from that local set. Do not guess remote prefixes.
+  Fetch remotes uses fetch=true only on the combined request and refreshes
+  local membership without a second fetch. Retain probe 1's source metadata
+  for worktreeRootForSource(source), source.repo_name and branchPathSlug
+  when generating the checkout path. A failed first probe is retried on
+  inline worktree entry, with inline error/retry if source is still
+  unavailable. Do not submit a malformed path. The request's source is
+  separately fixed to {cwd:F, workspace_id:null}, label:null and
+  pull_base:false, never the origin workspace or modal state.
+- **Pending worktree creation.** Freeze the submitted name/base and all
+  competing in-dialog actions until the request settles: list rows,
+  mode changes, ref loads, Cancel worktree and the plain-open footer.
+  Announce Creating worktree with role=status. Esc/outside dismissal
+  remains available and invalidates the opening, but does not cancel
+  the server-side creation. A short pending hint states that distinction.
+  On failure announce role=alert, restore controls and retain drafts for
+  retry. A late result must not repaint or navigate another opening.
+- **Short desktop and zoom.** At 200% zoom on a short desktop viewport,
+  the discovery dialog fits the available height below its live anchor.
+  Name, base, ref loading/fetching, submit, Cancel, error/retry and footer
+  remain reachable by keyboard and vertical scrolling, without horizontal
+  clipping. Focusing the expanded form or retry control scrolls it into
+  view. Verify this in the running preview, not only a DOM mock.
 - **Discovery popover exclusivity and Esc.** Opening discovery closes
   branch and worktree chip popovers; opening either chip popover closes
   discovery. The document-capture Esc handler extends to discovery
@@ -170,7 +212,8 @@ pick folder F
 ```
 row click (worktree) -> openFolderAsWorkspace(row.path), popover closes
 row click (branch)   -> branch row contract above
-"Create worktree"    -> openWorktreeCreateFromGitBranch(F, current)
+"Create worktree"    -> inline name + base area in this discovery dialog
+inline submit       -> POST /api/worktrees, then select created workspace
 "New branch"         -> name + base picker, open-then-create contract above
 footer "Open folder as workspace" -> plain ladder on F, always present
 ```
@@ -209,6 +252,7 @@ same-folder picks become useful rather than dead.
 | Branch rows (local+remote, tip details, worktree_path stamps) | GET `/api/git-ui/branches?cwd=` | Branch rows carry `worktree_path` so the branch list can reroute to a worktree exactly like the chip popover does |
 | Plain branch list for datalists | GET `/api/git-branches?cwd=&remote=true[&fetch=true]` | Base picker; extendable remote section |
 | Switch/create branch | POST `/api/git-ui/switch` `{cwd, branch[, create, base]}` | unchanged |
+| Create worktree | POST `/api/worktrees` `{cwd, branch, base, path, label, pull_base}` | unchanged, inline form uses generated path/default label |
 | Open checkout | POST `/api/worktrees/open` | unchanged, via the shared folder ladder |
 | Create workspace | POST `/api/workspaces` | unchanged, via the shared folder ladder |
 
