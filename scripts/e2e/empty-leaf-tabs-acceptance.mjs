@@ -377,6 +377,41 @@ async function main() {
     `wsKept=${termClosed.wsKept} tabs=${termClosed.tabs} shown=${termClosed.shown} err=${termClosed.err || "none"}`,
   );
 
+  // 13. Maximize reshape: split again, maximize the active leaf, then
+  // restore. The zero-tab card must stay reachable and shown across both
+  // toggles (rescue parks it hidden, the render-tail sync re-mounts it),
+  // and the rail stubs must not swallow the Enter scope (#workspacePanes
+  // still contains the focus target).
+  const maxState = await evalExpr(`new Promise(async (resolve) => {
+    try {
+      const panes = window.HerdrWorkspacePanes;
+      panes.splitPaneRight();
+      await new Promise((r) => setTimeout(r, 200));
+      const maxed = panes.maximizePaneFor(encodeURIComponent(panes.activePane().paneId));
+      await new Promise((r) => setTimeout(r, 300));
+      const railStubs = document.querySelectorAll(".pane-rail-stub").length;
+      const leaf = document.getElementById("workspaceEmptyLeaf");
+      const shownWhileMaxed = leaf && !leaf.hidden && !!leaf.closest(".pane-content");
+      const restored = panes.maximizePaneFor(encodeURIComponent(panes.activePane().paneId));
+      await new Promise((r) => setTimeout(r, 300));
+      const leafAfter = document.getElementById("workspaceEmptyLeaf");
+      resolve({
+        maxed,
+        railStubs,
+        shownWhileMaxed,
+        restored,
+        shownAfter: leafAfter && !leafAfter.hidden,
+        inPaneAfter: !!(leafAfter && leafAfter.closest(".pane-content")),
+      });
+    } catch (e) { resolve({ err: String(e && e.message ? e.message : e) }); }
+  })`);
+  record(
+    "maximize toggle keeps the card shown and mounted",
+    maxState.maxed && maxState.railStubs === 1 && maxState.shownWhileMaxed &&
+      maxState.restored && maxState.shownAfter && maxState.inPaneAfter,
+    `maxed=${maxState.maxed} railStubs=${maxState.railStubs} shownWhileMaxed=${maxState.shownWhileMaxed} restored=${maxState.restored} shownAfter=${maxState.shownAfter} inPaneAfter=${maxState.inPaneAfter} err=${maxState.err || "none"}`,
+  );
+
   writeReport(outPath, recorder);
   process.exit(recorder.failed ? 1 : 0);
 }
