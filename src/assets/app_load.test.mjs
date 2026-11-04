@@ -866,6 +866,64 @@ describe("app bundle load", () => {
     ok(dashboard.innerHTML.includes("Actions menu (Ctrl+Q then /)"), "dashboard menu button carries the search shortcut");
   });
 
+  it("hides the empty leaf as file and Git tabs open, then restores it when they close", async () => {
+    const ctx = context();
+    runSource(ctx);
+    vm.runInContext(
+      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
+      ctx,
+    );
+    const panes = ctx.window.HerdrWorkspacePanes;
+    const paneState = panes.panesStateFor("ws-1");
+    const root = paneState.root;
+    root.tabs = [];
+    root.active = null;
+    const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
+
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, false, "empty workspace shows the zero-terminal card");
+
+    ctx.window.HerdrFileBrowser = {
+      async openEditorTab(path) { panes.setActivePaneTab(`editor:${path}`); },
+    };
+    await panes.openEditorTab("src/app.js");
+    equal(emptyLeaf.hidden, true, "opening a file hides the card immediately");
+    panes.closeEditorTabImmediate("src/app.js");
+    equal(emptyLeaf.hidden, false, "closing the last file restores the card");
+
+    ctx.window.HerdrGitUi = { async openViewTab() {} };
+    await panes.openGitTab("log");
+    equal(emptyLeaf.hidden, true, "opening Git log hides the card immediately");
+    await panes.openGitTab("changes");
+    equal(emptyLeaf.hidden, true, "opening Changes keeps the card hidden");
+    panes.closeGitTabImmediate("log");
+    equal(emptyLeaf.hidden, true, "another open Git view keeps the card hidden");
+    panes.closeGitTabImmediate("changes");
+    equal(emptyLeaf.hidden, false, "closing the last Git view restores the card");
+
+    paneState.root = {
+      kind: "row",
+      children: [
+        { kind: "pane", paneId: "p1", tabs: ["git:log", "terminal"], active: "terminal" },
+        { kind: "pane", paneId: "p2", tabs: [], active: null },
+      ],
+      sizes: [1, 1],
+      activePaneId: "p2",
+    };
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, true, "an open Git tab in another pane hides the global card");
+    const splitRoot = panes.paneRoot();
+    splitRoot.activePaneId = "p1";
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, true, "switching panes does not reveal the card beside an open Git tab");
+    splitRoot.children[0].tabs = ["terminal"];
+    splitRoot.children[0].active = "terminal";
+    splitRoot.activePaneId = "p2";
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, false, "empty split panes retain the card when no file or Git tab remains");
+    equal(panes.paneLeaves(splitRoot).length, 2, "visibility changes do not collapse the split tree");
+  });
+
   it("wires the question dialog and span-button keyboard paths", () => {
     const ctx = context();
     runSource(ctx);
@@ -1175,6 +1233,19 @@ describe("app bundle load", () => {
     equal(newTabCalls, 2, "Enter under an open modal is ignored");
     settingsModal.style.display = "none";
 
+    const panes = ctx.window.HerdrWorkspacePanes;
+    const root = panes.paneRoot();
+    root.tabs = ["git:log"];
+    root.active = "git:log";
+    fire(inPanes);
+    equal(newTabCalls, 2, "Enter with an open Git tab is ignored");
+    root.tabs = ["editor:src/app.js"];
+    root.active = "editor:src/app.js";
+    fire(inPanes);
+    equal(newTabCalls, 2, "Enter with an open file tab is ignored");
+
+    root.tabs = [];
+    root.active = null;
     vm.runInContext(`state.tab = "tab_1";`, ctx);
     fire(inPanes);
     equal(newTabCalls, 2, "Enter with a live terminal tab is ignored");
@@ -9468,11 +9539,11 @@ describe("zero-tab enter creates terminal", () => {
     const bindingsSource = read("./desktop/app_js/bindings.js");
     match(bindingsSource, /#workspacePanes/);
     match(bindingsSource, /target === document\.body \|\|\n\s+target === document\.documentElement \|\|\n\s+!!target\.closest\("#workspacePanes"\)/);
-    // The guard chain: workspace open, no tab, no modal, no editable
-    // target: mirrors syncWorkspaceEmptyLeaf's show condition.
+    // The zero-terminal Enter shortcut follows the same file/Git pane-tab
+    // guard as the empty-leaf visibility rule.
     match(
       bindingsSource,
-      /e\.key === "Enter" &&\n\s+state\.ws &&\n\s+!state\.tab &&\n\s+!modalOpen\(\) &&\n\s+!target\.closest\("input, select, textarea, \[contenteditable='true'\]"\)/,
+      /e\.key === "Enter" &&\n\s+state\.ws &&\n\s+!state\.tab &&\n\s+!workspaceHasOpenFileOrGitTab\(\) &&\n\s+!modalOpen\(\) &&\n\s+!target\.closest\("input, select, textarea, \[contenteditable='true'\]"\)/,
     );
     match(bindingsSource, /newTab\(\);\n\s+return;/);
   });

@@ -1950,6 +1950,7 @@ function paneEnsureEditorTab(path) {
     saveWorkspacePanesStates();
     renderWorkspacePanes();
   }
+  if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
   return leaf;
 }
 
@@ -1996,6 +1997,7 @@ function closeEditorTabImmediate(encodedPath) {
   const collapsed = collapseEmptyLeafInTree(root, leaf);
   if (!collapsed) saveWorkspacePanesStates();
   renderWorkspacePanes();
+  if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
   teardownEditorTab(encodedPath);
 }
 
@@ -2060,6 +2062,7 @@ function paneEnsureGitTab(viewKey) {
     saveWorkspacePanesStates();
     renderWorkspacePanes();
   }
+  if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
   return leaf;
 }
 
@@ -2105,6 +2108,7 @@ function closeGitTabImmediate(viewKey) {
   const collapsed = collapseEmptyLeafInTree(root, leaf);
   if (!collapsed) saveWorkspacePanesStates();
   renderWorkspacePanes();
+  if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
   const container = document.getElementById(paneGitMountId(viewKey));
   if (container && container.remove) container.remove();
   const gitUi = window.HerdrGitUi;
