@@ -269,7 +269,7 @@
   flex-basis: 100%;
 }
 
-.location-bar .location-bar-discovery-popover input {
+.location-bar .location-bar-discovery-popover :is(input, .git-ui-btn) {
   border-color: var(--muted);
 }
 
