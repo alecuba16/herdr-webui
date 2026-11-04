@@ -1257,6 +1257,7 @@
     } catch (err) {
       list.createError = err.message || String(err);
       sync();
+      revealDiscoveryWorktreeError();
       return;
     }
     list.creating = true;
@@ -1275,8 +1276,15 @@
       if (discoveryOpeningActive(list)) {
         list.creating = false;
         sync();
+        if (list.createError) revealDiscoveryWorktreeError();
       }
     }
+  }
+
+  function revealDiscoveryWorktreeError() {
+    restoreDiscoveryFocus({ key: "create" });
+    const alert = document.querySelector('.location-bar-discovery-worktree-form .git-ui-error[role="alert"]');
+    if (alert && alert.scrollIntoView) alert.scrollIntoView({ block: "nearest" });
   }
 
   // A discovery worktree row: same contract as the branch rows, minus

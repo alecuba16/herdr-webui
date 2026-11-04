@@ -2095,6 +2095,7 @@ describe("location bar discovery popover", () => {
       equal(document.querySelector('[data-discovery-focus="create"]').disabled, false);
       equal(document.getElementById("locationBarDiscoveryName").disabled, false);
       ok(bar.innerHTML.includes("Retry worktree creation"));
+      equal(document.activeElement.getAttribute("data-discovery-focus"), "create", "failed creation returns keyboard focus to retry");
       const navigation = [];
       ctx.go = (...args) => navigation.push(args);
       const retry = ctx.HerdrLocationBar.discoverySubmitWorktree();
