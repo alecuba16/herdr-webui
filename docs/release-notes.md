@@ -1,6 +1,16 @@
 # Release notes
 
 ## Unreleased
+- The discovery popover opens from the empty dashboard too. The empty
+  boot state rendered no popover slot, treated two empty working
+  directories as different discovery contexts, and the opening click
+  closed the popover it had just opened, so "Open workspace or
+  worktree" did nothing visible from a fresh app; all three are fixed
+  with regressions.
+- Pull-base stays a fast-forward when the user has `pull.rebase`
+  configured. `git pull --ff-only` alone still rebases and fails on any
+  dirty tree, so the checkbox's "fast-forward" promise was wrong on
+  desktop, TUI and mobile; the pull now passes `--no-rebase`.
 - Every worktree open/create entry now lands in the desktop discovery
   flow. The workspace strip's worktree chip, the search palette, KeyT,
   new-workspace/new-panel fallbacks, the worktrees drawer, and git-log
