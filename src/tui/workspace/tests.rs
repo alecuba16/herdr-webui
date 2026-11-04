@@ -239,6 +239,104 @@ fn prefix_shift_t_opens_worktree_branch_prompt_and_chains_to_path() {
     );
     let prompt = app.prompt_input.as_ref().unwrap();
     assert_eq!(prompt.kind, PromptKind::CreateWorktreePath);
+
+    // Path chains into the base-ref prompt (webui inline form parity:
+    // name, path, base, pull-base).
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    // Empty path re-prompts with an error, same contract as the branch
+    // step.
+    assert_eq!(app.error.as_deref(), Some("type the checkout path"));
+    assert_eq!(
+        app.prompt_input.as_ref().map(|prompt| prompt.kind),
+        Some(PromptKind::CreateWorktreePath)
+    );
+    app.error = None;
+    for ch in "/tmp/checkout".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::Path(
+            "feature".to_string(),
+            "/tmp/checkout".to_string()
+        ))
+    );
+    let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::CreateWorktreeBase);
+
+    // Base refs are preserved verbatim and chain into an explicit pull
+    // question (no substring stripping, so refs like
+    // feature/pull-requests survive untouched).
+    for ch in "feature/pull-requests".chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(ch)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::Base(
+            "feature".to_string(),
+            "/tmp/checkout".to_string(),
+            "feature/pull-requests".to_string()
+        ))
+    );
+    let prompt = app.prompt_input.as_ref().unwrap();
+    assert_eq!(prompt.kind, PromptKind::ConfirmWorktreePullBase);
+
+    // Empty Enter on the pull question creates without pulling. The
+    // test backend socket is dead, so the create fails and the staged
+    // draft survives for a retry (it is re-staged, not left None).
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.error.is_some(), "dead socket fails the create");
+    assert_eq!(
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::Base(
+            "feature".to_string(),
+            "/tmp/checkout".to_string(),
+            "feature/pull-requests".to_string()
+        )),
+        "the failed create keeps the staged draft"
+    );
+}
+
+#[test]
+fn worktree_pull_confirm_parses_answers_and_keeps_draft_on_error() {
+    let mut app = app_with_snapshot(workspace_snapshot());
+    // Late-stage draft: branch, path, base staged, pull question open.
+    app.worktree_create_stage = Some(WorktreeCreateStage::Base(
+        "feat".to_string(),
+        "/tmp/wt".to_string(),
+        "main".to_string(),
+    ));
+    app.prompt_input = Some(PromptInput::new(PromptKind::ConfirmWorktreePullBase));
+
+    // A declined/empty answer still creates, without pulling. The
+    // backend socket is dead in tests, so the create fails and the
+    // staged draft must survive for a retry.
+    run_prompt(&mut app, &WorkspacePrompt::ConfirmWorktreePullBase, "");
+    assert!(app.error.is_some(), "dead backend socket fails the create");
+    assert_eq!(
+        app.worktree_create_stage,
+        Some(WorktreeCreateStage::Base(
+            "feat".to_string(),
+            "/tmp/wt".to_string(),
+            "main".to_string()
+        )),
+        "failed create keeps the staged draft"
+    );
+
+    // y is case-insensitive and requests the pull. The draft is kept
+    // again after the failure.
+    app.error = None;
+    run_prompt(&mut app, &WorkspacePrompt::ConfirmWorktreePullBase, "Y");
+    assert!(app.error.is_some());
+    assert!(matches!(app.worktree_create_stage, Some(WorktreeCreateStage::Base(..))));
+
+    // Other answers are not confused with y.
+    app.error = None;
+    run_prompt(&mut app, &WorkspacePrompt::ConfirmWorktreePullBase, "yes maybe");
+    assert!(app.error.is_some());
+    assert!(matches!(app.worktree_create_stage, Some(WorktreeCreateStage::Base(..))));
 }
 
 #[test]
@@ -269,6 +367,8 @@ fn prompt_kind_hints_and_titles_cover_workspace_kinds() {
         PromptKind::RenamePanel,
         PromptKind::CreateWorktreeBranch,
         PromptKind::CreateWorktreePath,
+        PromptKind::CreateWorktreeBase,
+        PromptKind::ConfirmWorktreePullBase,
         PromptKind::ConfirmCloseWorkspace,
     ] {
         assert!(!kind.title().is_empty());
@@ -282,6 +382,8 @@ fn prompt_kind_hints_and_titles_cover_workspace_kinds() {
                 PromptKind::RenamePanel => WorkspacePrompt::RenamePanel,
                 PromptKind::CreateWorktreeBranch => WorkspacePrompt::CreateWorktreeBranch,
                 PromptKind::CreateWorktreePath => WorkspacePrompt::CreateWorktreePath,
+                PromptKind::CreateWorktreeBase => WorkspacePrompt::CreateWorktreeBase,
+                PromptKind::ConfirmWorktreePullBase => WorkspacePrompt::ConfirmWorktreePullBase,
                 PromptKind::ConfirmCloseWorkspace => WorkspacePrompt::ConfirmCloseWorkspace,
                 _ => unreachable!(),
             }
@@ -302,6 +404,8 @@ fn rename_and_create_prompt_kinds_are_not_destructive() {
         PromptKind::RenamePanel,
         PromptKind::CreateWorktreeBranch,
         PromptKind::CreateWorktreePath,
+        PromptKind::CreateWorktreeBase,
+        PromptKind::ConfirmWorktreePullBase,
     ] {
         assert!(!kind.needs_confirm());
     }
@@ -436,7 +540,7 @@ fn workspace_actions_validate_empty_inputs_and_missing_selection() {
     );
     assert_eq!(app.rename_panel("  ").unwrap_err(), "type a panel name");
     assert_eq!(
-        app.create_worktree("branch", "  ").unwrap_err(),
+        app.create_worktree("branch", "  ", "main", false).unwrap_err(),
         "type branch and checkout path"
     );
 
@@ -455,7 +559,7 @@ fn workspace_actions_validate_empty_inputs_and_missing_selection() {
     assert_eq!(app.worktree_selected, 0);
     app.mode = TuiMode::Navigate;
     assert_eq!(
-        app.create_worktree("branch", "/tmp/path").unwrap_err(),
+        app.create_worktree("branch", "/tmp/path", "main", false).unwrap_err(),
         "no workspace folder selected"
     );
 }
@@ -487,7 +591,7 @@ fn workspace_backend_actions_succeed_against_fake_socket() {
         "browsing /docs (1 worktrees, 0 folders)"
     );
     assert_eq!(
-        app.create_worktree(" feature ", " /checkout ").unwrap(),
+        app.create_worktree(" feature ", " /checkout ", " main ", false).unwrap(),
         "worktree created: feature -> /checkout"
     );
     assert_eq!(app.remove_worktree().unwrap(), "worktree removed");
@@ -502,8 +606,11 @@ fn workspace_prompt_status_and_no_selection_edges() {
     app.workspace_status(Err("bad".to_string()));
     assert_eq!(app.error.as_deref(), Some("bad"));
 
+    // Path without a staged branch is a no-op guard return, not a create.
+    app.worktree_create_stage = None;
     super::run_prompt(&mut app, &WorkspacePrompt::CreateWorktreePath, "/tmp/wt");
     assert_ne!(app.status, "worktree created: feature -> /tmp/wt");
+    assert!(app.prompt_input.is_none(), "no chained prompt without a staged branch");
 
     let mut empty = app_with_snapshot(json!({
         "type":"session_snapshot",
@@ -556,7 +663,24 @@ fn round4_workspace_create_path_backend_error() {
         &WorkspacePrompt::CreateWorktreePath,
         " /checkout ",
     );
+    // The path stages and chains into the base prompt; the backend error
+    // surfaces when the pull step actually calls the create endpoint,
+    // and the staged draft survives the failure.
+    assert!(
+        matches!(app.worktree_create_stage, Some(WorktreeCreateStage::Path(..))),
+        "path stages before the base prompt"
+    );
+    run_prompt(&mut app, &WorkspacePrompt::CreateWorktreeBase, "main");
+    assert!(
+        matches!(app.worktree_create_stage, Some(WorktreeCreateStage::Base(..))),
+        "base stages before the pull question"
+    );
+    run_prompt(&mut app, &WorkspacePrompt::ConfirmWorktreePullBase, "");
     assert!(app.error.is_some());
+    assert!(
+        matches!(app.worktree_create_stage, Some(WorktreeCreateStage::Base(..))),
+        "the failed create keeps the staged draft"
+    );
 }
 
 /// Serializes tests that touch `$HOME`: one removes it process-wide

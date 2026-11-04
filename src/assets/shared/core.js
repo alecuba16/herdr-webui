@@ -280,6 +280,18 @@
     };
   }
 
+  // Diverged-base detection shared by every create surface: the backend
+  // surfaces the raw `git pull --ff-only` error when the base cannot
+  // fast-forward, and clients turn that message into a create-without-pull
+  // continuation question instead of a dead end.
+  function pullFastForwardFailed(message) {
+    const text = String(message || "").toLowerCase();
+    return (
+      text.includes("fast-forward") &&
+      (text.includes("diverging") || text.includes("not possible") || text.includes("fatal"))
+    );
+  }
+
   // Per-session storage keys, shared by desktop core and mobile core. The
   // backend pin used to be a single global `herdr-session-backend` value,
   // which leaked the last-used backend into every other session: reopening
@@ -514,6 +526,7 @@
     sortWorktreesByRecent,
     validateWorktreeCreate,
     buildWorktreeCreateBody,
+    pullFastForwardFailed,
     createFaviconNotifier,
     terminalPasteInput,
     stripTerminalMouseReports,

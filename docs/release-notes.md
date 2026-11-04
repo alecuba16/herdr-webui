@@ -1,6 +1,19 @@
 # Release notes
 
 ## Unreleased
+- Every worktree open/create entry now lands in the desktop discovery
+  flow. The workspace strip's worktree chip, the search palette, KeyT,
+  new-workspace/new-panel fallbacks, the worktrees drawer, and git-log
+  branch rows all open the shared discovery popover instead of the old
+  modal, and create entries prefill the base from the selected
+  checkout's branch.
+- Worktree creation can pull the base first, everywhere. The desktop
+  inline form's pull-base checkbox now has TUI and mobile parity: the
+  TUI create prompt asks for the base ref after the checkout path
+  (adding the word `pull` fast-forwards it first), and the mobile
+  worktrees screen shows the same checkbox and sends `pull_base` on the
+  create POST. A base that cannot fast-forward offers creating without
+  the pull on desktop and mobile; the TUI shows the git error.
 - Picking a folder from the desktop location bar now shows its worktrees or branches before opening it. Non-git folders open directly. An "Open folder as workspace" action stays available while discovery loads or fails, and branches checked out elsewhere open that worktree instead of attempting a switch.
 - New branches and worktrees can start from a local or remote ref, with an explicit Fetch remotes action. Worktree creation stays in the discovery dialog with branch-name and base fields, using a generated checkout path. If opening a folder succeeds but switching its branch fails, the folder stays open and the error explains the partial result.
 - Git diff coloring is back in every layout. Unified hunks rendered zero rows since the browser-logic move made the renderer depend on server chunk rows that only side-by-side ever had, so the client now derives unified rows and side-by-side pairs from chunk lines when the server sends none, which also covers large-diff previews that strip server rows. Row backgrounds had been silently invalid since the theme rework wrote color-mix percentages without the percent sign, so 11 tint declarations dropped their backgrounds while borders kept working and hid the bug. The diff color variables also only resolved inside the sidebar panel, while diff rows render in center pane tabs since the split-pane rework, so the variable block now scopes onto the pane mounts too.

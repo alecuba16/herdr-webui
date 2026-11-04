@@ -257,8 +257,11 @@ same-folder picks become useful rather than dead.
 | Open checkout | POST `/api/worktrees/open` | unchanged, via the shared folder ladder |
 | Create workspace | POST `/api/workspaces` | unchanged, via the shared folder ladder |
 
-Non-goal: backend protocol changes, mobile (the mobile sheet already
-has its own discover flow), TUI.
+Non-goal: backend protocol changes. The mobile worktrees screen and the
+TUI prompt chain stay separate surfaces, but both speak the same
+contract: pull_base on the worktree create POST and the same
+diverged-base continuation (mobile confirm sheet; TUI surfaces the raw
+git error).
 
 ## Files touched (desktop only)
 

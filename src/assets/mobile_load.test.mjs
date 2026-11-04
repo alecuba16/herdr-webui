@@ -1,5 +1,5 @@
 import { describe, it } from "node:test";
-import { doesNotThrow, equal, match, ok } from "node:assert/strict";
+import { deepEqual, doesNotThrow, equal, match, ok } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { TextEncoder } from "node:util";
@@ -2478,6 +2478,131 @@ describe("mobile bundle load", () => {
       ctx.requests.some(
         (request) => request.url === "/api/worktrees?cwd=~%2Fcode%2Frepo",
       ),
+    );
+  });
+
+  it("creates a mobile worktree with pull-base when the checkbox is on", async () => {
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1");
+    runSource(ctx);
+    ctx.HerdrMobile.showScreen("worktrees");
+    ctx.HerdrMobile.updateWorktreeField("worktreePullBase", true);
+    let html = ctx.document.getElementById("mobileScreen").innerHTML;
+    ok(html.includes("Pull base branch before create"), "create disclosure offers the pull-base checkbox");
+    ok(html.includes("HerdrMobile.updateWorktreeField('worktreePullBase', this.checked)"), "checkbox toggles the shared state field");
+
+    ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/mobile-create");
+    await ctx.HerdrMobile.createWorktree();
+    const createCalls = ctx.requests.filter(
+      (request) => request.url === "/api/worktrees" && request.opt.method === "POST",
+    );
+    ok(createCalls.length === 1, "one create POST");
+    equal(JSON.parse(createCalls[0].opt.body).pull_base, true, "checkbox state lands in pull_base");
+    equal(ctx.HerdrMobileAppDeps.state.worktreePullBase, false, "checkbox resets after a successful create");
+  });
+
+  it("retries a mobile pull-base create without pulling after the diverged-base question", async () => {
+    const answers = [];
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      confirm: () => true,
+    });
+    runSource(ctx);
+    ctx.HerdrMobile.showScreen("worktrees");
+    ctx.HerdrMobile.updateWorktreeField("worktreePullBase", true);
+    ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/diverged");
+    const realFetch = ctx.fetch;
+    ctx.fetch = async (url, opt = {}) => {
+      if (url === "/api/worktrees" && opt.method === "POST") {
+        answers.push(JSON.parse(opt.body).pull_base);
+        if (answers.length === 1)
+          throw Error("git pull: fatal: Not possible to fast-forward, aborting.");
+      }
+      return realFetch(url, opt);
+    };
+
+    await ctx.HerdrMobile.createWorktree();
+    await ctx.settle();
+
+    equal(answers.length, 2, "the diverged base re-POSTs once without pulling");
+    deepEqual(answers, [true, false]);
+    equal(ctx.HerdrMobileAppDeps.state.worktreeError, "", "the diverged first attempt does not surface as an error");
+  });
+
+  it("freezes the mobile retry payload while the diverged-base question is pending", async () => {
+    // Shrimp R2 / rooster HIGH regression: the user edits base/path/label
+    // while the first pull POST is pending and the confirm sheet is open.
+    // The no-pull retry must still send the originally submitted fields
+    // with only pull_base changed, and a second create call must be
+    // ignored while the first is pending.
+    const bodies = [];
+    let fail = true;
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      confirm: () => true,
+    });
+    runSource(ctx);
+    ctx.HerdrMobile.showScreen("worktrees");
+    ctx.HerdrMobile.updateWorktreeField("worktreePullBase", true);
+    ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/frozen");
+    ctx.HerdrMobile.updateWorktreeField("worktreeBase", "main");
+    ctx.HerdrMobile.updateWorktreeField("worktreePath", "/wt/frozen");
+    ctx.HerdrMobile.updateWorktreeField("worktreeLabel", "frozen-label");
+    const realFetch = ctx.fetch;
+    ctx.fetch = async (url, opt = {}) => {
+      if (url === "/api/worktrees" && opt.method === "POST") {
+        bodies.push(JSON.parse(opt.body));
+        if (fail) {
+          fail = false;
+          throw Error("git pull: fatal: Not possible to fast-forward, aborting.");
+        }
+      }
+      return realFetch(url, opt);
+    };
+
+    const submitting = ctx.HerdrMobile.createWorktree();
+    await ctx.settle(3);
+    // Edits while the confirm sheet is open must not reach the retry.
+    ctx.HerdrMobile.updateWorktreeField("worktreeBase", "different-base");
+    ctx.HerdrMobile.updateWorktreeField("worktreePath", "/wt/changed");
+    ctx.HerdrMobile.updateWorktreeField("worktreeLabel", "changed-label");
+    // A duplicate create is ignored while the first is pending.
+    await ctx.HerdrMobile.createWorktree();
+    await submitting;
+    await ctx.settle();
+
+    equal(bodies.length, 2, "the retry POSTs once, duplicate create ignored");
+    const [first, second] = bodies;
+    equal(first.pull_base, true, "first POST pulled");
+    equal(second.pull_base, false, "retry POSTs without pulling");
+    equal(second.base, "main", "retry keeps the submitted base");
+    equal(second.path, "/wt/frozen", "retry keeps the submitted path");
+    equal(second.label, "frozen-label", "retry keeps the submitted label");
+    equal(second.branch, "feature/frozen", "retry keeps the submitted branch");
+  });
+
+  it("keeps a diverged mobile pull-base failure as an error when the user declines", async () => {
+    const answers = [];
+    const ctx = context("/session/default/workspace/w1/tab/t1/pane/p1", {
+      confirm: () => false,
+    });
+    runSource(ctx);
+    ctx.HerdrMobile.showScreen("worktrees");
+    ctx.HerdrMobile.updateWorktreeField("worktreePullBase", true);
+    ctx.HerdrMobile.updateWorktreeField("worktreeBranch", "feature/diverged");
+    const realFetch = ctx.fetch;
+    ctx.fetch = async (url, opt = {}) => {
+      if (url === "/api/worktrees" && opt.method === "POST") {
+        answers.push(JSON.parse(opt.body).pull_base);
+        throw Error("git pull: fatal: Not possible to fast-forward, aborting.");
+      }
+      return realFetch(url, opt);
+    };
+
+    await ctx.HerdrMobile.createWorktree();
+    await ctx.settle();
+
+    equal(answers.length, 1, "declining the question stops after the first POST");
+    ok(
+      String(ctx.HerdrMobileAppDeps.state.worktreeError).includes("fast-forward"),
+      "the pull failure surfaces as the create error",
     );
   });
 

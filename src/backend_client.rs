@@ -264,9 +264,23 @@ impl BackendClient {
         path: &str,
         label: Option<&str>,
     ) -> Result<Value, BackendClientError> {
+        self.create_worktree_from_base_with_pull(cwd, branch, base, path, label, false)
+    }
+
+    /// Webui pull-base checkbox parity: `pull_base` fast-forwards the
+    /// base ref on the backend before the worktree is created.
+    pub fn create_worktree_from_base_with_pull(
+        &self,
+        cwd: &str,
+        branch: &str,
+        base: &str,
+        path: &str,
+        label: Option<&str>,
+        pull_base: bool,
+    ) -> Result<Value, BackendClientError> {
         self.request(
             "worktree.create",
-            json!({ "cwd": cwd, "branch": branch, "base": base, "path": path, "label": label }),
+            json!({ "cwd": cwd, "branch": branch, "base": base, "path": path, "label": label, "pull_base": pull_base }),
         )
     }
 
@@ -740,7 +754,7 @@ mod tests {
             ),
             (
                 "worktree.create",
-                json!({ "cwd": "/repo", "branch": "feature", "base": "HEAD", "path": "/wt/feature", "label": "Feature" }),
+                json!({ "cwd": "/repo", "branch": "feature", "base": "HEAD", "path": "/wt/feature", "label": "Feature", "pull_base": false }),
             ),
         ];
         let expected_for_thread = expected.clone();

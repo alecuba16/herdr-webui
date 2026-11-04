@@ -94,6 +94,7 @@
     worktreeDiscoverPath: "",
     worktreeBranch: "",
     worktreeBase: "",
+    worktreePullBase: false,
     worktreeLabel: "",
     worktreePath: "",
     worktreeCreateExpanded: false,
