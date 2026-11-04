@@ -279,6 +279,16 @@
   color: var(--fg);
 }
 
+.location-bar .location-bar-discovery-popover .git-ui-btn:enabled:not([aria-disabled="true"]):hover {
+  background: var(--panel);
+  border-color: var(--muted);
+}
+
+.location-bar .location-bar-discovery-popover .git-ui-btn:enabled:not([aria-disabled="true"]):active {
+  background: var(--panel2);
+  border-color: var(--accent);
+}
+
 .location-bar-discovery-popover :is(button, input):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
