@@ -273,6 +273,12 @@
   border-color: var(--muted);
 }
 
+.location-bar .location-bar-discovery-popover .git-ui-btn,
+.location-bar-discovery-popover .git-ui-branch-row-check,
+.location-bar-discovery-popover .git-ui-worktree-check {
+  color: var(--fg);
+}
+
 .location-bar-discovery-popover :is(button, input):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
