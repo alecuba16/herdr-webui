@@ -900,13 +900,10 @@ fn git_remote_url(cwd: &str, upstream: &str) -> Option<String> {
 /// - default branch: the origin/HEAD symref target, falling back to
 ///   master/main when those tracking refs exist
 /// - branch_on_remote: whether the checked-out branch has a tracking ref
+///
 /// A repo without the remote answers None; callers treat that as "no
 /// default branch known, branch not pushed".
-fn git_remote_refs_snapshot(
-    cwd: &str,
-    remote: &str,
-    branch: &str,
-) -> Option<RemoteRefsSnapshot> {
+fn git_remote_refs_snapshot(cwd: &str, remote: &str, branch: &str) -> Option<RemoteRefsSnapshot> {
     let pattern = format!("refs/remotes/{remote}/");
     let head_ref = format!("refs/remotes/{remote}/HEAD");
     let output = git_ui_text(
@@ -921,9 +918,7 @@ fn git_remote_refs_snapshot(
     // for-each-ref exits 0 with no output when the remote has no refs
     // (remote never added or never fetched). The old per-question spawns
     // failed there, so None keeps that observable behavior.
-    if output.lines().next().is_none() {
-        return None;
-    }
+    output.lines().next()?;
     let mut snapshot = RemoteRefsSnapshot {
         default_branch: None,
         branch_on_remote: false,
@@ -1064,7 +1059,8 @@ struct RemoteRefsSnapshot {
 
 impl PartialEq for RemoteRefsSnapshot {
     fn eq(&self, other: &Self) -> bool {
-        self.default_branch == other.default_branch && self.branch_on_remote == other.branch_on_remote
+        self.default_branch == other.default_branch
+            && self.branch_on_remote == other.branch_on_remote
     }
 }
 
@@ -1234,7 +1230,9 @@ fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, St
     let default_branch = refs
         .as_ref()
         .and_then(|snapshot| snapshot.default_branch.clone());
-    let branch_on_remote = refs.as_ref().is_some_and(|snapshot| snapshot.branch_on_remote);
+    let branch_on_remote = refs
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.branch_on_remote);
     let (repo_web_url, branch_web_url, pr_create_url) = git_web_urls_for_status(
         remote_url.as_deref(),
         &branch,
@@ -2036,7 +2034,9 @@ mod tests {
         repo.git(&["remote", "set-head", "origin", "main"]);
         let snapshot = git_remote_refs_snapshot(&cwd, "origin", "main");
         assert_eq!(
-            snapshot.as_ref().and_then(|snapshot| snapshot.default_branch.as_deref()),
+            snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.default_branch.as_deref()),
             Some("main"),
             "origin/HEAD answers the symbolic ref path"
         );
@@ -2068,7 +2068,9 @@ mod tests {
         let cwd = repo.path.to_str().unwrap().to_string();
         let snapshot = git_remote_refs_snapshot(&cwd, "origin", "no-such-branch");
         assert_eq!(
-            snapshot.as_ref().and_then(|snapshot| snapshot.default_branch.as_deref()),
+            snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.default_branch.as_deref()),
             Some("main"),
             "without origin/HEAD the master/main fallback finds the ref"
         );
@@ -2123,8 +2125,14 @@ mod tests {
             Some("main"),
             true,
         );
-        assert_eq!(repo, "https://example.com/github.com/lookalike/tree/feature");
-        assert_eq!(pr, "", "a lookalike path must not select the github PR shape");
+        assert_eq!(
+            repo,
+            "https://example.com/github.com/lookalike/tree/feature"
+        );
+        assert_eq!(
+            pr, "",
+            "a lookalike path must not select the github PR shape"
+        );
 
         // Pushed state: unpushed branch falls back to the default branch,
         // and with no default the repo root is the honest answer.
@@ -2138,19 +2146,27 @@ mod tests {
         assert_eq!(pr, "", "no branch on the remote means no PR URL");
 
         // Detached and empty states collapse to the repo root / empty.
-        let (repo, branch, pr) =
-            git_web_urls_for_status(Some("https://github.com/acme/widget.git"), "(detached)", Some("main"), false);
+        let (repo, branch, pr) = git_web_urls_for_status(
+            Some("https://github.com/acme/widget.git"),
+            "(detached)",
+            Some("main"),
+            false,
+        );
         assert_eq!(repo, "https://github.com/acme/widget/tree/main");
         assert_eq!(branch, "");
         assert_eq!(pr, "");
-        let (repo, _, _) =
-            git_web_urls_for_status(Some("https://github.com/acme/widget.git"), "main", None, false);
-        assert_eq!(repo, "https://github.com/acme/widget", "no default branch answers the repo root");
-        let all_empty = git_web_urls_for_status(None, "main", Some("main"), true);
-        assert_eq!(
-            all_empty,
-            ("".to_string(), "".to_string(), "".to_string())
+        let (repo, _, _) = git_web_urls_for_status(
+            Some("https://github.com/acme/widget.git"),
+            "main",
+            None,
+            false,
         );
+        assert_eq!(
+            repo, "https://github.com/acme/widget",
+            "no default branch answers the repo root"
+        );
+        let all_empty = git_web_urls_for_status(None, "main", Some("main"), true);
+        assert_eq!(all_empty, ("".to_string(), "".to_string(), "".to_string()));
     }
 
     #[test]
