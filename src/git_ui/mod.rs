@@ -891,6 +891,68 @@ fn git_remote_url(cwd: &str, upstream: &str) -> Option<String> {
     url
 }
 
+/// Default branch of the remote for this checkout. origin/HEAD is the
+/// authoritative answer when it exists; otherwise the first of master/main
+/// present in remote-tracking refs wins (the repos this UI targets use
+/// one of the two). None means no remote default could be derived.
+fn git_default_branch(cwd: &str, remote: &str) -> Option<String> {
+    if let Ok(head) = git_ui_text(
+        cwd,
+        &[
+            "symbolic-ref",
+            &format!("refs/remotes/{remote}/HEAD"),
+            "--short",
+        ],
+    ) {
+        let value = head.trim();
+        if !value.is_empty() {
+            return Some(
+                value
+                    .strip_prefix(&format!("{remote}/"))
+                    .unwrap_or(value)
+                    .to_string(),
+            );
+        }
+    }
+    for candidate in ["master", "main"] {
+        let found = git_ui_text(
+            cwd,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/{remote}/{candidate}"),
+            ],
+        )
+        .map(|text| !text.trim().is_empty())
+        .unwrap_or(false);
+        if found {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Whether the given branch exists on the remote, read from
+/// remote-tracking refs with no network access. False when the branch
+/// was never fetched or pushed.
+fn git_branch_on_remote(cwd: &str, remote: &str, branch: &str) -> bool {
+    if branch.is_empty() {
+        return false;
+    }
+    git_ui_text(
+        cwd,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/{remote}/{branch}"),
+        ],
+    )
+    .map(|text| !text.trim().is_empty())
+    .unwrap_or(false)
+}
+
 fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
     // /status is the hottest git-ui endpoint (drawer open, refresh, every
     // mutation). git_ui_repo would add a rev-parse spawn just to validate
@@ -1034,6 +1096,17 @@ fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, St
         }
     };
     let remote_url = git_remote_url(&repo, &upstream);
+    // The toast PR button and the repo-web button need to know the remote
+    // default branch and whether this branch exists on the remote. Both
+    // read local tracking refs; no network runs during /status.
+    let status_remote = upstream
+        .split_once('/')
+        .map(|(remote, _)| remote)
+        .filter(|remote| !remote.trim().is_empty())
+        .unwrap_or("origin")
+        .to_string();
+    let default_branch = git_default_branch(&repo, &status_remote);
+    let branch_on_remote = git_branch_on_remote(&repo, &status_remote, &branch);
     let state_name = if !conflicted.is_empty() {
         "conflicts"
     } else if staged.is_empty() && unstaged.is_empty() && untracked.is_empty() {
@@ -1046,6 +1119,8 @@ fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, St
         "branch": branch,
         "upstream": upstream,
         "remote_url": remote_url,
+        "default_branch": default_branch,
+        "branch_on_remote": branch_on_remote,
         "ahead": ahead,
         "behind": behind,
         "state": state_name,
@@ -1808,6 +1883,67 @@ mod tests {
             None,
             "a repo without the remote still answers uncached"
         );
+    }
+
+    #[test]
+    fn git_default_branch_prefers_symbolic_ref_then_master_main() {
+        // origin/HEAD first (the remote itself tells us the default), then
+        // the master/main remote-tracking refs. A bare repo with no remote
+        // answers None. Fetch creates the tracking ref; set-head pins
+        // origin/HEAD onto it.
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        let cwd = repo.path.to_str().unwrap().to_string();
+        repo.git(&["remote", "add", "origin", repo.path.to_str().unwrap()]);
+        repo.git(&["fetch", "origin", "--quiet"]);
+        repo.git(&["remote", "set-head", "origin", "main"]);
+        assert_eq!(
+            git_default_branch(&cwd, "origin").as_deref(),
+            Some("main"),
+            "origin/HEAD answers the symbolic ref path"
+        );
+
+        let fresh = TempRepo::new();
+        fresh.commit_initial();
+        let fresh_cwd = fresh.path.to_str().unwrap().to_string();
+        assert_eq!(
+            git_default_branch(&fresh_cwd, "origin"),
+            None,
+            "a repo with no remote answers None"
+        );
+    }
+
+    #[test]
+    fn git_default_branch_falls_back_to_remote_tracking_refs() {
+        // No origin/HEAD (fetch alone never creates it), so the fallback
+        // scans origin/master then origin/main with rev-parse --verify;
+        // only origin/main exists.
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        repo.git(&["remote", "add", "origin", repo.path.to_str().unwrap()]);
+        repo.git(&["fetch", "origin", "--quiet"]);
+        let cwd = repo.path.to_str().unwrap().to_string();
+        assert_eq!(
+            git_default_branch(&cwd, "origin").as_deref(),
+            Some("main"),
+            "without origin/HEAD the master/main fallback finds the ref"
+        );
+    }
+
+    #[test]
+    fn git_branch_on_remote_reports_pushed_state() {
+        // branch_on_remote feeds the Repo button fallback and the push
+        // toast PR link, so a branch that was never pushed must read as
+        // false. Fetch creates the tracking ref for main; other branches
+        // never appear.
+        let repo = TempRepo::new();
+        repo.commit_initial();
+        repo.git(&["remote", "add", "origin", repo.path.to_str().unwrap()]);
+        repo.git(&["fetch", "origin", "--quiet"]);
+        let cwd = repo.path.to_str().unwrap().to_string();
+        assert_eq!(git_branch_on_remote(&cwd, "origin", "main"), true);
+        assert_eq!(git_branch_on_remote(&cwd, "origin", "no-such-branch"), false);
+        assert_eq!(git_branch_on_remote(&cwd, "origin", ""), false);
     }
 
     #[test]

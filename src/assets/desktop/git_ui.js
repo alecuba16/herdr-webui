@@ -1508,6 +1508,26 @@
       delete state.cache[key];
     },
     refresh,
+    // Strip-label hook for compare tabs: a ref that is a branch tip in
+    // loaded log data names as branch[Head] instead of its 7-char hash.
+    // Reads only cached state (no fetch); empty string when the ref is
+    // not a loaded branch tip, so the caller keeps its fallback label.
+    branchHeadLabel(ref) {
+      const value = String(ref || "").trim();
+      if (!value) return "";
+      for (const key of Object.keys(state.cache)) {
+        const view = state.cache[key];
+        const rows = view && view.logData && Array.isArray(view.logData.rows) ? view.logData.rows : [];
+        for (const row of rows) {
+          if (!row || String(row.hash || "") !== value) continue;
+          const branch = window.HerdrGitLog && window.HerdrGitLog.selectedBranchForHash
+            ? window.HerdrGitLog.selectedBranchForHash(view.logData, value, view.logBaseBranch || "master")
+            : "";
+          if (branch) return `${branch}[Head]`;
+        }
+      }
+      return "";
+    },
     // Location-bar branch read: the branch from the parked probe state
     // (railStatus park or the __probed status), matched to the workspace
     // folder. Returns null when the parks do not answer this cwd (the
@@ -2425,6 +2445,16 @@
     closeCommitModal() { saveDraftFromDom(); state.commitModal = null; render(); },
     closeGitToast() { state.gitToast = null; render(); },
     openGitUrl(url) { const decoded = decodeURIComponent(url || ""); if (decoded) window.open(decoded, "_blank", "noopener"); },
+    // Persistent Repo button: builds the web URL from the cached status
+    // (no async fetch, so the click is not subject to popup blocking) and
+    // opens it in a new tab. The status carries remote_url,
+    // branch_on_remote and default_branch, so the fallback runs locally.
+    openRepoWeb() {
+      const view = active();
+      const status = (view && view.status) || {};
+      const url = toasts.repoWebUrl ? toasts.repoWebUrl(status) : "";
+      if (url) window.open(url, "_blank", "noopener");
+    },
     toggleCommitBody(value) { saveDraftFromDom(); state.commitModal = Object.assign({}, state.commitModal || {}, { includeBody: !!value }); render(); },
     commitPayload(amend) {
       const view = active();
@@ -2450,7 +2480,7 @@
           return;
         }
         await postJson("/api/git-ui/push", { cwd: view.cwd, mode: "regular", push_tags: false }, "Pushing");
-        showCommitToast("Commit pushed");
+        showCommitToast("Commit pushed", { pushed: true });
       } catch (err) {
         if (pushAfter) state.gitOpModal = { type: "force-push", error: err.message || String(err) };
         render();
@@ -2716,8 +2746,15 @@
       const view = active();
       hash = decodeURIComponent(hash || "");
       if (!view || !hash) return false;
-      view.selectedLogCommits = [hash];
-      loadSelectedCommitPreview(view, hash);
+      // A pair selection is the two-commit compare input: right-clicking a
+      // row that is part of the pair keeps it so the menu's Compare runs
+      // the pair. Otherwise the click targets one commit, and the menu
+      // operates on that single selection.
+      const current = view.selectedLogCommits || [];
+      if (!(current.length === 2 && current.includes(hash))) {
+        view.selectedLogCommits = [hash];
+        loadSelectedCommitPreview(view, hash);
+      }
       state.contextMenu = null;
       state.headerMenu = null;
       state.logContextMenu = {

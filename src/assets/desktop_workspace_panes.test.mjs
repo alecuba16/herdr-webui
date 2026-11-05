@@ -395,7 +395,8 @@ function makeGitStub() {
 
 test("git tab identity helpers map view-keys to tab ids and strip labels", () => {
   const { nodes, document } = buildDom();
-  const panes = loadPanesModule(document, "ws-1").HerdrWorkspacePanes;
+  const panesCtx = loadPanesModule(document, "ws-1");
+  const panes = panesCtx.HerdrWorkspacePanes;
   assert.equal(panes.gitTabId("changes"), "git:changes");
   assert.equal(panes.gitTabViewKey("git:history@src/a.py"), "history@src/a.py");
   assert.equal(panes.gitTabViewKey("editor:src/a.py"), "", "editor ids carry no git view-key");
@@ -427,6 +428,16 @@ test("git tab identity helpers map view-keys to tab ids and strip labels", () =>
   const full = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   assert.ok(strip.innerHTML.includes(`title="gitcmp ${full}..current"`), "strip compare button hovers the full compare text");
   assert.ok(strip.innerHTML.includes(`>gitcmp aaaaaaa vs current</span>`), "strip compare label keeps the short hash");
+
+  // branch[Head] labels: the hook answers only when git_ui has the log
+  // loaded, and the master-first sort still fires once the [Head] marker
+  // is stripped, so a master tip keeps both its position and its marker.
+  panesCtx.window.HerdrGitUi = { branchHeadLabel: (ref) => (ref === "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ? "master[Head]" : "") };
+  assert.equal(panes.gitTabLabel("compare@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..feature-x"), "gitcmp master[Head] vs feature", "branch tip resolves through the hook and master sorts first");
+  assert.equal(panes.gitTabLabel("compare@feature-x..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), "gitcmp master[Head] vs feature", "master-first applies whichever side carries the tip");
+  panesCtx.window.HerdrGitUi = { branchHeadLabel: (ref) => (ref === "cccccccccccccccccccccccccccccccccccccccc" ? "feature[Head]" : "") };
+  assert.equal(panes.gitTabLabel("compare@main..cccccccccccccccccccccccccccccccccccccccc"), "gitcmp main vs feature[Head]", "non-master tips keep base-vs-target order");
+  delete panesCtx.window.HerdrGitUi;
 });
 
 test("openGitTab ensures the tab, hands the open to git_ui, and drops the placeholder when the module is missing", async () => {

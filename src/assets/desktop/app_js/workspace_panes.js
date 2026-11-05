@@ -100,13 +100,23 @@ function gitTabLabel(viewKey) {
 
 // Compare tabs name their refs in the strip: a hash shows as its 7-char
 // short form, the working tree as "current", branch names truncate to 7
-// chars, and master sorts first when it is one of the two sides.
+// chars, and master sorts first when it is one of the two sides. A hash
+// that is a branch tip resolves to branch[Head] when git_ui has the log
+// loaded (the hook scans loaded log data); without data the 7-char form
+// stays, so strip labels never depend on load state.
+function branchHeadLabel(ref) {
+  const hook = typeof window !== "undefined" && window.HerdrGitUi && window.HerdrGitUi.branchHeadLabel;
+  return hook ? String(hook(ref) || "") : "";
+}
+
 function shortGitRef(refs) {
   const value = String(refs || "").trim();
   if (!value) return "current";
   const parts = value.split("..");
   const label = (part) => {
     if (part === "." || part === "") return "current";
+    const head = branchHeadLabel(part);
+    if (head) return head;
     return part.slice(0, 7);
   };
   return parts.map(label).join(" vs ");
@@ -119,7 +129,10 @@ function compareGitLabel(refs) {
   if (parts.length !== 2) return `gitcmp ${shortGitRef(value)}`;
   const base = shortGitRef(parts[0]);
   const target = shortGitRef(parts[1]);
-  if (target === "master") return `gitcmp master vs ${base}`;
+  // The master-first rule tests the branch name, so a master tip shown as
+  // master[Head] still sorts first without losing its head marker.
+  const sortKey = (label) => label.replace(/\[Head\]$/, "");
+  if (sortKey(target) === "master") return `gitcmp ${target} vs ${base}`;
   return `gitcmp ${base} vs ${target}`;
 }
 
