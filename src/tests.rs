@@ -9272,7 +9272,15 @@ fn pull_base_branch_fast_forwards_despite_rebase_config_and_dirty_tree() {
     git(Some(&origin), &["add", "."]);
     git(
         Some(&origin),
-        &["-c", "user.name=test", "-c", "user.email=t@example.com", "commit", "-m", "init"],
+        &[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
     );
     git(
         None,
@@ -9329,7 +9337,10 @@ fn pull_base_branch_fast_forwards_despite_rebase_config_and_dirty_tree() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "advance");
     // The unstaged modification must survive the fast-forward.
-    assert_eq!(fs::read_to_string(clone.join("tracked.txt")).unwrap(), "dirty");
+    assert_eq!(
+        fs::read_to_string(clone.join("tracked.txt")).unwrap(),
+        "dirty"
+    );
     let status = Command::new("git")
         .arg("-C")
         .arg(&clone)
@@ -9338,7 +9349,10 @@ fn pull_base_branch_fast_forwards_despite_rebase_config_and_dirty_tree() {
         .unwrap();
     // trim_end, not trim: the unstaged marker is a leading space that
     // trim would eat, turning " M" into "M" (the staged marker).
-    assert_eq!(String::from_utf8_lossy(&status.stdout).trim_end(), " M tracked.txt");
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout).trim_end(),
+        " M tracked.txt"
+    );
 
     let _ = fs::remove_dir_all(&origin);
     let _ = fs::remove_dir_all(&clone);

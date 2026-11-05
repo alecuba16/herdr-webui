@@ -999,10 +999,8 @@ pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
                 else {
                     return;
                 };
-                app.worktree_create_stage = Some(WorktreeCreateStage::Path(
-                    branch,
-                    path.to_string(),
-                ));
+                app.worktree_create_stage =
+                    Some(WorktreeCreateStage::Path(branch, path.to_string()));
                 app.prompt_input = Some(PromptInput::new(PromptKind::CreateWorktreeBase));
                 Ok("type the base ref (empty = HEAD), Enter continues".to_string())
             }
@@ -1024,7 +1022,8 @@ pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
         }
         WorkspacePrompt::ConfirmWorktreePullBase => {
             let pull_base = text.trim().eq_ignore_ascii_case("y");
-            let Some(WorktreeCreateStage::Base(branch, path, base)) = app.worktree_create_stage.take()
+            let Some(WorktreeCreateStage::Base(branch, path, base)) =
+                app.worktree_create_stage.take()
             else {
                 return;
             };
@@ -1035,8 +1034,7 @@ pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
                 // the error shows in the footer while the prompt stays
                 // up, so Enter retries and Esc abandons (webui keeps the
                 // inline error plus its retry button on the form).
-                app.worktree_create_stage =
-                    Some(WorktreeCreateStage::Base(branch, path, base));
+                app.worktree_create_stage = Some(WorktreeCreateStage::Base(branch, path, base));
                 app.prompt_input = Some(PromptInput::new(PromptKind::ConfirmWorktreePullBase));
             }
             result

@@ -4977,7 +4977,15 @@ fn pull_base_branch(cwd: &str, base: &str) -> Result<(), String> {
     let output = if base == "HEAD" {
         run_git_capture(&["-C", cwd, "pull", "--ff-only", "--no-rebase"])?
     } else {
-        run_git_capture(&["-C", cwd, "pull", "--ff-only", "--no-rebase", "origin", base])?
+        run_git_capture(&[
+            "-C",
+            cwd,
+            "pull",
+            "--ff-only",
+            "--no-rebase",
+            "origin",
+            base,
+        ])?
     };
     if output.status.success() {
         Ok(())
