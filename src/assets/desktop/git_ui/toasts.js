@@ -27,10 +27,37 @@
         return `${base}/tree/${branchPath(branch)}`;
       }
 
-      function gitPullRequestUrl(status) {
+      // Web URL for the persistent Repo button. The current branch wins
+      // when it exists on the remote; a branch that was never pushed opens
+      // the default branch so the link lands on the repo instead of a 404.
+      function repoWebUrl(status) {
+        const base = normalizeRemoteUrl(status && status.remote_url);
+        if (!base) return "";
+        const branch = status && status.branch;
+        const onRemote = status && status.branch_on_remote !== false;
+        if (branch && branch !== "(detached)" && onRemote) {
+          return base.includes("bitbucket.org/")
+            ? `${base}/branch/${branchPath(branch)}`
+            : `${base}/tree/${branchPath(branch)}`;
+        }
+        const fallback = String((status && status.default_branch) || "").trim();
+        if (!fallback) return base;
+        return base.includes("bitbucket.org/")
+          ? `${base}/branch/${branchPath(fallback)}`
+          : `${base}/tree/${branchPath(fallback)}`;
+      }
+
+      function gitPullRequestUrl(status, { pushed = false } = {}) {
         const base = normalizeRemoteUrl(status && status.remote_url);
         const branch = status && status.branch;
         if (!base || !branch || branch === "(detached)") return "";
+        // PR links appear only after a successful push on a non-default
+        // branch: the source branch must exist on the remote, and opening a
+        // PR against the default branch from the default branch is noise.
+        if (!pushed) return "";
+        const defaultBranch = String((status && status.default_branch) || "").trim();
+        if (defaultBranch && branch === defaultBranch) return "";
+        if (status && status.branch_on_remote === false) return "";
         if (base.includes("github.com/")) return `${base}/pull/new/${branchPath(branch)}`;
         if (base.includes("bitbucket.org/")) return `${base}/pull-requests/new?source=${encodeURIComponent(branch)}`;
         return "";
@@ -45,7 +72,7 @@
         return `<div class="git-ui-toast" role="status"><span>${esc(toast.message || "Done")}</span>${branch}<span class="git-ui-toast-actions">${branchButton}${prButton}<button class="git-ui-btn" onclick="HerdrGitUi.closeGitToast()">Dismiss</button></span></div>`;
       }
 
-      function showCommitToast(message) {
+      function showCommitToast(message, { pushed = false } = {}) {
         const view = active() || {};
         const status = view.status || {};
         const id = Date.now();
@@ -54,7 +81,7 @@
           message,
           branch: status.branch || "",
           branchUrl: gitBranchUrl(status),
-          prUrl: gitPullRequestUrl(status),
+          prUrl: gitPullRequestUrl(status, { pushed }),
         };
         render();
         setTimeout(() => {
@@ -131,18 +158,19 @@
         }, 1800);
       }
 
-    return {
-      normalizeRemoteUrl,
-      branchPath,
-      gitBranchUrl,
-      gitPullRequestUrl,
-      renderGitToast,
-      showCommitToast,
-      copyGitPermalink,
-      copyCommitId,
-      renderScopeCopyToast,
-      copyScopeValue,
-    };
+      return {
+        normalizeRemoteUrl,
+        branchPath,
+        gitBranchUrl,
+        repoWebUrl,
+        gitPullRequestUrl,
+        renderGitToast,
+        showCommitToast,
+        copyGitPermalink,
+        copyCommitId,
+        renderScopeCopyToast,
+        copyScopeValue,
+      };
   }
 
   globalThis.HerdrGitUiToastsModule = { create: createGitUiToasts };

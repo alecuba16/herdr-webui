@@ -29,7 +29,14 @@
         const menuOpen = state.headerMenu ? "true" : "false";
         const statusButton = `<button class="git-ui-btn git-ui-status-label" data-method="${esc(statusMethod)}" title="${esc(statusHint)}" onclick="HerdrGitUi.runStatusAction()">${esc(statusLabel)}</button>`;
         const statusCaret = `<button class="git-ui-btn git-ui-status-caret" title="Pull, fetch and push options" aria-haspopup="menu" aria-expanded="${menuOpen}" onclick="HerdrGitUi.toggleHeaderMenu(event)"><b class="git-ui-chip-caret">▾</b></button>`;
-        return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button></div><div class="git-ui-actions git-ui-worktree-right">${statusButton}${statusCaret}</div></div>`;
+        // Repo button: opens the remote web UI at the current branch; when
+        // the branch is not on the remote it opens the default branch so
+        // the link still lands on the repo instead of a 404 page. Only
+        // rendered when the status carries a remote URL.
+        const repoButton = String(s.remote_url || "").trim() && window.HerdrGitUi && typeof window.HerdrGitUi.openRepoWeb === "function"
+          ? `<button class="git-ui-btn git-ui-repo-open" title="Open the repository on the remote" onclick="HerdrGitUi.openRepoWeb(event)">Repo</button>`
+          : "";
+        return `<div class="git-ui-toolbar git-ui-worktree-row"><div class="git-ui-actions git-ui-worktree-left"><button class="git-ui-btn primary" title="${esc(commitHint)}" onclick="HerdrGitUi.openCommitModal()"${commitDisabled}>Commit</button></div><div class="git-ui-actions git-ui-worktree-right">${repoButton}${statusButton}${statusCaret}</div></div>`;
       }
 
       // Dropdown next to the status button, exactly seven items: Fetch /
