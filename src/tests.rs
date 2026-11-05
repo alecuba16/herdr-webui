@@ -9268,6 +9268,7 @@ fn pull_base_branch_fast_forwards_despite_rebase_config_and_dirty_tree() {
 
     git(None, &["init", "-b", "main", origin.to_str().unwrap()]);
     fs::write(origin.join("file.txt"), "one").unwrap();
+    fs::write(origin.join("tracked.txt"), "clean").unwrap();
     git(Some(&origin), &["add", "."]);
     git(
         Some(&origin),
@@ -9279,9 +9280,11 @@ fn pull_base_branch_fast_forwards_despite_rebase_config_and_dirty_tree() {
     );
     // The problematic configuration: pulls become rebases.
     git(Some(&clone), &["config", "pull.rebase", "true"]);
-    // Dirty tree: a rebase would refuse to start, a fast-forward succeeds.
-    fs::write(clone.join("local.txt"), "dirty").unwrap();
-    // Advance origin so the clone has something to fast-forward to.
+    // Unstaged change to a tracked file: a rebase refuses to start here,
+    // a fast-forward does not.
+    fs::write(clone.join("tracked.txt"), "dirty").unwrap();
+    // Advance origin on a different file so the clone is strictly behind
+    // and fast-forwardable.
     fs::write(origin.join("file.txt"), "two").unwrap();
     git(Some(&origin), &["add", "."]);
     git(
@@ -9297,6 +9300,25 @@ fn pull_base_branch_fast_forwards_despite_rebase_config_and_dirty_tree() {
         ],
     );
 
+    // Negative control: without --no-rebase the configured rebase fails
+    // on the dirty tree, which is the bug the fix removes.
+    let old = Command::new("git")
+        .arg("-C")
+        .arg(&clone)
+        .args(["pull", "--ff-only", "origin", "main"])
+        .output()
+        .unwrap();
+    assert!(!old.status.success());
+    assert!(String::from_utf8_lossy(&old.stderr).contains("cannot pull with rebase"));
+    // The failed pull must not have moved the branch.
+    let head_before = Command::new("git")
+        .arg("-C")
+        .arg(&clone)
+        .args(["log", "-1", "--format=%s"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&head_before.stdout).trim(), "init");
+
     let clone_str = clone.to_string_lossy().to_string();
     pull_base_branch(&clone_str, "main").expect("fast-forward pull must succeed");
     let head = Command::new("git")
@@ -9306,8 +9328,17 @@ fn pull_base_branch_fast_forwards_despite_rebase_config_and_dirty_tree() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "advance");
-    // Dirty file must survive the pull.
-    assert!(clone.join("local.txt").exists());
+    // The unstaged modification must survive the fast-forward.
+    assert_eq!(fs::read_to_string(clone.join("tracked.txt")).unwrap(), "dirty");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&clone)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    // trim_end, not trim: the unstaged marker is a leading space that
+    // trim would eat, turning " M" into "M" (the staged marker).
+    assert_eq!(String::from_utf8_lossy(&status.stdout).trim_end(), " M tracked.txt");
 
     let _ = fs::remove_dir_all(&origin);
     let _ = fs::remove_dir_all(&clone);
