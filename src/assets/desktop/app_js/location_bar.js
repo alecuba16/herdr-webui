@@ -825,6 +825,23 @@
       },
       true,
     );
+    // The Base picker is viewport-fixed while its field lives in the
+    // popover's scrollable body: a body scroll (or window resize) moves
+    // the field under a panel that stays put. Re-anchor on both, capture
+    // phase, so the panel tracks the field; discoveryPositionBasePicker
+    // early-outs when the picker is closed.
+    document.addEventListener(
+      "scroll",
+      () => {
+        if (bar.discoveryList && bar.discoveryList.basePickerOpen) discoveryPositionBasePicker();
+      },
+      true,
+    );
+    if (typeof window !== "undefined" && window.addEventListener) {
+      window.addEventListener("resize", () => {
+        if (bar.discoveryList && bar.discoveryList.basePickerOpen) discoveryPositionBasePicker();
+      });
+    }
   }
 
   // The bar reuses the drawer's chip classes, but git-ui.css lazy-loads
