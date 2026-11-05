@@ -1249,6 +1249,55 @@ describe("location bar discovery popover", () => {
   ];
   const REMOTE = [{ name: "origin/main", author: "Ada", date: "2026-01-02T03:04:05Z", subject: "initial" }];
 
+  it("shows the create form with the branch list and filter in worktrees mode", async () => {
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { worktrees: [
+        { path: "/repo", branch: "main" },
+        { path: "/repo-wt", branch: "feature-x" },
+      ], source: { cwd: "/repo", repo_root: "/repo" } } },
+      "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+    } });
+    const { ctx, bar, calls } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    ctx.HerdrLocationBar.discoveryCreateWorktree();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ok(bar.innerHTML.includes("Worktree branch name"), "create form renders");
+    ok(bar.innerHTML.includes("locationBarDiscoveryPullBase"), "pull checkbox renders");
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryFilter"'), "filter input renders");
+    ok(bar.innerHTML.includes("Local branches"), "local branch section renders");
+    ok(bar.innerHTML.includes("Remote branches"), "remote branch section renders");
+    ok(bar.innerHTML.includes("discoveryPickBaseFromRow"), "branch rows pick the base");
+    ok(!bar.innerHTML.includes('HerdrLocationBar.discoveryBranchRowOpen('), "create view rows do not open/switch");
+    ok(calls.some((call) => call.path === "/api/git-ui/branches"), "branch probe fetched for the create view");
+    // The rows and the form share one popover: the dialog wrapper wraps both.
+    const popoverStart = bar.innerHTML.indexOf("location-bar-discovery-popover");
+    const formPos = bar.innerHTML.indexOf("location-bar-discovery-worktree-form");
+    const popoverEnd = bar.innerHTML.lastIndexOf("location-bar-discovery-footer");
+    ok(popoverStart >= 0 && formPos > popoverStart && formPos < popoverEnd, "form sits inside the discovery popover");
+  });
+
+  it("fills the Base ref field when a branch row is picked in the create view", async () => {
+    const harness = loadDiscovery({ routes: {
+      "/api/worktrees": { result: { worktrees: [
+        { path: "/repo", branch: "main" },
+        { path: "/repo-wt", branch: "feature-x" },
+      ], source: { cwd: "/repo", repo_root: "/repo" } } },
+      "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+    } });
+    const { ctx, bar } = harness;
+    const document = installDiscoveryFocusDOM(harness);
+    await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
+    ctx.HerdrLocationBar.discoveryCreateWorktree();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    ctx.HerdrLocationBar.discoveryPickBaseFromRow("feature-x");
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryBase" value="feature-x"'), "base field holds the picked row");
+    // Cancel returns the open/switch rows and the create entry.
+    ctx.HerdrLocationBar.discoveryCancelWorktree();
+    ok(bar.innerHTML.includes("discoveryPickBaseFromRow") === false, "cancel restores open/switch rows");
+    ok(bar.innerHTML.includes("＋ Create worktree"), "cancel restores the create entry");
+  });
+
   it("renders the discovery popover from the empty boot state", async () => {
     // The empty app's open-workspace / create-worktree entries seed the
     // default directory into the discovery flow, so the popover must
@@ -1646,6 +1695,7 @@ describe("location bar discovery popover", () => {
     const harness = loadDiscovery({
       routes: {
         "/api/worktrees": { result: { worktrees: [{ path: "/repo", branch: "main" }, { path: "/repo-wt", branch: "feature-x" }], source: { repo_name: "repo.git", repo_root: "/repo" } } },
+        "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
       },
     });
     const { ctx, bar } = harness;
@@ -1655,12 +1705,15 @@ describe("location bar discovery popover", () => {
     ctx.openWorktreeCreateFromGitBranch = (cwd, branch) => modalCalls.push({ cwd, branch });
     ctx.openWorktreeOpenModal = () => modalCalls.push("fallback");
     await ctx.HerdrLocationBar.discoveryCreateWorktree();
+    await new Promise((resolve) => setTimeout(resolve, 0));
     equal(modalCalls.length, 0);
     ok(bar.innerHTML.includes("location-bar-discovery-popover"));
     ok(bar.innerHTML.includes("git-ui-worktree-option"));
     match(bar.innerHTML, /<label for="locationBarDiscoveryName">Worktree branch name<\/label>/);
     equal(document.activeElement.id, "locationBarDiscoveryName");
-    equal((bar.innerHTML.match(/<input\b/g) || []).length, 3);
+    equal((bar.innerHTML.match(/<input\b/g) || []).length, 4, "name, base, filter, and pull checkbox in one popover");
+    ok(bar.innerHTML.includes("Local branches"), "branch list renders with the form");
+    ok(bar.innerHTML.includes('id="locationBarDiscoveryFilter"'), "filter input renders");
     ok(bar.innerHTML.includes("--discovery-top:"));
   });
 
