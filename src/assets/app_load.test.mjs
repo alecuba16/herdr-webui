@@ -866,6 +866,64 @@ describe("app bundle load", () => {
     ok(dashboard.innerHTML.includes("Actions menu (Ctrl+Q then /)"), "dashboard menu button carries the search shortcut");
   });
 
+  it("hides the empty leaf as file and Git tabs open, then restores it when they close", async () => {
+    const ctx = context();
+    runSource(ctx);
+    vm.runInContext(
+      `state.workspaces = [{ workspace_id: "ws-1", label: "Repo" }]; state.ws = "ws-1"; state.tab = null;`,
+      ctx,
+    );
+    const panes = ctx.window.HerdrWorkspacePanes;
+    const paneState = panes.panesStateFor("ws-1");
+    const root = paneState.root;
+    root.tabs = [];
+    root.active = null;
+    const emptyLeaf = ctx.document.getElementById("workspaceEmptyLeaf");
+
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, false, "empty workspace shows the zero-terminal card");
+
+    ctx.window.HerdrFileBrowser = {
+      async openEditorTab(path) { panes.setActivePaneTab(`editor:${path}`); },
+    };
+    await panes.openEditorTab("src/app.js");
+    equal(emptyLeaf.hidden, true, "opening a file hides the card immediately");
+    panes.closeEditorTabImmediate("src/app.js");
+    equal(emptyLeaf.hidden, false, "closing the last file restores the card");
+
+    ctx.window.HerdrGitUi = { async openViewTab() {} };
+    await panes.openGitTab("log");
+    equal(emptyLeaf.hidden, true, "opening Git log hides the card immediately");
+    await panes.openGitTab("changes");
+    equal(emptyLeaf.hidden, true, "opening Changes keeps the card hidden");
+    panes.closeGitTabImmediate("log");
+    equal(emptyLeaf.hidden, true, "another open Git view keeps the card hidden");
+    panes.closeGitTabImmediate("changes");
+    equal(emptyLeaf.hidden, false, "closing the last Git view restores the card");
+
+    paneState.root = {
+      kind: "row",
+      children: [
+        { kind: "pane", paneId: "p1", tabs: ["git:log", "terminal"], active: "terminal" },
+        { kind: "pane", paneId: "p2", tabs: [], active: null },
+      ],
+      sizes: [1, 1],
+      activePaneId: "p2",
+    };
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, true, "an open Git tab in another pane hides the global card");
+    const splitRoot = panes.paneRoot();
+    splitRoot.activePaneId = "p1";
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, true, "switching panes does not reveal the card beside an open Git tab");
+    splitRoot.children[0].tabs = ["terminal"];
+    splitRoot.children[0].active = "terminal";
+    splitRoot.activePaneId = "p2";
+    ctx.syncWorkspaceEmptyLeaf();
+    equal(emptyLeaf.hidden, false, "empty split panes retain the card when no file or Git tab remains");
+    equal(panes.paneLeaves(splitRoot).length, 2, "visibility changes do not collapse the split tree");
+  });
+
   it("wires the question dialog and span-button keyboard paths", () => {
     const ctx = context();
     runSource(ctx);
@@ -1175,6 +1233,19 @@ describe("app bundle load", () => {
     equal(newTabCalls, 2, "Enter under an open modal is ignored");
     settingsModal.style.display = "none";
 
+    const panes = ctx.window.HerdrWorkspacePanes;
+    const root = panes.paneRoot();
+    root.tabs = ["git:log"];
+    root.active = "git:log";
+    fire(inPanes);
+    equal(newTabCalls, 2, "Enter with an open Git tab is ignored");
+    root.tabs = ["editor:src/app.js"];
+    root.active = "editor:src/app.js";
+    fire(inPanes);
+    equal(newTabCalls, 2, "Enter with an open file tab is ignored");
+
+    root.tabs = [];
+    root.active = null;
     vm.runInContext(`state.tab = "tab_1";`, ctx);
     fire(inPanes);
     equal(newTabCalls, 2, "Enter with a live terminal tab is ignored");
@@ -1778,7 +1849,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /markNoGitRepository\(view\)/);
     match(gitUiSource, /not_git_repository: true/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /cleanupOnly \? "" : renderWorktreeActions/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = sideFileCount\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = view\.tab !== "log" && sideFileCount\(view\)/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /disabledReason = "Open a Git repository to use this view"/);
     // Cleanup-only (not a git repo) views hide the diff layout toggle and
@@ -1872,7 +1943,7 @@ describe("app bundle load", () => {
     match(gitDiffCss, /\.git-ui-conflict-diff-actions \{[\s\S]*?border-left: 1px solid var\(--border\);/);
     match(gitDiffCss, /\.git-ui-editor-conflicts \{[\s\S]*?display: grid;/);
     match(gitDiffCss, /\.git-ui-conflict-block-actions \{[\s\S]*?flex-wrap: wrap;/);
-    match(gitLogCss, /\.git-ui-log-head \{[\s\S]*?position: sticky;[\s\S]*?z-index: 7;/);
+    match(gitLogCss, /\.git-ui-log-searchbar \{ position: sticky; top: 0; z-index: 7; \}/);
   });
 
   it("uses a log row context menu with reset and clear rebase wording", () => {
@@ -1941,7 +2012,7 @@ describe("app bundle load", () => {
     match(gitDiffRenderBlameSource, /ref_name=\$\{encodeURIComponent\(ref\)\}/);
     match(gitDiffRenderBlameSource, /blame unavailable/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function sideFileCount\(view\)/);
-    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = sideFileCount\(view\)/);
+    match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const filterInput = view\.tab !== "log" && sideFileCount\(view\)/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /const fileList = cleanupOnly \? "" : `\$\{filterInput\}\$\{fileSections\}`;/);
     match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /status\.conflicted, status\.staged, status\.unstaged, status\.untracked/);
     match(readFileSync(new URL("./desktop/git_ui/modals.js", import.meta.url), "utf8"), /Fetch selected branch \(and main\/master\) before rebasing onto origin/);
@@ -2565,14 +2636,23 @@ describe("app bundle load", () => {
   it("uses shared file tree rows for Git files with Git metadata", () => {
     const fileTreeSource = readFileSync(new URL("./shared/file_tree.js", import.meta.url), "utf8");
     const gitLayoutCss = readFileSync(new URL("./desktop/git_ui/layout.css", import.meta.url), "utf8");
+    const gitSideTreeSource = readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8");
+    const gitDiffViewSource = readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8");
 
-    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /FileTree\.renderPathTree\(files, \{/);
-    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /statusForPath,/);
-    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function fileSummaryEntries\(path, kind\)/);
-    match(readFileSync(new URL("./desktop/git_ui/side_tree.js", import.meta.url), "utf8"), /function normalizeFileTreeStatus\(status, kind\)/);
+    match(gitSideTreeSource, /FileTree\.renderPathTree\(files, \{\s*indentPx: 20,/);
+    match(gitSideTreeSource, /function section\(title, files, kind, treeStyle = false\)/);
+    match(gitSideTreeSource, /section\(`Committed files \$\{label\}`, filterFiles\(files, filter\), "C", true\)/);
+    match(gitSideTreeSource, /class="git-ui-list\$\{treeStyle \? " git-ui-tree-list" : ""\}" role="tree"/);
+    match(gitDiffViewSource, /section\(`Committed files \$\{historicalFileCommitLabel\(view\)\}`,[\s\S]*?, "C", true\)/);
+    match(gitSideTreeSource, /statusForPath,/);
+    match(gitSideTreeSource, /function fileSummaryEntries\(path, kind\)/);
+    match(gitSideTreeSource, /function normalizeFileTreeStatus\(status, kind\)/);
     match(fileTreeSource, /opts\.statusForPath\(dirPath, opts\.kind\)/);
     match(fileTreeSource, /opts\.metaForPath\(dirPath, opts\.kind\)/);
-    match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file \{[\s\S]*?display: grid;/);
+    match(gitLayoutCss, /\.git-ui-list\.git-ui-tree-list \{[\s\S]*?--git-tree-indent: 20px;[\s\S]*?gap: 0;/);
+    match(gitLayoutCss, /repeating-linear-gradient\(to right, transparent 0 7px, var\(--git-tree-guide\) 7px 8px/);
+    match(gitLayoutCss, /height: 24px;\s*contain-intrinsic-size: auto 24px;/);
+    match(gitLayoutCss, /\.git-ui-list\.git-ui-tree-list \.herdr-tree-row\.git-ui-file \{[\s\S]*?display: grid;/);
     match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\)/);
     match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-file:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\) \{\s*color: var\(--fg\);/);
     match(gitLayoutCss, /\.git-ui-list \.herdr-tree-row\.git-ui-dir:is\(\.git-modified, \.git-added, \.git-untracked, \.git-deleted, \.git-changed, \.git-conflict\) \{\s*color: var\(--muted\);/);
@@ -7563,7 +7643,7 @@ describe("app bundle load", () => {
     match(readFileSync(new URL("./desktop/git_ui/cleanup.js", import.meta.url), "utf8"), /id="gitUiCleanupRoot"[^`]*data-directory-picker-after-select="HerdrGitUi\.scanCleanup"/);
   });
 
-  it("renders Git log like a four-column graph table with ref chips", () => {
+  it("renders Git log like a six-column graph table with ref chips and commit details", () => {
     const gitLogCss = readFileSync(new URL("./desktop/git_ui/log.css", import.meta.url), "utf8");
     const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
     const renderSource = readFileSync(new URL("./desktop/app_js/render.js", import.meta.url), "utf8");
@@ -7592,9 +7672,9 @@ describe("app bundle load", () => {
     ok(!gitLogSource.includes("HerdrGitUi.setLogAll(false)"));
     ok(!gitLogSource.includes("All branches</button>"));
     ok(!gitUiSource.includes("function renderLogLine(line)"));
-    match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash \};/);
+    match(gitLogSource, /window\.HerdrGitLog = \{ render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash, computeLanePainting, renderDetails, toggleSearchCase, navigateSearch, toggleRefs, setSearch, beginDetailsResize, moveDetailsResize, endDetailsResize, moveDetailsResizeKeyboard, resetDetailsPaneSize, syncSeparatorState, detailsState: \(\) => \(\{ size: Object\.assign\(\{\}, detailsPaneSize\), resizing: !!detailsResize \}\) \};/);
     match(gitLogSource, /git-ui-log-table-head/);
-    match(gitLogSource, /<span>Graph<\/span><span>Description<\/span><span>Date<\/span><span>Author<\/span>/);
+    match(gitLogSource, /<span class="git-ui-log-cell-refs">Refs<\/span><span class="git-ui-log-cell-graph">Graph<\/span><span class="git-ui-log-cell-description">Description<\/span><span class="git-ui-log-cell-date">Date<\/span><span class="git-ui-log-cell-author">Author<\/span><span class="git-ui-log-cell-hash">Commit<\/span>/);
     match(gitLogSource, /class="git-ui-log-ref \$\{kind\}"/);
     match(gitLogSource, /title="\$\{esc\(normalized\)\}"/);
     match(gitLogSource, /class="git-ui-log-copy-hash"/);
@@ -7620,7 +7700,9 @@ describe("app bundle load", () => {
     match(gitLogSource, /function renderFilterRow/);
     match(gitLogSource, /oninput="HerdrGitUi.setLogFilter/);
     match(gitLogSource, /aria-label="Filter \$\{label\}"/);
-    match(gitLogSource, /input\("description", "Description"\)/);
+    match(gitLogSource, /input\("date", "Date"\)/);
+    match(gitLogSource, /input\("author", "Author"\)/);
+    match(gitLogSource, /name="git-log-search" aria-label="Search commits"[^>]*oninput="HerdrGitLog\.setSearch\(this\.value\)"/);
     match(gitLogSource, /name="git-log-filter-\$\{field\}"/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /id="gitUiFileFilter"/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /name="git-ui-file-filter"/);
@@ -7639,9 +7721,9 @@ describe("app bundle load", () => {
     match(gitLogSource, /field\("Tags"/);
     match(gitLogSource, /field\("Author"/);
     match(gitLogSource, /field\("Date"/);
-    match(gitLogCss, /\.git-ui-log-hover-field-label/);
-    match(gitLogCss, /\.git-ui-log-hover-tag/);
-    match(gitLogCss, /\.git-ui-log-hover-empty/);
+    match(gitLogCss, /\.git-ui-log-details-date/);
+    match(gitLogCss, /\.git-ui-log-details-labels/);
+    match(gitLogCss, /\.git-ui-log-details-error/);
     match(gitLogSource, /if \(label === "HEAD" \|\| label.startsWith\("HEAD -> "\)\) return "current";/);
     match(gitLogSource, /return "main";/);
     match(gitUiSource, /logFilters: \{ description: "", date: "", author: "" \}/);
@@ -7654,7 +7736,7 @@ describe("app bundle load", () => {
     match(gitUiSource, /setLogFilter\(field, value\)/);
     ok(!gitUiSource.includes('"graph", "description"'));
     match(gitUiSource, /HerdrGitLog\.applyFilters\(view\.logFilters\)/);
-    match(gitLogCss, /grid-template-columns: minmax\(96px, max-content\) minmax\(240px, 1fr\) minmax\(90px, 120px\) minmax\(120px, 180px\);/);
+    match(gitLogCss, /--git-log-columns: minmax\(86px, 0\.8fr\) minmax\(48px, var\(--git-log-graph-width, 84px\)\) minmax\(120px, 2\.5fr\) 84px minmax\(76px, 1fr\) 68px;/);
     match(gitLogCss, /\.git-ui-log-ref\.current[\s\S]*?#ef4444/);
     match(gitLogCss, /\.git-ui-log-ref\.main[\s\S]*?#3b82f6/);
     match(gitLogCss, /\.git-ui-log-filter-row/);
@@ -7663,7 +7745,7 @@ describe("app bundle load", () => {
     match(gitLogCss, /\.git-ui-log-load-more/);
     match(gitLogCss, /\.git-ui-log-hover-card/);
     match(gitLogCss, /\.git-ui-log-copy-hash/);
-    match(gitLogCss, /\.git-ui-log-hover-card \.git-ui-log-ref \{[\s\S]*?max-width: none;[\s\S]*?overflow-wrap: anywhere;[\s\S]*?white-space: normal;/);
+    match(gitLogCss, /\.git-ui-log-details-labels \{ display: flex; flex-wrap: wrap; gap: 4px; \}/);
     match(gitLogSource, /function selectedBranchForHash/);
     match(readFileSync(new URL("./desktop/git_ui/diff_view.js", import.meta.url), "utf8"), /item\("Worktree", "createWorktreeFromSelectedBranch\(\)", !view \|\| !view\.selectedLogBranch\)/);
     match(gitUiSource, /createWorktreeFromSelectedBranch\(\) \{/);
@@ -7677,11 +7759,16 @@ describe("app bundle load", () => {
     match(gitUiSource, /return tab === "cleanup" \|\| tab === "log" \|\| tab === "stash";/);
     match(gitUiSource, /const scrollTop = preserveContentScroll\(view\.tab\)/);
     match(gitUiSource, /content\.scrollTop = scrollTop;/);
-    match(gitLogCss, /\.git-ui-log-scope-head \{[\s\S]*?position: sticky;[\s\S]*?top: 0;/);
-    match(gitLogCss, /\.git-ui-log-table-head \{[\s\S]*?position: sticky;[\s\S]*?top: var\(--git-log-scope-sticky-height, 58px\);/);
-    match(gitLogCss, /\.git-ui-log-filter-row \{[\s\S]*?position: sticky;[\s\S]*?--git-log-table-head-sticky-height/);
+    match(gitLogCss, /\.git-ui-log-searchbar \{ position: sticky; top: 0; z-index: 7; \}/);
+    match(gitLogCss, /\.git-ui-log-table-head \{[\s\S]*?position: sticky;[\s\S]*?top: var\(--git-log-search-sticky-height, 54px\);/);
+    match(gitLogCss, /\.git-ui-log-ref-overflow\[hidden\] \{ display: none; \}/);
+    match(gitLogCss, /\.git-ui-log-row\.git-ui-log-search-current/);
+    match(gitLogCss, /\.git-ui-log-row\.git-ui-log-nonmatch/);
+    match(gitLogCss, /\.git-ui-log-graph svg[^\n]*height: var\(--git-log-row-height\)/);
+    match(gitLogCss, /\.git-ui-log-workbench\[data-has-details="true"\] \.git-ui-log-layout \{ grid-template-columns: minmax\(0,1fr\) 7px minmax\(0, var\(--git-log-pane-width, minmax\(240px,28%\)\)\); grid-template-areas: "browser separator details"; \}/);
+    match(gitLogCss, /@container git-log \(max-width: 780px\) \{[^@]*grid-template-areas: "details" "separator" "browser"/);
     match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /function updateGitLogStickyOffsets\(\)/);
-    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /--git-log-scope-sticky-height/);
+    match(readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8"), /--git-log-search-sticky-height/);
     match(gitLogCss, /border-style: dashed;/);
   });
 
@@ -9459,11 +9546,11 @@ describe("zero-tab enter creates terminal", () => {
     const bindingsSource = read("./desktop/app_js/bindings.js");
     match(bindingsSource, /#workspacePanes/);
     match(bindingsSource, /target === document\.body \|\|\n\s+target === document\.documentElement \|\|\n\s+!!target\.closest\("#workspacePanes"\)/);
-    // The guard chain: workspace open, no tab, no modal, no editable
-    // target: mirrors syncWorkspaceEmptyLeaf's show condition.
+    // The zero-terminal Enter shortcut follows the same file/Git pane-tab
+    // guard as the empty-leaf visibility rule.
     match(
       bindingsSource,
-      /e\.key === "Enter" &&\n\s+state\.ws &&\n\s+!state\.tab &&\n\s+!modalOpen\(\) &&\n\s+!target\.closest\("input, select, textarea, \[contenteditable='true'\]"\)/,
+      /e\.key === "Enter" &&\n\s+state\.ws &&\n\s+!state\.tab &&\n\s+!workspaceHasOpenFileOrGitTab\(\) &&\n\s+!modalOpen\(\) &&\n\s+!target\.closest\("input, select, textarea, \[contenteditable='true'\]"\)/,
     );
     match(bindingsSource, /newTab\(\);\n\s+return;/);
   });

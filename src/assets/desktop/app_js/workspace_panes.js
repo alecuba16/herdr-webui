@@ -100,13 +100,23 @@ function gitTabLabel(viewKey) {
 
 // Compare tabs name their refs in the strip: a hash shows as its 7-char
 // short form, the working tree as "current", branch names truncate to 7
-// chars, and master sorts first when it is one of the two sides.
+// chars, and master sorts first when it is one of the two sides. A hash
+// that is a branch tip resolves to branch[Head] when git_ui has the log
+// loaded (the hook scans loaded log data); without data the 7-char form
+// stays, so strip labels never depend on load state.
+function branchHeadLabel(ref) {
+  const hook = typeof window !== "undefined" && window.HerdrGitUi && window.HerdrGitUi.branchHeadLabel;
+  return hook ? String(hook(ref) || "") : "";
+}
+
 function shortGitRef(refs) {
   const value = String(refs || "").trim();
   if (!value) return "current";
   const parts = value.split("..");
   const label = (part) => {
     if (part === "." || part === "") return "current";
+    const head = branchHeadLabel(part);
+    if (head) return head;
     return part.slice(0, 7);
   };
   return parts.map(label).join(" vs ");
@@ -119,7 +129,10 @@ function compareGitLabel(refs) {
   if (parts.length !== 2) return `gitcmp ${shortGitRef(value)}`;
   const base = shortGitRef(parts[0]);
   const target = shortGitRef(parts[1]);
-  if (target === "master") return `gitcmp master vs ${base}`;
+  // The master-first rule tests the branch name, so a master tip shown as
+  // master[Head] still sorts first without losing its head marker.
+  const sortKey = (label) => label.replace(/\[Head\]$/, "");
+  if (sortKey(target) === "master") return `gitcmp ${target} vs ${base}`;
   return `gitcmp ${base} vs ${target}`;
 }
 
@@ -808,6 +821,14 @@ function renderWorkspacePanes() {
   // Non-owner terminal leaves own aux surfaces; anything not still on
   // screen (closed or promoted leaf, tab moved to the owner) disposes.
   if (window.HerdrPaneTerminals) window.HerdrPaneTerminals.releaseStale(auxTabs);
+  // A reshape can drop the leaf hosting the empty-leaf card (split
+  // collapse, close-promote, maximize): rescue parks it home hidden, and
+  // only this sync decides whether the zero-tab state still warrants it.
+  // Without the call here a quiet zero-tab workspace has no event-driven
+  // refresh coming, so the card stayed parked and gone until some other
+  // action rendered. Same bare-function guard style as the callers in
+  // this file: standalone VM harnesses load this module without render.js.
+  if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
 }
 
 function paneLeafElement(container, root, leaf) {
@@ -950,13 +971,24 @@ function rescueLiveSurfaces(container, element) {
   // The terminal shell is the singleton surface: it must never detach.
   // Its display stays untouched: the owner branch of the next render
   // decides visibility (shown in the owner slot, hidden at the home).
-  // The dashboard is id-resolved the same way (syncProjectDashboard reads
-  // el("projectDashboard")), so a dropped pane hosting it must park it
-  // home too or it becomes unreachable from every id lookup.
+  // The dashboard and the empty-leaf card are id-resolved the same way
+  // (syncProjectDashboard / syncWorkspaceEmptyLeaf read them by el()), so a
+  // dropped pane hosting one must park it home too or it becomes
+  // unreachable from every id lookup and the syncs silently no-op.
   const shell = el("terminalShell");
   if (shell && nodeWithin(element, shell)) container.appendChild(shell);
   const dashboard = el("projectDashboard");
   if (dashboard && nodeWithin(element, dashboard)) container.appendChild(dashboard);
+  const emptyLeaf = el("workspaceEmptyLeaf");
+  if (emptyLeaf && nodeWithin(element, emptyLeaf)) {
+    // Parked means hidden for the card too: #workspacePanes paints its
+    // direct children, so a shown card would float as a phantom pane for
+    // the tick until syncWorkspaceEmptyLeaf re-hides and re-mounts it.
+    // The sync owns this attribute every tick, so it lifts the hide on
+    // its own next pass when the zero-tab state still warrants the card.
+    emptyLeaf.hidden = true;
+    container.appendChild(emptyLeaf);
+  }
 }
 
 function paneTabButtonHtml(tab, isActive, index, tabs) {
@@ -1950,6 +1982,7 @@ function paneEnsureEditorTab(path) {
     saveWorkspacePanesStates();
     renderWorkspacePanes();
   }
+  if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
   return leaf;
 }
 
@@ -1996,6 +2029,7 @@ function closeEditorTabImmediate(encodedPath) {
   const collapsed = collapseEmptyLeafInTree(root, leaf);
   if (!collapsed) saveWorkspacePanesStates();
   renderWorkspacePanes();
+  if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
   teardownEditorTab(encodedPath);
 }
 
@@ -2060,6 +2094,7 @@ function paneEnsureGitTab(viewKey) {
     saveWorkspacePanesStates();
     renderWorkspacePanes();
   }
+  if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
   return leaf;
 }
 
@@ -2105,6 +2140,7 @@ function closeGitTabImmediate(viewKey) {
   const collapsed = collapseEmptyLeafInTree(root, leaf);
   if (!collapsed) saveWorkspacePanesStates();
   renderWorkspacePanes();
+  if (typeof syncWorkspaceEmptyLeaf === "function") syncWorkspaceEmptyLeaf();
   const container = document.getElementById(paneGitMountId(viewKey));
   if (container && container.remove) container.remove();
   const gitUi = window.HerdrGitUi;

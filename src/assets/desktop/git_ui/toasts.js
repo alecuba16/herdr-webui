@@ -1,39 +1,17 @@
 (function () {
   function createGitUiToasts({ state, active, api, esc, arg, render, ensurePanel, navigator, setTimeoutFn }) {
-      function normalizeRemoteUrl(raw) {
-        let value = String(raw || "").trim();
-        if (!value) return "";
-        const scp = value.match(/^git@([^:]+):(.+)$/);
-        if (scp) value = `https://${scp[1]}/${scp[2]}`;
-        if (value.startsWith("ssh://git@")) value = value.replace(/^ssh:\/\/git@/, "https://");
-        value = value.replace(/\.git$/, "");
-        try {
-          const url = new URL(value);
-          return /^https?:$/.test(url.protocol) ? url.toString().replace(/\/$/, "") : "";
-        } catch (_) {
-          return "";
-        }
-      }
-
-      function branchPath(branch) {
-        return String(branch || "").split("/").map(encodeURIComponent).join("/");
-      }
-
+      // Web/PR URLs come from /status (repo_web_url, branch_web_url,
+      // pr_create_url): the backend owns the forge-specific URL shapes.
+      // The client only gates the PR link on timing (shown after a
+      // successful push) and hides the branch link while detached.
       function gitBranchUrl(status) {
-        const base = normalizeRemoteUrl(status && status.remote_url);
-        const branch = status && status.branch;
-        if (!base || !branch || branch === "(detached)") return "";
-        if (base.includes("bitbucket.org/")) return `${base}/branch/${branchPath(branch)}`;
-        return `${base}/tree/${branchPath(branch)}`;
+        const detached = !status || !status.branch || status.branch === "(detached)";
+        return detached ? "" : String(status.branch_web_url || "");
       }
 
-      function gitPullRequestUrl(status) {
-        const base = normalizeRemoteUrl(status && status.remote_url);
-        const branch = status && status.branch;
-        if (!base || !branch || branch === "(detached)") return "";
-        if (base.includes("github.com/")) return `${base}/pull/new/${branchPath(branch)}`;
-        if (base.includes("bitbucket.org/")) return `${base}/pull-requests/new?source=${encodeURIComponent(branch)}`;
-        return "";
+      function gitPullRequestUrl(status, { pushed = false } = {}) {
+        if (!pushed) return "";
+        return String((status && status.pr_create_url) || "");
       }
 
       function renderGitToast() {
@@ -45,7 +23,7 @@
         return `<div class="git-ui-toast" role="status"><span>${esc(toast.message || "Done")}</span>${branch}<span class="git-ui-toast-actions">${branchButton}${prButton}<button class="git-ui-btn" onclick="HerdrGitUi.closeGitToast()">Dismiss</button></span></div>`;
       }
 
-      function showCommitToast(message) {
+      function showCommitToast(message, { pushed = false } = {}) {
         const view = active() || {};
         const status = view.status || {};
         const id = Date.now();
@@ -54,7 +32,7 @@
           message,
           branch: status.branch || "",
           branchUrl: gitBranchUrl(status),
-          prUrl: gitPullRequestUrl(status),
+          prUrl: gitPullRequestUrl(status, { pushed }),
         };
         render();
         setTimeout(() => {
@@ -131,18 +109,16 @@
         }, 1800);
       }
 
-    return {
-      normalizeRemoteUrl,
-      branchPath,
-      gitBranchUrl,
-      gitPullRequestUrl,
-      renderGitToast,
-      showCommitToast,
-      copyGitPermalink,
-      copyCommitId,
-      renderScopeCopyToast,
-      copyScopeValue,
-    };
+      return {
+        gitBranchUrl,
+        gitPullRequestUrl,
+        renderGitToast,
+        showCommitToast,
+        copyGitPermalink,
+        copyCommitId,
+        renderScopeCopyToast,
+        copyScopeValue,
+      };
   }
 
   globalThis.HerdrGitUiToastsModule = { create: createGitUiToasts };

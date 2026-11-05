@@ -2,16 +2,6 @@ use serde_json::{json, Value};
 
 pub(super) const LOG_FORMAT: &str = "%H%x00%an%x00%ar%x00%cI%x00%D%x00%s";
 
-pub(super) fn reconstruct_log_line(line: &str) -> String {
-    match parse_log_row(line) {
-        Some(row) if !row.hash.is_empty() => {
-            format!("{}{} {}", row.graph, short_hash(&row.hash), row.title)
-        }
-        Some(row) => row.graph,
-        None => line.to_owned(),
-    }
-}
-
 pub(super) fn parse_log_row_json(line: &str) -> Option<Value> {
     let row = parse_log_row(line)?;
     Some(json!({
@@ -129,10 +119,6 @@ fn normalize_label(value: &str) -> String {
         .to_string()
 }
 
-fn short_hash(hash: &str) -> &str {
-    &hash[..8.min(hash.len())]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,23 +147,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_graph_only_rows_and_reconstructs_legacy_line() {
+    fn parses_graph_only_rows() {
         let row = parse_log_row("|/  ").unwrap();
         assert_eq!(row.graph, "|/");
         assert!(row.hash.is_empty());
-        assert_eq!(
-            reconstruct_log_line(
-                &[
-                    "* abcdef123456",
-                    "Bob",
-                    "yesterday",
-                    "2026-07-13T12:00:00Z",
-                    "origin/main",
-                    "Fix bug",
-                ]
-                .join("\0")
-            ),
-            "* abcdef12 Fix bug"
-        );
     }
 }

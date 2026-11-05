@@ -142,6 +142,19 @@ otherwise) observed both at the app boundary and on the terminal input
 WebSocket, with the pane executing the pending line (fresh prompt in
 the bridge grid).
 
+## Empty-leaf card vs pane tabs (empty-leaf-tabs-e2e)
+
+```sh
+just empty-leaf-tabs-e2e   # or: scripts/e2e/run-empty-leaf-tabs-e2e.sh
+```
+
+Real-browser acceptance on its own ports (server 8791, CDP 9791).
+Creates a fixture workspace through the real open flow (zero tabs,
+welcome card visible), then verifies the card hides the moment a file
+or Git pane tab opens, returns when the last one closes, and that the
+Enter shortcut refuses while such a tab is open (no terminal minted
+behind the Git view) but works again once the card is back.
+
 ## Utility scripts
 
 - `cdp-driver-helpers.mjs` - shared CDP plumbing for the real-browser drivers

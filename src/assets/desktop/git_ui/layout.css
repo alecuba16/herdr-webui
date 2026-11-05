@@ -574,10 +574,12 @@
   overflow-x: hidden;
   overflow-y: auto;
 }
-.git-ui-list .herdr-file-tree {
+.git-ui-list.git-ui-tree-list {
+  --git-tree-guide: color-mix(in srgb, var(--border2) 58%, transparent);
+  --git-tree-indent: 20px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 0;
   padding: 0;
 }
 .git-ui-list .herdr-tree-row.git-ui-file {
@@ -598,10 +600,31 @@
   text-align: left;
   width: 100%;
 }
+.git-ui-list.git-ui-tree-list .herdr-tree-row.git-ui-file {
+  background-color: transparent;
+  background-image:
+    linear-gradient(var(--git-tree-guide), var(--git-tree-guide)),
+    repeating-linear-gradient(to right, transparent 0 7px, var(--git-tree-guide) 7px 8px, transparent 8px var(--git-tree-indent));
+  background-position:
+    calc(13px + var(--tree-offset, 0px) - var(--git-tree-indent)) 50%,
+    6px 0;
+  background-repeat: no-repeat;
+  background-size:
+    min(calc(var(--git-tree-indent) - 7px), var(--tree-offset, 0px)) 1px,
+    var(--tree-offset, 0px) 100%;
+  border-radius: 3px;
+  height: 24px;
+  contain-intrinsic-size: auto 24px;
+  padding: 3px 6px 3px calc(6px + var(--tree-offset, 0px));
+}
 .git-ui-list .herdr-tree-row.git-ui-file:hover,
 .git-ui-list .herdr-tree-row.git-ui-file.active {
-  background: var(--panel2);
+  background-color: var(--panel2);
   border-color: var(--border2);
+}
+.git-ui-list.git-ui-tree-list .herdr-tree-row.git-ui-file:hover,
+.git-ui-list.git-ui-tree-list .herdr-tree-row.git-ui-file.active {
+  border-color: transparent;
 }
 .git-ui-list .herdr-tree-row.git-ui-dir {
   color: var(--muted);

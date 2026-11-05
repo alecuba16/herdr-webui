@@ -44,15 +44,18 @@ echo "==> building herdr-webui (debug)"
 
 echo "==> creating fixture repo with tags"
 REPO="$WORK/log-hover-repo"
-mkdir -p "$REPO/src"
+mkdir -p "$REPO/src/nested"
 cat > "$REPO/README.md" <<'EOF'
 # readme
 EOF
 cat > "$REPO/src/app.js" <<'EOF'
 console.log("hello");
 EOF
+cat > "$REPO/src/nested/config.toml" <<'EOF'
+mode = "test"
+EOF
 git -C "$REPO" init -q -b main
-git -C "$REPO" add README.md src/app.js
+git -C "$REPO" add README.md src/app.js src/nested/config.toml
 git -C "$REPO" -c user.name=e2e -c user.email=e2e@local commit -qm init
 # Tagged HEAD so the hover card's Tags row has real chips to copy, plus a
 # second tag so "one copy per tag" is observable.
@@ -60,7 +63,8 @@ git -C "$REPO" tag v1.0.0
 git -C "$REPO" tag release-candidate
 # A second, untagged commit so the tagless card shape is also exercised.
 echo "// more" >> "$REPO/src/app.js"
-git -C "$REPO" add src/app.js
+echo 'mode = "changed"' >> "$REPO/src/nested/config.toml"
+git -C "$REPO" add src/app.js src/nested/config.toml
 git -C "$REPO" -c user.name=e2e -c user.email=e2e@local commit -qm "second commit"
 
 echo "==> starting isolated server on http://127.0.0.1:$PORT"

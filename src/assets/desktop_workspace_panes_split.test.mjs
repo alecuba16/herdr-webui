@@ -1127,3 +1127,42 @@ test("cross-leaf drag move that empties the source collapses the blank pane", ()
   assert.equal(after.length, 1, "emptied source leaf collapsed after the move");
   assert.ok(after[0].tabs.includes("editor:src/move.py"), "moved tab landed in the survivor");
 });
+
+test("rescue parks the empty-leaf card before a collapsed pane subtree is dropped", () => {
+  const { document, nodes } = buildDom();
+  const ctx = loadPanesModule(document, "ws-44");
+  const panes = ctx.HerdrWorkspacePanes;
+  bootstrapPanes(ctx, "t1");
+  // Mount the card into the split leaf's pane content, then close that
+  // leaf's only editor tab so the collapse path drops the pane subtree
+  // with the card inside: rescue must park it home first.
+  const container = nodes.workspacePanes;
+  const card = ctx.document.createElement("div");
+  card.id = "workspaceEmptyLeaf";
+  panes.splitPaneRight();
+  panes.renderWorkspacePanes();
+  const splitLeaves = document.querySelectorAll(".workspace-pane");
+  const dropLeaf = splitLeaves[1].querySelector(".pane-content");
+  dropLeaf.appendChild(card);
+  const leaves = panes.paneLeaves(panes.paneRoot());
+  leaves[1].tabs = ["editor:src/only.py"];
+  leaves[1].active = "editor:src/only.py";
+  panes.renderWorkspacePanes();
+  panes.closeEditorTabImmediate(encodeURIComponent("src/only.py"));
+  assert.equal(panes.paneLeaves(panes.paneRoot()).length, 1, "split collapsed to one leaf");
+  assert.equal(document.getElementById("workspaceEmptyLeaf"), card,
+    "card survives the collapse reachable by id");
+  assert.equal(card.parentNode, container,
+    "rescue parked the card at the workspacePanes home");
+  assert.equal(card.hidden, true,
+    "parked card is hidden so it cannot paint a phantom pane for a tick");
+  // The sync can mount it again: el() finds it, so mountEmptyLeafInPane
+  // re-parents it into a pane content slot instead of silently no-opping.
+  panes.mountEmptyLeafInPane(true);
+  const remounted = document.querySelectorAll(".workspace-pane")[0]
+    .querySelector(".pane-content");
+  assert.equal(card.parentNode, remounted,
+    "remount path adopts the rescued card into the pane content");
+  assert.equal(document.getElementById("workspaceEmptyLeaf"), card,
+    "card still reachable after the remount pass");
+});

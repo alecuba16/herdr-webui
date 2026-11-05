@@ -65,6 +65,12 @@ content-search-e2e:
 mobile-chord-e2e:
     bash scripts/e2e/run-mobile-chord-e2e.sh
 
+# Real-browser acceptance for the empty-leaf card vs file/Git pane tabs
+# (hide on open, restore on last close, Enter guard while a tab is open).
+# See scripts/e2e/README.md.
+empty-leaf-tabs-e2e:
+    bash scripts/e2e/run-empty-leaf-tabs-e2e.sh
+
 # Real-browser acceptance for the filter-results tree keyboard navigation
 # (Up/Down select, Left/Right collapse/expand, Enter activates, Tab hops
 # sections instead of walking rows). See scripts/e2e/README.md.

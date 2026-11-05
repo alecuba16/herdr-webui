@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::diff::{git_ui_diff_args, GitUiDiffQuery};
-use super::log_graph::{parse_log_row_json, reconstruct_log_line, LOG_FORMAT};
+use super::log_graph::{parse_log_row_json, LOG_FORMAT};
 use super::{
     check_auth, git_json_error, git_spawn, git_ui_output, git_ui_repo, git_ui_text,
     git_ui_text_strings, safe_git_token, safe_repo_path,
@@ -248,13 +248,8 @@ pub(super) fn git_ui_log_blocking(
                     })
                 })
                 .collect::<Vec<_>>();
-            let display_lines = lines
-                .iter()
-                .map(|line| reconstruct_log_line(line))
-                .collect::<Vec<_>>();
             Ok(json!({
                 "commits": commits,
-                "lines": display_lines,
                 "rows": rows,
                 "has_more": has_more,
                 "limit": limit,

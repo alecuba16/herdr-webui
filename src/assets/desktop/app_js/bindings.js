@@ -65,13 +65,8 @@ document.addEventListener("keydown", (e) => {
     }
     return;
   }
-  // Zero-tab workspace body: Enter creates the first terminal panel,
-  // same as the card's "New terminal" button. The pane column scope
-  // (#workspacePanes) covers every real flow: a click on the empty
-  // workspace body, the leaf card once the open-workspace modal closes,
-  // and the body-level focus left after the last tab closes.
-  // state.ws && !state.tab mirrors syncWorkspaceEmptyLeaf's show
-  // condition in render.js: the leaf is on screen exactly then.
+  // Enter creates the first terminal only while no file or Git pane tab
+  // is open. The pane column scope covers the empty body and the leaf card.
   // Buttons keep their native Enter path (the early return above), so a
   // focused pane control (the card's own New terminal button, pane strip
   // buttons) still activates itself: this branch only fires for
@@ -81,6 +76,7 @@ document.addEventListener("keydown", (e) => {
     e.key === "Enter" &&
     state.ws &&
     !state.tab &&
+    !workspaceHasOpenFileOrGitTab() &&
     !modalOpen() &&
     !target.closest("input, select, textarea, [contenteditable='true']") &&
     (target === document.body ||

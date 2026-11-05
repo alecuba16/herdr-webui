@@ -79,6 +79,7 @@ function context(fetchImpl) {
     RegExp,
     Error,
     TextEncoder,
+    URL,
     TextDecoder,
     encodeURIComponent,
     decodeURIComponent,
@@ -386,6 +387,36 @@ test("compareSelectedLog puts the newest commit on the target (right) side", asy
   assert.ok(call, "expected a compare request");
   assert.equal(call.params.get("base"), OLD, "older commit must stay the base regardless of click order");
   assert.equal(call.params.get("target"), NEW, "newest commit must stay the target regardless of click order");
+});
+
+test("branchHeadLabel resolves a loaded branch tip through the log data", async () => {
+  // Rows carry branch-tip labels; selectedBranchForHash turns a matching
+  // hash into the branch name. The hook is read-only (no fetches), scans
+  // every cached view, and answers "" for refs the log never saw so the
+  // strip falls back to the 7-char form.
+  const TIP = "1111111111111111111111111111111111111111";
+  const PLAIN = "2222222222222222222222222222222222222222";
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [{ hash: TIP }, { hash: PLAIN }], lines: [], rows: [{ hash: TIP, graph: "*", title: "tip", labels: ["feature/x"] }, { hash: PLAIN, graph: "*", title: "plain", labels: [] }], has_more: false, limit: 80 },
+  });
+  const { ui, ctx, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  ui.tab("log");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const before = calls.length;
+  const realResolver = ctx.window.HerdrGitLog.selectedBranchForHash;
+  ctx.window.HerdrGitLog.selectedBranchForHash = (data, ref, base) => {
+    const row = (data.rows || []).find((entry) => entry.hash === ref);
+    return row && Array.isArray(row.labels) && row.labels.length ? row.labels[0] : "";
+  };
+  assert.equal(ui.branchHeadLabel(TIP), "feature/x[Head]", "a loaded branch tip names as branch[Head]");
+  assert.equal(ui.branchHeadLabel(PLAIN), "", "a plain hash stays empty for the strip fallback");
+  assert.equal(ui.branchHeadLabel(""), "", "empty refs never resolve");
+  ctx.window.HerdrGitLog.selectedBranchForHash = realResolver;
+  assert.equal(calls.length, before, "the hook never fetches");
 });
 
 test("current-compare keeps the working tree on the target (right) side", async () => {
@@ -828,6 +859,36 @@ test("folder mutations are hidden and refused outside the changes view", async (
   assert.equal(staged.length, 0, "no stage POST may fire outside changes mode");
 });
 
+test("Repo button renders only with a remote and opens the web UI synchronously", async () => {
+  // With a remote: the button sits in the worktree-actions row and its
+  // click handler is the sync openRepoWeb (no fetch, no popup-blocked
+  // window.open chain).
+  const remote = await openedWithStatus({ branch: "feature-x", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: true, repo_web_url: "https://github.com/acme/widget/tree/feature-x" });
+  let html = String(ctxHtml(remote));
+  assert.match(html, /class="git-ui-btn git-ui-repo-open"[^>]*onclick="HerdrGitUi\.openRepoWeb\(event\)">Repo</);
+  let opened = [];
+  remote.ctx.window.open = (url) => { opened.push(String(url)); };
+  remote.ui.openRepoWeb();
+  assert.equal(opened.length, 1, "click opens exactly one tab");
+  assert.equal(opened[0], "https://github.com/acme/widget/tree/feature-x", "branch on the remote opens the branch page");
+
+  // Branch never pushed: the same click opens the default branch instead.
+  const offRemote = await openedWithStatus({ branch: "feature-y", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: false, repo_web_url: "https://github.com/acme/widget/tree/main" });
+  opened = [];
+  offRemote.ctx.window.open = (url) => { opened.push(String(url)); };
+  offRemote.ui.openRepoWeb();
+  assert.equal(opened[0], "https://github.com/acme/widget/tree/main", "unpushed branch falls back to the default branch");
+
+  // No remote configured: the button does not render at all.
+  const localOnly = await openedWithStatus({ branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] });
+  html = String(ctxHtml(localOnly));
+  assert.ok(!/git-ui-repo-open/.test(html), "no remote means no Repo button");
+  opened = [];
+  localOnly.ctx.window.open = (url) => { opened.push(String(url)); };
+  localOnly.ui.openRepoWeb();
+  assert.equal(opened.length, 0, "no remote means the click opens nothing");
+});
+
 test("status button labels Pull/Push/Fetch from sync state and runs the matching action", async () => {
   // In sync: plain Fetch, no arrows or counts.
   const synced = await openedWithStatus({ branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" });
@@ -1268,6 +1329,18 @@ test("branch list module is registered and wired before git_ui.js consumes it", 
   const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
   assert.match(gitUiSource, /globalThis\.HerdrGitUiBranchListModule\.create\(\{/);
   assert.match(gitUiSource, /const renderWorktreeActions = branchList\.renderWorktreeActions;/);
+  // The persistent Repo button opens the remote web UI from cached status
+  // data only: it renders only when a remote exists and never posts.
+  assert.match(branchListSource, /git-ui-repo-open/);
+  assert.match(branchListSource, /HerdrGitUi\.openRepoWeb\(event\)/);
+  assert.match(gitUiSource, /openRepoWeb\(\)/);
+  // Web/PR URL shapes live in the backend; the toast module only reads
+  // the /status fields and gates the PR link on push timing.
+  const toastsSource = readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8");
+  assert.match(toastsSource, /branch_web_url/);
+  assert.match(toastsSource, /pr_create_url/);
+  assert.match(gitUiSource, /status\.repo_web_url/);
+  assert.ok(!/normalizeRemoteUrl|bitbucket\.org\//.test(toastsSource), "no host sniffing stays client-side");
   const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
   const branchListIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/branch_list.js")');
   const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
@@ -1626,6 +1699,7 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
   const state = { contextMenu: { kind: "M", x: 10, y: 20, path: "a.js" }, logContextMenu: null };
   const toolbarViewFiles = [];
   const stableView = { tab: "changes", status: { staged: ["a.js"], unstaged: [], untracked: [] }, diff: { files: toolbarViewFiles }, file: "" };
+  let commitPreviewCalls = 0;
   const mod = ctx.globalThis.HerdrGitUiDiffViewModule.create({
     state,
     active: () => stableView,
@@ -1654,7 +1728,7 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
     stashCount: () => 0,
     canOpenStashView: () => true,
     section: (label, paths, kind) => `SECTION[${label}:${paths.join(",")}:${kind}]`,
-    commitPreviewSection: () => "",
+    commitPreviewSection: () => { commitPreviewCalls += 1; return "COMMIT-PREVIEW"; },
     stashListHtml: () => "STASH-LIST",
     stashFileSection: () => "STASH-FILES",
     renderGitViewTabs: (tabs, activeTab) => `TABS[${tabs.map((t) => t.id).join("|")}:${activeTab}]`,
@@ -1717,6 +1791,10 @@ test("diff view renders toolbar, large-diff guards, and file labels", () => {
   const side = mod.renderSide();
   assert.match(side, /TABS\[changes\|log\|stash\|cleanup:changes\]/);
   assert.match(side, /SECTION\[Staged:a\.js:S\]/);
+  stableView.tab = "log";
+  const logSide = mod.renderSide();
+  assert.equal(commitPreviewCalls, 0, "selected commit files are rendered in the log details pane only");
+  assert.doesNotMatch(logSide, /COMMIT-PREVIEW|git-ui-file-filter/);
   // renderDiffLayoutSideToggle renders the cwd as a clickable path title that
   // opens the folder picker, and the return-to-workspace button appears only
   // when the Git cwd left the workspace folder.
@@ -1794,6 +1872,414 @@ test("log_render module is registered and wired before git_ui.js consumes it", (
   assert.ok(logRenderIndex > -1 && logRenderIndex < gitUiIndex, "log_render.js concatenates before git_ui.js");
 });
 
+test("Git Log rerenders preserve the visible nested history scrollports", () => {
+  const source = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
+  assert.match(source, /const gitLogScrollSelectors = \["\.git-ui-log-workbench", "\.git-ui-log-browser", "\.git-ui-log-table"\]/);
+  assert.match(source, /function captureGitLogScroll\(view, content\)/);
+  assert.match(source, /function restoreGitLogScroll\(view, content\)/);
+  assert.match(source, /function captureGitLogFocus\(view, content\)/);
+  assert.match(source, /function restoreGitLogFocus\(view, content\)/);
+  assert.match(source, /focused\.matches\(gitLogFocusSelector\)[\s\S]*target\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(source, /captureGitLogScroll\(view, content\);\s+content\.innerHTML = html;[\s\S]*restoreGitLogScroll\(view, content\);/);
+  assert.match(source, /restoreGitLogScroll\(view, nextContent\);/);
+});
+
+function gitLogFocusHarness() {
+  const document = { body: {}, activeElement: null };
+  document.activeElement = document.body;
+  const view = { tab: "log" };
+  let nodes = [];
+  let hasWorkbench = true;
+  const content = {
+    contains: (node) => nodes.includes(node),
+    querySelector(selector) {
+      if (selector === ".git-ui-log-workbench") return hasWorkbench ? {} : null;
+      if (selector === ".git-ui-log-row.selected[data-log-hash]") return nodes.find((node) => node.selected) || null;
+      if (selector === '[name="git-log-search"]') return nodes.find((node) => node.attrs.name === "git-log-search") || null;
+      return null;
+    },
+    querySelectorAll: (selector) => selector === ".git-ui-log-row[data-log-hash]" ? nodes.filter((node) => node.isRow) : nodes,
+  };
+  function node(attrs = {}, options = {}) {
+    return {
+      tagName: options.tagName || "BUTTON", attrs, dataset: { logHash: options.hash || "" },
+      isRow: !!options.hash && !options.row, selected: !!options.selected,
+      isConnected: true, disabled: !!options.disabled, hidden: !!options.hidden,
+      matches: () => true,
+      getAttribute: (name) => attrs[name] ?? null,
+      closest(selector) {
+        if (selector === ".git-ui-log-row[data-log-hash]") return options.row || (this.isRow ? this : null);
+        if (selector === ".git-ui-log-details") return options.details ? {} : null;
+        if (selector === "details") return options.filterDetails || null;
+        if (selector === "details[open]") return options.filterDetails?.open ? options.filterDetails : null;
+        if (selector.includes("details:not([open])") && options.filterDetails && !options.filterDetails.open) return options.filterDetails;
+        return this.hidden ? {} : null;
+      },
+      focus(value) { document.activeElement = this; this.focusOptions = value; },
+      setSelectionRange(...value) { this.range = value; },
+    };
+  }
+  function mount(next, workbench = true) {
+    for (const old of nodes) old.isConnected = false;
+    nodes = next;
+    hasWorkbench = workbench;
+    document.activeElement = document.body;
+  }
+  const ctx = vm.createContext({ document });
+  const start = GIT_UI_SOURCE.indexOf("  const gitLogFocusSelector =");
+  const end = GIT_UI_SOURCE.indexOf("  // Snap the live content scroll", start);
+  vm.runInContext(GIT_UI_SOURCE.slice(start, end), ctx);
+  return { view, content, document, node, mount, capture: () => ctx.captureGitLogFocus(view, content), restore: () => ctx.restoreGitLogFocus(view, content) };
+}
+
+for (const [label, attrs] of [
+  ["scope", { onclick: "HerdrGitUi.cycleLogScope()" }],
+  ["load more", { onclick: "HerdrGitUi.loadMoreLog()" }],
+  ["case", { "aria-label": "Match case" }],
+  ["next hit", { "aria-label": "Next matching commit" }],
+]) {
+  test(`Git Log retains ${label} control focus without scrolling`, () => {
+    const h = gitLogFocusHarness();
+    const old = h.node(attrs);
+    h.mount([old]); old.focus(); h.capture();
+    h.mount([], false); h.capture(); h.restore();
+    const replacement = h.node(attrs);
+    h.mount([replacement]); h.restore();
+    assert.equal(h.document.activeElement, replacement);
+    assert.equal(replacement.focusOptions.preventScroll, true);
+  });
+}
+
+test("Git Log retains search input selection during a detail rerender", () => {
+  const h = gitLogFocusHarness();
+  const attrs = { name: "git-log-search" };
+  const old = h.node(attrs, { tagName: "INPUT" });
+  Object.assign(old, { selectionStart: 2, selectionEnd: 5, selectionDirection: "backward" });
+  h.mount([old]); old.focus(); h.capture();
+  const replacement = h.node(attrs, { tagName: "INPUT" });
+  h.mount([replacement]); h.restore();
+  assert.equal(h.document.activeElement, replacement);
+  assert.deepEqual(replacement.range, [2, 5, "backward"]);
+});
+
+test("Git Log restores the advanced filter expansion with field focus", () => {
+  const h = gitLogFocusHarness();
+  const attrs = { name: "git-log-filter-author" };
+  const old = h.node(attrs, { tagName: "INPUT", filterDetails: { open: true } });
+  h.mount([old]); old.focus(); h.capture();
+  const details = { open: false };
+  const replacement = h.node(attrs, { tagName: "INPUT", filterDetails: details });
+  h.mount([replacement]); h.restore();
+  assert.equal(details.open, true);
+  assert.equal(h.document.activeElement, replacement);
+});
+
+test("Git Log retains direct commit row focus", () => {
+  const h = gitLogFocusHarness();
+  const old = h.node({}, { tagName: "DIV", hash: "abc" });
+  h.mount([old]); old.focus(); h.capture();
+  const replacement = h.node({}, { tagName: "DIV", hash: "abc" });
+  h.mount([replacement]); h.restore();
+  assert.equal(h.document.activeElement, replacement);
+});
+
+test("Git Log hidden ref controls fall back to their owning row", () => {
+  const h = gitLogFocusHarness();
+  const row = h.node({}, { tagName: "DIV", hash: "abc" });
+  const attrs = { onclick: "copy()" };
+  const copy = h.node(attrs, { row });
+  h.mount([row, copy]); copy.focus(); h.capture();
+  const replacement = h.node(attrs, { row, hidden: true });
+  h.mount([row, replacement]); h.restore();
+  assert.equal(h.document.activeElement, row);
+});
+
+test("Git Log Close falls back to the previously selected commit row", () => {
+  const h = gitLogFocusHarness();
+  const oldRow = h.node({}, { tagName: "DIV", hash: "abc", selected: true });
+  const close = h.node({ "aria-label": "Clear commit selection" }, { details: true });
+  h.mount([oldRow, close]); close.focus(); h.capture();
+  const row = h.node({}, { tagName: "DIV", hash: "abc" });
+  h.mount([row]); h.restore();
+  assert.equal(h.document.activeElement, row);
+});
+
+test("Git Log disabled controls fall back to search when the old row is absent", () => {
+  const h = gitLogFocusHarness();
+  const attrs = { onclick: "HerdrGitUi.loadMoreLog()" };
+  const old = h.node(attrs);
+  h.mount([old]); old.focus(); h.capture();
+  const disabled = h.node(attrs, { disabled: true });
+  const search = h.node({ name: "git-log-search" }, { tagName: "INPUT" });
+  h.mount([disabled, search]); h.restore();
+  assert.equal(h.document.activeElement, search);
+});
+
+test("Git Log copy controls retain their owning row identity", () => {
+  const h = gitLogFocusHarness();
+  const attrs = { onclick: "copy()", "aria-label": "Copy branch" };
+  const rowA = h.node({}, { tagName: "DIV", hash: "a" });
+  const rowB = h.node({}, { tagName: "DIV", hash: "b" });
+  const copyA = h.node(attrs, { row: rowA });
+  const copyB = h.node(attrs, { row: rowB });
+  h.mount([rowA, copyA, rowB, copyB]); copyB.focus(); h.capture();
+  const nextA = h.node(attrs, { row: rowA });
+  const nextB = h.node(attrs, { row: rowB });
+  h.mount([rowA, nextA, rowB, nextB]); h.restore();
+  assert.equal(h.document.activeElement, nextB);
+});
+
+test("Git Log does not steal focus moved outside during a pending request", () => {
+  const h = gitLogFocusHarness();
+  const old = h.node({ onclick: "scope()" });
+  h.mount([old]); old.focus(); h.capture();
+  h.mount([h.node({ onclick: "scope()" })]);
+  const outside = h.node({ name: "outside" });
+  outside.focus(); h.restore();
+  assert.equal(h.document.activeElement, outside);
+});
+
+test("Git Log does not capture a matching control owned by another pane", () => {
+  const h = gitLogFocusHarness();
+  const inside = h.node({ onclick: "scope()" });
+  h.mount([inside]); inside.focus(); h.capture();
+  const outside = h.node({ onclick: "scope()" });
+  outside.focus(); h.capture();
+  h.mount([h.node({ onclick: "scope()" })]); h.restore();
+  assert.equal(h.document.activeElement, h.document.body);
+});
+
+function gitLogScrollHarness(width, sticky = false) {
+  const view = { tab: "log", cwd: "/repo", status: {}, selectedLogCommits: [], contentScrollTop: 999 };
+  const state = { visible: true, renderVersion: 0 };
+  const requests = [];
+  let markup = "";
+  let scrollTop = 0;
+  let rows = [];
+  let nodes = {};
+  let layout = null;
+  let explicitScrolls = 0;
+  const content = {
+    get scrollTop() { return scrollTop; },
+    set scrollTop(value) { scrollTop = Math.max(0, Math.min(layout ? 3000 : 0, value)); },
+    scrollLeft: 0,
+    getBoundingClientRect: () => ({ top: 50, bottom: 650, height: 600 }),
+    querySelectorAll(selector) {
+      if (selector === ".git-ui-log-row[data-log-hash]") return rows;
+      if (selector === ".git-ui-log-row.selected[data-log-hash]") return rows.filter((row) => layout.selected.includes(row.dataset.logHash));
+      if (selector === ".git-ui-log-searchbar, .git-ui-log-table-head, .git-ui-log-details") return sticky ? [nodes[".git-ui-log-searchbar"], nodes[".git-ui-log-table-head"], nodes[".git-ui-log-details"]].filter(Boolean) : [];
+      return nodes[selector] ? [nodes[selector]] : [];
+    },
+    querySelector(selector) { return nodes[selector] || null; },
+    get innerHTML() { return markup; },
+    set innerHTML(value) {
+      markup = value;
+      layout = value.startsWith("{") ? JSON.parse(value) : null;
+      nodes = {};
+      rows = [];
+      if (layout) {
+        for (const selector of [".git-ui-log-workbench", ".git-ui-log-browser", ".git-ui-log-table", ".git-ui-log-details"]) {
+          nodes[selector] = { dataset: {}, scrollTop: 0, scrollLeft: 0 };
+        }
+        const addedHeight = width <= 780 && layout.selected.length ? layout.height : 0;
+        if (sticky) {
+          nodes[".git-ui-log-searchbar"] = { getBoundingClientRect: () => ({ top: 50, bottom: 104, left: 0, right: width <= 780 ? width : 500 }) };
+          nodes[".git-ui-log-table-head"] = { getBoundingClientRect: () => ({ top: 104, bottom: 134, left: 0, right: width <= 780 ? width : 500 }) };
+          nodes[".git-ui-log-details"].getBoundingClientRect = () => ({ top: 50, bottom: 50 + (layout.selected.length ? layout.height : 0), left: width <= 780 ? 0 : 500, right: width });
+        }
+        rows = [["fallback", 650], ["a", 780], ["b", 900], ["offscreen", 2400]]
+          .filter(([hash]) => hash !== layout.omit)
+          .map(([hash, top]) => ({
+            dataset: { logHash: hash },
+            hidden: false,
+            getBoundingClientRect: () => ({ top: 50 + top + addedHeight - scrollTop, bottom: 80 + top + addedHeight - scrollTop, left: 0, right: width <= 780 ? width : 500 }),
+            focus() {},
+          }));
+      }
+      this.scrollTop = scrollTop;
+    },
+  };
+  const container = { querySelector: () => content, set innerHTML(value) { content.innerHTML = value; } };
+  const ctx = vm.createContext({
+    window: { HerdrGitLog: {
+      render: (options) => JSON.stringify({ selected: options.selected, height: 240 + (options.preview?.details ? 80 : 0) + (options.preview?.diff ? 40 : 0) }),
+      scrollToCommit: () => { explicitScrolls += 1; content.scrollTop = 1700; },
+    } },
+    document: { activeElement: null, querySelectorAll: () => [] },
+    state,
+    active: () => view,
+    gitMainContainer: () => container,
+    ensurePanel: () => container,
+    setupDiffHunkScrollbars() {},
+    mountSideEditors() {},
+    requestAnimationFrame: (fn) => fn(),
+    api: (url) => {
+      if (url.startsWith("/api/git-ui/log?")) return Promise.resolve({ commits: [] });
+      return new Promise((resolve, reject) => requests.push({ url, resolve, reject }));
+    },
+  });
+  const section = (start, end) => GIT_UI_SOURCE.slice(GIT_UI_SOURCE.indexOf(start), GIT_UI_SOURCE.indexOf(end, GIT_UI_SOURCE.indexOf(start)));
+  vm.runInContext(section("  function preserveContentScroll(", "  function setupDiffHunkScrollbars("), ctx);
+  vm.runInContext(section("  function renderMainIntoTab(", "  function focusDiffSearchIfNeeded("), ctx);
+  vm.runInContext(section("  function loadSelectedCommitPreview(", "  // Chunk selector"), ctx);
+  productScript("./desktop/git_ui/log_render.js").runInContext(ctx);
+  const mod = ctx.HerdrGitUiLogRenderModule.create({
+    active: () => view,
+    api: ctx.api,
+    gitLogDefaultBranch: () => "main",
+    normalizeLogScope: () => "all",
+    GIT_LOG_PAGE_SIZE: 80,
+    GIT_LOG_MAX_LIMIT: 1000,
+    isNoGitRepositoryView: () => false,
+    replaceContent: ctx.replaceContent,
+    render: () => ctx.render(),
+  });
+  ctx.renderMain = mod.renderMain;
+  ctx.renderLog = mod.renderLog;
+  ctx.render = () => {
+    ctx.captureContentScroll(view);
+    state.renderVersion += 1;
+    ctx.renderMainIntoTab(state.renderVersion, container);
+  };
+  content.innerHTML = JSON.stringify({ selected: [], height: 240 });
+  const rowOffset = (hash) => rows.find((row) => row.dataset.logHash === hash).getBoundingClientRect().top - 50;
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const select = (hash) => {
+    view.selectedLogCommits = [hash];
+    ctx.loadSelectedCommitPreview(view, hash);
+    ctx.render();
+  };
+  return { view, state, content, ctx, requests, rowOffset, settle, select, details: () => nodes[".git-ui-log-details"], node: (selector) => nodes[selector], explicitScrolls: () => explicitScrolls };
+}
+
+for (const width of [780, 781]) {
+  for (const order of [["commit-details", "compare"], ["compare", "commit-details"]]) {
+    test(`Git Log scroll anchor at ${width}px survives ${order.join(" then ")}`, async () => {
+      const h = gitLogScrollHarness(width);
+      h.content.scrollTop = 600;
+      h.node(".git-ui-log-table").scrollLeft = 37;
+      assert.equal(h.rowOffset("a"), 180);
+      h.select("a");
+      assert.equal(h.content.scrollTop, 0, "the loading shell clamps the live scrollport");
+      assert.equal(h.view.contentScrollTop, 600, "the shell does not overwrite the snapshot");
+      await h.settle();
+      assert.equal(h.rowOffset("a"), 180);
+      assert.equal(h.content.scrollTop, width === 780 ? 840 : 600);
+      assert.equal(h.node(".git-ui-log-table").scrollLeft, 37);
+      h.details().scrollTop = 120;
+      h.details().scrollLeft = 9;
+      for (const endpoint of order) {
+        h.requests.find((request) => request.url.startsWith(`/api/git-ui/${endpoint}?`)).resolve(endpoint === "compare" ? { files: [] } : { message: "full message" });
+        await h.settle();
+        assert.equal(h.rowOffset("a"), 180, `${endpoint} preserves the selected row offset`);
+        assert.equal(h.details().scrollTop, 120, `${endpoint} preserves details scroll`);
+        assert.equal(h.details().scrollLeft, 9);
+      }
+      h.select("b");
+      await h.settle();
+      assert.equal(h.details().scrollTop, 0, "changed selection resets details scroll");
+      assert.equal(h.details().scrollLeft, 0);
+    });
+  }
+}
+
+test("Git Log restores narrow anchors below growing sticky details", async () => {
+  const h = gitLogScrollHarness(780, true);
+  h.content.scrollTop = 600;
+  h.select("a");
+  await h.settle();
+  assert.equal(h.rowOffset("a"), 240, "selection cannot remain inside the stacked details overlay");
+  h.requests.find((request) => request.url.startsWith("/api/git-ui/commit-details?")).resolve({ message: "full message" });
+  await h.settle();
+  assert.equal(h.rowOffset("a"), 320, "details growth keeps the anchor below the new sticky edge");
+});
+
+test("Git Log ignores wide details outside the history columns", async () => {
+  const h = gitLogScrollHarness(781, true);
+  h.content.scrollTop = 600;
+  h.select("a");
+  await h.settle();
+  assert.equal(h.rowOffset("a"), 180);
+});
+
+test("Git Log skips rows fully covered by the sticky search and header", () => {
+  const h = gitLogScrollHarness(781, true);
+  h.content.scrollTop = 600;
+  h.ctx.captureContentScroll(h.view);
+  assert.equal(h.view.gitLogScrollAnchor.hash, "a", "fallback row at 50px is behind the 84px toolbar stack");
+  h.view.gitLogScrollAnchor = { hash: "a", offset: 30 };
+  h.ctx.restoreGitLogScroll(h.view, h.content);
+  assert.equal(h.rowOffset("a"), 84);
+});
+
+test("Git Log live zero overrides stale scroll and shells retain the last real snapshot", async () => {
+  const h = gitLogScrollHarness(780);
+  h.ctx.render();
+  await h.settle();
+  assert.equal(h.content.scrollTop, 0);
+  assert.equal(h.view.contentScrollTop, 0);
+  h.content.scrollTop = 600;
+  h.ctx.captureContentScroll(h.view);
+  h.content.innerHTML = "Loading log...";
+  h.ctx.captureContentScroll(h.view);
+  assert.equal(h.view.contentScrollTop, 600);
+  h.ctx.replaceContent(h.state.renderVersion, JSON.stringify({ selected: [], height: 240 }));
+  assert.equal(h.content.scrollTop, 600);
+  h.view.contentScrollTop = 999;
+  h.content.scrollTop = 0;
+  h.ctx.replaceContent(h.state.renderVersion, JSON.stringify({ selected: [], height: 240 }));
+  assert.equal(h.content.scrollTop, 0, "direct async replacement also reads live zero");
+});
+
+test("Git Log visible-row fallback and missing anchors do not jump to offscreen selection", () => {
+  const h = gitLogScrollHarness(780);
+  h.content.scrollTop = 600;
+  h.view.selectedLogCommits = ["offscreen"];
+  h.ctx.replaceContent(0, JSON.stringify({ selected: ["offscreen"], height: 240 }));
+  assert.equal(h.view.gitLogScrollAnchor.hash, "fallback");
+  assert.equal(h.rowOffset("fallback"), 50);
+  assert.equal(h.content.scrollTop, 840);
+  h.ctx.replaceContent(0, JSON.stringify({ selected: ["offscreen"], height: 360, omit: "fallback" }));
+  assert.equal(h.content.scrollTop, 840, "missing anchor falls back to the captured pixels");
+});
+
+test("Git Log details scroll keys include selected hashes outside the loaded log page", () => {
+  const h = gitLogScrollHarness(780);
+  h.view.selectedLogCommits = ["unloaded-a"];
+  const first = JSON.stringify({ selected: ["unloaded-a"], height: 240 });
+  h.ctx.replaceContent(0, first);
+  h.details().scrollTop = 120;
+  h.ctx.replaceContent(0, first);
+  assert.equal(h.details().scrollTop, 120);
+  h.view.selectedLogCommits = ["unloaded-b"];
+  h.ctx.replaceContent(0, JSON.stringify({ selected: ["unloaded-b"], height: 240 }));
+  assert.equal(h.details().scrollTop, 0);
+});
+
+test("Git Log ignores stale preview completion and explicit navigation overrides its row anchor", async () => {
+  const h = gitLogScrollHarness(780);
+  h.content.scrollTop = 600;
+  h.select("a");
+  await h.settle();
+  const stale = h.requests.slice();
+  h.select("b");
+  await h.settle();
+  h.details().scrollTop = 75;
+  const version = h.state.renderVersion;
+  stale.forEach((request) => request.resolve({ files: [], message: "stale a" }));
+  await h.settle();
+  assert.equal(h.view.selectedCommitPreview.hash, "b");
+  assert.equal(h.view.selectedCommitPreview.details, null);
+  assert.equal(h.state.renderVersion, version);
+  assert.equal(h.details().scrollTop, 75);
+  h.view.pendingLogScrollHash = "offscreen";
+  h.ctx.render();
+  await h.settle();
+  assert.equal(h.explicitScrolls(), 1);
+  assert.equal(h.content.scrollTop, 1700);
+  assert.equal(h.view.pendingLogScrollHash, "");
+});
+
 test("log render loads the log, tracks the selected branch, and routes tabs in renderMain", async () => {
   const logRenderSource = readFileSync(new URL("./desktop/git_ui/log_render.js", import.meta.url), "utf8");
   const stickyContent = {
@@ -1801,7 +2287,7 @@ test("log render loads the log, tracks the selected branch, and routes tabs in r
     getBoundingClientRect: () => ({ height: 10 }),
     querySelector: () => null,
   };
-  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Map, encodeURIComponent, requestAnimationFrame: (fn) => fn(), Error, document: { querySelector: () => stickyContent } });
+  const ctx = vm.createContext({ window: {}, globalThis: null, console, Math, JSON, Object, Array, String, Number, Set, Map, encodeURIComponent, requestAnimationFrame: (fn) => fn(), Error, document: { querySelector: () => stickyContent, querySelectorAll: () => [stickyContent] } });
   ctx.globalThis = ctx;
   vm.runInContext(logRenderSource, ctx);
   const calls = [];
@@ -1880,8 +2366,12 @@ test("primitives module is registered and wired before git_ui.js consumes it", (
 test("toasts module is registered and wired before git_ui.js consumes it", () => {
   const toastsSource = readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8");
   assert.match(toastsSource, /globalThis\.HerdrGitUiToastsModule = \{ create: createGitUiToasts \}/);
-  assert.match(toastsSource, /`\$\{base\}\/branch\/\$\{branchPath\(branch\)\}`/);
-  assert.match(toastsSource, /pull-requests\/new\?source=\$\{encodeURIComponent\(branch\)\}/);
+  // URL shaping moved to the backend /status fields; the toast module
+  // only reads branch_web_url and pr_create_url and gates the PR link
+  // on push timing.
+  assert.match(toastsSource, /status\.branch_web_url/);
+  assert.match(toastsSource, /status && status\.pr_create_url/);
+  assert.ok(!toastsSource.includes("branchPath"), "no client-side URL assembly left");
   assert.match(toastsSource, /Permalink copied/);
   const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
   assert.match(gitUiSource, /globalThis\.HerdrGitUiToastsModule\.create\(\{/);
@@ -1915,6 +2405,84 @@ test("permalink copy shows a toast and builds PR urls from the remote", async ()
   const html1 = ctxHtml(booted);
   assert.match(html1, /git-ui-toast/);
   assert.match(html1, /Permalink copied/);
+});
+
+test("commit toast gates the PR link to pushes off the default branch", async () => {
+  // Mutable status stub: refresh() re-reads /status after every op, so
+  // flipping the object between ops is the same as a real branch change.
+  const status = { branch: "feature-x", ahead: 1, behind: 0, staged: ["x.txt"], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: true, repo_web_url: "https://github.com/acme/widget/tree/feature-x", branch_web_url: "https://github.com/acme/widget/tree/feature-x", pr_create_url: "https://github.com/acme/widget/pull/new/feature-x" };
+  const booted = await bootGitUi({
+    "/api/git-ui/status": () => status,
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const fillModal = () => {
+    const values = new Map([["gitCommitTitle", "Fix bug"], ["gitCommitBody", "Body"]]);
+    const origGet = ctx.document.getElementById;
+    ctx.document.getElementById = function (id) {
+      const el = origGet.call(ctx.document, id);
+      if (values.has(id)) el.value = values.get(id);
+      if (id === "gitCommitAmend") el.checked = false;
+      if (id === "gitCommitIncludeBody") el.checked = false;
+      return el;
+    };
+    return origGet;
+  };
+
+  // Plain commit on a non-default branch: toast appears, PR link does not.
+  ui.openCommitModal();
+  const origGet = fillModal();
+  await ui.commitFromModal(false);
+  ctx.document.getElementById = origGet;
+  await settle();
+  let html = ctxHtml(booted);
+  assert.match(html, /Commit created/);
+  assert.ok(!/Open PR/.test(html), "plain commit never offers a PR link");
+
+  // Commit and push on a non-default branch: PR link appears.
+  ui.openCommitModal();
+  fillModal();
+  await ui.commitFromModal(true);
+  ctx.document.getElementById = origGet;
+  await settle();
+  html = ctxHtml(booted);
+  assert.match(html, /Commit pushed/);
+  assert.match(html, /Open PR/);
+  assert.match(html, /pull%2Fnew%2Ffeature-x/, "PR link carries the encoded pull/new URL");
+  assert.ok(calls.some((call) => call.path === "/api/git-ui/push"), "push op posted");
+
+  // Push on the default branch: no PR link even after the push. The
+  // backend computes pr_create_url per status, so flipping the branch
+  // must flip the URL fields the way a real refresh would.
+  status.branch = "main";
+  status.repo_web_url = "https://github.com/acme/widget/tree/main";
+  status.branch_web_url = "https://github.com/acme/widget/tree/main";
+  status.pr_create_url = "";
+  ui.openCommitModal();
+  fillModal();
+  await ui.commitFromModal(true);
+  ctx.document.getElementById = origGet;
+  await settle();
+  html = ctxHtml(booted);
+  assert.ok(!/Open PR/.test(html), "push on the default branch stays linkless");
+
+  // Branch never pushed to the remote: no PR link even off the default.
+  status.branch = "feature-x";
+  status.branch_on_remote = false;
+  status.repo_web_url = "https://github.com/acme/widget/tree/main";
+  status.branch_web_url = "https://github.com/acme/widget/tree/feature-x";
+  status.pr_create_url = "";
+  ui.openCommitModal();
+  fillModal();
+  await ui.commitFromModal(true);
+  ctx.document.getElementById = origGet;
+  await settle();
+  html = ctxHtml(booted);
+  assert.ok(!/Open PR/.test(html), "a branch the remote never saw stays linkless");
 });
 
 test("gotoLogCommit keeps the file scope and Back returns to the history list", async () => {
