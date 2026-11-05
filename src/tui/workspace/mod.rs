@@ -1031,10 +1031,13 @@ pub(crate) fn run_prompt(app: &mut TuiApp, kind: &WorkspacePrompt, text: &str) {
             let result = app.create_worktree(&branch, &path, &base, pull_base);
             if result.is_err() {
                 // A failed create (backend error, diverged pull) keeps the
-                // staged branch/path/base so the user can fix and retry
-                // instead of retyping the whole chain.
+                // staged branch/path/base and reopens the confirm prompt:
+                // the error shows in the footer while the prompt stays
+                // up, so Enter retries and Esc abandons (webui keeps the
+                // inline error plus its retry button on the form).
                 app.worktree_create_stage =
                     Some(WorktreeCreateStage::Base(branch, path, base));
+                app.prompt_input = Some(PromptInput::new(PromptKind::ConfirmWorktreePullBase));
             }
             result
         }

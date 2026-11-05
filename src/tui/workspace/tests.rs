@@ -337,6 +337,25 @@ fn worktree_pull_confirm_parses_answers_and_keeps_draft_on_error() {
     run_prompt(&mut app, &WorkspacePrompt::ConfirmWorktreePullBase, "yes maybe");
     assert!(app.error.is_some());
     assert!(matches!(app.worktree_create_stage, Some(WorktreeCreateStage::Base(..))));
+
+    // A failed create reopens the pull prompt instead of dropping the
+    // user back to the overlay: the error stays in the footer while the
+    // prompt is up, so Enter retries with the same draft and Esc abandons
+    // (webui parity: the inline form keeps its error and retry button).
+    assert!(
+        matches!(
+            app.prompt_input.as_ref().map(|prompt| prompt.kind),
+            Some(PromptKind::ConfirmWorktreePullBase)
+        ),
+        "failed create reopens the pull confirm prompt"
+    );
+    assert_eq!(app.prompt_input.as_ref().map(|p| p.text.clone()), Some(String::new()));
+
+    // Esc from the reopened prompt abandons the create; the staged draft
+    // stays for the next attempt via the `c` chain.
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(app.prompt_input.is_none());
+    assert!(matches!(app.worktree_create_stage, Some(WorktreeCreateStage::Base(..))));
 }
 
 #[test]

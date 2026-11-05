@@ -1,6 +1,11 @@
 # Release notes
 
 ## Unreleased
+- A failed worktree create keeps the TUI pull prompt open. The prompt
+  closed on a backend error and left the git error in the footer with
+  no retry affordance, so creating again meant re-typing `c` and the
+  whole branch/path/base chain; now the pull question stays up with
+  the error, Enter retries the same draft, and Esc abandons it.
 - The worktree create form and the branch list share one popover. The
   create view in the worktrees list rendered the form alone, so the
   base ref had to be typed blind; it now shows the filter input and
