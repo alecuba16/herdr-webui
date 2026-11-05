@@ -28,8 +28,9 @@ body.light .git-ui-log-workbench {
   --git-log-lane-6: #3f6212;
   --git-log-lane-7: #a21caf;
 }
-.git-ui-log-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 28%); min-width: 0; align-items: start; }
-.git-ui-log-browser { grid-column: 1; }
+.git-ui-log-layout { display: grid; grid-template-columns: minmax(0,1fr); grid-template-areas: "browser"; min-width: 0; align-items: start; }
+.git-ui-log-workbench[data-has-details="true"] .git-ui-log-layout { grid-template-columns: minmax(0,1fr) 7px var(--git-log-pane-width, minmax(240px,28%)); grid-template-areas: "browser separator details"; }
+.git-ui-log-browser { grid-area: browser; }
 .git-ui-log-browser, .git-ui-log-table, .git-ui-log { min-width: 0; max-width: 100%; }
 .git-ui-log-workbench *, .git-ui-log-workbench *::before, .git-ui-log-workbench *::after { box-sizing: border-box; }
 .git-ui-log { font: inherit; }
@@ -109,7 +110,12 @@ body.light .git-ui-log-workbench {
 .git-ui-log-scope-control { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .git-ui-log-scope-value { cursor: pointer; font: inherit; }
 .git-ui-log-load-more { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 10px; padding: 10px; border-top: 1px solid var(--border); }
-.git-ui-log-details { grid-column: 2; position: sticky; top: 0; align-self: start; min-width: 0; max-height: calc(100vh - 120px); overflow: auto; border-left: 1px solid var(--border); padding: 14px; overflow-wrap: anywhere; background: var(--panel); }
+.git-ui-log-details { grid-area: details; position: sticky; top: 0; align-self: start; min-width: 0; max-height: calc(100vh - 120px); overflow: auto; padding: 14px; overflow-wrap: anywhere; background: var(--panel); }
+.git-ui-log-separator { grid-area: separator; position: relative; align-self: stretch; justify-self: stretch; cursor: col-resize; touch-action: none; }
+.git-ui-log-separator::before { content: ""; position: absolute; inset: -4px; }
+.git-ui-log-separator::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: var(--border); }
+.git-ui-log-separator:hover::after, .git-ui-log-separator[data-resizing="true"]::after { background: var(--fg); }
+.git-ui-log-separator:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
 .git-ui-log-details h2, .git-ui-log-details h3 { margin: 0 0 12px; font-size: 13px; font-weight: 600; }
 .git-ui-log-details dl { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 8px 12px; margin: 0 0 16px; }
 .git-ui-log-details dt { font-weight: 500; }
@@ -141,11 +147,12 @@ body.light .git-ui-log-workbench {
 .git-ui-log-hover-card { display: none; }
 .git-ui-scope-copy-toast { background: var(--panel2); border: 1px solid var(--border2); border-radius: 3px; color: var(--fg); font-size: 11px; padding: 5px 8px; pointer-events: none; position: fixed; z-index: 1100; }
 @container git-log (max-width: 780px) {
-  .git-ui-log-layout { grid-template-columns: minmax(0,1fr); grid-template-areas: "browser" "details"; }
-  .git-ui-log-browser { grid-area: browser; }
-  .git-ui-log-details { grid-area: details; position: sticky; top: 0; max-height: 40vh; border-left: 0; border-top: 1px solid var(--border); }
-  .git-ui-log-workbench[data-has-selection="true"] .git-ui-log-layout { grid-template-areas: "details" "browser"; }
+  .git-ui-log-workbench[data-has-details="true"] .git-ui-log-layout { grid-template-columns: minmax(0,1fr); grid-template-rows: auto 7px minmax(0,1fr); grid-template-areas: "details" "separator" "browser"; }
+  .git-ui-log-details { height: var(--git-log-pane-height, auto); max-height: var(--git-log-pane-height, 40vh); }
+  .git-ui-log-separator { cursor: row-resize; }
+  .git-ui-log-separator::after { top: 3px; bottom: auto; left: 0; right: 0; width: auto; height: 1px; }
   .git-ui-log-workbench[data-has-selection="false"] .git-ui-log-details { display: none; }
+  .git-ui-log-workbench[data-has-details="false"] .git-ui-log-separator { display: none; }
 }
 @container git-log (max-width: 760px) {
   .git-ui-log-layout { --git-log-columns: minmax(72px,.8fr) minmax(40px,var(--git-log-graph-width,64px)) minmax(100px,2fr) 68px; }

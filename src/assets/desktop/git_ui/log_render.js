@@ -21,6 +21,9 @@
       if (active() !== view || view.tab !== "log" || logRequests.get(view) !== request) return;
       const selected = view.selectedLogCommits || [];
       view.logData = data;
+      // The branch-head label hook and scope chips read the base branch
+      // that produced this log data, so persist it next to the data.
+      view.logBaseBranch = baseBranch;
       logCache.set(view, {key: requestKey, status: view.status, data});
       const selectedBranch = selected.length === 1 && window.HerdrGitLog && window.HerdrGitLog.selectedBranchForHash
         ? window.HerdrGitLog.selectedBranchForHash(data, selected[0], baseBranch)
@@ -44,6 +47,7 @@
         status: view.status || {},
       }));
       updateGitLogStickyOffsets();
+      if (window.HerdrGitLog.syncSeparatorState) window.HerdrGitLog.syncSeparatorState();
       if (view.pendingLogScrollHash) {
         const hash = view.pendingLogScrollHash;
         view.pendingLogScrollHash = "";

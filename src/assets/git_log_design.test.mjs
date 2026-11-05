@@ -174,7 +174,9 @@ test("All, Master + Branch, and Branch keep the same workbench styling and contr
       assert.match(html, new RegExp(`git-ui-log-cell-${column}`), `${label} retains ${column}`);
     }
     assert.match(html, /git-ui-log-searchbar/);
-    assert.match(html, /git-ui-log-details/);
+    // The details pane belongs to a single-commit selection, so the bare
+    // scope renders never carry it.
+    assert.ok(!/git-ui-log-details/.test(html), `${label} hides the pane without a selection`);
   }
 });
 
@@ -401,16 +403,102 @@ test("compact references expand and collapse through a real button without selec
   assert.equal(stops, 2);
 });
 
-test("details show honest empty and two-commit states", () => {
+test("details hide for empty and two-commit states, one selection shows them", () => {
   const renderer = bootRenderer();
   const empty = renderer.renderDetails(options());
-  assert.match(empty, /Select a commit/);
-  assert.ok(!empty.includes("Unknown author"));
-  assert.ok(!empty.includes("git-ui-log-details-stats"));
+  assert.equal(empty, "");
   const pair = renderer.renderDetails(options({ selected: [hash, otherHash] }));
-  assert.match(pair, /2 commits selected/);
-  assert.match(pair, /HerdrGitUi\.compareSelectedLog\(\)/);
-  assert.match(pair, /HerdrGitUi\.clearLogSelection\(\)/);
+  assert.equal(pair, "");
+  const one = renderer.renderDetails(options({ selected: [hash] }));
+  assert.match(one, /Avery/);
+  assert.ok(!one.includes("Select a commit"));
+  assert.ok(!one.includes("2 commits selected"));
+});
+
+test("details pane resizes through the separator by pointer and keyboard, clamps to the workbench", () => {
+  // Fake DOM mirroring the real wiring: the pane and the separator
+  // share the layout parent, whose style object records the size vars
+  // the grid tracks consume. Layout is 460x480 and the pane starts
+  // 300px wide, so the width clamp range is [180, 368].
+  const css = {};
+  const style = {
+    setProperty(name, value) { css[name] = value; },
+    removeProperty(name) { delete css[name]; },
+  };
+  const layout = {
+    style,
+    getBoundingClientRect() { return { left: 60, top: 30, right: 520, bottom: 510, width: 460, height: 480 }; },
+  };
+  const pane = {
+    getBoundingClientRect() { return { left: 220, top: 30, right: 520, bottom: 510, width: 300, height: 480 }; },
+    parentElement: layout,
+  };
+  const separator = {
+    attributes: {},
+    parentElement: layout,
+    setPointerCapture() {},
+    setAttribute(name, value) { this.attributes[name] = value; },
+  };
+  const renderer = bootRenderer({ querySelector: (selector) => selector === ".git-ui-log-separator" ? separator : selector === ".git-ui-log-details" ? pane : null });
+  renderer.renderDetails(options({ selected: [hash] }));
+  assert.equal(renderer.detailsState().size.width, 0, "pane starts at the CSS default");
+
+  // Pointer drag: pointerdown captures on the separator, moving left
+  // widens the pane (it sits right of the separator).
+  renderer.beginDetailsResize({ type: "pointerdown", pointerType: "mouse", button: 0, pointerId: 1, clientX: 216, clientY: 120 });
+  assert.equal(separator.attributes["data-resizing"], "true");
+  renderer.moveDetailsResize({ clientX: 186, clientY: 160, preventDefault() {} });
+  assert.equal(renderer.detailsState().size.width, 330);
+  assert.equal(css["--git-log-pane-width"], "330px");
+  // A jump far beyond the layout clamps to 80% of the workbench width.
+  renderer.moveDetailsResize({ clientX: 0, clientY: 700, preventDefault() {} });
+  assert.equal(renderer.detailsState().size.width, 368);
+  renderer.endDetailsResize();
+  assert.equal(separator.attributes["data-resizing"], "false");
+
+  // Keyboard: left arrow widens by 16px, shift right shrinks by 48px,
+  // cross-axis keys do nothing, Home resets to the CSS default.
+  renderer.moveDetailsResizeKeyboard({ key: "ArrowLeft", preventDefault() {} });
+  assert.equal(renderer.detailsState().size.width, 368, "keyboard resize also clamps at the max");
+  renderer.moveDetailsResizeKeyboard({ key: "ArrowRight", shiftKey: true, preventDefault() {} });
+  assert.equal(renderer.detailsState().size.width, 320);
+  renderer.moveDetailsResizeKeyboard({ key: "ArrowUp", preventDefault() {} });
+  assert.equal(renderer.detailsState().size.width, 320, "cross-axis keys leave the size alone");
+  renderer.moveDetailsResizeKeyboard({ key: "Home", preventDefault() {} });
+  assert.equal(renderer.detailsState().size.width, 0, "Home resets to the CSS default");
+  assert.ok(!("--git-log-pane-width" in css), "reset clears the size var");
+
+  // Re-render with the same commit keeps the saved size; syncSeparatorState
+  // re-applies it and the ARIA state to the fresh separator node.
+  renderer.moveDetailsResizeKeyboard({ key: "ArrowLeft", preventDefault() {} });
+  const before = renderer.detailsState().size.width;
+  renderer.renderDetails(options({ selected: [hash] }));
+  renderer.syncSeparatorState();
+  assert.equal(renderer.detailsState().size.width, before, "size survives re-renders");
+  assert.equal(separator.attributes["aria-orientation"], "vertical");
+  assert.equal(separator.attributes["aria-valuemin"], "180");
+  assert.equal(separator.attributes["aria-valuemax"], "368");
+});
+
+test("separator is keyboard reachable and container queries stack the pane with a row-resize axis", () => {
+  const renderer = bootRenderer();
+  const html = renderer.render(options({ selected: [hash] }));
+  assert.match(html, /class="git-ui-log-separator" role="separator"/);
+  assert.match(html, /onkeydown="HerdrGitLog\.moveDetailsResizeKeyboard\(event\)"/);
+  assert.match(html, /aria-label="Resize commit details"/);
+  assert.match(html, /ondblclick="HerdrGitLog\.resetDetailsPaneSize\(\)"/);
+  assert.ok(!html.includes("git-ui-log-details-drag"), "the free-move drag handle is gone");
+  // No separator without a pane: zero or two selections skip it.
+  assert.ok(!renderer.render(options({ selected: [hash, otherHash] })).includes("git-ui-log-separator"));
+  // Narrow workbench: the pane stacks above the list and the separator
+  // becomes a horizontal drag (row-resize) consuming pane height.
+  const narrow = styles.slice(styles.indexOf("@container"));
+  assert.match(narrow, /grid-template-areas: "details" "separator" "browser"/);
+  assert.match(narrow, /\.git-ui-log-details \{[^}]*--git-log-pane-height/);
+  assert.match(narrow, /\.git-ui-log-separator \{ cursor: row-resize; \}/);
+  // Wide workbench: three columns, separator between list and pane.
+  assert.match(styles, /grid-template-columns: minmax\(0,1fr\) 7px var\(--git-log-pane-width/);
+  assert.match(styles, /\.git-ui-log-separator \{[^}]*cursor: col-resize/);
 });
 
 test("details retain real row fallback while metadata and files load", () => {

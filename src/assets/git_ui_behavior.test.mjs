@@ -79,6 +79,7 @@ function context(fetchImpl) {
     RegExp,
     Error,
     TextEncoder,
+    URL,
     TextDecoder,
     encodeURIComponent,
     decodeURIComponent,
@@ -386,6 +387,36 @@ test("compareSelectedLog puts the newest commit on the target (right) side", asy
   assert.ok(call, "expected a compare request");
   assert.equal(call.params.get("base"), OLD, "older commit must stay the base regardless of click order");
   assert.equal(call.params.get("target"), NEW, "newest commit must stay the target regardless of click order");
+});
+
+test("branchHeadLabel resolves a loaded branch tip through the log data", async () => {
+  // Rows carry branch-tip labels; selectedBranchForHash turns a matching
+  // hash into the branch name. The hook is read-only (no fetches), scans
+  // every cached view, and answers "" for refs the log never saw so the
+  // strip falls back to the 7-char form.
+  const TIP = "1111111111111111111111111111111111111111";
+  const PLAIN = "2222222222222222222222222222222222222222";
+  const booted = await bootGitUi({
+    "/api/git-ui/status": emptyStatus(),
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [{ hash: TIP }, { hash: PLAIN }], lines: [], rows: [{ hash: TIP, graph: "*", title: "tip", labels: ["feature/x"] }, { hash: PLAIN, graph: "*", title: "plain", labels: [] }], has_more: false, limit: 80 },
+  });
+  const { ui, ctx, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  ui.tab("log");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const before = calls.length;
+  const realResolver = ctx.window.HerdrGitLog.selectedBranchForHash;
+  ctx.window.HerdrGitLog.selectedBranchForHash = (data, ref, base) => {
+    const row = (data.rows || []).find((entry) => entry.hash === ref);
+    return row && Array.isArray(row.labels) && row.labels.length ? row.labels[0] : "";
+  };
+  assert.equal(ui.branchHeadLabel(TIP), "feature/x[Head]", "a loaded branch tip names as branch[Head]");
+  assert.equal(ui.branchHeadLabel(PLAIN), "", "a plain hash stays empty for the strip fallback");
+  assert.equal(ui.branchHeadLabel(""), "", "empty refs never resolve");
+  ctx.window.HerdrGitLog.selectedBranchForHash = realResolver;
+  assert.equal(calls.length, before, "the hook never fetches");
 });
 
 test("current-compare keeps the working tree on the target (right) side", async () => {
@@ -828,6 +859,36 @@ test("folder mutations are hidden and refused outside the changes view", async (
   assert.equal(staged.length, 0, "no stage POST may fire outside changes mode");
 });
 
+test("Repo button renders only with a remote and opens the web UI synchronously", async () => {
+  // With a remote: the button sits in the worktree-actions row and its
+  // click handler is the sync openRepoWeb (no fetch, no popup-blocked
+  // window.open chain).
+  const remote = await openedWithStatus({ branch: "feature-x", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: true });
+  let html = String(ctxHtml(remote));
+  assert.match(html, /class="git-ui-btn git-ui-repo-open"[^>]*onclick="HerdrGitUi\.openRepoWeb\(event\)">Repo</);
+  let opened = [];
+  remote.ctx.window.open = (url) => { opened.push(String(url)); };
+  remote.ui.openRepoWeb();
+  assert.equal(opened.length, 1, "click opens exactly one tab");
+  assert.equal(opened[0], "https://github.com/acme/widget/tree/feature-x", "branch on the remote opens the branch page");
+
+  // Branch never pushed: the same click opens the default branch instead.
+  const offRemote = await openedWithStatus({ branch: "feature-y", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: false });
+  opened = [];
+  offRemote.ctx.window.open = (url) => { opened.push(String(url)); };
+  offRemote.ui.openRepoWeb();
+  assert.equal(opened[0], "https://github.com/acme/widget/tree/main", "unpushed branch falls back to the default branch");
+
+  // No remote configured: the button does not render at all.
+  const localOnly = await openedWithStatus({ branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [] });
+  html = String(ctxHtml(localOnly));
+  assert.ok(!/git-ui-repo-open/.test(html), "no remote means no Repo button");
+  opened = [];
+  localOnly.ctx.window.open = (url) => { opened.push(String(url)); };
+  localOnly.ui.openRepoWeb();
+  assert.equal(opened.length, 0, "no remote means the click opens nothing");
+});
+
 test("status button labels Pull/Push/Fetch from sync state and runs the matching action", async () => {
   // In sync: plain Fetch, no arrows or counts.
   const synced = await openedWithStatus({ branch: "main", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], upstream: "origin/main" });
@@ -1268,6 +1329,12 @@ test("branch list module is registered and wired before git_ui.js consumes it", 
   const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
   assert.match(gitUiSource, /globalThis\.HerdrGitUiBranchListModule\.create\(\{/);
   assert.match(gitUiSource, /const renderWorktreeActions = branchList\.renderWorktreeActions;/);
+  // The persistent Repo button opens the remote web UI from cached status
+  // data only: it renders only when a remote exists and never posts.
+  assert.match(branchListSource, /git-ui-repo-open/);
+  assert.match(branchListSource, /HerdrGitUi\.openRepoWeb\(event\)/);
+  assert.match(gitUiSource, /openRepoWeb\(\)/);
+  assert.match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /repoWebUrl/);
   const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
   const branchListIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/branch_list.js")');
   const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
@@ -2328,6 +2395,76 @@ test("permalink copy shows a toast and builds PR urls from the remote", async ()
   const html1 = ctxHtml(booted);
   assert.match(html1, /git-ui-toast/);
   assert.match(html1, /Permalink copied/);
+});
+
+test("commit toast gates the PR link to pushes off the default branch", async () => {
+  // Mutable status stub: refresh() re-reads /status after every op, so
+  // flipping the object between ops is the same as a real branch change.
+  const status = { branch: "feature-x", ahead: 1, behind: 0, staged: ["x.txt"], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: true };
+  const booted = await bootGitUi({
+    "/api/git-ui/status": () => status,
+    "/api/git-ui/diff": { files: [] },
+    "/api/git-ui/compare": { files: [] },
+    "/api/git-ui/log": { commits: [], lines: [], rows: [], has_more: false, limit: 80 },
+  });
+  const { ui, ctx, calls } = booted;
+  await ui.open({ cwd: "/tmp/demo-repo", title: "demo" }, { forceOpen: true });
+  await settle();
+  const fillModal = () => {
+    const values = new Map([["gitCommitTitle", "Fix bug"], ["gitCommitBody", "Body"]]);
+    const origGet = ctx.document.getElementById;
+    ctx.document.getElementById = function (id) {
+      const el = origGet.call(ctx.document, id);
+      if (values.has(id)) el.value = values.get(id);
+      if (id === "gitCommitAmend") el.checked = false;
+      if (id === "gitCommitIncludeBody") el.checked = false;
+      return el;
+    };
+    return origGet;
+  };
+
+  // Plain commit on a non-default branch: toast appears, PR link does not.
+  ui.openCommitModal();
+  const origGet = fillModal();
+  await ui.commitFromModal(false);
+  ctx.document.getElementById = origGet;
+  await settle();
+  let html = ctxHtml(booted);
+  assert.match(html, /Commit created/);
+  assert.ok(!/Open PR/.test(html), "plain commit never offers a PR link");
+
+  // Commit and push on a non-default branch: PR link appears.
+  ui.openCommitModal();
+  fillModal();
+  await ui.commitFromModal(true);
+  ctx.document.getElementById = origGet;
+  await settle();
+  html = ctxHtml(booted);
+  assert.match(html, /Commit pushed/);
+  assert.match(html, /Open PR/);
+  assert.match(html, /pull%2Fnew%2Ffeature-x/, "PR link carries the encoded pull/new URL");
+  assert.ok(calls.some((call) => call.path === "/api/git-ui/push"), "push op posted");
+
+  // Push on the default branch: no PR link even after the push.
+  status.branch = "main";
+  ui.openCommitModal();
+  fillModal();
+  await ui.commitFromModal(true);
+  ctx.document.getElementById = origGet;
+  await settle();
+  html = ctxHtml(booted);
+  assert.ok(!/Open PR/.test(html), "push on the default branch stays linkless");
+
+  // Branch never pushed to the remote: no PR link even off the default.
+  status.branch = "feature-x";
+  status.branch_on_remote = false;
+  ui.openCommitModal();
+  fillModal();
+  await ui.commitFromModal(true);
+  ctx.document.getElementById = origGet;
+  await settle();
+  html = ctxHtml(booted);
+  assert.ok(!/Open PR/.test(html), "a branch the remote never saw stays linkless");
 });
 
 test("gotoLogCommit keeps the file scope and Back returns to the history list", async () => {

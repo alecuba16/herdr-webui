@@ -59,7 +59,7 @@
     const count = `${searchPosition >= 0 ? searchPosition + 1 : 0} / ${matches.length}`;
     const disabled = matches.length ? "" : " disabled";
     const search = `<div class="git-ui-log-searchbar">${scopeButton}<label class="git-ui-log-search-input"><span>Search commits</span><input name="git-log-search" aria-label="Search commits" value="${esc(filters.description || "")}"${inputAttrs("search")} oninput="HerdrGitLog.setSearch(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();HerdrGitLog.navigateSearch(event.shiftKey?-1:1)}"></label><button type="button" class="git-ui-log-search-case" aria-label="Match case" aria-pressed="${searchCaseSensitive}" onclick="HerdrGitLog.toggleSearchCase()">Aa</button><button type="button" class="git-ui-log-search-previous" aria-label="Previous matching commit" onclick="HerdrGitLog.navigateSearch(-1)"${disabled}>↑</button><button type="button" class="git-ui-log-search-next" aria-label="Next matching commit" onclick="HerdrGitLog.navigateSearch(1)"${disabled}>↓</button><output class="git-ui-log-search-count" aria-live="polite">${count}</output><details class="git-ui-log-advanced-filters"><summary>Filters</summary>${renderFilterRow(filters, esc)}</details></div>`;
-    return `<section class="git-ui-log-workbench" data-git-log-design="zed" data-log-scope="${logScope}" data-has-selection="${selected.length > 0}"><div class="git-ui-log-layout"><div class="git-ui-log-browser">${search}<div class="git-ui-log git-ui-log-table">${header}${body}${footer}</div></div>${renderDetails(options)}</div></section>`;
+    return `<section class="git-ui-log-workbench" data-git-log-design="zed" data-log-scope="${logScope}" data-has-selection="${selected.length > 0}" data-has-details="${selected.length === 1}"><div class="git-ui-log-layout"><div class="git-ui-log-browser">${search}<div class="git-ui-log git-ui-log-table">${header}${body}${footer}</div></div>${selected.length === 1 ? detailsSeparator() : ""}${renderDetails(options)}</div></section>`;
   }
 
   function renderPerson(size) {
@@ -80,13 +80,208 @@
     }
   }
 
+  // Resizable details split. The pane lives in its own grid track and a
+  // separator between list and details resizes it. CSS owns the axis:
+  // wide workbenches keep the pane as a right column (col-resize) and
+  // container queries stack it above the list on narrow ones (row-resize),
+  // so the drag reads the separator's computed cursor mid-gesture instead
+  // of guessing the layout mode. The size is a layout preference and
+  // survives re-renders; double-click resets it to the CSS default.
+  let detailsResize = null;
+  let detailsPaneSize = { width: 0, height: 0 };
+
+  function separatorNode() {
+    if (typeof document === "undefined" || !document || typeof document.querySelector !== "function") return null;
+    return document.querySelector(".git-ui-log-separator");
+  }
+
+  function separatorAxis(separator) {
+    // Test contexts without getComputedStyle fall back to the wide
+    // layout, which is also the axis a live drag keeps if the container
+    // flips mid-gesture.
+    const styles = typeof getComputedStyle === "function" ? getComputedStyle(separator) : null;
+    return styles && styles.cursor ? (styles.cursor.includes("row") ? "row" : "column") : "column";
+  }
+
+  function paneRects() {
+    const separator = separatorNode();
+    if (!separator) return null;
+    const layout = separator.parentElement && separator.parentElement.getBoundingClientRect ? separator.parentElement.getBoundingClientRect() : null;
+    const details = document.querySelector(".git-ui-log-details");
+    const detailsRect = details && details.getBoundingClientRect ? details.getBoundingClientRect() : null;
+    if (!layout || !detailsRect) return null;
+    return { layout, details: detailsRect };
+  }
+
+  function paneSizeBounds(axis, layoutRect) {
+    if (!layoutRect || !layoutRect.width || !layoutRect.height) return null;
+    if (axis === "row") {
+      const min = 96;
+      return { min, max: Math.max(min, Math.round(layoutRect.height * 0.8)) };
+    }
+    const min = 180;
+    return { min, max: Math.max(min, Math.round(layoutRect.width * 0.8)) };
+  }
+
+  function clampPaneSize(size, axis, layoutRect, detailsRect) {
+    const bounds = paneSizeBounds(axis, layoutRect);
+    if (!bounds || !detailsRect) return size;
+    if (axis === "row") return { width: size.width, height: Math.max(bounds.min, Math.min(size.height, bounds.max)) };
+    return { width: Math.max(bounds.min, Math.min(size.width, bounds.max)), height: size.height };
+  }
+
+  function beginDetailsResize(event) {
+    if (!event || event.type === "click" || (event.pointerType === "mouse" && event.button !== 0)) return;
+    const separator = separatorNode();
+    if (!separator) return;
+    // Pointer capture keeps the move/up stream on the separator even
+    // after the pointer crosses into the list or the pane.
+    if (separator.setPointerCapture && event.pointerId != null) separator.setPointerCapture(event.pointerId);
+    const axis = separatorAxis(separator);
+    syncSeparatorAria(separator);
+    const rects = paneRects() || {};
+    // Only the live axis gets a gesture baseline. Capturing both
+    // dimensions would write the stacked layout's squeezed width into
+    // the column var (and vice versa), so a resize while narrow would
+    // poison the wide layout after the container flips back.
+    const baseline = axis === "row"
+      ? (detailsPaneSize.height || Math.round(rects.details ? rects.details.height : 0))
+      : (detailsPaneSize.width || Math.round(rects.details ? rects.details.width : 0));
+    detailsResize = {
+      axis,
+      x: event.clientX,
+      y: event.clientY,
+      width: axis === "row" ? 0 : baseline,
+      height: axis === "row" ? baseline : 0,
+    };
+    setDetailsResizing(true);
+  }
+
+  function setDetailsResizing(active) {
+    const separator = separatorNode();
+    if (!separator || !separator.setAttribute) return;
+    separator.setAttribute("data-resizing", active ? "true" : "false");
+  }
+
+  function moveDetailsResize(event) {
+    if (!detailsResize) return;
+    event.preventDefault();
+    const rects = paneRects();
+    // The cross axis keeps its saved size: only the live axis moves.
+    const size = detailsResize.axis === "row"
+      ? { width: detailsPaneSize.width, height: detailsResize.height + (event.clientY - detailsResize.y) }
+      : { width: detailsResize.width + (detailsResize.x - event.clientX), height: detailsPaneSize.height };
+    detailsPaneSize = clampPaneSize(size, detailsResize.axis, rects && rects.layout, rects && rects.details);
+    applyDetailsPaneSize();
+    syncSeparatorAria(separatorNode());
+  }
+
+  function endDetailsResize() {
+    if (!detailsResize) return;
+    detailsResize = null;
+    setDetailsResizing(false);
+  }
+
+  function moveDetailsResizeKeyboard(event) {
+    if (event && event.key === "Home") {
+      event.preventDefault();
+      resetDetailsPaneSize();
+      return;
+    }
+    const step = event && event.shiftKey ? 48 : 16;
+    const delta = { ArrowLeft: { axis: "column", amount: step }, ArrowRight: { axis: "column", amount: -step }, ArrowUp: { axis: "row", amount: -step }, ArrowDown: { axis: "row", amount: step } }[event && event.key];
+    if (!delta) return;
+    event.preventDefault();
+    const separator = separatorNode();
+    if (!separator) return;
+    const axis = separatorAxis(separator);
+    if (axis !== delta.axis) return;
+    const rects = paneRects();
+    const size = axis === "row"
+      ? { width: detailsPaneSize.width, height: (detailsPaneSize.height || Math.round(rects && rects.details ? rects.details.height : 0)) + delta.amount }
+      : { width: (detailsPaneSize.width || Math.round(rects && rects.details ? rects.details.width : 0)) + delta.amount, height: detailsPaneSize.height };
+    detailsPaneSize = clampPaneSize(size, axis, rects && rects.layout, rects && rects.details);
+    applyDetailsPaneSize();
+    syncSeparatorAria(separator);
+  }
+
+  function resetDetailsPaneSize() {
+    detailsPaneSize = { width: 0, height: 0 };
+    applyDetailsPaneSize();
+    const separator = separatorNode();
+    if (separator) syncSeparatorAria(separator);
+  }
+
+  function applyDetailsPaneSize() {
+    // The grid tracks that consume the size vars live on the layout
+    // element, so the vars must be set there; custom properties only
+    // inherit down the tree.
+    const separator = separatorNode();
+    const layout = separator && separator.parentElement && separator.parentElement.style ? separator.parentElement : null;
+    if (!layout) return;
+    if (detailsPaneSize.width) layout.style.setProperty("--git-log-pane-width", `${detailsPaneSize.width}px`);
+    else layout.style.removeProperty("--git-log-pane-width");
+    if (detailsPaneSize.height) layout.style.setProperty("--git-log-pane-height", `${detailsPaneSize.height}px`);
+    else layout.style.removeProperty("--git-log-pane-height");
+  }
+
+  // Runs after every log mount: the separator is re-created by each
+  // render, so its ARIA orientation (axis comes from CSS) and the saved
+  // pane size (vars live on the layout element) must be re-applied to
+  // the fresh nodes.
+  function syncSeparatorState() {
+    const separator = separatorNode();
+    if (!separator || !separator.setAttribute) return;
+    applyDetailsPaneSize();
+    syncSeparatorAria(separator);
+    syncSeparatorObserver(separator);
+  }
+
+  // Container queries flip the separator's axis (col-resize <-> row-resize)
+  // when the workbench crosses 780px, but nothing re-renders on a pure
+  // resize, so the ARIA orientation and values would go stale until the
+  // next interaction. One observer on the layout element re-syncs them;
+  // it is re-targeted on each mount because every render replaces the
+  // layout node.
+  let separatorObserver = null;
+  let separatorObserved = null;
+  function syncSeparatorObserver(separator) {
+    const layout = separator.parentElement;
+    if (separatorObserved === layout) return;
+    if (typeof ResizeObserver !== "function" || !layout) return;
+    if (!separatorObserver) separatorObserver = new ResizeObserver(() => syncSeparatorAria(separatorNode()));
+    separatorObserver.disconnect();
+    separatorObserver.observe(layout);
+    separatorObserved = layout;
+  }
+
+  // A focusable separator is a window splitter for assistive tech, so it
+  // carries the pane size and its clamp range as ARIA values. The value
+  // follows the live axis: width when the pane is a column, height when
+  // it is stacked above the list.
+  function syncSeparatorAria(separator) {
+    if (!separator || !separator.setAttribute) return;
+    const axis = separatorAxis(separator);
+    separator.setAttribute("aria-orientation", axis === "row" ? "horizontal" : "vertical");
+    const rects = paneRects();
+    const bounds = paneSizeBounds(axis, rects && rects.layout);
+    if (!rects || !bounds) return;
+    separator.setAttribute("aria-valuemin", String(bounds.min));
+    separator.setAttribute("aria-valuemax", String(bounds.max));
+    const current = axis === "row" ? (detailsPaneSize.height || Math.round(rects.details.height)) : (detailsPaneSize.width || Math.round(rects.details.width));
+    separator.setAttribute("aria-valuenow", String(current));
+  }
+
+  // The details pane exists only for a single-commit selection. Zero
+  // selection means the log is the view; two selections mean a compare
+  // pair, and pairs open their own compare tab from the row menu, so the
+  // pane hides instead of rendering placeholder content.
   function renderDetails(options) {
     const selected = options.selected || [];
+    if (selected.length !== 1) return "";
     const esc = options.esc;
     const shell = (body) => `<aside class="git-ui-log-details" aria-label="Commit details">${body}</aside>`;
-    if (!selected.length) return shell(`<h2>Commit details</h2><p class="git-ui-log-details-empty">Select a commit to view its details and changed files.</p>`);
     const close = `<button type="button" aria-label="Clear commit selection" onclick="HerdrGitUi.clearLogSelection()">Close</button>`;
-    if (selected.length !== 1) return shell(`<div class="git-ui-log-details-header"><h2>Compare commits</h2>${close}</div><p>${esc(String(selected.length))} commits selected</p><div class="git-ui-log-details-actions"><button type="button" onclick="HerdrGitUi.compareSelectedLog()">Compare selected commits</button></div>`);
     const hash = String(selected[0]);
     const row = rowsFromData(options.data || {}).find((entry) => entry.hash === hash) || {};
     const preview = options.preview && options.preview.hash === hash ? options.preview : {};
@@ -114,6 +309,14 @@
     const fileState = preview.loading ? `<p role="status">Loading changed files...</p>` : preview.error ? `<p class="git-ui-log-details-error" role="alert">${esc(preview.error)}</p>` : "";
     const filesHtml = options.preview && options.preview.hash === hash ? options.commitFilesHtml || "" : "";
     return shell(`<div class="git-ui-log-details-header"><h2>Commit details</h2>${close}</div><div class="git-ui-log-details-avatar" title="Author placeholder">${renderPerson(32)}</div><div class="git-ui-log-details-author">${esc(author)}</div>${date ? `<div class="git-ui-log-details-date">${esc(date)}</div>` : ""}${details.email ? `<div class="git-ui-log-details-email">${esc(details.email)}</div>` : ""}<div class="git-ui-log-details-hash"><code>${esc(hash)}</code>${copyButton(hash, "Commit id")}</div><div class="git-ui-log-details-labels">${labels}</div>${loading}${error}<pre class="git-ui-log-details-message">${esc(message)}</pre>${stats}<div class="git-ui-log-details-files">${filesHtml || fileState}</div><div class="git-ui-log-details-actions"><button type="button" onclick="HerdrGitUi.compareSelectedLog()">View Commit</button>${link}</div>`);
+  }
+
+  // The separator renders only with the pane (single selection). It sits
+  // between the list and the details in DOM order; grid areas place it
+  // between the two whichever side the pane lands on. Keyboard: arrows
+  // resize along the live axis, Home resets to the CSS default.
+  function detailsSeparator() {
+    return `<div class="git-ui-log-separator" role="separator" aria-orientation="vertical" aria-label="Resize commit details" title="Drag to resize, double-click or press Home to reset" tabindex="0" onpointerdown="HerdrGitLog.beginDetailsResize(event)" onpointermove="HerdrGitLog.moveDetailsResize(event)" onpointerup="HerdrGitLog.endDetailsResize(event)" onpointercancel="HerdrGitLog.endDetailsResize(event)" ondblclick="HerdrGitLog.resetDetailsPaneSize()" onfocus="HerdrGitLog.syncSeparatorState()" onkeydown="HerdrGitLog.moveDetailsResizeKeyboard(event)"></div>`;
   }
 
   function upstreamRefFromStatus(status) {
@@ -490,5 +693,5 @@
     if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
-  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash, computeLanePainting, renderDetails, toggleSearchCase, navigateSearch, toggleRefs, setSearch };
+  window.HerdrGitLog = { render, scrollToCommit, rowsFromData, laneColor, applyFilters, logCommitCount, selectedBranchForHash, computeLanePainting, renderDetails, toggleSearchCase, navigateSearch, toggleRefs, setSearch, beginDetailsResize, moveDetailsResize, endDetailsResize, moveDetailsResizeKeyboard, resetDetailsPaneSize, syncSeparatorState, detailsState: () => ({ size: Object.assign({}, detailsPaneSize), resizing: !!detailsResize }) };
 })();
