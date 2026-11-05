@@ -46,7 +46,7 @@
     // lines stay identifiable past the tip chips the way Zed keeps HEAD
     // findable via its check icon (we use line color instead of an icon).
     const lanePainting = computeLanePainting(rows, baseBranch);
-    const scopeButton = `<span class="git-ui-log-scope-control"><span>Scope:</span><button class="git-ui-btn active" title="Toggle history scope: Master + Branch, All, Branch" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope, baseBranch))}</button>${options.filePath ? `<button class="git-ui-btn git-ui-log-file-clear" title="Show log for the whole repository" onclick="HerdrGitUi.clearLogFileHistory()">× ${esc(options.filePath)}</button>` : ""}</span>`;
+    const scopeButton = `<span class="git-ui-log-scope-control"><span>Scope:</span><button class="git-ui-btn active" title="Toggle history scope: Master + Branch, All, Branch" onclick="HerdrGitUi.cycleLogScope()">${esc(logScopeLabel(logScope))}</button>${options.filePath ? `<button class="git-ui-btn git-ui-log-file-clear" title="Show log for the whole repository" onclick="HerdrGitUi.clearLogFileHistory()">× ${esc(options.filePath)}</button>` : ""}</span>`;
     const header = `<div class="git-ui-log-table-head"><span class="git-ui-log-cell-refs">Refs</span><span class="git-ui-log-cell-graph">Graph</span><span class="git-ui-log-cell-description">Description</span><span class="git-ui-log-cell-date">Date</span><span class="git-ui-log-cell-author">Author</span><span class="git-ui-log-cell-hash">Commit</span></div>`;
     const matches = rows.filter((row) => row.hash && matchesFilters(filterFields(row), filters));
     searchPosition = matches.findIndex((row) => row.hash === searchHash);
@@ -173,13 +173,15 @@
       : { width: detailsResize.width + (detailsResize.x - event.clientX), height: detailsPaneSize.height };
     detailsPaneSize = clampPaneSize(size, detailsResize.axis, rects && rects.layout, rects && rects.details);
     applyDetailsPaneSize();
-    syncSeparatorAria(separatorNode());
   }
 
   function endDetailsResize() {
     if (!detailsResize) return;
     detailsResize = null;
     setDetailsResizing(false);
+    // One ARIA refresh when the gesture settles; the per-move refresh
+    // ran getComputedStyle plus layout reads on every pointermove frame.
+    syncSeparatorAria(separatorNode());
   }
 
   function moveDetailsResizeKeyboard(event) {
@@ -228,10 +230,15 @@
   // Runs after every log mount: the separator is re-created by each
   // render, so its ARIA orientation (axis comes from CSS) and the saved
   // pane size (vars live on the layout element) must be re-applied to
-  // the fresh nodes.
+  // the fresh nodes. A mount with no separator (zero or two selections)
+  // disconnects the observer: the layout node it watched belongs to the
+  // previous render and is detached now.
   function syncSeparatorState() {
     const separator = separatorNode();
-    if (!separator || !separator.setAttribute) return;
+    if (!separator || !separator.setAttribute) {
+      disconnectSeparatorObserver();
+      return;
+    }
     applyDetailsPaneSize();
     syncSeparatorAria(separator);
     syncSeparatorObserver(separator);
@@ -253,6 +260,11 @@
     separatorObserver.disconnect();
     separatorObserver.observe(layout);
     separatorObserved = layout;
+  }
+
+  function disconnectSeparatorObserver() {
+    if (separatorObserver) separatorObserver.disconnect();
+    separatorObserved = null;
   }
 
   // A focusable separator is a window splitter for assistive tech, so it
@@ -353,8 +365,7 @@
     return ["all", "base-current", "base"].includes(scope) ? scope : "all";
   }
 
-  function logScopeLabel(scope, baseBranch) {
-    const base = baseBranch || "master";
+  function logScopeLabel(scope) {
     if (scope === "base-current") return "Master + Branch";
     if (scope === "base") return "Branch";
     return "All";

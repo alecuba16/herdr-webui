@@ -34,7 +34,7 @@ body.light .git-ui-log-workbench {
 .git-ui-log-browser, .git-ui-log-table, .git-ui-log { min-width: 0; max-width: 100%; }
 .git-ui-log-workbench *, .git-ui-log-workbench *::before, .git-ui-log-workbench *::after { box-sizing: border-box; }
 .git-ui-log { font: inherit; }
-.git-ui-log-head, .git-ui-log-scope-head, .git-ui-log-searchbar {
+.git-ui-log-head, .git-ui-log-searchbar {
   display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
   padding: 8px 10px; margin: 0; min-width: 0;
   background: var(--panel); border: 0; border-bottom: 1px solid var(--border);
@@ -108,7 +108,6 @@ body.light .git-ui-log-workbench {
 .git-ui-log-filter { display: grid; gap: 3px; font-size: 11px; text-transform: none; min-width: 0; padding-right: 8px; }
 .git-ui-log-filter .sr-only { clip: rect(0,0,0,0); border: 0; height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap; width: 1px; }
 .git-ui-log-scope-control { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.git-ui-log-scope-value { cursor: pointer; font: inherit; }
 .git-ui-log-load-more { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 10px; padding: 10px; border-top: 1px solid var(--border); }
 .git-ui-log-details { grid-area: details; position: sticky; top: 0; align-self: start; min-width: 0; max-height: calc(100vh - 120px); overflow: auto; padding: 14px; overflow-wrap: anywhere; background: var(--panel); }
 .git-ui-log-separator { grid-area: separator; position: relative; align-self: stretch; justify-self: stretch; cursor: col-resize; touch-action: none; }

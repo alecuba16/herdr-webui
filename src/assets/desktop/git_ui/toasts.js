@@ -1,66 +1,17 @@
 (function () {
   function createGitUiToasts({ state, active, api, esc, arg, render, ensurePanel, navigator, setTimeoutFn }) {
-      function normalizeRemoteUrl(raw) {
-        let value = String(raw || "").trim();
-        if (!value) return "";
-        const scp = value.match(/^git@([^:]+):(.+)$/);
-        if (scp) value = `https://${scp[1]}/${scp[2]}`;
-        if (value.startsWith("ssh://git@")) value = value.replace(/^ssh:\/\/git@/, "https://");
-        value = value.replace(/\.git$/, "");
-        try {
-          const url = new URL(value);
-          return /^https?:$/.test(url.protocol) ? url.toString().replace(/\/$/, "") : "";
-        } catch (_) {
-          return "";
-        }
-      }
-
-      function branchPath(branch) {
-        return String(branch || "").split("/").map(encodeURIComponent).join("/");
-      }
-
+      // Web/PR URLs come from /status (repo_web_url, branch_web_url,
+      // pr_create_url): the backend owns the forge-specific URL shapes.
+      // The client only gates the PR link on timing (shown after a
+      // successful push) and hides the branch link while detached.
       function gitBranchUrl(status) {
-        const base = normalizeRemoteUrl(status && status.remote_url);
-        const branch = status && status.branch;
-        if (!base || !branch || branch === "(detached)") return "";
-        if (base.includes("bitbucket.org/")) return `${base}/branch/${branchPath(branch)}`;
-        return `${base}/tree/${branchPath(branch)}`;
-      }
-
-      // Web URL for the persistent Repo button. The current branch wins
-      // when it exists on the remote; a branch that was never pushed opens
-      // the default branch so the link lands on the repo instead of a 404.
-      function repoWebUrl(status) {
-        const base = normalizeRemoteUrl(status && status.remote_url);
-        if (!base) return "";
-        const branch = status && status.branch;
-        const onRemote = status && status.branch_on_remote !== false;
-        if (branch && branch !== "(detached)" && onRemote) {
-          return base.includes("bitbucket.org/")
-            ? `${base}/branch/${branchPath(branch)}`
-            : `${base}/tree/${branchPath(branch)}`;
-        }
-        const fallback = String((status && status.default_branch) || "").trim();
-        if (!fallback) return base;
-        return base.includes("bitbucket.org/")
-          ? `${base}/branch/${branchPath(fallback)}`
-          : `${base}/tree/${branchPath(fallback)}`;
+        const detached = !status || !status.branch || status.branch === "(detached)";
+        return detached ? "" : String(status.branch_web_url || "");
       }
 
       function gitPullRequestUrl(status, { pushed = false } = {}) {
-        const base = normalizeRemoteUrl(status && status.remote_url);
-        const branch = status && status.branch;
-        if (!base || !branch || branch === "(detached)") return "";
-        // PR links appear only after a successful push on a non-default
-        // branch: the source branch must exist on the remote, and opening a
-        // PR against the default branch from the default branch is noise.
         if (!pushed) return "";
-        const defaultBranch = String((status && status.default_branch) || "").trim();
-        if (defaultBranch && branch === defaultBranch) return "";
-        if (status && status.branch_on_remote === false) return "";
-        if (base.includes("github.com/")) return `${base}/pull/new/${branchPath(branch)}`;
-        if (base.includes("bitbucket.org/")) return `${base}/pull-requests/new?source=${encodeURIComponent(branch)}`;
-        return "";
+        return String((status && status.pr_create_url) || "");
       }
 
       function renderGitToast() {
@@ -159,10 +110,7 @@
       }
 
       return {
-        normalizeRemoteUrl,
-        branchPath,
         gitBranchUrl,
-        repoWebUrl,
         gitPullRequestUrl,
         renderGitToast,
         showCommitToast,

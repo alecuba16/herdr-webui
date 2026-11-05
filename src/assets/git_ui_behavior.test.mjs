@@ -863,7 +863,7 @@ test("Repo button renders only with a remote and opens the web UI synchronously"
   // With a remote: the button sits in the worktree-actions row and its
   // click handler is the sync openRepoWeb (no fetch, no popup-blocked
   // window.open chain).
-  const remote = await openedWithStatus({ branch: "feature-x", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: true });
+  const remote = await openedWithStatus({ branch: "feature-x", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: true, repo_web_url: "https://github.com/acme/widget/tree/feature-x" });
   let html = String(ctxHtml(remote));
   assert.match(html, /class="git-ui-btn git-ui-repo-open"[^>]*onclick="HerdrGitUi\.openRepoWeb\(event\)">Repo</);
   let opened = [];
@@ -873,7 +873,7 @@ test("Repo button renders only with a remote and opens the web UI synchronously"
   assert.equal(opened[0], "https://github.com/acme/widget/tree/feature-x", "branch on the remote opens the branch page");
 
   // Branch never pushed: the same click opens the default branch instead.
-  const offRemote = await openedWithStatus({ branch: "feature-y", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: false });
+  const offRemote = await openedWithStatus({ branch: "feature-y", ahead: 0, behind: 0, staged: [], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: false, repo_web_url: "https://github.com/acme/widget/tree/main" });
   opened = [];
   offRemote.ctx.window.open = (url) => { opened.push(String(url)); };
   offRemote.ui.openRepoWeb();
@@ -1334,7 +1334,13 @@ test("branch list module is registered and wired before git_ui.js consumes it", 
   assert.match(branchListSource, /git-ui-repo-open/);
   assert.match(branchListSource, /HerdrGitUi\.openRepoWeb\(event\)/);
   assert.match(gitUiSource, /openRepoWeb\(\)/);
-  assert.match(readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8"), /repoWebUrl/);
+  // Web/PR URL shapes live in the backend; the toast module only reads
+  // the /status fields and gates the PR link on push timing.
+  const toastsSource = readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8");
+  assert.match(toastsSource, /branch_web_url/);
+  assert.match(toastsSource, /pr_create_url/);
+  assert.match(gitUiSource, /status\.repo_web_url/);
+  assert.ok(!/normalizeRemoteUrl|bitbucket\.org\//.test(toastsSource), "no host sniffing stays client-side");
   const assetsSource = readFileSync(new URL("../assets.rs", import.meta.url), "utf8");
   const branchListIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui/branch_list.js")');
   const gitUiIndex = assetsSource.indexOf('include_str!("assets/desktop/git_ui.js")');
@@ -2360,8 +2366,12 @@ test("primitives module is registered and wired before git_ui.js consumes it", (
 test("toasts module is registered and wired before git_ui.js consumes it", () => {
   const toastsSource = readFileSync(new URL("./desktop/git_ui/toasts.js", import.meta.url), "utf8");
   assert.match(toastsSource, /globalThis\.HerdrGitUiToastsModule = \{ create: createGitUiToasts \}/);
-  assert.match(toastsSource, /`\$\{base\}\/branch\/\$\{branchPath\(branch\)\}`/);
-  assert.match(toastsSource, /pull-requests\/new\?source=\$\{encodeURIComponent\(branch\)\}/);
+  // URL shaping moved to the backend /status fields; the toast module
+  // only reads branch_web_url and pr_create_url and gates the PR link
+  // on push timing.
+  assert.match(toastsSource, /status\.branch_web_url/);
+  assert.match(toastsSource, /status && status\.pr_create_url/);
+  assert.ok(!toastsSource.includes("branchPath"), "no client-side URL assembly left");
   assert.match(toastsSource, /Permalink copied/);
   const gitUiSource = readFileSync(new URL("./desktop/git_ui.js", import.meta.url), "utf8");
   assert.match(gitUiSource, /globalThis\.HerdrGitUiToastsModule\.create\(\{/);
@@ -2400,7 +2410,7 @@ test("permalink copy shows a toast and builds PR urls from the remote", async ()
 test("commit toast gates the PR link to pushes off the default branch", async () => {
   // Mutable status stub: refresh() re-reads /status after every op, so
   // flipping the object between ops is the same as a real branch change.
-  const status = { branch: "feature-x", ahead: 1, behind: 0, staged: ["x.txt"], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: true };
+  const status = { branch: "feature-x", ahead: 1, behind: 0, staged: ["x.txt"], unstaged: [], untracked: [], conflicted: [], remote_url: "git@github.com:acme/widget.git", default_branch: "main", branch_on_remote: true, repo_web_url: "https://github.com/acme/widget/tree/feature-x", branch_web_url: "https://github.com/acme/widget/tree/feature-x", pr_create_url: "https://github.com/acme/widget/pull/new/feature-x" };
   const booted = await bootGitUi({
     "/api/git-ui/status": () => status,
     "/api/git-ui/diff": { files: [] },
@@ -2445,8 +2455,13 @@ test("commit toast gates the PR link to pushes off the default branch", async ()
   assert.match(html, /pull%2Fnew%2Ffeature-x/, "PR link carries the encoded pull/new URL");
   assert.ok(calls.some((call) => call.path === "/api/git-ui/push"), "push op posted");
 
-  // Push on the default branch: no PR link even after the push.
+  // Push on the default branch: no PR link even after the push. The
+  // backend computes pr_create_url per status, so flipping the branch
+  // must flip the URL fields the way a real refresh would.
   status.branch = "main";
+  status.repo_web_url = "https://github.com/acme/widget/tree/main";
+  status.branch_web_url = "https://github.com/acme/widget/tree/main";
+  status.pr_create_url = "";
   ui.openCommitModal();
   fillModal();
   await ui.commitFromModal(true);
@@ -2458,6 +2473,9 @@ test("commit toast gates the PR link to pushes off the default branch", async ()
   // Branch never pushed to the remote: no PR link even off the default.
   status.branch = "feature-x";
   status.branch_on_remote = false;
+  status.repo_web_url = "https://github.com/acme/widget/tree/main";
+  status.branch_web_url = "https://github.com/acme/widget/tree/feature-x";
+  status.pr_create_url = "";
   ui.openCommitModal();
   fillModal();
   await ui.commitFromModal(true);

@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use axum::extract::{ConnectInfo, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -668,22 +668,30 @@ fn normalize_git_remote_url(raw: &str) -> Option<String> {
 }
 
 fn encode_git_permalink_path(path: &str) -> String {
-    fn encode_segment(segment: &str) -> String {
-        let mut out = String::new();
-        for byte in segment.as_bytes() {
-            let ch = *byte as char;
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
-                out.push(ch);
-            } else {
-                out.push_str(&format!("%{byte:02X}"));
-            }
-        }
-        out
-    }
     path.split('/')
-        .map(encode_segment)
+        .map(encode_git_path_segment)
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Percent-encode one path segment: every byte outside the unreserved
+/// set is escaped, / included, so a whole value encoded this way is a
+/// single query component (bitbucket's ?source= expects exactly that).
+fn encode_git_query_component(value: &str) -> String {
+    encode_git_path_segment(value)
+}
+
+fn encode_git_path_segment(segment: &str) -> String {
+    let mut out = String::new();
+    for byte in segment.as_bytes() {
+        let ch = *byte as char;
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
+            out.push(ch);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 fn git_permalink_url(
@@ -891,66 +899,187 @@ fn git_remote_url(cwd: &str, upstream: &str) -> Option<String> {
     url
 }
 
-/// Default branch of the remote for this checkout. origin/HEAD is the
-/// authoritative answer when it exists; otherwise the first of master/main
-/// present in remote-tracking refs wins (the repos this UI targets use
-/// one of the two). None means no remote default could be derived.
-fn git_default_branch(cwd: &str, remote: &str) -> Option<String> {
-    if let Ok(head) = git_ui_text(
+/// Remote refs for one remote, answered by a single `for-each-ref` spawn.
+/// Replaces the per-question spawns (/status used to run symbolic-ref,
+/// two rev-parse calls, plus branch-on-remote rev-parse on every load):
+/// - default branch: the origin/HEAD symref target, falling back to
+///   master/main when those tracking refs exist
+/// - branch_on_remote: whether the checked-out branch has a tracking ref
+/// A repo without the remote answers None; callers treat that as "no
+/// default branch known, branch not pushed".
+fn git_remote_refs_snapshot(
+    cwd: &str,
+    remote: &str,
+    branch: &str,
+) -> Option<RemoteRefsSnapshot> {
+    let pattern = format!("refs/remotes/{remote}/");
+    let head_ref = format!("refs/remotes/{remote}/HEAD");
+    let output = git_ui_text(
         cwd,
         &[
-            "symbolic-ref",
-            &format!("refs/remotes/{remote}/HEAD"),
-            "--short",
-        ],
-    ) {
-        let value = head.trim();
-        if !value.is_empty() {
-            return Some(
-                value
-                    .strip_prefix(&format!("{remote}/"))
-                    .unwrap_or(value)
-                    .to_string(),
-            );
-        }
-    }
-    for candidate in ["master", "main"] {
-        let found = git_ui_text(
-            cwd,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/remotes/{remote}/{candidate}"),
-            ],
-        )
-        .map(|text| !text.trim().is_empty())
-        .unwrap_or(false);
-        if found {
-            return Some(candidate.to_string());
-        }
-    }
-    None
-}
-
-/// Whether the given branch exists on the remote, read from
-/// remote-tracking refs with no network access. False when the branch
-/// was never fetched or pushed.
-fn git_branch_on_remote(cwd: &str, remote: &str, branch: &str) -> bool {
-    if branch.is_empty() {
-        return false;
-    }
-    git_ui_text(
-        cwd,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/remotes/{remote}/{branch}"),
+            "for-each-ref",
+            "--format=%(refname)%00%(symref)%00%(objectname)",
+            &pattern,
         ],
     )
-    .map(|text| !text.trim().is_empty())
-    .unwrap_or(false)
+    .ok()?;
+    // for-each-ref exits 0 with no output when the remote has no refs
+    // (remote never added or never fetched). The old per-question spawns
+    // failed there, so None keeps that observable behavior.
+    if output.lines().next().is_none() {
+        return None;
+    }
+    let mut snapshot = RemoteRefsSnapshot {
+        default_branch: None,
+        branch_on_remote: false,
+    };
+    let mut saw_master = false;
+    let mut saw_main = false;
+    for line in output.lines() {
+        // Format is refname NUL symref NUL objectname; for-each-ref only
+        // emits a non-empty symref for refs/remotes/<remote>/HEAD itself.
+        let mut fields = line.splitn(3, '\u{0}');
+        let (Some(refname), Some(symref), Some(_oid)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if refname == head_ref {
+            // Symref target is refs/remotes/<remote>/<branch>; strip the
+            // prefix to keep the plain branch name the payload promises.
+            if let Some(name) = symref
+                .strip_prefix(&pattern)
+                .filter(|name| !name.trim().is_empty())
+            {
+                snapshot.default_branch = Some(name.trim().to_string());
+            }
+            continue;
+        }
+        let Some(name) = refname.strip_prefix(&pattern) else {
+            continue;
+        };
+        match name {
+            "master" => saw_master = true,
+            "main" => saw_main = true,
+            _ => {}
+        }
+        if !branch.is_empty() && name == branch {
+            snapshot.branch_on_remote = true;
+        }
+    }
+    // The symref wins because the remote itself declared the default;
+    // the master/main scan only answers when origin/HEAD is absent
+    // (fetch without set-head never creates it).
+    if snapshot.default_branch.is_none() {
+        snapshot.default_branch = if saw_master {
+            Some("master".to_string())
+        } else if saw_main {
+            Some("main".to_string())
+        } else {
+            None
+        };
+    }
+    Some(snapshot)
+}
+
+/// Host of a normalized remote URL, lowercased. Exact host matching
+/// (not substring sniffing) decides which forge-specific URL shape
+/// applies, so a repo path containing "github.com/" cannot select the
+/// GitHub PR shape for a different forge.
+fn git_remote_host(remote_url: &str) -> Option<String> {
+    let base = normalize_git_remote_url(remote_url)?;
+    let uri: Uri = base.parse().ok()?;
+    let host = uri.authority()?.host().to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    Some(host)
+}
+
+/// Repo, branch and PR-creation web URLs for the git-ui status payload.
+/// One host table here replaces the client-side URL shaping the desktop
+/// toast used to do (host substring sniffing plus manual reassembly);
+/// TUI and mobile can read the same fields. Bitbucket pins branches
+/// under /branch, every other forge uses /tree. Whether the PR link is
+/// SHOWN (after a push) stays client-side: that is timing state, not
+/// URL state.
+fn git_web_urls_for_status(
+    remote_url: Option<&str>,
+    branch: &str,
+    default_branch: Option<&str>,
+    branch_on_remote: bool,
+) -> (String, String, String) {
+    let empty = (String::new(), String::new(), String::new());
+    let Some(raw) = remote_url.filter(|url| !url.trim().is_empty()) else {
+        return empty;
+    };
+    let Some(base) = normalize_git_remote_url(raw) else {
+        return empty;
+    };
+    let Some(host) = git_remote_host(raw) else {
+        return empty;
+    };
+    let detached = branch.is_empty() || branch == "(detached)";
+    let branch_url = |name: &str| {
+        if host == "bitbucket.org" {
+            format!("{base}/branch/{}", encode_git_permalink_path(name))
+        } else {
+            format!("{base}/tree/{}", encode_git_permalink_path(name))
+        }
+    };
+    // The current branch opens its own page only when the remote has it;
+    // a never-pushed branch falls back to the default branch so the
+    // Repo button lands on the repo, not a 404.
+    let repo_web_url = if !detached && branch_on_remote {
+        branch_url(branch)
+    } else {
+        match default_branch.filter(|name| !name.trim().is_empty()) {
+            Some(default) => branch_url(default),
+            None => base.clone(),
+        }
+    };
+    let branch_web_url = if detached {
+        String::new()
+    } else {
+        branch_url(branch)
+    };
+    let pr_create_url = if detached
+        || !branch_on_remote
+        || Some(branch) == default_branch
+        || !matches!(host.as_str(), "github.com" | "bitbucket.org")
+    {
+        String::new()
+    } else if host == "github.com" {
+        format!("{base}/pull/new/{}", encode_git_permalink_path(branch))
+    } else {
+        // The whole branch name is one query component here: slashes
+        // stay escaped, unlike path segments where / separates.
+        format!(
+            "{base}/pull-requests/new?source={}",
+            encode_git_query_component(branch)
+        )
+    };
+    (repo_web_url, branch_web_url, pr_create_url)
+}
+
+struct RemoteRefsSnapshot {
+    default_branch: Option<String>,
+    branch_on_remote: bool,
+}
+
+impl PartialEq for RemoteRefsSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.default_branch == other.default_branch && self.branch_on_remote == other.branch_on_remote
+    }
+}
+
+impl std::fmt::Debug for RemoteRefsSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteRefsSnapshot")
+            .field("default_branch", &self.default_branch)
+            .field("branch_on_remote", &self.branch_on_remote)
+            .finish()
+    }
 }
 
 fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, String)> {
@@ -1096,17 +1225,27 @@ fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, St
         }
     };
     let remote_url = git_remote_url(&repo, &upstream);
-    // The toast PR button and the repo-web button need to know the remote
-    // default branch and whether this branch exists on the remote. Both
-    // read local tracking refs; no network runs during /status.
+    // The toast PR button and the repo-web button need the remote
+    // default branch, whether this branch exists on the remote, and the
+    // web/PR URLs. One for-each-ref spawn answers the first two from
+    // local tracking refs; no network runs during /status.
     let status_remote = upstream
         .split_once('/')
         .map(|(remote, _)| remote)
         .filter(|remote| !remote.trim().is_empty())
         .unwrap_or("origin")
         .to_string();
-    let default_branch = git_default_branch(&repo, &status_remote);
-    let branch_on_remote = git_branch_on_remote(&repo, &status_remote, &branch);
+    let refs = git_remote_refs_snapshot(&repo, &status_remote, &branch);
+    let default_branch = refs
+        .as_ref()
+        .and_then(|snapshot| snapshot.default_branch.clone());
+    let branch_on_remote = refs.as_ref().is_some_and(|snapshot| snapshot.branch_on_remote);
+    let (repo_web_url, branch_web_url, pr_create_url) = git_web_urls_for_status(
+        remote_url.as_deref(),
+        &branch,
+        default_branch.as_deref(),
+        branch_on_remote,
+    );
     let state_name = if !conflicted.is_empty() {
         "conflicts"
     } else if staged.is_empty() && unstaged.is_empty() && untracked.is_empty() {
@@ -1121,6 +1260,9 @@ fn git_status_blocking(cwd: String) -> Result<serde_json::Value, (StatusCode, St
         "remote_url": remote_url,
         "default_branch": default_branch,
         "branch_on_remote": branch_on_remote,
+        "repo_web_url": repo_web_url,
+        "branch_web_url": branch_web_url,
+        "pr_create_url": pr_create_url,
         "ahead": ahead,
         "behind": behind,
         "state": state_name,
@@ -1886,7 +2028,7 @@ mod tests {
     }
 
     #[test]
-    fn git_default_branch_prefers_symbolic_ref_then_master_main() {
+    fn remote_refs_snapshot_prefers_head_symref_then_master_main() {
         // origin/HEAD first (the remote itself tells us the default), then
         // the master/main remote-tracking refs. A bare repo with no remote
         // answers None. Fetch creates the tracking ref; set-head pins
@@ -1897,53 +2039,123 @@ mod tests {
         repo.git(&["remote", "add", "origin", repo.path.to_str().unwrap()]);
         repo.git(&["fetch", "origin", "--quiet"]);
         repo.git(&["remote", "set-head", "origin", "main"]);
+        let snapshot = git_remote_refs_snapshot(&cwd, "origin", "main");
         assert_eq!(
-            git_default_branch(&cwd, "origin").as_deref(),
+            snapshot.as_ref().and_then(|snapshot| snapshot.default_branch.as_deref()),
             Some("main"),
             "origin/HEAD answers the symbolic ref path"
+        );
+        assert_eq!(
+            snapshot.as_ref().map(|snapshot| snapshot.branch_on_remote),
+            Some(true),
+            "the fetched tracking ref marks main as pushed"
         );
 
         let fresh = TempRepo::new();
         fresh.commit_initial();
         let fresh_cwd = fresh.path.to_str().unwrap().to_string();
         assert_eq!(
-            git_default_branch(&fresh_cwd, "origin"),
+            git_remote_refs_snapshot(&fresh_cwd, "origin", "main"),
             None,
             "a repo with no remote answers None"
         );
     }
 
     #[test]
-    fn git_default_branch_falls_back_to_remote_tracking_refs() {
+    fn remote_refs_snapshot_falls_back_to_tracking_refs() {
         // No origin/HEAD (fetch alone never creates it), so the fallback
-        // scans origin/master then origin/main with rev-parse --verify;
+        // scans the for-each-ref output for origin/master then origin/main;
         // only origin/main exists.
         let repo = TempRepo::new();
         repo.commit_initial();
         repo.git(&["remote", "add", "origin", repo.path.to_str().unwrap()]);
         repo.git(&["fetch", "origin", "--quiet"]);
         let cwd = repo.path.to_str().unwrap().to_string();
+        let snapshot = git_remote_refs_snapshot(&cwd, "origin", "no-such-branch");
         assert_eq!(
-            git_default_branch(&cwd, "origin").as_deref(),
+            snapshot.as_ref().and_then(|snapshot| snapshot.default_branch.as_deref()),
             Some("main"),
             "without origin/HEAD the master/main fallback finds the ref"
+        );
+        assert_eq!(
+            snapshot.as_ref().map(|snapshot| snapshot.branch_on_remote),
+            Some(false),
+            "a branch the remote never saw is not on it"
         );
     }
 
     #[test]
-    fn git_branch_on_remote_reports_pushed_state() {
-        // branch_on_remote feeds the Repo button fallback and the push
-        // toast PR link, so a branch that was never pushed must read as
-        // false. Fetch creates the tracking ref for main; other branches
-        // never appear.
-        let repo = TempRepo::new();
-        repo.commit_initial();
-        repo.git(&["remote", "add", "origin", repo.path.to_str().unwrap()]);
-        repo.git(&["fetch", "origin", "--quiet"]);
-        let cwd = repo.path.to_str().unwrap().to_string();
-        assert_eq!(git_branch_on_remote(&cwd, "origin", "main"), true);
-        assert_eq!(git_branch_on_remote(&cwd, "origin", "no-such-branch"), false);
-        assert_eq!(git_branch_on_remote(&cwd, "origin", ""), false);
+    fn web_urls_track_the_forge_host_and_pushed_state() {
+        // Host shapes: bitbucket /branch, github /tree, github PR /pull/new,
+        // bitbucket PR query, gitlab gets repo+branch but no PR URL, and
+        // a repo whose path contains a forge name must not trip host
+        // sniffing (exact host match only).
+        let (repo, branch, pr) = git_web_urls_for_status(
+            Some("git@bitbucket.org:team/repo.git"),
+            "feature x",
+            Some("main"),
+            true,
+        );
+        assert_eq!(repo, "https://bitbucket.org/team/repo/branch/feature%20x");
+        assert_eq!(branch, "https://bitbucket.org/team/repo/branch/feature%20x");
+        assert_eq!(
+            pr,
+            "https://bitbucket.org/team/repo/pull-requests/new?source=feature%20x"
+        );
+
+        let (repo, branch, pr) = git_web_urls_for_status(
+            Some("https://github.com/acme/widget.git"),
+            "feature/x",
+            Some("main"),
+            true,
+        );
+        assert_eq!(repo, "https://github.com/acme/widget/tree/feature/x");
+        assert_eq!(branch, "https://github.com/acme/widget/tree/feature/x");
+        assert_eq!(pr, "https://github.com/acme/widget/pull/new/feature/x");
+
+        let (repo, _, pr) = git_web_urls_for_status(
+            Some("https://gitlab.com/acme/widget.git"),
+            "feature x",
+            Some("main"),
+            true,
+        );
+        assert_eq!(repo, "https://gitlab.com/acme/widget/tree/feature%20x");
+        assert_eq!(pr, "", "gitlab has no PR-create URL shape yet");
+
+        let (repo, _, pr) = git_web_urls_for_status(
+            Some("https://example.com/github.com/lookalike.git"),
+            "feature",
+            Some("main"),
+            true,
+        );
+        assert_eq!(repo, "https://example.com/github.com/lookalike/tree/feature");
+        assert_eq!(pr, "", "a lookalike path must not select the github PR shape");
+
+        // Pushed state: unpushed branch falls back to the default branch,
+        // and with no default the repo root is the honest answer.
+        let (repo, _, pr) = git_web_urls_for_status(
+            Some("https://github.com/acme/widget.git"),
+            "feature",
+            Some("main"),
+            false,
+        );
+        assert_eq!(repo, "https://github.com/acme/widget/tree/main");
+        assert_eq!(pr, "", "no branch on the remote means no PR URL");
+
+        // Detached and empty states collapse to the repo root / empty.
+        let (repo, branch, pr) =
+            git_web_urls_for_status(Some("https://github.com/acme/widget.git"), "(detached)", Some("main"), false);
+        assert_eq!(repo, "https://github.com/acme/widget/tree/main");
+        assert_eq!(branch, "");
+        assert_eq!(pr, "");
+        let (repo, _, _) =
+            git_web_urls_for_status(Some("https://github.com/acme/widget.git"), "main", None, false);
+        assert_eq!(repo, "https://github.com/acme/widget", "no default branch answers the repo root");
+        let all_empty = git_web_urls_for_status(None, "main", Some("main"), true);
+        assert_eq!(
+            all_empty,
+            ("".to_string(), "".to_string(), "".to_string())
+        );
     }
 
     #[test]
@@ -2285,7 +2497,8 @@ mod tests {
             .await;
             assert_eq!(log.status(), StatusCode::OK);
             let json = response_json(log).await;
-            assert!(json["lines"][0].as_str().unwrap().contains("initial"));
+            assert!(json["lines"].is_null(), "the legacy lines payload is gone");
+            assert_eq!(json["commits"][0]["message"], "initial");
             assert_eq!(json["rows"][0]["title"], "initial");
             assert!(json["rows"][0]["hash"]
                 .as_str()
@@ -2418,6 +2631,14 @@ mod tests {
             assert_eq!(json["upstream"], "origin/main");
             assert_eq!(json["ahead"], 1);
             assert_eq!(json["behind"], 0);
+            // A file-path remote is not a web URL: no repo/branch/PR web
+            // URLs even though default_branch and branch_on_remote read
+            // fine from the fetched origin/main tracking ref.
+            assert_eq!(json["default_branch"], "main");
+            assert_eq!(json["branch_on_remote"], true);
+            assert_eq!(json["repo_web_url"], "");
+            assert_eq!(json["branch_web_url"], "");
+            assert_eq!(json["pr_create_url"], "");
 
             // Advance upstream by one commit so local also falls behind.
             crate::git_bin::command()
@@ -3840,7 +4061,7 @@ mod tests {
         assert!(branches["local"][0]["current"].as_bool().unwrap());
 
         let log = socket_dispatch("git.log", json!({ "cwd": &cwd, "max": 5 })).unwrap();
-        assert!(log["lines"][0].as_str().unwrap().contains("initial"));
+        assert_eq!(log["commits"][0]["message"], "initial");
 
         let diff = socket_dispatch("git.diff", json!({ "cwd": &cwd, "scope": "staged" })).unwrap();
         assert_eq!(diff["files"][0]["path"], "tracked.txt");

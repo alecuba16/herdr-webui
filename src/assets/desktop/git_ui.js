@@ -329,10 +329,6 @@
     navigator,
     setTimeoutFn: (...args) => setTimeout(...args),
   });
-  const normalizeRemoteUrl = toasts.normalizeRemoteUrl;
-  const branchPath = toasts.branchPath;
-  const gitBranchUrl = toasts.gitBranchUrl;
-  const gitPullRequestUrl = toasts.gitPullRequestUrl;
   const renderGitToast = toasts.renderGitToast;
   const showCommitToast = toasts.showCommitToast;
   const copyGitPermalink = toasts.copyGitPermalink;
@@ -2445,14 +2441,13 @@
     closeCommitModal() { saveDraftFromDom(); state.commitModal = null; render(); },
     closeGitToast() { state.gitToast = null; render(); },
     openGitUrl(url) { const decoded = decodeURIComponent(url || ""); if (decoded) window.open(decoded, "_blank", "noopener"); },
-    // Persistent Repo button: builds the web URL from the cached status
-    // (no async fetch, so the click is not subject to popup blocking) and
-    // opens it in a new tab. The status carries remote_url,
-    // branch_on_remote and default_branch, so the fallback runs locally.
+    // Persistent Repo button: /status precomputes repo_web_url (branch
+    // page, or the default branch for never-pushed branches), so the
+    // click is synchronous and not subject to popup blocking.
     openRepoWeb() {
       const view = active();
       const status = (view && view.status) || {};
-      const url = toasts.repoWebUrl ? toasts.repoWebUrl(status) : "";
+      const url = String(status.repo_web_url || "");
       if (url) window.open(url, "_blank", "noopener");
     },
     toggleCommitBody(value) { saveDraftFromDom(); state.commitModal = Object.assign({}, state.commitModal || {}, { includeBody: !!value }); render(); },
