@@ -1,6 +1,23 @@
 # Release notes
 
 ## Unreleased
+- Every folder, branch, and worktree popover now shares one implementation:
+  the same row markup, list ordering, and create-form styling, all
+  anchored locally to the chip or field that opened them. Discovery rows
+  reuse the chip popover's row builder (current-branch check, hover
+  metadata, checked-out badges; the delete action stays on the chip
+  popover), the branch list body (filter pinning, remote ordering,
+  load-more, empty states) is one helper for all three popovers, and the
+  discovery popover no longer renders rows with its own hand-rolled
+  markup.
+- The create form has one Base-ref picker, and the Base input is its
+  only trigger. The old browser datalist plus Load refs / Fetch remotes
+  controls sat next to the controlled dropdown and duplicated its job
+  with a second endpoint; they are gone, and so is the separate chevron
+  button: a caret drawn inside the field shows the dropdown, the input
+  click opens it (and never closes it), the branch create form keeps
+  free-text Base with no dropdown, and both create paths use the same
+  free-text fallback to the current branch as before.
 - Opening a folder that is a plain checkout on a non-default branch now
   offers the default branch first. The discovery list shows an
   "Open on main" style row above the branch list naming the current
@@ -11,8 +28,8 @@
   dropdown got the geometry it needed. The dropdown now anchors to
   the Base field instead of pushing the form down: it overlays the
   rows below, caps its own height to the viewport, and flips above
-  the field when the screen has no room under it. The chevron stays
-  in the worktree create form only, the branch create form keeps its
+  the field when the screen has no room under it. The dropdown trigger
+  stays in the worktree create form only, the branch create form keeps its
   own list, a picker left open never leaks into a re-entered create
   view, a successful retry puts focus back on the dropdown filter,
   and cancel after a branch-chip create entry restores the branch
@@ -25,8 +42,8 @@
 - The worktree create form and the branch picker share one popover, and
   the branch picker is now a dropdown on the Base ref field itself. The
   create view in the worktrees list rendered the form alone, so the
-  base ref had to be typed blind; it now shows just the form, and the
-  chevron next to Base ref opens a filter plus local and remote branch
+  base ref had to be typed blind; it now shows just the form, and a
+  click on the Base ref field opens a filter plus local and remote branch
   rows in a dropdown anchored to the field. Clicking a row fills the
   Base ref field and closes the dropdown, Escape closes the dropdown
   before the popover, and the same shape applies when creating from

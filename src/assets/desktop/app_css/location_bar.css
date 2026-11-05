@@ -112,54 +112,69 @@
   cursor: not-allowed;
 }
 
-/* Branch popover: rows and filter reuse the drawer's git-ui rules; only
-   the anchoring is bar-owned. Fixed instead of the drawer's absolute
-   because the bar scrolls horizontally and would clip an absolute child.
-   Both selectors carry two classes so this beats the lazy-loaded
-   .git-ui-branch-list rule no matter which stylesheet lands last. */
-.location-bar .location-bar-branch-popover {
+/* Every chip and folder popover shares one anchoring contract: fixed
+   instead of the drawer's absolute because the bar scrolls horizontally
+   and would clip an absolute child. Two classes per selector so these
+   beat the lazy-loaded .git-ui-branch-list rule regardless of which
+   stylesheet lands last. */
+.location-bar .location-bar-branch-popover,
+.location-bar .location-bar-worktree-popover,
+.location-bar .location-bar-discovery-popover {
   bottom: auto;
-  max-height: 60vh;
   position: fixed;
   right: auto;
 }
 
-/* Worktree popover: same anchoring contract as the branch popover. */
+/* Discovery grows with its content up to the viewport, chip popovers
+   stay compact. */
+.location-bar .location-bar-branch-popover,
 .location-bar .location-bar-worktree-popover {
-  bottom: auto;
   max-height: 60vh;
-  position: fixed;
-  right: auto;
+}
+
+.location-bar .location-bar-discovery-popover {
+  max-height: min(70vh, calc(100vh - var(--discovery-top, 48px) - 8px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .location-bar-branch-popover .git-ui-branch-list-scroll {
   min-height: 96px;
 }
 
-/* New-branch row above the filter: the same inline-field pattern the
-   Git drawer uses for its scan and cwd inputs. */
-.location-bar-branch-popover .git-ui-branch-list-new {
+/* One form-row style for every popover's create form: the chip's
+   new-branch row and discovery's create view share the same
+   inline-field pattern the Git drawer uses for its scan and cwd
+   inputs. */
+.location-bar-branch-popover .git-ui-branch-list-new,
+.location-bar-discovery-popover .git-ui-branch-list-new {
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   margin-bottom: 0;
   margin-top: 8px;
   padding-top: 8px;
 }
 
-.location-bar-branch-popover .git-ui-branch-list-new span {
+.location-bar-branch-popover .git-ui-branch-list-new span,
+.location-bar-discovery-popover .git-ui-branch-list-new span,
+.location-bar-branch-popover .git-ui-branch-list-new label,
+.location-bar-discovery-popover .git-ui-branch-list-new label {
   color: var(--muted);
   font-size: 11px;
 }
 
-.location-bar-branch-popover .git-ui-branch-list-new .git-ui-inline-field {
+.location-bar-branch-popover .git-ui-branch-list-new .git-ui-inline-field,
+.location-bar-discovery-popover .git-ui-branch-list-new .git-ui-inline-field {
   align-items: center;
   display: flex;
   gap: 6px;
 }
 
-.location-bar-branch-popover .git-ui-branch-list-new input {
+.location-bar-branch-popover .git-ui-branch-list-new input,
+.location-bar-discovery-popover .git-ui-branch-list-new input {
   background: var(--panel2);
   border: 1px solid var(--border2);
   border-radius: 7px;
@@ -170,20 +185,10 @@
   padding: 6px 8px;
 }
 
-.location-bar-branch-popover .git-ui-branch-list-new .git-ui-btn {
+.location-bar-branch-popover .git-ui-branch-list-new .git-ui-btn,
+.location-bar-discovery-popover .git-ui-branch-list-new .git-ui-btn {
   flex: 0 0 auto;
   width: auto;
-}
-
-/* Fixed anchoring keeps discovery outside the scrolling location bar. */
-.location-bar .location-bar-discovery-popover {
-  bottom: auto;
-  max-height: min(70vh, calc(100vh - var(--discovery-top, 48px) - 8px));
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  position: fixed;
-  right: auto;
 }
 
 .location-bar-discovery-popover > * {
@@ -221,44 +226,11 @@
   width: auto;
 }
 
-.location-bar-discovery-popover .git-ui-branch-list-new {
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-  padding-top: 8px;
-}
-
 .location-bar-discovery-popover .git-ui-branch-list-new label {
-  color: var(--muted);
   display: flex;
   flex-direction: column;
-  font-size: 11px;
   gap: 4px;
   min-width: 0;
-}
-
-.location-bar-discovery-popover .git-ui-branch-list-new .git-ui-inline-field {
-  align-items: center;
-  display: flex;
-  gap: 6px;
-}
-
-.location-bar-discovery-popover .git-ui-branch-list-new input {
-  background: var(--panel2);
-  border: 1px solid var(--border2);
-  border-radius: 7px;
-  color: var(--fg);
-  flex: 1 1 auto;
-  font: 12px var(--font);
-  min-width: 0;
-  padding: 6px 8px;
-}
-
-.location-bar-discovery-popover .git-ui-branch-list-new .git-ui-btn {
-  flex: 0 0 auto;
-  width: auto;
 }
 
 .location-bar-discovery-popover .location-bar-discovery-worktree-form .git-ui-inline-field {
@@ -269,41 +241,43 @@
   flex-basis: calc(100% - 40px);
 }
 
-.location-bar-base-picker-toggle {
+/* Decorative caret inside the Base field: the input is the only
+   dropdown trigger, so the caret is not clickable and must not eat
+   pointer events meant for the input underneath. */
+.location-bar-base-picker-indicator {
+  color: var(--muted);
   flex: 0 0 auto;
-  min-width: 30px;
-  padding: 5px 7px;
+  font-size: 11px;
+  line-height: 1;
+  margin-left: -30px;
+  pointer-events: none;
+  width: 22px;
+  text-align: right;
 }
 
 .location-bar-base-field {
   position: relative;
 }
 
+/* Fixed positioning keeps the chooser inside the viewport regardless of
+   the popover's own scroll container: an absolutely positioned panel
+   under a scrollable ancestor gets clipped by that ancestor's bounds. */
 .location-bar-base-picker {
   background: var(--panel);
   border: 1px solid var(--border2);
   border-radius: 9px;
   box-shadow: 0 8px 24px rgb(0 0 0 / 25%);
-  /* Anchored below the Base field, outside the form flow: opening the
-     chooser must not push the create button row or footer off screen. */
   left: 0;
   margin: 0;
   max-height: min(320px, calc(100vh - 120px));
-  min-width: 100%;
+  min-width: 220px;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 6px;
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
-  z-index: 5;
-}
-
-/* Space is tight above (popover already near screen bottom): flip the
-   chooser up instead of clipping it under the viewport edge. */
-.location-bar-base-picker.flip-up {
-  bottom: calc(100% + 4px);
-  top: auto;
+  position: fixed;
+  right: auto;
+  top: 0;
+  z-index: 6;
 }
 
 .location-bar-base-picker .git-ui-branch-list-filter {

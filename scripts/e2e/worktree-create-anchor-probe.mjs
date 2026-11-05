@@ -89,7 +89,8 @@ try {
       style,
       hasForm: !!pop.querySelector("#locationBarDiscoveryName"),
       hasBase: !!pop.querySelector("#locationBarDiscoveryBase"),
-      hasToggle: !!pop.querySelector('[data-discovery-focus="base-picker-toggle"]'),
+      hasCaret: !!pop.querySelector(".location-bar-base-picker-indicator"),
+      hasToggle: !pop.querySelector('[data-discovery-focus="base-picker-toggle"]'),
       filterHidden: !pop.querySelector("#locationBarDiscoveryFilter"),
       hasPull: !!pop.querySelector("#locationBarDiscoveryPullBase"),
       chipPopoverGone: !document.querySelector(".location-bar-worktree-popover, .location-bar-branch-popover"),
@@ -103,22 +104,25 @@ try {
   } else {
     recorder.record("discovery create view morphs the popover in place", false, `before=${JSON.stringify(before)} after=${JSON.stringify(after)}`);
   }
-  recorder.record("create view renders the form with the Base chevron and no standalone list",
-    after && after.hasForm && after.hasBase && after.hasToggle && after.filterHidden && after.hasPull, JSON.stringify(after));
+  recorder.record("create view renders the form with the in-field caret and no standalone list",
+    after && after.hasForm && after.hasBase && after.hasCaret && after.hasToggle && after.filterHidden && after.hasPull, JSON.stringify(after));
   recorder.record("old chip popover closed", after && after.chipPopoverGone, "");
 
-  // Open the Base dropdown: chevron shows filter plus branch rows, pick
-  // fills Base and closes the dropdown, Escape closes only the dropdown.
+  // Open the Base dropdown: the input click shows filter plus branch
+  // rows, pick fills Base and closes the dropdown, Escape closes only
+  // the dropdown.
   const opened = await evalJs(cdp, `(() => {
-    const toggle = document.querySelector('[data-discovery-focus="base-picker-toggle"]');
-    if (!toggle) return "no-toggle";
-    toggle.click();
-    return "toggled";
+    const base = document.querySelector("#locationBarDiscoveryBase");
+    if (!base) return "no-base-input";
+    base.click();
+    return "clicked";
   })()`);
   await sleep(1000);
-  // Geometry: the dropdown overlays the form instead of stretching the
-  // popover; the create row, pull checkbox and footer stay visible and
-  // the panel never passes the viewport bottom.
+  // Geometry: the dropdown is a fixed-position overlay anchored to the
+  // Base field, so it escapes the popover's scroll container; the create
+  // row, pull checkbox and footer stay visible, the panel stays inside
+  // the viewport, and rows at the panel bottom actually hit-test inside
+  // it (not clipped by any ancestor).
   const geometry = await evalJs(cdp, `(() => {
     const pop = document.querySelector(".location-bar-discovery-popover");
     const panel = pop && pop.querySelector("#locationBarBasePicker");
@@ -133,18 +137,33 @@ try {
       const r = el.getBoundingClientRect();
       return r.bottom <= view && r.height > 0;
     };
+    // The panel's own last row must hit-test to an element still inside
+    // the panel: a clipped panel returns outside nodes here.
+    const rows = panel.querySelectorAll('.git-ui-branch-row-main, .git-ui-branch-load-more, .git-ui-branch-list-empty');
+    const lastRow = rows.length ? rows[rows.length - 1] : null;
+    let lastRowHitInside = true;
+    if (lastRow) {
+      const rr = lastRow.getBoundingClientRect();
+      if (rr.height > 0 && pr.height > 0) {
+        const y = Math.min(rr.top + Math.min(rr.height, 4) / 2, pr.bottom - 2);
+        const hit = document.elementFromPoint(Math.round(pr.left + Math.min(pr.width / 2, 60)), Math.round(y));
+        lastRowHitInside = !!hit && panel.contains(hit);
+      }
+    }
     return {
+      panelTop: Math.round(pr.top),
       panelBottom: Math.round(pr.bottom),
       viewport: view,
-      withinViewport: pr.bottom <= view + 1,
+      withinViewport: pr.top >= -1 && pr.bottom <= view + 1,
       createVisible: visible(createBtn),
       pullVisible: visible(pull),
       footerVisible: visible(footer),
-      overlay: getComputedStyle(panel).position === "absolute",
+      overlay: getComputedStyle(panel).position === "fixed",
+      rowsHitInsidePanel: lastRowHitInside,
     };
   })()`);
   recorder.record("Base dropdown overlays without clipping the form",
-    !!geometry && geometry.withinViewport && geometry.overlay && geometry.createVisible && geometry.pullVisible && geometry.footerVisible,
+    !!geometry && geometry.withinViewport && geometry.overlay && geometry.rowsHitInsidePanel && geometry.createVisible && geometry.pullVisible && geometry.footerVisible,
     JSON.stringify(geometry));
   const picked = await evalJs(cdp, `(() => {
     const pop = document.querySelector(".location-bar-discovery-popover");
@@ -167,15 +186,15 @@ try {
       popSurvives: !!document.querySelector(".location-bar-discovery-popover"),
     };
   })()`);
-  recorder.record("chevron opens the Base dropdown", opened === "toggled" && picked && picked.panel && picked.filter && picked.localRows, JSON.stringify({ opened, picked }));
+  recorder.record("Base input click opens the Base dropdown", opened === "clicked" && picked && picked.panel && picked.filter && picked.localRows, JSON.stringify({ opened, picked }));
   recorder.record("picking a row fills Base and closes the dropdown",
     picked && picked.pickedBase && picked.panelGoneAfterPick && picked.popSurvives, JSON.stringify(picked));
 
   // Reopen and check Escape closes only the dropdown.
   const escapeCheck = await evalJs(cdp, `(() => {
-    const toggle = document.querySelector('[data-discovery-focus="base-picker-toggle"]');
-    if (!toggle) return { reopened: false };
-    toggle.click();
+    const base = document.querySelector("#locationBarDiscoveryBase");
+    if (!base) return { reopened: false };
+    base.click();
     const panel = document.querySelector("#locationBarBasePicker");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     return {
