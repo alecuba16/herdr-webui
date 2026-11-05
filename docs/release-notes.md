@@ -15,7 +15,16 @@
   popover), the branch list body (filter pinning, remote ordering,
   load-more, empty states) is one helper for all three popovers, and the
   discovery popover no longer renders rows with its own hand-rolled
-  markup.
+  markup. Typing in a filter never re-runs git: the popover's own
+  opening probe already delivered the full remote list (the payload
+  has no server-side cap; the preload count is a render cap), so every
+  keystroke is a pure local operation.
+- The diverged-base question (pull requested but the base cannot
+  fast-forward) is one shared helper now: the desktop worktree modal, the
+  location bar create form, and the mobile create sheet all ask the same
+  message through their own confirm surface, and the worktree path
+  builders (root resolution, path join, branch slug) live in the shared
+  helpers instead of being re-implemented per surface.
 - The create form has one Base-ref picker, and the Base input is its
   only trigger. The old browser datalist plus Load refs / Fetch remotes
   controls sat next to the controlled dropdown and duplicated its job

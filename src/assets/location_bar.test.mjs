@@ -853,7 +853,31 @@ describe("location bar branch popover", () => {
     equal(top, 64, "anchor keeps the chip's bottom offset");
   });
 
-  it("filter keeps matching rows and posts nothing", async () => {
+  it("a stale event with a detached chip re-anchors on the live chip, not the top-left corner", async () => {
+    const { ctx, bar } = loadPopover({
+      routes: {
+        "/api/git-ui/branches": { local: LOCAL, remote: REMOTE },
+        "/api/worktrees": { result: { worktrees: [], source: null } },
+      },
+    });
+    ctx.HerdrLocationBar.sync();
+    // Console-style call: the held event points at a chip node an earlier
+    // re-render detached. A detached node reads as an all-zero rect, which
+    // must fall through to the live chip instead of anchoring at 0,0.
+    const detachedChip = { getBoundingClientRect: () => ({ left: 0, top: 0, bottom: 0, right: 0, width: 0, height: 0 }) };
+    const liveChip = { getBoundingClientRect: () => ({ left: 500, top: 10, bottom: 30, right: 620, width: 120, height: 20 }) };
+    ctx.document.querySelector = () => liveChip;
+    await ctx.HerdrLocationBar.openWorktreePopover({ stopPropagation() {}, currentTarget: detachedChip });
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: detachedChip });
+    const styleMatch = bar.innerHTML.match(/location-bar-branch-popover" role="dialog" aria-label="Branches" style="([^"]*)"/);
+    ok(styleMatch, "popover style renders");
+    const left = Number(/left:(-?\d+(?:\.\d+)?)px/.exec(styleMatch[1])[1]);
+    const top = Number(/top:(-?\d+(?:\.\d+)?)px/.exec(styleMatch[1])[1]);
+    equal(left, 500, "zero rect falls back to the live chip's left position");
+    equal(top, 34, "zero rect falls back to the live chip's bottom offset, never 0,0");
+  });
+
+  it("filter keeps matching rows and fetches nothing", async () => {
     const { ctx, bar, calls } = loadPopover({
       routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
     });
@@ -865,8 +889,23 @@ describe("location bar branch popover", () => {
     ok(bar.innerHTML.includes("feature-x"), "matching branch stays visible");
     ok(!bar.innerHTML.includes('>main</span>'), "non-matching local branch hidden");
     ok(!bar.innerHTML.includes("Load more branches"), "filtering shows the full remote list");
-    equal(calls.slice(before).length, 1, "filter fetches the full remote list once");
-    equal(calls.slice(before)[0].path, "/api/git-ui/branches");
+    equal(calls.slice(before).length, 0, "the opening fetch already carried the full remote list, so filtering runs no fetch");
+  });
+
+  it("every filter keystroke is a pure local operation", async () => {
+    const { ctx, bar, calls } = loadPopover({
+      routes: { "/api/git-ui/branches": { local: LOCAL, remote: REMOTE } },
+    });
+    ctx.HerdrLocationBar.sync();
+    await ctx.HerdrLocationBar.openBranchPopover({ stopPropagation() {}, currentTarget: null });
+    const before = calls.length;
+    ctx.HerdrLocationBar.branchPopoverFilter("fea");
+    ctx.HerdrLocationBar.branchPopoverFilter("feature");
+    ctx.HerdrLocationBar.branchPopoverFilter("feature-x");
+    equal(calls.length, before, "no keystroke re-runs git: the opening payload already holds every remote ref");
+    ok(bar.innerHTML.includes("feature-x"), "the narrowed filter still matches");
+    ctx.HerdrLocationBar.branchPopoverFilter("");
+    ok(bar.innerHTML.includes('>main</span>'), "clearing the filter restores the unfiltered rows");
   });
 
   it("load more reveals the full remote list", async () => {
@@ -1700,8 +1739,9 @@ describe("location bar discovery popover", () => {
     vm.runInContext(readFileSync(new URL("./shared/core.js", import.meta.url), "utf8"), contextObject);
     Object.assign(ctx, {
       options: {},
+      // worktrees.js (loaded below for bundle parity) still calls the
+      // shared helpers by their bare names.
       branchPathSlug: ctx.HerdrAppHelpers.branchPathSlug,
-      normalizeAbsolutePath: ctx.HerdrAppHelpers.normalizeAbsolutePath,
       buildWorktreeCreateBody: ctx.HerdrAppHelpers.buildWorktreeCreateBody,
     });
     vm.runInContext(readFileSync(new URL("./desktop/app_js/worktrees.js", import.meta.url), "utf8"), contextObject);
@@ -2114,9 +2154,13 @@ describe("location bar discovery popover", () => {
     ok(!bar.innerHTML.includes("Load more branches"));
     ok(bar.innerHTML.includes("origin/topic-11"));
     ctx.HerdrLocationBar.discoveryFilter("topic");
-    ok(bar.innerHTML.includes("Loading remote branches"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    ok(!bar.innerHTML.includes("Loading remote branches"));
+    ok(!bar.innerHTML.includes("Load more branches"), "typing lifts the render cap immediately, no remote fetch needed");
+    ok(bar.innerHTML.includes("origin/topic-11"), "filter matches across the full remote list the opening already delivered");
+    ctx.HerdrLocationBar.discoveryFilter("topic-2");
+    ok(!bar.innerHTML.includes("origin/topic-11"), "narrowing hides non-matching rows");
+    ctx.HerdrLocationBar.discoveryFilter("");
+    ok(bar.innerHTML.includes("origin/topic-11"), "clearing the filter keeps the lifted cap, matching load-more semantics");
+    ok(bar.innerHTML.includes("Load more branches") === false, "no reload prompt after the list was already fully revealed");
   });
 
   it("cancel preserves both discovery and branch drafts", async () => {
@@ -2188,23 +2232,20 @@ describe("location bar discovery popover", () => {
     ok(bar.innerHTML.includes("/other-repo"));
   });
 
-  it("ignores an obsolete filter response even when clocks are identical", async () => {
-    const { ctx, bar } = loadDiscovery({ routes: {
+  it("every discovery filter keystroke filters locally without fetching", async () => {
+    const { ctx, bar, calls } = loadDiscovery({ routes: {
       "/api/worktrees": { result: { worktrees: [] } },
-      "/api/git-ui/branches": { local: LOCAL, remote: [] },
+      "/api/git-ui/branches": { local: LOCAL, remote: [{ name: "origin/fresh", remote: true }] },
     } });
     await ctx.HerdrLocationBar.openDiscoveryForFolder("/repo");
-    const pending = [];
-    ctx.fetch = () => new Promise((resolve) => pending.push((body) => resolve({ ok: true, json: async () => body })));
-    ctx.Date = class extends Date { static now() { return 1; } };
-    ctx.HerdrLocationBar.discoveryFilter("old");
-    ctx.HerdrLocationBar.discoveryFilter("new");
-    pending[1]({ remote: [{ name: "origin/new", remote: true }] });
+    const before = calls.length;
+    ctx.HerdrLocationBar.discoveryFilter("fresh");
+    ctx.HerdrLocationBar.discoveryFilter("fres");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    pending[0]({ remote: [{ name: "origin/old-new", remote: true }] });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    ok(bar.innerHTML.includes("origin/new"));
-    ok(!bar.innerHTML.includes("origin/old-new"));
+    ok(bar.innerHTML.includes("origin/fresh"), "matching remote rows render from the opening's own probe");
+    equal(calls.length, before, "filtering runs no fetch: the opening payload already holds every remote ref");
+    ctx.HerdrLocationBar.discoveryFilter("");
+    ok(bar.innerHTML.includes("Local branches"), "clearing the filter restores the full list");
   });
 
   it("keeps discovery open when the initiating detached picker click bubbles", async () => {

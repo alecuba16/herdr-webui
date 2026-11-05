@@ -390,18 +390,14 @@ function localWorktreeBranchName(branch) {
   return text;
 }
 function joinPath(...parts) {
-  const clean = parts.filter(Boolean).map((part, index) => {
-    part = String(part);
-    if (index === 0) return part.replace(/\/+$/g, "");
-    return part.replace(/^\/+|\/+$/g, "");
-  });
-  return clean.join("/");
+  // Shared helper (HerdrAppHelpers): kept as a local name because the
+  // module's pre-existing call sites read like plain path math.
+  return HerdrAppHelpers.joinPath(...parts);
 }
 function worktreeRootForSource(source) {
-  let root = worktreeDefaultDirectoryOption();
-  if (!root) root = source.default_worktree_directory || "../worktrees";
-  if (root.startsWith("~") || root.startsWith("/")) return root;
-  return normalizeAbsolutePath(joinPath(source.repo_root, root));
+  // Desktop reads the shell options object for the user's configured
+  // default; the resolution order itself is shared.
+  return HerdrAppHelpers.worktreeRootForSource(source, worktreeDefaultDirectoryOption());
 }
 function worktreeDefaultDirectoryOption() {
   return String(options.worktreeDefaultDirectory || "").trim();
@@ -504,19 +500,12 @@ async function submitWorktreeCreate(input) {
   }
 }
 function pullFastForwardFailed(message) {
-  const text = String(message || "").toLowerCase();
-  return (
-    text.includes("fast-forward") &&
-    (text.includes("diverging") || text.includes("not possible") || text.includes("fatal"))
-  );
+  return HerdrAppHelpers.pullFastForwardFailed(message);
 }
 async function confirmContinueWithoutPull(message) {
-  if (!pullFastForwardFailed(message)) return false;
-  return askQuestion({
-    title: "Base branch diverged",
-    message: `Git could not fast-forward the base branch before creating the worktree:\n\n${message}\n\nCreate the worktree without pulling first?`,
-    confirmText: "Create without pull",
-  });
+  // Shared message contract (HerdrAppHelpers.confirmWorktreePullBaseQuestion);
+  // the modal asks through the shell's question card.
+  return HerdrAppHelpers.confirmWorktreePullBaseQuestion(message, askQuestion) || false;
 }
 function defaultBaseBranch() {
   const branches = state.openWorktreeBranches || [];

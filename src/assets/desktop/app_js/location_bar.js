@@ -1,7 +1,11 @@
 // Desktop location bar: the folder / worktree / branch strip above the
 // workspace panes. Independent shell module (same family as
 // workspace_panes.js): own state, own signature-based sync called from
-// render(), no dependency on the lazily-loaded git_ui drawer. Git facts
+// render(), no dependency on the lazily-loaded git_ui drawer. Shared
+// helpers (escaping, worktree create body, path builders, the diverged-
+// base question) come from HerdrAppHelpers (shared/core.js loads before
+// this bundle module); display helpers keep local fallbacks so bare
+// harnesses still run, the create flow requires the real helpers. Git facts
 // come from cached sources only (rail-status parks, the worktrees list,
 // the server branch attribution); the branch popover is the one surface
 // that fetches on demand (plan phase 3), and it owns its data in bar
@@ -31,7 +35,7 @@
 
   // Popover state (plan phase 3): the shape the row renderer expects
   // (loading, error, local, remote, filter, currentBranch,
-  // remoteLoaded, remoteLoading, remoteRequestId). discoveryList is the
+  // remoteLoaded, remoteLoading). discoveryList is the
   // open-folder surface (open-folder-redesign.md): a fresh probe after
   // a directory-picker pick decides whether it renders worktree rows,
   // branch rows, or an error with a fallback footer.
@@ -394,10 +398,23 @@
   function anchorFromEvent(event, chipSelector) {
     // Keyboard entry (the b shortcut) passes no event: anchor on the
     // chip itself so the popover still hangs off the bar.
-    const target =
-      (event && event.currentTarget) ||
-      (document.querySelector && document.querySelector(chipSelector || ".location-bar-branch-chip:not([disabled])"));
-    const rect = target && target.getBoundingClientRect ? target.getBoundingClientRect() : null;
+    const selector = chipSelector || ".location-bar-branch-chip:not([disabled])";
+    let target = (event && event.currentTarget) || null;
+    // A re-render (opening another popover repaints the bar) detaches the
+    // chip node a held event still points at, and a detached node reads as
+    // a zero rect, which would anchor the popover at the viewport's
+    // top-left corner. Any zero-sized rect means the node is gone: measure
+    // the live chip instead.
+    const rectOf = (node) => {
+      const rect = node && node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+      return rect && (rect.width > 0 || rect.height > 0) ? rect : null;
+    };
+    let rect = rectOf(target);
+    if (!rect && document.querySelector) {
+      const live = document.querySelector(selector);
+      rect = rectOf(live);
+      target = live;
+    }
     if (!rect) return { left: 10, top: 40, width: 360 };
     const viewport = window.innerWidth || 1200;
     const maxWidth = Math.min(420, Math.max(280, viewport - rect.left - 16));
@@ -419,18 +436,6 @@
       throw error;
     }
     return body;
-  }
-
-  function focusPopoverInput(selector, caretValue) {
-    requestAnimationFrame(() => {
-      const input = document.querySelector(selector);
-      if (!input) return;
-      input.focus();
-      try {
-        const length = String(caretValue || "").length;
-        input.setSelectionRange(length, length);
-      } catch (_) {}
-    });
   }
 
   function currentCwd() {
@@ -510,7 +515,6 @@
       currentBranch: facts.branch || "",
       remoteLoaded: false,
       remoteLoading: false,
-      remoteRequestId: 0,
       newBranch: "",
       creating: false,
       anchor: chipAnchor,
@@ -558,32 +562,12 @@
     const list = bar.branchList;
     if (!list || list.loading) return;
     list.filter = String(value || "");
-    if (list.filter.trim()) {
-      // Typing a filter needs the full remote list, same as the drawer.
-      list.remoteLoaded = true;
-      list.remoteLoading = true;
-      const requestId = Date.now();
-      list.remoteRequestId = requestId;
-      sync();
-      focusPopoverInput(".location-bar-branch-popover .git-ui-branch-list-filter input", list.filter);
-      api(`/api/git-ui/branches?cwd=${encodeURIComponent(currentCwd())}`)
-        .then((data) => {
-          if (!bar.branchList || bar.branchList.remoteRequestId !== requestId) return;
-          const existing = new Map((bar.branchList.remote || []).map((branch) => [branch.name, branch]));
-          (data.remote || []).forEach((branch) => existing.set(branch.name, branch));
-          bar.branchList.remote = [...existing.values()];
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (bar.branchList && bar.branchList.remoteRequestId === requestId) {
-            bar.branchList.remoteLoading = false;
-            sync();
-            focusPopoverInput(".location-bar-branch-popover .git-ui-branch-list-filter input", bar.branchList.filter);
-          }
-        });
-      return;
-    }
-    list.remoteLoading = false;
+    // Pure local operation: the opening fetch already delivered the full
+    // remote list (the payload has no server-side cap; the preload is a
+    // render cap), so typing only lifts that cap. No refetch per keystroke
+    // and none on the first keystroke either.
+    list.remoteLoaded = true;
+    if (!list.filter.trim()) list.remoteLoading = false;
     // Re-render only the popover: a full innerHTML rewrite would drop the
     // filter input's focus and caret.
     const node = barNode();
@@ -1519,24 +1503,13 @@
     return text;
   }
 
-  function pullFastForwardFailed(message) {
-    const text = String(message || "").toLowerCase();
-    return (
-      text.includes("fast-forward") &&
-      (text.includes("diverging") || text.includes("not possible") || text.includes("fatal"))
-    );
-  }
-
-  // Same contract as the worktrees modal: a diverged base branch asks once
-  // whether to create without pulling, instead of failing outright.
+  // Shared diverged-base contract (HerdrAppHelpers): the popover asks
+  // through the shell's question card, same message as the worktree modal
+  // and the mobile sheet.
   async function confirmContinueWithoutPull(message) {
-    if (!pullFastForwardFailed(message)) return false;
-    if (typeof askQuestion !== "function") return false;
-    return askQuestion({
-      title: "Base branch diverged",
-      message: `Git could not fast-forward the base branch before creating the worktree:\n\n${message}\n\nCreate the worktree without pulling first?`,
-      confirmText: "Create without pull",
-    });
+    const askQuestionShared = helpers.confirmWorktreePullBaseQuestion;
+    if (typeof askQuestionShared !== "function") return false;
+    return (await askQuestionShared(message, askQuestion)) || false;
   }
 
   function discoverySourceAvailable(source) {
@@ -1574,10 +1547,14 @@
     let body;
     let path;
     try {
-      const root = worktreeRootForSource(list.source);
-      path = root && joinPath(root, list.source.repo_name, branchPathSlug(branch));
+      // Shared path builders (HerdrAppHelpers): the create form computes
+      // the proposed checkout path client-side so the user sees it before
+      // the POST; the backend falls back to the same convention when path
+      // is omitted.
+      const root = helpers.worktreeRootForSource(list.source, String((typeof options !== "undefined" && options.worktreeDefaultDirectory) || "").trim());
+      path = root && helpers.joinPath(root, list.source.repo_name, helpers.branchPathSlug(branch));
       if (!path) throw Error("Worktree checkout path is unavailable.");
-      body = buildWorktreeCreateBody({ source: { cwd: list.folder, workspace_id: null }, branch, base, path, label: null, pullBase: !!list.pullBase });
+      body = helpers.buildWorktreeCreateBody({ source: { cwd: list.folder, workspace_id: null }, branch, base, path, label: null, pullBase: !!list.pullBase });
     } catch (err) {
       list.createError = err.message || String(err);
       sync();
@@ -1594,7 +1571,7 @@
         body: JSON.stringify(
           withPullBase
             ? body
-            : buildWorktreeCreateBody({ source: { cwd: list.folder, workspace_id: null }, branch, base, path, label: null, pullBase: false }),
+            : helpers.buildWorktreeCreateBody({ source: { cwd: list.folder, workspace_id: null }, branch, base, path, label: null, pullBase: false }),
         ),
       });
     try {
@@ -1715,29 +1692,12 @@
     const list = bar.discoveryList;
     if (!discoveryOpeningActive(list) || list.loading || list.creating) return;
     list.filter = String(value || "");
-    const requestId = nextPopoverRequestId();
-    list.remoteRequestId = requestId;
-    if (list.filter.trim()) {
-      list.remoteLoaded = true;
-      list.remoteLoading = true;
-      sync();
-      api(`/api/git-ui/branches?cwd=${encodeURIComponent(String(list.folder || ""))}`)
-        .then((data) => {
-          if (!discoveryOpeningActive(list) || list.remoteRequestId !== requestId) return;
-          const existing = new Map((bar.discoveryList.remote || []).map((branch) => [branch.name, branch]));
-          (data.remote || []).forEach((branch) => existing.set(branch.name, branch));
-          bar.discoveryList.remote = [...existing.values()];
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (discoveryOpeningActive(list) && list.remoteRequestId === requestId) {
-            bar.discoveryList.remoteLoading = false;
-            sync();
-          }
-        });
-      return;
-    }
-    list.remoteLoading = false;
+    // Pure local operation, same as the branch popover: every view that
+    // renders this filter (branches mode, the create view's Base picker)
+    // loaded its branch rows from a probe that returned the full remote
+    // list, so typing only lifts the render cap.
+    list.remoteLoaded = true;
+    if (!list.filter.trim()) list.remoteLoading = false;
     sync();
   }
 
@@ -1833,7 +1793,6 @@
       currentBranch: "",
       remoteLoaded: false,
       remoteLoading: false,
-      remoteRequestId: 0,
       newBranch: prefillBranch,
       newBase: prefillBase,
       pullBase: false,
